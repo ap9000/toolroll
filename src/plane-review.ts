@@ -6,7 +6,9 @@
  * - failed or no-change runs, grouped by cause (provider error, sign-in
  *   expiry, check failure, timeout, quit without handoff, stuck lease,
  *   orphaned process, no change, other);
- * - tasks waiting on a person for over a day, grouped by what they wait for;
+ * - tasks stuck for over a day on something the system must fix (unfinished
+ *   work no worker holds, repeated failures, an incident hold), grouped by
+ *   what they wait for;
  * - sign-in and plan-limit pauses, per provider;
  * - chat replies that couldn't be delivered, per app;
  * - integrations that are Broken (integration_check);
@@ -17,6 +19,13 @@
  * problem (flow-triggers.ts joins it to its card), and carries counts, run
  * ids and short evidence excerpts with anything shaped like a secret hidden.
  * A clean day is no problems at all. Only projects the reader may see count.
+ *
+ * Waits only a person can end — a result to open, a question to answer, a
+ * plan or task to approve, a hold to lift, a scope to write — are never
+ * problems: each card starts a find-the-cause → fix → pull request flow, and
+ * no code change opens a result for someone. Needs you and chat already ask
+ * the person. `longPersonWaits` counts the ones over `LONG_WAIT_DAYS` so the
+ * review's own summary line can mention them once, filing nothing.
  */
 import { scanForSecrets } from "./evidence.js";
 import { scrubIntegrationText } from "./integrations.js";
@@ -38,8 +47,10 @@ export type PlaneProblem = {
 export const REVIEW_HOURS = 24;
 const EVIDENCE_LINES = 5;
 const WAITING_DAYS = 1;
-/** A Ready result older than this is history, not today's problem. */
-const READY_WINDOW_DAYS = 7;
+/** A person's wait this long is mentioned in the review's summary line. */
+export const LONG_WAIT_DAYS = 3;
+/** What a person, not the code, must do next (lead-status.ts `taskWaitSnapshot`). The rest have a system cause. */
+const PERSON_NEXT = new Set(["Open result", "Answer the task's question", "Answer question", "Remove hold", "Review plan", "Resume or close attempt", "Choose a result", "Approve plan", "Add scope", "Approve task"]);
 
 export const RUN_CAUSES = ["provider", "sign-in", "check", "timeout", "no-handoff", "stuck-lease", "orphaned", "no-change", "other"] as const;
 export type RunCause = (typeof RUN_CAUSES)[number];
@@ -148,21 +159,11 @@ export function reviewPlane(store: Store, now: Date, canSee: (repo: string | nul
     add("run/orphaned", CAUSE_TITLES.orphaned, ["run", "runs"], { run, evidence: `Run ${run} (task ${str(row["task"]) ?? "?"}): process ${str(row["pid"]) ?? "?"} on ${excerpt(str(row["host"]), 40)} was still running after it finished` });
   }
 
-  // Tasks waiting on a person for over a day, by what they wait for.
-  const waited = new Date(now.getTime() - WAITING_DAYS * 86_400_000).toISOString();
-  const readyFrom = new Date(now.getTime() - READY_WINDOW_DAYS * 86_400_000).toISOString();
-  const tasks = store.handle.prepare(`SELECT task.id, task.title, task.updated_at, ref.repo FROM task JOIN task_ref ref ON ref.backend = 'built-in' AND ref.external_id = task.id
-    WHERE task.updated_at <= ? AND (task.state IN ('queued', 'running') OR (task.state = 'done' AND task.updated_at >= ?)) ORDER BY task.updated_at LIMIT 500`).all(waited, readyFrom);
-  for (const row of tasks) {
-    if (!canSee(str(row["repo"]))) continue;
-    // A version a later revision replaced never waits on its own.
-    const family = store.taskFamilyOf(String(row["id"]), null, true);
-    if (family !== null && family.current.id !== String(row["id"])) continue;
-    const snapshot = taskWaitSnapshot(store, String(row["id"]), now);
-    if (snapshot === null || (snapshot.reason !== "needs-person" && snapshot.reason !== "ready")) continue;
-    const days = Math.floor((now.getTime() - Date.parse(String(row["updated_at"]))) / 86_400_000);
-    add(`waiting/${keyPart(snapshot.next)}`, `Tasks waited over a day: ${snapshot.next}`, ["task", "tasks"], { run: snapshot.run,
-      evidence: `Task ${String(row["id"])} “${excerpt(str(row["title"]), 80)}”: ${plural(days, "day")} waiting` });
+  // Tasks stuck for over a day on a system cause, by what they wait for. Waits on a person are never cards.
+  for (const wait of openWaits(store, new Date(now.getTime() - WAITING_DAYS * 86_400_000), now, canSee)) {
+    if (wait.person) continue;
+    add(`waiting/${keyPart(wait.next)}`, `Tasks waited over a day: ${wait.next}`, ["task", "tasks"], { run: wait.run,
+      evidence: `Task ${wait.id} “${excerpt(wait.title, 80)}”: ${plural(wait.days, "day")} waiting` });
   }
 
   // Sign-in and plan-limit pauses.
@@ -233,6 +234,51 @@ export function reviewPlane(store: Store, now: Date, canSee: (repo: string | nul
     return { key, title: bucket.title, count: bucket.count, runs: runsList, evidence: bucket.evidence,
       summary: `${plural(bucket.count, bucket.noun[0], bucket.noun[1])} in the last ${REVIEW_HOURS} hours${runsList.length === 0 ? "" : ` (${runsList.length === 1 ? "run" : "runs"} ${runsList.slice(0, 12).join(", ")}${runsList.length > 12 ? ", …" : ""})`}.` };
   }).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
+type Wait = { id: string; title: string | null; next: string; run: number | null; days: number; person: boolean };
+
+/** Queued or running tasks last touched by `before` that wait, and on what; replaced versions never wait on their own. */
+function openWaits(store: Store, before: Date, now: Date, canSee: (repo: string | null) => boolean): Wait[] {
+  const rows = store.handle.prepare(`SELECT task.id, task.title, task.updated_at, ref.repo FROM task JOIN task_ref ref ON ref.backend = 'built-in' AND ref.external_id = task.id
+    WHERE task.updated_at <= ? AND task.state IN ('queued', 'running') ORDER BY task.updated_at LIMIT 500`).all(before.toISOString());
+  return waitsOf(store, rows, now, canSee);
+}
+
+function waitsOf(store: Store, rows: Record<string, unknown>[], now: Date, canSee: (repo: string | null) => boolean): Wait[] {
+  const waits: Wait[] = [];
+  for (const row of rows) {
+    if (!canSee(str(row["repo"]))) continue;
+    const id = String(row["id"]);
+    const family = store.taskFamilyOf(id, null, true);
+    if (family !== null && family.current.id !== id) continue;
+    const snapshot = taskWaitSnapshot(store, id, now);
+    if (snapshot === null || (snapshot.reason !== "needs-person" && snapshot.reason !== "ready")) continue;
+    waits.push({ id, title: str(row["title"]), next: snapshot.next, run: snapshot.run, days: Math.floor((now.getTime() - Date.parse(String(row["updated_at"]))) / 86_400_000),
+      person: snapshot.reason === "ready" || PERSON_NEXT.has(snapshot.next) });
+  }
+  return waits;
+}
+
+/**
+ * Results nobody has opened, and tasks waiting on a person's answer, approval or hold, for over `LONG_WAIT_DAYS`
+ * before `now`. Counted for the review's summary line only; they are never problems.
+ */
+export function longPersonWaits(store: Store, now: Date, canSee: (repo: string | null) => boolean = () => true): { results: number; tasks: number } {
+  const before = new Date(now.getTime() - LONG_WAIT_DAYS * 86_400_000);
+  // Newest first, so years of Complete work never crowds out this week's unopened results.
+  const finished = store.handle.prepare(`SELECT task.id, task.title, task.updated_at, ref.repo FROM task JOIN task_ref ref ON ref.backend = 'built-in' AND ref.external_id = task.id
+    WHERE task.updated_at <= ? AND task.state = 'done' ORDER BY task.updated_at DESC LIMIT 500`).all(before.toISOString());
+  const results = waitsOf(store, finished, now, canSee).filter(wait => wait.person).length;
+  const tasks = openWaits(store, before, now, canSee).filter(wait => wait.person).length;
+  return { results, tasks };
+}
+
+/** "3 results have waited over 3 days for you." — or null when nothing has. */
+export function longWaitWords(waits: { results: number; tasks: number }): string | null {
+  const parts = [waits.results > 0 ? plural(waits.results, "result") : null, waits.tasks > 0 ? plural(waits.tasks, "task") : null].filter(one => one !== null);
+  if (parts.length === 0) return null;
+  return `${parts.join(" and ")} ${waits.results + waits.tasks === 1 ? "has" : "have"} waited over ${LONG_WAIT_DAYS} days for you.`;
 }
 
 /** A problem as a card's details (or a day's note on a card it joins). */

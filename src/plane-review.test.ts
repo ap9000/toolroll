@@ -12,7 +12,8 @@ import { flowFromSteps } from "./flows.js";
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, runFlowTriggers, triggerConfigOf, type TriggerIo } from "./flow-triggers.js";
 import { flowInsights } from "./flow-insights.js";
 import { recordIntegrationCheck } from "./integrations.js";
-import { reviewPlane, runCause } from "./plane-review.js";
+import { longPersonWaits, reviewPlane, runCause } from "./plane-review.js";
+import { flowView } from "./flows-ui.js";
 
 const DAY1 = new Date("2026-09-30T07:30:00.000Z");
 const DAY2 = new Date("2026-10-01T07:30:00.000Z");
@@ -45,6 +46,22 @@ function run(finished: Date, fields: { outcome: string; reason?: string | null; 
   return runId;
 }
 
+/** A task in the project, last touched `at`, in `state`. */
+function task(id: string, title: string, at: Date, state: "queued" | "running" | "done" = "queued"): number {
+  store.createTask({ id, title }, at);
+  if (state !== "queued") store.setTaskState(id, state, at);
+  const ref = store.refFor("built-in", id).id;
+  store.handle.prepare("UPDATE task_ref SET repo = ? WHERE id = ?").run(repo, ref);
+  return ref;
+}
+
+/** Approved and marked running, but no worker holds it: the dispatch is stuck. */
+function stuckDispatch(id: string, title: string, at: Date): void {
+  task(id, title, at, "running");
+  store.handle.prepare("INSERT INTO task_scope (task_id, goal, proposed_at, digest, approved_digest, approved_at, approved_by) VALUES (?, 'Do it.', ?, 'd', 'd', ?, 'alex')").run(id, at.toISOString(), at.toISOString());
+  store.handle.prepare("UPDATE task SET updated_at = ? WHERE id = ?").run(at.toISOString(), id);
+}
+
 function seedMixedDay(): Record<string, number> {
   const at = (hours: number) => hoursBefore(DAY1, hours);
   const ids = {
@@ -66,9 +83,8 @@ function seedMixedDay(): Record<string, number> {
   const leased = store.handle.prepare("SELECT task_ref FROM run WHERE id = ?").get(ids.provider)!["task_ref"];
   store.handle.prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at, released_at, released_by) VALUES ('lease-stuck', ?, 2, 'worker-b', ?, ?, ?, ?, 'reaped')")
     .run(leased, at(12).toISOString(), at(11).toISOString(), at(12).toISOString(), at(10).toISOString());
-  // A task that has waited two days for a person to write its scope.
-  store.createTask({ id: "waiting", title: "Rotate the release key" }, hoursBefore(DAY1, 50));
-  store.handle.prepare("UPDATE task_ref SET repo = ? WHERE external_id = 'waiting'").run(repo);
+  // A task dispatched two days ago that no worker ever took up.
+  stuckDispatch("waiting", "Rotate the release key", hoursBefore(DAY1, 50));
   // An integration that is Broken, with a token in what it said.
   recordIntegrationCheck(store, "github", { outcome: "failed", problem: `gh said: bad credentials for ghp_${"a".repeat(36)}` }, at(2));
   // What the worker counted as broke.
@@ -102,7 +118,7 @@ describe("the morning plane review", () => {
     expect(Object.keys(byTitle).sort()).toEqual([
       "Agents quit without a handoff", "Integration broken: github", "Leases got stuck", "Processes were left behind", "Release checks failed",
       "Runs failed on a provider error", "Runs failed their checks", "Runs stopped: sign-in expired", "Runs timed out",
-      "Tasks waited over a day: Add scope", "The worker logged work as broke",
+      "Tasks waited over a day: Reconcile unfinished work", "The worker logged work as broke",
     ].sort());
     expect(pass.added).toBe(cards.length);
     expect(cards.every(card => card.stage === "look" && card.source?.kind === "plane-review")).toBe(true);
@@ -113,7 +129,7 @@ describe("the morning plane review", () => {
     expect(byTitle["Release checks failed"]!.description).toContain(`Run ${ids.release} (task t8): npm test: 2 failing`);
     expect(byTitle["Runs failed their checks"]!.description).toContain(`(run ${ids.check})`);
     expect(byTitle["The worker logged work as broke"]!.description).toContain("2 times in the last 24 hours");
-    expect(byTitle["Tasks waited over a day: Add scope"]!.description).toContain("Task waiting “Rotate the release key”: 2 days waiting");
+    expect(byTitle["Tasks waited over a day: Reconcile unfinished work"]!.description).toContain("Task waiting “Rotate the release key”: 2 days waiting");
     expect(byTitle["Agents quit without a handoff"]!.description).toContain("[hidden");
     for (const card of cards) {
       expect(card.description).not.toContain(SECRET);
@@ -180,5 +196,59 @@ describe("the morning plane review", () => {
     expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "plane-review", at: "25:00" }, "alex", DAY1, null)).toMatchObject({ ok: false, message: expect.stringMatching(/^Say the time it reviews the day as HH:MM/) });
     const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "plane-review", timeZone: "Europe/London" }, "alex", DAY1, null) as { id: number };
     expect(triggerConfigOf(store.getFlowTrigger(made.id)!)).toEqual({ kind: "plane-review", schedule: "daily:07:30@Europe/London", zone: null });
+  });
+});
+
+describe("waits on a person are not code problems", () => {
+  test("c1: an unopened result and decision, approval or hold waits make no card and start no flow", async () => {
+    task("unopened", "Rename the export button", hoursBefore(DAY1, 48), "done");
+    const planned = task("planned", "Split the settings page", hoursBefore(DAY1, 30));
+    store.handle.prepare("UPDATE task_ref SET plan = 'drafted' WHERE id = ?").run(planned);
+    const held = task("held", "Pause the nightly sync", hoursBefore(DAY1, 30));
+    store.handle.prepare("INSERT INTO hold (task_ref, owner_kind, owner_id, reason, held_at) VALUES (?, 'operator', 'alex', 'waiting on legal', ?)").run(held, hoursBefore(DAY1, 30).toISOString());
+    task("unscoped", "Write the release notes", hoursBefore(DAY1, 30));
+    task("unapproved", "Bump the minimum Node version", hoursBefore(DAY1, 30));
+    store.handle.prepare("INSERT INTO task_scope (task_id, goal, proposed_at, digest) VALUES ('unapproved', 'Bump it.', ?, 'd')").run(hoursBefore(DAY1, 30).toISOString());
+
+    expect(reviewPlane(store, DAY1)).toEqual([]);
+    const { flow, trigger } = planeFlow();
+    expect((await runFlowTriggers(store, repo, DAY1, io)).added).toBe(0);
+    expect(store.flowCards(flow, true)).toEqual([]);
+    // None of them has waited over three days, so the summary is a clean day.
+    expect(store.getFlowTrigger(trigger)!.lastOutcome).toBe("A clean day: nothing to fix.");
+  });
+
+  test("c2: a plan waiting 4 days is mentioned once in the summary, linked to Needs you, and files nothing", async () => {
+    const planned = task("planned", "Split the settings page", hoursBefore(DAY1, 4 * 24));
+    store.handle.prepare("UPDATE task_ref SET plan = 'drafted' WHERE id = ?").run(planned);
+    task("old-result", "Rename the export button", hoursBefore(DAY1, 5 * 24), "done");
+    task("fresh-result", "Fix the footer", hoursBefore(DAY1, 36), "done");
+    const failure = run(hoursBefore(DAY1, 2), { outcome: "failed", reason: "timeout", handoff: "the builder ran past 45 minutes" });
+
+    expect(longPersonWaits(store, DAY1)).toEqual({ results: 1, tasks: 1 });
+    const { flow, trigger } = planeFlow();
+    expect((await runFlowTriggers(store, repo, DAY1, io)).added).toBe(1);
+    expect(store.flowCards(flow, true).map(card => card.title)).toEqual(["Runs timed out"]);
+    expect(store.flowCards(flow, true)[0]!.description).toContain(`(run ${failure})`);
+    expect(store.getFlowTrigger(trigger)!.lastOutcome).toBe("Added 1 card. 1 result and 1 task have waited over 3 days for you.");
+    const shown = flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null).triggers[0]!;
+    expect(shown.statusLink).toEqual({ label: "Needs you", href: "/work?view=needs-you" });
+
+    // A plan alone, the next morning: a clean day that still mentions it.
+    store.handle.prepare("UPDATE task SET state = 'cancelled' WHERE id = 'old-result'").run();
+    await runFlowTriggers(store, repo, DAY2, io);
+    expect(store.flowCards(flow, true)).toHaveLength(1);
+    expect(store.getFlowTrigger(trigger)!.lastOutcome).toBe("A clean day: nothing to fix. 1 task has waited over 3 days for you.");
+  });
+
+  test("c3: a stuck dispatch still makes a card", async () => {
+    stuckDispatch("stuck", "Rotate the release key", hoursBefore(DAY1, 30));
+    const { flow, trigger } = planeFlow();
+    expect((await runFlowTriggers(store, repo, DAY1, io)).added).toBe(1);
+    const [card] = store.flowCards(flow, true);
+    expect(card!.title).toBe("Tasks waited over a day: Reconcile unfinished work");
+    expect(card!.description).toContain("Task stuck “Rotate the release key”: 1 day waiting");
+    expect(store.getFlowTrigger(trigger)!.lastOutcome).toBe("Added 1 card.");
+    expect(flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null).triggers[0]!.statusLink).toBeNull();
   });
 });
