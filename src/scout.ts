@@ -21,7 +21,7 @@ import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportProblem } from "./scout-report.js";
+import { parseReport, REPORT_JSON_SCHEMA, REPORT_LIMITS, type ParsedReport, type ReportProblem } from "./scout-report.js";
 import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
@@ -119,6 +119,7 @@ function scoutBrief(
   mailbox: string,
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
+  structured: boolean,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -147,8 +148,14 @@ function scoutBrief(
     "reversible}], recommendation), then stop. The operator answers from a",
     "phone; you will be resumed with the answer.",
     "",
-    "When you have your findings, write JSON to a file named exactly",
-    `\`${reportFile}\`:`,
+    ...(structured
+      ? [
+          "When you have your findings, return them as your final structured",
+          "output — plan mode will not let you write the report as a file, and",
+          "a plan file never reaches the operator. Only if structured output is",
+          `unavailable, write the same JSON to a file named exactly \`${reportFile}\`:`,
+        ]
+      : ["When you have your findings, write JSON to a file named exactly", `\`${reportFile}\`:`]),
     "{",
     '  "title": "one line",',
     '  "summary": "one paragraph the operator reads first",',
@@ -238,6 +245,15 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
   const liveLog = openLiveLog(root, request.runId);
+  // Claude's report rides the terminal result event (run 2334's fix): plan
+  // mode only lets the session write its own plan file. Codex has no
+  // structured output and keeps the mailbox file.
+  const structured = (request.provider ?? "claude") === "claude";
+  let wrotePlanFile = false;
+  const observe = (event: Record<string, unknown>): void => {
+    if (!wrotePlanFile && touchesPlanFile(event)) wrotePlanFile = true;
+    liveLog?.observe(event);
+  };
   let invoked;
   try {
     invoked = await invokeAgent(
@@ -246,13 +262,14 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? []),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured),
         maxTurns,
         // Read-only by policy AND by check: plan mode is the permission
         // posture; the clean-tree proof below is the law.
         permissionMode: request.permissionMode ?? "plan",
         skipPermissions: false,
         resumeSession: null,
+        ...(structured ? { jsonSchema: REPORT_JSON_SCHEMA } : {}),
         ...(request.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: request.maxBudgetUsd }),
         ...(auditOf(request.provider ?? "claude").sessionIdentity === "minted" ? { startSessionId: randomUUID() } : {}),
       },
@@ -263,7 +280,7 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
-        ...(liveLog === null ? {} : { onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event) }),
+        onStreamEvent: observe,
       },
     );
   } finally {
@@ -357,18 +374,28 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     return { ok: true, parked: { decision: parsed.decision, artifactIds: [payloadArtifact] } };
   }
 
-  // Or the report.
+  // Or the report: Claude's structured output first, the mailbox file as
+  // the fallback (and codex's only channel). Read only after the proof, the
+  // same as the file.
   const spoken = readMailbox(join(worktree, reportFile), REPORT_LIMITS.payload);
   cleanup(worktree, [mailbox, reportFile]);
-  if (!spoken.ok) {
-    return {
-      ok: false,
-      kind: "failure",
-      reason: "no-op",
-      message: "the scout ended without a question or a report — a session that says nothing spent money on silence",
-    };
+  const raw = (structured ? structuredReport(result.finalMessage) : null) ?? (spoken.ok ? spoken.raw.toString("utf8") : null);
+  if (raw === null) {
+    return wrotePlanFile
+      ? {
+          ok: false,
+          kind: "failure",
+          reason: "plan-file-only",
+          message: "The scout's findings were written to a plan file it couldn't hand back, so no report was delivered.",
+        }
+      : {
+          ok: false,
+          kind: "failure",
+          reason: "no-op",
+          message: "the scout ended without a question or a report — a session that says nothing spent money on silence",
+        };
   }
-  const parsed = parseReport(spoken.raw.toString("utf8"));
+  const parsed = parseReport(raw);
   if (!parsed.ok) {
     return {
       ok: false,
@@ -417,6 +444,41 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       message: `the report could not be stored as evidence (${error instanceof Error ? error.message : String(error)}) — nothing is done until it is`,
     };
   }
+}
+
+/**
+ * The structured report from the terminal result, or null when the turn
+ * returned none. The provider re-serializes `structured_output`; a plain
+ * prose result is not a report attempt. The raw string goes to
+ * `parseReport` unchanged, so every cap still applies.
+ */
+function structuredReport(finalMessage: string | null): string | null {
+  if (finalMessage === null) return null;
+  try {
+    const value: unknown = JSON.parse(finalMessage);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? finalMessage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a stream event shows the session writing its plan-mode plan
+ * file (~/.claude/plans/…) or handing a plan to ExitPlanMode. */
+function touchesPlanFile(event: Record<string, unknown>): boolean {
+  if (event["type"] !== "assistant") return false;
+  const message = event["message"];
+  if (typeof message !== "object" || message === null) return false;
+  const content = (message as Record<string, unknown>)["content"];
+  if (!Array.isArray(content)) return false;
+  return content.some(block => {
+    if (typeof block !== "object" || block === null) return false;
+    const one = block as Record<string, unknown>;
+    if (one["type"] !== "tool_use") return false;
+    if (one["name"] === "ExitPlanMode") return true;
+    const input = one["input"];
+    const path = typeof input === "object" && input !== null ? (input as Record<string, unknown>)["file_path"] : undefined;
+    return typeof path === "string" && /[\\/]\.claude[\\/]plans[\\/]/.test(path);
+  });
 }
 
 /** Redact credential-shaped lines in every field; say whether any were. */

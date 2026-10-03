@@ -81,6 +81,10 @@ export type Invocation = {
    * Codex renders it as its own sandbox profile; Claude as deny rules for
    * its file tools (its shell is fenced by the macOS sandbox around it). */
   fence?: readonly string[];
+  /** Claude's structured-output floor for a non-review phase: the scout's
+   * report rides the terminal result event instead of a file plan mode
+   * would refuse to write. Ignored by providers without `--json-schema`. */
+  jsonSchema?: Readonly<Record<string, unknown>>;
 };
 
 export type ProviderRunner = (
@@ -360,7 +364,8 @@ const claudeArgv = (invocation: Invocation): string[] => [
         // Headless (run 2085): a wakeup, cron job or monitor needs a later
         // turn that a -p process never gets. Denied at the harness too.
         "--disallowedTools", HEADLESS_DISALLOWED_TOOLS.join(","),
-        ...(invocation.toolArgv ?? []), ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : [])]),
+        ...(invocation.toolArgv ?? []), ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : []),
+        ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
 
 /** A claude envelope object, whichever line carried it. */

@@ -36,6 +36,33 @@ export const REPORT_LIMITS = {
   followUpGoal: 2_000,
 } as const;
 
+/**
+ * The report's shape for Claude's `--json-schema` (run 2334's fix): plan
+ * mode only lets a session write its own plan file, so a Claude scout
+ * returns its report as structured output on the terminal result event.
+ * Shape only, never the validator — byte caps, one-line titles and control
+ * characters stay `parseReport`'s, applied to the re-serialized payload.
+ */
+export const REPORT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    summary: { type: "string" },
+    report: { type: "string" },
+    followUps: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { title: { type: "string" }, goal: { type: "string" } },
+        required: ["title", "goal"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["title", "summary", "report"],
+  additionalProperties: false,
+} as const;
+
 function refuse(reason: string, message: string): ReportParseResult {
   return { ok: false, problems: [{ reason, message }] };
 }

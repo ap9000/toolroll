@@ -226,14 +226,15 @@ describe("scout tasks, against real git", () => {
     await rm(base, { recursive: true, force: true });
   });
 
-  const setup = async () => {
+  const setup = async (provider: "claude" | "codex" = "claude") => {
     const runnerToken = "tok-builder-1";
     {
       const store = openStore(db);
       register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => runnerToken });
-      store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
-      store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
-      store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
+      const model = provider === "claude" ? "sonnet" : "gpt-5-codex";
+      store.setPhaseConfig("installation", "build", provider, model, "test", new Date("2026-08-11T00:00:00.000Z"));
+      store.setPhaseConfig("installation", "plan", provider, model, "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
+      store.setPhaseConfig("installation", "review", provider, model, "test", new Date("2026-08-11T00:00:00.000Z"));
       store.close();
     }
     await run(["approver", "add", "alex", "--json"], reportingAgent);
@@ -439,6 +440,122 @@ describe("scout tasks, against real git", () => {
     expect(after.getTask("flaky")?.state).toBe("done");
     expect(after.runsFor(after.refFor("built-in", "flaky").id).map(one => one.role).sort()).toEqual(["scout", "scout"]);
     after.close();
+  });
+
+  /** Run 2334's Claude: plan mode refuses every write but its own plan file, so the report rides structured output. */
+  const FOUND = {
+    title: "Login flakes because the cookie races the assertion",
+    summary: "The login test reads the session cookie before the response sets it.",
+    report: "## Findings\nThe cookie is set asynchronously in src/session.ts.\n",
+    followUps: [{ title: "Await the session cookie", goal: "The login test waits for the cookie before asserting." }],
+  };
+  const planWrite = (options: Parameters<Runner>[2]) =>
+    options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/Users/someone/.claude/plans/you-are-a-scout-quiet-otter.md", content: "# Findings" } }] } });
+  let argvSeen: string[] = [];
+  const planModeAgent = (structured: unknown): Runner => async (_file, args, options) => {
+    argvSeen = [...args];
+    prompts.push(String(args[args.indexOf("-p") + 1] ?? ""));
+    planWrite(options);
+    const result = structured === undefined
+      ? { type: "result", subtype: "success", is_error: false, result: "I wrote my findings to the plan file." }
+      : { type: "result", subtype: "success", is_error: false, result: "", structured_output: structured };
+    return { ...OK, stdout: JSON.stringify(result) };
+  };
+
+  test("a Claude scout under plan mode returns its report as structured output and the run succeeds", async () => {
+    const { runnerToken } = await setup();
+    const reported = await tick(runnerToken, planModeAgent(FOUND));
+    expect(reported).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    // Plan mode is unchanged; the report schema rides beside it.
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(argvSeen).not.toContain("--dangerously-skip-permissions");
+    expect(JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}")).toMatchObject({ required: ["title", "summary", "report"] });
+    expect(prompts.at(-1)).toContain("final structured");
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.getTask("flaky")?.state).toBe("done");
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
+    store.close();
+  });
+
+  test("structured output never skips the clean-tree proof", async () => {
+    const { runnerToken } = await setup();
+    const sneaky: Runner = async (file, args, options) => {
+      await writeFile(join(options?.cwd ?? "", "sneaky.ts"), "export const smuggled = true;\n");
+      return planModeAgent(FOUND)(file, args, options);
+    };
+    expect(await tick(runnerToken, sneaky)).toBe(EXIT.failed);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "dirty-tree" }));
+    const store = openStore(db);
+    expect(store.latestReportArtifact(store.refFor("built-in", "flaky").id)).toBeNull();
+    store.close();
+  });
+
+  test("a structured report over the caps is still refused", async () => {
+    const { runnerToken } = await setup();
+    const failed = await tick(runnerToken, planModeAgent({ ...FOUND, report: "x".repeat(REPORT_LIMITS.document + 1) }));
+    expect(failed).toBe(EXIT.failed);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.latestReportArtifact(ref.id)).toBeNull();
+    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(true);
+    expect(store.getTask("flaky")?.state).not.toBe("done");
+    store.close();
+  });
+
+  test("a session that ends with only a plan file fails in plain words; once stalled, task requeue retries it", async () => {
+    const { runnerToken, approverToken } = await setup();
+    let at = T0.getTime();
+    for (let strike = 1; strike <= 3; strike++) {
+      expect(await tick(runnerToken, planModeAgent(undefined), new Date(at))).toBe(EXIT.failed);
+      expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "plan-file-only" }));
+      at += 30 * 60_000;
+    }
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    const last = store.runsFor(ref.id).at(-1);
+    expect(last?.reason).toContain("The scout's findings were written to a plan file it couldn't hand back");
+    expect(last?.reason).not.toContain("silence");
+    expect(store.getTask("flaky")?.state).toBe("failed");
+    expect(store.openIncidents().some(one => one.kind === "attempts-exhausted")).toBe(true);
+    store.close();
+
+    await run(["task", "requeue", "flaky", "--as", "alex", "--token", approverToken, "--json"], reportingAgent, new Date(at));
+    expect(payload().ok).toBe(true);
+    expect(await tick(runnerToken, planModeAgent(FOUND), new Date(at + 60_000))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+  });
+
+  test("codex has no structured output and keeps the mailbox file", async () => {
+    const { runnerToken } = await setup("codex");
+    const codexScout: Runner = async (_file, args, options) => {
+      argvSeen = [...args];
+      const prompt = String(args.at(-1) ?? "");
+      prompts.push(prompt);
+      const name = REPORT_FILE.exec(prompt)?.[0];
+      if (name !== undefined) await writeFile(join(options?.cwd ?? "", name), JSON.stringify(FOUND));
+      const lines = [
+        { type: "thread.started", thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53" },
+        { type: "item.completed", item: { type: "agent_message", text: "Report written." } },
+        { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      ];
+      return { ...OK, stdout: lines.map(one => JSON.stringify(one)).join("\n") + "\n" };
+    };
+    expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(argvSeen[0]).toBe("exec");
+    expect(argvSeen).not.toContain("--json-schema");
+    expect(prompts.at(-1)).toMatch(/write JSON to a file named exactly\n`STANDING-ORDERS-REPORT-/);
+    expect(prompts.at(-1)).not.toContain("structured");
+  });
+
+  test("a scout with no plan file and no report keeps the no-op failure", async () => {
+    const { runnerToken } = await setup();
+    const silent: Runner = async () => ({ ...OK, stdout: SAID });
+    expect(await tick(runnerToken, silent)).toBe(EXIT.failed);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "no-op" }));
   });
 
   test("a builder never takes a report task: the claim gate refuses the role", async () => {
