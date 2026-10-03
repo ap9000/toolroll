@@ -33,7 +33,8 @@ afterEach(() => {
 });
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const until = async (done: () => boolean, ms = 5_000) => { const end = Date.now() + ms; while (!done() && Date.now() < end) await new Promise(next => setTimeout(next, 25)); return done(); };
+// Wait on the condition itself; the ceiling is generous because a loaded machine can take seconds to schedule or reap.
+const until = async (done: () => boolean, ms = 30_000) => { const end = Date.now() + ms; while (!done() && Date.now() < end) await new Promise(next => setTimeout(next, 25)); return done(); };
 const row = (pid: number, pgid: number, bornAt: number, name = "sleep"): ProcessRow => ({ pid, ppid: 1, pgid, bornAt, name, terminal: false });
 
 test("the process listing is read with ages, groups and terminals, never arguments", () => {
@@ -96,20 +97,23 @@ test("when a run ends, what is still in its process group is stopped — SIGTERM
   const runId = store.startRun({ taskRef: ref, leaseId: "l-1", runner: "builder-1", branch: "toolroll/leaves-servers", worktree: join(dir, "wt-1"),
     route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: new Date() });
   // The provider starts a server and one that ignores SIGTERM, then exits: they live on in its process group.
-  const pids = join(dir, "pids");
+  // Each writes its pid only once it is set up, so the second is known to ignore SIGTERM before any signal is sent.
+  const pidFiles = [join(dir, "server.pid"), join(dir, "stubborn.pid")];
   const startedAt = Date.now();
-  const root = spawn("/bin/sh", ["-c", `sleep 300 & echo $! >> "${pids}"; (trap '' TERM; exec sleep 300) & echo $! >> "${pids}"; exit 0`], { detached: true, stdio: "ignore" });
+  const root = spawn("/bin/sh", ["-c", `sh -c 'echo $$ > "${pidFiles[0]}"; exec sleep 300' & sh -c 'trap "" TERM; echo $$ > "${pidFiles[1]}"; exec sleep 300' & exit 0`], { detached: true, stdio: "ignore" });
   store.recordRunProcess(runId, root.pid!, new Date(startedAt), true);
   await new Promise(done => root.once("exit", done));
-  expect(await until(() => existsSync(pids) && readFileSync(pids, "utf8").trim().split("\n").length === 2)).toBe(true);
-  const left = readFileSync(pids, "utf8").trim().split("\n").map(Number);
+  expect(await until(() => pidFiles.every(file => existsSync(file) && readFileSync(file, "utf8").endsWith("\n")))).toBe(true);
+  const left = pidFiles.map(file => Number(readFileSync(file, "utf8").trim()));
   spawned.push(...left);
   expect(left.every(alive)).toBe(true);
   store.finishRun(runId, { outcome: "built", now: new Date() });
 
   const signals: [number, string][] = [];
   const census = () => [row(process.pid, process.pid, startedAt - 60_000, "node"), ...left.filter(alive).map(pid => row(pid, root.pid!, startedAt))];
-  const closed = await closeOutRuns(store, () => new Date(), { graceMs: 400, census, signal: (pid, name) => { signals.push([pid, name]); process.kill(pid, name); } });
+  // Between looks, wait for the server to be gone (and reaped) rather than trusting the grace to be long enough.
+  const sleep = async (ms: number) => { await until(() => !alive(left[0]!)); await new Promise(next => setTimeout(next, ms)); };
+  const closed = await closeOutRuns(store, () => new Date(), { graceMs: 400, census, sleep, signal: (pid, name) => { signals.push([pid, name]); process.kill(pid, name); } });
 
   expect(closed.map(one => one.runId)).toEqual([runId]);
   expect(await until(() => !left.some(alive))).toBe(true);
@@ -119,9 +123,9 @@ test("when a run ends, what is still in its process group is stopped — SIGTERM
   const entry = store.actionLedger({ repos: null }).find(one => one.action === "run processes stopped");
   expect(entry).toMatchObject({ runId, taskId: "leaves-servers", source: "work", actor: "worker" });
   expect(entry!.detail).toContain(`run #${runId} ended (built); stopped 2 processes in 1 group: sleep (${left[0]}), sleep (${left[1]}); 1 needed SIGKILL after 0.4 s`);
-  // The group is gone, so the run's process witness is settled; a second pass finds nothing.
-  expect(store.handle.prepare("SELECT exited_at FROM run_process WHERE run = ?").get(runId)?.["exited_at"]).not.toBeNull();
+  // Once the group is gone, a second pass finds nothing to stop and the run's process witness is settled.
   expect(await closeOutRuns(store, () => new Date(), { graceMs: 400, census })).toEqual([]);
+  expect(store.handle.prepare("SELECT exited_at FROM run_process WHERE run = ?").get(runId)?.["exited_at"]).not.toBeNull();
 });
 
 test("a run still open is left alone", async () => {

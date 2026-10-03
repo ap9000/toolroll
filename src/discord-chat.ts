@@ -2,7 +2,7 @@
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { chatFlowButtons } from "./chat-flow.js";
-import { refuseResultShots, resultShotsPruned } from "./result-shots.js";
+import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { channelInbox } from "./chat-inbox.js";
 import { roomCommand } from "./chat-rooms.js";
 import {
@@ -306,8 +306,13 @@ export async function deliverDiscordPart(
       state.prepare("UPDATE chat_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
       return true;
     }
-    // A screenshot sent with a result replies to that result's message once it is placed.
-    const follows = content.shot?.follows == null ? undefined : state.prepare("SELECT message FROM chat_part WHERE id=? AND state='sent'").get(content.shot.follows)?.message;
+    // A screenshot sent with a result replies to that result's message once it is placed, and waits until then.
+    const result = content.shot?.follows == null ? undefined : state.prepare("SELECT message,state,next_at FROM chat_part WHERE id=?").get(content.shot.follows);
+    if (result !== undefined && !discordId(result["message"]) && result["state"] === "pending") {
+      state.prepare("UPDATE chat_part SET next_at=? WHERE id=?").run(shotWaitsUntil(result["next_at"], now), row.id);
+      return true;
+    }
+    const follows = result?.["message"];
     const thread = discordId(follows) ? String(follows) : event.thread;
     if (content.image) {
       const image = verifyResultImage(

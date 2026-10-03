@@ -1,5 +1,5 @@
 import { chatFlowButtons } from "./chat-flow.js";
-import { refuseResultShots, resultShotsPruned } from "./result-shots.js";
+import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { channelInbox } from "./chat-inbox.js";
@@ -350,8 +350,13 @@ export async function deliverSlackPart(
       !repos.includes(store.lookupRef(content.task)?.repo ?? "")
     )
       throw new SlackError("Connected projects changed");
-    // A screenshot sent with a result goes in that result's thread once its message is placed.
-    const follows = content.shot?.follows == null ? undefined : state.db.prepare("SELECT message FROM slack_part WHERE id=? AND state='sent'").get(content.shot.follows)?.message;
+    // A screenshot sent with a result goes in that result's thread once its message is placed, and waits until then.
+    const result = content.shot?.follows == null ? undefined : state.db.prepare("SELECT message,state,next_at FROM slack_part WHERE id=?").get(content.shot.follows);
+    if (result !== undefined && !slackTs(result["message"]) && result["state"] === "pending") {
+      state.db.prepare("UPDATE slack_part SET next_at=? WHERE id=?").run(shotWaitsUntil(result["next_at"], now), row.id);
+      return true;
+    }
+    const follows = result?.["message"];
     const thread = slackTs(follows) ? String(follows) : event.thread;
     if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
       state.db.prepare("UPDATE slack_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
