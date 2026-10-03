@@ -639,6 +639,20 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(shots).toHaveLength(2);
   });
 
+  test("a screenshot already sent with its result is not sent again for acceptance, and one sent for acceptance is not resent with the result", async () => {
+    const binding = pair();
+    const destination = store.telegramDestination(binding);
+    const { run, shots } = humanReviewResult();
+    // The first screenshot went out with the result message.
+    store.markResultShotsSent(destination, run, [shots[0]!], now);
+    const script = scriptedTransport();
+    expect((await pass(script)).ok).toBe(true);
+    expect(script.calls.filter(one => one.method === "sendDocument")).toHaveLength(1);
+    expect(receipts().filter(one => one.kind === "acceptance-evidence").map(one => one.receipt?.startsWith("skipped:") ? one.receipt : "sent")).toEqual(["skipped:screenshot-sent", "sent"]);
+    // The one sent for acceptance counts as sent with the result too.
+    expect([...store.resultShotsSent(destination, run)].sort()).toEqual([...shots].sort());
+  });
+
   test("acceptance recorded before delivery: no screenshot is uploaded, the skipped rows never read as delivered, and the final message carries no acceptance link", async () => {
     pair();
     const { run } = humanReviewResult();

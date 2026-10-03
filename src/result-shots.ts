@@ -121,6 +121,12 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   return remaining.length === 0 ? { kind: "none", why: "sent" } : { kind: "send", taskId: row.taskId, run: row.run, shots: remaining };
 }
 
+/** A screenshot whose result message is not posted yet waits for that message's own next try (at least a second). */
+export function shotWaitsUntil(resultNextAt: unknown, now: Date): string {
+  const soonest = new Date(now.getTime() + 1_000).toISOString();
+  return typeof resultNextAt === "string" && resultNextAt > soonest ? resultNextAt : soonest;
+}
+
 /** Retention removed this result's files: its screenshots go quietly, never as a complaint. */
 export function resultShotsPruned(evidenceRoot: string, run: number): boolean {
   return existsSync(join(evidenceRoot, String(run), RETENTION_NOTE));

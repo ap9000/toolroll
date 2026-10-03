@@ -837,12 +837,18 @@ function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, not
   const plan = resultShotsFor(store, options.evidenceRoot, repos, notification);
   if (plan.kind === "none" || notification.taskId === null || notification.run === null) return;
   const where = { task: notification.taskId, run: notification.run };
-  // The result's message here: its finished-work batch (quiet), or its progress card (every step).
+  // The result's message here: its finished-work batch (quiet), its progress card (every step), or the result's own
+  // notice. The transport threads the screenshots under it once it is posted, and holds them until then.
   const follows = (() => {
     const batch = notification.taskRef === null ? null : store.chatBatchMessageFor(`${state.channel}:${binding.id}`, notification.taskRef, notification.run);
     if (batch !== null) return Number(batch);
     const card = state.prepare("SELECT part FROM chat_progress WHERE binding=? AND run=?").get(binding.id, notification.run);
-    return card === undefined ? null : Number(card.part);
+    if (card !== undefined) return Number(card.part);
+    for (const one of store.handle.prepare("SELECT id FROM notification WHERE source_run=? AND recipient IS NULL AND id<? ORDER BY id DESC").all(notification.run, notification.id)) {
+      const part = state.prepare("SELECT id FROM chat_part WHERE event=? ORDER BY id LIMIT 1").get(chatHash(`${state.channel}:notice:${binding.id}:${Number(one["id"])}`));
+      if (part !== undefined) return Number(part.id);
+    }
+    return null;
   })();
   const image = (artifact: number, sha256: string) => ({ taskId: where.task, run: where.run, artifact, sha256 });
   const parts: ChatContent[] = plan.kind === "line" ? [{ text: plan.text, ...where }]

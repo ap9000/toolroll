@@ -181,6 +181,27 @@ describe("c2: Telegram", () => {
     expect(script.media()).toHaveLength(1);
   });
 
+  test("held for a digest: the screenshots wait for their result message and go right after it, once", async () => {
+    pair();
+    store.setNotificationPreference("alex", { mode: "all", screenshots: "first" }, "alex", now);
+    store.setTelegramDigest(60_000, "alex", now);
+    now = new Date(now.getTime() + 1_000);
+    result("held-1", THREE);
+    const script = scripted();
+    await pass(script);
+    // The result message is held for the digest, so its screenshots are too.
+    expect(script.media()).toEqual([]);
+    expect(script.texts()).toEqual([]);
+    now = new Date(now.getTime() + 61_000);
+    await pass(script);
+    const digest = script.calls.findIndex(one => one.method === "sendMessage" && String(one.params["text"]).startsWith("digest"));
+    expect(digest).toBeGreaterThanOrEqual(0);
+    expect(script.media()).toHaveLength(1);
+    expect(script.calls.indexOf(script.media()[0]!)).toBeGreaterThan(digest);
+    await pass(script);
+    expect(script.media()).toHaveLength(1);
+  });
+
   test("First one: a single photo with inline preview; an oversized screenshot goes as a document", async () => {
     pair();
     store.setNotificationPreference("alex", { screenshots: "first" }, "alex", now);
@@ -261,12 +282,13 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
   const SLACK_ID = { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace" };
   const MEMBER = "UTEST", CHANNEL = "DTEST";
 
-  function slack(refuse?: string) {
+  function slack(refuse?: string, failPosts = 0) {
     const state = new SlackState(store);
     const calls: { method: string; args: Record<string, unknown> }[] = [];
     let sent = 100;
     const api: SlackApi = async (method, args = {}) => {
       calls.push({ method, args });
+      if (method === "chat.postMessage" && failPosts > 0) { failPosts--; throw new SlackError("internal_error", 60_000); }
       if (method === "users.info") return { user: { id: MEMBER, team_id: SLACK_ID.team, deleted: false, is_bot: false } };
       if (method === "conversations.info") return { channel: { id: CHANNEL, is_im: true, user: MEMBER } };
       if (method === "chat.postMessage") return { ts: `1789700000.${String(sent++).padStart(6, "0")}` };
@@ -307,6 +329,22 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     expect(wire.calls.filter(one => one.method === "files.completeUploadExternal")).toHaveLength(3);
   });
 
+  test("Slack: while the result message waits to retry, its screenshots wait too, then go in its thread", async () => {
+    const wire = slack(undefined, 1);
+    store.setNotificationPreference("alex", { screenshots: "first", mode: "all" }, "alex", now);
+    result("slack-wait", THREE);
+    await planSlackNotifications(wire.options);
+    await wire.drain();
+    expect(wire.calls.filter(one => one.method.startsWith("files."))).toEqual([]);
+    now = new Date(now.getTime() + 5 * 60_000);
+    wire.state.lease(SLACK_ID.installation, "test", now);
+    await wire.drain();
+    const posted = wire.calls.filter(one => one.method === "chat.postMessage");
+    expect(posted).toHaveLength(2);
+    const shared = wire.calls.filter(one => one.method === "files.completeUploadExternal");
+    expect(shared.map(one => one.args.thread_ts)).toEqual(["1789700000.000100"]);
+  });
+
   test("Slack without file permission: one plain line, no uploads; pruned screenshots go quietly", async () => {
     const wire = slack("missing_scope");
     store.setNotificationPreference("alex", { screenshots: "all", mode: "all" }, "alex", now);
@@ -330,12 +368,13 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
 
   const D_BOT = "100000000000000001", D_MEMBER = "100000000000000002", D_CHANNEL = "100000000000000003";
   const D_ID = { app: D_BOT, bot: D_BOT, workspace: "Synthetic application", installation: chatHash(`discord:${D_BOT}:${D_BOT}`) };
-  function discord(refuse = false) {
+  function discord(refuse = false, failPosts = 0) {
     const state = new ChatState(store, "discord");
     const calls: { method: string; path: string; body: Record<string, unknown>; file?: { bytes: Uint8Array; name: string } }[] = [];
     let serial = 200;
     const api: DiscordApi = async (method, path, body = {}, file) => {
       calls.push({ method, path, body, ...(file ? { file } : {}) });
+      if (method === "POST" && !file && path.endsWith("/messages") && failPosts > 0) { failPosts--; throw new DiscordError("Discord is unavailable", 60_000); }
       if (path === `/users/${D_MEMBER}`) return { id: D_MEMBER };
       if (path === `/channels/${D_CHANNEL}`) return { id: D_CHANNEL, type: 1, recipients: [{ id: D_MEMBER }] };
       if (method === "GET") return { items: [] };
@@ -371,6 +410,21 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     const texts = refused.calls.filter(one => one.method === "POST" && one.file === undefined).map(one => JSON.stringify(one.body));
     expect(texts.filter(one => one.includes("weren't sent")).length).toBe(1);
     expect(texts.some(one => one.includes("the Discord app isn't allowed to upload files here"))).toBe(true);
+  });
+
+  test("Discord: while the result message waits to retry, its screenshot waits too, then replies to it", async () => {
+    const wire = discord(false, 1);
+    store.setNotificationPreference("alex", { screenshots: "first", mode: "all" }, "alex", now);
+    result("discord-wait", THREE);
+    await planDiscordNotifications(wire.options);
+    await wire.drain();
+    expect(wire.calls.filter(one => one.file !== undefined)).toEqual([]);
+    now = new Date(now.getTime() + 5 * 60_000);
+    wire.state.lease(D_ID.installation, "test", now);
+    await wire.drain();
+    const files = wire.calls.filter(one => one.file !== undefined);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.body.message_reference).toMatchObject({ message_id: "3000000000000020000" });
   });
 
   test("Teams: one message that links to the saved result", async () => {

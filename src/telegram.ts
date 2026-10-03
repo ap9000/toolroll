@@ -792,7 +792,7 @@ async function deliverOutboxTo(
   const groups: TelegramDelivery[][] = [];
   for (const row of claimed) {
     const last = groups[groups.length - 1];
-    if (!quiet && digest.everyMs !== null && !isUrgent(row) && last !== undefined && !isUrgent(last[0]!)) last.push(row);
+    if (!quiet && digest.everyMs !== null && joinsDigest(row) && last !== undefined && joinsDigest(last[0]!)) last.push(row);
     else groups.push([row]);
   }
   for (const group of groups) {
@@ -867,14 +867,23 @@ async function deliverOutboxTo(
         const sent = await sender(`A screenshot for result #${row.run} could not be sent: ${verified.problem}. Inspect the result before accepting.`);
         return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
       }
+      // Already sent with its result (result-shots.ts): the same screenshot is not sent again.
+      const artifact = Number(match[2]);
+      if (store.resultShotsSent(row.destination, row.run).has(artifact)) return { ok: true, receipt: "skipped:screenshot-sent" };
+      // Marked while it goes, so the screenshots sent with the result skip it; any failure unmarks it for the retry.
+      store.markResultShotsSent(row.destination, row.run, [artifact], clock());
       // No await between the access fence, file validation and upload.
       let answer: Awaited<ReturnType<TelegramTransport>>;
       try { answer = await transport("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
-        field: "document", bytes: verified.bytes, contentType: verified.format === "png" ? "image/png" : "image/jpeg", fileName: resultImageFileName(row.taskId, row.run, Number(match[2]), verified.format),
+        field: "document", bytes: verified.bytes, contentType: verified.format === "png" ? "image/png" : "image/jpeg", fileName: resultImageFileName(row.taskId, row.run, artifact, verified.format),
       });
-      } catch { return { ok: false, error: "Screenshot delivery is unconfirmed; retry may duplicate it" }; }
+      } catch {
+        store.unmarkResultShotsSent(row.destination, row.run, [artifact]);
+        return { ok: false, error: "Screenshot delivery is unconfirmed; retry may duplicate it" };
+      }
       const messageId = (answer.result as { message_id?: number } | undefined)?.message_id;
       if (!answer.ok || !Number.isSafeInteger(messageId)) {
+        store.unmarkResultShotsSent(row.destination, row.run, [artifact]);
         if (answer.parameters?.retry_after !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + answer.parameters.retry_after * 1000).toISOString());
         return { ok: false, error: answer.uncertain || (answer.ok && messageId == null) ? "Screenshot delivery is unconfirmed; retry may duplicate it" : "Telegram did not accept the screenshot" };
       }
@@ -925,7 +934,7 @@ async function deliverOutboxTo(
       }
       return { ok: true, receipt };
     };
-    const batched = !quiet && digest.everyMs !== null && !isUrgent(rows[0]!);
+    const batched = !quiet && digest.everyMs !== null && joinsDigest(rows[0]!);
     const row = rows[0]!;
     const progressRun = batched ? null : store.telegramProgressRun(row);
     const progress = progressRun !== null && isTelegramProgressNotification(row);
@@ -1122,8 +1131,13 @@ async function deliverOutboxTo(
 
 /** What pages singly whatever the cadence: a decision, or an attention-class fact. */
 function isUrgent(notification: Notification): boolean {
-  return /^decision:\d+$/.test(notification.dedupeKey) || notification.pushClass === "attention" || notification.kind === "acceptance-evidence" || notification.kind === "acceptance-ready"
-    || notification.kind === RESULT_SHOTS_KIND;
+  return /^decision:\d+$/.test(notification.dedupeKey) || notification.pushClass === "attention" || notification.kind === "acceptance-evidence" || notification.kind === "acceptance-ready";
+}
+
+/** A routine fact the digest may carry. Screenshots are never urgent (they follow their result message, which the
+ * task's order fence holds them behind) and never a digest line: they go as their own photos once it has gone. */
+function joinsDigest(notification: Notification): boolean {
+  return !isUrgent(notification) && notification.kind !== RESULT_SHOTS_KIND;
 }
 
 /** The digest text: a header with the count and the window, then one
