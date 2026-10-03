@@ -81,6 +81,10 @@ export type Invocation = {
    * Codex renders it as its own sandbox profile; Claude as deny rules for
    * its file tools (its shell is fenced by the macOS sandbox around it). */
   fence?: readonly string[];
+  /** Claude's structured-output floor for a non-review phase: the scout's
+   * report rides the terminal result event instead of a file plan mode
+   * would refuse to write. Ignored by providers without `--json-schema`. */
+  jsonSchema?: Readonly<Record<string, unknown>>;
 };
 
 export type ProviderRunner = (
@@ -103,6 +107,10 @@ export type ParsedEnvelope = {
   protocolError: string | null;
   /** The agent's spoken conclusion — diagnostics only, never the handoff. */
   finalMessage: string | null;
+  /** Claude's schema-validated `structured_output` alone, re-serialized —
+   * never the prose result, even when that prose is JSON. Absent or null
+   * when the turn ran without `--json-schema` or returned none. */
+  structuredOutput?: string | null;
   /** How the harness said the turn ended (claude: the result's subtype and
    * turn count) — absent on dialects that carry no such record. */
   ending?: AgentEnding | null;
@@ -360,7 +368,8 @@ const claudeArgv = (invocation: Invocation): string[] => [
         // Headless (run 2085): a wakeup, cron job or monitor needs a later
         // turn that a -p process never gets. Denied at the harness too.
         "--disallowedTools", HEADLESS_DISALLOWED_TOOLS.join(","),
-        ...(invocation.toolArgv ?? []), ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : [])]),
+        ...(invocation.toolArgv ?? []), ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : []),
+        ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
 
 /** A claude envelope object, whichever line carried it. */
@@ -429,6 +438,10 @@ function claudeEnvelopeOf(
         ? "the Claude init event and terminal result announced different session ids"
         : null,
     finalMessage: claudeFinalMessage(result),
+    structuredOutput:
+      result === null || result.structured_output === undefined || result.structured_output === null
+        ? null
+        : JSON.stringify(result.structured_output),
     ending: result === null ? null : {
       subtype: typeof result.subtype === "string" ? result.subtype : null,
       turns: typeof result.num_turns === "number" && result.num_turns >= 0 ? result.num_turns : null,
