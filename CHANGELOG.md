@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.20 — 2026-10-03
+
+- **Scouts deliver again.** Claude scouts hand back their report, or a
+  question for you, as structured output. Plan mode no longer swallows the
+  report.
+- **The morning review stops filing work for things only you can do.**
+  Unopened results, questions, plan approvals and holds no longer start an
+  investigate-and-fix flow. Anything waiting over 3 days gets one line in the
+  review's summary, with a link to Needs you.
+
 ## 0.9.19 — 2026-10-03
 
 - A release candidate whose check was rerun on the same commit can be

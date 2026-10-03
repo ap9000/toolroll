@@ -16,7 +16,9 @@
  * - plane-review — every day at a set time (07:30 in the computer's time zone unless it says),
  *              the plane's last 24 hours read straight from the store (plane-review.ts): one card
  *              per distinct problem worth fixing, and the same problem on a later day joins its
- *              card while that card is still open. A clean day makes nothing. Its row is kept as a
+ *              card while that card is still open. A clean day makes nothing. Waits only a person
+ *              can end make no card; ones over three days are mentioned once in its summary line,
+ *              linked to Needs you. Its row is kept as a
  *              'schedule' (the table's kinds are fixed); its settings say what it is.
  *
  * GitHub and Linear are checked by the worker's pass — `gh` and one HTTPS
@@ -581,10 +583,14 @@ export async function firePlaneReview(store: Store, trigger: FlowTriggerRow, con
   };
   if (flow === null || flow.state !== "active") return done("The flow isn't active.");
   // Loaded when a review first runs: the reader reaches the integrations and task status, which reach back to these triggers.
-  const { problemCard, problemText, reviewPlane } = await import("./plane-review.js");
+  const { longPersonWaits, longWaitWords, problemCard, problemText, reviewPlane } = await import("./plane-review.js");
   // Only the projects the flow's owner may see: a flow's cards are read by everyone on its project.
   const owner = store.accountOf(flow.owner);
-  const problems = reviewPlane(store, now, repo => owner === null || (repo !== null && store.accountCanAccess(flow.owner, repo)) || (repo === null && owner.projects === null));
+  const canSee = (repo: string | null) => owner === null || (repo !== null && store.accountCanAccess(flow.owner, repo)) || (repo === null && owner.projects === null);
+  const problems = reviewPlane(store, now, canSee);
+  // Long waits on a person are said here once, linked to Needs you (planeStatusLink), and file nothing.
+  const waited = longWaitWords(longPersonWaits(store, now, canSee));
+  const said = (words: string) => waited === null ? words : `${words} ${waited}`;
   const timeZone = schedule !== null && schedule.kind !== "every" ? schedule.timezone ?? "UTC" : "UTC";
   const day = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(now);
   const dayWords = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone }).format(now);
@@ -608,10 +614,18 @@ export async function firePlaneReview(store: Store, trigger: FlowTriggerRow, con
     if (made.made === "added") added++;
     else if (made.note !== null) skipped.push(made.note);
   }
-  if (problems.length === 0) return done("A clean day: nothing to fix.");
+  if (problems.length === 0) return done(said("A clean day: nothing to fix."));
   const parts = [added > 0 ? `Added ${plural(added, "card")}.` : null, joined > 0 ? `${plural(joined, "problem")} came back and joined ${joined === 1 ? "its card" : "their cards"}.` : null,
     skipped.length > 0 ? `Left out ${plural(skipped.length, "problem")}: ${skipped[0]}.` : null].filter(one => one !== null);
-  return done(parts.length === 0 ? "Nothing new since this morning's review." : parts.join(" "), added, joined);
+  return done(said(parts.length === 0 ? "Nothing new since this morning's review." : parts.join(" ")), added, joined);
+}
+
+/** Where a person sees everything that waits on them. */
+export const NEEDS_YOU_HREF = "/work?view=needs-you";
+
+/** A plane review whose summary mentions long waits on a person links to Needs you. */
+export function planeStatusLink(config: TriggerConfig | null, status: string | null): { label: string; href: string } | null {
+  return config?.kind === "plane-review" && status !== null && /waited over \d+ days for you\.$/.test(status) ? { label: "Needs you", href: NEEDS_YOU_HREF } : null;
 }
 
 /** v96: a schedule (a teammate's routine) makes its card now, once per press, and keeps its own times. */

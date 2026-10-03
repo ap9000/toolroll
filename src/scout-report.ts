@@ -36,6 +36,72 @@ export const REPORT_LIMITS = {
   followUpGoal: 2_000,
 } as const;
 
+const REPORT_SHAPE = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    summary: { type: "string" },
+    report: { type: "string" },
+    followUps: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { title: { type: "string" }, goal: { type: "string" } },
+        required: ["title", "goal"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["title", "summary", "report"],
+  additionalProperties: false,
+} as const;
+
+/** The park mailbox's decision, the same fields `parseDecision` reads. */
+const DECISION_SHAPE = {
+  type: "object",
+  properties: {
+    urgency: { type: "string", enum: ["blocking"] },
+    recap: { type: "string" },
+    question: { type: "string" },
+    options: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          label: { type: "string" },
+          consequence: { type: "string" },
+          reversible: { type: "boolean" },
+        },
+        required: ["id", "label", "consequence", "reversible"],
+        additionalProperties: false,
+      },
+    },
+    recommendation: { type: "string" },
+  },
+  required: ["urgency", "recap", "question", "options", "recommendation"],
+  additionalProperties: false,
+} as const;
+
+/**
+ * The scout's handback for Claude's `--json-schema` (run 2334's fix): plan
+ * mode only lets a session write its own plan file, so a Claude scout
+ * returns a report — or a question for the operator — as structured output
+ * on the terminal result event. Shape only, never the validator: byte caps,
+ * one-line titles and control characters stay `parseReport`'s and
+ * `parseDecision`'s, applied to the re-serialized body.
+ */
+export const SCOUT_OUTPUT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["report", "question"] },
+    report: REPORT_SHAPE,
+    decision: DECISION_SHAPE,
+  },
+  required: ["kind"],
+  additionalProperties: false,
+} as const;
+
 function refuse(reason: string, message: string): ReportParseResult {
   return { ok: false, problems: [{ reason, message }] };
 }

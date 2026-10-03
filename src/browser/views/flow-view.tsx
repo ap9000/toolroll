@@ -307,6 +307,11 @@ const whenAt = (at: string, now = new Date()) => Number.isNaN(new Date(at).getTi
 const minutesWords = (minutes: number) => minutes % 1440 === 0 ? `${minutes / 1440} day${minutes === 1440 ? "" : "s"}` : minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
 
 /** A comment's text with the people it pinged picked out. */
+/** A trigger status that points somewhere: one short link after its words. */
+function StatusLink({ link }: { link: BrowserFlowTrigger["statusLink"] }) {
+  return link === null ? null : <> <a className="font-medium text-primary underline-offset-4 hover:underline" href={link.href} data-status-link>{link.label}</a></>;
+}
+
 function Mentioned({ body, mentions }: { body: string; mentions: string[] }) {
   if (mentions.length === 0) return <>{body}</>;
   const pattern = new RegExp(`(@(?:${mentions.map(one => one.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}))(?![A-Za-z0-9_])`, "gi");
@@ -1046,7 +1051,7 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-medium leading-snug">{trigger.words}</p>
           <p className="text-[12px] text-muted-foreground">Starts in {trigger.zone}{trigger.state === "paused" ? " · Paused" : ""}{trigger.shared ? " · Shared as a form" : ""}</p>
-          {trigger.status !== null && <p className={cn("text-[12px]", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}</p>}
+          {trigger.status !== null && <p className={cn("text-[12px]", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
         </div>
       </div>
       {trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
@@ -1530,7 +1535,7 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
       <h2 className="text-[14px] font-semibold">Triggers</h2>
       <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-[13px]"><span className="font-medium">{one.name}</span> · {one.detail}
-        <div className={cn("text-[12px]", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : `${ago(one.statusAt)}: ${one.status}`}</div></li>)}</ul>
+        <div className={cn("text-[12px]", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div></li>)}</ul>
     </section>}
   </div>;
 }

@@ -383,6 +383,8 @@ export type BrowserFlowCard = {
 export type BrowserFlowTrigger = {
   id: number; kind: string; words: string; name: string; detail: string; zone: string; zoneId: string; state: "active" | "paused" | "removed";
   status: string | null; statusAt: string | null; failing: boolean;
+  /** Where the status points a person (a plane review's long waits: Needs you). */
+  statusLink: BrowserLink | null;
   button: { label: string; questions: string[] } | null;
   /** A webhook trigger: whether it can prove deliveries yet (Linear needs its signing secret pasted). */
   hook: { ready: boolean; needsSecret: boolean } | null;

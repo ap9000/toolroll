@@ -2,7 +2,7 @@
  * (the React view's data, plus a plain fallback page the view replaces). */
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
 import { draftFor, flowDefinitionOf } from "./flow-engine.js";
-import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, readHooksBase, readLinearKey, takesDeliveries, triggerConfigOf } from "./flow-triggers.js";
+import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, takesDeliveries, triggerConfigOf } from "./flow-triggers.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
@@ -160,7 +160,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     return {
       id: trigger.id, kind: trigger.kind, words: config === null ? "This trigger can't be read." : describeTrigger(config, store),
       ...(config === null ? { name: "Trigger", detail: "Can't be read" } : triggerHeadline(config, store)),
-      zone: title(config?.zone ?? definition?.start ?? ""), zoneId: config?.zone ?? definition?.start ?? "", state: trigger.state, status: trigger.lastOutcome, statusAt: trigger.lastAt, failing: trigger.failures > 0,
+      zone: title(config?.zone ?? definition?.start ?? ""), zoneId: config?.zone ?? definition?.start ?? "", state: trigger.state, status: trigger.lastOutcome, statusLink: planeStatusLink(config, trigger.lastOutcome), statusAt: trigger.lastAt, failing: trigger.failures > 0,
       button: config?.kind === "button" ? { label: config.label, questions: config.questions } : null,
       hook: config !== null && takesDeliveries(config) ? { ready: hookReady(trigger, setup.dir), needsSecret: config.kind === "linear" } : null,
       checkable: ((config?.kind === "github" || config?.kind === "linear") && config.delivery === "poll") || config?.kind === "email" || (config?.kind === "schedule" && config.script !== undefined) || config?.kind === "plane-review",

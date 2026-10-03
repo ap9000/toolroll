@@ -21,7 +21,7 @@ import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportProblem } from "./scout-report.js";
+import { parseReport, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportProblem } from "./scout-report.js";
 import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
@@ -119,6 +119,7 @@ function scoutBrief(
   mailbox: string,
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
+  structured: boolean,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -141,14 +142,30 @@ function scoutBrief(
     "stage, commit, or switch branches. The workspace is checked after you",
     "finish; any other change discards your session and its report.",
     answeredBlock,
-    "If you need the operator's judgement to investigate well, write ONE",
-    `decision as JSON to a file named exactly \`${mailbox}\` (fields:`,
-    'urgency:"blocking", recap, question, options:[{id,label,consequence,',
-    "reversible}], recommendation), then stop. The operator answers from a",
-    "phone; you will be resumed with the answer.",
-    "",
-    "When you have your findings, write JSON to a file named exactly",
-    `\`${reportFile}\`:`,
+    ...(structured
+      ? [
+          "If you need the operator's judgement to investigate well, end with",
+          'your final structured output as kind "question" and ONE decision',
+          '(fields: urgency:"blocking", recap, question, options:[{id,label,',
+          "consequence,reversible}], recommendation). The operator answers from",
+          "a phone; you will be resumed with the answer.",
+          "",
+          'When you have your findings, end with kind "report" and the report',
+          "below as your final structured output — plan mode will not let you",
+          "write a file, and a plan file never reaches the operator. Only if",
+          "structured output is unavailable, write the decision JSON to",
+          `\`${mailbox}\` or the report JSON to \`${reportFile}\` instead:`,
+        ]
+      : [
+          "If you need the operator's judgement to investigate well, write ONE",
+          `decision as JSON to a file named exactly \`${mailbox}\` (fields:`,
+          'urgency:"blocking", recap, question, options:[{id,label,consequence,',
+          "reversible}], recommendation), then stop. The operator answers from a",
+          "phone; you will be resumed with the answer.",
+          "",
+          "When you have your findings, write JSON to a file named exactly",
+          `\`${reportFile}\`:`,
+        ]),
     "{",
     '  "title": "one line",',
     '  "summary": "one paragraph the operator reads first",',
@@ -238,6 +255,15 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
   const liveLog = openLiveLog(root, request.runId);
+  // Claude's report rides the terminal result event (run 2334's fix): plan
+  // mode only lets the session write its own plan file. Codex has no
+  // structured output and keeps the mailbox file.
+  const structured = (request.provider ?? "claude") === "claude";
+  let wrotePlanFile = false;
+  const observe = (event: Record<string, unknown>): void => {
+    if (!wrotePlanFile && touchesPlanFile(event)) wrotePlanFile = true;
+    liveLog?.observe(event);
+  };
   let invoked;
   try {
     invoked = await invokeAgent(
@@ -246,13 +272,14 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? []),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured),
         maxTurns,
         // Read-only by policy AND by check: plan mode is the permission
         // posture; the clean-tree proof below is the law.
         permissionMode: request.permissionMode ?? "plan",
         skipPermissions: false,
         resumeSession: null,
+        ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
         ...(request.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: request.maxBudgetUsd }),
         ...(auditOf(request.provider ?? "claude").sessionIdentity === "minted" ? { startSessionId: randomUUID() } : {}),
       },
@@ -263,7 +290,7 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
-        ...(liveLog === null ? {} : { onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event) }),
+        onStreamEvent: observe,
       },
     );
   } finally {
@@ -339,12 +366,21 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     };
   }
 
-  // Only now: the question, if it asked one.
+  // Only now: what the scout handed back. A park file wins, as it always
+  // has; then Claude's structured output (run 2334's fix: plan mode only
+  // lets the session write its own plan file), read only from the
+  // schema-validated field, never prose; then the report file — codex's
+  // only channel, and the fallback when the structured payload is invalid.
   const asked = readMailbox(join(worktree, mailbox));
-  if (asked.ok) {
-    const parsed = parseDecision(asked.raw.toString("utf8"));
-    const payloadArtifact = storeEvidence(store, root, request.runId, "park-payload", "park-payload.json", asked.raw, "scout mailbox (verified tree)", clock());
+  const handback = structured ? structuredHandback(result.structuredOutput ?? null) : null;
+  if (asked.ok || handback?.kind === "question") {
+    const raw = asked.ok ? asked.raw : Buffer.from(handback?.kind === "question" ? handback.raw : "", "utf8");
+    const parsed = parseDecision(raw.toString("utf8"));
+    // An invalid structured question still yields to a valid report file.
+    const filed = !parsed.ok && !asked.ok ? fileReport(worktree, reportFile) : null;
     cleanup(worktree, [mailbox, reportFile]);
+    if (filed?.ok === true) return deliver(filed.report);
+    const payloadArtifact = storeEvidence(store, root, request.runId, "park-payload", "park-payload.json", raw, asked.ok ? "scout mailbox (verified tree)" : "scout structured output (verified tree)", clock());
     if (!parsed.ok) {
       return {
         ok: false,
@@ -357,18 +393,30 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     return { ok: true, parked: { decision: parsed.decision, artifactIds: [payloadArtifact] } };
   }
 
-  // Or the report.
-  const spoken = readMailbox(join(worktree, reportFile), REPORT_LIMITS.payload);
+  const fromStructured = handback?.kind === "report" ? parseReport(handback.raw) : null;
+  const filed = fromStructured?.ok === true ? null : fileReport(worktree, reportFile);
   cleanup(worktree, [mailbox, reportFile]);
-  if (!spoken.ok) {
-    return {
-      ok: false,
-      kind: "failure",
-      reason: "no-op",
-      message: "the scout ended without a question or a report — a session that says nothing spent money on silence",
-    };
+  // A valid report wins from either channel; otherwise the file's
+  // problems, then the structured payload's.
+  const parsed =
+    fromStructured?.ok === true ? fromStructured
+    : filed !== null ? filed
+    : fromStructured ?? (handback?.kind === "invalid" ? { ok: false as const, problems: handback.problems } : null);
+  if (parsed === null) {
+    return wrotePlanFile
+      ? {
+          ok: false,
+          kind: "failure",
+          reason: "plan-file-only",
+          message: "The scout's findings were written to a plan file it couldn't hand back, so no report was delivered.",
+        }
+      : {
+          ok: false,
+          kind: "failure",
+          reason: "no-op",
+          message: "the scout ended without a question or a report — a session that says nothing spent money on silence",
+        };
   }
-  const parsed = parseReport(spoken.raw.toString("utf8"));
   if (!parsed.ok) {
     return {
       ok: false,
@@ -378,45 +426,102 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       problems: parsed.problems,
     };
   }
+  return deliver(parsed.report);
 
-  // Credential shapes never leave the repository boundary (v4 review,
-  // finding 8): a scout that quotes a key it found has the line redacted
-  // in every field BEFORE the report is stored, paged, or shown — the
-  // same high-confidence detector the diff capture uses.
-  const { report, redacted } = redactReport(parsed.report);
+  function deliver(validated: ParsedReport): ScoutOutcome {
+    // Credential shapes never leave the repository boundary (v4 review,
+    // finding 8): a scout that quotes a key it found has the line redacted
+    // in every field BEFORE the report is stored, paged, or shown — the
+    // same high-confidence detector the diff capture uses.
+    const { report, redacted } = redactReport(validated);
 
-  // The whole VALIDATED payload is the artifact: re-serialized from the
-  // parsed shape, so what the page renders is exactly what passed the
-  // parser — never the raw bytes with fields the parser ignored. A capture
-  // that fails is a FAILED attempt (v4 review, finding 1): the report is
-  // the deliverable, and a task whose deliverable does not exist is not
-  // done.
-  try {
-    const content = Buffer.from(JSON.stringify(report, null, 2), "utf8");
-    const key = writeEvidenceFile(root, request.runId, "report.json", content);
-    return {
-      ok: true,
-      reported: {
-        report,
-        artifact: {
-          key,
-          bytesOriginal: content.length,
-          bytesStored: content.length,
-          truncated: false,
-          sha256: createHash("sha256").update(content).digest("hex"),
-          capture: "scout handoff (verified tree)",
-          redacted,
+    // The whole VALIDATED payload is the artifact: re-serialized from the
+    // parsed shape, so what the page renders is exactly what passed the
+    // parser — never the raw bytes with fields the parser ignored. A capture
+    // that fails is a FAILED attempt (v4 review, finding 1): the report is
+    // the deliverable, and a task whose deliverable does not exist is not
+    // done.
+    try {
+      const content = Buffer.from(JSON.stringify(report, null, 2), "utf8");
+      const key = writeEvidenceFile(root, request.runId, "report.json", content);
+      return {
+        ok: true,
+        reported: {
+          report,
+          artifact: {
+            key,
+            bytesOriginal: content.length,
+            bytesStored: content.length,
+            truncated: false,
+            sha256: createHash("sha256").update(content).digest("hex"),
+            capture: "scout handoff (verified tree)",
+            redacted,
+          },
         },
-      },
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      kind: "failure",
-      reason: "capture-failed",
-      message: `the report could not be stored as evidence (${error instanceof Error ? error.message : String(error)}) — nothing is done until it is`,
-    };
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        kind: "failure",
+        reason: "capture-failed",
+        message: `the report could not be stored as evidence (${error instanceof Error ? error.message : String(error)}) — nothing is done until it is`,
+      };
+    }
   }
+}
+
+/** What Claude's structured output handed back, or null when the turn
+ * returned none. Only the schema-validated field counts — a prose result is
+ * never a handback, even when it is JSON. The body goes to `parseReport` or
+ * `parseDecision` re-serialized, so every cap still applies. */
+type Handback =
+  | { kind: "report" | "question"; raw: string }
+  | { kind: "invalid"; problems: ReportProblem[] };
+
+function structuredHandback(structuredOutput: string | null): Handback | null {
+  if (structuredOutput === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(structuredOutput);
+  } catch {
+    return { kind: "invalid", problems: [{ reason: "structured-not-json", message: "the structured output is not JSON" }] };
+  }
+  const body = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const kind = body["kind"];
+  const inner = kind === "report" ? body["report"] : kind === "question" ? body["decision"] : undefined;
+  if (kind !== "report" && kind !== "question") {
+    return { kind: "invalid", problems: [{ reason: "structured-kind", message: 'the structured output must say kind "report" or "question"' }] };
+  }
+  if (inner === undefined || inner === null) {
+    const field = kind === "report" ? "report" : "decision";
+    return { kind: "invalid", problems: [{ reason: `structured-missing-${field}`, message: `kind "${kind}" needs its ${field}` }] };
+  }
+  return { kind, raw: JSON.stringify(inner) };
+}
+
+/** The report file's verdict, or null when the scout wrote none. */
+function fileReport(worktree: string, reportFile: string): ReturnType<typeof parseReport> | null {
+  const spoken = readMailbox(join(worktree, reportFile), REPORT_LIMITS.payload);
+  return spoken.ok ? parseReport(spoken.raw.toString("utf8")) : null;
+}
+
+/** Whether a stream event shows the session writing its plan-mode plan
+ * file (~/.claude/plans/…) or handing a plan to ExitPlanMode. */
+function touchesPlanFile(event: Record<string, unknown>): boolean {
+  if (event["type"] !== "assistant") return false;
+  const message = event["message"];
+  if (typeof message !== "object" || message === null) return false;
+  const content = (message as Record<string, unknown>)["content"];
+  if (!Array.isArray(content)) return false;
+  return content.some(block => {
+    if (typeof block !== "object" || block === null) return false;
+    const one = block as Record<string, unknown>;
+    if (one["type"] !== "tool_use") return false;
+    if (one["name"] === "ExitPlanMode") return true;
+    const input = one["input"];
+    const path = typeof input === "object" && input !== null ? (input as Record<string, unknown>)["file_path"] : undefined;
+    return typeof path === "string" && /[\\/]\.claude[\\/]plans[\\/]/.test(path);
+  });
 }
 
 /** Redact credential-shaped lines in every field; say whether any were. */
