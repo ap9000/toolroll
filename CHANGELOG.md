@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.19 — 2026-10-03
+
+- A release candidate whose check was rerun on the same commit can be
+  deployed; no fresh gate needed.
+- Screenshots with results follow their result message and thread under it on
+  Slack and Discord, never sent twice.
+- A process-cleanup test no longer flakes under load.
+
 ## 0.9.18 — 2026-10-03
 
 - **Decide in Telegram.** A ready result's Accept and finish, Request changes
