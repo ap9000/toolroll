@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.18 — 2026-10-03
+
+- **Decide in Telegram.** A ready result's Accept and finish, Request changes
+  and Retry now work right in the chat, each confirmed with a second tap. With
+  `toolroll mode set … --chat-approve` signed once, you can also approve plans
+  and merge pull requests from Telegram. Anything outside the mode's terms
+  still links to the console.
+- **Screenshots with results, if you want them.** Settings → Notifications →
+  Screenshots with results: Off, First one, or Up to 4. On Telegram they
+  arrive as photos with a plain caption.
+
 ## 0.9.17 — 2026-10-03
 
 - **The lead checks before it promises.** One check covers agents (signed in

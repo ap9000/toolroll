@@ -12,9 +12,11 @@ import { asksToFinish, batchLine, chatText, chatTitle, factLinkLabel, mentions, 
 import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.js";
 import { isLifecycleNotification, type ChatBatch, type Notification, type Run, type Store } from "./store.js";
 import { leadSubjectOf } from "./lead-voice.js";
+import { decideFallbackLink, decideTargetOf, type DecideTarget } from "./chat-decide.js";
 
-/** `also`: more buttons after `link`, such as [Look first] beside [Merge]. */
-export type QuietView = { text: string; entities: ProgressEntity[]; link: PhoneTaskLink; also?: PhoneTaskLink[] };
+/** `also`: more buttons after `link`, such as [Look first] beside [Merge]. `target`: the one card a chat may act on in
+ * place (chat-decide.ts), when the message is about one result, plan, failure or pull request. */
+export type QuietView = { text: string; entities: ProgressEntity[]; link: PhoneTaskLink; also?: PhoneTaskLink[]; target?: DecideTarget };
 
 /** What always makes a new message, even in quiet mode: a question or approval waiting, a failure or other
  * attention fact, a result Ready for review, a security alert or release, and anything addressed to one person
@@ -123,7 +125,7 @@ function updatePhrase(row: Pick<Notification, "kind" | "pushClass">): { phrase: 
   return { phrase: "needs you", headline: "Needs you" };
 }
 
-type BatchLine = { fact: FinishedFact; link: PhoneTaskLink; also: PhoneTaskLink[] };
+type BatchLine = { fact: FinishedFact; link: PhoneTaskLink; also: PhoneTaskLink[]; target?: DecideTarget | null };
 
 /** One task's line in a batch: a finished result in a person's words with its real next step, or another
  * update in its own words with its own link. */
@@ -137,7 +139,8 @@ function lineOf(store: Store, item: ChatBatch["items"][number], now: Date, root?
     const subject = leadSubjectOf(store, row, viewer);
     const words = chatText(phoneText(row.body === "" ? subject : `${subject}\n\n${row.body}`, 2500), [{ id: ref.externalId, title: summary }]);
     const { phrase, headline } = updatePhrase(row);
-    return { also: [], link: row.link === null ? { label: "Open task", path: chatControlHref("task", ref.externalId) } : { label: factLinkLabel(row.link), path: row.link },
+    const target = decideTargetOf(row);
+    return { also: [], target, link: decideFallbackLink(target) ?? (row.link === null ? { label: "Open task", path: chatControlHref("task", ref.externalId) } : { label: factLinkLabel(row.link), path: row.link }),
       fact: { summary, headline, checks: null, report: false, completedBy: null, update: { words: mentions(words, summary) ? words : `${summary} · ${words}`, phrase } } };
   }
   const run = item.run === null ? null : store.getRun(item.run);
@@ -159,6 +162,7 @@ function lineOf(store: Store, item: ChatBatch["items"][number], now: Date, root?
   };
   // A result ready for a person offers its real next step, then a look first.
   if (asksToFinish(fact)) return { fact, also: [{ label: READY_ACTIONS.look, path: chatResultHref(ref.externalId, run.id, "changes") }],
+    target: pullRequest ? { kind: "merge", taskId: ref.externalId, run: run.id } : { kind: "result", taskId: ref.externalId, run: run.id },
     link: pullRequest ? { label: READY_ACTIONS.merge, path: `/t/${encodeURIComponent(ref.externalId)}#merge` } : { label: READY_ACTIONS.complete, path: chatResultHref(ref.externalId, run.id) } };
   return { fact, link: card.link, also: [] };
 }
@@ -170,7 +174,8 @@ export function finishedView(store: Store, batch: Pick<ChatBatch, "items">, now:
   if (lines.length === 0) return null;
   const text = batchLine(lines.map(one => one.fact));
   if (lines.length > 1) return { text, entities: [], link: { label: "Open", path: "/tasks" } };
-  return { text, entities: [], link: lines[0]!.link, ...(lines[0]!.also.length === 0 ? {} : { also: lines[0]!.also }) };
+  const target = lines[0]!.target ?? null;
+  return { text, entities: [], link: lines[0]!.link, ...(lines[0]!.also.length === 0 ? {} : { also: lines[0]!.also }), ...(target === null ? {} : { target }) };
 }
 
 // ---- the evening digest ----------------------------------------------------------

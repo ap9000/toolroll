@@ -28,7 +28,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateNote } from "./decision.js";
-import { isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
+import { resultShotsFor, type ResultShot } from "./result-shots.js";
+import { isLifecycleNotification, isTelegramProgressNotification, RESULT_SHOTS_KIND, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
 import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, type QuietView } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
@@ -37,6 +38,9 @@ import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team
 import { applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowDecisionAt } from "./telegram-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { focusContextFor, taskInCeiling } from "./chat-channel.js";
+import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, dropDecideTokens, hasLiveDecideTokens, linksFor, placeDecidePrompt, decideOffer, decideTargetOf, isDecideToken, mergedText, mintDecideButtons, offerFingerprint, openPromptFor, placeDecideTokens, recordChatMerge, retireDecideTokens,
+  type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
+import { mergePullRequest } from "./pull-request-flow.js";
 import { phoneCommand, phoneStatus, phoneTaskView, PHONE_CONSOLE_FOOTER, PHONE_HELP, notificationIdentity, phoneTaskChoices, resolvePhoneTask, phoneFocusText, phoneTaskListText, phoneText, PHONE_NO_MATCH, PHONE_BACK_TO_LEAD, type PhoneTaskChoice } from "./telegram-status.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { envValue } from "./names.js";
@@ -192,6 +196,8 @@ export type TelegramTransport = (
   signal?: AbortSignal,
   /** v64: one verified file to send as multipart — the ONLY way bytes leave. Absent, the call is JSON exactly as before. */
   upload?: TelegramUpload,
+  /** More verified files in the same multipart call: the rest of one album (sendMediaGroup). */
+  more?: readonly TelegramUpload[],
 ) => Promise<{ ok: boolean; result?: unknown; description?: string; parameters?: { retry_after?: number }; uncertain?: boolean }>;
 
 /**
@@ -201,10 +207,10 @@ export type TelegramTransport = (
  * Telegram never fetches anything for us, and nothing on this machine is
  * uploaded by name.
  */
-export type TelegramUpload = { field: "document"; fileName: string; contentType: "image/png" | "image/jpeg"; bytes: Buffer };
+export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fileName: string; contentType: "image/png" | "image/jpeg"; bytes: Buffer };
 
 export function createTransport(token: string, timeoutMs = 30_000): TelegramTransport {
-  return async (method, params, signal, upload) => {
+  return async (method, params, signal, upload, more) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = () => controller.abort();
@@ -219,7 +225,7 @@ export function createTransport(token: string, timeoutMs = 30_000): TelegramTran
       // the verified bytes as one Blob under the file name given.
       const request: RequestInit = upload === undefined
         ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(params), signal: controller.signal }
-        : { method: "POST", body: multipartOf(params, upload), signal: controller.signal };
+        : { method: "POST", body: multipartOf(params, upload, ...(more ?? [])), signal: controller.signal };
       const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, request);
       const body = (await response.json()) as { ok?: boolean; result?: unknown; description?: string; parameters?: { retry_after?: number } } | null;
       // A missing or malformed acknowledgement does not prove a send failed.
@@ -285,13 +291,13 @@ export function transportError(error: unknown): string {
 }
 
 /** The multipart body: every param a field (objects as JSON), the file last. Exported for the adapter's own test only. */
-export function multipartOf(params: Record<string, unknown>, upload: TelegramUpload): FormData {
+export function multipartOf(params: Record<string, unknown>, upload: TelegramUpload, ...more: readonly TelegramUpload[]): FormData {
   const form = new FormData();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
     form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
   }
-  form.append(upload.field, new Blob([new Uint8Array(upload.bytes)], { type: upload.contentType }), upload.fileName);
+  for (const one of [upload, ...more]) form.append(one.field, new Blob([new Uint8Array(one.bytes)], { type: one.contentType }), one.fileName);
   return form;
 }
 
@@ -710,6 +716,26 @@ function viewKeyboard(phoneOrigin: (() => string | null) | undefined, view: Quie
   } catch { return []; }
 }
 
+/** Where a paired person taps: their binding and private chat. */
+function decideSeat(binding: TelegramBinding): DecideSeat {
+  return { channel: "telegram", binding: binding.id, chat: binding.chatId, approver: binding.approver, generation: binding.approverGeneration };
+}
+
+/** Decide buttons as Telegram draws them: an act's opaque token, or a link under the trusted origin read now (none without one). */
+function decideKeyboard(phoneOrigin: (() => string | null) | undefined, rows: readonly DecideButton[][]): InlineButton[][] {
+  let origin: string | null = null;
+  try { origin = phoneOrigin?.() ?? null; } catch { origin = null; }
+  return rows.map(row => row.flatMap((one): InlineButton[] => "token" in one ? [{ text: one.label, callback_data: one.token }]
+    : phoneLinkButton(origin, one.link) ?? [])).filter(row => row.length > 0);
+}
+
+/** What this card may act on in the chat now, for this person under their current ceiling; null keeps its link. */
+function decideOfferFor(store: Store, binding: TelegramBinding, target: DecideTarget | null | undefined, projects: readonly string[], now: Date, root?: string): DecideOffer | null {
+  if (target === null || target === undefined) return null;
+  const principal = verifyApproverStanding(store, binding.approver, binding.approverGeneration, telegramConversationRepos(store, binding.approver, projects));
+  return principal.ok ? decideOffer(store, target, principal.who, now, root) : null;
+}
+
 /** Team-conversation traffic to the chats that follow one — after the outbox, under the same delivery switch, never a problem to raise when nothing follows anything. */
 async function deliverTeam(
   store: Store, botId: string, transport: TelegramTransport, clock: () => Date, report: BridgeReport,
@@ -735,7 +761,7 @@ async function deliverOutbox(
     // Routine progress facts are not a problem to fix: a first pairing
     // starts from now and settles them as history. Anything else pending
     // is named, once per pass, as before.
-    if (store.listNotifications("pending").some(row => !isLifecycleNotification(row))) report.problems.push("outbox rows are pending but no chat is paired — `toolroll bridge telegram pair`");
+    if (store.listNotifications("pending").some(row => !isLifecycleNotification(row) && row.kind !== RESULT_SHOTS_KIND)) report.problems.push("outbox rows are pending but no chat is paired — `toolroll bridge telegram pair`");
     return;
   }
   const digest = store.telegramDigest();
@@ -856,6 +882,49 @@ async function deliverOutboxTo(
       const after = (await readAccess()) ?? fence();
       return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, String(messageId)) } : { ok: false, error: after };
     };
+    /** Screenshots with a result (result-shots.ts): photos, several as one album, re-proved before every call. Each is
+     * marked sent before it goes, so an unconfirmed send is never repeated; only Telegram's outright refusal unmarks it. */
+    const shotsSender = async (row: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
+      let receipt: string | null = null;
+      for (let call = 0; call <= 4; call++) {
+        const problem = (await readAccess()) ?? fence();
+        if (problem !== null) return { ok: false, error: problem };
+        const plan = resultShotsFor(store, evidenceRoot, telegramConversationRepos(store, binding.approver, projects), row, store.resultShotsSent(row.destination, row.run ?? 0));
+        if (plan.kind === "none") return call > 0 ? { ok: true, receipt } : { ok: true, receipt: `skipped:screenshots-${plan.why}` };
+        if (plan.kind === "line") {
+          const sent = await sender(plan.text, undefined, [row]);
+          return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
+        }
+        // No await between the access fence, the files' verification and the upload.
+        const photos = plan.shots.filter(one => one.photo);
+        const batch: ResultShot[] = photos.length >= 2 ? photos : [plan.shots[0]!];
+        const upload = (one: ResultShot, field: TelegramUpload["field"]): TelegramUpload =>
+          ({ field, fileName: one.fileName, contentType: one.format === "png" ? "image/png" : "image/jpeg", bytes: one.bytes });
+        const ids = batch.map(one => one.artifact);
+        store.markResultShotsSent(row.destination, plan.run, ids, clock());
+        let answer: Awaited<ReturnType<TelegramTransport>>;
+        try {
+          answer = batch.length > 1
+            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 ? { caption: one.caption } : {}) })) },
+              undefined, upload(batch[0]!, "shot0"), batch.slice(1).map((one, index) => upload(one, `shot${index + 1}`)))
+            : batch[0]!.photo
+              ? await transport("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
+              : await transport("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
+        } catch { answer = { ok: false, uncertain: true }; }
+        if (!answer.ok && answer.uncertain !== true) {
+          store.unmarkResultShotsSent(row.destination, plan.run, ids);
+          if (answer.parameters?.retry_after !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + answer.parameters.retry_after * 1000).toISOString());
+          return { ok: false, error: "Telegram did not accept the screenshots" };
+        }
+        const messages = (Array.isArray(answer.result) ? answer.result : [answer.result])
+          .map(one => (one as { message_id?: number } | undefined)?.message_id).filter((one): one is number => Number.isSafeInteger(one));
+        // An unconfirmed send stays marked: it may have arrived, so it is never sent again.
+        if (!answer.ok || messages.length === 0) report.problems.push(`notification ${row.id}: Telegram did not confirm the screenshots; they are not sent again`);
+        for (const one of messages) store.recordTelegramMessage(row, binding, String(one), clock());
+        receipt = receiptFor(botId, binding.chatId, messages.length === 0 ? null : String(messages[0]));
+      }
+      return { ok: true, receipt };
+    };
     const batched = !quiet && digest.everyMs !== null && !isUrgent(rows[0]!);
     const row = rows[0]!;
     const progressRun = batched ? null : store.telegramProgressRun(row);
@@ -940,31 +1009,57 @@ async function deliverOutboxTo(
           if (readyRun !== null) return { ok: true, receipt: receiptFor(botId, binding.chatId, card.messageId) };
           return deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
         }
+        // A message about one result, plan, failure or pull request acts in place (chat-decide.ts); its buttons are
+        // minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps the
+        // ones already in the chat.
+        const offer = decideOfferFor(store, binding, view.target, projects, clock(), evidenceRoot);
+        const text = offer?.text ?? view.text;
         // While a lone update is still the only item, its edit keeps that update's own action button.
-        const own = lone && fact.link !== null ? factButton(phoneOrigin, fact.link) : null;
-        const keyboard = own !== null ? [own] : viewKeyboard(phoneOrigin, view);
-        const shown = createHash("sha256").update(JSON.stringify([view.text, keyboard])).digest("hex");
+        const own = offer === null && lone && fact.link !== null ? factButton(phoneOrigin, fact.link) : null;
+        let keyboard = own !== null ? [own] : viewKeyboard(phoneOrigin, view);
+        const shown = createHash("sha256").update(JSON.stringify(offer === null ? [view.text, keyboard] : [text, offerFingerprint(offer)])).digest("hex");
+        let tokens: string[] = [];
+        // Minted unplaced: they ride a message only once it shows them, and until then the old card's buttons work.
+        const mintFor = (): void => {
+          if (offer === null) return;
+          const minted = mintDecideButtons(store, decideSeat(binding), view.target!, offer, clock());
+          keyboard = decideKeyboard(phoneOrigin, minted.rows);
+          tokens = minted.tokens;
+        };
         if (batch.message !== null) {
-          if (batch.digest === shown) {
+          if (batch.digest === shown && (offer === null || hasLiveDecideTokens(store, "telegram", binding.chatId, batch.message, clock()))) {
             store.recordTelegramMessage(fact, binding, batch.message, clock());
             return { ok: true, receipt: receiptFor(botId, binding.chatId, batch.message) };
           }
           const problem = (await readAccess()) ?? fence();
           if (problem !== null) return { ok: false, error: problem };
-          const edited = await editProgress(transport, binding.chatId, batch.message, view.text, keyboard);
+          mintFor();
+          const edited = await editProgress(transport, binding.chatId, batch.message, text, keyboard);
           if (edited.ok) {
+            // The repaint landed: the old words' buttons retire and the new ones ride the message.
+            retireDecideTokens(store, "telegram", binding.chatId, batch.message, clock());
+            placeDecideTokens(store, tokens, batch.message);
             store.setChatBatchMessage(batch.id, batch.message, shown);
             store.recordTelegramMessage(fact, binding, batch.message, clock());
             const after = (await readAccess()) ?? fence();
             return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, batch.message) } : { ok: false, error: after };
           }
+          // A failed edit: the buttons it carried never act, and the card's old ones keep working.
+          dropDecideTokens(store, tokens, clock());
           if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
           // Only Telegram's definitive missing/uneditable answer permits a new message.
           if (!edited.replace) return edited;
         }
-        const sent = await sender(view.text, keyboard.length === 0 ? undefined : keyboard, [fact]);
+        // A new message: its buttons are minted for it, never the ones a failed edit was given.
+        mintFor();
+        const sent = await sender(text, keyboard.length === 0 ? undefined : keyboard, [fact]);
         const placed = sent.ok ? sent.messageId : store.telegramMessageOf(fact.id, fact.destination);
         if (placed !== null) store.setChatBatchMessage(batch.id, placed, shown);
+        if (sent.ok && sent.messageId !== null) {
+          // The new card replaces the old one: only its buttons act.
+          if (batch.message !== null) retireDecideTokens(store, "telegram", binding.chatId, batch.message, clock());
+          placeDecideTokens(store, tokens, sent.messageId);
+        } else dropDecideTokens(store, tokens, clock());
         return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
       }
       return fact.kind === "acceptance-evidence" ? imageSender(fact) : deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
@@ -992,7 +1087,8 @@ async function deliverOutboxTo(
       return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
     };
     let outcome: { ok: true; receipt: string | null } | { ok: false; error: string };
-    if (rows.length === 1 && row.kind === LEAD_SAY_KIND) outcome = await leadSayOutcome(row);
+    if (rows.length === 1 && row.kind === RESULT_SHOTS_KIND) outcome = await shotsSender(row);
+    else if (rows.length === 1 && row.kind === LEAD_SAY_KIND) outcome = await leadSayOutcome(row);
     else if (quiet && rows.length === 1 && isTaskFact(row)) outcome = await quietOutcome(row);
     else {
       // A failure or decision still gets its own alert. Refresh an existing
@@ -1026,7 +1122,8 @@ async function deliverOutboxTo(
 
 /** What pages singly whatever the cadence: a decision, or an attention-class fact. */
 function isUrgent(notification: Notification): boolean {
-  return /^decision:\d+$/.test(notification.dedupeKey) || notification.pushClass === "attention" || notification.kind === "acceptance-evidence" || notification.kind === "acceptance-ready";
+  return /^decision:\d+$/.test(notification.dedupeKey) || notification.pushClass === "attention" || notification.kind === "acceptance-evidence" || notification.kind === "acceptance-ready"
+    || notification.kind === RESULT_SHOTS_KIND;
 }
 
 /** The digest text: a header with the count and the window, then one
@@ -1116,8 +1213,14 @@ async function deliverOne(
     const task = notification.taskId === null ? [] : [{ id: notification.taskId, ...(title === undefined ? {} : { title }) }];
     const words = chatText(`${alreadyAccepted ? "Acceptance recorded" : leadSubjectOf(store, notification, binding.approver)}${body === "" ? "" : `\n\n${body}`}`, task);
     // The task's title once: in front, unless the words already name it.
-    const parts = split(`${notificationIdentity(notification, title !== undefined && mentions(words, title) ? undefined : title)}${words}`);
-    const button = notification.link !== null && !alreadyAccepted && current ? factButton(phoneOrigin, notification.link) : null;
+    // A result, plan, failure or ready pull request acts in place (chat-decide.ts); otherwise its one link.
+    const target = alreadyAccepted || !current ? null : decideTargetOf(notification);
+    const offer = decideOfferFor(store, binding, target, projects, clock(), evidenceRoot);
+    const decided = offer === null ? null : mintDecideButtons(store, decideSeat(binding), target!, offer, clock());
+    const parts = split(offer?.text ?? `${notificationIdentity(notification, title !== undefined && mentions(words, title) ? undefined : title)}${words}`);
+    const fallback = offer === null ? decideFallbackLink(target) : null;
+    const button = fallback !== null ? (() => { try { return phoneLinkButton(phoneOrigin?.() ?? null, fallback); } catch { return null; } })()
+      : offer === null && notification.link !== null && !alreadyAccepted && current ? factButton(phoneOrigin, notification.link) : null;
     // A flow card waiting on a decision (v86): Approve, Edit, Send back on the last part, for this visit only.
     const visit = FLOW_DECIDE_KEY.exec(notification.dedupeKey);
     const waiting = visit === null ? null : flowDecisionAt(store, Number(visit[1]), Number(visit[2]));
@@ -1129,13 +1232,18 @@ async function deliverOne(
     let last: string | null = null;
     for (const [index, part] of parts.entries()) {
       const final = index === parts.length - 1;
-      const keyboard = !final ? undefined : keys !== null ? [...keys.keyboard, ...(button === null ? [] : [button])] : button !== null ? [button] : undefined;
+      const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
+      const keyboard = !final ? undefined : keys !== null ? [...keys.keyboard, ...(button === null ? [] : [button])] : decideKeys.length > 0 ? decideKeys : button !== null ? [button] : undefined;
       const sent = await sender(part, keyboard);
-      if (!sent.ok) return { ok: false, error: sent.error };
+      if (!sent.ok) {
+        if (decided !== null) dropDecideTokens(store, decided.tokens, clock());
+        return { ok: false, error: sent.error };
+      }
       last = sent.messageId;
     }
     if (flowKeys !== null && last !== null) store.placeTelegramFlowActions(flowKeys.tokens, last);
     if (questionKeys !== null && last !== null) store.placeTelegramQuestionActions(questionKeys.tokens, last);
+    if (decided !== null && last !== null) placeDecideTokens(store, decided.tokens, last);
     return { ok: true, receipt: receiptFor(botId, binding.chatId, last) };
   }
 
@@ -1431,13 +1539,15 @@ async function projectsForTap(context: Context, update: Update): Promise<readonl
   const callback = update.callback_query;
   // Flow decision buttons (v86) work with or without the lead's conversation on this phone.
   const flowTap = callback !== undefined && context.store.getTelegramFlowAction(callback.data ?? "") !== null;
-  if (callback === undefined || context.readProjects === undefined || (context.conversation === undefined && !flowTap)) return null;
+  // So do a result's, plan's or pull request's own buttons (chat-decide.ts).
+  const decideTap = callback !== undefined && isDecideToken(context.store, callback.data ?? "");
+  if (callback === undefined || context.readProjects === undefined || (context.conversation === undefined && !flowTap && !decideTap)) return null;
   const binding = callback.from === undefined ? null : context.store.liveTelegramBindingFor(context.botId, String(callback.from.id));
   if (
     binding === null || callback.from === undefined ||
     callback.message?.chat === undefined ||
     // Proposal cards and task picks read the chat's project ceiling.
-    (context.store.getTelegramProposalAction(callback.data ?? "") === null && context.store.getTelegramFlowAction(callback.data ?? "") === null && !(callback.data ?? "").startsWith("pick:"))
+    (context.store.getTelegramProposalAction(callback.data ?? "") === null && context.store.getTelegramFlowAction(callback.data ?? "") === null && !decideTap && !(callback.data ?? "").startsWith("pick:"))
   ) return null;
   const chat = callback.message.chat;
   const chatId = String(chat.id);
@@ -1557,6 +1667,21 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
           if (sent.ok && sent.messageId !== null) store.placeTelegramFlowActions(effect.tokens, sent.messageId);
         });
       }
+      return;
+    }
+    // After Request changes asked "What should change?": the person's next message in their own chat is the feedback.
+    // A reply to some other message (a decision, a result) keeps its own meaning.
+    const decidePrompt = binding !== null && chat.type === "private" && String(chat.id) === binding.chatId && typeof message.text === "string" && message.text.trim() !== "" && !message.text.startsWith("/")
+      ? openPromptFor(store, { channel: "telegram", binding: binding.id, chat: binding.chatId }, clock()) : null;
+    if (binding !== null && decidePrompt !== null && answersPrompt(decidePrompt, message.reply_to_message === undefined ? null : String(message.reply_to_message.message_id))) {
+      const repos = context.projects === null ? [] : telegramConversationRepos(store, binding.approver, context.projects);
+      const answer = applyDecideFeedback(store, decideSeat(binding), decidePrompt, message.text ?? "", repos, context.conversation?.evidenceRoot, clock());
+      effects.push(async () => {
+        let button: InlineButton[] | null = null;
+        try { button = phoneLinkButton(context.conversation?.phoneOrigin?.() ?? null, answer.link); } catch { button = null; }
+        await transport("sendMessage", { chat_id: binding.chatId, text: answer.said, link_preview_options: { is_disabled: true }, reply_parameters: { message_id: message.message_id },
+          ...(button === null ? {} : { reply_markup: { inline_keyboard: [button] } }) });
+      });
       return;
     }
     // A message to a teammate by name (v96), in the person's own chat: a card on its desk, and the answer comes back here.
@@ -1967,6 +2092,14 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   const binding = from === undefined ? null : store.liveTelegramBindingFor(botId, String(from.id));
   const tapChat = message?.chat === undefined ? null : String(message.chat.id);
   const followedGroup = tapChat !== null && binding !== null && tapChat !== binding.chatId && store.telegramTeamChat(botId, tapChat)?.kind === "group";
+  // A result's, plan's, failure's or pull request's own buttons act only in the paired person's own chat; a tap
+  // anywhere else is still answered, so the button never just spins.
+  if (isDecideToken(store, token) && (binding === null || tapChat === null || tapChat !== binding.chatId)) {
+    report.ignored++;
+    ack(binding === null ? "These buttons work only for the person they were sent to. Nothing was done."
+      : "These buttons work only in your own chat with the bot. Nothing was done.");
+    return;
+  }
   if (
     binding === null ||
     from === undefined ||
@@ -2068,6 +2201,43 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     report.chatQueued = (report.chatQueued ?? 0) + 1;
     ack(`Sent: ${option}`.slice(0, 190));
     editText(`${message.text ?? ask.question}\n\nYou chose: ${option}`.slice(0, 4000));
+    return;
+  }
+  // A result's, plan's, failure's or pull request's own buttons (chat-decide.ts): in the person's own chat only.
+  if (isDecideToken(store, token)) {
+    const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
+    if (repos === null) { ack("Your projects couldn't be read just now. Try again."); return; }
+    const messageId = String(message.message_id);
+    const tapped = applyDecideTap(store, decideSeat(binding), { token, message: messageId, shown: message.text ?? "", repos, ...(context.conversation === undefined ? {} : { root: context.conversation.evidenceRoot }), now: clock() });
+    if (tapped === null) { report.ignored++; ack("That button doesn't do anything now."); return; }
+    if (tapped.ignored === true) report.ignored++;
+    ack(tapped.ack.slice(0, 190));
+    if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
+    if (tapped.prompt !== undefined) {
+      const prompt = tapped.prompt;
+      effects.push(async () => {
+        const answer = await transport("sendMessage", { chat_id: binding.chatId, text: prompt.text, link_preview_options: { is_disabled: true },
+          reply_parameters: { message_id: message.message_id }, reply_markup: { force_reply: true, input_field_placeholder: "What should change?" } });
+        const id = (answer.result as { message_id?: number } | undefined)?.message_id;
+        if (answer.ok && Number.isSafeInteger(id)) placeDecidePrompt(store, prompt.id, String(id));
+      });
+    }
+    if (tapped.merge !== undefined) {
+      const merge = tapped.merge, shown = tapped.edit?.text ?? message.text ?? "";
+      // GitHub is a network call: after the tap's transaction, then the card says how it went.
+      effects.push(async () => {
+        let merged: { ok: true } | { ok: false; message: string };
+        try {
+          merged = context.conversation?.merge !== undefined ? await context.conversation.merge({ runId: merge.runId, by: merge.by })
+            : await mergePullRequest(store, { runId: merge.runId, by: merge.by, clock });
+        } catch { merged = { ok: false, message: "GitHub couldn't be reached just now. Try again from the task." }; }
+        // The ledger says what happened, failure included, once GitHub has answered.
+        recordChatMerge(store, merge, merged.ok ? { ok: true } : { ok: false, message: merged.message }, clock());
+        // A merge that didn't land keeps a way to the task.
+        await transport("editMessageText", { chat_id: binding.chatId, message_id: message.message_id, text: mergedText(shown, merged.ok ? { ok: true } : { ok: false, message: merged.message }).slice(0, 4000),
+          link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: merged.ok ? [] : decideKeyboard(context.conversation?.phoneOrigin, linksFor({ kind: "merge", taskId: merge.taskId, run: merge.runId })) } });
+      });
+    }
     return;
   }
   const action = store.getTelegramAction(token);

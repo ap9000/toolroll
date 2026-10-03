@@ -183,7 +183,8 @@ CREATE TABLE IF NOT EXISTS notification_preference (
   digest_at  TEXT CHECK (digest_at IS NULL OR (length(digest_at) = 5 AND digest_at GLOB '[0-2][0-9]:[0-5][0-9]')),
   digest_on  TEXT,
   updated_at TEXT NOT NULL,
-  updated_by TEXT NOT NULL
+  updated_by TEXT NOT NULL,
+  screenshots TEXT NOT NULL DEFAULT 'off' CHECK (screenshots IN ('off', 'first', 'all'))
 );
 CREATE TABLE IF NOT EXISTS chat_card (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,6 +217,19 @@ CREATE TABLE IF NOT EXISTS chat_batch_item (
   run       INTEGER,
   joined_at TEXT NOT NULL,
   PRIMARY KEY (batch, task_ref)
+);
+`;
+
+/** Screenshots with results (no version bump: additive only): each saved screenshot a destination was sent with a
+ * result, marked before the upload so a retry never sends it twice. No foreign keys: a deleted project's runs take
+ * their rows with them (project-delete.ts). */
+const RESULT_SHOT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS result_shot_sent (
+  destination TEXT NOT NULL,
+  run         INTEGER NOT NULL,
+  artifact    INTEGER NOT NULL,
+  sent_at     TEXT NOT NULL,
+  PRIMARY KEY (destination, run, artifact)
 );
 `;
 
@@ -335,6 +349,41 @@ CREATE TABLE IF NOT EXISTS mate_ask (
 );
 CREATE INDEX IF NOT EXISTS mate_ask_thread ON mate_ask (thread, turn);
 `;
+/** Decisions in the chat app (chat-decide.ts; no version bump: additive only). A token names one act on one card (the chat and message it rides); `digest` is
+ * what the card showed — a receipt, a revision source, a task stamp, a plan or a commit. */
+export const CHAT_DECIDE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_decide_action (
+  token       TEXT PRIMARY KEY,
+  channel     TEXT NOT NULL,
+  binding     INTEGER NOT NULL,
+  chat        TEXT NOT NULL,
+  message     TEXT,
+  act         TEXT NOT NULL CHECK (act IN ('accept','changes','retry','approve','not-now','merge')),
+  phase       TEXT NOT NULL CHECK (phase IN ('offer','yes','cancel')),
+  task_id     TEXT NOT NULL,
+  run         INTEGER,
+  digest      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_decide_action_message ON chat_decide_action (channel, chat, message);
+CREATE TABLE IF NOT EXISTS chat_decide_prompt (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel     TEXT NOT NULL,
+  binding     INTEGER NOT NULL,
+  chat        TEXT NOT NULL,
+  task_id     TEXT NOT NULL,
+  run         INTEGER NOT NULL,
+  digest      TEXT NOT NULL,
+  message     TEXT,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_decide_prompt_open ON chat_decide_prompt (channel, binding, consumed_at);
+`;
+
 export type MateAsk = { turn: number; thread: number; question: string; options: string[]; createdAt: string };
 export const MATE_ASK_OTHER = "Something else";
 /** How long the question's buttons work, on every channel. */
@@ -1374,7 +1423,12 @@ export type TelegramDelivery = Notification & { destination: string; claimGenera
 
 /** How chats reach one person (quiet chat): only when they are needed, or every step. */
 export type NotificationMode = "quiet" | "all";
-export type NotificationPreference = { mode: NotificationMode; digestAt: string | null; digestOn: string | null; updatedAt: string | null };
+/** Screenshots with results: none (the default), the first one, or up to four (result-shots.ts). */
+export type ResultScreenshots = "off" | "first" | "all";
+export const RESULT_SCREENSHOTS: readonly ResultScreenshots[] = ["off", "first", "all"];
+export type NotificationPreference = { mode: NotificationMode; digestAt: string | null; digestOn: string | null; updatedAt: string | null; screenshots: ResultScreenshots };
+/** One person's saved screenshots following a result message: its own outbox row, addressed to them (result-shots.ts). */
+export const RESULT_SHOTS_KIND = "result-screenshots";
 /** Tasks filed this close together share one chat message. */
 export const QUIET_GROUP_MS = 60_000;
 export function isDigestTime(value: string): boolean {
@@ -5172,6 +5226,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MONITORING_SCHEMA);
   db.exec(INTEGRATIONS_SCHEMA);
   db.exec(MATE_ASK_SCHEMA);
+  // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
+  db.exec(CHAT_DECIDE_SCHEMA);
   db.exec(SPEND_SCHEMA);
   // Sign-in pauses: one row per incident of a provider's sign-in no longer working.
   db.exec(PROVIDER_AUTH_SCHEMA);
@@ -5187,6 +5243,9 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(POLICY_SCHEMA);
   db.exec(RUN_CHECK_SCHEMA);
   db.exec(QUIET_CHAT_SCHEMA);
+  // Screenshots with results: each person's choice (an older notification_preference gains it), and what was sent.
+  addColumn(db, "notification_preference", "screenshots", "TEXT NOT NULL DEFAULT 'off' CHECK (screenshots IN ('off', 'first', 'all'))");
+  db.exec(RESULT_SHOT_SCHEMA);
   // The update a batch line speaks for: its newest fact about that task (null: a finished result).
   addColumn(db, "chat_batch_item", "notification", "INTEGER");
   db.exec(LEAD_QUIET_SCHEMA);
@@ -18206,6 +18265,10 @@ export class Store {
     if (Number(changes) > 0 && actor !== null) {
       this.db.prepare("INSERT OR IGNORE INTO notification_actor (notification, account, lead) VALUES (?, ?, ?)").run(Number(lastInsertRowid), actor.account, actor.lead ? 1 : 0);
     }
+    if (Number(changes) > 0 && run !== null && notification.recipient == null) {
+      const made = this.notificationById(Number(lastInsertRowid));
+      if (made !== null) this.enqueueResultShots(made, now);
+    }
     return Number(changes) > 0;
   }
 
@@ -26680,22 +26743,65 @@ export class Store {
 
   /** How chats reach this person: only when they are needed unless they chose every step. */
   notificationPreference(account: string): NotificationPreference {
-    const row = this.db.prepare("SELECT mode, digest_at, digest_on, updated_at FROM notification_preference WHERE account = ?").get(account);
-    return row === undefined ? { mode: "quiet", digestAt: null, digestOn: null, updatedAt: null }
+    const row = this.db.prepare("SELECT mode, digest_at, digest_on, updated_at, screenshots FROM notification_preference WHERE account = ?").get(account);
+    return row === undefined ? { mode: "quiet", digestAt: null, digestOn: null, updatedAt: null, screenshots: "off" }
       : { mode: row["mode"] === "all" ? "all" : "quiet", digestAt: row["digest_at"] == null ? null : String(row["digest_at"]),
-        digestOn: row["digest_on"] == null ? null : String(row["digest_on"]), updatedAt: String(row["updated_at"]) };
+        digestOn: row["digest_on"] == null ? null : String(row["digest_on"]), updatedAt: String(row["updated_at"]),
+        screenshots: row["screenshots"] === "first" || row["screenshots"] === "all" ? row["screenshots"] : "off" };
   }
 
   /** Change one person's choice; a digest time is a local HH:MM, or null for no evening digest. */
-  setNotificationPreference(account: string, change: { mode?: NotificationMode; digestAt?: string | null }, by: string, now: Date): NotificationPreference {
+  setNotificationPreference(account: string, change: { mode?: NotificationMode; digestAt?: string | null; screenshots?: ResultScreenshots }, by: string, now: Date): NotificationPreference {
     if (change.digestAt != null && !isDigestTime(change.digestAt)) throw new Error("digest time must be HH:MM");
+    if (change.screenshots !== undefined && !RESULT_SCREENSHOTS.includes(change.screenshots)) throw new Error("screenshots must be off, first or all");
     const current = this.notificationPreference(account);
     const mode = change.mode ?? current.mode;
     const digestAt = change.digestAt === undefined ? current.digestAt : change.digestAt;
-    this.db.prepare(`INSERT INTO notification_preference (account, mode, digest_at, digest_on, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT (account) DO UPDATE SET mode = excluded.mode, digest_at = excluded.digest_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-      .run(account, mode, digestAt, current.digestOn, now.toISOString(), by);
+    const screenshots = change.screenshots ?? current.screenshots;
+    this.db.prepare(`INSERT INTO notification_preference (account, mode, digest_at, digest_on, updated_at, updated_by, screenshots) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (account) DO UPDATE SET mode = excluded.mode, digest_at = excluded.digest_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
+        screenshots = excluded.screenshots`)
+      .run(account, mode, digestAt, current.digestOn, now.toISOString(), by, screenshots);
     return this.notificationPreference(account);
+  }
+
+  // ---- screenshots with results (result-shots.ts) ----
+
+  /** The screenshots of this result already sent (or being sent) to one destination. */
+  resultShotsSent(destination: string, run: number): Set<number> {
+    return new Set(this.db.prepare("SELECT artifact FROM result_shot_sent WHERE destination = ? AND run = ?").all(destination, run).map(row => Number(row["artifact"])));
+  }
+
+  /** Mark screenshots as sent BEFORE they go: an unconfirmed send is never repeated. */
+  markResultShotsSent(destination: string, run: number, artifacts: readonly number[], now: Date): void {
+    const insert = this.db.prepare("INSERT OR IGNORE INTO result_shot_sent (destination, run, artifact, sent_at) VALUES (?, ?, ?, ?)");
+    this.transact(() => { for (const artifact of artifacts) insert.run(destination, run, artifact, now.toISOString()); });
+  }
+
+  /** Telegram refused them outright, so nothing arrived: they may be tried again. */
+  unmarkResultShotsSent(destination: string, run: number, artifacts: readonly number[]): void {
+    const remove = this.db.prepare("DELETE FROM result_shot_sent WHERE destination = ? AND run = ? AND artifact = ?");
+    this.transact(() => { for (const artifact of artifacts) remove.run(destination, run, artifact); });
+  }
+
+  /**
+   * A result message just became a fact: everyone who asked for screenshots with results, can see the project and
+   * would be pinged by it gets one row of their own that follows it — once per result, whatever produced the fact.
+   * Only a result that saved screenshots qualifies; what is sent, and whether at all, is decided again at send time.
+   */
+  private enqueueResultShots(source: Notification, now: Date): void {
+    if (source.run === null || source.taskRef === null || source.project === null || source.recipient !== null) return;
+    const ready = isLifecycleNotification(source) && source.kind === "run-finished";
+    if (!ready && !/fail/.test(source.kind)) return;
+    const run = this.getRun(source.run);
+    if (run === null || !["builder", "repair"].includes(run.role) || run.contestant !== null) return;
+    if (!this.artifactsFor(run.id).some(one => one.kind === "screenshot")) return;
+    const people = this.db.prepare("SELECT account FROM notification_preference WHERE screenshots IN ('first', 'all') ORDER BY account").all().map(row => String(row["account"]));
+    for (const account of people) {
+      if (!this.accountCanAccess(account, source.project) || !this.pingAllowed(source, account)) continue;
+      this.enqueueNotification({ dedupeKey: `result-shots:r${run.id}:${account}`, kind: RESULT_SHOTS_KIND, subject: "Screenshots with this result", body: "",
+        ...(source.link === null ? {} : { link: source.link }), source: { run: run.id }, recipient: account }, now);
+    }
   }
 
   /** Everyone who asked for an evening digest, with the local day theirs was last considered. */
@@ -26975,6 +27081,13 @@ export class Store {
 
   setChatBatchMessage(id: number, message: string, digest: string): void {
     this.db.prepare("UPDATE chat_batch SET message = ?, digest = ? WHERE id = ?").run(message, digest, id);
+  }
+
+  /** The finished-work message that carries this result at one destination, if one was placed: screenshots follow it. */
+  chatBatchMessageFor(destination: string, taskRef: number, run: number): string | null {
+    const row = this.db.prepare(`SELECT b.message FROM chat_batch b JOIN chat_batch_item i ON i.batch = b.id
+      WHERE b.destination = ? AND i.task_ref = ? AND (i.run = ? OR i.run IS NULL) AND b.message IS NOT NULL ORDER BY b.id DESC LIMIT 1`).get(destination, taskRef, run);
+    return row === undefined ? null : String(row["message"]);
   }
 
   /** The message now showing this card, and what it shows. */

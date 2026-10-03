@@ -2070,6 +2070,17 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(page).toContain('value="19:00" selected');
     expect((await post({ mode: "quiet", digest: "off" })).status).toBe(303);
     expect(store.notificationPreference("alex")).toMatchObject({ mode: "quiet", digestAt: null });
+    // Screenshots with results: Off by default, then First one or Up to 4; nothing else.
+    expect(store.notificationPreference("alex").screenshots).toBe("off");
+    expect(page).toContain("Screenshots with results");
+    expect((await post({ screenshots: "some" })).status).toBe(400);
+    expect((await post({ screenshots: "first" })).status).toBe(303);
+    expect(store.notificationPreference("alex")).toMatchObject({ mode: "quiet", screenshots: "first" });
+    expect((await post({ screenshots: "all" })).status).toBe(303);
+    page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(page).toContain('value="all" selected>Up to 4');
+    expect((await post({ screenshots: "off" })).status).toBe(303);
+    expect(store.notificationPreference("alex").screenshots).toBe("off");
     expect((await fetch(`${base}/settings/notifications`, { method: "POST", body: new URLSearchParams({ mode: "all" }) })).status).toBe(401);
   });
 

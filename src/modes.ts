@@ -69,6 +69,12 @@ export type ModeTerms = {
    * `repairAuto` is also true — a mode may sign a cap without signing the
    * authority, but never the reverse. */
   repairMaxAttempts: number;
+  /** Explicit opt-in: the signer's paired Telegram chat may approve this
+   * repository's plans and merge its ready pull requests with two taps,
+   * for the mode's lifetime. A plan that widens permissions, exceeds the
+   * per-attempt budget or touches protected paths still opens Toolroll.
+   * Legacy modes read FALSE — never inherited, only freshly signed. */
+  chatApprove: boolean;
   absoluteExpiry: string;
 };
 
@@ -93,6 +99,7 @@ export function presetTerms(name: ModeName, absoluteExpiry: string): ModeTerms {
         allowPaidFallback: false,
         repairAuto: false,
         repairMaxAttempts: 0,
+        chatApprove: false,
         absoluteExpiry,
       }
     : {
@@ -110,6 +117,7 @@ export function presetTerms(name: ModeName, absoluteExpiry: string): ModeTerms {
         allowPaidFallback: false,
         repairAuto: false,
         repairMaxAttempts: 0,
+        chatApprove: false,
         absoluteExpiry,
       };
 }
@@ -180,6 +188,7 @@ export function modeTermsFromJson(json: string | null): ModeTerms | null {
     (t["repairAuto"] === undefined || typeof t["repairAuto"] === "boolean") &&
     (t["repairMaxAttempts"] === undefined ||
       (typeof t["repairMaxAttempts"] === "number" && Number.isInteger(t["repairMaxAttempts"]) && t["repairMaxAttempts"] >= 0 && t["repairMaxAttempts"] <= 3)) &&
+    (t["chatApprove"] === undefined || typeof t["chatApprove"] === "boolean") &&
     typeof t["absoluteExpiry"] === "string" &&
     !Number.isNaN(Date.parse(t["absoluteExpiry"]))
   ) {
@@ -198,6 +207,7 @@ export function modeTermsFromJson(json: string | null): ModeTerms | null {
       allowPaidFallback: t["allowPaidFallback"] === true,
       repairAuto: t["repairAuto"] === true,
       repairMaxAttempts: typeof t["repairMaxAttempts"] === "number" ? t["repairMaxAttempts"] : 0,
+      chatApprove: t["chatApprove"] === true,
       absoluteExpiry: t["absoluteExpiry"],
     };
   }
@@ -242,6 +252,8 @@ export function modeWords(terms: ModeTerms): string[] {
       : "automatic fallback never switches to a paid API key on its own; a subscription that runs out stops and waits for you",
     ...(terms.repairAuto
       ? ["historical automatic repair grants are retained on record but no longer schedule work"] : []),
+    ...(terms.chatApprove
+      ? ["your paired Telegram chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password; a plan that widens permissions, exceeds the per-attempt cap above or touches protected paths still opens Toolroll"] : []),
     `everything above ends at ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} — revoking it earlier is one click, and every act it covered falls back to its own ceremony`,
   ];
 }

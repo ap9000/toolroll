@@ -25,6 +25,8 @@ export type DiscordApi = (
   file?: { bytes: Uint8Array; name: string },
 ) => Promise<Record<string, unknown>>;
 export class DiscordError extends ChatDeliveryError {}
+/** Discord's 403: the bot may not do this here (for a file, no Attach Files permission). */
+export const DISCORD_REFUSED = "Discord refused access. Check the app and direct-message permissions.";
 export function discordApi(
   token: string,
   fetcher: typeof fetch = fetch,
@@ -87,7 +89,7 @@ export function discordApi(
         response.status === 401
           ? "Discord access expired. Disconnect and reconnect with the current bot token."
           : response.status === 403
-            ? "Discord refused access. Check the app and direct-message permissions."
+            ? DISCORD_REFUSED
             : response.status === 404
               ? "The Discord message or conversation is unavailable. Open the saved chat."
               : response.status === 413

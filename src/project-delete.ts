@@ -235,12 +235,15 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("telegram_flow_prompt", IN("card"), C);
   del("telegram_question_action", IN("question"), questions);
   del("telegram_question_prompt", IN("question"), questions);
+  del("chat_decide_action", IN("task_id"), K);
+  del("chat_decide_prompt", IN("task_id"), K);
   del("telegram_task_message", `${IN("task_id")} OR ${IN("source_run")}`, K, R);
   del("telegram_conversation_part", `${IN("conversation")} OR ${IN("source_run")} OR ${IN("task_id")}`, conversations, R, K);
   del("telegram_conversation", IN("id"), conversations);
   del("telegram_outbound_message", `project = ? OR ${IN("notification")} OR ${IN("task_ref")} OR ${IN("source_run")}`, repo, notifications, T, R);
   del("chat_card_task", IN("task_ref"), T);
   del("chat_batch_item", IN("task_ref"), T);
+  del("result_shot_sent", IN("run"), R);
   del("push_delivery", IN("notification"), notifications);
   del("notification_actor", IN("notification"), notifications);
   del("notification_delivery", IN("notification"), notifications);

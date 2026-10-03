@@ -300,8 +300,10 @@ describe("chat voice on Telegram", () => {
     const pings = script.pings(BOB_CHAT);
     expect(pings).toHaveLength(1);
     expect(String(pings[0]!.params["text"])).toBe("Keep the guard readable is ready. Your tests passed. Accept and finish it?");
-    expect(script.buttons(pings[0]!)).toEqual([
-      { text: "Accept and finish", url: `${ORIGIN}/chat?task=guard-12&result=${run}` },
+    // Accept and finish and Request changes act in place (chat-decide.ts); Look first stays a link.
+    expect(script.buttons(pings[0]!).map(one => ({ text: one.text, url: one.url ?? null }))).toEqual([
+      { text: "Accept and finish", url: null },
+      { text: "Request changes", url: null },
       { text: "Look first", url: `${ORIGIN}/chat?task=guard-12&result=${run}&tab=changes` },
     ]);
     // An open pull request: the ask is "Merge it?", and [Merge] opens the task's merge control.

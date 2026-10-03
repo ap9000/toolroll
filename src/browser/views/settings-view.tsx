@@ -347,6 +347,9 @@ function Updates({ updates, csrf, firstResult }: { updates: NonNullable<BrowserS
   </Section>;
 }
 
+/** Screenshots with results (result-shots.ts keeps the same three). */
+const SCREENSHOT_CHOICES = [["off", "Off"], ["first", "First one"], ["all", "Up to 4"]] as const;
+
 function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string }) {
   const base = useId();
   if (!view.chat && view.services === null && view.push === null && view.digest === null) return null;
@@ -363,6 +366,13 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
           <SelectContent>{digestTimes(view.chat!.digestAt).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
         </Select>
         <p className="text-[13px] text-muted-foreground">One message: what finished, what waits, what failed.</p>
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor={`${base}-screenshots`}>Screenshots with results</Label>
+        <Select name="screenshots" defaultValue={view.chat!.screenshots ?? "off"} onValueChange={submit}>
+          <SelectTrigger id={`${base}-screenshots`} className="desk:max-w-72"><SelectValue /></SelectTrigger>
+          <SelectContent>{SCREENSHOT_CHOICES.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+        </Select>
       </div>
       <noscript><Button type="submit">Save</Button></noscript>
     </>}</AutoForm>}

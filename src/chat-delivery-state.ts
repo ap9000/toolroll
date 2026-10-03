@@ -168,6 +168,9 @@ export type ChatContent = {
   channel?: string;
   proposal?: number;
   image?: { taskId: string; run: number; artifact: number; sha256: string };
+  /** A screenshot sent with a result (result-shots.ts): it follows that result's message part, in its thread when
+   * the app allows; a refused upload becomes one plain line, and one removed by retention goes quietly. */
+  shot?: { follows: number | null };
   task?: string;
   run?: number;
   edit?: string;

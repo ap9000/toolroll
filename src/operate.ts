@@ -93,6 +93,8 @@ import {
   verifiedAuthor,
   contestantProfileOf,
   isDigestTime,
+  RESULT_SCREENSHOTS,
+  type ResultScreenshots,
   type Capability,
   type ReviewRetryState,
   type Store,
@@ -424,6 +426,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll notifications [quiet|all]   how chats reach you: only when you're needed (the default), or every step
   toolroll notifications digest <HH:MM>|off   one evening message: what finished, what waits, what failed
   toolroll notifications mute|unmute --repo <p>   no pings for a project; the console and digest keep it
+  toolroll notifications screenshots off|first|all   a result's saved screenshots with its chat message: none, the first one, or up to 4
   toolroll retention show|preview    how long evidence, checkout records, chat and notifications are kept; what the daily sweep would remove
   toolroll retention set <kind> <period>   evidence|checkouts|chat|notifications, 1d|30d|1y|forever (instance operator)
   toolroll backup now|list          back the database up now; list backups and how the last ones went
@@ -835,7 +838,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
-  "self-heal", "plan-auto", "repair-auto", "review-retry-auto", "no-local",
+  "self-heal", "plan-auto", "chat-approve", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // v105: the full export.
   "zip",
@@ -6395,6 +6398,8 @@ async function modeCommand(
   // The paid-fallback grant (R8): NEVER a preset default — only this
   // explicit flag lets an exhausted subscription switch to another account.
   if (flag(flags, "allow-paid-fallback")) terms.allowPaidFallback = true;
+  // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
+  if (flag(flags, "chat-approve")) terms.chatApprove = true;
   // Automerge requires a live merge-capable grant on the repo (D1).
   if (terms.publication === "automerge" && !store.hasMergeCapableGrant(repo, now)) {
     return fail(write, json, "mode set", "no-grant", "automerge needs a merge-capable publication grant on this repo — file one first", EXIT.refused);
@@ -13467,18 +13472,21 @@ async function budgetCommand(positional: readonly string[], flags: Map<string, s
   return succeed(context.write, context.json, command, { budget: saved }, () => [`${budgetLabel(saved).replace(/'s$/, "")}: ${spendUsd(saved.limitMicrousd)} a month${saved.hardStop ? ", API work stops at 100%" : ", alerts only"}.`]);
 }
 
-/** `notifications [quiet | all | digest <HH:MM> | digest off]`: how chats reach this person — only when they are
- * needed (the default), every step, and an optional evening digest. Each person sets their own. */
+/** `notifications [quiet | all | digest <HH:MM> | digest off | screenshots off|first|all]`: how chats reach this
+ * person — only when they are needed (the default), every step, an optional evening digest, and whether a result's
+ * saved screenshots follow its message. Each person sets their own. */
 async function notificationsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const [action, value, ...extra] = positional;
   const command = `notifications${action === undefined ? "" : ` ${action}`}`;
   const store = context.store;
   const muting = action === "mute" || action === "unmute";
   for (const name of flags.keys()) if (!["as", "token", "token-file", "token-env", "db", "json", ...(muting ? ["repo"] : [])].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a notifications option.`, EXIT.usage);
-  const usage = "Use notifications quiet, notifications all, notifications digest <HH:MM>|off, or notifications mute|unmute --repo <project>.";
-  if (extra.length > 0 || (action !== undefined && !["quiet", "all", "digest", "mute", "unmute"].includes(action)) || (action === "digest") !== (value !== undefined) || (muting && (value !== undefined || text(flags, "repo") === undefined))) {
+  const usage = "Use notifications quiet, notifications all, notifications digest <HH:MM>|off, notifications screenshots off|first|all, or notifications mute|unmute --repo <project>.";
+  const valued = action === "digest" || action === "screenshots";
+  if (extra.length > 0 || (action !== undefined && !["quiet", "all", "digest", "screenshots", "mute", "unmute"].includes(action)) || valued !== (value !== undefined) || (muting && (value !== undefined || text(flags, "repo") === undefined))) {
     return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
   }
+  if (action === "screenshots" && !RESULT_SCREENSHOTS.includes(value as ResultScreenshots)) return fail(context.write, context.json, command, "usage", "Screenshots with results is off, first (the first one) or all (up to 4).", EXIT.usage);
   if (action === "digest" && value !== "off" && !isDigestTime(value!)) return fail(context.write, context.json, command, "usage", "The digest time is HH:MM on a 24-hour clock, like 18:30, or off.", EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -13499,11 +13507,13 @@ async function notificationsCommand(positional: readonly string[], flags: Map<st
   }
   const preference = action === "quiet" || action === "all" ? store.setNotificationPreference(acting.name, { mode: action }, acting.name, now)
     : action === "digest" ? store.setNotificationPreference(acting.name, { digestAt: value === "off" ? null : value! }, acting.name, now)
+    : action === "screenshots" ? store.setNotificationPreference(acting.name, { screenshots: value as ResultScreenshots }, acting.name, now)
     : store.notificationPreference(acting.name);
   const muted = store.mutedProjects(acting.name);
-  return succeed(context.write, context.json, command, { mode: preference.mode, digestAt: preference.digestAt, mutedProjects: muted }, () => [
+  return succeed(context.write, context.json, command, { mode: preference.mode, digestAt: preference.digestAt, screenshots: preference.screenshots, mutedProjects: muted }, () => [
     preference.mode === "quiet" ? "Only when you're needed: one message per task, updated as it moves, and a new one when something needs you." : "Every step: a message for each update.",
     preference.digestAt === null ? "No evening digest." : `Evening digest at ${preference.digestAt}: what finished, what waits and what failed.`,
+    preference.screenshots === "off" ? "Screenshots with results: off." : `Screenshots with results: ${preference.screenshots === "first" ? "the first one" : "up to 4"}.`,
     ...(muted.length === 0 ? [] : [`Muted: ${muted.map(one => basename(one)).join(", ")}.`]),
   ]);
 }

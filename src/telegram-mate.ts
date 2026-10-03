@@ -61,6 +61,8 @@ export type TelegramConversationOptions = {
    * wires `phoneOrigin` from webhooks.ts; absent, no card carries a link.
    */
   phoneOrigin?: () => string | null;
+  /** Injected by tests: how a Merge tapped in chat reaches GitHub (production: mergePullRequest). */
+  merge?: (input: { runId: number; by: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
 };
 
 /** One Bot API call, the shape telegram.ts injects. */

@@ -1,5 +1,6 @@
 /** Microsoft Teams on the shared chat layer: activities in, Adaptive Cards
  * out, the same durable receipts, rooms and commands as every other channel. */
+import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { ChatState, chatHash, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
@@ -157,6 +158,10 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     if (serviceUrl === null) throw new TeamsError("This Teams conversation has no known service address yet; send it a message first", 60_000);
     if (content.task && !repos.includes(store.lookupRef(content.task)?.repo ?? "")) throw new TeamsError("Connected projects changed");
     let text = content.text, actions: Record<string, unknown>[] = [];
+    if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
+      state.prepare("UPDATE chat_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      return true;
+    }
     if (content.image) {
       text = `${content.text}\n\nScreenshots open from the saved result.`;
       actions = openUrlAction(options.origin(), { label: "Open result", path: chatResultHref(content.image.taskId, content.image.run, "checks") });

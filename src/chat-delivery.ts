@@ -43,7 +43,8 @@ import { leadChannelOf } from "./lead-context.js";
 import { promiseChannelOf } from "./lead-commitments.js";
 import { phoneText, PHONE_HELP, phoneCommand, phoneStatus, phoneTaskView, phoneTaskChoices, phoneTaskListText, resolvePhoneTask, phoneFocusText, PHONE_NO_MATCH, PHONE_BACK_TO_LEAD } from "./telegram-status.js";
 import { applyRoomInbound, conversationRow, roomCardApprover, roomCommand, roomGrantAllowed, roomMessagesAfter, roomMessageText, teamDomain } from "./chat-rooms.js";
-import { isTelegramProgressNotification, proposalTaskOf, type Store } from "./store.js";
+import { isTelegramProgressNotification, proposalTaskOf, RESULT_SHOTS_KIND, type Notification, type Store } from "./store.js";
+import { resultShotsFor } from "./result-shots.js";
 import { messageTeammate } from "./teammate-desk.js";
 import { CHAT_APP_NAMES } from "./flow-triggers.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
@@ -829,6 +830,31 @@ function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRe
   return true;
 }
 
+/** Screenshots with a result (result-shots.ts), planned after the result's own message: each an upload that follows
+ * it in its thread (Slack, Discord), or one link to them (Teams). A failed check is one plain line instead. */
+function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, notification: Notification, repos: readonly string[], id: string, now: Date): void {
+  const { state, store, identity } = options;
+  const plan = resultShotsFor(store, options.evidenceRoot, repos, notification);
+  if (plan.kind === "none" || notification.taskId === null || notification.run === null) return;
+  const where = { task: notification.taskId, run: notification.run };
+  // The result's message here: its finished-work batch (quiet), or its progress card (every step).
+  const follows = (() => {
+    const batch = notification.taskRef === null ? null : store.chatBatchMessageFor(`${state.channel}:${binding.id}`, notification.taskRef, notification.run);
+    if (batch !== null) return Number(batch);
+    const card = state.prepare("SELECT part FROM chat_progress WHERE binding=? AND run=?").get(binding.id, notification.run);
+    return card === undefined ? null : Number(card.part);
+  })();
+  const image = (artifact: number, sha256: string) => ({ taskId: where.task, run: where.run, artifact, sha256 });
+  const parts: ChatContent[] = plan.kind === "line" ? [{ text: plan.text, ...where }]
+    // Teams has no file upload here: one message that links to the saved result.
+    : state.channel === "teams" ? [{ text: plan.shots.length === 1 ? plan.shots[0]!.caption : `${plan.shots[0]!.caption} · ${plan.shots.length} screenshots`,
+      image: image(plan.shots[0]!.artifact, plan.shots[0]!.sha256), shot: { follows: null }, ...where }]
+    : plan.shots.map(one => ({ text: one.caption, image: image(one.artifact, one.sha256), shot: { follows }, ...where }));
+  state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
+    ts: "", thread: "", payload: "{}", created: now.toISOString() });
+  state.plan(id, parts, now);
+}
+
 /** One progress card per exact result; separate urgent facts retain their own review link. */
 export async function planChatNotifications(
   options: ChatDeliveryOptions,
@@ -881,6 +907,10 @@ export async function planChatNotifications(
         // Only when I'm needed (the default): the task's one card is edited in place, and a new message
         // follows only when this person is needed. Every step keeps the branches below unchanged.
         const quiet = !personal && isTaskFact(notification) && store.notificationPreference(binding.approver).mode === "quiet";
+        if (notification.kind === RESULT_SHOTS_KIND) {
+          planResultShots(options, binding, notification, repos, id, now);
+          return;
+        }
         if (notification.kind === LEAD_SAY_KIND) {
           // The lead's words (lead-voice.ts): one message, repainted in place when a later say joins it.
           const content: ChatContent = { text: leadSayText(store, notification, binding.approver),

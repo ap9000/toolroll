@@ -96,6 +96,7 @@ import { DISCLOSURE_CSS } from "./disclosure.js";
 import { styleAsset } from "./style-asset.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { authorizePlanUnderMode, applyModeToNewFiling, planAutoPending } from "./plan-auto.js";
+import { permissionPlainWords } from "./chat-decide.js";
 import { LEDGER_CSV_HEADER, ledgerCsvRows } from "./ledger-csv.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -255,7 +256,8 @@ import { dirname } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { loadOrCreateVapidKeys, validatePushEndpoint } from "./push.js";
 import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, listGithubRepos, isLargeRepo, type ListOutcome } from "./onboard.js";
-import { verifiedAuthor, LEAD_THREAD, isDigestTime, MATE_ASK_OTHER, type MateAsk, type MateThreadScope } from "./store.js";
+import { verifiedAuthor, LEAD_THREAD, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, MATE_ASK_OTHER, type MateAsk, type MateThreadScope } from "./store.js";
+import { RESULT_SHOT_CHOICES } from "./result-shots.js";
 import { digestTimes } from "./digest-times.js";
 import type { MateProgress } from "./mate-progress.js";
 import { updateRepos, addRepos, removeRepos } from "./repos.js";
@@ -2850,6 +2852,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
                 `<option value="0">wait for my approval</option>` +
                 `<option value="1">auto-approve plans that preserve my filed contract</option>` +
                 `</select><span class="meta">Requires automatic filing approval. File the goal, paths, and acceptance criteria upfront. Changed scope and unanswered questions still pause.</span></label>`,
+              `<label>From my chat app<select name="chat-approve">` +
+                `<option value="">approve plans and merges here, with my password (the default)</option>` +
+                `<option value="1">approve plans and merge ready pull requests from my paired chat, two taps each</option>` +
+                `</select><span class="meta">Plans that widen permissions, exceed the attempt cap or touch protected paths still open Toolroll.</span></label>`,
               `<label>If a subscription runs out<select name="allow-paid-fallback">` +
                 `<option value="">never switch to a paid API key on its own (the default, every preset)</option>` +
                 `<option value="1">allow the approved fallback — spend moves to that account</option>` +
@@ -4434,7 +4440,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           return at === null || since === null ? null : firstResultWords(since, at);
         })(), (() => {
           const chosen = store.notificationPreference(who.name);
-          return { mode: chosen.mode, digestAt: chosen.digestAt, projects: notificationProjects(store, who.name) };
+          return { mode: chosen.mode, digestAt: chosen.digestAt, screenshots: chosen.screenshots, projects: notificationProjects(store, who.name) };
         })()),
       );
     }
@@ -8072,13 +8078,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     if (url.pathname === "/settings/notifications") {
       // Each person's own choice: a closed list of modes and a 24-hour HH:MM, or off.
-      const mode = body.get("mode"), time = (body.get("digest") ?? "").trim();
+      const mode = body.get("mode"), time = (body.get("digest") ?? "").trim(), shots = body.get("screenshots");
       if (mode !== null && mode !== "quiet" && mode !== "all") return refuse(response, who, 400, "choose Only when I'm needed or Every step", "/settings");
       if (time !== "" && time !== "off" && !isDigestTime(time)) return refuse(response, who, 400, "the evening digest time is HH:MM, or off", "/settings");
+      if (shots !== null && !RESULT_SCREENSHOTS.includes(shots as ResultScreenshots)) return refuse(response, who, 400, "choose Off, First one or Up to 4", "/settings");
       const before = store.notificationPreference(who.name);
-      const after = store.setNotificationPreference(who.name, { ...(mode === null ? {} : { mode }), ...(time === "" ? {} : { digestAt: time === "off" ? null : time }) }, who.name, now);
+      const after = store.setNotificationPreference(who.name, { ...(mode === null ? {} : { mode }), ...(time === "" ? {} : { digestAt: time === "off" ? null : time }),
+        ...(shots === null ? {} : { screenshots: shots as ResultScreenshots }) }, who.name, now);
       const said = after.mode !== before.mode
         ? after.mode === "quiet" ? "Chats now message you only when you're needed." : "Chats now message you at every step."
+        : after.screenshots !== before.screenshots
+        ? after.screenshots === "off" ? "Results arrive without screenshots." : `Results arrive with ${after.screenshots === "first" ? "their first screenshot" : "up to 4 screenshots"}.`
         : after.digestAt === null ? "Evening digest off." : `Evening digest at ${after.digestAt}.`;
       return redirect(response, `/settings?said=${encodeURIComponent(said)}`);
     }
@@ -8561,6 +8571,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // attempt cap it carries is meaningless without it.
         repairAuto: false,
         repairMaxAttempts: 0,
+        // Approving from the paired chat: only the explicit choice grants it.
+        chatApprove: body.get("chat-approve") === "1",
         publication: body.get("publication") === "automerge" ? "automerge" : "notify",
       };
       if (["review-auto", "review-retry-auto", "repair-auto"].some(field => body.get(field) === "1")) {
@@ -8584,7 +8596,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           `<input type="hidden" name="csrf" value="${escape(who.session.csrf)}">` +
           `<input type="hidden" name="nonce" value="${escape(nonce)}">` +
           `<input type="hidden" name="digest" value="${escape(digest)}">` +
-          ["name", "days", "publication", "auto-approve", "plan-auto", "allow-paid-fallback"]
+          ["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "allow-paid-fallback"]
             .map(field => `<input type="hidden" name="${field}" value="${escape(body.get(field) ?? "")}">`)
             .join("") +
           `<input type="hidden" name="expiry" value="${escape(expiry)}">` +
@@ -12409,7 +12421,7 @@ function approvalSheetHtml(input: {
   // What the yes allows, in plain words, right above it: the agent's
   // permissions, the per-attempt limit, and an earlier version still running.
   const allowing: string[] = [];
-  const allowed = permissionPlainWordsOf(scope.profile);
+  const allowed = permissionPlainWords(scope.profile);
   if (allowed !== null) allowing.push(allowed);
   if (raceTerms === null) allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
@@ -12570,19 +12582,6 @@ class PermissionsWouldChange extends Error {}
 
 /** Evidence kinds in plain words, for the signed criteria in Details. */
 const EVIDENCE_PLAIN: Record<string, string> = { check: "the project check", screenshot: "screenshots", "changed-path": "changed files", "manual-review": "your own check" };
-
-/** What an agent may do on its own, in a few plain words. */
-function permissionPlainWordsOf(profile: Scope["profile"] | null | undefined): string | null {
-  if (profile === null || profile === undefined) return null;
-  const full = "full access, nothing asks first";
-  if (profile.provider === "claude") {
-    return profile.permissionArgv === "bypassPermissions" ? full
-      : profile.permissionArgv === "auto" ? "file edits and routine commands; anything risky stops"
-      : "file edits only; commands are refused";
-  }
-  if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? full : "file edits only; other tools are refused";
-  return profile.sandboxMode === "danger-full-access" ? full : "file edits and commands inside the project only";
-}
 
 /** The permission choice a sealed profile carries, as the scope form names it. */
 function permissionModeOfProfile(profile: Scope["profile"] | null | undefined): UnattendedPermissionMode | null {
@@ -25798,7 +25797,7 @@ function settingsPage(
   workers: NonNullable<BrowserSettingsView["workers"]> | null = null,
   updates: BrowserUpdates | null = null,
   firstResult: string | null = null,
-  chatNotices: { mode: "quiet" | "all"; digestAt: string | null; projects?: { repo: string; name: string; muted: boolean }[] } | null = null,
+  chatNotices: { mode: "quiet" | "all"; digestAt: string | null; screenshots?: ResultScreenshots; projects?: { repo: string; name: string; muted: boolean }[] } | null = null,
 ): Screen {
   const permissionCard =
     permissionDefault === null
@@ -25844,6 +25843,9 @@ function settingsPage(
             digestTimes(chatNotices.digestAt).map(([value, label]) => `<option value="${value}"${value === (chatNotices.digestAt ?? "off") ? " selected" : ""}>${label}</option>`).join("") +
             `</select></label>`,
           `<p class="meta">One message: what finished, what waits, what failed.</p>`,
+          `<label>Screenshots with results<select name="screenshots">` +
+            RESULT_SHOT_CHOICES.map(([value, label]) => `<option value="${value}"${value === (chatNotices.screenshots ?? "off") ? " selected" : ""}>${label}</option>`).join("") +
+            `</select></label>`,
           `<button type="submit">Save</button>`,
           `</form>`,
           ...((chatNotices.projects ?? []).length === 0 ? [] : [

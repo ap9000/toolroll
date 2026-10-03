@@ -2,6 +2,7 @@
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { chatFlowButtons } from "./chat-flow.js";
+import { refuseResultShots, resultShotsPruned } from "./result-shots.js";
 import { channelInbox } from "./chat-inbox.js";
 import { roomCommand } from "./chat-rooms.js";
 import {
@@ -40,6 +41,7 @@ import {
   discordId,
   discordMember,
   DiscordError,
+  DISCORD_REFUSED,
   type DiscordApi,
 } from "./discord-api.js";
 export type DiscordChatOptions = Omit<
@@ -300,6 +302,13 @@ export async function deliverDiscordPart(
     let text = content.text,
       buttons: Record<string, unknown>[] = [],
       file: { bytes: Uint8Array; name: string } | undefined;
+    if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
+      state.prepare("UPDATE chat_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      return true;
+    }
+    // A screenshot sent with a result replies to that result's message once it is placed.
+    const follows = content.shot?.follows == null ? undefined : state.prepare("SELECT message FROM chat_part WHERE id=? AND state='sent'").get(content.shot.follows)?.message;
+    const thread = discordId(follows) ? String(follows) : event.thread;
     if (content.image) {
       const image = verifyResultImage(
         store,
@@ -500,9 +509,9 @@ export async function deliverDiscordPart(
     if (!target) {
       args.nonce = nonce;
       args.enforce_nonce = true;
-      if (discordId(event.thread))
+      if (discordId(thread))
         args.message_reference = {
-          message_id: event.thread,
+          message_id: thread,
           channel_id: destination,
           fail_if_not_exists: false,
         };
@@ -543,6 +552,12 @@ export async function deliverDiscordPart(
       .run(identity.installation, options.owner);
     return true;
   } catch (error) {
+    // No permission to attach files here: one plain line instead of the result's screenshots.
+    const content = JSON.parse(row.payload) as ChatContent;
+    if (content.image && content.shot && error instanceof DiscordError && error.code === DISCORD_REFUSED) {
+      refuseResultShots(state, store, row, content, "Discord", options.clock?.() ?? new Date());
+      return true;
+    }
     const problem =
       error instanceof ChatDeliveryError
         ? error

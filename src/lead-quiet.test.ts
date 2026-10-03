@@ -289,4 +289,15 @@ describe("pings follow responsibility", () => {
     expect(script.texts(ALEX_CHAT).join("\n")).toContain("A secret was found");
     expect((await cli(["notifications", "unmute", "--repo", REPO, "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: true, muted: false, mutedProjects: [] });
   });
+
+  test("notifications screenshots off|first|all is each person's own choice, off by default", async () => {
+    expect((await cli(["notifications", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: true, screenshots: "off" });
+    expect((await cli(["notifications", "screenshots", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: false, reason: "usage" });
+    expect((await cli(["notifications", "screenshots", "some", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: false, reason: "usage" });
+    expect((await cli(["notifications", "screenshots", "first", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: true, screenshots: "first" });
+    expect(store.notificationPreference("alex").screenshots).toBe("first");
+    expect(store.notificationPreference("bob").screenshots).toBe("off");
+    expect((await cli(["notifications", "screenshots", "all", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: true, screenshots: "all" });
+    expect((await cli(["notifications", "screenshots", "off", "--as", "alex", "--token", alexPassword, "--json"])).body).toMatchObject({ ok: true, screenshots: "off" });
+  });
 });

@@ -105,6 +105,8 @@ export type BrowserSettingsView = {
   push: { available: boolean; devices: { id: number; words: string; state: string; removable: boolean }[] } | null;
   /** Quiet chat: how chats reach this person, and their evening digest time (null: off). */
   chat?: { mode: 'quiet' | 'all'; digestAt: string | null;
+    /** Whether a result's saved screenshots follow its chat message: off, the first one, or up to 4. */
+    screenshots?: 'off' | 'first' | 'all';
     /** Each project this person can see; a muted one sends no pings but stays in Tasks and the digest. */
     projects?: { repo: string; name: string; muted: boolean }[] } | null;
   digest: { every: string; held: string | null } | null;

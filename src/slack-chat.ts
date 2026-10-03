@@ -1,4 +1,5 @@
 import { chatFlowButtons } from "./chat-flow.js";
+import { refuseResultShots, resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { channelInbox } from "./chat-inbox.js";
@@ -349,6 +350,13 @@ export async function deliverSlackPart(
       !repos.includes(store.lookupRef(content.task)?.repo ?? "")
     )
       throw new SlackError("Connected projects changed");
+    // A screenshot sent with a result goes in that result's thread once its message is placed.
+    const follows = content.shot?.follows == null ? undefined : state.db.prepare("SELECT message FROM slack_part WHERE id=? AND state='sent'").get(content.shot.follows)?.message;
+    const thread = slackTs(follows) ? String(follows) : event.thread;
+    if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
+      state.db.prepare("UPDATE slack_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      return true;
+    }
     if (content.image) {
       const verified = verifyResultImage(
         store,
@@ -415,7 +423,7 @@ export async function deliverSlackPart(
             .map(object)
             .find(
               (receipt) =>
-                receipt.thread_ts === event.thread && slackTs(receipt.ts),
+                (receipt.thread_ts ?? "") === thread && slackTs(receipt.ts),
             );
           if (found) {
             state.db
@@ -438,7 +446,7 @@ export async function deliverSlackPart(
             },
           ],
           channel_id: destination,
-          thread_ts: event.thread,
+          thread_ts: thread === "" ? undefined : thread,
           initial_comment: safeResultImageCaption(
             content.text,
             content.image.taskId,
@@ -571,9 +579,9 @@ export async function deliverSlackPart(
       : await options.api("chat.postMessage", {
           ...args,
           thread_ts:
-            event.kind === "notice" && event.thread === ""
+            event.kind === "notice" && thread === ""
               ? undefined
-              : event.thread,
+              : thread,
         });
     if (!slackTs(answer.ts) || (target && answer.ts !== target))
       throw new SlackError(
@@ -593,6 +601,12 @@ export async function deliverSlackPart(
       .run(identity.installation, options.owner);
     return true;
   } catch (error) {
+    // No permission to upload files here: one plain line instead of the result's screenshots.
+    const content = JSON.parse(row.payload) as SlackContent;
+    if (content.image && content.shot && error instanceof SlackError && ["missing_scope", "no_permission"].includes(error.code)) {
+      refuseResultShots(state, store, row, content, "Slack", nowOf(options));
+      return true;
+    }
     const problem =
       error instanceof SlackError
         ? error
