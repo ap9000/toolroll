@@ -452,10 +452,24 @@ describe("scout tasks, against real git", () => {
   const planWrite = (options: Parameters<Runner>[2]) =>
     options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/Users/someone/.claude/plans/you-are-a-scout-quiet-otter.md", content: "# Findings" } }] } });
   let argvSeen: string[] = [];
-  const planModeAgent = (structured: unknown): Runner => async (_file, args, options) => {
+  const ASKED = {
+    urgency: "blocking",
+    recap: "Two suites fail differently.",
+    question: "Which suite matters?",
+    options: [
+      { id: "unit", label: "Unit", consequence: "Faster, narrower.", reversible: true },
+      { id: "e2e", label: "End to end", consequence: "Slower, the real flake.", reversible: true },
+    ],
+    recommendation: "e2e",
+  };
+  const planModeAgent = (structured: unknown, files: { report?: unknown } = {}): Runner => async (_file, args, options) => {
     argvSeen = [...args];
-    prompts.push(String(args[args.indexOf("-p") + 1] ?? ""));
+    const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+    prompts.push(prompt);
     planWrite(options);
+    // The fallback channel a session could still use outside plan mode.
+    const name = REPORT_FILE.exec(prompt)?.[0];
+    if (files.report !== undefined && name !== undefined) await writeFile(join(options?.cwd ?? "", name), JSON.stringify(files.report));
     const result = structured === undefined
       ? { type: "result", subtype: "success", is_error: false, result: "I wrote my findings to the plan file." }
       : { type: "result", subtype: "success", is_error: false, result: "", structured_output: structured };
@@ -464,13 +478,16 @@ describe("scout tasks, against real git", () => {
 
   test("a Claude scout under plan mode returns its report as structured output and the run succeeds", async () => {
     const { runnerToken } = await setup();
-    const reported = await tick(runnerToken, planModeAgent(FOUND));
+    const reported = await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }));
     expect(reported).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     // Plan mode is unchanged; the report schema rides beside it.
     expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
-    expect(JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}")).toMatchObject({ required: ["title", "summary", "report"] });
+    const schema = JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}");
+    expect(schema).toMatchObject({ required: ["kind"], properties: { kind: { enum: ["report", "question"] } } });
+    expect(schema.properties.report.required).toEqual(["title", "summary", "report"]);
+    expect(schema.properties.decision.required).toEqual(["urgency", "recap", "question", "options", "recommendation"]);
     expect(prompts.at(-1)).toContain("final structured");
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
@@ -484,7 +501,7 @@ describe("scout tasks, against real git", () => {
     const { runnerToken } = await setup();
     const sneaky: Runner = async (file, args, options) => {
       await writeFile(join(options?.cwd ?? "", "sneaky.ts"), "export const smuggled = true;\n");
-      return planModeAgent(FOUND)(file, args, options);
+      return planModeAgent({ kind: "report", report: FOUND })(file, args, options);
     };
     expect(await tick(runnerToken, sneaky)).toBe(EXIT.failed);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "dirty-tree" }));
@@ -495,7 +512,7 @@ describe("scout tasks, against real git", () => {
 
   test("a structured report over the caps is still refused", async () => {
     const { runnerToken } = await setup();
-    const failed = await tick(runnerToken, planModeAgent({ ...FOUND, report: "x".repeat(REPORT_LIMITS.document + 1) }));
+    const failed = await tick(runnerToken, planModeAgent({ kind: "report", report: { ...FOUND, report: "x".repeat(REPORT_LIMITS.document + 1) } }));
     expect(failed).toBe(EXIT.failed);
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
@@ -524,8 +541,62 @@ describe("scout tasks, against real git", () => {
 
     await run(["task", "requeue", "flaky", "--as", "alex", "--token", approverToken, "--json"], reportingAgent, new Date(at));
     expect(payload().ok).toBe(true);
-    expect(await tick(runnerToken, planModeAgent(FOUND), new Date(at + 60_000))).toBe(EXIT.ok);
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }), new Date(at + 60_000))).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+  });
+
+  test("a Claude scout parks a question through structured output; the task waits on that decision", async () => {
+    const { runnerToken, approverToken } = await setup();
+    expect(await tick(runnerToken, planModeAgent({ kind: "question", decision: ASKED }))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "parked" }));
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(prompts.at(-1)).toContain('kind "question"');
+    const store = openStore(db);
+    const decision = store.listDecisions("unanswered")[0];
+    expect(decision?.question).toBe("Which suite matters?");
+    expect(store.getTask("flaky")?.state).not.toBe("done");
+    store.close();
+    await run(["decide", String(decision?.id), "--choose", "e2e", "--as", "alex", "--token", approverToken, "--json"], reportingAgent, new Date(T0.getTime() + 60_000));
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }), new Date(T0.getTime() + 2 * 60_000))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(prompts.at(-1)).toContain("Which suite matters?");
+  });
+
+  test("a structured question that is not a decision is refused like a bad park file", async () => {
+    const { runnerToken } = await setup();
+    expect(await tick(runnerToken, planModeAgent({ kind: "question", decision: { ...ASKED, recommendation: "nope" } }))).toBe(EXIT.failed);
+    const store = openStore(db);
+    expect(store.listDecisions("unanswered")).toHaveLength(0);
+    expect(store.openIncidents().some(one => one.kind === "malformed-decision")).toBe(true);
+    store.close();
+  });
+
+  test.each([
+    ["over the caps", { kind: "report", report: { ...FOUND, title: "x".repeat(REPORT_LIMITS.title + 1) } }],
+    ["missing its body", { kind: "report" }],
+    ["an invalid question", { kind: "question", decision: { ...ASKED, options: [] } }],
+  ])("an invalid structured payload (%s) falls back to a valid report file", async (_label, structured) => {
+    const { runnerToken } = await setup();
+    expect(await tick(runnerToken, planModeAgent(structured, { report: FOUND }))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    const store = openStore(db);
+    const view = readVerifiedReport(store, join(base, "evidence"), store.refFor("built-in", "flaky").id);
+    expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
+    expect(store.listDecisions("unanswered")).toHaveLength(0);
+    store.close();
+  });
+
+  test("only structured_output counts: a report spoken as prose JSON is not a handback", async () => {
+    const { runnerToken } = await setup();
+    const prose: Runner = async (_file, args) => {
+      prompts.push(String(args[args.indexOf("-p") + 1] ?? ""));
+      return { ...OK, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify({ kind: "report", report: FOUND }) }) };
+    };
+    expect(await tick(runnerToken, prose)).toBe(EXIT.failed);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "no-op" }));
+    const store = openStore(db);
+    expect(store.latestReportArtifact(store.refFor("built-in", "flaky").id)).toBeNull();
+    store.close();
   });
 
   test("codex has no structured output and keeps the mailbox file", async () => {

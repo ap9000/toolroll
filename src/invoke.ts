@@ -80,6 +80,9 @@ export type AgentOutcome = {
   sessionId: string | null;
   /** The agent's spoken conclusion — diagnostics, never the handoff. */
   finalMessage: string | null;
+  /** Claude's `structured_output` alone (see ParsedEnvelope) — the only
+   * field a structured handback may be read from. */
+  structuredOutput?: string | null;
   /** The harness's own account of the ending, when its dialect has one. */
   ending?: AgentEnding | null;
   usage: ProviderUsage;
@@ -653,6 +656,7 @@ export async function invokeAgent(
       notFound: result.notFound,
       sessionId: envelope.sessionId,
       finalMessage: envelope.finalMessage,
+      structuredOutput: envelope.structuredOutput ?? null,
       ending: envelope.ending ?? null,
       usage: {
         tokensIn: envelope.tokensIn,

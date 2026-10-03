@@ -107,6 +107,10 @@ export type ParsedEnvelope = {
   protocolError: string | null;
   /** The agent's spoken conclusion — diagnostics only, never the handoff. */
   finalMessage: string | null;
+  /** Claude's schema-validated `structured_output` alone, re-serialized —
+   * never the prose result, even when that prose is JSON. Absent or null
+   * when the turn ran without `--json-schema` or returned none. */
+  structuredOutput?: string | null;
   /** How the harness said the turn ended (claude: the result's subtype and
    * turn count) — absent on dialects that carry no such record. */
   ending?: AgentEnding | null;
@@ -434,6 +438,10 @@ function claudeEnvelopeOf(
         ? "the Claude init event and terminal result announced different session ids"
         : null,
     finalMessage: claudeFinalMessage(result),
+    structuredOutput:
+      result === null || result.structured_output === undefined || result.structured_output === null
+        ? null
+        : JSON.stringify(result.structured_output),
     ending: result === null ? null : {
       subtype: typeof result.subtype === "string" ? result.subtype : null,
       turns: typeof result.num_turns === "number" && result.num_turns >= 0 ? result.num_turns : null,
