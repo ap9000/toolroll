@@ -58,6 +58,10 @@ describe("prepared candidate observer-gap eligibility is read-only and not exit 
     sealVerificationReceipt(store, dir, runId, HEAD, command, { configured: true, ran: true, exitCode: result.code }, SEALED);
     store.saveProofVerdict(runId, "verified", [], SEALED, [], "verified");
     store.finishRun(runId, { outcome: "built", committed: true, now: FINISHED });
+    expect(store.handle.prepare("SELECT exited_at FROM run_process WHERE id=?").get(unknown)?.exited_at).toBe(FINISHED.toISOString());
+    // Recovery still supports historical gaps left by runtimes without the
+    // run-end settlement pass. Eligibility itself must never close them.
+    store.handle.prepare("UPDATE run_process SET exited_at=NULL WHERE id=?").run(unknown);
     store.setTaskState("prepared", "done", FINISHED);
   });
   afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -72,6 +76,19 @@ describe("prepared candidate observer-gap eligibility is read-only and not exit 
     storeEvidence(store, dir, runId, kind, kind === "handoff" ? "replacement-handoff.json" : "replacement-receipt.json",
       Buffer.from(JSON.stringify(payload)), artifact.capture, SEALED, { captureStatus: "ok" });
   }
+
+  test("a finished prepared check closes its NULL-pid witness at run end, preserving its passing result", () => {
+    // The fixture ran the actual witnessed command and asserted closure at
+    // FINISHED before restoring an old-runtime gap for the recovery tests.
+    const entry = store.actionLedger({ repos: null }).find(one => one.action === "process witness settled");
+    expect(entry).toMatchObject({ runId, at: FINISHED.toISOString(), detail: expect.stringContaining(`witness ${unknown}`) });
+    const verdict = store.proofVerdictFor(runId), artifacts = store.artifactsFor(runId);
+    store.finishRun(runId, { outcome: "built", committed: true, now: FINISHED });
+    expect(store.handle.prepare("SELECT exited_at FROM run_process WHERE id=?").get(unknown)?.exited_at).toBe(FINISHED.toISOString());
+    expect(store.stopQuiescenceFact(runId)).toBeNull();
+    expect(store.proofVerdictFor(runId)).toEqual(verdict);
+    expect(store.artifactsFor(runId)).toEqual(artifacts);
+  });
 
   test("binds immutable exact rows without clearing custody or claiming descendants absent", () => {
     const before = rows(), ledger = store.actionLedger({ repos: null });
