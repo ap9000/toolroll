@@ -2,6 +2,7 @@
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
 import type { TeamSnapshot } from './team-contract.js';
+import type { BrandIconId } from './brand-icons.js';
 import type { AssignmentSnapshot } from './assignment.js';
 import { browserCrewFromIndex } from './browser-crew.js';
 export { browserCrewFromIndex, browserWorkActionHref } from './browser-crew.js';
@@ -126,7 +127,8 @@ export type BrowserSettingsView = {
   /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
   updates?: BrowserUpdates | null;
 };
-export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
+/** A tile's `brand` is a chat app's logo (brand-mark.ts), drawn in place of its icon. */
+export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; brand?: BrandIconId; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */
@@ -355,6 +357,9 @@ export type BrowserFlowStage = {
 };
 
 /** One card: a piece of work, where it is, what it waits on, what zones said. */
+/** After research, one of the report's items as the message numbered it, with its screenshot when it has one. */
+export type BrowserFlowSentItem = { number: number; title: string; lines: string[]; source: string; url: string; image: { src: string; caption: string } | null };
+
 export type BrowserFlowCard = {
   id: number; title: string; description: string | null; stage: string; state: "active" | "done" | "cancelled";
   waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
@@ -380,9 +385,9 @@ export type BrowserFlowCard = {
   /** v92: what the teammate said when it handed this decision to a person. */
   handoff?: { from: string; note: string } | null;
   /** Waiting at a "Person chooses" zone: what was sent, its options and whether the viewer is the one who chooses. */
-  choose?: { entry: number; title: string; summary: string; links: { label: string; href: string }[]; person: string; mine: boolean; options: { choice: number; label: string }[]; reply: boolean } | null;
+  choose?: { entry: number; title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; mine: boolean; options: { choice: number; label: string }[]; reply: boolean } | null;
   /** What a "Send to me" (or an earlier choice) last sent the card's person. */
-  sent?: { title: string; summary: string; links: { label: string; href: string }[]; person: string; at: string } | null;
+  sent?: { title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; at: string } | null;
   /** v94: every tool call teammates made or asked to make on this card, oldest first: the receipts. */
   calls?: { id: number; who: string; words: string; state: string; outcome: string; why: string; result: string | null; at: string;
     /** v97: the teammate's id and the action that undoes this call, when a person can press Undo. */
