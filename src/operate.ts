@@ -12493,10 +12493,9 @@ async function scopeTask(
     if (sized.ok) refinement = refineFiledSizing(store, id, input, true, context.clock);
     return null;
   }, () => false);
-  // A credentialed filing can seal under a signed mode in the transaction
-  // below. Let its bounded classification land first so approval binds the
-  // final size and route. Anonymous filings keep their immediate heuristic.
-  if (actor !== null) await refinement;
+  // Wait for bounded classification before filing so any approval in the
+  // transaction below binds the final size and route.
+  await refinement;
   // ONE replayed composite (surfaces round 1, finding 3): the filing, any
   // race/comparison terms, AND the mode seal record as a single operation —
   // a replayed key returns the FIRST answer whole instead of re-sealing

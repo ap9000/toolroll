@@ -2119,7 +2119,7 @@ describe("explainable phase routing from the command line (v47)", () => {
   const ROUTED_REPO = "/repo/routed";
   let token = "";
 
-  afterEach(() => { rmSync(dirname(db), { recursive: true, force: true }); });
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(dirname(db), { recursive: true, force: true }); });
   beforeEach(async () => {
     db = join(mkdtempSync(join(tmpdir(), "so-route-cli-")), "db.sqlite");
     await run(["approver", "add", "alex", "--json"]);
@@ -2206,24 +2206,27 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(routeFromJson(payload().scope.approvedRouteJson)).toEqual(approved);
   });
 
-  test("replacing an unapproved goal sizes it immediately, then applies the classifier without delaying the filing", async () => {
+  test("replacing an unapproved goal sizes it immediately and waits for the classifier before filing", async () => {
     await run(["task", "scope", "payouts", "--goal", "Fix a label", "--acceptance", "The label is fixed|check"]);
     const started = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<SizeAnswer>();
     const classifier = vi.fn<Sizer>(() => { started.resolve(); return answer.promise; });
     const filing = run(["task", "scope", "payouts", "--goal", "Refactor the label helper", "--acceptance", "The label is fixed|check", "--json"], { filingSizer: classifier });
     await started.promise;
-    // The response and replacement goal are already saved while the
-    // command's shutdown waits for the classifier before closing SQLite.
-    expect(payload().scope.goal).toBe("Refactor the label helper");
-    expect(routeFromJson(payload().scope.proposedRouteJson)?.size).toMatchObject({ size: "medium", source: "heuristic" });
+    // Even without credentials, the replacement waits for the bounded
+    // classifier; its heuristic is available immediately on the task.
     const before = openStore(db);
     try {
-      expect(before.getScope("payouts")?.goal).toBe("Refactor the label helper");
+      expect(text()).toBe("");
+      expect(before.getScope("payouts")?.goal).toBe("Fix a label");
       expect(before.lookupRef("payouts")?.sizing).toMatchObject({ size: "medium", source: "heuristic" });
-    } finally { before.close(); }
-    answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
-    expect(await filing).toBe(EXIT.ok);
+    } finally {
+      before.close();
+      answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
+      expect(await filing).toBe(EXIT.ok);
+    }
+    expect(payload().scope.goal).toBe("Refactor the label helper");
+    expect(routeFromJson(payload().scope.proposedRouteJson)?.size).toMatchObject({ size: "small", source: "classifier" });
     expect(classifier.mock.calls[0]?.[0]).toMatchObject({ title: "harden payouts", goal: "Refactor the label helper" });
     const after = openStore(db);
     try {
@@ -2234,7 +2237,7 @@ describe("explainable phase routing from the command line (v47)", () => {
     } finally { after.close(); }
   });
 
-  test("a credentialed scope waits for sizing before the mode seals, and replay never resizes", async () => {
+  test.each(["--as", "--token", "TOOLROLL_LEAD_TOKEN"])("a scope using %s waits for sizing before the mode seals, and replay never resizes", async credential => {
     await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token]);
     const setup = openStore(db);
     try {
@@ -2243,19 +2246,28 @@ describe("explainable phase routing from the command line (v47)", () => {
     } finally { setup.close(); }
     // The title suggests medium; the classifier sees this is only a one-line fix.
     await run(["task", "add", "Refactor the label helper", "--id", "copy", "--repo", ROUTED_REPO]);
+    let credentials = ["--as", "alex", "--token", token];
+    if (credential !== "--as") {
+      expect(await run(["lead", "token", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+      const leadToken = payload().token as string;
+      credentials = credential === "--token" ? ["--token", leadToken] : [];
+      if (credential === "TOOLROLL_LEAD_TOKEN") vi.stubEnv("TOOLROLL_LEAD_TOKEN", leadToken);
+    }
     const started = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<SizeAnswer>();
     const classifier = vi.fn<Sizer>(() => { started.resolve(); return answer.promise; });
-    const args = ["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check", "--as", "alex", "--token", token, "--key", "sized-scope", "--json"];
+    const args = ["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check", ...credentials, "--key", "sized-scope", "--json"];
     const filing = run(args, { filingSizer: classifier });
     await started.promise;
     const pending = openStore(db);
     try {
       expect(pending.lookupRef("copy")?.sizing).toMatchObject({ size: "medium", source: "heuristic" });
       expect(pending.getScope("copy")?.approvedAt ?? null).toBeNull();
-    } finally { pending.close(); }
-    answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
-    expect(await filing).toBe(EXIT.ok);
+    } finally {
+      pending.close();
+      answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
+      expect(await filing).toBe(EXIT.ok);
+    }
     expect(payload().approvedUnderMode).toBe(true);
     const response = payload();
     const check = openStore(db);
@@ -2268,7 +2280,7 @@ describe("explainable phase routing from the command line (v47)", () => {
       expect(legOf(route, "build")).toMatchObject({ tier: "light", model: "haiku" });
       expect(check.lookupRef("copy")?.plan).toBeNull();
     } finally { check.close(); }
-    // Even after another edit invalidates the approval, a lost response's
+    // Even after another edit changes the scope, a lost response's
     // retry returns its original result and leaves the later scope alone.
     await run(["task", "scope", "copy", "--goal", "Use the label in two places", "--acceptance", "Both labels say Save|check"]);
     const beforeReplay = openStore(db);
