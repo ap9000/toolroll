@@ -40,6 +40,9 @@ beforeEach(() => {
   pool = join(base, "pool");
   mkdirSync(repo);
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  // A build commits in a worktree of this repo: it needs an identity where none is set globally (CI machines).
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"]);
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@localhost"]);
   writeFileSync(join(repo, "README.md"), "Site\n");
   execFileSync("git", ["-C", repo, "add", "."]);
   execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "seed"]);
