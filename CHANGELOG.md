@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.24 — 2026-10-04
+
+- **Settings, grouped.** The Settings home puts its tiles under five headings
+  (Agents, Automation, Chat apps, Access and rules, System), every tile has an
+  icon, and each chat app says how it stands: Gets alerts, Connected, Not set
+  up, or Has a problem. The first change from the UI inspiration flow.
+
 ## 0.9.23 — 2026-10-04
 
 - After a research step, a flow's message to you now carries that research's
