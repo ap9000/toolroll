@@ -91,6 +91,9 @@ export type Invocation = {
   /** More MCP servers for this launch only, beside the project's own (the
    * scout's headless browser). Claude-only; ignored for a review. */
   extraMcpServers?: Readonly<Record<string, unknown>>;
+  /** A research step's project tools: only these servers, each offering only
+   * these read-only actions (Codex's `enabled_tools`). Others are left out. */
+  readOnlyTools?: Readonly<Record<string, readonly string[]>>;
 };
 
 export type ProviderRunner = (

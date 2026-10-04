@@ -18,10 +18,11 @@ import type { Store } from "./store.js";
 import { envValue } from "./names.js";
 
 /**
- * A one-click service. `reads` names its read-only actions, the ones a
- * research step may use (what it's for: never anything that changes it).
+ * A one-click service. `reads` names what a research step may read there:
+ * an action is read-only only when it is named by a reading verb (READING)
+ * and every other word in its name is one of these.
  */
-export type OneClick = { id: string; label: string; url: string; about: string; reads?: RegExp };
+export type OneClick = { id: string; label: string; url: string; about: string; reads?: readonly string[] };
 
 /** Services verified to connect this way (their servers speak streamable HTTP and register clients on the spot). */
 export const ONE_CLICK: readonly OneClick[] = [
@@ -42,11 +43,14 @@ export const ONE_CLICK: readonly OneClick[] = [
   { id: "vercel", label: "Vercel", url: "https://mcp.vercel.com/", about: "Projects, deployments and logs." },
   { id: "cloudflare", label: "Cloudflare", url: "https://mcp.cloudflare.com/mcp", about: "Workers, DNS and your Cloudflare account." },
   // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
-  { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.", reads: /(^|[-_])search/i },
-  { id: "figma", label: "Figma", url: "https://mcp.figma.com/mcp", about: "Design files and frames.", reads: /^get_/ },
+  { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.",
+    reads: ["screen", "flow", "app", "site", "element", "pattern", "ui", "ios", "android", "web"] },
+  { id: "figma", label: "Figma", url: "https://mcp.figma.com/mcp", about: "Design files and frames.",
+    reads: ["file", "frame", "node", "image", "screenshot", "design", "context", "metadata", "variable", "defs", "component", "style", "code", "connect", "map", "figjam"] },
   { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.",
-    reads: /(^|-)(query|insights?)(-|$)|^(event-definitions-list|properties-list)$/ },
-  { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.", reads: /monitor|incident/i },
+    reads: ["insight", "run", "event", "definition", "property", "properties"] },
+  { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.",
+    reads: ["uptime", "monitor", "incident", "availability", "response", "time"] },
 ];
 const loopback = (value: string) => { try { const url = new URL(value); return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname); } catch { return false; } };
 /**
@@ -73,30 +77,44 @@ export function connectionsOf(store: Store, repo: string): { id: string; label: 
   });
 }
 
-/** Words in an action's name that mean it changes something: never a read, whatever a service's pattern says. */
-const CHANGES = new Set(["create", "update", "delete", "remove", "add", "set", "edit", "write", "post", "put", "patch", "send", "upload", "switch", "move",
-  "archive", "unarchive", "ack", "acknowledge", "resolve", "reopen", "pause", "resume", "enable", "disable", "escalate", "publish", "invite", "cancel",
-  "import", "merge", "assign", "mute", "unmute", "trigger", "start", "stop", "duplicate", "rename", "save", "approve"]);
-const changes = (action: string) => action.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).some(word => CHANGES.has(word));
+/** The verbs that only read. An action named by anything else is withheld from research. */
+const READING = new Set(["list", "get", "search", "find", "read", "query", "describe", "fetch", "view", "export-image"]);
+/** Words that only qualify what is read ("insights-get-all", "get_by_id"). */
+const QUALIFIERS = new Set(["all", "by", "id", "ids"]);
+
+/**
+ * Whether an action only reads: its name has a reading verb, and every other
+ * word is a reading verb, a qualifier or something this service lets
+ * research read. An allow-list: a word nobody listed withholds the action.
+ */
+export function readsOnly(action: string, subjects: readonly string[]): boolean {
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(action)) return false;
+  const words = action.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(word => word !== "")
+    .join(" ").replace(/\bexport images?\b/g, "export-image").split(" ");
+  const subject = (word: string) => subjects.includes(word) || subjects.includes(word.replace(/s$/, ""));
+  return words.some(word => READING.has(word)) && words.every(word => READING.has(word) || QUALIFIERS.has(word) || subject(word));
+}
 
 /**
  * What a research step may use of a project's connected services: each
- * signed-in service's read-only actions, as its last test listed them, named
- * the way Claude allows them (`mcp__<service>__<action>`). A service not
- * connected, without read-only actions, or left out of this run (`launched`)
- * gives nothing.
+ * signed-in service's read-only actions, as its last test listed them —
+ * by server (`reads`, for Codex's `enabled_tools`) and named the way Claude
+ * allows them (`mcp__<service>__<action>`). A service not connected, without
+ * read-only actions, or left out of this run (`launched`) gives nothing.
  */
-export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null): { services: { id: string; label: string }[]; allowed: string[] } {
-  const services: { id: string; label: string }[] = [], allowed: string[] = [];
+export type ResearchTools = { services: { id: string; label: string }[]; allowed: string[]; reads: Record<string, string[]> };
+export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null): ResearchTools {
+  const research: ResearchTools = { services: [], allowed: [], reads: {} };
   for (const service of oneClickServices()) {
     const tool = tools.find(one => one.name === service.id);
     if (service.reads === undefined || tool === undefined || tool.spec.url !== service.url || tool.spec.bearer !== ACCESS || (launched !== null && !launched.has(tool.name))) continue;
-    const reads = (tool.lastTest?.ok ? tool.lastTest.tools : []).filter(action => /^[A-Za-z0-9_.-]{1,64}$/.test(action) && service.reads!.test(action) && !changes(action));
+    const reads = (tool.lastTest?.ok ? tool.lastTest.tools : []).filter(action => readsOnly(action, service.reads!));
     if (reads.length === 0) continue;
-    services.push({ id: service.id, label: service.label });
-    allowed.push(...reads.map(action => `mcp__${service.id}__${action}`));
+    research.services.push({ id: service.id, label: service.label });
+    research.allowed.push(...reads.map(action => `mcp__${service.id}__${action}`));
+    research.reads[service.id] = reads;
   }
-  return { services, allowed };
+  return research;
 }
 
 /** The secrets a connected tool keeps: the bearer the MCP server takes, and what refreshing it needs. */

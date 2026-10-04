@@ -394,7 +394,7 @@ export async function invokeAgent(
   const isolatedDb = isolatedAgentDatabase(runId);
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own. A review keeps its isolation.
-  const tools = invocation.phase === "review" ? null : runTools(store, runId, spec, options.keyHome, clock);
+  const tools = invocation.phase === "review" ? null : runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools);
   // The agent fence: Toolroll's own secrets, database and other runs'
   // evidence stay out of reach, whatever the permission mode. A review is
   // already confined to its sealed files.
@@ -757,7 +757,7 @@ export async function invokeHeldAgent(
   const isolatedDb = isolatedAgentDatabase(runId);
   // The project's tools (v80), as for every build: exactly its MCP servers;
   // and the agent fence around Toolroll's own secrets.
-  const heldTools = runTools(store, runId, spec, keyHome, clock);
+  const heldTools = runTools(store, runId, spec, keyHome, clock, undefined);
   const heldFence = runFence(store, runId, keyHome);
   argv = [...argv, ...heldTools.argv, ...(heldFence.length > 0 ? ["--settings", claudeFenceSettings(heldFence)] : [])];
   const heldLaunch = fenceLaunch("claude", heldFence);
@@ -903,9 +903,9 @@ function fenceLaunch(provider: AgentSpec["provider"], fence: readonly string[]):
 }
 
 /** One launch's tools, or — when they cannot be prepared — the same isolation with none, never the operator's global servers. */
-function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date): ToolLaunchArgs {
+function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined): ToolLaunchArgs {
   try {
-    return prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), includeModel: spec.model === null });
+    return prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), includeModel: spec.model === null, ...(readOnly === undefined ? {} : { readOnly }) });
   } catch {
     return noToolsArgs(spec.provider, spec.model === null);
   }

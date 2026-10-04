@@ -565,7 +565,7 @@ export function toolLauncherPath(): string {
  * its policy says, so no secret rides it: each tool's values sit in the
  * run's private 0600 file and reach only that tool's process.
  */
-export function codexToolArgs(launch: ToolLaunch, options: { includeModel: boolean; codexHome?: string; launcher?: string; node?: string }): ToolLaunchArgs {
+export function codexToolArgs(launch: ToolLaunch, options: { includeModel: boolean; codexHome?: string; launcher?: string; node?: string; enabledTools?: Readonly<Record<string, readonly string[]>> }): ToolLaunchArgs {
   // ChatGPT apps, connectors and plugins are the operator's account, not the project's: all off (plugins carry their own MCP servers).
   const argv = ["--ignore-user-config", ...carriedCodexSettings(options.includeModel, options.codexHome), "-c", "apps._default.enabled=false", "-c", "features.plugins=false"];
   if (launch.tools.length === 0) return { argv, env: {}, omitEnv: [], cleanup: () => undefined };
@@ -584,6 +584,9 @@ export function codexToolArgs(launch: ToolLaunch, options: { includeModel: boole
       // Adding a tool to a project is the operator's yes to its calls: an unattended build has no one to ask.
       "-c", `${key}.default_tools_approval_mode="approve"`,
     );
+    // A research step's server offers only its read-only actions.
+    const enabled = options.enabledTools?.[tool.spec.name];
+    if (enabled !== undefined) argv.push("-c", `${key}.enabled_tools=${tomlList(enabled)}`);
   }
   return { argv, env: {}, omitEnv: [], cleanup: () => rmSync(dir, { recursive: true, force: true }), privateDir: dir };
 }
@@ -653,12 +656,13 @@ export function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; includeModel: boolean },
+  options: { home?: string; now: Date; includeModel: boolean; readOnly?: Readonly<Record<string, readonly string[]>> },
 ): ToolLaunchArgs {
-  const launch = toolLaunchFor(store, runId, options.home);
+  const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly);
+  const enabledTools = options.readOnly === undefined ? {} : { enabledTools: options.readOnly };
   const prepared = provider === "claude" ? claudeToolArgs(launch)
-    : provider === "codex" ? codexToolArgs(launch, { includeModel: options.includeModel })
-      : provider === "openrouter" ? codexToolArgs(launch, { includeModel: false })
+    : provider === "codex" ? codexToolArgs(launch, { includeModel: options.includeModel, ...enabledTools })
+      : provider === "openrouter" ? codexToolArgs(launch, { includeModel: false, ...enabledTools })
         : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
   const skipped = provider === "gemini"
     ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
@@ -669,6 +673,16 @@ export function prepareRunTools(
     skipped,
   }), options.now);
   return prepared;
+}
+
+/** A research step's launch: only the servers it may read, each limited to its read-only actions; the rest left out, saying why. */
+function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonly string[]>> | undefined): ToolLaunch {
+  if (readOnly === undefined) return launch;
+  const readable = (name: string) => (readOnly[name] ?? []).length > 0;
+  return {
+    tools: launch.tools.filter(one => readable(one.spec.name)),
+    skipped: [...launch.skipped, ...launch.tools.filter(one => !readable(one.spec.name)).map(one => ({ name: one.spec.name, reason: "research reads only connected services' read-only actions" }))],
+  };
 }
 
 /** When a launch's tools cannot be prepared, it still gets none of anything else's: the same isolation with an empty list. */

@@ -41,7 +41,7 @@ import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
 import { catalogTool, projectToolsOf, toolLaunchFor, type ToolSpec } from "./project-tools.js";
-import { researchToolsOf } from "./mcp-connect.js";
+import { researchToolsOf, type ResearchTools } from "./mcp-connect.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
 import { invokeAgent } from "./invoke.js";
@@ -267,14 +267,16 @@ function scoutBrief(
   ].join("\n");
 }
 
+const NO_RESEARCH: ResearchTools = { services: [], allowed: [], reads: {} };
+
 /** What of the project's connected services this run may read (none when they can't be read). */
-function connectedResearch(store: Store, taskRef: number, runId: number): ReturnType<typeof researchToolsOf> {
+function connectedResearch(store: Store, taskRef: number, runId: number): ResearchTools {
   try {
     const repo = store.refById(taskRef)?.repo ?? null;
-    if (repo === null) return { services: [], allowed: [] };
+    if (repo === null) return NO_RESEARCH;
     return researchToolsOf(projectToolsOf(store, repo), new Set(toolLaunchFor(store, runId).tools.map(one => one.spec.name)));
   } catch {
-    return { services: [], allowed: [] };
+    return NO_RESEARCH;
   }
 }
 
@@ -406,8 +408,9 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     const browser = browserServer === null ? null : scoutBrowser(browserServer.url);
     const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null);
     const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
-    // The project's signed-in services, read-only actions only: allowed by name, so `dontAsk` refuses every other one.
-    const research = proxy === null || !structured ? { services: [], allowed: [] } : connectedResearch(store, request.taskRef, request.runId);
+    // The project's signed-in services, read-only actions only: Claude allows them by name, so `dontAsk` refuses every
+    // other one; Codex launches only those servers, each with only those actions enabled.
+    const research = proxy === null ? NO_RESEARCH : connectedResearch(store, request.taskRef, request.runId);
     invoked = await invokeAgent(
       store,
       request.runId,
@@ -422,6 +425,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         permissionMode: request.permissionMode ?? "dontAsk",
         allowedTools: proxy === null ? [] : [...(browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS), ...research.allowed],
         ...(browser === null ? {} : { extraMcpServers: browser }),
+        readOnlyTools: research.reads,
         skipPermissions: false,
         resumeSession: null,
         ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),

@@ -617,6 +617,46 @@ describe("scout tasks, against real git", () => {
     expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
   });
 
+  test("a Codex scout launches only connected services' read-only actions, never write tools, and its brief looks in Mobbin first", async () => {
+    const { runnerToken, approverToken } = await setup("codex");
+    const prepared = vi.spyOn(projectTools, "prepareRunTools");
+    const codexScout: Runner = async (_file, args, options) => {
+      argvSeen = [...args];
+      const prompt = String(args.at(-1) ?? "");
+      prompts.push(prompt);
+      const name = REPORT_FILE.exec(prompt)?.[0];
+      if (name !== undefined) await writeFile(join(options?.cwd ?? "", name), JSON.stringify(FOUND));
+      const lines = [
+        { type: "thread.started", thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53" },
+        { type: "item.completed", item: { type: "agent_message", text: "Report written." } },
+        { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      ];
+      return { ...OK, stdout: lines.map(one => JSON.stringify(one)).join("\n") + "\n" };
+    };
+    // Nothing connected: no project server's actions at all.
+    expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+    expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({});
+    expect(prompts.at(-1)).not.toContain("Mobbin");
+
+    await run(["task", "add", "how do others onboard", "--id", "onboard", "--repo", repo, "--report", "--json"], reportingAgent);
+    await run(["task", "scope", "onboard", "--goal", "Find how good apps onboard new people", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
+    const store = openStore(db);
+    const digest = store.getScope("onboard")?.digest as string;
+    for (const [id, tools] of [["mobbin", ["search_screens", "save_to_collection"]], ["posthog", ["query-run", "insight-create-from-query", "insight-delete"]]] as const) {
+      expect(projectTools.addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: base })).toMatchObject({ ok: true });
+      store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools, problem: null }));
+    }
+    store.close();
+    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+    vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: ["mobbin", "posthog"].map(id => ({ spec: connectedSpec(id)!, digest: "d", values: {} })), skipped: [] }));
+    expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "onboard", outcome: "reported" }));
+    expect(prepared.mock.calls.at(-1)?.[2]).toBe("codex");
+    expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({ mobbin: ["search_screens"], posthog: ["query-run"] });
+    expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
+    expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
+  });
+
   test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {
     const { runnerToken } = await setup();
     const shot = png();
