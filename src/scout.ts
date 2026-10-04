@@ -43,8 +43,7 @@ import { CLAUDE_LIMITS } from "./scope.js";
 import { catalogTool, type ToolSpec } from "./project-tools.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
-import { agentWrapFence, invokeAgent } from "./invoke.js";
-import { insideInheritedSandbox } from "./agent-fence.js";
+import { invokeAgent } from "./invoke.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -68,22 +67,29 @@ export const SCOUT_ALLOWED_TOOLS: readonly string[] = ["WebSearch", "WebFetch", 
 const SCOUT_RESEARCH_TOOLS: readonly string[] = ["WebSearch", "WebFetch"];
 
 /** The scout's browser launch, or null when this install has no Playwright entry (the scout then researches without
- * screenshots). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
- * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. When `fenced`, Chrome's
- * own sandbox is off (run 2356): it can't start inside the agent fence, which then holds the whole browser. Unfenced,
- * Chrome keeps its sandbox. */
-export function scoutBrowser(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string, fenced = false): Record<string, unknown> | null {
+ * screenshots). The worker runs it outside the agent fence with Chrome's own sandbox on (run 2356, review 828:
+ * scout-browser.ts). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
+ * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. Screenshots are saved
+ * in `imageFolder`. */
+export function scoutBrowserLaunch(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): browserCheck.BrowserLaunch | null {
   if (tool === null || tool.command === null) return null;
-  return { [SCOUT_BROWSER]: { type: "stdio", command: tool.command, args: [...tool.args, "--isolated", ...(fenced ? ["--no-sandbox"] : []), "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"], env: {} } };
+  return { command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"] };
+}
+
+/** What the fenced scout gets: the running browser's loopback address, nothing it could launch itself. */
+export function scoutBrowser(url: string): Record<string, unknown> {
+  return { [SCOUT_BROWSER]: { type: "http", url } };
 }
 
 /** What would let the scout's own requests skip its proxy: never passed on while one runs. */
 const PROXY_BYPASS_ENV: readonly string[] = ["NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
 
 /** The scout's environment while its proxy runs (review 827): web fetch and the provider's own traffic go through
- * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable. */
-export function scoutProxyEnv(proxy: string): Record<string, string> {
-  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy };
+ * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable.
+ * The one direct address is its own browser's port, when it has one (review 828): the proxy refuses loopback. */
+export function scoutProxyEnv(proxy: string, browserUrl: string | null = null): Record<string, string> {
+  const direct = browserUrl === null ? {} : { NO_PROXY: new URL(browserUrl).host, no_proxy: new URL(browserUrl).host };
+  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, ...direct };
 }
 
 export type ScoutRequest = {
@@ -200,7 +206,7 @@ function scoutBrief(
       : "problem" in browser
         ? [
             `The browser couldn't start (${inert(browser.problem, 200)}), so this run has no screenshots:`,
-            "leave images empty, and say so in one line in the report.",
+            "leave images empty. The report already says so; don't repeat it.",
           ]
         : [
             "You may take screenshots (PNG or JPEG) of public web pages you actually",
@@ -363,23 +369,23 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
   const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
   const demoUrl = request.demoUrl ?? null;
   let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
+  let browserServer: browserCheck.ScoutBrowserServer | null = null;
   let browserProblem: string | null = null;
   let invoked;
   try {
     proxy = await startScoutProxy({ demoUrl }).catch(() => null);
-    const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url);
-    const fence = agentWrapFence(store, request.runId, request.provider ?? "claude");
-    const offered = proxy === null || !structured ? null : scoutBrowser(browserTool, imageFolder, proxy.url, fence.length > 0 || insideInheritedSandbox());
-    // The preflight (run 2356): the browser is started once, the way the scout gets it, before research begins. One
-    // that can't start is said once, in the brief and the report, and the scout researches without it.
-    const preflight = offered === null ? null : browserCheck.preflightFor(agent !== undefined);
-    const checked = preflight === null || offered === null ? null : await preflight(offered[SCOUT_BROWSER] as browserCheck.BrowserLaunch, {
-      env: { ...withoutEnv(process.env, [...AGENT_ENV_DENYLIST, ...PROXY_BYPASS_ENV]), ...proxyEnv },
-      fence,
-      cwd: worktree,
-    }).catch((error: unknown): browserCheck.PreflightResult => ({ ok: false, reason: error instanceof Error ? error.message : String(error) }));
-    browserProblem = checked !== null && !checked.ok ? checked.reason : null;
-    const browser = browserProblem === null ? offered : null;
+    const launch = proxy === null || !structured ? null : scoutBrowserLaunch(browserTool, imageFolder, proxy.url);
+    // The preflight (run 2356, review 828): the worker starts the browser outside the fence and opens a public page
+    // through the proxy before research begins. One that can't start is said once, in the brief and the report, and
+    // the scout researches without it.
+    const started = launch === null || proxy === null ? null : await browserCheck.starterFor(agent !== undefined)(launch, {
+      env: { ...withoutEnv(process.env, [...AGENT_ENV_DENYLIST, ...PROXY_BYPASS_ENV]), ...scoutProxyEnv(proxy.url) },
+      folder: imageFolder,
+    }).catch((error: unknown): browserCheck.BrowserStart => ({ ok: false, reason: error instanceof Error ? error.message : String(error) }));
+    if (started !== null && started.ok) browserServer = started.server;
+    browserProblem = started !== null && !started.ok ? started.reason : null;
+    const browser = browserServer === null ? null : scoutBrowser(browserServer.url);
+    const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null);
     const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
     invoked = await invokeAgent(
       store,
@@ -404,7 +410,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       {
         cwd: worktree,
         idleTimeoutMs: timeoutMs,
-        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV)],
+        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV.filter(name => !(name in proxyEnv)))],
         ...(proxy === null ? {} : { env: proxyEnv }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
@@ -414,6 +420,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     );
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
+    await browserServer?.close();
     await proxy?.close();
     liveLog?.close();
   }

@@ -890,11 +890,6 @@ function runFence(store: Store, runId: number, keyHome: string | undefined): str
   }
 }
 
-/** The fence a run's agent is wrapped in (empty when it gets none), for a check that must run the way the agent will. */
-export function agentWrapFence(store: Store, runId: number, provider: AgentSpec["provider"]): readonly string[] {
-  return fenceLaunch(provider, runFence(store, runId, undefined)).wrap;
-}
-
 /** How the fence reaches a provider: Codex through its own sandbox profile
  * (already in its argv; wrapping it would nest sandboxes), Claude and
  * Gemini inside the macOS sandbox the spawn road applies (`wrap`), Claude

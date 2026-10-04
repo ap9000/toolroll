@@ -20,7 +20,7 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
-import { SCOUT_BROWSER, scoutBrowser, scrubUrl } from "./scout.js";
+import { SCOUT_BROWSER, scoutBrowserLaunch, scrubUrl } from "./scout.js";
 import * as projectTools from "./project-tools.js";
 import * as browserCheck from "./scout-browser.js";
 import { createServer, request as httpRequest } from "node:http";
@@ -231,7 +231,14 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: SAID };
   };
 
+  /** Every browser a scout started, as the worker launched it (outside the fence); a stub agent never gets a real one. */
+  let launches: browserCheck.BrowserLaunch[] = [];
   beforeEach(async () => {
+    launches = [];
+    vi.spyOn(browserCheck, "starterFor").mockImplementation(() => async launch => {
+      launches.push(launch);
+      return { ok: true, server: { url: "http://127.0.0.1:9/mcp", close: async () => undefined } };
+    });
     base = realpathSync(await mkdtemp(join(tmpdir(), "standing-orders-scout-")));
     repo = join(base, "repo");
     db = join(base, "queue.db");
@@ -247,6 +254,7 @@ describe("scout tasks, against real git", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(base, { recursive: true, force: true });
   });
 
@@ -536,15 +544,17 @@ describe("scout tasks, against real git", () => {
     return bytes;
   };
   let folderSeen = "";
-  /** The scout browser's launch arguments, from the launch's own MCP config (none when it has no browser). */
-  const browserLaunch = (args: readonly string[]): string[] => {
+  /** The scout's browser as its MCP config names it, or undefined when it has none. */
+  const browserConfig = (args: readonly string[]): Record<string, unknown> | undefined => {
     for (const [at, arg] of args.entries()) {
       if (arg !== "--mcp-config" || !String(args[at + 1]).startsWith("{")) continue;
       const browser = JSON.parse(String(args[at + 1])).mcpServers?.[SCOUT_BROWSER];
-      if (browser !== undefined) return (browser.args as unknown[]).map(String);
+      if (browser !== undefined) return browser;
     }
-    return [];
+    return undefined;
   };
+  /** The launch arguments of the browser the scout was given (none when it has no browser). */
+  const browserLaunch = (args: readonly string[]): string[] => (browserConfig(args) === undefined ? [] : [...(launches.at(-1)?.args ?? [])]);
   /** Where the scout's browser saves its screenshots: its `--output-dir`. */
   const browserFolder = (args: readonly string[]): string => {
     const launch = browserLaunch(args);
@@ -555,6 +565,8 @@ describe("scout tasks, against real git", () => {
     const prompt = String(args[args.indexOf("-p") + 1] ?? "");
     prompts.push(prompt);
     argvSeen = [...args];
+    envSeen = options?.env;
+    omitSeen = options?.omitEnv ?? [];
     folderSeen = browserFolder(args);
     expect(prompt).toContain(folderSeen);
     expect(folderSeen.startsWith(realpathSync(options?.cwd ?? ""))).toBe(false);
@@ -605,9 +617,14 @@ describe("scout tasks, against real git", () => {
     expect(launch[launch.indexOf("--proxy-server") + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(launch[launch.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
     expect(launch).not.toContain("--allow-unrestricted-file-access");
-    // Chrome's own sandbox can't start inside the agent fence (run 2356): off only when the fence holds the browser.
-    expect(scoutBrowser({ command: "npx", args: [] }, "/tmp/shots", "http://127.0.0.1:1", true)?.[SCOUT_BROWSER]).toMatchObject({ args: expect.arrayContaining(["--no-sandbox"]) });
-    expect(JSON.stringify(scoutBrowser({ command: "npx", args: [] }, "/tmp/shots", "http://127.0.0.1:1"))).not.toContain("--no-sandbox");
+    // Review 828: the worker starts the browser outside the fence, Chrome's sandbox on; the fenced scout gets only its
+    // loopback address, the one place it reaches without the proxy.
+    expect(launches).toHaveLength(1);
+    expect(launch).not.toContain("--no-sandbox");
+    expect(browserConfig(argvSeen)).toEqual({ type: "http", url: "http://127.0.0.1:9/mcp" });
+    expect(envSeen?.["NO_PROXY"]).toBe("127.0.0.1:9");
+    expect(envSeen?.["no_proxy"]).toBe("127.0.0.1:9");
+    expect(omitSeen).toEqual(expect.arrayContaining(["ALL_PROXY", "all_proxy"]));
     // Screenshots are saved by their full path in the image folder, which is never the checkout.
     expect(prompts.at(-1)).toContain(join(folderSeen, "home.png"));
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
@@ -686,7 +703,9 @@ describe("scout tasks, against real git", () => {
         expect(options?.env?.["HTTPS_PROXY"]).toBe(browserProxy);
         expect(options?.env?.["HTTP_PROXY"]).toBe(browserProxy);
         expect(options?.env?.["https_proxy"]).toBe(browserProxy);
-        expect(options?.omitEnv).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
+        // The only address it skips the proxy for is its own browser's loopback port (review 828).
+        expect(options?.env?.["NO_PROXY"]).toBe("127.0.0.1:9");
+        expect(options?.omitEnv).toEqual(expect.arrayContaining(["ALL_PROXY", "all_proxy"]));
         const proxy = new URL(options?.env?.["HTTP_PROXY"] ?? "");
         const get = (path: string) => new Promise<number | string>((done, fail) => {
           const sent = httpRequest({ host: proxy.hostname, port: Number(proxy.port), path, headers: { host: new URL(path).host } }, answer => {
@@ -744,21 +763,19 @@ describe("scout tasks, against real git", () => {
     expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
     expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
-    expect(scoutBrowser(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
+    expect(launches).toEqual([]);
+    expect(omitSeen).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
+    expect(scoutBrowserLaunch(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
   });
 
   test("a browser that can't start is found before research, said once in the brief and the report, and not offered", async () => {
     const { runnerToken } = await setup();
-    const checked: { args: readonly string[]; env: Record<string, string | undefined> }[] = [];
-    const failing = vi.spyOn(browserCheck, "preflightFor").mockImplementation(() => async (launch, options) => {
-      checked.push({ args: launch.args, env: options.env });
-      return { ok: false, reason: "Target crashed" };
+    const checked: { args: readonly string[]; env: Record<string, string | undefined>; folder: string }[] = [];
+    vi.spyOn(browserCheck, "starterFor").mockImplementation(() => async (launch, options) => {
+      checked.push({ args: launch.args, env: options.env, folder: options.folder });
+      return { ok: false, reason: "the browser did not start within 60 seconds" };
     });
-    try {
-      expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
-    } finally {
-      failing.mockRestore();
-    }
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
     // Checked once, as the scout would get it: its proxy, loopback included, and its proxy environment.
     expect(checked).toHaveLength(1);
     const proxy = String(checked[0]!.args[checked[0]!.args.indexOf("--proxy-server") + 1]);
@@ -766,16 +783,23 @@ describe("scout tasks, against real git", () => {
     expect(checked[0]!.args[checked[0]!.args.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
     expect(checked[0]!.env["HTTPS_PROXY"]).toBe(proxy);
     expect(checked[0]!.env["NO_PROXY"]).toBeUndefined();
-    // The scout is told once and gets no browser; its web research still goes through the proxy.
-    expect(prompts.at(-1)).toContain("The browser couldn't start (Target crashed), so this run has no screenshots");
+    expect(checked[0]!.args).not.toContain("--no-sandbox");
+    expect(checked[0]!.args[checked[0]!.args.indexOf("--output-dir") + 1]).toBe(checked[0]!.folder);
+    // The scout is told once and gets no browser; its web research still goes through the proxy, with no way around it.
+    expect(prompts.at(-1)).toContain("The browser couldn't start (the browser did not start within 60 seconds), so this run has no screenshots");
+    expect(prompts).toHaveLength(1);
     expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
     expect(browserLaunch(argvSeen)).toEqual([]);
     expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
     expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(envSeen?.["NO_PROXY"]).toBeUndefined();
+    expect(omitSeen).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     const store = openStore(db);
     const view = readVerifiedReport(store, join(base, "evidence"), store.refFor("built-in", "flaky").id);
-    expect(view !== null && view.ok && view.report.report).toContain("_No screenshots: the browser couldn't start (Target crashed)._");
+    const report = view !== null && view.ok ? view.report.report : "";
+    expect(report).toContain("_No screenshots: the browser couldn't start (the browser did not start within 60 seconds)._");
+    expect(report.split("couldn't start")).toHaveLength(2);
     store.close();
   });
 

@@ -161,12 +161,6 @@ export function macosFenceAvailable(platform: NodeJS.Platform = process.platform
   return seatbeltWorks;
 }
 
-/** Whether this process already runs inside a macOS sandbox it inherited (one sandbox-exec can't nest in): its
- * children are held by that fence even when none is applied to them. */
-export function insideInheritedSandbox(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "darwin" && existsSync(SANDBOX_EXEC) && !macosFenceAvailable(platform);
-}
-
 /** The spawn that runs `file args` inside the macOS fence (same process: sandbox-exec replaces itself with the agent). */
 export function macosFenced(file: string, args: readonly string[], fence: readonly string[]): { file: string; args: string[] } {
   return { file: SANDBOX_EXEC, args: ["-p", macosFenceProfile(fence), file, ...args] };
