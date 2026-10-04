@@ -4,8 +4,10 @@ import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
 import { DEFAULT_LIVENESS_MS, register } from "./runner.js";
 import { completeFenced } from "./claim.js";
 import { addApprover } from "./scope.js";
+import { legOf, routeFromJson } from "./phase-routing.js";
+import { SIZING_BUDGET_MS, type SizeAnswer, type Sizer } from "./task-sizing.js";
 import { canonicalProject } from "./project.js";
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2117,7 +2119,7 @@ describe("explainable phase routing from the command line (v47)", () => {
   const ROUTED_REPO = "/repo/routed";
   let token = "";
 
-  afterEach(() => { rmSync(dirname(db), { recursive: true, force: true }); });
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(dirname(db), { recursive: true, force: true }); });
   beforeEach(async () => {
     db = join(mkdtempSync(join(tmpdir(), "so-route-cli-")), "db.sqlite");
     await run(["approver", "add", "alex", "--json"]);
@@ -2162,8 +2164,178 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(text()).toContain("build  claude · haiku  [recommended · fast]");
     await run(["task", "route", "payouts", "--json"]);
     expect(payload().size).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
+    const classifier = vi.fn<Sizer>(async () => ({ size: "large", risky: true, reason: "broad change" }));
+    expect(await run(["task", "scope", "payouts", "--goal", "Refactor the label helper", "--acceptance", "The label works|check", "--json"], { filingSizer: classifier })).toBe(EXIT.ok);
+    expect(classifier).not.toHaveBeenCalled();
+    await run(["task", "route", "payouts", "--json"]);
+    expect(payload().size).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
     expect(await run(["config", "clear", "build", "--tier", "light", "--as", "alex", "--token", token, "--json"])).toBe(0);
     expect(payload()).toMatchObject({ tier: "light", cleared: true });
+  });
+
+  test("CLI add and scope size a one-line fix, show it before approval, and seal the light route", async () => {
+    await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token]);
+    await run(["task", "add", "Fix the Save label", "--id", "copy", "--repo", ROUTED_REPO]);
+    expect(await run(["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check"])).toBe(EXIT.ok);
+    expect(text()).toContain("size         Small change: fast model, no plan");
+    expect(text()).toContain("build  claude · haiku");
+    await run(["task", "show", "copy"]);
+    expect(text()).toContain("size         Small change: fast model, no plan");
+    const store = openStore(db);
+    let digest: string;
+    try {
+      const scope = store.getScope("copy")!;
+      digest = scope.digest;
+      expect(scope.approvedAt).toBeNull();
+      expect(store.lookupRef("copy")).toMatchObject({ sizing: { size: "small", source: "heuristic" }, plan: null });
+      const route = routeFromJson(scope.proposedRouteJson!)!;
+      expect(route.size).toMatchObject({ size: "small", source: "heuristic" });
+      expect(legOf(route, "build")).toMatchObject({ model: "haiku", tier: "light" });
+    } finally { store.close(); }
+    expect(await run(["task", "approve", "copy", "--yes", "--digest", digest!, "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+    await run(["task", "show", "copy", "--json"]);
+    expect(payload().approval.approved).toBe(true);
+    const approved = routeFromJson(payload().scope.approvedRouteJson)!;
+    expect(approved.size).toMatchObject({ size: "small", source: "heuristic" });
+    expect(legOf(approved, "build")).toMatchObject({ tier: "light", model: "haiku" });
+    const classifier = vi.fn<Sizer>(async () => ({ size: "large", risky: true, reason: "late answer" }));
+    await run(["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check"], { filingSizer: classifier });
+    expect(classifier).not.toHaveBeenCalled();
+    await run(["task", "show", "copy", "--json"]);
+    expect(payload().approval.approved).toBe(true);
+    expect(routeFromJson(payload().scope.approvedRouteJson)).toEqual(approved);
+  });
+
+  test("replacing an unapproved goal sizes it immediately and waits for the classifier before filing", async () => {
+    await run(["task", "scope", "payouts", "--goal", "Fix a label", "--acceptance", "The label is fixed|check"]);
+    const started = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<SizeAnswer>();
+    const classifier = vi.fn<Sizer>(() => { started.resolve(); return answer.promise; });
+    const filing = run(["task", "scope", "payouts", "--goal", "Refactor the label helper", "--acceptance", "The label is fixed|check", "--json"], { filingSizer: classifier });
+    await started.promise;
+    // Even without credentials, the replacement waits for the bounded
+    // classifier; its heuristic is available immediately on the task.
+    const before = openStore(db);
+    try {
+      expect(text()).toBe("");
+      expect(before.getScope("payouts")?.goal).toBe("Fix a label");
+      expect(before.lookupRef("payouts")?.sizing).toMatchObject({ size: "medium", source: "heuristic" });
+    } finally {
+      before.close();
+      answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
+      expect(await filing).toBe(EXIT.ok);
+    }
+    expect(payload().scope.goal).toBe("Refactor the label helper");
+    expect(routeFromJson(payload().scope.proposedRouteJson)?.size).toMatchObject({ size: "small", source: "classifier" });
+    expect(classifier.mock.calls[0]?.[0]).toMatchObject({ title: "harden payouts", goal: "Refactor the label helper" });
+    const after = openStore(db);
+    try {
+      const scope = after.getScope("payouts")!;
+      expect(scope.approvedAt).toBeNull();
+      expect(routeFromJson(scope.proposedRouteJson!)?.size).toMatchObject({ size: "small", source: "classifier" });
+      expect(after.lookupRef("payouts")?.plan).toBeNull();
+    } finally { after.close(); }
+  });
+
+  test.each(["--as", "--token", "TOOLROLL_LEAD_TOKEN"])("a scope using %s waits for sizing before the mode seals, and replay never resizes", async credential => {
+    await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token]);
+    const setup = openStore(db);
+    try {
+      const terms = { ...presetTerms("standard", later(86_400_000).toISOString()), autoApproveFiling: true };
+      setup.signMode({ repo: ROUTED_REPO, name: terms.name, termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "alex", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, T0);
+    } finally { setup.close(); }
+    // The title suggests medium; the classifier sees this is only a one-line fix.
+    await run(["task", "add", "Refactor the label helper", "--id", "copy", "--repo", ROUTED_REPO]);
+    let credentials = ["--as", "alex", "--token", token];
+    if (credential !== "--as") {
+      expect(await run(["lead", "token", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+      const leadToken = payload().token as string;
+      credentials = credential === "--token" ? ["--token", leadToken] : [];
+      if (credential === "TOOLROLL_LEAD_TOKEN") vi.stubEnv("TOOLROLL_LEAD_TOKEN", leadToken);
+    }
+    const started = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<SizeAnswer>();
+    const classifier = vi.fn<Sizer>(() => { started.resolve(); return answer.promise; });
+    const args = ["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check", ...credentials, "--key", "sized-scope", "--json"];
+    const filing = run(args, { filingSizer: classifier });
+    await started.promise;
+    const pending = openStore(db);
+    try {
+      expect(pending.lookupRef("copy")?.sizing).toMatchObject({ size: "medium", source: "heuristic" });
+      expect(pending.getScope("copy")?.approvedAt ?? null).toBeNull();
+    } finally {
+      pending.close();
+      answer.resolve({ size: "small", risky: false, reason: "one-line label fix" });
+      expect(await filing).toBe(EXIT.ok);
+    }
+    expect(payload().approvedUnderMode).toBe(true);
+    const response = payload();
+    const check = openStore(db);
+    try {
+      const scope = check.getScope("copy")!;
+      expect(scope.approvedDigest).toBe(scope.digest);
+      expect(response.scope.digest).toBe(scope.digest);
+      const route = routeFromJson(scope.approvedRouteJson!)!;
+      expect(route.size).toEqual({ size: "small", risky: false, source: "classifier", reason: "one-line label fix" });
+      expect(legOf(route, "build")).toMatchObject({ tier: "light", model: "haiku" });
+      expect(check.lookupRef("copy")?.plan).toBeNull();
+    } finally { check.close(); }
+    // Even after another edit changes the scope, a lost response's
+    // retry returns its original result and leaves the later scope alone.
+    await run(["task", "scope", "copy", "--goal", "Use the label in two places", "--acceptance", "Both labels say Save|check"]);
+    const beforeReplay = openStore(db);
+    const laterScope = beforeReplay.getScope("copy");
+    beforeReplay.close();
+    expect(await run(args, { filingSizer: classifier })).toBe(EXIT.ok);
+    expect(payload()).toEqual(response);
+    expect(classifier).toHaveBeenCalledTimes(1);
+    const afterReplay = openStore(db);
+    try { expect(afterReplay.getScope("copy")).toEqual(laterScope); } finally { afterReplay.close(); }
+  });
+
+  test.each(["timeout", "failure"])("a classifier %s keeps the heuristic and still seals within its budget", async failure => {
+    const setup = openStore(db);
+    try {
+      const terms = { ...presetTerms("standard", later(86_400_000).toISOString()), autoApproveFiling: true };
+      setup.signMode({ repo: ROUTED_REPO, name: terms.name, termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "alex", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, T0);
+    } finally { setup.close(); }
+    const started = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const classifier: Sizer = async (_input, stop) => {
+      signal = stop;
+      started.resolve();
+      if (failure === "failure") throw new Error("offline");
+      return new Promise(() => {});
+    };
+    vi.useFakeTimers();
+    try {
+      const filing = run(["task", "scope", "payouts", "--goal", "Change one label", "--acceptance", "The label is fixed|check", "--as", "alex", "--token", token, "--json"], { filingSizer: classifier });
+      await started.promise;
+      if (failure === "timeout") await vi.advanceTimersByTimeAsync(SIZING_BUDGET_MS);
+      expect(await filing).toBe(EXIT.ok);
+      expect(payload().approvedUnderMode).toBe(true);
+      expect(routeFromJson(payload().scope.proposedRouteJson)?.size).toMatchObject({ size: "small", source: "heuristic" });
+      if (failure === "timeout") expect(signal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  test.each(["candidate", "report", "mcp", "coordinator"])("a %s scope is not sized or classified", async excluded => {
+    if (excluded === "mcp" || excluded === "coordinator") {
+      const setup = openStore(db);
+      try {
+        expect(setup.createConsoleTask({ id: "excluded", title: "Fix a label", repo: ROUTED_REPO,
+          filedVia: excluded === "mcp" ? "mcp:test" : "cli", proposedVia: excluded === "coordinator" ? "coordinator" : null,
+          goal: "Fix a label", acceptance: [{ id: "c1", statement: "The label is fixed", evidence: ["check"] }],
+        }, T0).ok).toBe(true);
+      } finally { setup.close(); }
+    } else {
+      await run(["task", "add", "Fix a label", "--id", "excluded", "--repo", ROUTED_REPO, ...(excluded === "report" ? ["--report"] : [])]);
+    }
+    const classifier = vi.fn<Sizer>(async () => ({ size: "large", risky: false, reason: "test" }));
+    expect(await run(["task", "scope", "excluded", "--goal", "Change one line", "--acceptance", "The label is fixed|check", ...(excluded === "candidate" ? ["--candidate", "a".repeat(40)] : []), "--json"], { filingSizer: classifier })).toBe(EXIT.ok);
+    expect(classifier).not.toHaveBeenCalled();
+    const check = openStore(db);
+    try { expect(check.lookupRef("excluded")?.sizing).toBeNull(); } finally { check.close(); }
   });
 
   test("a light planner is refused, not kept and ignored; --also names another provider's agent on a tier, shown and clearable", async () => {
