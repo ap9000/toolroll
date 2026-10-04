@@ -74,8 +74,10 @@ function withoutNew(table: string, row: Record<string, unknown>): Record<string,
   // v77's thread scope is a later additive column on the lead thread.
   if (table === "mate_thread") { delete copy["scope_kind"]; delete copy["scope_key"]; }
   // v102's filer is a later additive column on the task reference (null for tasks filed before it).
-  // So is the sign-in gate's note (null until a gate holds the task).
-  if (table === "task_ref") { delete copy["filed_by"]; delete copy["filed_by_kind"]; delete copy["auth_wait_pause"]; }
+  // So is the sign-in gate's note (null until a gate holds the task), and sized routing's size and tier (null until filed).
+  if (table === "task_ref") {
+    for (const column of ["filed_by", "filed_by_kind", "auth_wait_pause", "size", "size_risky", "size_source", "size_reason", "route_tier"]) delete copy[column];
+  }
   if (table === "routine") delete copy["created_by"];
   return copy;
 }

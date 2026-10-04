@@ -1134,7 +1134,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain("Agents change");
     expect(html).toContain("planner on <span class=\"mono\">codex · gpt-5-codex</span>");
     expect(html).toContain("<dt>agents now</dt><dd>claude · sonnet plans, builds, and repairs</dd>");
-    expect(html).toContain("Elevated risk: planning and building keep the everyday agents unless the work itself asks for more (strict quality or screenshots).");
+    expect(html).toContain("Elevated risk: planning and building use the strongest agent you have configured.");
     expect(html).toContain("The current approval no longer covers the task afterwards — approve it again on the task.");
     expect(store.refFor("built-in", "a").routeOverrides).toEqual([]);
     expect(approvalOf(store.getScope("a"))).toMatchObject({ approved: true });
@@ -1148,7 +1148,9 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain("risk is now elevated risk; the planner is now codex · gpt-5-codex — the earlier approval no longer covers this task; approve it again");
     expect(html).toContain('<p class="agents-summary">codex · gpt-5-codex plans; claude · sonnet builds and repairs</p>');
-    expect(html).toContain('action="/t/a/approve"');
+    // Elevated risk plans first, whatever the size: approval waits for the plan.
+    expect(store.refFor("built-in", "a").plan).toBe("requested");
+    expect(html).not.toContain('action="/t/a/approve"');
   });
 
   test("a focused chat answers a blocking decision and returns to the same conversation", async () => {

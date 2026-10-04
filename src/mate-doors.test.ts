@@ -325,7 +325,8 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
       task: "a",
       risk: { level: "routine", title: "Routine", consequence: expect.stringContaining("everyday configured agent") },
       standing: "awaiting approval",
-      summary: "claude · sonnet plans, builds, and repairs",
+      // A short, single-path goal is a small change: it makes no plan, so no planner works on it.
+      summary: "claude · sonnet builds and repairs",
       editable: true,
       approval: "not approved",
     });
