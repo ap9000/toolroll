@@ -92,7 +92,28 @@ export const TOOL_CATALOG: readonly (ToolSpec & { label: string })[] = [
     about: "Reads Sentry issues and errors." },
   { label: "Supabase (read-only)", name: "supabase", transport: "stdio", command: "npx", args: ["-y", "@supabase/mcp-server-supabase@0.13.0", "--read-only"], url: null, secrets: [{ name: "SUPABASE_ACCESS_TOKEN", optional: false }], bearer: null, headerSecrets: {},
     about: "Reads Supabase tables and schema, without changing anything." },
+  // Figma's Dev Mode server, run by its desktop app on this computer and signed in as the app is: no key.
+  { label: "Figma (desktop app)", name: "figma-desktop", transport: "http", command: null, args: [], url: "http://127.0.0.1:3845/mcp", secrets: [], bearer: null, headerSecrets: {},
+    about: "Code, images, variables and metadata from what you select in the Figma desktop app." },
 ];
+
+/**
+ * Apps that serve their own MCP on this computer: Connect adds them like a
+ * common tool (`connect` is its one line of how), a test that can't reach one
+ * says why (`offline`), and research may read what `reads` names (see
+ * readsOnly in mcp-connect.ts). The only loopback address research reaches.
+ */
+export type LocalApp = { tool: string; connect: string; offline: string; reads: readonly string[] };
+export const LOCAL_APPS: readonly LocalApp[] = [
+  { tool: "figma-desktop", connect: "Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.",
+    offline: "The Figma desktop app isn't running, or its Dev Mode MCP server is off. Open Figma and turn the server on in Preferences.",
+    reads: ["code", "image", "screenshot", "variable", "defs", "metadata", "design", "context", "connect", "map", "figjam"] },
+];
+/** The local app a project's tool is, when it is one exactly as listed (same name and address). */
+export function localAppOf(spec: Pick<ToolSpec, "name" | "url">): LocalApp | null {
+  const app = LOCAL_APPS.find(one => one.tool === spec.name);
+  return app !== undefined && spec.url !== null && spec.url === catalogTool(app.tool)?.url ? app : null;
+}
 
 export function catalogTool(id: string): (ToolSpec & { label: string }) | null {
   return TOOL_CATALOG.find(one => one.name === id) ?? null;
@@ -485,7 +506,7 @@ async function exchangeHttp(spec: ToolSpec, values: Record<string, string>, time
     if (answered.message.error !== undefined) return { ok: false, problem: `It refused ${request.doing}: ${safeLine(String(answered.message.error.message ?? "error"))}.` };
     return { ok: true, result: answered.message.result };
   } catch (error) {
-    return { ok: false, problem: error instanceof Error && error.name === "TimeoutError" ? `It did not answer within ${Math.round(timeoutMs / 1000)} seconds.` : "It could not be reached." };
+    return { ok: false, problem: error instanceof Error && error.name === "TimeoutError" ? `It did not answer within ${Math.round(timeoutMs / 1000)} seconds.` : localAppOf(spec)?.offline ?? "It could not be reached." };
   }
 }
 

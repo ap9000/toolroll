@@ -22,7 +22,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
 import { flag, freePort, GiveUp, groupAlive, mailSink, option, own, REAL_TURN_MS, Skip, SKIPPED_FADE, sleep, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
 
@@ -1212,7 +1212,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   // The project tool, the way the Tools page adds one (with your password), and tested.
   await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
   for (const form of [{ action: "add-custom", name: "store", transport: "stdio", target: `${process.execPath} ${shop}`, password: w.passwords.alex }, { action: "test", name: "store" }]) {
-    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
+    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, shown: repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
     if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
   }
   // Rosa, from the Support rep template; on her page she's let use the store.
@@ -1490,7 +1490,7 @@ await journey("flows", "One-click connections: Connect Stripe on the kit's check
     await Promise.all([page.waitForNavigation(), page.locator('[data-step="tool-stripe"] a:has-text("Connect")').click()]);
     if (!/\/settings\/tools\?.*kit=support-desk&connect=stripe#connect$/.test(page.url())) throw new Error(`Connect went to ${page.url()}`);
     if ((await page.locator('#connect-stripe[data-state="open"]').count()) !== 1 || (await page.locator(".connect-tile").count()) < 15) throw new Error("the one-click services aren't offered");
-    if (!(await page.locator("#connect-heading").isVisible()) || (await page.locator("button.connect-wanted").innerText()) !== "Connect Stripe") throw new Error("the page doesn't open on Connect with one click and a Connect Stripe button");
+    if (!(await page.locator("#connect-heading").isVisible()) || (await page.locator("button.connect-wanted").innerText()) !== `Connect Stripe to ${basename(repo)}`) throw new Error("the page doesn't open on Connect and a Connect Stripe button naming the project");
     if ((await page.locator('select[name="catalog"] option[value="sentry"]').count()) !== 0) throw new Error("Sentry is still offered with a key as well as by signing in");
     await shot("connect-tiles");
     const phone = await signIn("alex", { width: 390, height: 844 });
@@ -1509,7 +1509,7 @@ await journey("flows", "One-click connections: Connect Stripe on the kit's check
     if (!/started in another browser/.test(elsewhere)) throw new Error(`a return from another browser: ${elsewhere.slice(0, 200)}`);
     await Promise.all([page.waitForURL(/\/kits\/support-desk/, { timeout: 30_000 }), page.click('button:has-text("Allow")')]);
     const said = await page.locator('[role="status"]').first().innerText();
-    if (!/Stripe is connected, and Maya can use it/.test(said)) throw new Error(`back on the kit: ${said}`);
+    if (!new RegExp(`Stripe is connected to ${basename(repo)}, and Maya can use it`).test(said)) throw new Error(`back on the kit: ${said}`);
     if ((await page.locator('[data-step="tool-stripe"]').getAttribute("data-done")) !== "true") throw new Error("the checklist doesn't say Maya can use Stripe");
     await shot("kit-connected");
     const tool = rows("SELECT spec_json FROM project_tool WHERE name = 'stripe'")[0];

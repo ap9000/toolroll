@@ -13,7 +13,8 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { addToolTo, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
+import { basename } from "node:path";
+import { LOCAL_APPS, addToolTo, catalogTool, localAppOf, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
 
@@ -24,7 +25,17 @@ import { envValue } from "./names.js";
  */
 export type OneClick = { id: string; label: string; url: string; about: string; reads?: readonly string[] };
 
-/** Services verified to connect this way (their servers speak streamable HTTP and register clients on the spot). */
+/**
+ * Services that connect this way: their servers speak streamable HTTP and
+ * advertise registering clients on the spot. Advertising isn't accepting:
+ * Figma's server advertises it, but its registration answers 403 to any app
+ * Figma hasn't approved, so Figma connects through its desktop app instead
+ * (LOCAL_APPS). A service is listed only when its registration accepts
+ * Toolroll; mcp-connect.test.ts replays each one's answer (no live calls).
+ *
+ * Signed in end to end, live: Mobbin. The rest register in replayed checks
+ * only, until someone signs in to each for real.
+ */
 export const ONE_CLICK: readonly OneClick[] = [
   { id: "stripe", label: "Stripe", url: "https://mcp.stripe.com/", about: "Payments, customers, refunds and invoices." },
   { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", about: "Pages and databases: search, read and write." },
@@ -45,8 +56,6 @@ export const ONE_CLICK: readonly OneClick[] = [
   // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
   { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.",
     reads: ["screen", "flow", "app", "site", "element", "pattern", "ui", "ios", "android", "web"] },
-  { id: "figma", label: "Figma", url: "https://mcp.figma.com/mcp", about: "Design files and frames.",
-    reads: ["file", "frame", "node", "image", "screenshot", "design", "context", "metadata", "variable", "defs", "component", "style", "code", "connect", "map", "figjam"] },
   { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.",
     reads: ["insight", "run", "event", "definition", "property", "properties"] },
   { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.",
@@ -68,13 +77,29 @@ export function oneClickServices(environment: NodeJS.ProcessEnv = process.env): 
 }
 export const oneClickOf = (id: string) => oneClickServices().find(one => one.id === id) ?? null;
 
-/** Where each service stands in a project: connected by signing in, open to connect, or its name taken by a tool set up another way. */
-export function connectionsOf(store: Store, repo: string): { id: string; label: string; about: string; state: "connected" | "open" | "taken" }[] {
+/** What to use when a service won't let Toolroll sign in by itself. */
+const INSTEAD: Readonly<Record<string, string>> = { figma: "Connect Figma (desktop app) instead." };
+
+/** An app on this computer that Connect adds without a sign-in (LOCAL_APPS): its tool, name and one line of how. */
+export const localConnectOf = (id: string): { id: string; label: string; about: string } | null => {
+  const app = LOCAL_APPS.find(one => one.tool === id), tool = catalogTool(id);
+  return app === undefined || tool === null ? null : { id, label: tool.label, about: app.connect };
+};
+
+/** Where each service stands in a project: connected, open to connect, or its name taken by a tool set up another way. `local` connects with no sign-in. */
+export function connectionsOf(store: Store, repo: string): { id: string; label: string; about: string; state: "connected" | "open" | "taken"; local?: true }[] {
   const tools = projectToolsOf(store, repo);
-  return oneClickServices().map(service => {
+  const signIn = oneClickServices().map(service => {
     const had = tools.find(one => one.name === service.id);
-    return { id: service.id, label: service.label, about: service.about, state: had === undefined ? "open" : had.spec.url === service.url && had.spec.bearer === ACCESS ? "connected" : "taken" };
+    return { id: service.id, label: service.label, about: service.about, state: had === undefined ? "open" as const : had.spec.url === service.url && had.spec.bearer === ACCESS ? "connected" as const : "taken" as const };
   });
+  const local = LOCAL_APPS.flatMap(app => {
+    const one = localConnectOf(app.tool);
+    if (one === null) return [];
+    const had = tools.find(tool => tool.name === one.id);
+    return [{ ...one, state: had === undefined ? "open" as const : localAppOf(had.spec) !== null ? "connected" as const : "taken" as const, local: true as const }];
+  });
+  return [...signIn, ...local];
 }
 
 /** The verbs that only read. An action named by anything else is withheld from research. */
@@ -99,20 +124,27 @@ export function readsOnly(action: string, subjects: readonly string[]): boolean 
  * What a research step may use of a project's connected services: each
  * signed-in service's read-only actions, as its last test listed them —
  * by server (`reads`, for Codex's `enabled_tools`) and named the way Claude
- * allows them (`mcp__<service>__<action>`). A service not connected, without
+ * allows them (`mcp__<service>__<action>`). `local` is the loopback host of
+ * each app on this computer it reads (its proxy lets only those through). A service not connected, without
  * read-only actions, or left out of this run (`launched`) gives nothing.
  */
-export type ResearchTools = { services: { id: string; label: string }[]; allowed: string[]; reads: Record<string, string[]> };
+export type ResearchTools = { services: { id: string; label: string }[]; allowed: string[]; reads: Record<string, string[]>; local: string[] };
 export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null): ResearchTools {
-  const research: ResearchTools = { services: [], allowed: [], reads: {} };
-  for (const service of oneClickServices()) {
+  const research: ResearchTools = { services: [], allowed: [], reads: {}, local: [] };
+  // Signed-in services, then apps on this computer (each exactly as listed: its own address, no key).
+  const readable = [
+    ...oneClickServices().map(service => ({ id: service.id, label: service.label, reads: service.reads, is: (spec: ToolSpec) => spec.url === service.url && spec.bearer === ACCESS })),
+    ...LOCAL_APPS.map(app => ({ id: app.tool, label: catalogTool(app.tool)?.label ?? app.tool, reads: app.reads, is: (spec: ToolSpec) => localAppOf(spec) === app })),
+  ];
+  for (const service of readable) {
     const tool = tools.find(one => one.name === service.id);
-    if (service.reads === undefined || tool === undefined || tool.spec.url !== service.url || tool.spec.bearer !== ACCESS || (launched !== null && !launched.has(tool.name))) continue;
+    if (service.reads === undefined || tool === undefined || !service.is(tool.spec) || (launched !== null && !launched.has(tool.name))) continue;
     const reads = (tool.lastTest?.ok ? tool.lastTest.tools : []).filter(action => readsOnly(action, service.reads!));
     if (reads.length === 0) continue;
     research.services.push({ id: service.id, label: service.label });
     research.allowed.push(...reads.map(action => `mcp__${service.id}__${action}`));
     research.reads[service.id] = reads;
+    if (localAppOf(tool.spec) !== null) research.local.push(new URL(tool.spec.url!).host);
   }
   return research;
 }
@@ -187,6 +219,8 @@ export async function startConnect(input: { service: string; repo: string; by: s
   try {
     const registered = await fetcher(server.register, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({ client_name: "Toolroll", redirect_uris: [redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }) });
+    // Figma's answer (Oct 2026): it registers only apps it has approved. Said before reading a body that may not be JSON.
+    if (registered.status === 401 || registered.status === 403) return { ok: false, said: `${service.label} doesn't let other apps sign in this way yet.${INSTEAD[service.id] === undefined ? "" : ` ${INSTEAD[service.id]}`}` };
     const body = await registered.json() as { client_id?: unknown; client_secret?: unknown };
     if (!registered.ok || typeof body.client_id !== "string") return { ok: false, said: `${service.label} didn't let Toolroll register (HTTP ${registered.status}).` };
     clientId = body.client_id;
@@ -251,10 +285,12 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   }
   setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource,
     ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }), ...(visit.clientSecret === null ? {} : { [CLIENT_SECRET]: visit.clientSecret }) }, home);
-  if (options.test === false) return { ok: true, said: `${service.label} is connected.` };
+  // The success line names the project it went to: the page and chat may be looking at another.
+  const to = basename(visit.repo);
+  if (options.test === false) return { ok: true, said: `${service.label} is connected to ${to}.` };
   const tested = await testToolOf(store, visit.repo, spec.name, now, { home, ...(options.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) });
-  return tested?.ok ? { ok: true, said: `${service.label} is connected: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a teammate use it from its page.` }
-    : { ok: true, said: `${service.label} is signed in, but its test didn't pass yet: ${tested?.problem ?? "no answer"}.` };
+  return tested?.ok ? { ok: true, said: `${service.label} is connected to ${to}: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a teammate use it from its page.` }
+    : { ok: true, said: `${service.label} is signed in for ${to}, but its test didn't pass yet: ${tested?.problem ?? "no answer"}.` };
 }
 
 /** Keep connected services signed in: any token expiring within ten minutes is refreshed (the worker's pass, and before a teammate's call). */

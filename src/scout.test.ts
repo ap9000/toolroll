@@ -599,10 +599,10 @@ describe("scout tasks, against real git", () => {
     };
     connect("mobbin", ["search_screens", "search_flows", "save_to_collection"]);
     connect("posthog", ["query-run", "insight-create-from-query", "feature-flag-get-all"]);
-    connect("figma", ["get_screenshot"]);
+    connect("betterstack", ["uptime_list_monitors"]);
     store.close();
     await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
-    // This run launches Mobbin and PostHog (their sign-ins are set); Figma is left out of it.
+    // This run launches Mobbin and PostHog (their sign-ins are set); Better Stack is left out of it.
     const launched = vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: ["mobbin", "posthog"].map(id => ({ spec: connectedSpec(id)!, digest: "d", values: {} })), skipped: [] }));
     expect(payload().ok).toBe(true);
     expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);

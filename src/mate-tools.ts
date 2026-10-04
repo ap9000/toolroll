@@ -774,7 +774,7 @@ export const MATE_TOOLS: MateTool[] = [
   },
   {
     name: "get_project_tools",
-    description: "Read a project's tools (the MCP servers its builds get, and only those), the services that connect by signing in, the common tools list and servers found on this computer. A service in connectBySigningIn (Stripe, Notion, Linear, Sentry, Jira…) connects in one click: the person signs in on the service's own page, so give them its connect link and never propose tool_add for it. Add/remove others with propose_action tool_add/tool_remove; secrets are set only on the Tools page.",
+    description: "Read a project's tools (the MCP servers its builds get, and only those), the services that connect by signing in, the common tools list and servers found on this computer. A service in connectBySigningIn (Stripe, Notion, Linear, Sentry, Jira…) connects in one click: the person signs in on the service's own page, so give them its connect link (for this repo; another project has its own) and never propose tool_add for it. When saying a service is connected, name the project it is connected to (its list_repos name). Add/remove others with propose_action tool_add/tool_remove; secrets are set only on the Tools page.",
     inputSchema: schema({ repo: REPO_ARG }, ["repo"]),
     handle: (ctx, args) => {
       const repo = repoPathOf(ctx.who, args["repo"]);

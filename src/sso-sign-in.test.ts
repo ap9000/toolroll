@@ -132,14 +132,14 @@ test("a step-up is the provider's check from moments ago; later, a link to be ch
   const tools = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
   expect(tools).toContain('data-sso-step-up="confirmed"');
   expect(tools).not.toMatch(/type="password"[^>]*autocomplete="current-password"/);
-  const add = (csrf: string) => fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, repo: "/repo/main", action: "add-catalog", catalog: "playwright", password: "" }) });
+  const add = (csrf: string) => fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog: "playwright", password: "" }) });
   expect((await add(csrfOf(tools))).headers.get("location")).toContain("said=");
   // Eleven minutes on: the page asks to confirm with the provider, and an empty password no longer does.
   const later = Date.now() + 11 * 60_000;
   vi.spyOn(Date, "now").mockReturnValue(later);
   const stale = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
   expect(stale).toContain('href="/login/sso?reauth=1&amp;return=%2Fsettings%2Ftools">Confirm with Okta</a>');
-  const refused = await fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: csrfOf(stale), repo: "/repo/main", action: "add-catalog", catalog: "shadcn", password: "" }) });
+  const refused = await fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: csrfOf(stale), repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog: "shadcn", password: "" }) });
   expect(decodeURIComponent(refused.headers.get("location") ?? "")).toContain("problem=");
   // Confirming with the provider makes it fresh again, and says so on the record.
   vi.restoreAllMocks();
