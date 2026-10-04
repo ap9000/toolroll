@@ -30,7 +30,7 @@ import { exportFlow, fetchFlowFile, FlowFileError, importFlow, parseFlowFile, pl
 import { BLANK_SOUL, TEAMMATE_CSS, teammatePageHtml, teammatesListHtml } from "./teammates-ui.js";
 import { grantTool, revokeTool, rulesFromForm, setToolRules } from "./teammate-tools.js";
 import { addKitGithubTrigger, addKitSample, kitInstalled, kitOf, setUpKit } from "./kits.js";
-import { CONNECT_CALLBACK, connectionsOf, finishConnect, oneClickOf, startConnect, type ConnectVisit } from "./mcp-connect.js";
+import { CONNECT_CALLBACK, connectionsOf, finishConnect, localConnectOf, oneClickOf, startConnect, type ConnectVisit } from "./mcp-connect.js";
 import { KITS_CSS, kitPageHtml, kitsGalleryHtml } from "./kits-ui.js";
 import { STARTERS_CSS, startersHtml } from "./flow-starters-ui.js";
 import { GALLERY_CSS, galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
@@ -53,7 +53,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, rece
 import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";
 import { FLOW_TEMPLATES, validateFlowDefinition } from "./flows.js";
-import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
+import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
 import { changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
 import { knowledgeHtml, knowledgeContextHtml, KNOWLEDGE_CSS, decisionsHtml, memorySearchHtml, MEMORY_INTRO, proposalsHtml } from "./knowledge-ui.js";
@@ -984,8 +984,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return {
       repo, project: repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo,
       tools: tools.map(tool => ({ tool, secretsSet: secretsSetFor(repo, tool.spec, toolHome) })),
-      // A service that connects by signing in is offered only that way.
-      catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null),
+      // A service that connects by signing in (or an app's own Connect) is offered only that way.
+      catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
       connections: connectionsOf(store, repo), kit, wanted,
       found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
     };
@@ -4127,7 +4127,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (chosen) {
         try {
           const approver = who.role === "approver" && who.via === "cookie";
-          content = toolsHtml(toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kitOf(url.searchParams.get("kit") ?? "")?.id ?? null, oneClickOf(url.searchParams.get("connect") ?? "")?.id ?? null), who.via === "cookie" ? who.session.csrf : "", approver,
+          content = toolsHtml(toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kitOf(url.searchParams.get("kit") ?? "")?.id ?? null, (oneClickOf(url.searchParams.get("connect") ?? "") ?? localConnectOf(url.searchParams.get("connect") ?? ""))?.id ?? null), who.via === "cookie" ? who.session.csrf : "", approver,
             { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
         } catch { content = '<p class="problem" role="alert">Tools are unavailable. Reload to retry.</p>'; }
       }
@@ -7666,10 +7666,28 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const repo = body.get("repo") ?? "";
       if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
       const service = oneClickOf(body.get("service") ?? "");
+      const local = service === null ? localConnectOf(body.get("service") ?? "") : null;
+      const chosen = service ?? local;
       const kit = kitOf(body.get("kit") ?? "")?.id ?? null;
-      const back = (words: string) => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}${service === null ? "" : `&connect=${service.id}`}&problem=${encodeURIComponent(words)}#connect`);
-      if (service === null) return back("Choose a service to connect.");
+      // A Connect that fails comes back to its own button, where the reason is said. No #fragment: one stops the alert's autofocus.
+      const back = (words: string) => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}${chosen === null ? "" : `&connect=${chosen.id}`}&problem=${encodeURIComponent(words)}`);
+      if (chosen === null) return back("Choose a service to connect.");
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
+      // An app on this computer: added like a common tool and tested; one that can't be reached isn't kept.
+      if (local !== null) {
+        const had = projectToolsOf(store, repo).find(one => one.name === local.id);
+        if (had !== undefined && localAppOf(had.spec) === null) return back(`This project already has a tool called ${local.id}, set up another way. Remove it on this page to connect ${local.label}.`);
+        if (had === undefined) {
+          const { label: _label, ...spec } = catalogTool(local.id)!;
+          const added = addToolTo(store, repo, spec, `${local.label}, connected on this computer`, who.name, clock(), { home: toolHome });
+          if (!added.ok) return back(added.message);
+        }
+        const tested = await testToolOf(store, repo, local.id, clock(), { home: toolHome, omitEnv: ALL_CREDENTIAL_ENV });
+        if (tested?.ok) return redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}&said=${encodeURIComponent(`${local.label} is connected: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}.`)}#tool-${local.id}`);
+        if (had === undefined) removeToolFrom(store, repo, local.id, who.name, clock(), toolHome);
+        return back(tested?.problem ?? `${local.label} didn't answer.`);
+      }
+      if (service === null) return back("Choose a service to connect.");
       const origin = consoleOrigin(request.headers.host);
       if (origin === null) return back("Connect tools from this computer (localhost) or from your https address.");
       const started = await startConnect({ service: service.id, repo, by: who.name, origin, kit }, options.connectFetch ?? fetch);

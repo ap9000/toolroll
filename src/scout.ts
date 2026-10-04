@@ -87,9 +87,11 @@ const PROXY_BYPASS_ENV: readonly string[] = ["NO_PROXY", "no_proxy", "ALL_PROXY"
 
 /** The scout's environment while its proxy runs (review 827): web fetch and the provider's own traffic go through
  * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable.
- * The one direct address is its own browser's port, when it has one (review 828): the proxy refuses loopback. */
-export function scoutProxyEnv(proxy: string, browserUrl: string | null = null): Record<string, string> {
-  const direct = browserUrl === null ? {} : { NO_PROXY: new URL(browserUrl).host, no_proxy: new URL(browserUrl).host };
+ * The direct addresses are its own browser's port, when it has one (review 828), and an app on this computer it
+ * reads (`local`: Figma's desktop server): the proxy refuses loopback. */
+export function scoutProxyEnv(proxy: string, browserUrl: string | null = null, local: readonly string[] = []): Record<string, string> {
+  const hosts = [...(browserUrl === null ? [] : [new URL(browserUrl).host]), ...local].join(",");
+  const direct = hosts === "" ? {} : { NO_PROXY: hosts, no_proxy: hosts };
   return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, ...direct };
 }
 
@@ -267,7 +269,7 @@ function scoutBrief(
   ].join("\n");
 }
 
-const NO_RESEARCH: ResearchTools = { services: [], allowed: [], reads: {} };
+const NO_RESEARCH: ResearchTools = { services: [], allowed: [], reads: {}, local: [] };
 
 /** What of the project's connected services this run may read (none when they can't be read). */
 function connectedResearch(store: Store, taskRef: number, runId: number): ResearchTools {
@@ -406,11 +408,11 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     if (started !== null && started.ok) browserServer = started.server;
     browserProblem = started !== null && !started.ok ? started.reason : null;
     const browser = browserServer === null ? null : scoutBrowser(browserServer.url);
-    const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null);
-    const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
-    // The project's signed-in services, read-only actions only: Claude allows them by name, so `dontAsk` refuses every
-    // other one; Codex launches only those servers, each with only those actions enabled.
+    // The project's signed-in services (and apps on this computer), read-only actions only: Claude allows them by name,
+    // so `dontAsk` refuses every other one; Codex launches only those servers, each with only those actions enabled.
     const research = proxy === null ? NO_RESEARCH : connectedResearch(store, request.taskRef, request.runId);
+    const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null, research.local);
+    const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
     invoked = await invokeAgent(
       store,
       request.runId,

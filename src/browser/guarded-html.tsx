@@ -53,8 +53,12 @@ export function GuardedHtml({ html, immutable = false, className = "" }: { html:
       } else if (!node.querySelector("form.approve-form")) setDeferred(true);
       return;
     }
+    const first = installed.current === null;
     node.innerHTML = html;
     installed.current = html;
+    // Markup placed by innerHTML never autofocuses: on first placement, focus what asks for it (a failed Connect's alert).
+    const asked = first ? node.querySelector<HTMLElement>("[autofocus]") : null;
+    if (asked !== null && (document.activeElement === null || document.activeElement === document.body)) asked.focus();
     setDeferred(false);
     notifyWorkspaceRendered();
   }, [html, immutable, revision]);

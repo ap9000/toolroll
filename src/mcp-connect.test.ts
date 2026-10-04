@@ -5,15 +5,16 @@
  * name set up another way is never overwritten; and the worker renews a
  * sign-in before it runs out, trying a revoked one only now and then.
  */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, setToolSecrets } from "./project-tools.js";
-import { CONNECT_CALLBACK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, oneClickServices, refreshConnections, readsOnly, researchToolsOf, startConnect } from "./mcp-connect.js";
+import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, setToolSecrets, testTool } from "./project-tools.js";
+import { CONNECT_CALLBACK, ONE_CLICK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, oneClickServices, refreshConnections, readsOnly, researchToolsOf, startConnect } from "./mcp-connect.js";
+import { scoutProxyEnv } from "./scout.js";
 
 const T0 = new Date("2026-09-26T23:00:00.000Z");
 let dir: string, repo: string, store: Store;
@@ -117,16 +118,82 @@ test("a stand-in takes a service's place only at a loopback address", () => {
   expect(oneClickServices({ STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|https://127.0.0.1/mcp" }).find(one => one.id === "stripe")?.url).toBe("https://mcp.stripe.com/");
 });
 
-test("Mobbin, Figma, PostHog and Better Stack connect by signing in, each said plainly", () => {
+test("Mobbin, PostHog and Better Stack connect by signing in; Figma connects through its desktop app, with no key", () => {
   const listed = connectionsOf(store, repo);
-  expect(listed.filter(one => ["mobbin", "figma", "posthog", "betterstack"].includes(one.id))).toEqual([
+  expect(listed.filter(one => ["mobbin", "figma", "posthog", "betterstack", "figma-desktop"].includes(one.id))).toEqual([
     { id: "mobbin", label: "Mobbin", about: "Real app screens and flows to learn from.", state: "open" },
-    { id: "figma", label: "Figma", about: "Design files and frames.", state: "open" },
     { id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "open" },
     { id: "betterstack", label: "Better Stack", about: "Uptime checks and incidents.", state: "open" },
+    { id: "figma-desktop", label: "Figma (desktop app)", about: "Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.", state: "open", local: true },
   ]);
-  expect(oneClickServices({}).filter(one => ["mobbin", "figma", "posthog", "betterstack"].includes(one.id)).map(one => one.url))
-    .toEqual(["https://api.mobbin.com/mcp", "https://mcp.figma.com/mcp", "https://mcp.posthog.com/mcp", "https://mcp.betterstack.com"]);
+  expect(oneClickServices({}).map(one => one.id)).not.toContain("figma");
+  expect(connectedSpec("figma")).toBeNull();
+  // The desktop app's Dev Mode server on this computer: streamable HTTP, no key (it uses the app's own sign-in).
+  const { label, ...figma } = catalogTool("figma-desktop")!;
+  expect(label).toBe("Figma (desktop app)");
+  expect(figma).toMatchObject({ transport: "http", url: "http://127.0.0.1:3845/mcp", secrets: [], bearer: null, headerSecrets: {} });
+  expect(addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir })).toMatchObject({ ok: true, spec: { name: "figma-desktop", url: "http://127.0.0.1:3845/mcp" } });
+  expect(connectionsOf(store, repo).find(one => one.id === "figma-desktop")?.state).toBe("connected");
+});
+
+test("the desktop app's test says plainly when Figma isn't running or its server is off", async () => {
+  const { label: _label, ...figma } = catalogTool("figma-desktop")!;
+  const refused = vi.fn(async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:3845"), { code: "ECONNREFUSED" }) }); });
+  vi.stubGlobal("fetch", refused);
+  try {
+    expect(await testTool(figma, {})).toEqual({ ok: false, problem: "The Figma desktop app isn't running, or its Dev Mode MCP server is off. Open Figma and turn the server on in Preferences." });
+    expect(refused).toHaveBeenCalledWith("http://127.0.0.1:3845/mcp", expect.anything());
+    // Any other unreachable tool keeps the general words.
+    expect(await testTool({ ...figma, name: "mine", url: "http://127.0.0.1:3846/mcp" }, {})).toEqual({ ok: false, problem: "It could not be reached." });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+/**
+ * Registration answers as recorded (no live calls): the dry check before a
+ * service is listed. Every listed service must have one that accepts; one
+ * that refuses (Figma: 403 for any app it hasn't approved) can't be listed.
+ */
+const REGISTRATION: Readonly<Record<string, number>> = {
+  ...Object.fromEntries(ONE_CLICK.map(one => [one.id, 201])),
+  figma: 403,
+};
+
+/** A service's sign-in replayed at a stand-in address on this computer: discovery, then its recorded registration answer. */
+function replayed(id: string) {
+  const origin = "http://127.0.0.1:5123", reply = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === `${origin}/mcp` && init?.method === "POST") return reply(401, {}, { "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"` });
+    if (url === `${origin}/.well-known/oauth-protected-resource`) return reply(200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+    if (url === `${origin}/.well-known/oauth-authorization-server`) return reply(200, { authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register` });
+    if (url === `${origin}/register`) return REGISTRATION[id]! < 300 ? reply(REGISTRATION[id]!, { client_id: `${id}-client` }) : new Response("Forbidden", { status: REGISTRATION[id]! });
+    return reply(404, {});
+  }) as typeof fetch;
+}
+
+test("a one-click service is listed only when its recorded registration accepts Toolroll; a refusal says so plainly, with the alternative", async () => {
+  for (const service of ONE_CLICK) expect(REGISTRATION[service.id], `${service.id} has no recorded registration answer`).toBe(201);
+  for (const [id, status] of Object.entries(REGISTRATION)) if (status >= 400) expect(ONE_CLICK.map(one => one.id)).not.toContain(id);
+  for (const id of Object.keys(REGISTRATION)) {
+    vi.stubEnv("STANDING_ORDERS_TEST_CONNECT", `${id}|${ONE_CLICK.find(one => one.id === id)?.label ?? "Figma"}|http://127.0.0.1:5123/mcp`);
+    try {
+      const started = await startConnect({ service: id, repo, by: "alex", origin: "http://127.0.0.1:4180" }, replayed(id), T0.getTime());
+      if (id === "figma") expect(started).toEqual({ ok: false, said: "Figma doesn't let other apps sign in this way yet. Connect Figma (desktop app) instead." });
+      else expect(started, id).toMatchObject({ ok: true, visit: { clientId: `${id}-client` } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
+  // 401 reads the same; a service with no alternative just says it.
+  vi.stubEnv("STANDING_ORDERS_TEST_CONNECT", "zapier|Zapier|http://127.0.0.1:5123/mcp");
+  try {
+    const refusing = (async (input: string | URL | Request, init?: RequestInit) => String(input).endsWith("/register") ? new Response("", { status: 401 }) : replayed("zapier")(input, init)) as typeof fetch;
+    expect(await startConnect({ service: "zapier", repo, by: "alex", origin: "http://127.0.0.1:4180" }, refusing, T0.getTime())).toEqual({ ok: false, said: "Zapier doesn't let other apps sign in this way yet." });
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 test("a sign-in on another origin is found through the server's resource metadata (Mobbin's Supabase auth)", async () => {
@@ -166,9 +233,13 @@ test("research gets only the read-only actions of services signed in, and nothin
     expect(addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
     store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools, problem: null }));
   };
-  expect(researchToolsOf(projectToolsOf(store, repo))).toEqual({ services: [], allowed: [], reads: {} });
+  expect(researchToolsOf(projectToolsOf(store, repo))).toEqual({ services: [], allowed: [], reads: {}, local: [] });
   connect("mobbin", ["search_screens", "search_flows", "save_to_collection", "searchApps", "search_and_save_screens"]);
-  connect("figma", ["get_design_context", "get_screenshot", "get_metadata", "create_design_system_rules", "add_code_connect_map", "generate_figma_design", "get_file_then_publish"]);
+  // Figma's desktop app: added with no key, read-only by what its last test listed.
+  const { label: _figma, ...figma } = catalogTool("figma-desktop")!;
+  addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir });
+  store.recordProjectToolTest(repo, "figma-desktop", JSON.stringify({ at: T0.toISOString(), ok: true, problem: null,
+    tools: ["get_code", "get_image", "get_variable_defs", "get_metadata", "get_screenshot", "get_code_connect_map", "create_design_system_rules", "add_code_connect_map", "generate_figma_design"] }));
   connect("posthog", ["query-run", "insights-get-all", "insight-get", "insight-create-from-query", "insight-update", "insight-delete", "event-definitions-list", "feature-flag-get-all", "create-feature-flag", "switch-project"]);
   connect("betterstack", ["uptime_list_monitors", "uptime_get_incident", "uptime_acknowledge_incident", "uptime_resolve_incident", "uptime_create_monitor", "uptime_pause_monitor", "telemetry_query"]);
   // Stripe is connected too, but names no reads: research never gets it.
@@ -176,24 +247,34 @@ test("research gets only the read-only actions of services signed in, and nothin
   const { label: _label, ...sentry } = catalogTool("sentry")!;
   addToolTo(store, repo, sentry, "the common tools list", "alex", T0, { home: dir });
   const research = researchToolsOf(projectToolsOf(store, repo));
-  expect(research.services.map(one => one.id)).toEqual(["mobbin", "figma", "posthog", "betterstack"]);
+  expect(research.services.map(one => one.id)).toEqual(["mobbin", "posthog", "betterstack", "figma-desktop"]);
   expect(research.allowed).toEqual([
     "mcp__mobbin__search_screens", "mcp__mobbin__search_flows", "mcp__mobbin__searchApps",
-    "mcp__figma__get_design_context", "mcp__figma__get_screenshot", "mcp__figma__get_metadata",
     "mcp__posthog__query-run", "mcp__posthog__insights-get-all", "mcp__posthog__insight-get", "mcp__posthog__event-definitions-list",
     "mcp__betterstack__uptime_list_monitors", "mcp__betterstack__uptime_get_incident",
+    "mcp__figma-desktop__get_code", "mcp__figma-desktop__get_image", "mcp__figma-desktop__get_variable_defs", "mcp__figma-desktop__get_metadata", "mcp__figma-desktop__get_screenshot", "mcp__figma-desktop__get_code_connect_map",
   ]);
   expect(research.reads).toEqual({
     mobbin: ["search_screens", "search_flows", "searchApps"],
-    figma: ["get_design_context", "get_screenshot", "get_metadata"],
     posthog: ["query-run", "insights-get-all", "insight-get", "event-definitions-list"],
     betterstack: ["uptime_list_monitors", "uptime_get_incident"],
+    "figma-desktop": ["get_code", "get_image", "get_variable_defs", "get_metadata", "get_screenshot", "get_code_connect_map"],
   });
+  // Its one loopback address is the only one research reaches directly, past its proxy.
+  expect(research.local).toEqual(["127.0.0.1:3845"]);
+  expect(scoutProxyEnv("http://127.0.0.1:7000", "http://127.0.0.1:7001/mcp", research.local)).toMatchObject({ NO_PROXY: "127.0.0.1:7001,127.0.0.1:3845", no_proxy: "127.0.0.1:7001,127.0.0.1:3845" });
+  expect(scoutProxyEnv("http://127.0.0.1:7000")).not.toHaveProperty("NO_PROXY");
   // Left out of this run (not launched), a service gives nothing.
-  expect(researchToolsOf(projectToolsOf(store, repo), new Set(["figma"])).allowed.every(one => one.startsWith("mcp__figma__"))).toBe(true);
+  expect(researchToolsOf(projectToolsOf(store, repo), new Set(["figma-desktop"])).allowed.every(one => one.startsWith("mcp__figma-desktop__"))).toBe(true);
+  expect(researchToolsOf(projectToolsOf(store, repo), new Set(["mobbin"])).local).toEqual([]);
   // A failed test lists nothing to read.
   store.recordProjectToolTest(repo, "mobbin", JSON.stringify({ at: T0.toISOString(), ok: false, tools: [], problem: "signed out" }));
   expect(researchToolsOf(projectToolsOf(store, repo)).services.map(one => one.id)).not.toContain("mobbin");
+  // A tool named figma-desktop at another address isn't the desktop app: research reads nothing of it.
+  removeToolFrom(store, repo, "figma-desktop", "alex", T0, dir);
+  addToolTo(store, repo, { ...figma, url: "http://127.0.0.1:9999/mcp" }, "added by hand", "alex", T0, { home: dir });
+  store.recordProjectToolTest(repo, "figma-desktop", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["get_code"], problem: null }));
+  expect(researchToolsOf(projectToolsOf(store, repo)).services.map(one => one.id)).not.toContain("figma-desktop");
 });
 
 test("read-only is an allow-list of reading verbs: any word nobody listed withholds the action", () => {
@@ -209,7 +290,7 @@ test("read-only is an allow-list of reading verbs: any word nobody listed withho
 });
 
 test("a research launch gets only connected services' read-only actions: Codex enables just those per server, and the rest are left out", () => {
-  const ids = ["mobbin", "figma", "stripe"];
+  const ids = ["mobbin", "posthog", "stripe"];
   for (const id of ids) {
     expect(addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
     setToolSecrets(repo, id, { OAUTH_ACCESS_TOKEN: "access" }, dir);
@@ -220,15 +301,15 @@ test("a research launch gets only connected services' read-only actions: Codex e
     getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "research" }), getScope: () => null, toolSealFor: () => null,
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
-  const readOnly = { mobbin: ["search_screens", "search_flows"], figma: [] };
+  const readOnly = { mobbin: ["search_screens", "search_flows"], posthog: [] };
   const launched = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false, readOnly });
   try {
     const argv = launched.argv.join(" ");
     expect(argv).toContain('mcp_servers.mobbin.enabled_tools=["search_screens","search_flows"]');
-    expect(argv).not.toContain("mcp_servers.figma.");
+    expect(argv).not.toContain("mcp_servers.posthog.");
     expect(argv).not.toContain("mcp_servers.stripe.");
     expect(JSON.parse(recorded)).toMatchObject({ tools: [{ name: "mobbin" }], skipped: [
-      { name: "figma", reason: "research reads only connected services' read-only actions" },
+      { name: "posthog", reason: "research reads only connected services' read-only actions" },
       { name: "stripe", reason: "research reads only connected services' read-only actions" },
     ] });
   } finally {
