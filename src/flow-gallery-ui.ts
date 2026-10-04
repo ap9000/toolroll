@@ -1,12 +1,12 @@
 /**
  * The flow gallery in the console (Flows → New and Settings → Flows): cards grouped by what they're for, each with
- * its promise, a small drawing of its zones, what it needs and "Use this". A template's page asks only what it
+ * its promise, its steps in order, what it needs and "Use this". A template's page asks only what it
  * needs, previews in plain words what it will do and never do, and creates it — the same answers it previewed.
  * A template's tools show their marks and whether the project has them; one it lacks offers Connect first.
  */
 import { brandMarkHtml } from "./brand-mark.js";
 import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
-import { choiceTargets, type FlowDefinition } from "./flows.js";
+import { choiceTargets, type FlowDefinition, type FlowStage } from "./flows.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -14,8 +14,10 @@ export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{ma
   `.gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}` +
   `.gallery-card{display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid var(--so-line);border-radius:10px;background:var(--so-paper);min-width:0}` +
   `.gallery-card h3{margin:0;font-size:.9375rem}.gallery-card p{margin:0;overflow-wrap:anywhere}.gallery-card .gallery-promise{line-height:1.5;flex:1}` +
-  `.gallery-zones{display:block;width:100%;height:56px;border-radius:8px;background:var(--so-raised)}.gallery-zones rect{fill:var(--so-paper);stroke:var(--so-input-line);stroke-width:1.5}` +
-  `.gallery-zones rect[data-person="true"]{fill:var(--so-signal-soft,var(--so-raised));stroke:var(--so-ink)}.gallery-zones line{stroke:var(--so-input-line);stroke-width:1.5}` +
+  // A template's steps in order, joined by arrows; a person's own steps carry the attention chip.
+  `.gallery-steps{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;list-style:none;padding:0;margin:0;font-size:12px;font-weight:500;line-height:1.5;color:var(--so-ink)}` +
+  `.gallery-steps li{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow-wrap:anywhere}.gallery-steps li>span[aria-hidden]{color:var(--so-muted)}` +
+  `.gallery-steps b{font-weight:500;font-size:11.5px;line-height:18px;padding:1px 6px;border-radius:5px;background:var(--so-signal-soft);color:var(--so-signal)}` +
   `.gallery-needs{display:flex;flex-wrap:wrap;gap:4px;list-style:none;padding:0;margin:0}.gallery-needs li{font-size:11.5px;font-weight:500;line-height:18px;padding:1px 6px;border-radius:5px;background:var(--so-neutral-soft,var(--so-raised));color:var(--so-neutral-ink,var(--so-muted))}` +
   // An outline action in a list (the Quiet List Rule), over the workspace's ink default for .button-link.
   `.gallery .gallery-card a.button-link{align-self:flex-start;min-height:36px;background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line)}` +
@@ -24,7 +26,7 @@ export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{ma
   `.gallery-tools{display:grid;gap:6px;list-style:none;padding:0;margin:0}.gallery-tools li{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.gallery-tools li>span:not(.brand-mark){min-width:0;overflow-wrap:anywhere}` +
   `.gallery-tools strong{font-weight:500;overflow-wrap:anywhere}.gallery-connect{display:grid;gap:10px;padding:12px 0;border-top:1px solid var(--so-line)}.gallery-connect:last-child{border-bottom:1px solid var(--so-line);margin-bottom:4px}` +
   `.gallery-connect form{display:grid;gap:8px;margin:0}.gallery-connect p{margin:0;overflow-wrap:anywhere}.gallery-connect .gallery-tool-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.gallery-connect button{justify-self:start;min-height:36px;white-space:nowrap;background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);font-weight:600}` +
-  `.gallery-use{max-width:720px;min-width:0}.gallery-use .gallery-zones{height:88px;margin:4px 0 12px}.gallery-use form{display:grid;gap:12px;margin:0}.gallery-use label{display:grid;gap:4px;font-weight:500}` +
+  `.gallery-use{max-width:720px;min-width:0}.gallery-use .gallery-steps{margin:4px 0 12px}.gallery-use form{display:grid;gap:12px;margin:0}.gallery-use label{display:grid;gap:4px;font-weight:500}` +
   `.gallery-use label small{font-weight:400;color:var(--so-muted)}.gallery-use label.gallery-check{display:flex;align-items:flex-start;gap:8px;font-weight:500}.gallery-use label.gallery-check input{margin-top:3px;width:16px;height:16px;min-height:0;flex:none}.gallery-use label.gallery-check small{display:block}` +
   `.gallery-use input:not([type=hidden]),.gallery-use select{box-sizing:border-box;width:100%;max-width:100%;min-height:32px;padding:0 10px;border:1px solid var(--so-input-line);border-radius:8px;background:var(--so-paper);color:var(--so-ink);font:inherit}` +
   `.gallery-preview{display:grid;gap:8px;padding:16px;border:1px solid var(--so-line);border-radius:10px;background:var(--so-paper);min-width:0}.gallery-preview h2{margin:0;font-size:.9375rem}` +
@@ -36,20 +38,29 @@ export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{ma
   `@media(max-width:760px){.gallery-grid{grid-template-columns:minmax(0,1fr)}.gallery-connect button{min-height:44px;justify-self:stretch}.gallery .gallery-card a.button-link{min-height:44px;align-self:stretch;justify-content:center}` +
   `.gallery-use input:not([type=hidden]),.gallery-use select{font-size:16px;min-height:44px}.gallery-actions button{flex:1 1 auto;min-height:44px}}`;
 
-/** A small drawing of a flow's zones where they sit on its canvas, with its paths; a person's decisions stand out. */
-export function zonesDiagram(definition: FlowDefinition, label: string): string {
-  const zones = definition.stages.map(one => one.zone);
-  const minX = Math.min(...zones.map(one => one.x)), minY = Math.min(...zones.map(one => one.y));
-  const maxX = Math.max(...zones.map(one => one.x + one.w)), maxY = Math.max(...zones.map(one => one.y + one.h));
-  const pad = 40;
-  const box = `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`;
-  const centre = (id: string | null) => { const at = definition.stages.find(one => one.id === id)?.zone; return at === undefined ? null : { x: at.x + at.w / 2, y: at.y + at.h / 2 }; };
-  const lines = definition.stages.flatMap(stage => [stage.next, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage)].map(to => {
-    const from = centre(stage.id), end = centre(to);
-    return from === null || end === null ? "" : `<line x1="${from.x}" y1="${from.y}" x2="${end.x}" y2="${end.y}" vector-effect="non-scaling-stroke"/>`;
-  })).join("");
-  const rects = definition.stages.map(one => `<rect x="${one.zone.x}" y="${one.zone.y}" width="${one.zone.w}" height="${one.zone.h}" rx="36" data-person="${one.kind === "approval" || one.kind === "choose"}" vector-effect="non-scaling-stroke"/>`).join("");
-  return `<svg class="gallery-zones" viewBox="${box}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${e(label)}">${lines}${rects}</svg>`;
+/** A flow's main path, as a person reads it: from the start, each step's first way on (a sort's first answer, a choose's
+ * first option that goes somewhere, else next; a check's failure when passing just ends), never back to a step shown. */
+export function mainPath(definition: FlowDefinition): FlowStage[] {
+  const byId = new Map(definition.stages.map(one => [one.id, one]));
+  const path: FlowStage[] = [];
+  for (let at = byId.get(definition.start); at !== undefined && at.kind !== "done" && !path.includes(at);) {
+    path.push(at);
+    const ways = [...(at.sort?.answers.map(one => one.to) ?? []), ...choiceTargets(at), at.next, ...(at.routes?.map(one => one.to) ?? [])].map(id => id === null ? undefined : byId.get(id));
+    if (at.kind === "check") ways.push(at.onFail === null ? undefined : byId.get(at.onFail));
+    at = at.kind === "check" ? ways.find(one => one !== undefined && one.kind !== "done") : ways.find(one => one !== undefined);
+  }
+  return path;
+}
+
+/** A step's short name in the strip: a person's own steps from their side. */
+const stepName = (stage: FlowStage) => stage.kind === "choose" ? "You choose" : stage.kind === "approval" ? "You approve" : stage.kind === "send" ? "Sent to you" : stage.title;
+
+/** A flow's steps in order, joined by arrows; a person's decisions carry the accent. */
+export function stepStrip(definition: FlowDefinition): string {
+  return `<ol class="gallery-steps" aria-label="Steps">${mainPath(definition).map((one, i) => {
+    const name = e(stepName(one));
+    return `<li>${i === 0 ? "" : `<span aria-hidden="true">→</span>`}${one.kind === "choose" || one.kind === "approval" ? `<b data-person>${name}</b>` : name}</li>`;
+  }).join("")}</ol>`;
 }
 
 const needsList = (template: GalleryTemplate) => template.needs.length === 0 ? (template.tools ?? []).length > 0 ? "" : `<ul class="gallery-needs"><li>Nothing to connect</li></ul>`
@@ -68,7 +79,7 @@ export function galleryHtml(input: { repo: string | null; canUse: boolean; conne
   const card = (template: GalleryTemplate) => {
     const definition = galleryDiagram(template);
     return `<article class="gallery-card" data-template="${e(template.id)}"><h3>${e(template.name)}</h3><p class="gallery-promise">${e(template.promise)}</p>` +
-      zonesDiagram(definition, `Zones: ${definition.stages.map(one => one.title).join(", ")}`) + toolsList(galleryToolsOf(template, definition, input.repo === null ? null : input.connections ?? null)) + needsList(template) +
+      stepStrip(definition) + toolsList(galleryToolsOf(template, definition, input.repo === null ? null : input.connections ?? null)) + needsList(template) +
       (input.canUse ? `<a class="button-link" href="${e(href(template.id))}" aria-label="Use ${e(template.name)}">Use this</a>` : "") + `</article>`;
   };
   const groups = GALLERY_GROUPS.map(group => `<h2 id="gallery-${group.id}">${e(group.label)}</h2><div class="gallery-grid" data-group="${group.id}">${GALLERY.filter(one => one.group === group.id).map(card).join("")}</div>`).join("");
@@ -118,7 +129,7 @@ export function galleryUseHtml(input: {
     `<details><summary>Every step</summary><ol>${input.preview.steps.map(one => `<li>${e(one.replace(/^\d+\.\s/, ""))}</li>`).join("")}</ol></details></section>`;
   return `<section class="gallery-use" data-gallery-template="${e(template.id)}">` +
     (input.problem === null ? "" : `<p class="problem" role="alert">${e(input.problem)}</p>`) + (input.said ? `<p role="status">${e(input.said)}</p>` : "") +
-    `<p>${e(template.promise)}</p>${input.diagram === null ? "" : zonesDiagram(input.diagram, `Zones: ${input.diagram.stages.map(one => one.title).join(", ")}`)}${needsList(template)}${toolsBlock}` +
+    `<p>${e(template.promise)}</p>${input.diagram === null ? "" : stepStrip(input.diagram)}${needsList(template)}${toolsBlock}` +
     `<form method="post" action="/flows/new/${e(template.id)}" data-gallery-use><input type="hidden" name="csrf" value="${e(input.csrf)}">` +
     `<input type="hidden" name="previewed" value="${e(input.preview?.digest ?? "")}">${project}${template.asks.map(field).join("")}` +
     `<label>Name<input name="name" value="${e(input.name)}" maxlength="80"></label>` +

@@ -13,7 +13,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
-import { galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
+import { galleryHtml, galleryUseHtml, stepStrip } from "./flow-gallery-ui.js";
 import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
 import { codeOutput } from "./flow-code.js";
 import { addToolTo } from "./project-tools.js";
@@ -150,6 +150,22 @@ describe("flow gallery", () => {
     expect(unchosen).not.toContain("integration-state");
   });
 
+  test("c1: a template's steps read in order, a person's from their side, its main path only and no Done", () => {
+    const strip = (id: string) => stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!))
+      .replace(/<span aria-hidden="true">→<\/span>/g, " → ").replace(/<b data-person>([^<]+)<\/b>/g, "[$1]").replace(/<[^>]+>/g, "");
+    expect(strip("fix-drop-off")).toBe("Find the drop-off → [You choose] → Build the fix → Pull request → Sent to you");
+    // A sort shows its main way, not Ignore; a check that just ends when it passes shows the work it starts.
+    expect(strip("worker-errors")).toBe("Read the errors → Worth fixing? → Find the cause → [You choose] → Fix it → Pull request");
+    expect(strip("weekly-upkeep")).toBe("Anything outdated? → Update them → [You approve] → Pull request");
+    // A failure path is not the main one.
+    expect(strip("email-replies")).toBe("Write the reply → [You approve] → Email it");
+    for (const template of [...GALLERY, BLANK]) {
+      const shown = strip(template.id);
+      expect(shown, template.id).not.toMatch(/Done|Ignore/);
+      expect(shown.length, template.id).toBeGreaterThan(0);
+    }
+  });
+
   test("c1: the gallery shows the templates grouped, and each is created from its page with sample answers", async () => {
     const alex = addApprover(store, "alex", T0);
     if (!alex.ok) throw new Error("alex");
@@ -173,7 +189,9 @@ describe("flow gallery", () => {
       expect(group("ops")).toEqual(BUSINESS);
       expect(gallery.match(/>Use this<\/a>/g)).toHaveLength(GALLERY.length);
       expect(gallery).toContain('<li>Dependabot or Renovate</li>');
-      expect(gallery).toContain('<svg class="gallery-zones"');
+      // Each card names its steps in order, not a drawing.
+      expect(gallery).not.toContain("gallery-zones");
+      expect(gallery.match(/<ol class="gallery-steps" aria-label="Steps">/g)).toHaveLength(GALLERY.length);
       // The Flows list leads to it; Settings → Flows shows it beside the starters.
       expect(await get("/flows")).toContain('<a class="button-link" href="/flows/new">New flow</a>');
       const settings = await get(`/settings/flows?repo=${encodeURIComponent(repo)}`);
