@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.30 — 2026-10-04
+
+- **Long tasks can be planned.** 0.9.28 let task goals run to 8,000
+  characters, but plans still had to fit the goal in 2,000, so every plan for a
+  longer task was refused. Plans now take the same limit as the task.
+
 ## 0.9.29 — 2026-10-04
 
 - **Tasks filed from the command line get sized too.** `task scope` now sizes

@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import { hasForbiddenControls } from "./decision.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 export type PlanProblem = { reason: string; message: string };
 
@@ -168,11 +169,13 @@ export type PlanParseResult =
   | { ok: true; plan: ParsedPlan }
   | { ok: false; problems: PlanProblem[] };
 
-/** Caps matching the scope ritual's fields, plus the document itself. */
+/** Caps matching the scope ritual's fields, plus the document itself. The goal and out-of-scope text share the
+ * task's own limit: a plan reproduces the filed contract exactly, so a lower cap here would refuse every plan for a
+ * long goal. */
 export const PLAN_LIMITS = {
   payload: 64 * 1024,
-  goal: 2_000,
-  outOfScope: 2_000,
+  goal: TEXT_LIMITS.goal,
+  outOfScope: TEXT_LIMITS.goal,
   touch: 200,
   touches: 32,
   document: 16 * 1024,
