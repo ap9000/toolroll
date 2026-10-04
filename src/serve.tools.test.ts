@@ -130,3 +130,26 @@ test("a connected service is connected to another project with one action: a fre
   expect(decodeURIComponent(refused.headers.get("location") ?? "")).toContain("Stripe isn't connected to standing-orders.");
   expect(signIns).toHaveLength(1);
 });
+
+test("the React workspace's Settings → Tools is the same page: named buttons, a shown project on every form, refusals alike", async () => {
+  const cookie = await login();
+  const read = await fetch(`${base}/settings/tools?repo=${encodeURIComponent(ORDERS)}&format=workspace`, { headers: { cookie } });
+  const workspace = await read.json() as import("./browser-workspace.js").BrowserWorkspace;
+  // The workspace places the server's page as it is, so its forms are the ones tested above.
+  expect(workspace.view).toBeNull();
+  const html = workspace.pageHtml ?? "";
+  expect(html).toContain("data-tools-project");
+  expect(html).toContain('aria-label="Connect Stripe to standing-orders"');
+  expect(html).toContain("Add to standing-orders");
+  const forms = [...html.matchAll(/<form method="post" action="\/settings\/tools\/(?:change|connect)">[\s\S]*?<\/form>/g)].map(m => m[0]);
+  expect(forms.length).toBeGreaterThan(0);
+  for (const form of forms) expect(form).toContain(`<input type="hidden" name="shown" value="${ORDERS}">`);
+  const fields = formOf(html, "/settings/tools/connect");
+  expect(fields).toMatchObject({ repo: ORDERS, shown: ORDERS, csrf: workspace.csrf });
+  const started = await post(cookie, "/settings/tools/connect", { ...fields, service: "stripe", password: token });
+  expect(started.status).toBe(200);
+  expect(await declined(started)).toBe(`/settings/tools?repo=${ORDERS}&problem=Stripe wasn't connected to standing-orders: access was declined.`);
+  const stale = await post(cookie, "/settings/tools/connect", { ...fields, shown: BENTO, service: "stripe", password: token });
+  expect(decodeURIComponent(stale.headers.get("location") ?? "")).toContain("The project changed; connect again.");
+  expect(signIns).toHaveLength(1);
+});
