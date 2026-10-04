@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.22 — 2026-10-04
+
+- **Research takes screenshots again.** The research step's browser now runs
+  outside the agent's sandbox with Chrome's own sandbox on, reached on a
+  private local port. It still opens public pages only. A short check before
+  research starts says once, in plain words, if the browser can't start.
+
 ## 0.9.21 — 2026-10-03
 
 - **Flows send you what was done.** A new "Send to me" step sends the last
