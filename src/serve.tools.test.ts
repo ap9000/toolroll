@@ -99,7 +99,7 @@ test("a post from a page that showed another project is refused, and nothing sta
   // The dropdown moved to standing-orders while bentoportfolio's form was still on screen.
   const stale = await post(cookie, "/settings/tools/connect", { ...fields, shown: ORDERS, service: "stripe", password: token });
   expect(stale.status).toBe(303);
-  expect(decodeURIComponent(stale.headers.get("location") ?? "")).toBe(`/settings/tools?repo=${ORDERS}&connect=stripe&problem=The project changed; connect again.#connect`);
+  expect(decodeURIComponent(stale.headers.get("location") ?? "")).toBe(`/settings/tools?repo=${ORDERS}&connect=stripe&problem=The project changed; connect again.`);
   expect(signIns).toHaveLength(0);
   const missing = await post(cookie, "/settings/tools/connect", { csrf: fields["csrf"]!, repo: BENTO, service: "stripe", password: token });
   expect(decodeURIComponent(missing.headers.get("location") ?? "")).toContain("The project changed; connect again.");

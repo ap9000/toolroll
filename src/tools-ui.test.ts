@@ -17,7 +17,7 @@ const view = (wanted: string | null): ToolsView => ({
 test("a failed Connect says why as a focused alert right under its button, and not again at the top", () => {
   const html = toolsHtml(view("stripe"), "csrf", true, { problem: "Stripe doesn't let other apps sign in this way yet." });
   const alert = '<p class="problem connect-problem" id="connect-problem" role="alert" tabindex="-1" autofocus>Stripe doesn&#39;t let other apps sign in this way yet.</p>';
-  expect(html).toContain(`<button name="service" value="stripe" class="connect-wanted">Connect Stripe</button>${alert}`);
+  expect(html).toContain(`<button name="service" value="stripe" class="connect-wanted">Connect Stripe to shop</button>${alert}`);
   expect(html.match(/role="alert"/g)).toHaveLength(1);
   expect(html.indexOf(alert)).toBeGreaterThan(html.indexOf('id="connect-heading"'));
 });
@@ -30,6 +30,6 @@ test("a problem that isn't one service's Connect stays at the top", () => {
 
 test("Figma's desktop app has its own Connect, with its one line of how", () => {
   const html = toolsHtml(view("figma-desktop"), "csrf", true);
-  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-tile connect-local" id="connect-figma-desktop" data-state="open"><i aria-hidden="true">F</i><strong>Figma (desktop app)</strong><span>Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.</span></button>');
-  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-wanted">Connect Figma (desktop app)</button>');
+  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-tile connect-local" id="connect-figma-desktop" data-state="open" aria-label="Connect Figma (desktop app) to shop"><i aria-hidden="true">F</i><strong>Figma (desktop app)</strong><span>Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.</span></button>');
+  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-wanted">Connect Figma (desktop app) to shop</button>');
 });
