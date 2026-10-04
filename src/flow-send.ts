@@ -14,6 +14,7 @@
  * Deterministic and model-free, in the worker's flow pass.
  */
 import { assignmentOf } from "./assignment.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { withActor } from "./actor.js";
 import { flowCardHref, flowDefinitionOf, revisionWithNote, type FlowDecision } from "./flow-engine.js";
 import { itemPlug, itemSource, readFlowItems, type FlowSendItem } from "./flow-items.js";
@@ -273,7 +274,7 @@ export function chooseFlowCard(store: Store, input: { card: number; entry?: numb
   if (target === null) return { ok: false, message: "Choose one of the options; this step doesn't take a reply." };
   if (input.to !== undefined && target !== input.to) return { ok: false, message: "Where replies go changed since; nothing was changed." };
   if (note === "") return { ok: false, message: "Say what you'd change." };
-  if (note.length > 2000) return { ok: false, message: "Keep it under 2,000 characters." };
+  if (note.length > TEXT_LIMITS.note) return { ok: false, message: `Keep it to ${TEXT_LIMITS.note.toLocaleString("en-US")} characters; this is ${note.length.toLocaleString("en-US")}.` };
   const revision = revisionWithNote(store, card, definition.stages.find(one => one.id === target), note, input.actor, input.repos, input.evidenceRoot, now);
   const moved = store.transact(() => {
     if (!store.moveFlowCard(card.id, { to: target, outcome: "sent-back", actor: input.actor, note, ...(revision === null ? {} : { task: revision }), expectEntry: card.entry }, now)) return false;

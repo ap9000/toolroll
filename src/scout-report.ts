@@ -8,6 +8,8 @@
  */
 
 import { hasForbiddenControls } from "./decision.js";
+import { TASK_TEXT_LIMITS } from "./task-text.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 export type ReportProblem = { reason: string; message: string };
 
@@ -33,15 +35,17 @@ export type ReportParseResult =
   | { ok: false; problems: ReportProblem[] };
 
 /** Caps are BYTES of UTF-8 (v4 review, finding 11): a 64 KiB report is
- * 64 KiB whatever script it is written in. */
+ * 64 KiB whatever script it is written in. They hold what a scout writes;
+ * a stored report is read without them (parseReport's `stored`). */
 export const REPORT_LIMITS = {
   payload: 96 * 1024,
   title: 200,
-  summary: 1_000,
+  summary: TEXT_LIMITS.reportSummary,
   document: 64 * 1024,
   followUps: 5,
   followUpTitle: 200,
-  followUpGoal: 2_000,
+  /** A follow-up files as a task: its goal is held to the task goal limit, in bytes of the same count. */
+  followUpGoal: TASK_TEXT_LIMITS.text,
   items: 6,
   itemTitle: 200,
   itemWhy: 1_000,
@@ -157,7 +161,7 @@ function prose(value: unknown, field: string, cap: number, problems: ReportProbl
     problems.push({ reason: `bad-${field}`, message: `${field} must be a string (got ${describe(value)})` });
     return null;
   }
-  if (Buffer.byteLength(value, "utf8") > cap) {
+  if (!readingStored && Buffer.byteLength(value, "utf8") > cap) {
     problems.push({ reason: `${field}-too-long`, message: `${field} is over ${cap} bytes` });
     return null;
   }
@@ -168,8 +172,18 @@ function prose(value: unknown, field: string, cap: number, problems: ReportProbl
   return value;
 }
 
-export function parseReport(raw: string): ReportParseResult {
-  if (Buffer.byteLength(raw, "utf8") > REPORT_LIMITS.payload) {
+/** True while a stored report is read: a limit is for writing, and reading never re-checks a text's length. */
+let readingStored = false;
+
+/** A report, checked. `stored`: one already kept as evidence, read without the length caps (a report written under
+ * higher limits stays readable); every other check still holds. */
+export function parseReport(raw: string, options: { stored?: boolean } = {}): ReportParseResult {
+  readingStored = options.stored === true;
+  try { return parseReportBody(raw); } finally { readingStored = false; }
+}
+
+function parseReportBody(raw: string): ReportParseResult {
+  if (!readingStored && Buffer.byteLength(raw, "utf8") > REPORT_LIMITS.payload) {
     return refuse("too-large", `the payload is over ${REPORT_LIMITS.payload} bytes`);
   }
   let parsed: unknown;

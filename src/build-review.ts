@@ -15,6 +15,7 @@
  * automatic one-shot rule is what keeps it to exactly one reviewer run per
  * build. Nothing here retries.
  */
+import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,8 +143,8 @@ function reviewBrief(title: string, scope: { goal: string; outOfScope: string | 
     "Task:",
     quote(title, 300),
     ...(scope === null ? [] : [
-      "Goal:", quote(scope.goal, 4_000),
-      ...(scope.outOfScope === null ? [] : ["Out of scope:", quote(scope.outOfScope, 2_000)]),
+      "Goal:", quote(scope.goal, TASK_TEXT_LIMITS.text),
+      ...(scope.outOfScope === null ? [] : ["Out of scope:", quote(scope.outOfScope, TASK_TEXT_LIMITS.text)]),
       ...(scope.acceptance.length === 0 ? [] : ["Acceptance criteria:", ...scope.acceptance.map(one => quote(`${one.id}: ${one.statement}`, 1_000))]),
     ]),
     "",

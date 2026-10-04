@@ -7,6 +7,7 @@ import { KNOWLEDGE_SCHEMA } from "./project-knowledge.js";
 import { MEMORY_SCHEMA } from "./project-memory.js";
 import { MODELS_SCHEMA } from "./model-catalog.js";
 import { validateTaskText } from "./task-text.js";
+import { flowDefinitionForStore, flowDefinitionFromStore } from "./flows.js";
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { actorLabel, currentActor, leadSecretMatches, mintLeadToken, parseLeadToken, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
@@ -1104,7 +1105,7 @@ export type FlowTriggerRow = { id: number; flow: number; kind: string; configJso
 export type FlowEventOutcome = "created" | "ok" | "fail" | "moved" | "approved" | "sent-back" | "cancelled";
 
 function readFlowRow(row: Record<string, unknown>): FlowRow {
-  return { id: Number(row["id"]), repo: String(row["repo"]), name: String(row["name"]), definitionJson: String(row["definition_json"]), revision: Number(row["revision"]),
+  return { id: Number(row["id"]), repo: String(row["repo"]), name: String(row["name"]), definitionJson: flowDefinitionFromStore(String(row["definition_json"])), revision: Number(row["revision"]),
     state: String(row["state"]) as FlowRow["state"], createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]),
     owner: row["owner"] === null || row["owner"] === undefined ? String(row["created_by"]) : String(row["owner"]) };
 }
@@ -23055,7 +23056,7 @@ export class Store {
   createFlow(flow: { repo: string; name: string; definitionJson: string; by: string }, now: Date): number {
     const stamp = now.toISOString();
     return Number(this.db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?)")
-      .run(flow.repo, flow.name, flow.definitionJson, flow.by, stamp, flow.by, stamp).lastInsertRowid);
+      .run(flow.repo, flow.name, flowDefinitionForStore(flow.definitionJson), flow.by, stamp, flow.by, stamp).lastInsertRowid);
   }
 
   /** Hand a flow to another person: its "the owner decides" zones ask them from now on. */
@@ -23076,7 +23077,7 @@ export class Store {
   /** Save a new drawing of the flow only over the revision the editor saw (two editors never overwrite each other silently). */
   saveFlow(id: number, change: { name: string; definitionJson: string; sawRevision: number; by: string }, now: Date): boolean {
     const { changes } = this.db.prepare("UPDATE flow SET name = ?, definition_json = ?, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'")
-      .run(change.name, change.definitionJson, change.by, now.toISOString(), id, change.sawRevision);
+      .run(change.name, flowDefinitionForStore(change.definitionJson), change.by, now.toISOString(), id, change.sawRevision);
     return Number(changes) === 1;
   }
 

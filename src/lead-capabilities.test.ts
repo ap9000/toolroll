@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
-import { executeMateTool, type MateToolContext } from "./mate-tools.js";
+import { executeMateTool, MATE_TOOLS, type MateToolContext } from "./mate-tools.js";
 import { MATE_CONTRACT } from "./mate-contract.js";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { register } from "./runner.js";
@@ -202,6 +202,10 @@ describe("the lead checks a capability before it claims it", () => {
     expect(executeMateTool(turn(2), "get_capabilities", { repo: "r1" })).toMatchObject({ ok: true });
     expect(executeMateTool(turn(2), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS })).toMatchObject({ ok: true });
+    // The goal's limit is stated in the tool and taken whole; over it, the lead is told the length and asked to shorten.
+    expect(MATE_TOOLS.find(one => one.name === "propose_task")!.inputSchema).toMatchObject({ properties: { goal: { maxLength: 8_000, description: expect.stringContaining("At most 8,000 characters") } } });
+    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_000) })).toMatchObject({ ok: true });
+    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_001) })).toEqual({ ok: false, message: "Goal is 8,001 characters; the limit is 8,000. Shorten it." });
     expect(executeMateTool(turn(3), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
 
     // One read over every project covers each of them.

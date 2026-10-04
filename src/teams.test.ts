@@ -15,6 +15,7 @@ import { createDecisionServer } from "./serve.js";
 import { checkTeamsCredentials, forgetTeamsKeys, forgetTeamsToken, saveTeamsCredentials, teamsIdentity, verifyTeamsToken, type TeamsApi, type TeamsCredentials } from "./teams-api.js";
 import { deliverTeamsPart, planTeamsNotifications, planTeamsRooms, processTeamsEvent, receiveTeams, type TeamsChatOptions } from "./teams-chat.js";
 import { flowFromSteps } from "./flows.js";
+import { PLATFORM_LIMITS } from "./text-limits.js";
 import { advanceFlows } from "./flow-engine.js";
 import { prepareSharedAction } from "./chat-actions.js";
 import { resolveChannelMate } from "./chat-channel.js";
@@ -306,10 +307,33 @@ describe("Teams shared chat", () => {
     expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: back.data })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("Your next message here is the note");
+    // A note longer than a chat message holds is refused with the limit, never cut, and the card stays put.
+    expect(receive(activity(DM_ALEX, ALEX, "Mention the 5-day wait. ".repeat(110)))).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toBe("That's too long to take from here. Keep it to 2,000 characters, or send it back in Toolroll.");
+    expect(store.getFlowCard(card)).toMatchObject({ stage: "check", note: null });
     expect(receive(activity(DM_ALEX, ALEX, "Mention the 5-day wait."))).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(store.getFlowCard(card)).toMatchObject({ stage: "draft", note: "Mention the 5-day wait." });
     expect(lastText()).toBe("↩️ Sent back to Write the reply with your note.");
+  });
+
+  test("text longer than one Teams message goes out as several, never cut, with the buttons after all of it", async () => {
+    expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
+    const binding = state.bindingFor(credentials.installation, ALEX)!;
+    const event = chatHash(`long${++ids}`);
+    state.enqueue({ id: event, installation: credentials.installation, binding: binding.id, kind: "notice", channel: DM_ALEX, member: ALEX, ts: "x", thread: "x", payload: "{}", created: now.toISOString() });
+    const text = Array.from({ length: 160 }, (_, i) => `Line ${i}: the refund for order ${i} matches its receipt.`).join("\n");
+    expect(text.length).toBeGreaterThan(PLATFORM_LIMITS.teams);
+    state.plan(event, [{ text, link: { label: "Open", path: "/flows/1?card=2" } }], now);
+    calls = [];
+    await drain();
+    const posted = sends();
+    expect(posted.length).toBe(2);
+    expect(posted[0]!.body).toEqual({ type: "message", text: text.slice(0, PLATFORM_LIMITS.teams), textFormat: "plain" });
+    expect(lastText()).toBe(text.slice(PLATFORM_LIMITS.teams));
+    expect(lastActions().map(action => action["title"])).toEqual(["Open"]);
+    expect(String(posted[0]!.body!["text"]) + lastText()).toBe(text);
   });
 
   test("a flow choice in Teams: the flow's own options as buttons, a tap moves the card, and a message instead is the note only when answered Yes", async () => {

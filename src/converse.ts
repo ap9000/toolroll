@@ -20,6 +20,7 @@
  * cannot be spoken to — the reservation math would be fiction.
  */
 
+import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { createHash } from "node:crypto";
 import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
 import { ROUTINE_NAME, parseSchedule } from "./routine.js";
@@ -349,8 +350,8 @@ function readDraft(raw: unknown): ChatDraft | null {
   const outOfScope = body["outOfScope"];
   const touches = body["touches"];
   if (typeof repoId !== "string" || !REPO_ID.test(repoId)) return null;
-  if (typeof goal !== "string" || goal.trim() === "" || !honest(goal, 2_000, 8_000)) return null;
-  if (outOfScope !== null && (typeof outOfScope !== "string" || !honest(outOfScope, 2_000, 8_000))) return null;
+  if (typeof goal !== "string" || goal.trim() === "" || !honest(goal, TASK_TEXT_LIMITS.text, TASK_TEXT_LIMITS.textBytes)) return null;
+  if (outOfScope !== null && (typeof outOfScope !== "string" || !honest(outOfScope, TASK_TEXT_LIMITS.text, TASK_TEXT_LIMITS.textBytes))) return null;
   if (!Array.isArray(touches) || touches.length > 50) return null;
   for (const one of touches) {
     if (typeof one !== "string" || one.trim() === "" || !honest(one, 200, 800)) return null;

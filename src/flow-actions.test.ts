@@ -98,6 +98,21 @@ describe("a web request", () => {
     expect(JSON.stringify(run)).not.toContain("tok-live-9f8e7d6c");
   });
 
+  test("an answer is passed on whole up to 12,000 characters; longer is attached whole to the card and linked, never cut", async () => {
+    const flow = flowOf([{ id: "call", title: "Look it up", kind: "request", method: "GET", url: `${base}/x` }]);
+    const fits = cardIn(flow, "call");
+    reply = { status: 200, body: "a".repeat(12_000) };
+    await runFlowSteps(store, repo, at(1), io());
+    expect(store.getFlowCard(fits)!.outputs["call"]).toBe("a".repeat(12_000));
+    expect(store.flowComments(fits)).toEqual([]);
+    const long = cardIn(flow, "call");
+    const answer = `START ${"b".repeat(20_000)} END`;
+    reply = { status: 200, body: answer };
+    await runFlowSteps(store, repo, at(2), io());
+    expect(store.getFlowCard(long)!.outputs["call"]).toBe(`This is 20,010 characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${long}.`);
+    expect(store.flowComments(long).map(one => one.body)).toEqual([`What Look it up produced, in full (20,010 characters):\n\n${answer}`]);
+  });
+
   test("a refusal takes the failure path; a server error is tried again; a missing secret says so", async () => {
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { id: "call", title: "Call", kind: "request", method: "GET", url: `${base}/x`, headers: { "X-Key": "{{secret.NOPE}}" }, ifFails: "Inbox" }]);
     const missing = cardIn(flow, "call");
