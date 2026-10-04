@@ -255,7 +255,7 @@ function scoutBrief(
     '  "summary": "one paragraph the operator reads first",',
     '  "report": "the report as markdown: what you found, the evidence, the risks",',
     '  "followUps": [{ "title": "one line", "goal": "what success looks like" }],',
-    '  "items": [{ "title": "one line", "why": "why it matters", "url": "https://…", "image": "home.png" }],',
+    '  "items": [{ "title": "one line", "why": "the pattern; why it fits us; how it plugs in", "url": "https://…", "image": "home.png" }],',
     '  "images": [{ "file": "home.png", "caption": "one line", "url": "the page it shows" }]',
     "}",
     `Caps: title ${REPORT_LIMITS.title}, summary ${REPORT_LIMITS.summary}, report ${REPORT_LIMITS.document} bytes,`,

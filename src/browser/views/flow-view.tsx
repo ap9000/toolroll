@@ -13,7 +13,7 @@ import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineC
 import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { BrowserFlowCard, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
+import type { BrowserFlowCard, BrowserFlowSentItem, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Input, Label, Textarea, cn, toast } from "../components/ui/index.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
@@ -376,6 +376,20 @@ function SentLinks({ links }: { links: { label: string; href: string }[] }) {
     {...(link.href.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{link.label}</a>)}</div>;
 }
 
+/** After research: the report's items as the message numbered them, each beside its screenshot. */
+function SentItems({ items }: { items: BrowserFlowSentItem[] }) {
+  return <ol className="flex flex-col gap-3" data-flow-items>{items.map(item => <li key={item.number} className="flex items-start gap-3" data-flow-item={item.number}>
+    <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-[12.5px]">
+      <p className="font-semibold">{item.number}. {item.title}</p>
+      {item.lines.map((line, index) => <p key={index} className="break-words text-muted-foreground">{line}</p>)}
+      <a className="self-start font-medium text-primary underline-offset-4 hover:underline" href={item.url} target="_blank" rel="noreferrer">{item.source}</a>
+    </div>
+    {item.image !== null && <a className="w-28 shrink-0" href={item.image.src} target="_blank" rel="noreferrer">
+      <img className="w-full rounded-md border object-cover object-top" style={{ aspectRatio: "4 / 3" }} src={item.image.src} alt={item.image.caption} loading="lazy" />
+    </a>}
+  </li>)}</ol>;
+}
+
 /** What a "Send to me" last sent the card's person. */
 function SentBox({ sent }: { sent: NonNullable<BrowserFlowCard["sent"]> }) {
   return <details className="rounded-md border px-3 py-2" data-flow-sent>
@@ -383,6 +397,7 @@ function SentBox({ sent }: { sent: NonNullable<BrowserFlowCard["sent"]> }) {
     <div className="mt-2 flex flex-col gap-2">
       <p className="text-[12px] text-muted-foreground">{sent.title}</p>
       <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{sent.summary}</p>
+      {sent.items !== undefined && <SentItems items={sent.items} />}
       {sent.links.length > 0 && <SentLinks links={sent.links} />}
     </div>
   </details>;
@@ -402,6 +417,7 @@ function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserF
   return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-flow-choose>
     <p className="text-[12px] text-muted-foreground">{choose.title}</p>
     <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{choose.summary}</p>
+    {choose.items !== undefined && <SentItems items={choose.items} />}
     {choose.links.length > 0 && <SentLinks links={choose.links} />}
     {!choose.mine ? <p className="text-[12.5px] text-muted-foreground">Waiting for {choose.person} to choose.</p> : <>
       <div className="flex flex-wrap gap-2">{choose.options.map(option => <Button key={option.choice} size="sm" variant={option.choice === 0 ? "default" : "outline"} disabled={busy}

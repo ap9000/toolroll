@@ -36,7 +36,9 @@ import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot
 import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubjectOf } from "./lead-voice.js";
 import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team.js";
 import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowDecisionAt, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
-import { flowChoiceAt, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
+import { flowChoiceAt, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
+import { fitFlowMessage } from "./flow-items.js";
+import { telegramReply, type TelegramEntity } from "./reply-shape.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { focusContextFor, taskInCeiling } from "./chat-channel.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, dropDecideTokens, hasLiveDecideTokens, linksFor, placeDecidePrompt, decideOffer, decideTargetOf, isDecideToken, mergedText, mintDecideButtons, offerFingerprint, openPromptFor, placeDecideTokens, recordChatMerge, retireDecideTokens,
@@ -74,6 +76,8 @@ export const BRIDGE_LEASE_MS = 2 * 60_000;
 export const DELIVERY_CLAIM_MS = 2 * 60_000;
 /** Telegram's own message ceiling, with room for our part headers. */
 const PART_CAP = 3_900;
+/** Telegram's own limit on one message's text (Bot API sendMessage), less room for the line a tap adds under it. */
+const TELEGRAM_TEXT_MAX = 4_096 - 300;
 /** Pages of getUpdates one pass will read before reporting a backlog. */
 const PAGE_BUDGET = 10;
 
@@ -700,7 +704,7 @@ async function processConversations(
 // ---- outbound --------------------------------------------------------------
 
 type SendResult = { ok: true; messageId: string | null } | { ok: false; error: string; retryAfter?: number };
-type OutboundSender = (text: string, keyboard?: InlineButton[][], messageRows?: readonly TelegramDelivery[], entities?: ProgressEntity[], silent?: boolean) => Promise<SendResult>;
+type OutboundSender = (text: string, keyboard?: InlineButton[][], messageRows?: readonly TelegramDelivery[], entities?: TelegramEntity[], silent?: boolean) => Promise<SendResult>;
 
 /** A fact's own next-action button row under the trusted origin read now; none without one. */
 function factButton(phoneOrigin: (() => string | null) | undefined, link: string): InlineButton[] | null {
@@ -915,7 +919,7 @@ async function deliverOutboxTo(
         let answer: Awaited<ReturnType<TelegramTransport>>;
         try {
           answer = batch.length > 1
-            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 ? { caption: one.caption } : {}) })) },
+            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
               undefined, upload(batch[0]!, "shot0"), batch.slice(1).map((one, index) => upload(one, `shot${index + 1}`)))
             : batch[0]!.photo
               ? await transport("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
@@ -1232,7 +1236,7 @@ async function deliverOne(
     const target = alreadyAccepted || !current ? null : decideTargetOf(notification);
     const offer = decideOfferFor(store, binding, target, projects, clock(), evidenceRoot);
     const decided = offer === null ? null : mintDecideButtons(store, decideSeat(binding), target!, offer, clock());
-    const parts = split(offer?.text ?? `${notificationIdentity(notification, title !== undefined && mentions(words, title) ? undefined : title)}${words}`);
+    let parts = split(offer?.text ?? `${notificationIdentity(notification, title !== undefined && mentions(words, title) ? undefined : title)}${words}`);
     const fallback = offer === null ? decideFallbackLink(target) : null;
     let button = fallback !== null ? (() => { try { return phoneLinkButton(phoneOrigin?.() ?? null, fallback); } catch { return null; } })()
       : offer === null && notification.link !== null && !alreadyAccepted && current ? factButton(phoneOrigin, notification.link) : null;
@@ -1247,6 +1251,14 @@ async function deliverOne(
     const choiceKeys = choosing === null || sent === null ? null : flowChoiceButtons(store, binding, choosing, sent, clock());
     const sentRow = sent === null ? null : (() => { try { return flowSendKeyboardRow(phoneOrigin?.() ?? null, sent); } catch { return []; } })();
     if (sentRow !== null) button = sentRow.length === 0 ? null : sentRow;
+    // After research (flow-items.ts): each item numbered under the summary, one message within Telegram's limit, every link kept.
+    let entities: TelegramEntity[] | undefined;
+    if (sent?.items !== undefined && sent.items.length > 0 && offer === null) {
+      const subject = chatText(leadSubjectOf(store, notification, binding.approver), task);
+      const head = `${notificationIdentity(notification, title !== undefined && mentions(subject, title) ? undefined : title)}${subject}`;
+      const voiced = telegramReply(fitFlowMessage({ head, summary: chatText(sent.summary, task), items: sent.items, tail: flowSendTail(sent) }, TELEGRAM_TEXT_MAX, shaped => telegramReply(shaped).text.length));
+      if (voiced.text.length <= TELEGRAM_TEXT_MAX) { parts = [voiced.text]; entities = voiced.entities; }
+    }
     // A teammate's question (v93): its options and "Answer in words", for the person it asks.
     const asked = flowKeys === null && choiceKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
@@ -1256,7 +1268,7 @@ async function deliverOne(
       const final = index === parts.length - 1;
       const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
       const keyboard = !final ? undefined : keys !== null ? [...keys.keyboard, ...(button === null ? [] : [button])] : decideKeys.length > 0 ? decideKeys : button !== null ? [button] : undefined;
-      const sent = await sender(part, keyboard);
+      const sent = await sender(part, keyboard, undefined, final ? entities : undefined);
       if (!sent.ok) {
         if (decided !== null) dropDecideTokens(store, decided.tokens, clock());
         return { ok: false, error: sent.error };
@@ -1348,7 +1360,7 @@ async function send(
   chatId: string,
   text: string,
   keyboard?: InlineButton[][],
-  entities?: ProgressEntity[],
+  entities?: TelegramEntity[],
   silent?: boolean,
 ): Promise<SendResult> {
   // No markup parsing. Only machine-selected heading ranges may be bold;
@@ -1390,6 +1402,17 @@ async function editProgress(transport: TelegramTransport, chatId: string, messag
   }
   const confirmed = (answer.result as { message_id?: number } | undefined)?.message_id;
   return String(confirmed) === messageId ? { ok: true, messageId } : { ok: false, error: "Telegram did not confirm the progress message identity" };
+}
+
+/** A tapped message's own formatting, read back for its edit: only bold and links that still fall inside the text. */
+function keptEntities(raw: unknown[] | undefined, length: number): TelegramEntity[] {
+  return (raw ?? []).flatMap((one): TelegramEntity[] => {
+    if (typeof one !== "object" || one === null) return [];
+    const { type, offset, length: size, url } = one as Record<string, unknown>;
+    if (typeof offset !== "number" || typeof size !== "number" || !Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size <= 0 || offset + size > length) return [];
+    if (type === "bold") return [{ type, offset, length: size }];
+    return type === "text_link" && typeof url === "string" && /^https?:\/\/\S+$/.test(url) ? [{ type, offset, length: size, url }] : [];
+  });
 }
 
 function receiptFor(botId: string, chatId: string, messageId: string | null): string {
@@ -1435,7 +1458,7 @@ type Update = {
     id: string;
     data?: string;
     from?: { id: number };
-    message?: { message_id: number; chat?: { id: number }; text?: string };
+    message?: { message_id: number; chat?: { id: number }; text?: string; entities?: unknown[] };
   };
 };
 
@@ -2096,7 +2119,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
       });
     });
   };
-  const editText = (text: string, keyboard?: InlineButton[][]): void => {
+  const editText = (text: string, keyboard?: InlineButton[][], entities?: TelegramEntity[]): void => {
     if (message === undefined) return;
     const chatId = message.chat === undefined ? null : String(message.chat.id);
     const messageId = message.message_id;
@@ -2106,6 +2129,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
         chat_id: chatId,
         message_id: messageId,
         text,
+        ...(entities === undefined || entities.length === 0 ? {} : { entities }),
         link_preview_options: { is_disabled: true },
         ...(keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } }),
       });
@@ -2209,7 +2233,8 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
     for (const effect of applyFlowChoiceTap(store, binding, choiceAction, { text: message.text ?? "" }, repos, clock())) {
       if (effect.kind === "ack") ack(effect.text);
-      else if (effect.kind === "edit") editText(effect.text);
+      // The message keeps its bold titles and labelled links (an item list's) under what was chosen.
+      else if (effect.kind === "edit") editText(effect.text, undefined, keptEntities(message.entities, effect.text.length));
     }
     return;
   }
