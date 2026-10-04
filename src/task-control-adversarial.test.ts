@@ -399,10 +399,13 @@ describe("a failed or interrupted spawn never leaves a run unprovable", () => {
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
     const child = await live();
     f.store.recordRunProcess(f.id, child.pid!, new Date());
-    // Even a recorded exit is rechecked against the live group.
-    f.store.raw().prepare("UPDATE run_process SET exited_at=? WHERE run=? AND pid=?").run(new Date().toISOString(), f.id, child.pid!);
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
     expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("alive");
+    // Automatic settlement keeps its group probe, even for a recorded exit.
+    // Quiescence trusts that exit but retains the remaining unknown witness.
+    f.store.raw().prepare("UPDATE run_process SET exited_at=? WHERE run=? AND pid=?").run(new Date().toISOString(), f.id, child.pid!);
+    expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
+    expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("unprovable");
   });
 
   test("c3: run settle records the approver's reason and refuses while a process of the run is alive", async () => {

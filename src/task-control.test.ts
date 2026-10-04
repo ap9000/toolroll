@@ -93,7 +93,7 @@ describe("safe task stop and resume (v52)", () => {
   });
   afterEach(() => store.close());
 
-  test.each([false, true])("an observed exit settles only the single process, not a possibly live group (group=%s)", group => {
+  test.each([false, true])("quiescence trusts recorded process and group exits while approver settlement keeps its group probe (group=%s)", group => {
     const a = runningAttempt(store, "t-exit-reused"), pid = 4682;
     store.recordRunProcess(a.runId, pid, T0, group);
     const before = store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)!;
@@ -106,9 +106,9 @@ describe("safe task stop and resume (v52)", () => {
       // An unrelated service takes the same number while the builder continues.
       kill.mockReturnValue(true);
       store.finishRun(a.runId, { outcome: "built", now: later(1000) });
+      expect(store.stopQuiescenceFact(a.runId)).toBeNull();
       const settled = store.settleRunWitnessesByApprover({ runId: a.runId, by: "alex", why: "The check ended." }, later(2000));
       if (group) {
-        expect(store.stopQuiescenceFact(a.runId)?.kind).toBe("alive");
         expect(settled).toMatchObject({ ok: false, reason: "alive" });
       } else {
         expect(store.stopQuiescenceProblem(a.runId)).toBeNull();
@@ -118,6 +118,29 @@ describe("safe task stop and resume (v52)", () => {
       expect(store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)).toEqual(ended);
       expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
     } finally { kill.mockRestore(); ps.mockReset(); }
+  });
+
+  test("an exited group whose PGID is reused before run end does not block quiescence", () => {
+    const a = runningAttempt(store, "t-group-exit-before-finish"), pid = 21417;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+    const ps = vi.mocked(childProcess.execFileSync).mockClear().mockReturnValue("Sat Sep 12 08:10:00 2026\n");
+    try {
+      store.recordRunProcess(a.runId, pid, T0, true);
+      expect(store.recordRunProcessExits(a.runId, later(1000))).toBe(1);
+      expect(kill).toHaveBeenCalledWith(-pid, 0);
+      const ended = store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId);
+      // The original group was proven gone before this unrelated group was
+      // born. Its birth still predates run end, so birth lookup cannot help.
+      kill.mockReturnValue(true);
+      store.finishRun(a.runId, { outcome: "built", now: later(11 * 60_000) });
+      kill.mockClear();
+      expect(store.stopQuiescenceFact(a.runId)).toBeNull();
+      expect(kill).not.toHaveBeenCalled();
+      expect(ps).not.toHaveBeenCalled();
+      expect(store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)).toEqual(ended);
+    } finally { kill.mockRestore(); ps.mockReset(); Object.defineProperty(process, "platform", platform); }
   });
 
   test("a PID reused after its recorded exit but before run end cannot delay automatic settlement", () => {
@@ -154,6 +177,7 @@ describe("safe task stop and resume (v52)", () => {
     try {
       expect(store.recordRunProcessExits(a.runId, later(100))).toBe(0);
       store.finishRun(a.runId, { outcome: "built", now: later(1000) });
+      expect(store.stopQuiescenceFact(a.runId)?.kind).toBe("alive");
       expect(store.raw().prepare("SELECT * FROM run_process WHERE run=?").all(a.runId)).toEqual(before);
       expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
     } finally { kill.mockRestore(); Object.defineProperty(process, "platform", platform); }

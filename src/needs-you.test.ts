@@ -261,14 +261,15 @@ describe("Confirm it stopped, end to end", () => {
     expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "test" }, NOW)).toMatchObject({ ok: false, reason: "alive" });
   });
 
-  test("an exited non-group PID permits settle and completion without changing a passed check", async () => {
-    const id = "reused-process", run = built(id, "Verify the release candidate");
+  test.each([false, true])("an exited witness permits completion without changing a passed check (group=%s)", async group => {
+    const id = group ? "reused-group" : "reused-process", run = built(id, "Verify the release candidate");
     // This live PID represents an unrelated process. Its historical witness
     // exited before the run ended; no birth lookup or permission is needed.
     witness(run, process.pid);
-    store.raw().prepare("UPDATE run_process SET exited_at=? WHERE run=?").run(NOW.toISOString(), run);
+    store.raw().prepare("UPDATE run_process SET exited_at=?, process_group=? WHERE run=?").run(NOW.toISOString(), group ? 1 : 0, run);
     store.recordRunCheck(run, { status: "passed", exitCode: 0, suites: [] }, NOW);
-    expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "The check ended." }, NOW)).toMatchObject({ ok: true });
+    if (!group) expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "The check ended." }, NOW)).toMatchObject({ ok: true });
+    expect(store.stopQuiescenceFact(run)).toBeNull();
     const read = assignment(id);
     expect(read.state).toBe("ready-to-check");
     expect(read.primaryAction?.code).not.toBe("confirm-stopped");

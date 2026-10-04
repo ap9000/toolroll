@@ -25644,9 +25644,9 @@ export class Store {
         return fact(id, "unprovable", `run #${id} may have spawned before its process witness was recorded; exit is unproven`);
       }
       for (const witness of witnesses) {
-        // A recorded leader exit does not establish group emptiness. Native
-        // custody and pid-less reservations retain their existing exit rule.
-        if (witness["exited_at"] !== null && (witness["process_group"] !== 1 || witness["pid"] === null || witness["containment"] !== null || witness["container"] !== null)) continue;
+        // A recorded group exit proves the whole group ended, not just its
+        // leader. Re-probing its number could mistake reuse for the old group.
+        if (witness["exited_at"] !== null) continue;
         const host = String(witness["host"]);
         const bootId = witness["boot_id"] === null || witness["boot_id"] === undefined ? null : String(witness["boot_id"]);
         // A VERIFIED boot change on this host (v53): nothing of the old
