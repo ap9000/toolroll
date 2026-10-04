@@ -171,7 +171,7 @@ import { join } from "node:path";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { starterRecipes, savedRecipes, findRecipe, importRecipe, exportRecipe, createWorkflowPreview, workflowPreview, launchWorkflow, saveWorkflowRecipe, RecipeError, prepareRecipeRun } from "./recipes.js";
 import { recipeFromForm, recipeLibraryHtml, recipeEditorHtml, workflowPreviewHtml, recipeScript, RECIPE_CSS, recipeDefinitionPreviewHtml, recipeRunHtml, recipeAnswersFromForm } from "./recipe-ui.js";
-import { EVIDENCE_CAPS, readVerifiedArtifact, readVerifiedReport, readVerifiedProofForRun, storeEvidence, writeEvidenceFile, scanForSecrets, type ReportView } from "./evidence.js";
+import { EVIDENCE_CAPS, readVerifiedArtifact, readVerifiedReport, readVerifiedProofForRun, reportShotsOf, storeEvidence, writeEvidenceFile, scanForSecrets, type ReportShot, type ReportView } from "./evidence.js";
 import { GOAL_ASSESSMENT_PENDING, reviewConflict, manualReviewOnly, manualReviewCriterionOf, personCheckWords, plainReasonWords, dispatchStatusToken, passFraction, semanticCoverage, coverageWords, coverageStateWords, type ProofVerdict, type CriterionMatrixRow, type CriterionEvidenceRef } from "./proof.js";
 import {
   WORK_VIEWS, REVIEW_TOKENS, RESULT_DECISION_SENTENCE, acceptWordsOf, buildProgressOf, cantAcceptYetOf, earlierAttemptsWords, evidenceProblemOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, ACCEPT_NEEDS_REASON, MISMATCH_HEADLINE, parseWorkView, resultStatusOf, resultHeadlineOf, receiptHeadingOf, receiptPublicationWords, reviewFactsOf, workStatusOf, primaryDestinationOf, needsPerson, dispatchActionLabel,
@@ -183,7 +183,7 @@ import {
   revisionBatchOf, parseRevisionBatch, revisionSourceOf,
   type ResultTab, type ResultScreenshot, type SharedResultFacts,
 } from "./result-review.js";
-import { parseReport } from "./scout-report.js";
+import { parseReport, type ReportItem } from "./scout-report.js";
 import {
   buildDataDocument,
   composeRequest,
@@ -13456,6 +13456,9 @@ ${THEME_DARK}
   .receipt-shot { display: grid; gap: .35rem; color: var(--muted-foreground); font-size: .75rem; text-decoration: none; }
   .receipt-shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border: 1px solid var(--glass-border); border-radius: calc(var(--radius) - 3px); background: var(--muted); }
   @media (hover: hover) and (pointer: fine) { .receipt-shot:hover { color: var(--foreground); } }
+  .report-items ol { margin: .35rem 0 .75rem; padding-left: 1.25rem; display: grid; gap: .75rem; }
+  .report-items li p { margin: .15rem 0; }
+  .report-link { overflow-wrap: anywhere; }
   .receipt-caveats, .receipt-coverage { margin-top: .8rem; padding: .7rem .8rem; border-left: 1px solid var(--border); border-radius: 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px) 0; background: color-mix(in srgb, var(--muted) 62%, transparent); font-size: .78rem; }
   .receipt-caveats ul, .receipt-coverage ul { margin: .3rem 0 0; padding-left: 1.15rem; }
   /* Secondary receipt detail (concise pass, 2026-09-13): native
@@ -21838,6 +21841,7 @@ function taskBodyParts(data: {
             `<div class="card report">`,
             `<p><strong>${escape(data.report.report.title)}</strong> <span class="meta">the scout's report · <a href="/r/${data.report.run}">run ${data.report.run}</a></span></p>`,
             `<p class="report-summary">${escape(data.report.report.summary)}</p>`,
+            reportItemsHtml(data.report.report.items, data.report.shots, data.report.run),
             `<pre class="recap plan-doc">${escape(data.report.report.report)}</pre>`,
             ...(data.report.report.followUps.length === 0
               ? []
@@ -23959,8 +23963,29 @@ type CompletionReceiptView = {
  * the reason it cannot be shown. The download link serves the exact
  * stored bytes as text — never as a page. */
 type RunReportView =
-  | { ok: true; artifactId: number; title: string; summary: string; document: string; followUps: number; truncated: boolean }
+  | { ok: true; artifactId: number; title: string; summary: string; document: string; followUps: number; truncated: boolean; items: ReportItem[]; shots: ReportShot[] }
   | { ok: false; artifactId: number; problem: string };
+
+/** What a scout found, each with its link and picture, then any screenshot no item shows. Every link is the cited
+ * http(s) address the report parser admitted; every picture is served from verified evidence. */
+function reportItemsHtml(items: readonly ReportItem[], shots: readonly ReportShot[], runId: number): string {
+  const picture = (shot: ReportShot): string =>
+    shot.artifactId === null
+      ? `<p class="meta">Screenshot unavailable: ${escape(shot.problem ?? "it can't be shown")}</p>`
+      : `<a class="receipt-shot" href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${escape(shot.caption)}" loading="lazy"><span>${escape(shot.caption)}</span></a>`;
+  const link = (url: string): string => `<a href="${escape(url)}" rel="noopener noreferrer nofollow" target="_blank" class="report-link">${escape(url)}</a>`;
+  const shown = new Set(items.map(one => one.image).filter((one): one is string => one !== null));
+  const loose = shots.filter(one => !shown.has(one.file));
+  if (items.length === 0 && loose.length === 0) return "";
+  return `<div class="report-items" data-report-items="${items.length}">` +
+    (items.length === 0 ? "" : `<p><strong>What it found</strong></p><ol>${items.map(item => {
+      const shot = item.image === null ? undefined : shots.find(one => one.file === item.image);
+      return `<li data-report-item><p><strong>${escape(item.title)}</strong></p><p class="meta">${escape(item.why)}</p><p class="meta">${link(item.url)}</p>` +
+        (shot === undefined ? "" : `<div class="receipt-visuals">${picture(shot)}</div>`) + `</li>`;
+    }).join("")}</ol>`) +
+    (loose.length === 0 ? "" : `<p><strong>Screenshots</strong></p><div class="receipt-visuals" aria-label="the scout's screenshots">${loose.map(picture).join("")}</div>`) +
+    `</div>`;
+}
 
 function runReportView(artifacts: Artifact[], root: string): RunReportView | null {
   const artifact = [...artifacts].reverse().find(one => one.kind === "report");
@@ -23974,7 +23999,8 @@ function runReportView(artifacts: Artifact[], root: string): RunReportView | nul
   if (!read.ok) return { ok: false, artifactId: artifact.id, problem: read.problem };
   const parsed = parseReport(read.content.toString("utf8"));
   if (!parsed.ok) return { ok: false, artifactId: artifact.id, problem: artifact.truncated ? "the report was shortened at storage and cannot be read; the missing part was never captured" : "the stored report is not a report this console can read" };
-  return { ok: true, artifactId: artifact.id, title: parsed.report.title, summary: parsed.report.summary, document: parsed.report.report, followUps: parsed.report.followUps.length, truncated: artifact.truncated };
+  return { ok: true, artifactId: artifact.id, title: parsed.report.title, summary: parsed.report.summary, document: parsed.report.report, followUps: parsed.report.followUps.length, truncated: artifact.truncated,
+    items: parsed.report.items, shots: reportShotsOf(artifacts, root, artifact.run, parsed.report.images) };
 }
 
 /** The shared facts (package 3), computed ONCE from the same verified
@@ -24896,6 +24922,7 @@ function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): { html: 
       // in "What the agent reported"), so the article never repeats it.
       summaryParts.push(
         `<article class="result-report" data-result-report="ok"><h3>${escape(report.title)}</h3>` +
+          reportItemsHtml(report.items, report.shots, runId) +
           `<pre class="recap plan-doc">${escape(report.document)}</pre>` +
           `<p class="meta"><a href="/r/${runId}/evidence/${report.artifactId}">${report.truncated ? "Download the stored part of the report (shortened at storage — not the full report)" : "Download the report"}</a>${report.followUps === 0 ? "" : ` · ${report.followUps} proposed follow-up${report.followUps === 1 ? "" : "s"} on <a href="${taskHref(detail.rootId ?? detail.taskId)}">the task</a>`}</p></article>`,
       );

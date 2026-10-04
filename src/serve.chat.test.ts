@@ -2006,10 +2006,18 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     // The report lands as evidence; the page renders it only once verified.
     sealScopeFixture(store, taskId, approverToken);
     const run = store.startRun({ taskRef: ref.id, leaseId: "scout-lease", runner: "b", role: "scout", branch: "standing-orders-scout/x", worktree: "/pool/scout", now: new Date(), ...presented(store, ref.id, "scout") });
-    const report = { title: "The cookie races the assertion", summary: "The read wins under load.", report: "## Findings\nAsync cookie in src/session.ts.\n", followUps: [{ title: "Await the cookie", goal: "Wait for it before asserting." }] };
-    const content = Buffer.from(JSON.stringify(report, null, 2), "utf8");
     const { mkdirSync: mkdirS, writeFileSync: writeS } = await import("node:fs");
     mkdirS(join(evidenceRoot, String(run)), { recursive: true });
+    // A screenshot the scout saved, stored as evidence and tied to its item.
+    const shot = Buffer.alloc(600);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(shot, 0);
+    writeS(join(evidenceRoot, String(run), "report-image-1.png"), shot);
+    const shotSha = createHash("sha256").update(shot).digest("hex");
+    const shotId = store.saveArtifact({ run, kind: "screenshot", key: `${run}/report-image-1.png`, bytesOriginal: shot.length, bytesStored: shot.length, truncated: false, sha256: shotSha, capture: "scout screenshot login.png (validated png) from https://app.example.com/login" }, new Date());
+    const report = { title: "The cookie races the assertion", summary: "The read wins under load.", report: "## Findings\nAsync cookie in src/session.ts.\n", followUps: [{ title: "Await the cookie", goal: "Wait for it before asserting." }],
+      items: [{ title: "The login page sets the cookie late", why: "The response sets it after the redirect.", url: "https://app.example.com/login", image: "login.png" }],
+      images: [{ file: "login.png", caption: "The login page after submitting", url: "https://app.example.com/login", sha256: shotSha, artifact: shotId }] };
+    const content = Buffer.from(JSON.stringify(report, null, 2), "utf8");
     writeS(join(evidenceRoot, String(run), "report.json"), content);
     store.saveArtifact({ run, kind: "report", key: `${run}/report.json`, bytesOriginal: content.length, bytesStored: content.length, truncated: false, sha256: createHash("sha256").update(content).digest("hex"), capture: "scout handoff (verified tree)" }, new Date());
     store.finishRun(run, { outcome: "built", reason: "report-delivered", now: new Date() });
@@ -2017,6 +2025,13 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(page).toContain("The cookie races the assertion");
     expect(page).toContain("Async cookie in src/session.ts.");
     expect(page).toContain("File this follow-up");
+    // Its items, each with its link and screenshot.
+    expect(page).toContain("What it found");
+    expect(page).toContain("The login page sets the cookie late");
+    expect(page).toContain('href="https://app.example.com/login" rel="noopener noreferrer nofollow"');
+    expect(page).toContain(`<img src="/r/${run}/evidence/${shotId}" alt="The login page after submitting"`);
+    const image = await fetch(`${base}/r/${run}/evidence/${shotId}`, { headers: { cookie } });
+    expect(image.headers.get("content-type")).toBe("image/png");
 
     // A tampered file never renders: the problem is named instead.
     writeS(join(evidenceRoot, String(run), "report.json"), content.toString("utf8").replace("Async", "Sync"));

@@ -26791,10 +26791,11 @@ export class Store {
    */
   private enqueueResultShots(source: Notification, now: Date): void {
     if (source.run === null || source.taskRef === null || source.project === null || source.recipient !== null) return;
-    const ready = isLifecycleNotification(source) && source.kind === "run-finished";
+    // A scout's report is its result: its "report ready" carries the screenshots it saved.
+    const ready = (isLifecycleNotification(source) && source.kind === "run-finished") || source.kind === "report-ready";
     if (!ready && !/fail/.test(source.kind)) return;
     const run = this.getRun(source.run);
-    if (run === null || !["builder", "repair"].includes(run.role) || run.contestant !== null) return;
+    if (run === null || !["builder", "repair", "scout"].includes(run.role) || run.contestant !== null) return;
     if (!this.artifactsFor(run.id).some(one => one.kind === "screenshot")) return;
     const people = this.db.prepare("SELECT account FROM notification_preference WHERE screenshots IN ('first', 'all') ORDER BY account").all().map(row => String(row["account"]));
     for (const account of people) {

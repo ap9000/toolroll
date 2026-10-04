@@ -32,7 +32,7 @@ import { join, sep } from "node:path";
 import { namedPath } from "./names.js";
 import { LIMITS } from "./decision.js";
 import { PLAN_LIMITS } from "./plan.js";
-import { parseReport, REPORT_LIMITS, type ParsedReport } from "./scout-report.js";
+import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportImage } from "./scout-report.js";
 import { parseProof, PROOF_LIMITS, type ParsedProof } from "./proof.js";
 import type { Artifact, Store } from "./store.js";
 import type { ExecResult } from "./exec.js";
@@ -268,8 +268,22 @@ export function readMailbox(
  * the same 422 rule that admitted it. null = no report; a problem names
  * why an existing artifact cannot be shown rather than showing nothing. */
 export type ReportView =
-  | { ok: true; run: number; report: ParsedReport }
+  | { ok: true; run: number; report: ParsedReport; shots: ReportShot[] }
   | { ok: false; run: number; problem: string };
+
+/** A report's screenshot as a page shows it: its stored evidence, or why it can't be shown. The bytes are
+ * verified again whenever the image itself is served. */
+export type ReportShot = { file: string; caption: string; url: string; artifactId: number | null; problem: string | null };
+
+/** Each image a report names, matched to the screenshot evidence its own run stored with the same sha256. */
+export function reportShotsOf(artifacts: readonly Artifact[], root: string, run: number, images: readonly ReportImage[]): ReportShot[] {
+  const pruned = existsSync(join(root, String(run), RETENTION_NOTE));
+  return images.map(image => {
+    const stored = artifacts.find(one => one.id === image.artifact && one.run === run && one.kind === "screenshot" && one.sha256 === image.sha256);
+    const problem = pruned ? "removed by the retention setting" : stored === undefined ? "the saved screenshot is missing" : null;
+    return { file: image.file, caption: image.caption, url: image.url, artifactId: problem === null ? stored!.id : null, problem };
+  });
+}
 
 export function readVerifiedReport(store: Store, root: string, taskRef: number): ReportView | null {
   const artifact = store.latestReportArtifact(taskRef);
@@ -283,7 +297,7 @@ export function readVerifiedReport(store: Store, root: string, taskRef: number):
   if (!verified.ok) return { ok: false, run: artifact.run, problem: `the report does not verify (${verified.problem})` };
   const parsed = parseReport(verified.content.toString("utf8"));
   if (!parsed.ok) return { ok: false, run: artifact.run, problem: "the stored report is not a report this build can read" };
-  return { ok: true, run: artifact.run, report: parsed.report };
+  return { ok: true, run: artifact.run, report: parsed.report, shots: reportShotsOf(store.artifactsFor(artifact.run), root, artifact.run, parsed.report.images) };
 }
 
 /** A build's proof, read the same verified way as a scout's report — but

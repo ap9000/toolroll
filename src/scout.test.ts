@@ -21,7 +21,8 @@ import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
 import { readVerifiedReport } from "./evidence.js";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { Runner } from "./builder.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
@@ -64,6 +65,25 @@ describe("the report parser (422 rule)", () => {
     expect(twoParagraphs.ok).toBe(false);
     if (!twoParagraphs.ok) expect(twoParagraphs.problems.map(one => one.reason)).toContain("summary-paragraphs");
     expect(parseReport(JSON.stringify({ title: "t", summary: "one line,\nwrapped.", report: "r" })).ok).toBe(true);
+  });
+
+  test("items and images: capped, cited with http(s) URLs, and an item's picture names one of the images", () => {
+    const item = (index: number) => ({ title: `Finding ${index}`, why: "It matters.", url: `https://example.com/${index}` });
+    const good = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r",
+      items: [{ ...item(1), image: "home.png" }, item(2)], images: [{ file: "home.png", caption: "The home page", url: "https://example.com/" }] }));
+    expect(good.ok).toBe(true);
+    if (good.ok) {
+      expect(good.report.items).toEqual([{ ...item(1), image: "home.png" }, { ...item(2), image: null }]);
+      expect(good.report.images).toEqual([{ file: "home.png", caption: "The home page", url: "https://example.com/" }]);
+    }
+    const old = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r" }));
+    expect(old.ok && old.report.items.length === 0 && old.report.images.length === 0).toBe(true);
+    const reasons = (body: Record<string, unknown>) => { const read = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r", ...body })); return read.ok ? [] : read.problems.map(one => one.reason); };
+    expect(reasons({ items: Array.from({ length: REPORT_LIMITS.items + 1 }, (_, index) => item(index)) })).toContain("items-too-many");
+    expect(reasons({ images: Array.from({ length: REPORT_LIMITS.images + 1 }, (_, index) => ({ file: `${index}.png`, caption: "c", url: "https://example.com/" })) })).toContain("images-too-many");
+    expect(reasons({ items: [{ ...item(1), image: "nowhere.png" }] })).toContain("items[0]-image");
+    expect(reasons({ items: [{ ...item(1), url: "file:///etc/passwd" }] })).toContain("items[0].url-not-a-link");
+    expect(reasons({ images: [{ file: "a.png", caption: "two\nlines", url: "https://example.com/" }] })).toContain("images[0]-caption-multiline");
   });
 });
 
@@ -494,6 +514,86 @@ describe("scout tasks, against real git", () => {
     expect(store.getTask("flaky")?.state).toBe("done");
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
     expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
+    store.close();
+  });
+
+  /** A real-enough PNG: signature and IHDR, so it sniffs and measures like a screenshot. */
+  const png = (width = 1280, height = 800, size = 2_048) => {
+    const bytes = Buffer.alloc(size);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
+    bytes.writeUInt32BE(13, 8);
+    bytes.write("IHDR", 12, "ascii");
+    bytes.writeUInt32BE(width, 16);
+    bytes.writeUInt32BE(height, 20);
+    return bytes;
+  };
+  const FOLDER = /folder outside the repository: `([^`]+)`/;
+  let folderSeen = "";
+  /** A scout that saves screenshots in its output folder, some of which the runner must refuse. */
+  const imagingAgent = (images: Record<string, Buffer | { link: string }>, report: Record<string, unknown>, outside?: Buffer): Runner => async (_file, args, options) => {
+    const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+    prompts.push(prompt);
+    folderSeen = FOLDER.exec(prompt)?.[1] ?? "";
+    expect(folderSeen.startsWith(realpathSync(options?.cwd ?? ""))).toBe(false);
+    for (const [name, content] of Object.entries(images)) {
+      if (Buffer.isBuffer(content)) await writeFile(join(folderSeen, name), content);
+      else symlinkSync(content.link, join(folderSeen, name));
+    }
+    if (outside !== undefined) await writeFile(join(folderSeen, "..", "outside.png"), outside);
+    const result = { type: "result", subtype: "success", is_error: false, result: "", structured_output: { kind: "report", report } };
+    return { ...OK, stdout: JSON.stringify(result) };
+  };
+
+  test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {
+    const { runnerToken } = await setup();
+    const shot = png();
+    const secret = join(base, "secret.png");
+    await writeFile(secret, png());
+    const items = [
+      { title: "The pricing page hides the annual plan", why: "Visitors only see monthly prices.", url: "https://example.com/pricing", image: "pricing.png" },
+      { title: "The sign-up form asks for a phone number", why: "It is required and unexplained.", url: "https://example.com/signup", image: "huge.png" },
+      { title: "Docs link to a dead page", why: "The quick start 404s.", url: "https://example.com/docs", image: "notes.png" },
+      { title: "Footer copy is out of date", why: "It says 2024.", url: "https://example.com/", image: "linked.png" },
+      { title: "A file outside the folder", why: "Must not be read.", url: "https://example.com/x", image: "../outside.png" },
+    ];
+    const images = [
+      { file: "pricing.png", caption: "The pricing page", url: "https://example.com/pricing" },
+      { file: "huge.png", caption: "The sign-up form", url: "https://example.com/signup" },
+      { file: "notes.png", caption: "Not an image", url: "https://example.com/docs" },
+      { file: "linked.png", caption: "A link elsewhere", url: "https://example.com/" },
+      { file: "../outside.png", caption: "Outside", url: "https://example.com/x" },
+    ];
+    const agent = imagingAgent(
+      { "pricing.png": shot, "huge.png": png(1280, 800, 5 * 1024 * 1024 + 1), "notes.png": Buffer.from("just text, named like a picture"), "linked.png": { link: secret } },
+      { ...FOUND, items, images }, png());
+    expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(prompts.at(-1)).toContain("never download anything else, and never run downloaded code");
+    expect(prompts.at(-1)).toContain("Cite the URL");
+    // The folder was the run's own, outside the checkout, and is gone afterwards.
+    expect(folderSeen).not.toBe("");
+    expect(existsSync(folderSeen)).toBe(false);
+
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.runsFor(ref.id)[0]).toMatchObject({ role: "scout", outcome: "built", reason: "report-delivered" });
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok).toBe(true);
+    if (view !== null && view.ok) {
+      const sha = createHash("sha256").update(shot).digest("hex");
+      expect(view.report.images).toEqual([expect.objectContaining({ file: "pricing.png", caption: "The pricing page", url: "https://example.com/pricing", sha256: sha })]);
+      const artifact = store.artifactsFor(view.run).find(one => one.id === view.report.images[0]!.artifact);
+      expect(artifact).toMatchObject({ kind: "screenshot", sha256: sha });
+      expect(artifact?.capture).toContain("https://example.com/pricing");
+      expect(store.artifactsFor(view.run).filter(one => one.kind === "screenshot")).toHaveLength(1);
+      expect(view.shots).toEqual([expect.objectContaining({ file: "pricing.png", artifactId: artifact!.id, problem: null })]);
+      // Every item arrives; only the verified picture stays tied to its item.
+      expect(view.report.items.map(one => one.image)).toEqual(["pricing.png", null, null, null, null]);
+      expect(view.report.report).toContain("huge.png (over 5 MB)");
+      expect(view.report.report).toContain("notes.png (not a PNG or JPEG)");
+      expect(view.report.report).toContain("linked.png (a link, not a file)");
+      expect(view.report.report).toContain("../outside.png (not a PNG or JPEG file name in the screenshot folder)");
+    }
     store.close();
   });
 

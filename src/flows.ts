@@ -460,7 +460,8 @@ export function flowDigest(definition: FlowDefinition): string {
   return createHash("sha256").update(JSON.stringify({ start: definition.start, terms })).digest("hex").slice(0, 32);
 }
 
-const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|note|stage\.([a-z0-9-]+))\s*\}\}/g;
+/** {{stage.<id>}} is an earlier zone's output; a report zone also fills {{stage.<id>.items}} and {{stage.<id>.report}}. */
+const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|note|stage\.([a-z0-9-]+(?:\.(?:items|report))?))\s*\}\}/g;
 type FlowFillCard = { title: string; description: string | null; note: string | null; outputs: Record<string, string> };
 
 /** Fill a zone's text from the card: title, description, the latest note and earlier zones' reports. */
@@ -711,9 +712,9 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
   });
   // {{stage.<ref>}} in a step's words names a step as the lead wrote it (draftReply, Draft reply):
   // it is rewritten to that step's id, the same way the steps themselves are named.
-  const refs = (text: string) => text.replace(/\{\{\s*stage\.([A-Za-z0-9_ -]{1,60}?)\s*\}\}/g, (whole, ref: string) => {
+  const refs = (text: string) => text.replace(/\{\{\s*stage\.([A-Za-z0-9_ -]{1,60}?)(\.items|\.report)?\s*\}\}/g, (whole, ref: string, part: string | undefined) => {
     const hit = drafts.find(one => one.id === ref) ?? drafts.find(one => one.id === idOf(ref) || one.id.replace(/-/g, "") === idOf(ref).replace(/-/g, "") || one.title.toLowerCase() === ref.trim().toLowerCase());
-    return hit === undefined ? whole : `{{stage.${hit.id}}}`;
+    return hit === undefined ? whole : `{{stage.${hit.id}${part ?? ""}}}`;
   });
   for (const stage of stages) {
     if (stage.instructions !== null) stage.instructions = refs(stage.instructions);

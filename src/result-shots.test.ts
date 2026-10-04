@@ -123,6 +123,38 @@ describe("c1: the per-person choice", () => {
   });
 });
 
+describe("a scout's report", () => {
+  test("its screenshots go with its \"report ready\" message, captioned as the report captioned them", () => {
+    store.setNotificationPreference("alex", { screenshots: "all" }, "alex", now);
+    store.createTask({ id: "scout-1", title: "What do competitors charge?" }, now);
+    const ref = store.refFor("built-in", "scout-1").id;
+    store.placeTask(ref, ALPHA, {}, now);
+    const run = store.startRun({ taskRef: ref, leaseId: "l-scout-1", runner: RUNNER, role: "scout", branch: "so/scout-1", worktree: "/pool/scout-1", ...legacy, now });
+    const pricing = png(1280, 800, 1);
+    const plans = png(1280, 800, 2);
+    const first = storeEvidence(store, root, run, "screenshot", "report-image-1.png", pricing, "scout screenshot pricing.png (validated png) from https://rival.example/pricing", now);
+    const second = storeEvidence(store, root, run, "screenshot", "report-image-2.png", plans, "scout screenshot plans.png (validated png) from https://rival.example/plans", now);
+    const sha = (artifact: number) => store.artifactsFor(run).find(one => one.id === artifact)!.sha256;
+    const report = { title: "Rivals charge less", summary: "Both rivals undercut the annual plan.", report: "## Prices", followUps: [],
+      items: [{ title: "Rival A is cheaper", why: "Its annual plan is 20% less.", url: "https://rival.example/pricing", image: "pricing.png" }],
+      images: [
+        { file: "pricing.png", caption: "Rival A's pricing page", url: "https://rival.example/pricing", sha256: sha(first), artifact: first },
+        { file: "plans.png", caption: "Rival A's plan table", url: "https://rival.example/plans", sha256: sha(second), artifact: second },
+      ] };
+    storeEvidence(store, root, run, "report", "report.json", Buffer.from(JSON.stringify(report)), "scout handoff (verified tree)", now);
+    store.finishRun(run, { outcome: "built", reason: "report-delivered", now });
+    expect(shotRows()).toEqual([]);
+    store.enqueueNotification({ source: { run }, dedupeKey: `report:${ref}:${run}`, kind: "report-ready", subject: "scout-1: report ready", body: "Both rivals undercut the annual plan." }, now);
+    const row = shotRows()[0]!;
+    expect(row).toMatchObject({ recipient: "alex", run });
+    const plan = resultShotsFor(store, root, [ALPHA], row);
+    expect(plan.kind === "send" ? plan.shots.map(one => [one.artifact, one.caption]) : plan).toEqual([
+      [first, "What do competitors charge? · Rival A's pricing page"],
+      [second, "Rival A's plan table"],
+    ]);
+  });
+});
+
 describe("c2: Telegram", () => {
   const pair = () => {
     const code = mintPairingCode();

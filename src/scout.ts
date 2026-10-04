@@ -12,16 +12,16 @@ import { skillsContext } from "./project-skills.js";
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative, isAbsolute } from "node:path";
 import { run } from "./exec.js";
 import { auditOf } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parseReport, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportProblem } from "./scout-report.js";
+import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
 import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
@@ -30,7 +30,9 @@ import {
   quarantineMailboxes,
   readMailbox,
   reportFileName,
+  SCREENSHOT_BYTE_CAP,
   storeEvidence,
+  validateScreenshotBytes,
   writeEvidenceFile,
 } from "./evidence.js";
 import type { Runner } from "./builder.js";
@@ -75,6 +77,9 @@ export type ScoutRequest = {
   git?: Runner;
   /** Answered questions from earlier scouting rounds, for the brief. */
   answers?: readonly { question: string; choice: string; note: string | null }[];
+  /** Where the scout may save screenshots: outside the checkout, so the clean-tree proof still holds. Left out, a
+   * fresh temporary folder is made for this run and removed after it. */
+  outputDir?: string;
 };
 
 export type ReportArtifact = {
@@ -120,6 +125,7 @@ function scoutBrief(
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
   structured: boolean,
+  outputDir: string,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -141,6 +147,14 @@ function scoutBrief(
     "create any file (other than the two protocol files named below),",
     "stage, commit, or switch branches. The workspace is checked after you",
     "finish; any other change discards your session and its report.",
+    "",
+    "You may search the web and fetch pages for this research. Cite the URL",
+    "of every source you use. You may save screenshots (headless Playwright,",
+    "PNG or JPEG) of public pages you actually visited, and of this",
+    "project's own UI (its demo or dev server, if it has one), into this",
+    `folder outside the repository: \`${outputDir}\`. Use plain file names`,
+    `such as home.png; at most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB. Never screenshot a page you`,
+    "did not visit, never download anything else, and never run downloaded code.",
     answeredBlock,
     ...(structured
       ? [
@@ -170,16 +184,30 @@ function scoutBrief(
     '  "title": "one line",',
     '  "summary": "one paragraph the operator reads first",',
     '  "report": "the report as markdown: what you found, the evidence, the risks",',
-    '  "followUps": [{ "title": "one line", "goal": "what success looks like" }]',
+    '  "followUps": [{ "title": "one line", "goal": "what success looks like" }],',
+    '  "items": [{ "title": "one line", "why": "why it matters", "url": "https://…", "image": "home.png" }],',
+    '  "images": [{ "file": "home.png", "caption": "one line", "url": "the page it shows" }]',
     "}",
     `Caps: title ${REPORT_LIMITS.title}, summary ${REPORT_LIMITS.summary}, report ${REPORT_LIMITS.document} bytes,`,
-    `up to ${REPORT_LIMITS.followUps} follow-ups (title ${REPORT_LIMITS.followUpTitle}, goal ${REPORT_LIMITS.followUpGoal}).`,
+    `up to ${REPORT_LIMITS.followUps} follow-ups (title ${REPORT_LIMITS.followUpTitle}, goal ${REPORT_LIMITS.followUpGoal}),`,
+    `up to ${REPORT_LIMITS.items} items (the findings later steps read; image optional, naming one of images),`,
+    `up to ${REPORT_LIMITS.images} images (screenshots you saved, each with its caption and the URL it shows).`,
     "Each follow-up becomes a task the operator may file with one tap — write",
     "its goal as the contract a builder would be held to.",
   ].join("\n");
 }
 
 export async function scout(store: Store, request: ScoutRequest): Promise<ScoutOutcome> {
+  const made = request.outputDir === undefined ? mkdtempSync(join(tmpdir(), "toolroll-scout-")) : null;
+  try {
+    return await scoutWith(store, request, made ?? request.outputDir!);
+  } finally {
+    // The verified images are evidence by now; what is left here is never read again.
+    if (made !== null) rmSync(made, { recursive: true, force: true });
+  }
+}
+
+async function scoutWith(store: Store, request: ScoutRequest, outputDir: string): Promise<ScoutOutcome> {
   const {
     taskId,
     taskRef,
@@ -200,6 +228,15 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
   const leased = store.getWorktree(worktree);
   if (leased === null || leased.releasedAt !== null || leased.runner !== runner || leased.taskRef !== taskRef || !leased.verified) {
     return { ok: false, kind: "failure", reason: "not-leased", message: `${worktree} is not this task's leased workspace` };
+  }
+  // Screenshots go outside the checkout, or saving one would break the clean-tree proof.
+  let imageFolder: string;
+  try {
+    imageFolder = realpathSync(outputDir);
+    const inside = relative(realpathSync(worktree), imageFolder);
+    if (inside === "" || (!inside.startsWith("..") && !isAbsolute(inside))) throw new Error("the folder is inside the workspace");
+  } catch (error) {
+    return { ok: false, kind: "failure", reason: "output-folder", message: `the scout's screenshot folder can't be used: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   const revision = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
@@ -272,7 +309,7 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, imageFolder),
         maxTurns,
         // Read-only by policy AND by check: plan mode is the permission
         // posture; the clean-tree proof below is the law.
@@ -433,7 +470,8 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     // finding 8): a scout that quotes a key it found has the line redacted
     // in every field BEFORE the report is stored, paged, or shown — the
     // same high-confidence detector the diff capture uses.
-    const { report, redacted } = redactReport(validated);
+    const { report: clean, redacted } = redactReport(validated);
+    const report = keepImages(clean);
 
     // The whole VALIDATED payload is the artifact: re-serialized from the
     // parsed shape, so what the page renders is exactly what passed the
@@ -468,6 +506,48 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       };
     }
   }
+
+  /** Each image the report names, verified and stored as screenshot evidence with its sha256, caption and source
+   * URL. One that isn't a plain PNG or JPEG file in the output folder, or is over the size cap, is left out, its
+   * item keeps no picture, and the report says so; the findings themselves still arrive. */
+  function keepImages(report: ParsedReport): ParsedReport {
+    const kept: ReportImage[] = [];
+    const refused: string[] = [];
+    for (const image of report.images) {
+      const checked = readReportImage(imageFolder, image.file);
+      if (!checked.ok) {
+        refused.push(`${image.file.slice(0, 100)} (${checked.problem})`);
+        continue;
+      }
+      const name = `report-image-${kept.length + 1}.${checked.kind === "png" ? "png" : "jpg"}`;
+      const artifact = storeEvidence(store, root, request.runId, "screenshot", name, checked.bytes, `scout screenshot ${image.file} (validated ${checked.kind}) from ${image.url.slice(0, 500)}`, clock());
+      kept.push({ file: image.file, caption: image.caption, url: image.url, sha256: createHash("sha256").update(checked.bytes).digest("hex"), artifact });
+    }
+    const files = new Set(kept.map(one => one.file));
+    const note = refused.length === 0 ? "" : `\n\n_Screenshots left out: ${refused.join("; ")}._`;
+    const document = note !== "" && Buffer.byteLength(report.report + note, "utf8") <= REPORT_LIMITS.document ? report.report + note : report.report;
+    return {
+      ...report,
+      report: document,
+      images: kept,
+      items: report.items.map(item => (item.image !== null && !files.has(item.image) ? { ...item, image: null } : item)),
+    };
+  }
+}
+
+/** One screenshot from the scout's output folder: a plain file name (never a path), a regular file (never a link),
+ * at most SCREENSHOT_BYTE_CAP, and a PNG or JPEG by its signature. */
+export function readReportImage(folder: string, file: string): { ok: true; bytes: Buffer; kind: "png" | "jpeg" } | { ok: false; problem: string } {
+  if (!REPORT_IMAGE_FILE.test(file)) return { ok: false, problem: "not a PNG or JPEG file name in the screenshot folder" };
+  const found = readMailbox(join(folder, file), SCREENSHOT_BYTE_CAP);
+  if (!found.ok) {
+    if (found.missing) return { ok: false, problem: "not in the screenshot folder" };
+    if (found.bytesOriginal !== undefined) return { ok: false, problem: `over ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB` };
+    return { ok: false, problem: /symlink/.test(found.problem) ? "a link, not a file" : "not a regular file" };
+  }
+  const checked = validateScreenshotBytes(found.raw);
+  if (!checked.ok) return { ok: false, problem: /signature/.test(checked.problem) ? "not a PNG or JPEG" : checked.problem };
+  return { ok: true, bytes: found.raw, kind: checked.kind };
 }
 
 /** What Claude's structured output handed back, or null when the turn
@@ -539,6 +619,8 @@ function redactReport(report: ParsedReport): { report: ParsedReport; redacted: b
       summary: clean(report.summary),
       report: clean(report.report),
       followUps: report.followUps.map(one => ({ title: clean(one.title), goal: clean(one.goal) })),
+      items: report.items.map(one => ({ ...one, title: clean(one.title), why: clean(one.why) })),
+      images: report.images.map(one => ({ ...one, caption: clean(one.caption) })),
     },
     redacted,
   };

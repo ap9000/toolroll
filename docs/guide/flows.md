@@ -58,7 +58,10 @@ time.
 Text in a zone can use: `{{card.title}}`, `{{card.description}}`,
 `{{card.email}}` (the first email address the card mentions), `{{note}}` (the
 latest send-back note), and `{{stage.<zone id>}}` (what an earlier zone said:
-a report, a draft, a sort, an API's answer).
+a report, a draft, a sort, an API's answer). A research zone also fills
+`{{stage.<zone id>.items}}` (what it found: a numbered list of titles, why
+each matters and its URL) and `{{stage.<zone id>.report}}` (the full report,
+up to 20,000 characters).
 
 ## What starts cards
 
