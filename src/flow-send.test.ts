@@ -15,7 +15,8 @@ import { storeEvidence } from "./evidence.js";
 import { advanceFlows, crossProjectProblem, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, readFlowSend } from "./flow-send.js";
 import { flowFromSteps, flowTerms, validateFlowDefinition, type FlowDefinition } from "./flows.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, galleryTemplateOf, SEND_RESULT, withSendResult } from "./flow-gallery.js";
+import { BLANK, buildFromGallery, GALLERY, galleryDiagram, galleryTemplateOf, SEND_RESULT, sendsAlready, withSendResult } from "./flow-gallery.js";
+import { galleryUseHtml } from "./flow-gallery-ui.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { flowView } from "./flows-ui.js";
 import { createDecisionServer } from "./serve.js";
@@ -371,11 +372,27 @@ describe("c3: another project, and Send me the result", () => {
     }
   });
 
-  test("every gallery template can end with Send me the result, off unless asked for", () => {
-    for (const template of [...GALLERY, BLANK]) {
+  test("every gallery template can end with Send me the result, off unless asked for, and one that already sends keeps one send", () => {
+    const already = [...GALLERY, BLANK].filter(one => galleryDiagram(one).stages.some(stage => stage.kind === "send")).map(one => one.id);
+    expect(already.sort()).toEqual(["failed-deploy", "figma-to-pr", "fix-drop-off", "metrics-digest", "support-to-fix", "ui-inspiration"]);
+    for (const template of [...GALLERY, BLANK].filter(one => already.includes(one.id))) {
       const drawn = galleryDiagram(template);
-      expect(drawn.stages.some(one => one.kind === "send")).toBe(false);
+      // Its own send stays the only one: adding is a no-op, the box isn't offered, and the answer isn't taken.
+      expect(sendsAlready(template), template.id).toBe(true);
+      expect(withSendResult(drawn), template.id).toBe(drawn);
+      const asked = buildFromGallery(store, template, ALPHA, { [SEND_RESULT.key]: "yes" });
+      expect(asked.definition.stages.filter(one => one.kind === "send"), template.id).toHaveLength(1);
+      expect(asked.answers, template.id).not.toHaveProperty(SEND_RESULT.key);
+      expect(asked.does, template.id).not.toContain(SEND_RESULT.does);
+      expect(galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }), template.id).not.toContain("data-send-result");
+    }
+    for (const template of [...GALLERY, BLANK].filter(one => !already.includes(one.id))) {
+      const drawn = galleryDiagram(template);
+      expect(sendsAlready(template), template.id).toBe(false);
+      expect(galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }), template.id).toContain("data-send-result");
       const sending: FlowDefinition = validateFlowDefinition(withSendResult(drawn));
+      // Exactly one is gained.
+      expect(sending.stages.filter(one => one.kind === "send"), template.id).toHaveLength(1);
       const send = sending.stages.find(one => one.kind === "send")!;
       expect(send).toMatchObject({ title: "Send me the result", next: expect.any(String) });
       expect(sending.stages.find(one => one.id === send.next)!.kind).toBe("done");

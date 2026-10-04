@@ -5,7 +5,7 @@
  * A template's tools show their marks and whether the project has them; one it lacks offers Connect first.
  */
 import { brandMarkHtml } from "./brand-mark.js";
-import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
+import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
 import { choiceTargets, type FlowDefinition } from "./flows.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -84,12 +84,13 @@ export function galleryUseHtml(input: {
 }): string {
   const { template } = input;
   const tools = input.tools ?? input.preview?.tools ?? [];
-  const missing = tools.filter(one => one.state !== "connected");
+  // A tool added another way is there: only one the project lacks is missing.
+  const missing = tools.filter(one => one.state !== "connected" && one.state !== "taken");
   // Each tool with its state; one the project lacks offers its own Connect (the Tools page's, with the same password), and comes back here.
   const connect = (tool: GalleryTool) => {
     const head = `<p class="gallery-tool-head">${toolMark(tool)} <strong>${e(tool.label)}</strong> ${toolState(tool)}</p>`;
-    if (tool.state === "connected" || input.csrf === "") return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="${tool.state}">${head}</div>`;
-    if (tool.state === "taken") return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="taken">${head}<p class="meta">This project has a tool by that name, set up another way. To connect ${e(tool.label)} here, remove it on <a href="/settings/tools?repo=${e(encodeURIComponent(input.repo))}">Tools</a>.</p></div>`;
+    // Added another way, it is there: nothing to connect.
+    if (tool.state === "connected" || tool.state === "taken" || input.csrf === "") return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="${tool.state}">${head}</div>`;
     const how = tool.id === "figma-desktop" ? "Open the Figma desktop app and turn on its Dev Mode MCP server in Preferences." : `You sign in on ${tool.label}, then come back here.`;
     return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="open">${head}<form method="post" action="/settings/tools/connect">` +
       `<input type="hidden" name="csrf" value="${e(input.csrf)}"><input type="hidden" name="repo" value="${e(input.repo)}"><input type="hidden" name="shown" value="${e(input.repo)}"><input type="hidden" name="template" value="${e(template.id)}">` +
@@ -98,7 +99,9 @@ export function galleryUseHtml(input: {
   };
   const toolsBlock = tools.length === 0 ? "" : `<section class="gallery-tools-use" aria-label="Tools">${tools.map(connect).join("")}</section>`;
   // Made without a tool, the preview names the zone that needs it.
-  const needing = missing.filter(one => one.zones.length > 0).map(one => `<p class="meta" data-needs-tool="${e(one.id)}">${one.zones.map(zone => `“${e(zone)}”`).join(" and ")} need${one.zones.length === 1 ? "s" : ""} ${e(one.label)}, which isn't connected.</p>`).join("");
+  const zones = (tool: GalleryTool) => tool.zones.map(zone => `“${e(zone)}”`).join(" and ");
+  const needing = missing.filter(one => one.zones.length > 0).map(one => `<p class="meta" data-needs-tool="${e(one.id)}">${zones(one)} need${one.zones.length === 1 ? "s" : ""} ${e(one.label)}, which isn't connected.</p>`).join("") +
+    tools.filter(one => one.state === "taken" && one.zones.length > 0).map(one => `<p class="meta" data-tool-taken="${e(one.id)}">${zones(one)} use${one.zones.length === 1 ? "s" : ""} ${e(one.label)}, added another way.</p>`).join("");
   const field = (ask: GalleryTemplate["asks"][number]) => {
     const value = input.answers[ask.key] ?? ask.default;
     const hint = ask.hint === undefined ? "" : ` <small>${e(ask.hint)}</small>`;
@@ -119,7 +122,7 @@ export function galleryUseHtml(input: {
     `<form method="post" action="/flows/new/${e(template.id)}" data-gallery-use><input type="hidden" name="csrf" value="${e(input.csrf)}">` +
     `<input type="hidden" name="previewed" value="${e(input.preview?.digest ?? "")}">${project}${template.asks.map(field).join("")}` +
     `<label>Name<input name="name" value="${e(input.name)}" maxlength="80"></label>` +
-    `<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" ? " checked" : ""} data-send-result><span>${e(SEND_RESULT.title)}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>${preview}` +
+    (sendsAlready(template) ? "" : `<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" ? " checked" : ""} data-send-result><span>${e(SEND_RESULT.title)}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>`) + preview +
     `<p class="gallery-actions">${input.preview === null ? "" : `<button type="submit" name="intent" value="create"${missing.length > 0 ? ' class="secondary" data-without-tools' : ""}>Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>` +
     `</form><p class="meta"><a href="/flows/new">All templates</a></p></section>`;
 }

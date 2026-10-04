@@ -94,6 +94,17 @@ try {
     if (needs !== "“Find examples” needs Mobbin, which isn't connected.") fail(`${name} needs`, needs, errors);
     await tab.screenshot({ path: join(out, `${name}-ui-inspiration-preview.png`) });
 
+    // It sends its result already, so "Send me the result" isn't offered again.
+    if (await tab.locator('[data-send-result]').count() !== 0) fail(`${name} ui-inspiration offers a second send`, null, errors);
+
+    // Added another way: it reads as there, not missing; Create flow keeps its normal weight.
+    await tab.goto(`${url}/flows/new/error-to-fix?repo=${encodeURIComponent(repo)}`);
+    const taken = await tab.locator('[data-tool-taken="sentry"]').textContent();
+    if (taken !== '“Find the cause” uses Sentry, added another way.' || await tab.locator('[data-needs-tool], [data-without-tools], .gallery-connect form').count() !== 0) fail(`${name} taken`, taken, errors);
+    await check('error-to-fix taken');
+    await tab.locator('.gallery-preview').evaluate(one => one.scrollIntoView({ block: 'start' }));
+    await tab.screenshot({ path: join(out, `${name}-error-to-fix-taken.png`) });
+
     // A connected tool, with its long steps open.
     await tab.goto(`${url}/flows/new/fix-drop-off?repo=${encodeURIComponent(repo)}`);
     await tab.locator('.gallery-preview details').evaluate(one => { one.open = true; });

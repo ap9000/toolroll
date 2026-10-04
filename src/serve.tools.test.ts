@@ -180,11 +180,14 @@ test("a gallery template shows its tools for the project, offers Connect first a
   expect(digest).toContain('<div class="gallery-connect" data-tool="posthog" data-state="connected">');
   expect(digest).not.toContain('action="/settings/tools/connect"');
   expect(digest).toContain('<button type="submit" name="intent" value="create">Create flow</button>');
-  // Set up another way: no Connect here; the Tools page is where to change it.
+  // Added another way: it is there, so nothing reads as missing: no Connect, and Create flow keeps its normal weight.
   const errors = await get(`/flows/new/error-to-fix?repo=${encodeURIComponent(BENTO)}`);
+  expect(errors).toContain('<div class="gallery-connect" data-tool="sentry" data-state="taken">');
   expect(errors).not.toContain('action="/settings/tools/connect"');
-  expect(errors).toContain("set up another way. To connect Sentry here, remove it on <a href=\"/settings/tools?repo=%2Frepo%2Fbentoportfolio\">Tools</a>.");
-  expect(errors).toContain(`data-needs-tool="sentry">“Find the cause” needs Sentry, which isn't connected.</p>`);
+  expect(errors).toContain(`data-tool-taken="sentry">“Find the cause” uses Sentry, added another way.</p>`);
+  expect(errors).not.toContain("data-needs-tool");
+  expect(errors).not.toContain("isn't connected");
+  expect(errors).toContain('<button type="submit" name="intent" value="create">Create flow</button>');
 
   // Not connected: its Connect (with the password) comes first; the preview names the zone that needs it; Create stays, quieter.
   const figma = await get(`/flows/new/figma-to-pr?repo=${encodeURIComponent(BENTO)}`);

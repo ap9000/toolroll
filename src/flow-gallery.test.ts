@@ -14,7 +14,8 @@ import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
 import { galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { codeOutput } from "./flow-code.js";
 import { addToolTo } from "./project-tools.js";
 import { connectedSpec, connectionsOf, ONE_CLICK } from "./mcp-connect.js";
 
@@ -87,7 +88,7 @@ describe("flow gallery", () => {
       "figma-to-pr": { tools: ["figma-desktop"], uses: ["Build the frame"], kinds: ["task", "pull-request", "send", "done"], trigger: "button" },
       "worker-errors": { tools: ["cloudflare"], uses: ["Read the errors", "Find the cause"], kinds: ["report", "sort", "report", "choose", "task", "pull-request", "done", "done"], trigger: "schedule" },
       "failed-deploy": { tools: ["vercel"], uses: ["Find the cause"], kinds: ["report", "task", "pull-request", "send", "done"], trigger: "webhook" },
-      "linear-to-prs": { tools: ["linear"], uses: ["Comment on the issue"], kinds: ["task", "pull-request", "draft", "tool", "done"], trigger: "linear" },
+      "linear-to-prs": { tools: ["linear"], uses: ["Comment on the issue"], kinds: ["task", "pull-request", "check", "tool", "done"], trigger: "linear" },
       "support-to-fix": { tools: ["intercom"], uses: ["Rank the bugs"], kinds: ["report", "choose", "task", "pull-request", "send", "done"], trigger: "schedule" },
       "error-to-fix": { tools: ["sentry"], uses: ["Find the cause"], kinds: ["sort", "report", "task", "approval", "pull-request", "inbox", "done", "done"], trigger: "webhook" },
     };
@@ -125,6 +126,16 @@ describe("flow gallery", () => {
     const linear = buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, SAMPLE);
     expect(linear.triggers).toEqual([{ kind: "linear", team: "WEB", label: "bug-report" }]);
     expect(linear.definition.stages.find(one => one.kind === "tool")!.tool).toEqual({ server: "linear", name: "create_comment", args: JSON.stringify({ issueId: "{{stage.issue-key}}", body: "A pull request is ready: {{stage.pull-request}}" }) });
+    // The issue key comes from the card's source as the Linear trigger stored it, never guessed: none skips the comment.
+    const key = linear.definition.stages.find(one => one.id === "issue-key")!;
+    expect(key).toMatchObject({ kind: "check", runIn: "folder", routes: [{ answer: "Found", to: "comment" }, { answer: "None", to: "done" }] });
+    expect(linear.scripts).toEqual([expect.objectContaining({ name: "linear-issue-key", body: LINEAR_KEY })]);
+    const keyOf = (source: unknown, description: string) => codeOutput(execFileSync("/bin/sh", ["-c", LINEAR_KEY], { input: JSON.stringify({
+      card: { id: 1, title: "Fix it", description, email: null, note: null, owner: "alex", source },
+      outputs: { build: { zone: "Build it", text: '"source":{"kind":"linear","label":"Linear ENG-999"}' } } }), encoding: "utf8" }), {});
+    expect(keyOf({ kind: "linear", label: "Linear ENG-123", url: "https://linear.app/x/issue/ENG-123" }, "From Linear ENG-123:\n\nIt breaks.")).toEqual({ output: "ENG-123", goTo: "Found" });
+    expect(keyOf(null, "Mentions ENG-77 and \"label\":\"Linear ENG-55\"")).toEqual({ output: "none", goTo: "None" });
+    expect(keyOf({ kind: "github", label: "Linear ENG-1", url: null }, "")).toEqual({ output: "none", goTo: "None" });
     expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, { team: "eng team" })).toThrow("Say the Linear team as its short key, like ENG.");
     expect(buildFromGallery(store, GALLERY.find(one => one.id === "metrics-digest")!, repo, SAMPLE).triggers).toEqual([{ kind: "schedule", schedule: expect.stringMatching(/^weekdays 03:00/), title: "Metrics digest" }]);
     // Connected, the preview says so and names no missing tool.
