@@ -1,10 +1,7 @@
-/** brandMarkHtml's markup in React: the same tile, logo or letter, styled by BRAND_MARK_CSS. */
-import { BRAND_ICONS } from "../brand-icons.js";
-import { brandIconFor, brandLetter } from "../brand-mark.js";
+/** brandIconHtml's markup in React: the logo alone, sized and coloured like the icons beside it. */
+import { BRAND_ICONS, type BrandIcon as Icon, type BrandIconId } from "../brand-icons.js";
 
-export function BrandMark({ name, label, connected }: { name: string; label: string; connected: boolean }) {
-  const icon = brandIconFor(name);
-  return <span className="brand-mark" data-connected={String(connected)} data-letter={icon === null ? "" : undefined} aria-hidden="true">
-    {icon === null ? brandLetter(label) : <svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d={BRAND_ICONS[icon].path} /></svg>}
-  </span>;
+export function BrandIcon({ id }: { id: BrandIconId }) {
+  const icon: Icon = BRAND_ICONS[id];
+  return <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path fill="currentColor" fillRule={icon.evenodd ? "evenodd" : undefined} d={icon.path} /></svg>;
 }

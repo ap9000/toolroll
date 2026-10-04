@@ -1,13 +1,16 @@
 // Generates src/brand-icons.ts: every integration logo as one monochrome
-// 24x24 path, the mark's larger side 20 and centred. Run it after changing a
-// source: `node scripts/brand-icons.mjs`. Nothing here runs with Toolroll.
+// path in a 24x24 box, centred and scaled to one optical size. Run it after
+// changing a source: `node scripts/brand-icons.mjs`. Nothing here runs with
+// Toolroll.
 //
 // Sources: Simple Icons (npm simple-icons, CC0), already one path each; and
-// five SVGs from svgl (svgl.app, MIT) saved as published under
-// assets/brand-icons/. A multi-colour svgl mark is flattened by its recipe
-// below, checked by eye: layers that shade one shape become that shape, a
-// white glyph becomes a hole, and a shape in front cuts a thin gap into the
-// shapes behind it, so overlapping shapes stay apart instead of merging.
+// SVGs saved as published under assets/brand-icons/: five from svgl
+// (svgl.app, MIT) and Zapier's asterisk from Simple Icons 9.10.0. A logo's
+// shapes are kept exactly as drawn, every fill becomes currentColor, and only
+// scale and position change: no shape is merged, cut or redrawn. Overlapping
+// shapes simply paint over one another in the one colour; a white glyph (the
+// Canva C, the Teams T) stays see-through, its outline added in the opposite
+// winding once per shape it sits on.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,34 +18,37 @@ import paper from "paper";
 import * as simpleIcons from "simple-icons";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The box is 24. Every mark gets the area of a 20x20 square (its sides'
+ * geometric mean is 20), so a wide wordmark (Wix) reads the same size as a
+ * square mark beside it; no side may pass the box.
+ */
 const SIZE = 24, MARK = 20;
-/** The gap a front shape cuts, in final units (the mark is 20). */
-const GAP = 0.9;
 
 /** id → Simple Icons slug. */
 const SIMPLE = {
   stripe: "stripe", notion: "notion", linear: "linear", sentry: "sentry", jira: "jira", confluence: "confluence",
-  intercom: "intercom", zapier: "zapier", square: "square", paypal: "paypal", webflow: "webflow", wix: "wix",
+  intercom: "intercom", square: "square", paypal: "paypal", webflow: "webflow", wix: "wix",
   vercel: "vercel", cloudflare: "cloudflare", figma: "figma", posthog: "posthog", betterstack: "betterstack",
   telegram: "telegram", discord: "discord", github: "github", gmail: "gmail", claude: "claude", supabase: "supabase",
   shadcn: "shadcnui", chrome: "googlechrome",
 };
 
 /**
- * id → svgl file and recipe. Elements are numbered in document order, defs
- * left out. `shapes` run back to front; each is the union of `from`, less the
- * union of `holes`. Elements in no shape are colour overlays on a shape
- * already listed, or (Playwright's dark outlines) shading of the masks.
+ * id → a saved SVG. Elements are numbered in document order, defs left out.
+ * `shapes` are the drawn elements (a gradient layer repeating a shape is
+ * left out: it adds nothing in one colour); `holes` are white glyphs.
+ * `evenodd` keeps the source's own fill rule where its holes rely on it.
  */
-const SVGL = {
-  slack: { title: "Slack", file: "slack.svg", shapes: [{ from: [0] }, { from: [1] }, { from: [2] }, { from: [3] }] },
-  teams: { title: "Microsoft Teams", file: "microsoft-teams.svg",
-    // Back body, front body, the two heads, then the T tile in front of them all.
-    shapes: [{ from: [0] }, { from: [1] }, { from: [4] }, { from: [7] }, { from: [10], holes: [12] }] },
-  canva: { title: "Canva", file: "canva.svg", shapes: [{ from: [0], holes: [5] }] },
-  openai: { title: "OpenAI", file: "openai.svg", shapes: [{ from: [0] }] },
-  // The red mask behind (with its shading), the green mask in front (with its shading).
-  playwright: { title: "Playwright", file: "playwright.svg", shapes: [{ from: [2, 4, 6] }, { from: [3, 5] }] },
+const SAVED = {
+  zapier: { title: "Zapier", source: "Simple Icons", file: "zapier.svg", shapes: [0] },
+  slack: { title: "Slack", source: "svgl", file: "slack.svg", shapes: [0, 1, 2, 3] },
+  // Back body, front body, the two heads, the T tile; the T is white.
+  teams: { title: "Microsoft Teams", source: "svgl", file: "microsoft-teams.svg", shapes: [0, 1, 4, 7, 10], holes: [12] },
+  canva: { title: "Canva", source: "svgl", file: "canva.svg", shapes: [0], holes: [5] },
+  openai: { title: "OpenAI", source: "svgl", file: "openai.svg", shapes: [0], evenodd: true },
+  // Every coloured element: the masks, their shading and the dark outlines.
+  playwright: { title: "Playwright", source: "svgl", file: "playwright.svg", shapes: [0, 1, 2, 3, 4, 5, 6] },
 };
 
 paper.setup(new paper.Size(SIZE, SIZE));
@@ -76,10 +82,9 @@ function spaced(d) {
 
 const attr = (tag, name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1] ?? null;
 
-/** The drawn elements of an SVG, in order, as paper items with their fill rule. */
+/** The drawn elements of an SVG, in order, as paper paths. */
 function elements(svg) {
   const body = svg.replace(/<defs[\s\S]*?<\/defs>/g, "").replace(/<clipPath[\s\S]*?<\/clipPath>/g, "");
-  const groupRule = /<g[^>]*fill-rule="evenodd"/.test(body) ? "evenodd" : "nonzero";
   return [...body.matchAll(/<(path|rect|circle)\b[^>]*>/g)].map(([tag, kind]) => {
     let item;
     if (kind === "path") item = new paper.CompoundPath(spaced(attr(tag, "d")));
@@ -87,46 +92,34 @@ function elements(svg) {
       const [x, y, w, h, rx] = ["x", "y", "width", "height", "rx"].map(n => Number(attr(tag, n) ?? 0));
       item = new paper.Path.Rectangle(new paper.Rectangle(x, y, w, h), new paper.Size(rx, rx));
     } else item = new paper.Path.Circle(new paper.Point(Number(attr(tag, "cx")), Number(attr(tag, "cy"))), Number(attr(tag, "r")));
-    item.fillRule = attr(tag, "fill-rule") ?? groupRule;
     item.remove();
     return item;
   });
 }
 
-const unite = items => items.slice(1).reduce((all, one) => { const next = all.unite(one, { insert: false }); return next; }, items[0].clone({ insert: false }).unite(items[0], { insert: false }));
-
-/** The shape grown by `by` all round: its union with copies shifted in 32 directions. */
-function grown(shape, by) {
-  let all = shape.clone({ insert: false });
-  for (let i = 0; i < 32; i++) {
-    const angle = (i / 32) * Math.PI * 2;
-    const copy = shape.clone({ insert: false });
-    copy.translate(new paper.Point(Math.cos(angle) * by, Math.sin(angle) * by));
-    all = all.unite(copy, { insert: false });
-  }
-  return all;
-}
-
-function flatten(svg, recipe) {
+/** One saved logo's subpaths: its shapes as drawn, then each white glyph wound against the shapes under it. */
+function subpaths(svg, recipe) {
   const parts = elements(svg);
-  const silhouettes = recipe.shapes.map(shape => unite(shape.from.map(i => parts[i])));
-  const span = Math.max(...silhouettes.map(s => Math.max(s.bounds.width, s.bounds.height)));
-  const gap = (GAP / MARK) * span;
-  return recipe.shapes.map((shape, at) => {
-    let region = silhouettes[at];
-    if (shape.holes) region = region.subtract(unite(shape.holes.map(i => parts[i])), { insert: false });
-    for (const front of silhouettes.slice(at + 1)) {
-      if (region.bounds.intersects(front.bounds.expand(gap * 2))) region = region.subtract(grown(front, gap), { insert: false });
+  const shapes = recipe.shapes.map(i => parts[i]);
+  const out = shapes.map(shape => shape.clone({ insert: false }));
+  for (const i of recipe.holes ?? []) {
+    const hole = parts[i], inside = hole.interiorPoint;
+    const under = shapes.filter(shape => shape.contains(inside));
+    for (const shape of under) {
+      const copy = hole.clone({ insert: false });
+      const outer = (shape.children ?? [shape]).find(one => one.contains(inside)) ?? shape;
+      copy.clockwise = !outer.clockwise;
+      out.push(copy);
     }
-    return region;
-  });
+  }
+  return out;
 }
 
-/** Scale and centre so the larger side is MARK, then write compact path data. */
+/** Scale and centre to the one optical size, then write compact path data. */
 function fit(items) {
   const group = new paper.Group({ children: items, insert: false });
-  const box = group.bounds;
-  group.scale(MARK / Math.max(box.width, box.height), box.center);
+  const { width, height } = group.bounds;
+  group.scale(Math.min(MARK / Math.sqrt(width * height), SIZE / Math.max(width, height)), group.bounds.center);
   group.translate(new paper.Point(SIZE / 2, SIZE / 2).subtract(group.bounds.center));
   const data = group.children.map(child => child.pathData).join("");
   return data.replace(/-?\d*\.?\d+(e-?\d+)?/g, n => {
@@ -143,22 +136,24 @@ for (const [id, slug] of Object.entries(SIMPLE)) {
   path.remove();
   icons[id] = { title: icon.title, source: "Simple Icons", path: fit([path]) };
 }
-for (const [id, recipe] of Object.entries(SVGL)) {
+for (const [id, recipe] of Object.entries(SAVED)) {
   const svg = readFileSync(join(root, "assets/brand-icons", recipe.file), "utf8");
-  icons[id] = { title: recipe.title, source: "svgl", path: fit(flatten(svg, recipe)) };
+  icons[id] = { title: recipe.title, source: recipe.source, path: fit(subpaths(svg, recipe)), ...(recipe.evenodd ? { evenodd: true } : {}) };
 }
 
 const sorted = Object.keys(icons).sort();
-const lines = sorted.map(id => `  ${JSON.stringify(id)}: { title: ${JSON.stringify(icons[id].title)}, source: ${JSON.stringify(icons[id].source)}, path: ${JSON.stringify(icons[id].path)} },`);
+const lines = sorted.map(id => `  ${JSON.stringify(id)}: { title: ${JSON.stringify(icons[id].title)}, source: ${JSON.stringify(icons[id].source)}, ` +
+  `${icons[id].evenodd ? "evenodd: true, " : ""}path: ${JSON.stringify(icons[id].path)} },`);
 const version = JSON.parse(readFileSync(join(root, "node_modules/simple-icons/package.json"), "utf8")).version;
 writeFileSync(join(root, "src/brand-icons.ts"), `/**
  * Integration logos: each one path in a 24x24 box, filled with currentColor,
- * the mark's larger side 20 and centred. Generated by scripts/brand-icons.mjs
- * from Simple Icons ${version} (CC0) and svgl (MIT, assets/brand-icons/); do
- * not edit by hand. The logos are their owners' trademarks, used only to name
- * the integrations. See THIRD_PARTY_NOTICES.md.
+ * centred, with the area of a 20x20 square. Generated by
+ * scripts/brand-icons.mjs from Simple Icons ${version} (CC0), Zapier's asterisk
+ * from Simple Icons 9.10.0 and svgl (MIT), the last two saved in
+ * assets/brand-icons/; do not edit by hand. The logos are their owners'
+ * trademarks, used only to name the integrations. See THIRD_PARTY_NOTICES.md.
  */
-export type BrandIcon = { title: string; source: "Simple Icons" | "svgl"; path: string };
+export type BrandIcon = { title: string; source: "Simple Icons" | "svgl"; evenodd?: true; path: string };
 
 export const BRAND_ICONS = {
 ${lines.join("\n")}

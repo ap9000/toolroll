@@ -303,7 +303,8 @@ import { readSsoSettings, removeSsoSettings, saveSsoSettings, SSO_CALLBACK, ssoC
 import { monitoringChange, readMonitoring, saveMonitoring } from "./monitoring-settings.js";
 import { MONITORING_CSS, monitoringHtml, signingSecretHtml } from "./monitoring-ui.js";
 import { INTEGRATIONS_CSS, integrationsHtml } from "./integrations-ui.js";
-import { BRAND_MARK_CSS, brandMarkHtml } from "./brand-mark.js";
+import { BRAND_MARK_CSS, brandIconHtml } from "./brand-mark.js";
+import type { BrandIconId } from "./brand-icons.js";
 import { createIntegrationMonitor, type IntegrationIo } from "./integrations.js";
 import { BACKUP_CSS, backupHtml } from "./backup-ui.js";
 import { BACKUP_EVERY_HOURS, MAX_KEEP, backupFolderOf, backupNow, checkBackupFolder, defaultBackupFolder } from "./backup.js";
@@ -26195,10 +26196,10 @@ async function latestReleaseFor(latest: (() => Promise<{ version: string }>) | u
 }
 
 /** Settings destinations under short headings: an icon and a name each, and a chat app's logo and state. */
-function settingsTiles(groups: BrowserSettingsGroup[]): string {
+export function settingsTiles(groups: BrowserSettingsGroup[]): string {
   return `<nav class="settings-tiles" aria-label="Settings sections">${groups.map(group =>
     `<section aria-label="${escape(group.title)}"><h2>${escape(group.title)}</h2><div>${group.tiles.map(tile =>
-      `<a href="${escape(tile.href)}">${tile.brand === undefined ? strokeIcon(SETTINGS_TILE_ICONS.get(tile.href) ?? "") : brandMarkHtml(tile.brand, tile.label, tile.status !== undefined && tile.status.tone !== "off")}<span>${escape(tile.label)}${tile.status === undefined ? "" :
+      `<a href="${escape(tile.href)}">${tile.brand === undefined ? strokeIcon(SETTINGS_TILE_ICONS.get(tile.href) ?? "") : brandIconHtml(tile.brand)}<span>${escape(tile.label)}${tile.status === undefined ? "" :
         `<span class="provider-status provider-status--${tile.status.tone}"><i aria-hidden="true"></i>${escape(tile.status.words)}</span>`}</span></a>`).join("")}</div></section>`).join("")}</nav>`;
 }
 
@@ -26239,7 +26240,7 @@ const SETTINGS_GROUPS: [string, [string, string, string][]][] = [
   ]],
 ];
 const SETTINGS_TILE_ICONS = new Map(SETTINGS_GROUPS.flatMap(([, tiles]) => tiles.map(([href, , icon]) => [href, icon] as const)));
-const CHAT_APP_TILES: Record<string, string> = { "/settings/telegram": "telegram", "/settings/slack": "slack", "/settings/discord": "discord", "/settings/teams": "teams" };
+const CHAT_APP_TILES: Record<string, BrandIconId> = { "/settings/telegram": "telegram", "/settings/slack": "slack", "/settings/discord": "discord", "/settings/teams": "teams" };
 
 /**
  * The settings groups, with each chat app's state from what the server already holds: not set up,

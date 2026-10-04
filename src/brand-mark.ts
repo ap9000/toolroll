@@ -1,11 +1,12 @@
 /**
  * The one mark an integration shows wherever it appears: its logo
- * (brand-icons.ts) in a 32px tile, 28px on a phone; a letter in the same tile
- * when it has none (a custom tool, a service without a logo). Ink when
- * connected, muted otherwise. Server pages use brandMarkHtml; React uses
- * BrandMark (browser/brand-mark.tsx) with the same markup and BRAND_MARK_CSS.
+ * (brand-icons.ts) in a 32px tile, 28px once the tiles go to their phone
+ * layout; a letter in the same tile when it has none (a custom tool, a service
+ * without a logo). Ink when connected, muted otherwise. Where a row of plain
+ * icons already stands (the Settings home), the logo is drawn as one of them:
+ * brandIconHtml, or BrandIcon in React (browser/brand-mark.tsx).
  */
-import { BRAND_ICONS, type BrandIconId } from "./brand-icons.js";
+import { BRAND_ICONS, type BrandIcon, type BrandIconId } from "./brand-icons.js";
 
 /** Service ids, catalog tool names and integration keys that differ from their icon's id. */
 const ALIASES: Record<string, BrandIconId> = {
@@ -29,14 +30,27 @@ export function brandLetter(label: string): string {
 
 const e = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-/** The mark, decorative (the name always sits beside it). */
-export function brandMarkHtml(name: string, label: string, connected: boolean): string {
-  const icon = brandIconFor(name);
-  const inside = icon === null ? e(brandLetter(label))
-    : `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="${BRAND_ICONS[icon].path}"/></svg>`;
+/** The logo alone, decorative: an svg its surroundings size and colour. */
+export function brandIconHtml(id: BrandIconId): string {
+  const icon: BrandIcon = BRAND_ICONS[id];
+  return `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path fill="currentColor"${icon.evenodd ? ` fill-rule="evenodd"` : ""} d="${icon.path}"/></svg>`;
+}
+
+/**
+ * The mark, decorative (the name always sits beside it). `name` null is a
+ * letter whatever the label: a custom tool never borrows a logo by its name.
+ */
+export function brandMarkHtml(name: string | null, label: string, connected: boolean): string {
+  const icon = name === null ? null : brandIconFor(name);
+  const inside = icon === null ? e(brandLetter(label)) : brandIconHtml(icon);
   return `<span class="brand-mark" data-connected="${connected}"${icon === null ? " data-letter" : ""} aria-hidden="true">${inside}</span>`;
 }
 
-export const BRAND_MARK_CSS = `.brand-mark{box-sizing:border-box;flex:0 0 auto;width:32px;height:32px;border-radius:8px;display:inline-grid;place-items:center;background:var(--so-neutral-soft);color:var(--so-muted);font-style:normal;font-weight:600;font-size:15px;line-height:1}` +
-  `.brand-mark svg{display:block;width:20px;height:20px}.brand-mark[data-connected="true"]{color:var(--so-ink)}` +
-  `@media(max-width:760px){.brand-mark{width:28px;height:28px;font-size:14px}.brand-mark svg{width:18px;height:18px}}`;
+/** Where the integration tiles (Settings → Tools) switch to their phone layout, and the mark with them. */
+export const TILE_PHONE = "@media(max-width:600px)";
+
+/** The mark's own sizes; `--brand-mark` is its side, for layouts that line up beside it. */
+export const BRAND_MARK_CSS = `:root{--brand-mark:32px}${TILE_PHONE}{:root{--brand-mark:28px}}` +
+  `.brand-mark{box-sizing:border-box;flex:0 0 auto;width:var(--brand-mark);height:var(--brand-mark);border-radius:8px;display:inline-grid;place-items:center;background:var(--so-neutral-soft);color:var(--so-muted);font-style:normal;font-weight:600;font-size:15px;line-height:1}` +
+  `.brand-mark svg{display:block;width:calc(var(--brand-mark) * .625);height:calc(var(--brand-mark) * .625)}.brand-mark[data-connected="true"]{color:var(--so-ink)}` +
+  `${TILE_PHONE}{.brand-mark{font-size:14px}}`;

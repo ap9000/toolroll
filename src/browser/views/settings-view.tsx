@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import type { BrowserSettingsView } from "../../browser-workspace.js";
 import { accentNote, accentTokens, normalHex } from "../../accent-colors.js";
 import { digestTimes } from "../../digest-times.js";
-import { BrandMark } from "../brand-mark.js";
+import { BrandIcon } from "../brand-mark.js";
 import {
   Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, CollapsibleContent, CollapsibleTrigger,
   Input, Label, RadioCard, RadioGroup, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Switch, cn, toast,
@@ -465,7 +465,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
         <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>
         <div className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
           {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
-            {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandMark name={tile.brand} label={tile.label} connected={tile.status !== undefined && tile.status.tone !== "off"} />}
+            {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
             <span className="grid min-w-0 gap-0.5">{tile.label}
               {tile.status && <span className="flex items-center gap-1.5 text-[13px] font-normal text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
         </div>

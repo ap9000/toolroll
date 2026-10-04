@@ -1,9 +1,9 @@
 // Synthetic visual proof for integration logos: Settings → Tools,
-// Integrations and the Settings home at desktop (1440) and phone (390), light
+// Integrations and the Settings home (its chat apps drawn as plain icons) at desktop (1440) and phone (390), light
 // and dark, plus a sheet of every icon at 1x and 2x. A fresh installation with
 // one project: Telegram connected and the other chat apps not set up; Stripe
 // and Figma connected by one click; Sentry from the catalog waiting for its
-// token; a custom tool (a letter tile). No network: outside answers are
+// token; two custom tools (letter tiles), one named after a brand. No network: outside answers are
 // stubbed. Build first (`npm run build`).
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -52,6 +52,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 });
 `);
 add({ name: 'catalog', command: process.execPath, args: [serverFile], secrets: [], about: 'The library catalogue' }, 'custom');
+// A custom tool named after a brand still shows a letter.
+add({ name: 'linear', command: process.execPath, args: [serverFile], secrets: [], about: 'Our own bridge to the reading list' }, 'custom');
 
 // No network: the one-click servers answer here, and anything else outside this computer fails.
 const realFetch = globalThis.fetch;
@@ -99,15 +101,25 @@ try {
         await page.locator(anchor).first().waitFor();
         await page.waitForTimeout(300);
         if (name === 'settings') await page.locator('a[href="/settings/telegram"]').scrollIntoViewIfNeeded();
-        const facts = await page.evaluate(() => {
+        const facts = await page.evaluate(settings => {
+          if (settings) {
+            // The Settings home: the chat apps' logos stand among the plain icons, no tile, sized and coloured alike.
+            const icons = ['tools', 'integrations', 'telegram', 'slack', 'discord', 'teams'].flatMap(id => [...document.querySelectorAll(`a[href="/settings/${id}"] > svg`)]
+              .filter(one => one.getClientRects().length > 0).map(one => {
+                const box = one.getBoundingClientRect();
+                return { id, w: Math.round(box.width), h: Math.round(box.height), color: getComputedStyle(one).color, logo: one.querySelector('path[fill="currentColor"]') !== null };
+              }));
+            return { overflow: document.documentElement.scrollWidth > innerWidth, tiles: document.querySelectorAll('.brand-mark').length, marks: icons };
+          }
           const marks = [...document.querySelectorAll('.brand-mark')].filter(one => one.getClientRects().length > 0).map(one => {
             const box = one.getBoundingClientRect(), svg = one.querySelector('svg'), style = getComputedStyle(one);
             return { w: Math.round(box.width), h: Math.round(box.height), svg: svg ? Math.round(svg.getBoundingClientRect().width) : null, letter: svg ? null : one.textContent, connected: one.dataset.connected, color: style.color };
           });
-          return { overflow: document.documentElement.scrollWidth > innerWidth, marks };
-        });
+          return { overflow: document.documentElement.scrollWidth > innerWidth, tiles: 0, marks };
+        }, name === 'settings');
         const sizes = new Set(facts.marks.map(one => `${one.w}x${one.h}`));
-        if (facts.overflow || errors.length > 0 || facts.marks.length === 0 || sizes.size !== 1) throw Error(`${device} ${scheme} ${name}: ${JSON.stringify({ facts, errors })}`);
+        const settingsWrong = name === 'settings' && (new Set(facts.marks.map(one => one.color)).size !== 1 || facts.marks.filter(one => one.logo).length < 4);
+        if (facts.overflow || errors.length > 0 || facts.marks.length === 0 || sizes.size !== 1 || facts.tiles > 0 || settingsWrong) throw Error(`${device} ${scheme} ${name}: ${JSON.stringify({ facts, errors })}`);
         await page.screenshot({ path: join(out, `${device}-${scheme}-${name}.png`) });
         // The one-click tiles sit under the tool cards: a second shot there.
         if (name === 'tools') { await page.locator('#connect').scrollIntoViewIfNeeded(); await page.locator('#connect').evaluate(one => one.scrollIntoView({ block: 'start' })); await page.screenshot({ path: join(out, `${device}-${scheme}-tools-connect.png`) }); }
