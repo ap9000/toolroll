@@ -31,13 +31,13 @@ import { startCodexLimits } from "./codex-limits.js";
 import { packageVersion, startMonitoring, targetOf } from "./monitoring.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
-import { advanceFlows } from "./flow-engine.js";
-import { readHooksBase, runFlowTriggers, type TriggerIo } from "./flow-triggers.js";
-import { watchFlowReplies } from "./flow-replies.js";
+import type { FlowAdvance } from "./flow-engine.js";
+import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
+import { readHooksBase, type TriggerIo } from "./flow-triggers.js";
 import { sendTeammateSummaries } from "./teammate-admin.js";
 import { runRequestedUndos, sendTeammateWeeklies } from "./teammate-week.js";
 import { refreshConnections } from "./mcp-connect.js";
-import { runFlowSteps, type StepIo } from "./flow-steps.js";
+import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
 import { followTeams } from "./teams.js";
 import {loadDiscordCredentials} from "./discord-api.js";
@@ -371,6 +371,8 @@ export type OperateOptions = {
   flowTriggerIo?: Partial<TriggerIo>;
   /** Injected by tests: how flow check and update steps run commands and reach GitHub and Linear. */
   flowStepIo?: Partial<StepIo>;
+  /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
+  flowEveryMs?: number;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
@@ -1030,6 +1032,7 @@ export async function runOperate(
       ...(options.dispatchAdapter === undefined ? {} : { dispatchAdapter: options.dispatchAdapter }),
       ...(options.flowTriggerIo === undefined ? {} : { flowTriggerIo: options.flowTriggerIo }),
       ...(options.flowStepIo === undefined ? {} : { flowStepIo: options.flowStepIo }),
+      ...(options.flowEveryMs === undefined ? {} : { flowEveryMs: options.flowEveryMs }),
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
@@ -1088,6 +1091,8 @@ type Context = {
   flowTriggerIo?: Partial<TriggerIo>;
   /** Injected by tests: how flow check and update steps run commands and reach GitHub and Linear. */
   flowStepIo?: Partial<StepIo>;
+  /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
+  flowEveryMs?: number;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   integrationIo?: Partial<IntegrationIo>;
@@ -2419,6 +2424,25 @@ type TickOutcome = {
   worktree?: string;
 };
 
+/** How a worker's flow pass reaches outside: the tests' seams, or the real commands, network and folders. */
+function flowIoOf(context: Context, pool: string, git: CommandRunner, base: string): FlowIo {
+  const dir = dirname(context.databaseFile);
+  return {
+    triggers: { gh: context.flowTriggerIo?.gh ?? run, fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,
+      // A schedule's script (v90) runs like a code step: the same runner, in a clean folder beside the step copies.
+      shell: context.flowTriggerIo?.shell ?? context.flowStepIo?.shell ?? run, scratch: context.flowTriggerIo?.scratch ?? context.flowStepIo?.scratch ?? join(pool, "flow-checks"),
+      ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) },
+    // Replies to cards' emails (v91): read about once a minute, and only while a card is in an email conversation.
+    replies: { fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,
+      ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) },
+    // Check and update steps run outside a model: an approved command in a fresh copy of the card's work, or a comment on the issue it came from.
+    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? git, shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
+      dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
+      ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
+    ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
+  };
+}
+
 /**
  * One scheduling pass: the M1 loop, without the human typing each step.
  *
@@ -2553,26 +2577,14 @@ async function tickCommand(
   // Triggers first: a schedule, GitHub, Linear or another flow may start
   // cards, which then move in the same pass. Checking an outside service is
   // `gh` or one HTTPS request, never a model, and only when it is due.
-  const triggerPass = buildsOnly || context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true ? { added: 0, checked: 0, problems: [] }
-    : await runFlowTriggers(store, repo, clock(), { gh: context.flowTriggerIo?.gh ?? run, fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dirname(context.databaseFile),
-      // A schedule's script (v90) runs like a code step: the same runner, in a clean folder beside the step copies.
-      shell: context.flowTriggerIo?.shell ?? context.flowStepIo?.shell ?? run, scratch: context.flowTriggerIo?.scratch ?? context.flowStepIo?.scratch ?? join(pool, "flow-checks"),
-      ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) });
-  // Replies to cards' emails (v91): read about once a minute, and only while
-  // a card is in an email conversation. A reply moves a waiting card on here,
-  // before its next step runs.
-  const replyPass = buildsOnly || context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true ? { read: 0, taken: 0, problem: null }
-    : await watchFlowReplies(store, clock(), { fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dirname(context.databaseFile),
-      ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) });
-  // Check and update steps run outside a model: an approved command in a
-  // fresh copy of the card's work, or a comment on the issue it came from.
-  const stepPass = buildsOnly || context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true ? { ran: 0, problems: [] }
-    : await runFlowSteps(store, repo, clock(), {
-      gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? git, shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
-      dir: context.flowStepIo?.dir ?? dirname(context.databaseFile), scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
-      ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
-    });
-  const flowPass: ReturnType<typeof advanceFlows> = buildsOnly ? { moved: 0, filed: [], problems: [] } : advanceFlows(store, repo, clock(), context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot });
+  // Each part is one at a time per project, so the worker's own flow cadence (runWatchLoop) and this pass never
+  // run the same part twice at once.
+  const housekeeping = buildsOnly ? null : await flowHousekeeping(store, repo, clock, flowIoOf(context, pool, git, base),
+    () => context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true);
+  const triggerPass = housekeeping?.triggers ?? { added: 0, checked: 0, problems: [] };
+  const replyPass = housekeeping?.replies ?? { read: 0, taken: 0, problem: null };
+  const stepPass = housekeeping?.steps ?? { ran: 0, problems: [] };
+  const flowPass: FlowAdvance = housekeeping?.flows ?? { moved: 0, filed: [], problems: [] };
   // Each AI teammate's daily summary to its manager (v92), once, after 5 pm; its weekly report (v97), Monday mornings.
   if (!buildsOnly) try { sendTeammateSummaries(store, repo, clock()); sendTeammateWeeklies(store, repo, clock()); } catch (error) { flowPass.problems.push(`teammate summaries: ${error instanceof Error ? error.message : "could not send"}`); }
   // Undoing a teammate's tool call asked for in chat (v97): made here, as the person who asked.
@@ -2585,9 +2597,18 @@ async function tickCommand(
     try { flowPass.problems.push(...(await refreshConnections(store, [repo], clock(), context.flowStepIo?.fetch === undefined ? {} : { fetcher: context.flowStepIo.fetch })).problems); }
     catch (error) { flowPass.problems.push(`tool sign-ins: ${error instanceof Error ? error.message : "could not renew"}`); }
   }
-  const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
-    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
+  // A build, research or check finishing below moves its card at once (moveCardsAfter), not a pass later: by then
+  // other builds may hold the worker for minutes.
+  let settled = 0;
+  const settleFinished = (): void => {
+    const finished = dispatched.slice(settled).filter(one => one.outcome !== "skipped" && one.outcome !== "contest").map(one => one.id);
+    settled = dispatched.length;
+    if (finished.length === 0) return;
+    const after = moveCardsAfter(store, repo, finished, clock(), context.evidenceRoot);
+    flowPass.moved += after.moved;
+    flowPass.filed.push(...after.filed);
+    flowPass.problems.push(...after.problems);
+  };
 
   // Tournament housekeeping before the ordinary pass (stage 4): interrupted
   // races recover by CAS, and an ANSWERED question re-admits its parked
@@ -2957,6 +2978,7 @@ async function tickCommand(
   const attestedThisPass = new Map<ProviderId, AttestOutcome | null>();
   let untakenTrial: SignInGate | null = null;
   for (const ref of ready) {
+    settleFinished();
     untakenTrial?.giveBack();
     untakenTrial = null;
     // The build budget governs UNATTENDED admissions (round-1 finding 4):
@@ -4373,6 +4395,7 @@ async function tickCommand(
   // only claim, worktree, and rail, and its run then re-proves the
   // chain-entry dispatch proof inside build() before any money moves.
   for (const pending of buildsOnly ? [] : store.pendingChainAdmissions(repo)) {
+    settleFinished();
     if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) break;
     if (built >= max) break;
     // v105: a fallback billed to an API key spends dollars: a used-up budget holds it like any new work.
@@ -4795,6 +4818,11 @@ async function tickCommand(
   }
   // Existing worker pass owns durable lead handoffs; reads never create events.
   if (!buildsOnly) syncAssignmentHandoffs(store, clock(), auth.runner.repos, context.evidenceRoot);
+
+  settleFinished();
+  const replied = replyPass.taken > 0 || replyPass.problem !== null;
+  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
+    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
@@ -8473,6 +8501,49 @@ async function runWatchLoop(args: {
       if (store.isDemo()) return;
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
+      // A finished check may send a build's card down its failure path: now, not on the next beat.
+      if (ran > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
+    },
+  });
+
+  // Flows on their own cadence (flow-cadence.ts), not between builds: while builds hold every slot of this
+  // project, a card whose step finished still moves within one beat. Moves run apart from triggers, replies
+  // and steps, so a long check script doesn't hold them either. Neither starts a build: a card entering a
+  // build zone files its task, which waits for a free slot like any other.
+  const flowEveryMs = context.flowEveryMs ?? FLOW_EVERY_MS;
+  const flowPool = text(flags, "pool") ?? join(dirname(databasePath(process.env, homedir())), "worktrees");
+  const flowGit = context.gitRunner ?? run;
+  const flowsDid = (moved: number, filed: number, did: string): void => {
+    if (moved + filed === 0) return;
+    store.bumpWake();
+    progress(`watch: ${did}`);
+  };
+  const flowMoves = startMaintenance({
+    intervalMs: flowEveryMs,
+    shouldStop: stopping,
+    onError: error => progress(`watch: flow cards couldn't move — ${describe(error)}; they try again shortly`),
+    run: async () => {
+      if (paused()) return;
+      const moved = moveCards(store, repo, context.clock(), context.evidenceRoot);
+      flowsDid(moved.moved, moved.filed.length, `moved ${moved.moved} flow card(s), filed ${moved.filed.length} task(s)`);
+    },
+  });
+  const flowSteps = startMaintenance({
+    intervalMs: flowEveryMs,
+    shouldStop: stopping,
+    onError: error => progress(`watch: a flow pass failed — ${describe(error)}; it runs again shortly`),
+    run: async () => {
+      if (paused()) return;
+      let base = text(flags, "base");
+      if (base === undefined) {
+        const head = await flowGit("git", ["symbolic-ref", "--short", "-q", "HEAD"], { cwd: repo });
+        // A detached HEAD: the tick says so; steps wait for a branch rather than guessing one.
+        if (head.code !== 0 || head.stdout.trim() === "") return;
+        base = head.stdout.trim();
+      }
+      const pass = await flowHousekeeping(store, repo, context.clock, flowIoOf(context, flowPool, flowGit, base), admissionStopped);
+      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length,
+        `flow pass — ${pass.triggers.added} card(s) added, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
     },
   });
 
@@ -8715,6 +8786,8 @@ async function runWatchLoop(args: {
     await Promise.all(lanes);
     await maintenance.stop();
     await followUpChecks.stop();
+    await flowMoves.stop();
+    await flowSteps.stop();
     await modelWatch.stop();
     clearInterval(heartbeat);
     followController.abort();
