@@ -37,7 +37,7 @@ import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubj
 import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team.js";
 import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowDecisionAt, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
 import { flowChoiceAt, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
-import { fitFlowMessage } from "./flow-items.js";
+import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
 import { telegramReply, type TelegramEntity } from "./reply-shape.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { focusContextFor, taskInCeiling } from "./chat-channel.js";
@@ -1251,13 +1251,16 @@ async function deliverOne(
     const choiceKeys = choosing === null || sent === null ? null : flowChoiceButtons(store, binding, choosing, sent, clock());
     const sentRow = sent === null ? null : (() => { try { return flowSendKeyboardRow(phoneOrigin?.() ?? null, sent); } catch { return []; } })();
     if (sentRow !== null) button = sentRow.length === 0 ? null : sentRow;
-    // After research (flow-items.ts): each item numbered under the summary, one message within Telegram's limit, every link kept.
-    let entities: TelegramEntity[] | undefined;
+    // After research (flow-items.ts): each item numbered under the summary, its words cleaned as the rest of the message's
+    // are, within Telegram's limit with every link kept — one message, unless head, links and tail alone overflow it.
+    let entities: TelegramEntity[][] = [];
     if (sent?.items !== undefined && sent.items.length > 0 && offer === null) {
       const subject = chatText(leadSubjectOf(store, notification, binding.approver), task);
       const head = `${notificationIdentity(notification, title !== undefined && mentions(subject, title) ? undefined : title)}${subject}`;
-      const voiced = telegramReply(fitFlowMessage({ head, summary: chatText(sent.summary, task), items: sent.items, tail: flowSendTail(sent) }, TELEGRAM_TEXT_MAX, shaped => telegramReply(shaped).text.length));
-      if (voiced.text.length <= TELEGRAM_TEXT_MAX) { parts = [voiced.text]; entities = voiced.entities; }
+      const message = cleanFlowMessage({ head, summary: sent.summary, items: sent.items, tail: flowSendTail(sent) }, words => chatText(words, task));
+      const voiced = fitFlowMessage(message, TELEGRAM_TEXT_MAX, shaped => telegramReply(shaped).text.length).map(telegramReply);
+      parts = voiced.map(one => one.text);
+      entities = voiced.map(one => one.entities);
     }
     // A teammate's question (v93): its options and "Answer in words", for the person it asks.
     const asked = flowKeys === null && choiceKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
@@ -1268,7 +1271,7 @@ async function deliverOne(
       const final = index === parts.length - 1;
       const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
       const keyboard = !final ? undefined : keys !== null ? [...keys.keyboard, ...(button === null ? [] : [button])] : decideKeys.length > 0 ? decideKeys : button !== null ? [button] : undefined;
-      const sent = await sender(part, keyboard, undefined, final ? entities : undefined);
+      const sent = await sender(part, keyboard, undefined, entities[index]?.length ? entities[index] : undefined);
       if (!sent.ok) {
         if (decided !== null) dropDecideTokens(store, decided.tokens, clock());
         return { ok: false, error: sent.error };
@@ -2231,10 +2234,11 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   if (choiceAction !== null) {
     if (choiceAction.binding !== binding.id || choiceAction.chatId !== tapChat || (choiceAction.messageId !== null && choiceAction.messageId !== String(message.message_id))) { report.ignored++; return; }
     const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
+    const listed = (flowSentContent(store, choiceAction.card, choiceAction.entry)?.items?.length ?? 0) > 0;
     for (const effect of applyFlowChoiceTap(store, binding, choiceAction, { text: message.text ?? "" }, repos, clock())) {
       if (effect.kind === "ack") ack(effect.text);
-      // The message keeps its bold titles and labelled links (an item list's) under what was chosen.
-      else if (effect.kind === "edit") editText(effect.text, undefined, keptEntities(message.entities, effect.text.length));
+      // An item list's message (flow-items.ts) keeps its bold titles and labelled links under what was chosen; any other stays plain.
+      else if (effect.kind === "edit") editText(effect.text, undefined, listed ? keptEntities(message.entities, effect.text.length) : undefined);
     }
     return;
   }

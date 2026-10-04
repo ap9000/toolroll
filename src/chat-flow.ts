@@ -28,7 +28,7 @@
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowSendPaths, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend, type FlowSendContent } from "./flow-send.js";
-import { fitFlowMessage } from "./flow-items.js";
+import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
 import { renderReply } from "./reply-shape.js";
 import { deciderOf, replyTarget } from "./flows.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
@@ -81,15 +81,17 @@ function sendLinks(paths: { label: string; path: string }[]): Pick<ChatContent, 
   return { ...(paths[0] === undefined ? {} : { link: paths[0] }), ...(paths.length > 1 ? { also: paths.slice(1) } : {}) };
 }
 
-/** The most an item list's message carries here, as the app renders it — a Slack section (2,800), a Discord embed
- * (4,096), a Teams message as long as Telegram's — less room for the line a tap adds under it. */
-const ITEMS_LIMIT: Record<ChatApp, number> = { slack: PART_CHARS - 300, discord: 4096 - 300, teams: 4096 - 300 };
+/** The most an item list's part carries here, as the app renders it — a Slack section (2,800), Discord's plain message
+ * content (2,000), a Teams message as long as Telegram's — less room for the line a tap adds under it. */
+const ITEMS_LIMIT: Record<ChatApp, number> = { slack: PART_CHARS - 300, discord: 2000 - 300, teams: 4096 - 300 };
 type ChatApp = "slack" | "discord" | "teams";
 
-/** After research (flow-items.ts): the message with each item numbered under the summary, as one part within the app's limit. */
-function itemsText(content: FlowSendContent, subject: string, app: ChatApp | undefined): string | null {
+/** After research (flow-items.ts): the message with each item numbered under the summary, its words cleaned as every
+ * other flow message's are, in as few parts as the app's limit allows (one, unless head, links and tail alone overflow). */
+function itemsText(content: FlowSendContent, subject: string, app: ChatApp | undefined): string[] | null {
   if (app === undefined || content.items === undefined || content.items.length === 0) return null;
-  return fitFlowMessage({ head: chatFlowText(subject), summary: content.summary, items: content.items, tail: flowSendTail(content) }, ITEMS_LIMIT[app], shaped => renderReply(shaped, app).length);
+  const message = cleanFlowMessage({ head: subject, summary: content.summary, items: content.items, tail: flowSendTail(content) }, chatFlowText);
+  return fitFlowMessage(message, ITEMS_LIMIT[app], shaped => renderReply(shaped, app).length);
 }
 
 /** A "Send to me" notice as chat parts: what was done, then its links; null when it isn't one. */
@@ -99,7 +101,7 @@ export function flowSendParts(store: Store, notification: { dedupeKey: string; s
   const content = kept === null ? null : readFlowSend(kept.contentJson);
   if (content === null) return null;
   const voiced = itemsText(content, notification.subject, app);
-  if (voiced !== null) return [{ text: voiced, voice: true, ...sendLinks(flowSendPaths(content)) }];
+  if (voiced !== null) return voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true } : { text, voice: true, ...sendLinks(flowSendPaths(content)) });
   const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
   return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, ...sendLinks(flowSendPaths(content)) });
 }
@@ -117,7 +119,8 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
     if (visit === null || content === null) return null;
     const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label);
     const voiced = itemsText(content, notification.subject, app);
-    if (voiced !== null) return [{ text: voiced, voice: true, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) }];
+    if (voiced !== null) return voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true }
+      : { text, voice: true, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });
     const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
     return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece }
       : { text: piece, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });

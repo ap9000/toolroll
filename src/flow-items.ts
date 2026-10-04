@@ -5,8 +5,8 @@
  * (result-shots.ts), so "2." in the album is item 2 in the text.
  *
  * The message is written in reply-shape.ts's canonical form (`**bold**`, `[label](url)`), which every channel renders
- * in its own format. Fitted to a channel's limit, each why is shortened evenly first; then the summary, then the
- * titles. Links are never cut.
+ * in its own format. Its words go through the channel's own cleaner first. Fitted to a channel's limit, each why is
+ * shortened evenly first; then the summary, then the titles; past that it is split into parts. Links are never cut.
  */
 
 export type FlowSendItem = {
@@ -70,14 +70,22 @@ const linkable = (url: string) => url.replace(/[()[\]<>"'`\s]/g, char => `%${cha
 
 export type FlowMessage = { head: string; summary: string; items: readonly FlowSendItem[]; tail: readonly string[] };
 
-function compose(message: FlowMessage, whyCap: number, summaryCap: number, titleCap: number): string {
+/** The message's own words through a channel's cleaner — head, summary, each title and why, and tail — before it is fitted. */
+export function cleanFlowMessage(message: FlowMessage, clean: (text: string) => string): FlowMessage {
+  return { head: clean(message.head), summary: clean(message.summary), items: message.items.map(item => ({ ...item, title: clean(item.title), why: clean(item.why) })),
+    tail: message.tail.map(clean) };
+}
+
+function blocks(message: FlowMessage, whyCap: number, summaryCap: number, titleCap: number): string[] {
   const items = message.items.map((item, index) => {
     const title = cutTo(oneLine(item.title).replace(/\*/g, ""), titleCap);
     const why = cutTo(whyLines(item.why).join("\n"), whyCap);
     return [`${index + 1}. ${title === "" ? "" : `**${title}**`}`.trimEnd(), ...(why === "" ? [] : [inert(why)]), `[${item.source.replace(/[[\]]/g, "")}](${linkable(item.url)})`].join("\n");
   });
-  return [inert(message.head), inert(cutTo(message.summary, summaryCap)), ...items, ...message.tail.map(inert)].filter(one => one.trim() !== "").join("\n\n");
+  return [inert(message.head), inert(cutTo(message.summary, summaryCap)), ...items, ...message.tail.map(inert)].filter(one => one.trim() !== "");
 }
+
+const compose = (message: FlowMessage, whyCap: number, summaryCap: number, titleCap: number) => blocks(message, whyCap, summaryCap, titleCap).join("\n\n");
 
 /** The largest n in [0, high] that fits, or -1. */
 function largest(high: number, fits: (n: number) => boolean): number {
@@ -90,21 +98,48 @@ function largest(high: number, fits: (n: number) => boolean): number {
   return low;
 }
 
+/** Whole pieces packed into as few parts as fit, joined by `glue`; a piece too long alone is broken by `smaller`. */
+function pack(pieces: readonly string[], glue: string, fits: (text: string) => boolean, smaller: (piece: string) => string[]): string[] {
+  const parts: string[] = [];
+  let open = "";
+  for (const piece of pieces.flatMap(one => fits(one) ? [one] : smaller(one))) {
+    const joined = open === "" ? piece : `${open}${glue}${piece}`;
+    if (open === "" || fits(joined)) open = joined;
+    else { parts.push(open); open = piece; }
+  }
+  return open === "" ? parts : [...parts, open];
+}
+
+/** A line longer than a whole part, in the longest prefixes that fit (never splitting a surrogate pair). */
+function chop(line: string, fits: (text: string) => boolean): string[] {
+  const out: string[] = [];
+  for (let rest = line; rest !== "";) {
+    let at = Math.max(1, largest(rest.length, n => fits(rest.slice(0, n))));
+    if (at < rest.length && /[\uD800-\uDBFF]/.test(rest[at - 1]!)) at = at > 1 ? at - 1 : at + 1;
+    out.push(rest.slice(0, at));
+    rest = rest.slice(at);
+  }
+  return out;
+}
+
 /**
- * The message in canonical form, within `limit` as `measure` counts it once the channel renders it: whole when it
- * fits; else every why shortened to the same length; then the summary; then the titles. Every link stays.
+ * The message in canonical form, as parts within `limit` as `measure` counts each once the channel renders it: one
+ * whole part when it fits; else every why shortened to the same length; then the summary; then the titles. When the
+ * head, links and tail alone are over the limit, the whole message goes in several parts instead, split between
+ * blocks (else between lines). Every link stays.
  */
-export function fitFlowMessage(message: FlowMessage, limit: number, measure: (shaped: string) => number): string {
+export function fitFlowMessage(message: FlowMessage, limit: number, measure: (shaped: string) => number): string[] {
   const fits = (text: string) => measure(text) <= limit;
   const full = compose(message, Infinity, Infinity, Infinity);
-  if (fits(full)) return full;
+  if (fits(full)) return [full];
   const longest = Math.max(0, ...message.items.map(one => whyLines(one.why).join("\n").length));
   const why = largest(longest, n => fits(compose(message, n, Infinity, Infinity)));
-  if (why >= 0) return compose(message, why, Infinity, Infinity);
+  if (why >= 0) return [compose(message, why, Infinity, Infinity)];
   const summary = largest(message.summary.length, n => fits(compose(message, 0, n, Infinity)));
-  if (summary >= 0) return compose(message, 0, summary, Infinity);
+  if (summary >= 0) return [compose(message, 0, summary, Infinity)];
   const title = largest(Math.max(0, ...message.items.map(one => one.title.length)), n => fits(compose(message, 0, 0, n)));
-  return compose(message, 0, 0, Math.max(0, title));
+  if (title >= 0) return [compose(message, 0, 0, title)];
+  return pack(blocks(message, Infinity, Infinity, Infinity), "\n\n", fits, block => pack(block.split("\n"), "\n", fits, line => chop(line, fits)));
 }
 
 /** Items read back from a kept content; anything malformed is left out. */
