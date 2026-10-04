@@ -559,23 +559,23 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       expect(plain).not.toMatch(/name="note"[^>]* autofocus/);
     });
 
-    test("follow-up on build 1540: the annotation form advertises the server's own 500-character limit, with helper text and a counter", async () => {
+    test("follow-up on build 1540: the annotation form advertises the server's own 4000-character limit, with helper text and a counter", async () => {
       const cookie = await login();
       const csrf = await csrfOf(cookie);
       const html = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
-      // Advertised: maxlength is LIMITS.note (500), never the old 2000; the helper names it and the textarea points at the helper.
-      expect(html).toContain('<textarea name="note" rows="2" maxlength="500" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"></textarea><span class="meta diff-comment-limit" id="comment-note-limit">up to 500 characters</span>');
-      expect(html).not.toContain('maxlength="2000"');
+      // Advertised: maxlength is LIMITS.note (4000), never the old 500; the helper names it and the textarea points at the helper.
+      expect(html).toContain('<textarea name="note" rows="2" maxlength="4000" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"></textarea><span class="meta diff-comment-limit" id="comment-note-limit">up to 4000 characters</span>');
+      expect(html).not.toContain('maxlength="500" placeholder="Describe');
       // The counter rides the result panel's script and reads the textarea's own maxlength.
       expect(html).toContain("limit.textContent=noteBox.value.length===0?'up to '+noteBox.maxLength+' characters':noteBox.value.length+' of '+noteBox.maxLength+' characters'");
-      // Enforced: exactly 500 lands; 501 is refused by the same rule the form now advertises.
+      // Enforced: exactly 4000 lands; 4001 is refused by the same rule the form now advertises.
       const post = (note: string) => fetch(url(`/r/${runId}/comment`), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, path: "src/a.ts", line: "2", note }), redirect: "manual" });
-      const full = await post("n".repeat(500));
+      const full = await post("n".repeat(4000));
       expect(full.status).toBe(303);
       expect(store.liveDiffComments(runId)).toHaveLength(1);
-      const over = await post("n".repeat(501));
+      const over = await post("n".repeat(4001));
       expect(over.status).toBe(400);
-      expect(await over.text()).toContain("a note is at most 500 characters");
+      expect(await over.text()).toContain("a note is at most 4000 characters");
       expect(store.liveDiffComments(runId)).toHaveLength(1);
     });
 

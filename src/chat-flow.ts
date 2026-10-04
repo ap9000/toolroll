@@ -25,6 +25,7 @@
  * made through chooseFlowCard, by that person alone, for exactly that visit,
  * and spend that visit's buttons in every chat app.
  */
+import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowSendPaths, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend, type FlowSendContent } from "./flow-send.js";
@@ -239,7 +240,7 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
 function replyAsNote(options: { store: Store; state: ChatState; label: string }, binding: ChatBinding, said: string, cutShort: boolean, visit: { card: number; entry: number }, repos: readonly string[], now: Date): { ok: true; said: string } | { ok: false; said: string } | null {
   const { store } = options;
   if (said === "") return { ok: false, said: "Say what you'd change." };
-  if (cutShort || said.length > 2000) return { ok: false, said: "That's too long to take from here. Keep it under 2,000 characters, or reply in Toolroll." };
+  if (cutShort || said.length > LIMITS.note) return { ok: false, said: `That's too long to take from here. Keep it to ${Math.min(LIMITS.note, MATE_MESSAGE_MAX_CHARS).toLocaleString("en-US")} characters, or reply in Toolroll.` };
   if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) return null;
   const chosen = chooseFlowCard(store, { card: visit.card, entry: visit.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
   return chosen.ok ? { ok: true, said: chosen.said } : { ok: false, said: chosen.message };
@@ -349,8 +350,11 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
     if (waiting === null) { retire(state, card, entry, now); say("That card has moved on since; nothing was changed."); return true; }
     if (said === "") { say(mode === "edit" ? "Send the text itself, or “cancel”." : "Say what should change, or send “cancel”."); return true; }
     // A long message arrives cut short (the chat keeps its first 2,000 characters): never take part of one as the draft.
-    const limit = (input.originalLength ?? 0) > input.text.length ? MATE_MESSAGE_MAX_CHARS : DRAFT_LIMIT;
-    if ((input.originalLength ?? 0) > input.text.length || said.length > DRAFT_LIMIT) { say(`That's too long to take from here. Keep it under ${limit.toLocaleString("en-US")} characters, or change it in Toolroll.`); return true; }
+    // An edit is a draft (DRAFT_LIMIT); a send-back is a note (LIMITS.note). Over it is refused with the limit, never cut.
+    const cutShort = (input.originalLength ?? 0) > input.text.length;
+    const most = mode === "edit" ? DRAFT_LIMIT : LIMITS.note;
+    const limit = cutShort ? Math.min(MATE_MESSAGE_MAX_CHARS, most) : most;
+    if (cutShort || said.length > most) { say(`That's too long to take from here. Keep it to ${limit.toLocaleString("en-US")} characters, or ${mode === "edit" ? "change it" : "send it back"} in Toolroll.`); return true; }
     if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { close(); state.finish(event.id, true); return true; }
     if (mode === "edit") {
       if (waiting.draft === null) { close(); say("This decision has no draft to edit."); return true; }
@@ -364,7 +368,7 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
         { card, entry, actions: actionsFor(fresh) }, { label: "Open", path: flowCardHref(waiting.flow.id, card) }), now);
       return true;
     }
-    const decided = decideFlowCard(store, { card, decision: "send-back", note: said.slice(0, 2000), actor: binding.approver, repos, entry }, now);
+    const decided = decideFlowCard(store, { card, decision: "send-back", note: said, actor: binding.approver, repos, entry }, now);
     if (!decided.ok) { close(); say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);

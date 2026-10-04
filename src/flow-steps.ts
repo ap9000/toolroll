@@ -28,12 +28,13 @@ import type { Runner } from "./backend.js";
 import { approvedCommandShell, redactSecretAssignments, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { assignmentOf } from "./assignment.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
-import { flowDefinitionOf } from "./flow-engine.js";
+import { flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { cardFollowers, notifyPeople } from "./flow-people.js";
 import { LINEAR_URL, readLinearKey } from "./flow-triggers.js";
 import { cardEmailOf, fillFlowText, type FlowDefinition, type FlowStage } from "./flows.js";
 import { JEV_MODEL, askJev, readJevAnswers, sortLog, sortRequest, sortState, sortWords } from "./flow-sort.js";
-import { claudeDraftRunner, DRAFT_TIMEOUT, draftPrompt, keptDraft, type DraftRunner } from "./flow-draft.js";
+import { claudeDraftRunner, DRAFT_CHARS, DRAFT_TIMEOUT, draftPrompt, wholeDraft, type DraftRunner } from "./flow-draft.js";
+import { overruns, passOn, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 import { readFlowSecrets, sendingReady, runRequest, sendEmail, toolWaiting, useTool, type MailSender, type ToolCaller } from "./flow-actions.js";
 import { cleanFolder, runCode } from "./flow-code.js";
 import { agentFence } from "./agent-fence.js";
@@ -261,7 +262,12 @@ function settle(store: Store, definition: FlowDefinition, stage: FlowStage, card
     outcome = { state: "failed", said: `${outcome.said} It didn't work after three tries.` };
   }
   store.finishFlowStep(card.id, card.entry, { state: outcome.state === "passed" ? "passed" : "failed", result: outcome.said, ...kept }, now);
-  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: outcome.output ?? outcome.said }, waiting: null }, now);
+  // What the steps after it read: whole up to TEXT_LIMITS.stageOutput; longer is attached whole to the card's discussion,
+  // and they read a link to it. Never cut.
+  const whole = outcome.output ?? outcome.said;
+  const passed = passOn(whole, TEXT_LIMITS.stageOutput, { label: "the card's discussion", href: flowCardHref(card.flow, card.id) });
+  if (passed.kept) store.addFlowComment({ card: card.id, author: "flow", body: `What ${stage.title} produced, in full (${whole.length.toLocaleString("en-US")} characters):\n\n${whole}`, mentions: [] }, now);
+  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: passed.text }, waiting: null }, now);
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "another zone";
   if (outcome.state === "passed") {
     // A sort names where the card goes; one it isn't sure about is a person's to place.
@@ -304,14 +310,28 @@ function draftModel(store: Store): string {
 /** A draft: Claude writes what the zone asks, from the card, with the lead chat's Claude model; the text stays on the card. */
 async function draftCard(store: Store, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, io: StepIo, repo: string, now: Date): Promise<Outcome> {
   const model = draftModel(store);
-  const answer = await (io.draft ?? claudeDraftRunner())({ model, prompt: draftPrompt(stage, card, definition), timeoutMs: DRAFT_TIMEOUT });
-  if (!answer.ok) return { state: "retry", said: answer.said };
-  // v105: what it cost, billed as this computer's Claude does (a plan's is $0).
-  store.recordDraftSpend({ repo, model: model === "default" ? null : model, costUsd: answer.costUsd ?? null }, now);
-  const text = keptDraft(answer.text);
-  if (text === "") return { state: "retry", said: "Claude's draft came back empty." };
+  const runner = io.draft ?? claudeDraftRunner();
+  // Claude is told the limit before it writes; a draft over it is asked once to shorten, and one still over is kept whole
+  // in the step's log and attached to the card's discussion, linked from what the next steps read (settle): never cut.
+  let first: string | null = null;
+  const written = await writeWithin(async shorten => {
+    const answer = await runner({ model, prompt: draftPrompt(stage, card, definition, shorten === null || first === null ? null : { draft: first, ask: shorten }), timeoutMs: DRAFT_TIMEOUT });
+    // v105: what it cost, billed as this computer's Claude does (a plan's is $0).
+    if (answer.ok) { store.recordDraftSpend({ repo, model: model === "default" ? null : model, costUsd: answer.costUsd ?? null }, now); first ??= wholeDraft(answer.text); }
+    return answer;
+  }, answer => answer.ok ? overruns({ draft: wholeDraft(answer.text) }, { draft: DRAFT_CHARS }) : []);
+  const answer = written.answer;
+  if (!answer.ok) return written.repaired && first !== null ? draftOutcome(first, model, null, true) : { state: "retry", said: answer.said };
+  const text = wholeDraft(answer.text);
+  if (text === "") return written.repaired && first !== null ? draftOutcome(first, model, answer.ms, true) : { state: "retry", said: "Claude's draft came back empty." };
+  return draftOutcome(text, model, answer.ms, written.repaired);
+}
+
+/** A draft step's result: the draft whole, on the card and in its log. */
+function draftOutcome(text: string, model: string, ms: number | null, shortened: boolean): Outcome {
   const words = text.split(/\s+/).filter(Boolean).length;
-  return { state: "passed", said: `Drafted ${words} word${words === 1 ? "" : "s"}.`, output: text, log: `Claude (${model}) · ${(answer.ms / 1000).toFixed(1)} s\n\n${text}` };
+  const over = text.length > DRAFT_CHARS ? ` It is still over the ${DRAFT_CHARS.toLocaleString("en-US")}-character limit after one ask to shorten, so it is kept whole.` : shortened ? " Shortened once to fit." : "";
+  return { state: "passed", said: `Drafted ${words} word${words === 1 ? "" : "s"}.${over}`, output: text, log: `Claude (${model})${ms === null ? "" : ` · ${(ms / 1000).toFixed(1)} s`}\n\n${text}` };
 }
 
 /** A sort: Jev picks one of the zone's answers for the card; the answer (or the not-sure path) says where it goes. */

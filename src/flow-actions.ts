@@ -34,10 +34,10 @@ import { callProjectTool, projectToolsOf, readToolSecrets, type ToolCall, type T
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { FlowCardRow, Store } from "./store.js";
 
+/** `output` is the answer whole: the step passes it on whole up to TEXT_LIMITS.stageOutput, and attaches longer to the card, linked (flow-steps settle). */
 export type ActionOutcome = { state: "passed" | "failed" | "retry"; said: string; log?: string; output?: string;
   /** email (v91): the Message-ID it went out with, and to whom, so a reply finds the card. */
   mail?: { id: string; to: string[] } };
-const OUTPUT_CHARS = 8000;
 const clip = (text: string, cap: number) => text.length <= cap ? text : `${text.slice(0, cap - 1)}…`;
 const blank = (text: string) => redactSecretAssignments(redactSecretLines(text, scanForSecrets(text)));
 
@@ -95,11 +95,11 @@ export async function runRequest(stage: FlowStage, card: FlowCardRow, repo: stri
     return { state: "retry", said: `Couldn't reach ${where}${error instanceof Error && error.name === "TimeoutError" ? " within 30 seconds" : ""}.` };
   }
   const answered = blank(scrub(clip(await response.text().catch(() => ""), 64_000), secrets));
-  const log = `${request.method} ${shown}\n→ ${response.status} ${response.statusText}\n\n${clip(answered, 16_000)}`;
+  const log = `${request.method} ${shown}\n→ ${response.status} ${response.statusText}\n\n${clip(answered, 64_000)}`;
   const first = answered.trim().split("\n")[0]?.slice(0, 160) ?? "";
-  if (response.ok) return { state: "passed", said: `${where} answered ${response.status}.`, log, output: clip(answered, OUTPUT_CHARS) };
+  if (response.ok) return { state: "passed", said: `${where} answered ${response.status}.`, log, output: answered };
   if (response.status === 429 || response.status >= 500) return { state: "retry", said: `${where} answered ${response.status}${first === "" ? "" : `: ${first}`}.`, log };
-  return { state: "failed", said: `${where} refused it (${response.status})${first === "" ? "" : `: ${first}`}.`, log, output: clip(answered, OUTPUT_CHARS) };
+  return { state: "failed", said: `${where} refused it (${response.status})${first === "" ? "" : `: ${first}`}.`, log, output: answered };
 }
 
 // ---- email ----------------------------------------------------------------------
@@ -192,7 +192,7 @@ export async function useTool(store: Store, stage: FlowStage, card: FlowCardRow,
   const answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, values, call.name, args);
   if (!answer.ok) return { state: "retry", said: `${call.server}: ${answer.problem}` };
   const said = blank(scrub(clip(answer.text, 64_000), values));
-  const log = `${call.server} → ${call.name}\n${blank(JSON.stringify(args, null, 2)).slice(0, 4000)}\n\n${clip(said, 16_000)}`;
-  if (answer.isError) return { state: "failed", said: `${call.server} → ${call.name} said it failed${said.trim() === "" ? "" : `: ${said.trim().split("\n")[0]!.slice(0, 160)}`}.`, log, output: clip(said, OUTPUT_CHARS) };
-  return { state: "passed", said: `${call.server} → ${call.name} done.`, log, output: clip(said, OUTPUT_CHARS) };
+  const log = `${call.server} → ${call.name}\n${blank(JSON.stringify(args, null, 2)).slice(0, 4000)}\n\n${clip(said, 64_000)}`;
+  if (answer.isError) return { state: "failed", said: `${call.server} → ${call.name} said it failed${said.trim() === "" ? "" : `: ${said.trim().split("\n")[0]!.slice(0, 160)}`}.`, log, output: said };
+  return { state: "passed", said: `${call.server} → ${call.name} done.`, log, output: said };
 }

@@ -42,6 +42,8 @@ import {
 import type { Store } from "./store.js";
 import { parseAcceptanceCriteria, type UnattendedPermissionMode } from "./scope.js";
 import type { QualityMode } from "./quality.js";
+import type { TaskSizing } from "./phase-routing.js";
+import { heuristicSizing, planningSignals, refineFiledSizing } from "./task-sizing.js";
 
 /** Provenance tokens are part of the audit surface: lowercase, bounded,
  * nothing that could render as anything but itself. */
@@ -104,14 +106,18 @@ export type TaskProposalInput = {
    * which is the fail-closed reading of an empty ceiling (finding 4).
    */
   admittedRepos?: readonly string[];
+  /** v2 routing: the task's size when the caller already knows it (a
+   * person's choice). Absent, filing sizes it from the description at
+   * once and the process's classifier refines it within five seconds. */
+  sizing?: TaskSizing;
 };
-
-const SUBSTANTIAL_WORK = /\b(?:architecture|end[- ]to[- ]end|migrat(?:e|ion)|moderni[sz]e|redesign|refactor|rework|workflow|navigation|accessibility|responsive|performance|security|unif(?:y|ied)|multi[- ](?:step|project|service))\b/i;
 
 /** One deterministic planning policy for console, chat, MCP, and sync
  * filings. A planner needs a repository to inspect; report/scout work is
- * already the discovery phase and never recursively plans itself. */
-export function shouldPlanTask(input: TaskProposalInput): boolean {
+ * already the discovery phase and never recursively plans itself. With a
+ * size (v2 routing), a small change is not planned and a large or risky
+ * one is; a medium one keeps the description's signals. */
+export function shouldPlanTask(input: TaskProposalInput, sizing?: TaskSizing): boolean {
   if (input.deliverable === "report" || input.planning === "skip") return false;
   // Remote coordinators only propose work. Keep their submissions quarantined
   // until an operator has restated the scope; automatic planning must not turn
@@ -119,13 +125,11 @@ export function shouldPlanTask(input: TaskProposalInput): boolean {
   if (input.proposedVia === "coordinator" || input.filedVia?.startsWith("mcp:")) return false;
   if (input.repo === undefined || input.repo.trim() === "") return false;
   if (input.planning === "required") return true;
-  const goal = input.goal ?? "";
-  const descriptionSize = input.title.length + goal.length + (input.outOfScope?.length ?? 0);
-  return (
-    (input.touches?.length ?? 0) >= 2 ||
-    descriptionSize >= 280 ||
-    SUBSTANTIAL_WORK.test(`${input.title}\n${goal}`)
-  );
+  if (sizing !== undefined) {
+    if (sizing.size === "small" && !sizing.risky) return false;
+    if (sizing.size === "large" || sizing.risky) return true;
+  }
+  return planningSignals(input);
 }
 
 export type RoutineProposalInput = {
@@ -194,12 +198,14 @@ export function fileTaskProposal(
   store: Store,
   input: TaskProposalInput,
   now: Date,
-): { ok: true; id: string; planning: boolean } | ProposalRefusal {
+): { ok: true; id: string; planning: boolean; sizing: TaskSizing } | ProposalRefusal {
   if (!FILED_VIA.test(input.filedVia)) {
     return refuse("bad-provenance", "filedVia is an audit token: lowercase letters, digits, dashes, colons");
   }
   const badText = validateTaskText(input);
   if (badText !== null) return badText;
+  // Sized at once from the description; filing never waits for a model.
+  const sizing = input.sizing ?? heuristicSizing(input);
   const outOfScope = input.outOfScope ?? null;
   const touches = input.touches ?? [];
   const repo = checkRepo(input.repo, input.admittedRepos);
@@ -221,6 +227,7 @@ export function fileTaskProposal(
       ...(input.filedBy === undefined ? {} : { filedBy: input.filedBy }),
       proposedVia: input.proposedVia ?? null,
       ...(input.deliverable === undefined ? {} : { deliverable: input.deliverable }),
+      sizing,
     },
     now,
   );
@@ -237,11 +244,19 @@ export function fileTaskProposal(
     );
   }
   let planning = false;
-  if (shouldPlanTask({ ...input, ...(repo.repo === undefined ? {} : { repo: repo.repo }) })) {
+  const placed = { ...input, ...(repo.repo === undefined ? {} : { repo: repo.repo }) };
+  if (shouldPlanTask(placed, sizing)) {
     const ref = store.lookupRef(made.id);
     if (ref !== null) planning = store.requestPlan(ref.id, now).ok;
   }
-  return { ok: true, id: made.id, planning };
+  // The classifier (when this process has one) answers within five seconds
+  // and re-files the still-unapproved scope with its size. Never for work
+  // that builds nothing, or for an untrusted remote proposal.
+  if (input.sizing === undefined && repo.repo !== undefined && input.goal !== undefined && input.deliverable !== "report" &&
+      input.proposedVia !== "coordinator" && !input.filedVia.startsWith("mcp:")) {
+    void refineFiledSizing(store, made.id, placed, input.planning === undefined || input.planning === "auto");
+  }
+  return { ok: true, id: made.id, planning, sizing };
 }
 
 export function fileRoutineProposal(

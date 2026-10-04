@@ -44,7 +44,8 @@ import { MATE_CONTRACT } from "./mate-contract.js";
 import { MATE_MAX_PROPOSALS_PER_TURN, MATE_TOOL_SCHEMAS, executeMateTool, isMateTool, mateViewContextFor, projectLabelForMate, redactForMate, toolResultBytes } from "./mate-tools.js";
 import type { ReviewSnapshot } from "./chat-review.js";
 import { composeSubscriptionMatePrompt, performSubscriptionMateRequest, type SubscriptionMateRunner } from "./subscription-chat.js";
-import { leadContext, type LeadChannel } from './lead-context.js';
+import { LEAD_REPLY_LIMITS, leadContext, type LeadChannel } from './lead-context.js';
+import { shortenAsk } from './text-limits.js';
 import { envValue } from "./names.js";
 import { deliverableClaim, deliverableRepair, dropDeliverableClaims, replyCarriesDeliverable } from "./reply-shape.js";
 
@@ -423,6 +424,9 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
   let shownControl = false;
   /** The turn's one repair step for a reply that claims an attachment it does not carry. */
   let repaired = false;
+  /** The turn's one shorten step for a reply over its channel's message limit (LEAD_REPLY_LIMITS); still over, it is split. */
+  let shortened = false;
+  const replyLimit = input.channel === undefined ? null : LEAD_REPLY_LIMITS[input.channel];
   const unbacked = (text: string): string | null => {
     const claim = deliverableClaim(text);
     if (claim === null || shownControl || replyCarriesDeliverable(text) || store.listMateTurnEvidence(turnId).length > 0) return null;
@@ -547,7 +551,14 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
         history.push({ role: "operator", text: deliverableRepair(claim) });
         continue;
       }
-      reply = claim === null ? answer.text : dropDeliverableClaims(answer.text);
+      const candidate = claim === null ? answer.text : dropDeliverableClaims(answer.text);
+      if (replyLimit !== null && candidate.length > replyLimit && !shortened && steps < maxSteps) {
+        shortened = true;
+        history.push({ role: "assistant", text: answer.text, calls: [] });
+        history.push({ role: "operator", text: shortenAsk([{ field: "Your reply", limit: replyLimit, length: candidate.length }]) });
+        continue;
+      }
+      reply = candidate;
       break;
     }
     if (answer.calls.length > MATE_MAX_CALLS_PER_STEP) return fail("malformed-reply", MATE_FAILURE_COPY.unusable, false);

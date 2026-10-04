@@ -411,13 +411,13 @@ describe("the mate's turn", () => {
     const base = { repo: "r1", task: "in-1", title: "Task", goal: "valid", acceptance: [{ id: "c1", statement: "Works", evidence: ["check"] }] };
     for (const tool of ["propose_task", "propose_scope"]) {
       for (const field of ["goal", "not"]) {
-        for (const value of ["a".repeat(2001), "😀".repeat(1001), "界".repeat(3000), "bad\u0000", "bad\u202e", "ok\r"]) {
-          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/2000|control or hidden/) });
+        for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(8001), "bad\u0000", "bad\u202e", "ok\r"]) {
+          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/the limit is 8,000|control or hidden/) });
           expect(executeMateTool(ctx, tool, { ...base, [field]: value, inheritLegacy: true, filedVia: "revision" })).toMatchObject({ ok: false });
         }
       }
       expect(drafts).toBe(tool === "propose_task" ? 0 : 1);
-      expect(executeMateTool(ctx, tool, { ...base, goal: "😀".repeat(1000), not: "界".repeat(2000) })).toMatchObject({ ok: true });
+      expect(executeMateTool(ctx, tool, { ...base, goal: "😀".repeat(4000), not: "界".repeat(8000) })).toMatchObject({ ok: true });
     }
   });
 
@@ -484,6 +484,37 @@ describe("the mate's turn", () => {
       const shown = scripted([answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
       expect(reply(await turn("where are settings?", shown.fetcher))).toBe("Here's the link to Settings.");
       expect(shown.bodies).toHaveLength(2);
+    });
+  });
+
+  describe("a reply over its channel's message limit", () => {
+    const words = (outcome: Awaited<ReturnType<typeof runMateTurn>>): string => {
+      if (!outcome.ok || outcome.replayed) throw new Error("expected an answered turn");
+      return outcome.reply;
+    };
+    const long = "The payout guard is fixed and its test passes. ".repeat(60).trim();
+    test("gets one step asking the lead to shorten it to the channel's limit", async () => {
+      expect(long.length).toBeGreaterThan(2_000);
+      const script = scripted([text(long), text("The payout guard is fixed and its test passes.")]);
+      const outcome = await turn("did it work?", script.fetcher, { channel: "discord" });
+      expect(script.bodies).toHaveLength(2);
+      expect(script.bodies[0]).toContain("Keep each reply within 2,000 characters, one message");
+      expect(script.bodies[1]).toContain(`Your reply is ${long.length.toLocaleString("en-US")} characters; the limit is 2,000.`);
+      expect(words(outcome)).toBe("The payout guard is fixed and its test passes.");
+    });
+    test("still over after that one step, it is kept whole (delivery splits it across messages)", async () => {
+      const script = scripted([text(long), text(`${long} Ship it.`), text("never asked")]);
+      expect(words(await turn("did it work?", script.fetcher, { channel: "discord" }))).toBe(`${long} Ship it.`);
+      expect(script.bodies).toHaveLength(2);
+      // Within Telegram's 4,096, the same reply needs no shorten step there.
+      const telegram = scripted([text(long)]);
+      expect(words(await turn("did it work?", telegram.fetcher, { channel: "telegram" }))).toBe(long);
+      expect(telegram.bodies).toHaveLength(1);
+    });
+    test("the console has no message limit: no shorten step", async () => {
+      const script = scripted([text(long)]);
+      expect(words(await turn("did it work?", script.fetcher, { channel: "console" }))).toBe(long);
+      expect(script.bodies).toHaveLength(1);
     });
   });
 

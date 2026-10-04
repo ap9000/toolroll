@@ -309,11 +309,11 @@ async function longRequestJourney() {
     // the same text, while the signed scope and approval card stay untouched.
     await goto(page, `/t/${fixture.tasks.long}`);
     await page.evaluate(() => { document.querySelector('#scope').open = true; document.querySelector('.scope-editor').closest('details').open = true; });
-    const bad = '新しい request 😀 '.repeat(150);
+    const bad = '新しい request 😀 '.repeat(600);
     await page.fill('.scope-editor [name="goal"]', bad);
     await submit(page, '.scope-editor button[type="submit"]');
     const problem = await page.locator('#scope-error').textContent();
-    check(`${name}: rejected long scope stays editable with one concise error`, problem === 'Goal must be 2000 characters or fewer.' && await page.inputValue('.scope-editor [name="goal"]') === bad && (await noOverflow(page)).ok);
+    check(`${name}: rejected long scope stays editable with one concise error`, problem === `Goal is ${bad.length.toLocaleString('en-US')} characters; the limit is 8,000. Shorten it.` && await page.inputValue('.scope-editor [name="goal"]') === bad && (await noOverflow(page)).ok);
     await scrollTo(page, '.scope-editor', 80);
     await shot(page, `${name}-long-rejected`, `${viewport.width}×${viewport.height}: rejected new goal stays editable; signed terms remain unchanged (synthetic fixture)`);
     await page.fill('.scope-editor [name="goal"]', 'Repair the CSV footer.');

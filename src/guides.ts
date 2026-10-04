@@ -219,7 +219,7 @@ const steering: Guide = {
 ${AUTHORITY_LINE}
 
 Steering is an OPERATOR ceremony. \`task steer <id> --note "..." --as
-<you> --token <t>\` files one short note (≤500 characters) for the
+<you> --token <t>\` files one note (≤4000 characters) for the
 task's NEXT attempt, and the credential is the point: the note appears
 in the agent's brief under an OPERATOR STEERING heading, so only a
 verified person may put words there. Anonymous or agent-authored notes

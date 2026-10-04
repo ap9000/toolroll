@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.28 — 2026-10-04
+
+- **Each task gets the right model.** When a task is filed, a fast
+  classifier on your own subscription sizes it as small, medium or large and
+  flags risky work. Small changes build on a fast model with no plan. Large or
+  risky ones get your strong models for planning and building. The choice is
+  sealed into the plan you approve, with the reason, and you can override it.
+  Where a tier has both Claude and Codex, it picks the one with more of its
+  plan left. `toolroll spend` shows what each tier took.
+- **Nothing gets cut off.** Task goals hold 8,000 characters (up from 2,000),
+  notes 4,000 (up from 500) and flow instructions 8,000. Agents are told each
+  limit before they write and get one chance to shorten. Anything still over
+  is kept whole and linked. Chat messages split instead of cutting.
+
 ## 0.9.27 — 2026-10-04
 
 - **Integrations show their real logos.** Every integration has its own mark

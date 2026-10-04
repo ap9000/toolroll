@@ -2235,11 +2235,11 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(risk.status).toBe(303);
     expect(store.getScope("payouts")!.riskLevel).toBe("elevated");
     expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("Elevated risk");
-    // Clearing the override restores the recommendation.
+    // Clearing the override restores the recommendation — at elevated risk, the strong planner.
     const cleared = await post(cookie, "/t/payouts/route", { csrf, sawDigest: store.getScope("payouts")!.digest, "clear-phase": "plan" });
     expect(cleared.status).toBe(303);
     expect(store.refFor("built-in", "payouts").routeOverrides).toEqual([]);
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("<dt>Planner</dt><dd><span class=\"mono\">claude · sonnet</span>");
+    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("<dt>Planner</dt><dd><span class=\"mono\">codex · gpt-5-codex</span> <span class=\"badge\">Recommended · strong</span>");
   });
 
   test("a viewer reads the agents but cannot change them; a live claim refuses the edit", async () => {
@@ -2305,7 +2305,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     // Every risk level explained in plain words, beside the control.
     expect(change).toContain('<dl class="agents-risk-guide">');
     expect(change).toContain("<dt>Routine</dt><dd>every role uses the everyday configured agent unless the work itself asks for more");
-    expect(change).toContain("<dt>Elevated risk</dt><dd>planning and building keep the everyday agents");
+    expect(change).toContain("<dt>Elevated risk</dt><dd>planning and building use the strongest agent you have configured");
     expect(change).toContain("<dt>High risk</dt><dd>every active role — planner, builder, and repair — uses the strongest agent you have configured");
     // One form per role, a select of exact configured pairs, no free text.
     expect(change).not.toContain('name="model"');
@@ -2344,6 +2344,46 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(store.refFor("built-in", "payouts").routeOverrides).toEqual([expect.objectContaining({ phase: "plan", provider: "claude", model: "opus", by: "alex" })]);
     // A planner choice IS the plan pin (v47): the leg reads pinned, exactly.
     expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("<dt>Planner</dt><dd><span class=\"mono\">claude · opus</span> <span class=\"badge\">Pinned</span>");
+  });
+
+  test("size: an approver sets a task's size from the page; the approval says it plainly before the password, with the reason", async () => {
+    const cookie = await loginAs("alex", approverToken);
+    store.setPhaseTierConfig("installation", "build", "light", "claude", "haiku", "test", T0);
+    const html = await page(cookie, "/t/payouts");
+    expect(agentsCardOf(html)).toContain('<option value="small">Small change: fast model, no plan</option>');
+    expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "tiny" })).status).toBe(400);
+    // At this task's high risk a small change still plans; at routine risk it makes no plan.
+    expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" })).status).toBe(303);
+    expect(store.refFor("built-in", "payouts")).toMatchObject({ riskLevel: "high", plan: "requested" });
+    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small", risk: "routine" });
+    expect(sized.status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
+    expect(store.refFor("built-in", "payouts").plan).toBeNull();
+    const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(await page(cookie, "/t/payouts"))?.[1] ?? "";
+    const sizeAt = ceremony.indexOf('<p class="agents-size"><strong>');
+    expect(sizeAt).toBeGreaterThan(-1);
+    expect(ceremony.indexOf('name="token"')).toBeGreaterThan(sizeAt);
+    // The rubric here asks for screenshots, which lifts the builder: the size line says what actually runs.
+    expect(ceremony.slice(sizeAt)).toMatch(/^<p class="agents-size"><strong>Small change: strongest model, no plan\.<\/strong> <span class="meta">set by alex<\/span><\/p>/);
+  });
+
+  test("size: setting a size keeps the risky flag, and the page can mark a task risky", async () => {
+    const cookie = await loginAs("alex", approverToken);
+    const html = await page(cookie, "/t/payouts");
+    expect(agentsCardOf(html)).toContain('<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"> Risky</label>');
+    // The form as a browser sends it: the hidden "no", then the ticked box.
+    const form = (fields: [string, string][]) =>
+      fetch(url("/t/payouts/route"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams([["csrf", csrfOf(html)], ["sawDigest", store.getScope("payouts")!.digest], ...fields]), redirect: "manual" });
+    expect((await form([["size", "small"], ["risky", "no"], ["risky", "yes"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "small", risky: true, source: "person" });
+    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<input type="checkbox" name="risky" value="yes" checked> Risky');
+    // A size alone (another client, no box) keeps the flag.
+    expect((await form([["size", "medium"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: true });
+    // Unticked on the form: not risky.
+    expect((await form([["size", "medium"], ["risky", "no"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: false });
+    expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
   test("consent: the task page, the focused chat, and the next-up triage all restate the same concise exact agents before the password, with runtime limits closed away", async () => {

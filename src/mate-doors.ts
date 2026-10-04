@@ -21,7 +21,7 @@ import { isVerifiedApprover, reproveApprover } from "./principal.js";
 import { TeamLeads } from './team-leads.js';
 import { fileTaskProposal } from "./proposal.js";
 import { proposeGuarded } from "./scope.js";
-import { isRiskLevel, PHASES, riskTitle, specWords } from "./phase-routing.js";
+import { isRiskLevel, isTaskSize, PHASES, riskTitle, specWords } from "./phase-routing.js";
 import { isProviderId } from "./provider.js";
 import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
@@ -490,9 +490,12 @@ function executeProposal(
     const clear = payload["clear"] === true;
     const provider = payloadString(payload, "provider");
     const model = payloadString(payload, "model");
+    const size = payload["size"];
+    const risky = payload["risky"];
     if (risk !== undefined && !isRiskLevel(risk)) return refuse("refused", "this proposal carries an unknown risk level");
+    if (size !== undefined && (!isTaskSize(size) || typeof risky !== "boolean")) return refuse("refused", "this proposal carries an unknown size");
     if (phase !== undefined && (typeof phase !== "string" || !PHASES.includes(phase as Phase))) return refuse("refused", "this proposal names an unknown role");
-    if (risk === undefined && phase === undefined) return refuse("refused", "this proposal changes nothing about the agents");
+    if (risk === undefined && phase === undefined && size === undefined) return refuse("refused", "this proposal changes nothing about the agents");
     let override: { phase: Phase; provider: ProviderId; model: string } | { phase: Phase; clear: true } | undefined;
     if (typeof phase === "string") {
       if (clear) {
@@ -511,6 +514,7 @@ function executeProposal(
           return standing.ok ? { ok: true } : { ok: false, reason: `your approver standing changed (${standing.reason}) — sign in again` };
         },
         ...(isRiskLevel(risk) ? { risk } : {}),
+        ...(isTaskSize(size) && typeof risky === "boolean" ? { size: { size, risky } } : {}),
         ...(override === undefined ? {} : { override }),
         expectDigest: payloadString(payload, "sawDigest"),
         // The pair is re-proved against the role's configured choices
@@ -536,6 +540,7 @@ function executeProposal(
     const roleWord = typeof phase === "string" ? ({ plan: "planner", build: "builder", repair: "repair", review: "reviewer" } as Record<string, string>)[phase] ?? phase : null;
     const changed = [
       ...(isRiskLevel(risk) ? [`risk is now ${riskTitle(risk).toLowerCase()}`] : []),
+      ...(isTaskSize(size) ? [`it is now a ${size}${risky === true ? ", risky" : ""} change`] : []),
       ...(roleWord === null ? [] : clear ? [`the ${roleWord} choice was cleared — the recommendation stands again`] : [`the ${roleWord} is now ${specWords({ provider: provider as string, model: model as string })}`]),
     ];
     return {

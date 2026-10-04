@@ -294,7 +294,7 @@ import type { BoardCard } from "./board.js";
 import { approveRoutine, describeSchedule, fireRoutine, parseSchedule, refreshRoutineAgents, routineAgentsState, routineDigestOf, validateRoutineTerms, ROUTINE_NAME, type RoutineTerms } from "./routine.js";
 import { effectivePrimary, isMessagingChannel, loadConsoleUrl, savePrimary } from "./webhooks.js";
 import { resolvePhaseAgent, resolveRoutineAuthority, INSTALLATION_SCOPE, routeOfTask, agentChoicesFor, type AgentChoice } from "./agentconfig.js";
-import { isRiskLevel, projectRoute, riskTitle, riskConsequence, chosenWords, agentsSummary, postureWords, RISK_CHOICES, RISK_LEVELS, PHASES as ROUTE_PHASES, type PhaseRoute, type RouteProjection, type RouteOverride, type RouteStamp, type RiskLevel } from "./phase-routing.js";
+import { isRiskLevel, isTaskSize, makesNoPlan, projectRoute, riskTitle, riskConsequence, chosenWords, agentsSummary, postureWords, RISK_CHOICES, RISK_LEVELS, TASK_SIZES, PHASES as ROUTE_PHASES, type PhaseRoute, type RouteProjection, type RouteOverride, type RouteStamp, type RiskLevel } from "./phase-routing.js";
 import { ALL_CREDENTIAL_ENV, isProviderId, reportsCost, PROVIDER_IDS, validModelId, validateSpec, type Phase, type ProviderId } from "./provider.js";
 import { authenticateAccount, freshIdentitySignIn, hasFreshIdentitySignIn, hashPassword, modeFilingCoverage, PLACEHOLDER_RUBRIC, profileFromJson } from "./scope.js";
 import { DEFAULT_GUARD_POLICY, passwordGuardOf, SourceBudget } from "./sign-in-guard.js";
@@ -520,10 +520,13 @@ export const SIGN_IN_LINK_MS = 10 * 60_000;
 const LEAD_BY_DEFAULT_FACT = "lead-on-by-default";
 /** The installation fact that the phone card was put away. */
 const PHONE_CARD_FACT = "phone-card-dismissed";
-const BODY_CAP = 16 * 1024;
+// A note is at most NOTE_BYTE_CAP (16,000) UTF-8 bytes, which URL encoding
+// can triple: room for one whole, before canonical text validation.
+const BODY_CAP = 64 * 1024;
 // URL encoding can triple UTF-8 bytes. Admit the existing bounded task
-// fields (including paths and rubric) before canonical text validation.
-const TASK_FORM_BODY_CAP = 256 * 1024;
+// fields (a goal and exclusions of 32,000 bytes each, paths and rubric)
+// before canonical text validation.
+const TASK_FORM_BODY_CAP = 1024 * 1024;
 /** A cookie idles out after half a day and dies outright after a week. */
 const SESSION_IDLE_MS = 12 * 60 * 60_000;
 const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60_000;
@@ -7239,7 +7242,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (verb === "decide") {
         const decision = body.get("decision") === "approve" ? "approve" : body.get("decision") === "send-back" ? "send-back" : null;
         if (decision === null) return answer(400, { ok: false, said: "Approve it or send it back." });
-        const note = (body.get("note") ?? "").trim().slice(0, 2000) || null;
+        const note = (body.get("note") ?? "").trim() || null;
+        if (note !== null && note.length > LIMITS.note) return answer(400, { ok: false, said: `Keep the note to ${LIMITS.note.toLocaleString("en-US")} characters; this is ${note.length.toLocaleString("en-US")}.` });
         const decided = decideFlowCard(store, { card: target.id, decision, note, actor: who.name, repos: projects, evidenceRoot, draft: body.get("draft") }, now);
         return decided.ok ? settle(decided.said) : answer(409, { ok: false, said: decided.message });
       }
@@ -10724,6 +10728,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // already refused a watcher; a live claim or a tournament refuses
         // inside the transaction.
         const riskGiven = body.get("risk");
+        const sizeGiven = body.get("size");
+        const riskyGiven = body.getAll("risky");
         const phaseGiven = body.get("phase");
         const clearGiven = body.get("clear-phase");
         // The agent arrives as the form's `provider|model` choice (v48) or,
@@ -10737,7 +10743,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (riskGiven !== null && !isRiskLevel(riskGiven)) return taskScreen(response, who, taskId, "risk is routine, elevated, or high", 400);
         const phase = phaseGiven ?? clearGiven;
         if (phase !== null && !(ROUTE_PHASES as readonly string[]).includes(phase)) return taskScreen(response, who, taskId, "the role is planner, builder, or revision", 400);
-        if (riskGiven === null && phase === null) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
+        if (sizeGiven !== null && !isTaskSize(sizeGiven)) return taskScreen(response, who, taskId, "size is small, medium, or large", 400);
+        if (riskyGiven.some(one => one !== "yes" && one !== "no")) return taskScreen(response, who, taskId, "risky is yes or no", 400);
+        // A size keeps the task's risky flag unless the form says otherwise; marking risky keeps the size.
+        const sizeEdit = sizeGiven === null && riskyGiven.length === 0 ? undefined : {
+          size: sizeGiven !== null && isTaskSize(sizeGiven) ? sizeGiven : ref.sizing?.size ?? "medium",
+          risky: riskyGiven.includes("yes") ? true : riskyGiven.includes("no") ? false : ref.sizing?.risky ?? false,
+        };
+        if (riskGiven === null && phase === null && sizeEdit === undefined) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
         if (phaseGiven !== null) {
           if (providerGiven === null || !isProviderId(providerGiven)) return taskScreen(response, who, taskId, "provider is claude, codex, openrouter, or gemini", 400);
           if (modelGiven === "") return taskScreen(response, who, taskId, "name the exact model id — approvals bind exact agents", 400);
@@ -10758,6 +10771,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
               return account !== null && account.revokedAt === null && account.role === "approver" ? { ok: true } : { ok: false, reason: "your login is no longer an approver" };
             },
             ...(riskGiven === null ? {} : { risk: riskGiven as RiskLevel }),
+            // A person's size replaces the classifier's; the risky flag rides with it.
+            ...(sizeEdit === undefined ? {} : { size: sizeEdit }),
             ...(phase === null
               ? {}
               : { override: phaseGiven !== null ? { phase: phase as RouteOverride["phase"], provider: providerGiven as ProviderId, model: modelGiven } : { phase: phase as RouteOverride["phase"], clear: true as const } }),
@@ -12474,7 +12489,10 @@ function approvalSheetHtml(input: {
     else if (scope.profile != null) who.push(`Builder ${agentNameWords(scope.profile.provider, scope.profile.model)}`);
   }
   const planner = legOf("plan");
-  if (planner !== undefined) who.push(`Planner ${agentNameWords(planner.provider, planner.model)}`);
+  // A small change makes no plan: no planner is named (a person's chosen planner still is).
+  const sized = route?.projection?.size ?? null;
+  const unplanned = route?.projection != null && makesNoPlan(sized, route.projection.risk) && planner?.chosen === "recommended";
+  if (planner !== undefined && !unplanned) who.push(`Planner ${agentNameWords(planner.provider, planner.model)}`);
   // What the yes allows, in plain words, right above it: the agent's
   // permissions, the per-attempt limit, and an earlier version still running.
   const allowing: string[] = [];
@@ -12612,6 +12630,8 @@ function approvalSheetHtml(input: {
     `</dl>` +
     approvalAmendmentHtml(contract) +
     race +
+    // The size, said once and plainly beside who builds: "Small change: fast model, no plan".
+    (projection === null ? "" : sizeLineHtml(projection)) +
     (who.length === 0 ? "" : `<p class="approval-who">${who.map(escape).join(" · ")}</p>`) +
     consent +
     `<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">` +
@@ -12819,6 +12839,20 @@ function agentsStandingWords(view: RouteView): string {
           : "recommended";
 }
 
+/** The size line an approval leads its agents with — "Small change: fast
+ * model, no plan" — and, quietly, why it was sized so. */
+function sizeLineHtml(projection: RouteProjection): string {
+  if (projection.sizeWords === null) return "";
+  return `<p class="agents-size"><strong>${escape(projection.sizeWords)}.</strong>${projection.sizeReason === null ? "" : ` <span class="meta">${escape(projection.sizeReason)}</span>`}</p>`;
+}
+
+/** What a size does, for a proposal card. */
+function sizeConsequence(size: string, risky: boolean): string {
+  if (size === "small" && !risky) return "Small change: fast model, no plan";
+  if (size === "large" || risky) return `${size === "large" ? "Large" : "Risky"} change: strongest agents plan and build`;
+  return "Medium change: everyday agents";
+}
+
 /** The one plain-English line: who does what. */
 function agentsSummaryWords(view: RouteView): string {
   if (view.projection !== null) return view.projection.summary;
@@ -12883,6 +12917,7 @@ function agentsCeremonyHtml(view: RouteView | null | undefined): string {
   }
   return (
     `<div class="agents-ceremony"><p class="approval-label">agents</p>` +
+    sizeLineHtml(view.projection) +
     `<p class="agents-summary">${escape(view.projection.summary)}</p>` +
     `<div class="agents-badges"><span class="badge">${escape(sentenceCase(riskTitle(view.riskLevel)))}</span><span class="badge">${escape(sentenceCase(view.projection.postureWords))}</span></div>` +
     `<p class="meta agents-risk-line">${escape(riskTitle(view.riskLevel))}: ${escape(riskConsequence(view.riskLevel))}.</p>` +
@@ -12983,6 +13018,11 @@ function agentsCardHtml(taskId: string, view: RouteView | null | undefined, csrf
         `<form method="post" action="${taskHref(taskId)}/route" class="agents-form-risk">${hidden}` +
         `<label>Risk<select name="risk" aria-label="declared risk">${RISK_LEVELS.map(one => `<option value="${one}"${one === view.riskLevel ? " selected" : ""}>${escape(riskTitle(one))}</option>`).join("")}</select></label>` +
         `<button type="submit" class="secondary">Set risk</button></form>` +
+        `<form method="post" action="${taskHref(taskId)}/route" class="agents-form-risk">${hidden}` +
+        `<label>Size<select name="size" aria-label="task size">${TASK_SIZES.map(one => `<option value="${one}"${one === (p?.size?.size ?? "medium") ? " selected" : ""}>${escape(sizeConsequence(one, false))}</option>`).join("")}</select></label>` +
+        // The hidden "no" says the form showed the box: unticked means not risky; a request without either keeps the flag.
+        `<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"${p?.size?.risky === true ? " checked" : ""}> Risky</label>` +
+        `<button type="submit" class="secondary">Set size</button></form>` +
         riskGuide +
         `<div class="agents-role-forms">${roleForms.join("")}</div>` +
         `<p class="meta">Only agents you have configured are offered; each choice is recorded as you. ${view.replanOnPlanChange ? "Changing the planner asks for a new plan — the drafted one is not relabeled. " : ""}An approval given under the earlier agents needs renewing.</p>` +
@@ -14252,6 +14292,7 @@ ${THEME_DARK}
   .agents-form input, .agents-form select, .agents-form-risk select { width: 100%; min-width: 0; min-height: 2.75rem; }
   .agents-form button, .agents-form-risk button, .agents-clear button { min-height: 2.75rem; }
   .agents-form-risk { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; margin-top: .5rem; }
+  .agents-form-risk label.agents-risky { display: flex; align-items: center; gap: .4rem; min-height: 2.75rem; font-size: .85rem; }
   .agents-overrides { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .35rem; font-size: .78rem; }
   .agents-overrides li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .6rem; }
   .agents-clear { margin: 0; }
@@ -14306,6 +14347,7 @@ ${THEME_DARK}
   .approval-amendment { max-width: 75ch; padding: 12px 14px; border-radius: 8px; background: var(--muted); font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
   .approval-amendment p { margin: 0; }
   .approval-amendment ul { display: grid; gap: 4px; margin: 6px 0; padding-left: 1.25rem; }
+  .agents-size { margin: 0; font-size: 13px; line-height: 1.5; }
   .approval-who { max-width: 75ch; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
   .approval-act { display: grid; grid-template-columns: minmax(0, 20rem) auto; justify-content: start; align-items: center; gap: 8px; }
   .approval-password { margin: 0; }
@@ -18495,11 +18537,15 @@ function proposalCardParts(view: ProposalCardView, csrf: string, inert: boolean,
     const risk = text("risk");
     const clear = payload["clear"] === true;
     const agentWords = text("provider") === "" ? "" : `${text("provider")} · ${text("model")}`;
+    const size = text("size");
+    const sizeLine = size === "" ? "" : `${size}${payload["risky"] === true ? ", risky" : ""} change`;
     const heading = role !== "" && !clear
       ? `Run <a href="${taskHref(task)}">${escape(taskTitle)}</a>'s ${escape(role)} on <span class="mono">${escape(agentWords)}</span>`
       : role !== "" && clear
         ? `Let the recommended ${escape(role)} stand for <a href="${taskHref(task)}">${escape(taskTitle)}</a>`
-        : `Declare <a href="${taskHref(task)}">${escape(taskTitle)}</a> ${escape(riskTitle((isRiskLevel(risk) ? risk : "routine") as RiskLevel).toLowerCase())}`;
+        : risk === "" && size !== ""
+          ? `Treat <a href="${taskHref(task)}">${escape(taskTitle)}</a> as a ${escape(sizeLine)}`
+          : `Declare <a href="${taskHref(task)}">${escape(taskTitle)}</a> ${escape(riskTitle((isRiskLevel(risk) ? risk : "routine") as RiskLevel).toLowerCase())}`;
     const riskWords = isRiskLevel(risk) ? `${riskTitle(risk)}: ${riskConsequence(risk)}.` : "";
     what =
       `<h3>${heading}</h3>` +
@@ -18507,6 +18553,7 @@ function proposalCardParts(view: ProposalCardView, csrf: string, inert: boolean,
       facts(
         ["agents now", escape(text("before"))],
         ["risk", risk === "" ? "" : `<strong>${escape(riskTitle(risk as RiskLevel))}</strong>${role !== "" && isRiskLevel(risk) ? "" : ` — ${escape(riskConsequence(risk as RiskLevel))}`}`],
+        ["size", size === "" ? "" : escape(sizeConsequence(size, payload["risky"] === true))],
         ["role", role === "" ? "" : `${escape(role)} → ${clear ? "the recommendation" : `<span class="mono">${escape(agentWords)}</span>`}`],
         ["project", `<span class="mono">${escape(repoId)}</span>`],
       ) +
@@ -24054,7 +24101,7 @@ function runReportView(artifacts: Artifact[], root: string): RunReportView | nul
     return { ok: false, artifactId: artifact.id, problem: "the report file could not be read" };
   }
   if (!read.ok) return { ok: false, artifactId: artifact.id, problem: read.problem };
-  const parsed = parseReport(read.content.toString("utf8"));
+  const parsed = parseReport(read.content.toString("utf8"), { stored: true });
   if (!parsed.ok) return { ok: false, artifactId: artifact.id, problem: artifact.truncated ? "the report was shortened at storage and cannot be read; the missing part was never captured" : "the stored report is not a report this console can read" };
   return { ok: true, artifactId: artifact.id, title: parsed.report.title, summary: parsed.report.summary, document: parsed.report.report, followUps: parsed.report.followUps.length, truncated: artifact.truncated,
     items: parsed.report.items, shots: reportShotsOf(artifacts, root, artifact.run, parsed.report.images) };

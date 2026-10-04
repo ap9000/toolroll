@@ -404,7 +404,9 @@ describe("Telegram conversation: the same chat, from the phone", () => {
   test("a long reply full of links, bold and & or < goes out in parts Telegram accepts, each link whole as an entity", async () => {
     origin = "https://so.example.com";
     const urls = Array.from({ length: 200 }, (_, index) => `https://docs.example.org/guide/${index}?a=1&b=2`);
-    answers.push({ text: urls.map((url, index) => `**Step ${index}** a<b & c: ${url}`).join(" ") });
+    // Over Telegram's 4,096 the lead is asked once to shorten; still over, the reply is split, never cut.
+    const guide = urls.map((url, index) => `**Step ${index}** a<b & c: ${url}`).join(" ");
+    answers.push({ text: guide }, { text: guide });
     script.updates.push([textUpdate(2, "send me the guide links")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     const sent = script.sends().filter(call => call.method === "sendMessage");
@@ -896,7 +898,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
     test("a crash after the first part of a long reply was confirmed: the restart sends only the rest, with no model call", async () => {
       const long = "The queue is quiet. ".repeat(220);
-      answers.push({ text: long });
+      // Asked once to shorten (it is over 4,096), the lead keeps it: it goes out split.
+      answers.push({ text: long }, { text: long });
       let renewals = 0;
       const original = store.renewTelegramConversation.bind(store);
       const dying = vi.spyOn(store, "renewTelegramConversation").mockImplementation((...args) => { if (++renewals === 2) throw new Error("power cut"); return original(...args); });
@@ -914,7 +917,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(script.texts()).toEqual([first, rest]);
       expect(parts().map(one => [one.state, one.messageId])).toEqual([["sent", "100"], ["sent", "101"]]);
       expect(row()).toMatchObject({ state: "done", outcome: "replayed", attempts: 2 });
-      expect(requests).toHaveLength(1);
+      // The answer and its one shorten step, both before the crash: the restart made no model call.
+      expect(requests).toHaveLength(2);
       expect(turns()).toBe(1);
     });
 

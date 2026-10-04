@@ -423,7 +423,9 @@ test("the lead's voice in Discord: a tool turn gets one 👍 on the owner's mess
 });
 
 test("a long reply is split as written before it is shaped: the link that straddles a part's limit arrives whole, named, in one part", async () => {
-  answers.push({ text: `${"word ".repeat(355)}**Ready** see https://console.example/chat?task=payout now. ${"more ".repeat(100)}` });
+  // Over Discord's 2,000 the lead is asked once to shorten; a reply still over it is split across messages, never cut.
+  const long = `${"word ".repeat(355)}**Ready** see https://console.example/chat?task=payout now. ${"more ".repeat(100)}`;
+  answers.push({ text: long }, { text: long });
   receive("tell me everything");
   await processDiscordEvent(options);
   await drain();

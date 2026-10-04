@@ -1,6 +1,7 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
 import { withActor } from "./actor.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -234,10 +235,12 @@ function text(
 ): string {
   const value = input[key];
   if (optional && value === undefined) return "";
+  // Over its limit is refused with the limit, never cut.
+  if (typeof value === "string" && value.length > cap)
+    throw Error(`The ${key} is ${value.length.toLocaleString("en-US")} characters; the limit is ${cap.toLocaleString("en-US")}. Shorten it and propose again.`);
   if (
     typeof value !== "string" ||
     (!optional && !value.trim()) ||
-    value.length > cap ||
     /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufffd]/.test(
       value,
     ) ||
@@ -698,7 +701,7 @@ export function prepareSharedAction(
       if (operation === "flow_card_comment" || operation === "flow_card_assign" || operation === "flow_card_watch") {
         const people = flowPeople(store, flowTarget!.flow.repo);
         if (operation === "flow_card_comment") {
-          const note = text(input, "note", 4000).trim();
+          const note = text(input, "note", TEXT_LIMITS.note).trim();
           const mentions = mentionsIn(note, people);
           request["note"] = note;
           title = `Comment on ${quoted(card.title)}`;
@@ -743,7 +746,7 @@ export function prepareSharedAction(
           title = `Choose “${option.label}” for ${quoted(card.title)}`;
           terms.push(option.to === "end" ? `${at.title}: “${option.label}”. The card is closed as Ignored.` : `${at.title}: “${option.label}”. It moves to ${titleOf(option.to)}.`);
         } else {
-          const note = input["note"] === undefined ? "" : text(input, "note", 2000).trim();
+          const note = input["note"] === undefined ? "" : text(input, "note", TEXT_LIMITS.note).trim();
           const target = replyTarget(at);
           if (target === null) throw Error("This step takes one of its options, not a reply.");
           if (note === "") throw Error("Say what you'd change, or choose an option by number.");
@@ -756,7 +759,7 @@ export function prepareSharedAction(
         if (at?.kind !== "approval") throw Error("That card isn't waiting for a decision.");
         const decider = deciderOf(at, flowTarget!.flow);
         if (decider !== null && decider !== who.name) throw Error(`Only ${decider} decides here.`);
-        const note = input["note"] === undefined ? "" : text(input, "note", 2000).trim();
+        const note = input["note"] === undefined ? "" : text(input, "note", TEXT_LIMITS.note).trim();
         const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? null;
         if (operation === "flow_card_approve") {
           title = `Approve ${quoted(card.title)}`;

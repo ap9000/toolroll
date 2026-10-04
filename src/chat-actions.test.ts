@@ -25,7 +25,8 @@ import { confirmMateProposal } from "./mate-doors.js";
 import { projectToolsOf } from "./project-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
 import { knowledgeView, changeKnowledge } from "./project-knowledge.js";
-import { executeMateTool } from "./mate-tools.js";
+import { executeMateTool, MATE_TOOLS } from "./mate-tools.js";
+import { flowFromSteps } from "./flows.js";
 import { createDecisionServer } from "./serve.js";
 import { requestTaskStop } from "./task-control.js";
 import { register } from "./runner.js";
@@ -218,6 +219,20 @@ describe("shared chat action lifecycle", () => {
     expect(confirm(remove)).toMatchObject({ ok: true, said: "Tool removed from every build." });
     expect(projectToolsOf(store, repo)).toEqual([]);
   });
+  test("a flow card note from chat is taken whole up to 4,000 characters; over it is refused with its length, never cut", () => {
+    const flow = store.createFlow({ repo, name: "Support", by: who.name, definitionJson: JSON.stringify(flowFromSteps([
+      { title: "Inbox", kind: "inbox" },
+      { id: "draft", title: "Write the reply", kind: "draft", instructions: "Reply to {{card.title}}" },
+      { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
+    ], null)) }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: who.name }, now);
+    const note = "Mention the 5-day wait. ".repeat(200).slice(0, 4_000);
+    expect(prepareSharedAction(store, who, "flow_card_send_back", { card, note }, root, now).request).toMatchObject({ note: note.trim() });
+    expect(() => prepareSharedAction(store, who, "flow_card_send_back", { card, note: `${note}!` }, root, now)).toThrow("The note is 4,001 characters; the limit is 4,000. Shorten it and propose again.");
+    // The chat tools state the same limit they are held to.
+    for (const name of ["propose_action", "propose_flow"]) expect(MATE_TOOLS.find(one => one.name === name)!.inputSchema).toMatchObject({ properties: { note: { maxLength: 4_000, description: expect.stringContaining("At most 4000 characters") } } });
+  });
+
   test("the lead lets a teammate use a tool and sets one action's rule, each as a card; a card drafted before a change is refused (v94)", () => {
     const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
     expect(confirm(proposal("tool_add", { repo, catalog: "github" }), true)).toMatchObject({ ok: true });

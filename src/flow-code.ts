@@ -23,12 +23,14 @@ import { SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { scrubSecrets } from "./flow-secrets.js";
 import type { FlowScriptRow } from "./store.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 import { LANGUAGE_WORDS, type ScriptLanguage } from "./flows.js";
 export { LANGUAGE_WORDS, SCRIPT_LANGUAGES, type ScriptLanguage } from "./flows.js";
 const EXTENSION: Record<ScriptLanguage, string> = { shell: "sh", python: "py", node: "mjs" };
-/** A step's result on the card: the end of what the script printed. */
-export const CODE_OUTPUT_CHARS = 3000;
+/** A step's result on the card: what the script printed, up to what a step passes on (the end, when longer; the whole
+ * is in the step's log). */
+export const CODE_OUTPUT_CHARS = TEXT_LIMITS.stageOutput;
 const LOG_CHARS = 64_000;
 
 /** How a file runs in each language: sh, Python 3, and the Node this app runs on. */
@@ -67,9 +69,9 @@ export function codeOutput(stdout: string, secrets: Record<string, string>): { o
   const lines = clean.replace(/\s+$/, "").split("\n");
   const last = lines.at(-1) ?? "";
   const goto = /^goto:\s*(.{1,40})$/i.exec(last.trim());
+  // Whole: the step passes it on whole up to CODE_OUTPUT_CHARS, and attaches longer to the card, linked (flow-steps settle).
   const body = (goto === null ? lines : lines.slice(0, -1)).join("\n").trim();
-  const shown = body.length <= CODE_OUTPUT_CHARS ? body : `…${body.slice(-CODE_OUTPUT_CHARS)}`;
-  return { output: redactSecretLines(shown, scanForSecrets(shown)), goTo: goto === null ? null : goto[1]!.trim() };
+  return { output: redactSecretLines(body, scanForSecrets(body)), goTo: goto === null ? null : goto[1]!.trim() };
 }
 
 /** Run one script once, with the card as its input. */

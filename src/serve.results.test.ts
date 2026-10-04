@@ -738,7 +738,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(before).toContain(`<form method="post" action="/r/${run}/comment" class="diff-comment-form" id="comment-form">`);
     expect(before).toContain(`<input type="hidden" name="return" value="/review?result=t-act&amp;run=${run}">`);
     // Follow-up on build 1540: this form advertises the server's 500-character limit too, with the same helper.
-    expect(before).toContain('maxlength="500" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"></textarea><span class="meta diff-comment-limit" id="comment-note-limit">up to 500 characters</span>');
+    expect(before).toContain('maxlength="4000" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"></textarea><span class="meta diff-comment-limit" id="comment-note-limit">up to 4000 characters</span>');
     expect(before).not.toContain('maxlength="2000"');
     expect(before).not.toContain(`action="/r/${run}/revise"`);
     expect(before).not.toContain("draft-repair");
@@ -1588,8 +1588,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(panel.querySelector('[data-result-view="checks"]')?.textContent).toContain('no verification result');
       const field = panel.querySelector('textarea[name="note"]')!;
       expect(field.getAttribute('aria-label')).toBe('review comment');
-      expect(field.getAttribute('maxlength')).toBe('500');
-      expect(panel.querySelector('#comment-note-limit')?.textContent).toBe('up to 500 characters');
+      expect(field.getAttribute('maxlength')).toBe('4000');
+      expect(panel.querySelector('#comment-note-limit')?.textContent).toBe('up to 4000 characters');
       expect(panel.querySelector('[data-request-changes]')?.textContent).toBe('Request changes');
       expect(panel.querySelector('[data-save-feedback]')?.textContent).toBe('Save for later');
       expect(panel.querySelector('.result-pin')?.hasAttribute('open')).toBe(false);

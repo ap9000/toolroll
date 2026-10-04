@@ -133,11 +133,13 @@ describe("a code step", () => {
     expect(store.getFlowCard(card)!.outputs["peek"]).toBe("denied");
   });
 
-  test("what counts as output: the goto line comes off, secrets and key-shaped lines are blanked, long output keeps its end", () => {
+  test("what counts as output: the goto line comes off, secrets and key-shaped lines are blanked, long output is kept whole", () => {
     expect(codeOutput("Result\ngoto: Big\n", {})).toEqual({ output: "Result", goTo: "Big" });
     expect(codeOutput("goto: nowhere in particular at all, really, truly too long for an answer\n", {})).toEqual({ output: "goto: nowhere in particular at all, really, truly too long for an answer", goTo: null });
     expect(codeOutput("token is hunter22secret\n", { PASS: "hunter22secret" }).output).toBe("token is [secret]");
-    expect(codeOutput("x".repeat(5000), {}).output.length).toBe(3001);
+    // Never cut: the step passes it on whole up to 12,000 and attaches longer to the card (flow-steps settle).
+    expect(codeOutput("x".repeat(12_000), {}).output).toBe("x".repeat(12_000));
+    expect(codeOutput(`START\n${"x".repeat(20_000)}\nEND`, {}).output).toBe(`START\n${"x".repeat(20_000)}\nEND`);
     expect(cardsFromOutput('[{"title":"One","key":1},{"title":"Two","description":"d","email":"a@b.example"},{"nope":true}]')).toEqual([
       { key: "key:1", title: "One", description: null }, { key: "item:Two\nd\n\na@b.example", title: "Two", description: "d\n\na@b.example" }]);
     expect(cardsFromOutput('{"title":"A"}\n{"title":"B","key":"b"}\nplain line\n\n')).toEqual([

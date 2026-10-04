@@ -4,7 +4,8 @@ import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { ChatState, chatHash, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
-import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, type ChatDeliveryOptions } from "./chat-delivery.js";
+import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
+import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { renderReply } from "./reply-shape.js";
@@ -123,16 +124,23 @@ function openUrlAction(origin: string | null, target: ChatContent["link"]): Reco
   } catch { return []; }
 }
 
-/** One Adaptive Card: plain text, then the buttons (submit tokens, or one link). */
+/** One Adaptive Card: plain text (within PLATFORM_LIMITS.teams: teamsMessages splits longer), then the buttons (submit tokens, or one link). */
 export function teamsCard(text: string, actions: Record<string, unknown>[]): Record<string, unknown> {
   return {
     type: "message",
     attachments: [{
       contentType: "application/vnd.microsoft.card.adaptive",
       content: { type: "AdaptiveCard", version: "1.4", $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
-        body: [{ type: "TextBlock", text: text.slice(0, 6000), wrap: true }], ...(actions.length ? { actions } : {}) },
+        body: [{ type: "TextBlock", text, wrap: true }], ...(actions.length ? { actions } : {}) },
     }],
   };
+}
+
+/** Text longer than one Teams message, as several, never cut: the leading parts as plain messages, and the last as
+ * `last` makes it (a card with the buttons, or a message), so the buttons come after all of the text. */
+export function teamsMessages(text: string, markdown: boolean, last: (text: string) => Record<string, unknown>): Record<string, unknown>[] {
+  const parts = text.length <= PLATFORM_LIMITS.teams ? [text] : splitChatText(text, PLATFORM_LIMITS.teams);
+  return parts.map((part, at) => at === parts.length - 1 ? last(part) : { type: "message", text: part, textFormat: markdown ? "markdown" : "plain" });
 }
 
 /** Send the next pending part: a plain message, an edit, or a card with its tokens. */
@@ -173,7 +181,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       else {
         const preview = proposalPreview(store, proposal, repos, "teams");
         text = content.phase === "armed" ? armedCardText(proposal, preview.text) : preview.text.replace("\n\nConfirm or Dismiss below. Nothing changes until you confirm.", "");
-        if (preview.buttons && preview.text.length <= 6000) {
+        if (preview.buttons && preview.text.length <= PLATFORM_LIMITS.teams) {
           actions = state.prepare("SELECT token,phase FROM chat_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(row.id, now.toISOString())
             .map(action => ({ type: "Action.Submit", title: action.phase === "yes" ? armedYesLabel(proposal) : action.phase === "cancel" ? "Cancel" : action.phase === "dismiss" ? "Dismiss" : "Confirm", data: { so: String(action.token) } }));
           if (!actions.length) text = "This confirmation expired. Ask for a fresh proposal.";
@@ -194,8 +202,11 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     const target = content.edit ?? row.message;
     // The lead's own reply goes out in Teams' Markdown (bold anchors, labelled links); everything else stays plain.
     const voiced = content.voice === true && !content.proposal && !content.image ? renderReply(text, "teams") : null;
-    const body = actions.length || content.proposal ? teamsCard(voiced ?? text, actions) : voiced !== null ? { type: "message", text: voiced, textFormat: "markdown" } : { type: "message", text, textFormat: "plain" };
-    const answer = await options.api(target ? "PUT" : "POST", serviceUrl, `/v3/conversations/${encodeURIComponent(destination)}/activities${target ? `/${encodeURIComponent(target)}` : ""}`, body);
+    const bodies = teamsMessages(voiced ?? text, voiced !== null, one => actions.length || content.proposal ? teamsCard(one, actions) : { type: "message", text: one, textFormat: voiced !== null ? "markdown" : "plain" });
+    const activities = `/v3/conversations/${encodeURIComponent(destination)}/activities`;
+    // An edit replaces its one message with the first part; any more follow it as new messages.
+    let answer = await options.api(target ? "PUT" : "POST", serviceUrl, target ? `${activities}/${encodeURIComponent(target)}` : activities, bodies[0]!);
+    for (const more of bodies.slice(1)) answer = await options.api("POST", serviceUrl, activities, more);
     const messageId = target ?? (typeof answer.id === "string" ? answer.id : null);
     if (messageId === null) throw new TeamsError("Teams did not confirm the message", 15_000, true);
     state.prepare("UPDATE chat_part SET state='sent',message=?,attempts=attempts+1,next_at=NULL,problem=NULL WHERE id=?").run(messageId, row.id);

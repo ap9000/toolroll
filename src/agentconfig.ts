@@ -24,7 +24,7 @@ import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId
 import { contestantProfileOf, type Store, type TaskRef } from "./store.js";
 import { CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, chainFromJson, canonicalChainJson, type ChainEntry, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
 import { SUBSCRIPTION_CAPABLE } from "./keys.js";
-import { exactModelId, legOf, PHASES, recommendRoute, routeFromJson, routeProblems, sameSpec, type ExactSpec, type PhaseRoute, type RouteCandidate, type RouteCandidates, type RouteEvidenceKind } from "./phase-routing.js";
+import { exactModelId, legOf, PHASES, recommendRoute, routeFromJson, routeProblems, sameSpec, type CandidateTier, type ExactSpec, type PhaseRoute, type RouteCandidate, type RouteCandidates, type RouteEvidenceKind } from "./phase-routing.js";
 import type { AcceptanceCriterion } from "./scope.js";
 
 export const INSTALLATION_SCOPE = "installation";
@@ -311,6 +311,35 @@ export type CandidatesResolution =
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
 
 export function resolveRouteCandidates(store: Store, repo: string | null, pins: { plan?: ExactSpec | null; build?: ExactSpec | null } = {}): CandidatesResolution {
+  // The LIGHT tier (v2): the operator's named fast builder, project over
+  // installation, never inherited and never inferred. Only the build phase
+  // has one: a small change makes no plan, and repairs resume the builder.
+  const lightOf = (phase: "build"): { ok: true; light: RouteCandidate | null } | { ok: false; problem: string } => {
+    const project = repo === null ? null : store.phaseTierConfig(repo, phase, "light");
+    const row = project ?? store.phaseTierConfig(INSTALLATION_SCOPE, phase, "light");
+    if (row === null) return { ok: true, light: null };
+    const source = project !== null ? "project (light)" : "installation (light)";
+    if (!isProviderId(row.provider) || row.model === null || row.model === "") {
+      return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]} names ${row.provider}${row.model === null || row.model === "" ? " with no model" : ` · ${row.model}`} — a light agent is an exact pair: \`config set ${phase} --tier light --provider … --model …\`, or \`--clear\` it` };
+    }
+    const valid = validateSpec({ provider: row.provider, model: row.model });
+    if (!valid.ok) return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]}: ${valid.problem}` };
+    return { ok: true, light: { provider: row.provider, model: row.model, source } };
+  };
+  // Alternates (v2): one more candidate per provider on a tier, project over installation.
+  const alternatesOf = (phase: "plan" | "build", tier: CandidateTier): { ok: true; alternates: RouteCandidate[] } | { ok: false; problem: string } => {
+    const project = repo === null ? [] : store.phaseTierAlternates(repo, phase, tier);
+    const rows = project.length > 0 ? project : store.phaseTierAlternates(INSTALLATION_SCOPE, phase, tier);
+    const source = `${project.length > 0 ? "project" : "installation"} (${tier}, also)`;
+    const alternates: RouteCandidate[] = [];
+    for (const row of rows) {
+      if (!isProviderId(row.provider)) return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]} names unknown provider ${row.provider} — \`config clear ${phase} --also --provider ${row.provider}\`` };
+      const valid = validateSpec({ provider: row.provider, model: row.model });
+      if (!valid.ok) return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]}: ${valid.problem}` };
+      alternates.push({ provider: row.provider, model: row.model, source });
+    }
+    return { ok: true, alternates };
+  };
   const strongOf = (phase: Phase): { ok: true; strong: RouteCandidate | null } | { ok: false; problem: string } => {
     const strongProject = repo === null ? null : store.phaseTierConfig(repo, phase, "strong");
     const strongInstallation = store.phaseTierConfig(INSTALLATION_SCOPE, phase, "strong");
@@ -358,7 +387,30 @@ export function resolveRouteCandidates(store: Store, repo: string | null, pins: 
     }
     if (!routine.ok) return { ok: false, phase, problem: routine.problem };
     if (!strong.ok) return { ok: false, phase, problem: strong.problem };
-    out[phase] = { routine: routine.routine, strong: strong.strong };
+    const light = phase === "build" ? lightOf(phase) : { ok: true as const, light: null };
+    if (!light.ok) return { ok: false, phase, problem: light.problem };
+    if (phase === "review") {
+      out.review = { routine: routine.routine, strong: strong.strong };
+      continue;
+    }
+    // A tier's candidates on other providers (`--also`), one per provider.
+    const alternates: Partial<Record<CandidateTier, RouteCandidate[]>> = {};
+    let primary: { light: RouteCandidate | null; strong: RouteCandidate | null } = { light: light.light, strong: strong.strong };
+    for (const tier of (phase === "build" ? ["light", "routine", "strong"] : ["routine", "strong"]) as CandidateTier[]) {
+      const read = alternatesOf(phase, tier);
+      if (!read.ok) return { ok: false, phase, problem: read.problem };
+      const own = tier === "routine" ? routine.routine : primary[tier];
+      // With no candidate of its own, a tier's first alternate stands as it.
+      const list = own === null ? read.alternates.slice(1) : read.alternates.filter(one => one.provider !== own.provider);
+      if (own === null && read.alternates[0] !== undefined) primary = { ...primary, [tier]: read.alternates[0] };
+      if (list.length > 0) alternates[tier] = list;
+    }
+    out[phase] = {
+      routine: routine.routine,
+      strong: primary.strong,
+      ...(primary.light === null ? {} : { light: primary.light }),
+      ...(Object.keys(alternates).length === 0 ? {} : { alternates }),
+    };
   }
   // Repair: the configured row is optional (inherit is the law when none
   // exists), but a row that EXISTS must be exact — a provider the policy
@@ -454,6 +506,8 @@ export function routeOfTask(store: Store, taskId: string, ref: TaskRef | null, n
     candidates: candidates.candidates,
     overrides,
     pins: { plan: planPin.pin, build: buildPin.pin },
+    size: ref?.sizing ?? null,
+    headroom: store.planHeadroom(now),
   });
   return { kind: "route", route, source: "live" };
 }
@@ -537,9 +591,15 @@ export function agentChoicesFor(store: Store, repo: string | null, route: PhaseR
   const buildProvider = route === null ? candidates.candidates.build.routine.provider : legOf(route, "build").provider;
   const configuredFor = (phase: Phase): RouteCandidate[] => {
     const tiers = candidates.candidates[phase];
+    const everyOf = (one: RouteCandidates["build"]): (RouteCandidate | null)[] => [
+      one.light ?? null,
+      one.routine,
+      one.strong,
+      ...Object.values(one.alternates ?? {}).flatMap(list => [...(list ?? [])]),
+    ];
     const own: (RouteCandidate | null)[] = phase === "repair"
-      ? [tiers.routine, tiers.strong, candidates.candidates.build.routine, candidates.candidates.build.strong]
-      : [tiers.routine, tiers.strong];
+      ? [tiers.routine, tiers.strong, ...everyOf(candidates.candidates.build)]
+      : phase === "review" ? [tiers.routine, tiers.strong] : everyOf(candidates.candidates[phase]);
     const out: RouteCandidate[] = [];
     for (const one of own) {
       if (one === null || out.some(seen => sameSpec(seen, one))) continue;

@@ -1,3 +1,4 @@
+import { TEXT_LIMITS } from "./text-limits.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
 import { policyParts } from "./policy.js";
@@ -46,7 +47,7 @@ import { parseAcceptanceCriteria, ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type Accept
 import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
-import { agentsSummary, chosenWords, isRiskLevel, PHASES, postureWords, RISK_CHOICES, riskConsequence, riskTitle, routeProblems, sameSpec, specWords, type PhaseRoute } from "./phase-routing.js";
+import { agentsSummary, chosenWords, isRiskLevel, isTaskSize, PHASES, postureWords, RISK_CHOICES, riskConsequence, riskTitle, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
 import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_STAGE_KINDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, type FlowDefinition } from "./flows.js";
@@ -426,6 +427,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
   const base = {
     task: taskId,
     risk: { level: risk, title: riskTitle(risk), consequence: riskConsequence(risk) },
+    size: ref.sizing == null ? null : { size: ref.sizing.size, risky: ref.sizing.risky, reason: ref.sizing.reason, source: sizeSourceWords(ref.sizing.source) },
     riskChoices: RISK_CHOICES.map(one => ({ risk: one.risk, title: one.title, consequence: one.consequence })),
     editable,
     editableWhy,
@@ -443,6 +445,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
     standing: routed.source === "approved" ? "approved" : routed.source === "proposed" ? "awaiting approval" : "recommended",
     summary: agentsSummary(route),
     posture: postureWords(route),
+    sizeWords: sizeWords(route),
     demands: route.demands.filter(reason => !/review/i.test(reason)),
     agents: route.legs.filter(leg => leg.phase !== "review").map(leg => ({ role: ROLE_WORD[leg.phase], provider: leg.provider, model: leg.model, chosen: chosenWords(leg), reasons: leg.reasons.map(reason => reason.replace("builder and reviewer", "builder")), problem: leg.problem })),
     problems: routeProblems(route),
@@ -494,7 +497,7 @@ export const MATE_TOOLS: MateTool[] = [
   {
     name: "propose_action",
     description: "Read get_actions and relevant skills/evidence first. Save an exact-state proposal only; protected or long terms require full secure review.",
-    inputSchema: schema({operation:{type:'string',enum:Object.keys(CHAT_ACTIONS).filter(one=>!one.startsWith('flow_')&&!one.startsWith('teammate_'))},repo:{type:'string'},task:TASK_ARG,version:{type:'string'},restore:{type:'integer',minimum:1},sample:{type:'string',maxLength:800},content:{type:'string',maxLength:12000},instructions:{type:'string',maxLength:4000},title:{type:'string',maxLength:120},id:{type:'string'},run:{type:'integer',minimum:1},note:{type:'string',maxLength:2000},catalog:{type:'string',maxLength:40},name:{type:'string',maxLength:40},command:{type:'string',maxLength:400},args:{type:'array',items:{type:'string',maxLength:400},maxItems:40},url:{type:'string',maxLength:500},secrets:{type:'array',items:{type:'string',maxLength:64},maxItems:12},about:{type:'string',maxLength:240}},['operation']),
+    inputSchema: schema({operation:{type:'string',enum:Object.keys(CHAT_ACTIONS).filter(one=>!one.startsWith('flow_')&&!one.startsWith('teammate_'))},repo:{type:'string'},task:TASK_ARG,version:{type:'string'},restore:{type:'integer',minimum:1},sample:{type:'string',maxLength:800},content:{type:'string',maxLength:12000},instructions:{type:'string',maxLength:TEXT_LIMITS.flowInstructions},title:{type:'string',maxLength:120},id:{type:'string'},run:{type:'integer',minimum:1},note:{type:'string',maxLength:LIMITS.note,description:`At most ${LIMITS.note} characters; longer is refused with its length, not cut.`},catalog:{type:'string',maxLength:40},name:{type:'string',maxLength:40},command:{type:'string',maxLength:400},args:{type:'array',items:{type:'string',maxLength:400},maxItems:40},url:{type:'string',maxLength:500},secrets:{type:'array',items:{type:'string',maxLength:64},maxItems:12},about:{type:'string',maxLength:240}},['operation']),
     handle:(ctx,args)=>{
       const operation=args['operation'];if(!isChatAction(operation))return {ok:false,message:'Choose an action from get_actions.'};
       if(operation.startsWith('flow_'))return {ok:false,message:'Use propose_flow for flows.'};
@@ -896,7 +899,7 @@ export const MATE_TOOLS: MateTool[] = [
       name: { type: "string", maxLength: 80 }, template: { type: "string", enum: FLOW_TEMPLATES.map(one => one.id) },
       steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", additionalProperties: false, properties: {
         id: { type: "string", maxLength: 32 }, title: { type: "string", maxLength: 60 }, kind: { type: "string", enum: [...FLOW_STAGE_KINDS] },
-        instructions: { type: "string", maxLength: 4000 }, planning: { type: "string", enum: ["auto", "required", "skip"] },
+        instructions: { type: "string", maxLength: TEXT_LIMITS.flowInstructions }, planning: { type: "string", enum: ["auto", "required", "skip"] },
         decider: { type: "string", maxLength: 64 }, message: { type: "string", maxLength: 1000 },
         script: { type: "string", maxLength: 40 }, close: { type: "boolean" },
         question: { type: "string", maxLength: 300 }, sureAt: { type: "integer", minimum: 50, maximum: 99 },
@@ -915,7 +918,7 @@ export const MATE_TOOLS: MateTool[] = [
         ifReplied: { type: "string", maxLength: 60 }, repo: REPO_ARG,
         next: { type: "string", maxLength: 60 }, ifFails: { type: "string", maxLength: 60 }, ifNotSure: { type: "string", maxLength: 60 },
       } } },
-      title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 4000 }, zone: { type: "string", maxLength: 60 }, note: { type: "string", maxLength: 2000 },
+      title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 4000 }, zone: { type: "string", maxLength: 60 }, note: { type: "string", maxLength: LIMITS.note, description: `At most ${LIMITS.note} characters; longer is refused with its length, not cut.` },
       choice: { type: "integer", minimum: 1, maximum: 4 },
       trigger: { type: "integer", minimum: 1 }, owner: { type: "string", maxLength: 64 },
       script: { type: "object", additionalProperties: false, properties: { name: { type: "string", maxLength: 40 }, about: { type: "string", maxLength: 160 }, body: { type: "string", maxLength: 1600 }, timeoutMinutes: { type: "integer", minimum: 1, maximum: 60 },
@@ -1623,13 +1626,14 @@ export const MATE_TOOLS: MateTool[] = [
   {
     name: "propose_steer",
     description: "Guide the next attempt within existing scope; never interrupt work.",
-    inputSchema: schema({ task: TASK_ARG, note: { type: "string", maxLength: 2_000 } }, ["task", "note"]),
+    inputSchema: schema({ task: TASK_ARG, note: { type: "string", maxLength: LIMITS.note, description: `At most ${LIMITS.note} characters; longer is refused with its length, not cut.` } }, ["task", "note"]),
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       const ref = taskId === null ? null : admittedRef(ctx, taskId);
       const task = taskId === null ? null : ctx.store.getTask(taskId);
       if (taskId === null || ref === null || task === null) return notFound();
-      if (!honest(args["note"], 2_000)) return { ok: false, message: "guidance is plain text up to 2,000 characters" };
+      if (typeof args["note"] === "string" && args["note"].length > LIMITS.note) return { ok: false, message: `guidance is ${args["note"].length} characters; the limit is ${LIMITS.note}. Shorten it and propose again.` };
+      if (!honest(args["note"], LIMITS.note)) return { ok: false, message: `guidance is plain text up to ${LIMITS.note} characters` };
       if (task.state === "done" || task.state === "cancelled") return { ok: false, message: "that task is finished, so guidance has no next attempt to reach" };
       if (ctx.store.openContestFor(ref.id) !== null) return { ok: false, message: "agents are racing on that task — wait until the comparison finishes" };
       const id = ctx.draft("steer", { task: taskId, taskTitle: task.title, repoId: ref.repoId, note: args["note"] });
@@ -1727,11 +1731,13 @@ export const MATE_TOOLS: MateTool[] = [
   },
   {
     name: "propose_agents",
-    description: "Read get_agents. Change risk/configured role model or clear override; stales approval, refuses running work.",
+    description: "Read get_agents. Change risk, size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
     inputSchema: schema(
       {
         task: TASK_ARG,
         risk: { type: "string", enum: ["routine", "elevated", "high"] },
+        size: { type: "string", enum: ["small", "medium", "large"] },
+        risky: { type: "boolean" },
         role: { type: "string", enum: ["planner", "builder", "repair"] },
         agent: schema({ provider: { type: "string", maxLength: 20 }, model: { type: "string", maxLength: 120 } }, ["provider", "model"]),
         clear: { type: "boolean" },
@@ -1751,7 +1757,13 @@ export const MATE_TOOLS: MateTool[] = [
       if (roleWord !== undefined && (phase === null || phase === "review")) return { ok: false, message: "role is planner, builder, or repair" };
       const clear = args["clear"] === true;
       const agent = args["agent"];
-      if (risk === undefined && phase === null) return { ok: false, message: "say what changes: a risk, or a role with an agent (or clear: true)" };
+      const size = args["size"];
+      const risky = args["risky"];
+      if (size !== undefined && !isTaskSize(size)) return { ok: false, message: "size is small, medium, or large" };
+      if (risky !== undefined && typeof risky !== "boolean") return { ok: false, message: "risky is true or false" };
+      const sized = ctx.store.refForId(ref.id)?.sizing ?? null;
+      const sizeChange = size === undefined && risky === undefined ? null : { size: (size as TaskSize | undefined) ?? sized?.size ?? "medium", risky: (risky as boolean | undefined) ?? sized?.risky ?? false };
+      if (risk === undefined && phase === null && sizeChange === null) return { ok: false, message: "say what changes: a risk, a size, or a role with an agent (or clear: true)" };
       if (phase !== null && !clear && (agent === null || typeof agent !== "object")) return { ok: false, message: "a role change names an agent from get_agents, or clear: true" };
       if (phase === null && (clear || agent !== undefined)) return { ok: false, message: "an agent or clear needs the role it applies to" };
       if (args["why"] !== undefined && !honest(args["why"], 400)) return { ok: false, message: "why is plain text ≤400" };
@@ -1787,6 +1799,7 @@ export const MATE_TOOLS: MateTool[] = [
         taskTitle: task.title,
         repoId: ref.repoId,
         ...(risk === undefined ? {} : { risk, riskConsequence: riskConsequence(risk) }),
+        ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
         ...(phase === null ? {} : { phase, role: ROLE_WORD[phase] }),
         ...(chosen === null ? {} : { provider: chosen.provider, model: chosen.model }),
         ...(clear ? { clear: true } : {}),
@@ -1803,6 +1816,7 @@ export const MATE_TOOLS: MateTool[] = [
           kind: "agents",
           task: taskId,
           ...(risk === undefined ? {} : { risk }),
+          ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
           ...(phase === null ? {} : { role: ROLE_WORD[phase], ...(chosen === null ? { clear: true } : { agent: chosen }) }),
           awaiting: view["approval"] === "approved" ? "the operator's confirmation — the current approval will then need renewing" : "the operator's confirmation",
         },

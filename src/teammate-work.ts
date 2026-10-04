@@ -21,9 +21,11 @@
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
 import type { FlowDefinition, FlowStage } from "./flows.js";
 import { decideFlowCard, draftFor, flowCardHref } from "./flow-engine.js";
-import { keptDraft } from "./flow-draft.js";
+import { wholeDraft } from "./flow-draft.js";
 import { notifyPeople } from "./flow-people.js";
-import { claudeTurnRunner, parseSoul, readTurn, teammateActor, teammateLabel, TURN_TIMEOUT_MS, turnPrompt, type TurnAnswer, type TurnContext, type TurnRunner } from "./teammates.js";
+import { claudeTurnRunner, parseSoul, readTurn, teammateActor, teammateLabel, TURN_TIMEOUT_MS, turnOverruns, turnPrompt, type TurnAnswer, type TurnContext, type TurnRunner } from "./teammates.js";
+import { passOn, shortenAsk, TEXT_LIMITS } from "./text-limits.js";
+import { LIMITS } from "./decision.js";
 import { callName, callOutcome, callWords, inputProblem, makeCall, offeredTools, refreshGrants, ruleFor, type OfferedTool, type ToolIo } from "./teammate-tools.js";
 import { answerSuggestion, considerSuggestion, memoriesFor, remember } from "./teammate-memory.js";
 import { replyToAsker } from "./teammate-desk.js";
@@ -116,11 +118,14 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     for (const call of store.teammateCallsOn(card.id, card.entry).filter(one => one.state === "approved" && one.undoOf === null)) await makeCall(store, call, flow.repo, io, now);
   }
   const log: string[] = [];
+  /** The one shorten turn this run allows: an answer over a limit is asked once, then kept whole. */
+  let shorten: { answer: string; ask: string } | undefined;
+  let shortened = false;
   for (let turn = 1; ; turn++) {
     const made = store.teammateCallsOn(card.id, card.entry).length;
     const spent = made >= CALLS_PER_VISIT || turn > TURNS_PER_RUN;
     const tools = spent ? [] : offeredTools(store, mate);
-    const context = contextOf(store, flow, definition, stage, card, mate, tools, spent && made > 0);
+    const context = { ...contextOf(store, flow, definition, stage, card, mate, tools, spent && made > 0), ...(shorten === undefined ? {} : { shorten }) };
     const asked = Date.now();
     const reply = await (io.turn ?? claudeTurnRunner())({ model, prompt: turnPrompt(context), timeoutMs: TURN_TIMEOUT_MS });
     // v97: every turn is kept with what it cost, for its weekly report.
@@ -129,6 +134,15 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     const answer = readTurn(reply.value, context);
     if (answer === null) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
     const header = `${context.name} (${model}) · ${(reply.ms / 1000).toFixed(1)} s`;
+    const over = turnOverruns(answer);
+    if (over.length > 0 && !shortened) {
+      shortened = true;
+      shorten = { answer: JSON.stringify(answer), ask: shortenAsk(over) };
+      log.push(`${header}\n\nOver a limit, asked once to shorten: ${over.map(one => `${one.field} ${one.length} of ${one.limit}`).join(", ")}.\n\n${JSON.stringify(answer)}`);
+      turn--;
+      continue;
+    }
+    shorten = undefined;
     if (answer.remember !== "") remember(store, mate, answer.remember, { source: "teammate", card: card.id, by: teammateActor({ name: context.name }) }, now);
     if (answer.action !== "use_tool") {
       const outcome = carryOut(store, flow, definition, stage, card, mate, context, answer, now, io, header);
@@ -183,6 +197,14 @@ async function useTool(store: Store, flow: FlowRow, stage: FlowStage, card: Flow
   return { state: "waiting", said: `Asked ${context.person} to approve ${action}`, nextAt: ASKED };
 }
 
+/** Text still over its limit after the one shorten turn: attached whole to the card's discussion, and what is passed on
+ * (a note, or what the next zones read) is a link to it. Never cut. */
+function keptWhole(store: Store, flow: FlowRow, card: FlowCardRow, author: string, text: string, limit: number, holds: string, what: string, now: Date): string {
+  const kept = passOn(text, limit, { label: "the card's discussion", href: flowCardHref(flow.id, card.id) }, holds);
+  if (kept.kept) store.addFlowComment({ card: card.id, author, body: `${what}, in full (${text.length.toLocaleString("en-US")} characters):\n\n${text}`, mentions: [] }, now);
+  return kept.text;
+}
+
 function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, mate: TeammateRow, context: TurnContext, answer: TurnAnswer, now: Date,
   io: { evidenceRoot?: string }, header: string): TeammateOutcome {
   const soul = { name: context.name, role: context.role };
@@ -193,11 +215,12 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
     store.addTeammateEvent({ teammate: mate.id, card: card.id, entry: card.entry, kind, said, detail: { flow: flow.id, zone: stage.id, action: answer.action, reason: answer.reason } }, now);
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "the next zone";
   const repos = [flow.repo];
+  const note = (text: string) => keptWhole(store, flow, card, actor, text, LIMITS.note, "a note holds", `${label}'s note`, now);
   if (answer.action === "approve" || answer.action === "send_back") {
     const draft = draftFor(definition, stage);
     const decided = decideFlowCard(store, {
-      card: card.id, decision: answer.action === "approve" ? "approve" : "send-back", note: answer.action === "approve" ? answer.reason || null : answer.note, actor, repos, teammate: mate.handle, entry: card.entry,
-      ...(answer.action === "approve" && draft !== null && answer.text !== "" ? { draft: keptDraft(answer.text) } : {}),
+      card: card.id, decision: answer.action === "approve" ? "approve" : "send-back", note: answer.action === "approve" ? answer.reason || null : note(answer.note), actor, repos, teammate: mate.handle, entry: card.entry,
+      ...(answer.action === "approve" && draft !== null && answer.text !== "" ? { draft: wholeDraft(answer.text) } : {}),
       ...(io.evidenceRoot === undefined ? {} : { evidenceRoot: io.evidenceRoot }),
     }, now);
     if (!decided.ok) return { state: "failed", said: decided.message, log, decisionJson };
@@ -223,13 +246,14 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   }
   if (answer.action === "cant") {
     event("handled", `Couldn't handle “${card.title}”: ${answer.note}`);
-    if (stage.onFail !== null) store.moveFlowCard(card.id, { to: stage.onFail, outcome: "fail", actor, note: answer.note || null, expectEntry: card.entry }, now);
+    if (stage.onFail !== null) store.moveFlowCard(card.id, { to: stage.onFail, outcome: "fail", actor, note: answer.note === "" ? null : note(answer.note), expectEntry: card.entry }, now);
     else store.updateFlowCard(card.id, { waiting: `${context.name} couldn't handle it: ${answer.note}`.slice(0, 300) }, now);
     return { state: "failed", said: answer.note || "It couldn't handle this card.", log, decisionJson };
   }
   // route: the answer names where the card goes; its text is what the next zones use.
   const picked = handleAnswers(stage).find(one => one.answer.toLowerCase() === answer.answer.toLowerCase())!;
-  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: keptDraft(answer.text) } }, now);
+  // What the next zones read: whole up to what a step passes on; longer is attached whole to the card, and they read a link to it.
+  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: keptWhole(store, flow, card, actor, wholeDraft(answer.text), TEXT_LIMITS.stageOutput, "a step passes on", `What ${label} wrote for the next zones`, now) } }, now);
   const said = `Sent “${card.title}” to ${titleOf(picked.to)}${picked.answer === CARRY_ON ? "" : ` (${picked.answer})`}${answer.reason === "" ? "" : `: ${answer.reason}`}`;
   event("handled", said);
   // v96: a zone that answers whoever asked sends what it wrote back to them, under its name.

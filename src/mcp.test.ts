@@ -545,7 +545,7 @@ describe("the MCP stdio server", () => {
       {
         name: "propose_scope",
         description: "Propose rewriting a task's scope. An approver confirms the rewrite, then approves it with a password — a scope you wrote never seals under a mode.",
-        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", maxLength: 2000, description: "At most 2000 UTF-16 code units and 8000 UTF-8 bytes; no control or disguised text." }, not: { type: "string", maxLength: 2000, description: "At most 2000 UTF-16 code units and 8000 UTF-8 bytes; no control or disguised text." }, touches: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 50 } }, required: ["ref", "goal"], additionalProperties: false },
+        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, not: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, touches: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 50 } }, required: ["ref", "goal"], additionalProperties: false },
       },
       {
         name: "propose_cancel",
@@ -570,7 +570,7 @@ describe("the MCP stdio server", () => {
           properties: {
             repo: { type: "string", minLength: 1, maxLength: 800 },
             title: { type: "string", minLength: 1, maxLength: 200 },
-            intent: { type: "string", maxLength: 2000, description: "At most 2000 UTF-16 code units and 8000 UTF-8 bytes; no control or disguised text." },
+            intent: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." },
             idempotency_key: { type: "string", minLength: 8, maxLength: 64 },
             deliverable: { type: "string", enum: ["branch", "report"] },
           },

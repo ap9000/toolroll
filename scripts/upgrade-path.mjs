@@ -26,6 +26,14 @@
  * still complete with the same digest, every table a fresh candidate database
  * has exists, and (after `toolroll update`) the leftover record is settled.
  *
+ * The rollback leg (releases from ROLLBACK_FROM on): the candidate writes text
+ * only its raised limits allow (an 8,000-character goal, a 4,000-character
+ * steering note and a flow whose zone has 8,000 characters of instructions),
+ * then the release's own code opens the database and reads the goal and note
+ * back whole and loads the flow (it re-checks a zone's instructions against
+ * 4,000 characters, so the candidate saves the rest beside them), and the
+ * release's `toolroll status` opens it: going back a version still works.
+ *
  *   node scripts/upgrade-path.mjs [--candidate <checkout with dist>] [--versions 0.9.9,0.9.10,0.9.11] [--keep]
  *
  * Needs npm and the registry (reads only). A published release never changes, so
@@ -54,6 +62,17 @@ export function lastPublished(versions, count = 3) {
   release.sort((a, b) => { const [x, y] = [key(a), key(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; });
   return release.slice(-count);
 }
+
+/** The oldest release the rollback leg runs on: the ones a person may go back to from raised text limits (Oct 4). */
+export const ROLLBACK_FROM = "0.9.23";
+/** Whether `version` is at or after `from`. */
+export function atLeast(version, from) {
+  const [a, b] = [version, from].map(v => v.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return true;
+}
+/** The texts the candidate writes for the rollback leg: as long as its limits allow. */
+export const LONG_TEXT = Object.freeze({ goal: 8_000, note: 4_000, instructions: 8_000 });
 
 /** Releases always on the path. 0.9.11's service could be killed before it released the coding workspace (Oct 2). */
 export const PINNED_RELEASES = Object.freeze(["0.9.11"]);
@@ -276,6 +295,46 @@ async function inspect({ candidateDist, databaseFile, evidenceRoot, completed, l
   } finally { store.close(); }
 }
 
+/** The candidate writes a task whose goal and steering note only its raised limits allow. */
+async function longText({ candidateDist, databaseFile, repo }) {
+  const [{ openStore }, { propose }, { validateTaskText }, { validateFlowDefinition }] = await Promise.all(["store.js", "scope.js", "task-text.js", "flows.js"].map(name => load(candidateDist, name)));
+  const goal = `Keep every detail of this goal. ${"The checkout keeps each line item's rounding. ".repeat(400)}`.slice(0, LONG_TEXT.goal);
+  const note = `Steer: ${"try the parser fix first, then the totals. ".repeat(200)}`.slice(0, LONG_TEXT.note).trim();
+  const instructions = `Read the card. ${"Check every page, every form and every total. ".repeat(200)}`.slice(0, LONG_TEXT.instructions).trim();
+  const definition = validateFlowDefinition({ version: 1, start: "inbox", stages: [
+    { id: "inbox", title: "Inbox", kind: "inbox", next: "work" },
+    { id: "work", title: "Work", kind: "task", instructions, next: "done" },
+    { id: "done", title: "Done", kind: "done" },
+  ] });
+  const refused = validateTaskText({ title: "Long goal", goal });
+  if (refused !== null) throw Error(`the candidate refused an ${LONG_TEXT.goal}-character goal: ${refused.message}`);
+  const store = openStore(databaseFile);
+  try {
+    const id = "long-goal", now = NOW();
+    store.createTask({ id, title: "Long goal" }, now);
+    store.placeTask(store.refFor("built-in", id).id, repo, {}, now);
+    propose(store, { taskId: id, goal, touches: [], acceptance: [{ id: "c1", statement: "Every detail is kept", how: null, evidence: ["manual-review"] }], now });
+    const filed = store.fileSteerNote(id, "sam", note, now);
+    if (!filed.ok) throw Error(`the candidate refused a ${note.length}-character steering note: ${filed.problem ?? filed.reason}`);
+    const flow = store.createFlow({ repo, name: "Long instructions", definitionJson: JSON.stringify(definition), by: "sam" }, now);
+    return { task: id, goal: goal.length, note: note.length, flow, instructions: instructions.length };
+  } finally { store.close(); }
+}
+
+/** The release's own code reads what the candidate wrote, whole. */
+async function rollback({ dist, databaseFile, task, flow }) {
+  const [{ openStore }, { flowDefinitionOf }] = await Promise.all(["store.js", "flow-engine.js"].map(name => load(dist, name)));
+  const store = openStore(databaseFile);
+  try {
+    const goal = store.getScope(task)?.goal ?? "";
+    const ref = store.lookupRef(task);
+    const notes = ref === null ? [] : store.listSteerNotes(ref.id);
+    const row = store.getFlow(flow);
+    const zone = row === null ? undefined : flowDefinitionOf(row)?.stages.find(one => one.id === "work");
+    return { goal: goal.length, note: Math.max(0, ...notes.map(one => String(one.note ?? "").length)), flow: zone !== undefined && typeof zone.instructions === "string" };
+  } finally { store.close(); }
+}
+
 // ---- the parent: one temporary home per published release ------------------
 
 /** Pack the candidate checkout's built package once. */
@@ -369,6 +428,15 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   if (updated.leftoverOpen !== 0) problems.push(`run #${seeded.leftoverRun}'s leftover record was not settled`);
   if (problems.length > 0) throw Object.assign(Error(`after toolroll update: ${problems.join("; ")}`), { step: "inspect (updated)" });
 
+  // Back a version: the candidate writes text only its raised limits allow, then the release reads it whole.
+  if (atLeast(version, ROLLBACK_FROM)) {
+    const wrote = step("long text (candidate)", () => child("longText", { candidateDist: staged.to, databaseFile: seeded.databaseFile, repo: seeded.repo }, env, "the candidate writing long text"));
+    const read = step("rollback read", () => child("rollback", { dist: installed, databaseFile: seeded.databaseFile, task: wrote.task, flow: wrote.flow }, env, `${version} reading the candidate's long text`));
+    if (!read.flow) throw Object.assign(Error(`${version} couldn't load the flow whose zone has ${wrote.instructions} characters of instructions`), { step: "rollback read" });
+    if (read.goal !== wrote.goal || read.note !== wrote.note) throw Object.assign(Error(`${version} read a ${read.goal}-character goal and a ${read.note}-character note; the candidate wrote ${wrote.goal} and ${wrote.note}`), { step: "rollback read" });
+    step("toolroll status (rollback)", () => must(sh(process.execPath, [join(installed, "bin.js"), "status", "--db", seeded.databaseFile], { env, timeout: 120_000 }), `${version}'s toolroll status over the candidate's database`));
+  }
+
   // npm i -g over the same release and database, then its toolroll status opens the database.
   const npmDatabase = join(npmState, "orders.db");
   const npmEnv = envFor(npmHome, npmPrefix);
@@ -415,7 +483,7 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SELF) {
-  const modes = { seed, facts, stage, inspect, hold, release };
+  const modes = { seed, facts, stage, inspect, hold, release, longText, rollback };
   const mode = Object.keys(modes).find(name => args[0] === `--${name}`);
   if (mode) {
     modes[mode](JSON.parse(args[1])).then(value => { process.stdout.write(`\n${JSON.stringify(value)}\n`); }, error => { process.stderr.write(`${error?.stack ?? error}\n`); process.exitCode = 1; });

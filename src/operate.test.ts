@@ -976,11 +976,11 @@ describe("agreeing to a scope from the command line", () => {
   test("new CLI goals and exclusions use the canonical text policy without rewriting on rejection", async () => {
     await scopeIt();
     for (const flag of ["--goal", "--not"]) {
-      for (const value of ["a".repeat(2001), "😀".repeat(1001), "界".repeat(3000), "bad\u0000", "bad\u202e", "ok\r"]) {
+      for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(10700), "bad\u0000", "bad\u202e", "ok\r"]) {
         const args = ["task", "scope", "pay", "--goal", "valid", "--acceptance", "Works|check", "--json"];
         if (flag === "--goal") args[4] = value; else args.push(flag, value);
         expect(await run(args)).toBe(EXIT.usage);
-        expect(payload()).toMatchObject({ ok: false, message: expect.stringMatching(/2000|control or hidden/) });
+        expect(payload()).toMatchObject({ ok: false, message: expect.stringMatching(/8,000|8000|control or hidden/) });
         const check = openStore(db);
         try { expect(check.getScope("pay")?.goal).toBe("add a guard"); } finally { check.close(); }
       }
@@ -2144,6 +2144,40 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(text()).toContain("plan     none configured");
     expect(await run(["config", "clear", "build", "--tier", "strong", "--as", "alex", "--token", token, "--json"])).toBe(0);
     expect(payload()).toMatchObject({ tier: "strong", cleared: true });
+  });
+
+  test("config set --tier light names the fast builder; task route --size is an approver's override that re-files the route and says it plainly", async () => {
+    expect(await run(["config", "set", "repair", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, tier: "light", provider: "claude", model: "haiku" });
+    await run(["config", "show"]);
+    expect(text()).toContain("light tier (small changes build on this, with no plan):");
+    expect(text()).toContain("build    claude · haiku  [installation (light)]");
+    expect(await run(["task", "scope", "payouts", "--goal", "Say Save, not Submit", "--acceptance", "copy: says Save | check", "--json"])).toBe(0);
+    expect(await run(["task", "route", "payouts", "--size", "tiny", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["task", "route", "payouts", "--size", "small", "--json"])).toBe(2);
+    expect(await run(["task", "route", "payouts", "--size", "small", "--as", "alex", "--token", token])).toBe(0);
+    expect(text()).toContain("size         Small change: fast model, no plan — set by alex");
+    expect(text()).toContain("build  claude · haiku  [recommended · fast]");
+    await run(["task", "route", "payouts", "--json"]);
+    expect(payload().size).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
+    expect(await run(["config", "clear", "build", "--tier", "light", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ tier: "light", cleared: true });
+  });
+
+  test("a light planner is refused, not kept and ignored; --also names another provider's agent on a tier, shown and clearable", async () => {
+    expect(await run(["config", "set", "plan", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(payload().error ?? JSON.stringify(payload())).toContain("build only");
+    expect(await run(["config", "set", "build", "--also", "--provider", "codex", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "repair", "--also", "--provider", "codex", "--model", "gpt-5.6", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--also", "--provider", "codex", "--model", "gpt-5.6", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, tier: "routine", also: true, provider: "codex", model: "gpt-5.6" });
+    await run(["config", "show"]);
+    expect(text()).toContain("other providers on a tier (each task runs the one whose plan has more room):");
+    expect(text()).toContain("build    routine  also codex · gpt-5.6  [installation (routine, also)]");
+    expect(await run(["config", "clear", "build", "--also", "--provider", "codex", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ also: true, cleared: 1 });
   });
 
   test("task route shows one projection with reasons; --risk and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
