@@ -18,20 +18,23 @@
  * for a card that moved on, changes nothing.
  *
  * A "Send to me" visit (flow-send.ts) is one notice with its links; a "Person
- * chooses" visit is the same with the zone's own options as buttons, and its
- * notice opens a prompt so the person's next message, instead of a tap, is
- * their reply (the note for where replies go). Choices are made through
- * chooseFlowCard, by that person alone, for exactly that visit.
+ * chooses" visit is the same with the zone's own options as buttons. Instead
+ * of a tap, a reply in the notice's thread is the note for where replies go;
+ * the first other message in their chat is asked about once ("Use this as
+ * your note?"), and everything else goes to the lead as usual. Choices are
+ * made through chooseFlowCard, by that person alone, for exactly that visit,
+ * and spend that visit's buttons in every chat app.
  */
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
-import { chooseFlowCard, flowChoiceAt, flowSendPaths, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend, REPLY_ASK } from "./flow-send.js";
-import { deciderOf } from "./flows.js";
+import { chooseFlowCard, flowChoiceAt, flowSendPaths, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend } from "./flow-send.js";
+import { deciderOf, replyTarget } from "./flows.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { verifyApproverStanding } from "./principal.js";
-import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
+import { chatHash, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
 import type { Store } from "./store.js";
 import { FLOW_DECIDE_KEY, flowDecisionAt } from "./telegram-flow.js";
+import { phoneCommand } from "./telegram-status.js";
 
 export type ChatFlowAction = "approve" | "edit" | "send-back";
 export const CHAT_FLOW_LABELS: Record<ChatFlowAction, string> = { approve: "Approve", edit: "Edit", "send-back": "Send back" };
@@ -71,9 +74,6 @@ function decisionParts(text: string, visit: { card: number; entry: number; actio
   return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, flow: visit, ...(link === null ? {} : { link }) });
 }
 
-/** In a chat app the reply is the person's next message: said plainly, once. */
-const CHAT_REPLY_ASK = "Or reply with what you'd change: your next message here is your reply (“cancel” skips it).";
-
 /** A sent visit's links as a part's buttons: the first as its link, the rest beside it. */
 function sendLinks(paths: { label: string; path: string }[]): Pick<ChatContent, "link" | "also"> {
   return { ...(paths[0] === undefined ? {} : { link: paths[0] }), ...(paths.length > 1 ? { also: paths.slice(1) } : {}) };
@@ -101,7 +101,7 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
     const content = kept === null ? null : readFlowSend(kept.contentJson);
     if (visit === null || content === null) return null;
     const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label);
-    const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body.replace(REPLY_ASK, CHAT_REPLY_ASK)}`));
+    const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
     return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece }
       : { text: piece, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });
   }
@@ -112,20 +112,16 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
     notification.link === null ? null : { label: "Open", path: notification.link });
 }
 
-/** A choice's notice opens its reply: the person's next message in their chat with Toolroll is the note, unless it is “cancel”. */
-export function openChoiceReply(state: ChatState, binding: ChatBinding, card: number, entry: number, now: Date): void {
-  state.prepare("INSERT INTO chat_flow_prompt(binding,card,entry,mode,created,expires) VALUES(?,?,?,?,?,?)")
-    .run(binding.id, card, entry, "send-back", now.toISOString(), new Date(now.getTime() + PROMPT_MS).toISOString());
-}
-
-/** The live buttons on one part, in the order they were minted: a decision's, then a choice's options in their order.
- * `key` is unique on the part (Slack names each button by it). */
-export function chatFlowButtons(state: ChatState, part: number, now: Date): Array<{ token: string; action: ChatFlowAction | "choose"; label: string; key: string }> {
+/** The live buttons on one part, in the order they were minted: a decision's, a choice's options in their order, or
+ * "Use this as your note?" Yes / No. `key` is unique on the part (Slack names each button by it). */
+export function chatFlowButtons(state: ChatState, part: number, now: Date): Array<{ token: string; action: ChatFlowAction | "choose" | "note"; label: string; key: string }> {
   const decide = (state.prepare("SELECT token,action FROM chat_flow_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; action: ChatFlowAction }>)
     .map(one => ({ token: String(one.token), action: one.action, label: CHAT_FLOW_LABELS[one.action], key: one.action.replace("-", "_") }));
   const choose = (state.prepare("SELECT token,choice,label FROM chat_flow_choice WHERE part=? AND consumed IS NULL AND expires>? ORDER BY choice").all(part, now.toISOString()) as Array<{ token: string; choice: number; label: string }>)
     .map(one => ({ token: String(one.token), action: "choose" as const, label: String(one.label), key: `choose_${Number(one.choice)}` }));
-  return [...decide, ...choose];
+  const note = (state.prepare("SELECT token,answer FROM chat_flow_note WHERE part=? AND consumed IS NULL AND expires>? ORDER BY answer DESC").all(part, now.toISOString()) as Array<{ token: string; answer: "yes" | "no" }>)
+    .map(one => ({ token: String(one.token), action: "note" as const, label: one.answer === "yes" ? "Yes" : "No", key: `note_${one.answer}` }));
+  return [...decide, ...choose, ...note];
 }
 
 const retire = (state: ChatState, card: number, entry: number, now: Date): void => {
@@ -150,7 +146,7 @@ function repaint(state: ChatState, part: number, event: ChatEvent, line: string)
 export function applyChatFlowTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
   const { store, state } = options;
   const action = state.prepare("SELECT a.*,p.message,e.binding AS owner,e.channel FROM chat_flow_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE a.token=?").get(token);
-  if (action === undefined) return applyChatChoiceTap(options, event, binding, token, repos, now);
+  if (action === undefined) return applyChatChoiceTap(options, event, binding, token, repos, now) || applyChatNoteTap(options, event, binding, token, repos, now);
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, the chat and the exact message the button rode.
   if (Number(action["owner"]) !== binding.id || action["channel"] !== event.channel || action["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
@@ -211,24 +207,105 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
   const chosen = chooseFlowCard(store, { card, entry, choice: Number(tapped["choice"]), label, note: null, actor: binding.approver, where: options.label, repos }, now);
   if (!chosen.ok) { say(chosen.message); return true; }
   retire(state, card, entry, now);
-  store.retireTelegramFlowChoices(card, entry, now);
+  store.retireFlowChoices(card, entry, now);
   repaint(state, part, event, `✅ You chose “${label}”. ${chosen.said}`);
   state.finish(event.id);
   return true;
 }
 
-/** A message while a choice's reply is open: the note for where replies go. */
-function answerChoiceReply(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, said: string, cutShort: boolean, prompt: { card: number; entry: number; close: () => void }, repos: readonly string[], now: Date): void {
+/** A reply that is the note for where a choice's replies go; `say` answers on the message it came from. */
+function replyAsNote(options: { store: Store; state: ChatState; label: string }, binding: ChatBinding, said: string, cutShort: boolean, visit: { card: number; entry: number }, repos: readonly string[], now: Date): { ok: true; said: string } | { ok: false; said: string } | null {
+  const { store } = options;
+  if (said === "") return { ok: false, said: "Say what you'd change." };
+  if (cutShort || said.length > 2000) return { ok: false, said: "That's too long to take from here. Keep it under 2,000 characters, or reply in Toolroll." };
+  if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) return null;
+  const chosen = chooseFlowCard(store, { card: visit.card, entry: visit.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
+  return chosen.ok ? { ok: true, said: chosen.said } : { ok: false, said: chosen.message };
+}
+
+/** The choice a part's message carries, by the message any of its parts was posted as (a long notice is several). */
+function choiceOnMessage(state: ChatState, binding: ChatBinding, channel: string, message: string): { card: number; entry: number; live: boolean } | null {
+  const row = state.prepare(`SELECT c.card,c.entry,MAX(c.consumed IS NULL) AS live FROM chat_part p JOIN chat_event e ON e.id=p.event
+    JOIN chat_part q ON q.event=p.event JOIN chat_flow_choice c ON c.part=q.id WHERE e.binding=? AND e.channel=? AND p.message=? GROUP BY c.card,c.entry ORDER BY MAX(c.rowid) DESC LIMIT 1`)
+    .get(binding.id, channel, message);
+  return row === undefined ? null : { card: Number(row["card"]), entry: Number(row["entry"]), live: Number(row["live"]) === 1 };
+}
+
+/**
+ * A message in the person's own chat while one of their choices waits. Only a reply in the Choose notice's thread (Slack,
+ * Discord) is the note. Any other message there is the lead's, except the first one after a choice that takes replies:
+ * that one is asked about, once — "Use this as your note?" — and only Yes makes it the note (No passes it on to the lead).
+ * false when the message isn't about a choice at all.
+ */
+export function answerChoiceMessage(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, input: { text: string; originalLength?: number; lead?: boolean }, now: Date, repos: readonly string[]): boolean {
   const { store, state } = options;
+  if (event.kind !== "message" || event.channel !== binding.channel || input.lead === true) return false;
   const say = (text: string) => state.plan(event.id, [{ text }], now);
-  if (said === "") { say("Say what you'd change, or send “cancel”."); return; }
-  if (cutShort || said.length > DRAFT_LIMIT) { say(`That's too long to take from here. Keep it under 2,000 characters, or reply in Toolroll.`); return; }
-  if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { prompt.close(); state.finish(event.id, true); return; }
-  const chosen = chooseFlowCard(store, { card: prompt.card, entry: prompt.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
-  if (!chosen.ok) { prompt.close(); say(chosen.message); return; }
-  retire(state, prompt.card, prompt.entry, now);
-  store.retireTelegramFlowChoices(prompt.card, prompt.entry, now);
-  say(`↩️ ${chosen.said}`);
+  const said = input.text.trim();
+  return store.transact(() => {
+    if (event.thread !== "" && event.thread !== event.ts) {
+      const on = choiceOnMessage(state, binding, event.channel, event.thread);
+      if (on === null) return false;
+      const visit = flowChoiceAt(store, on.card, on.entry);
+      if (visit === null || !on.live) { say("That choice was already made, or the card moved on; nothing was changed."); return true; }
+      if (visit.person !== binding.approver) { say(`Only ${visit.person} chooses here.`); return true; }
+      if (replyTarget(visit.stage) === null) { say("This step takes one of its options. Tap one above."); return true; }
+      const done = replyAsNote(options, binding, said, (input.originalLength ?? 0) > input.text.length, on, repos, now);
+      if (done === null) state.finish(event.id, true);
+      else say(done.ok ? `↩️ ${done.said}` : done.said);
+      return true;
+    }
+    if (said === "" || phoneCommand(said) !== null) return false;
+    // The newest choice of theirs still open here that takes a reply and hasn't asked yet.
+    const open = state.prepare(`SELECT DISTINCT c.card,c.entry FROM chat_flow_choice c JOIN chat_part p ON p.id=c.part JOIN chat_event e ON e.id=p.event
+      WHERE e.binding=? AND c.consumed IS NULL AND c.expires>? AND NOT EXISTS (SELECT 1 FROM chat_flow_note n WHERE n.card=c.card AND n.entry=c.entry) ORDER BY c.rowid DESC`)
+      .all(binding.id, now.toISOString()) as Array<{ card: number; entry: number }>;
+    for (const one of open) {
+      const visit = flowChoiceAt(store, Number(one.card), Number(one.entry));
+      const target = visit === null ? null : replyTarget(visit.stage);
+      if (visit === null || target === null || visit.person !== binding.approver) continue;
+      const to = visit.definition.stages.find(stage => stage.id === target)?.title ?? target;
+      state.plan(event.id, [{ text: `Use this as your note on “${visit.card.title}”?\nYes sends it to ${to}. No passes it to the lead.`,
+        note: { card: visit.card.id, entry: visit.card.entry, held: event.id } }], now);
+      // What it said is kept beside its question until answered: the event's own copy is cleared once it is handled.
+      state.prepare("UPDATE chat_flow_note SET words=? WHERE held=?").run(JSON.stringify({ text: input.text, ...(input.originalLength === undefined ? {} : { originalLength: input.originalLength }) }), event.id);
+      return true;
+    }
+    return false;
+  });
+}
+
+/** Yes or No to "Use this as your note?"; false when the token isn't one. */
+function applyChatNoteTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
+  const { store, state } = options;
+  const tapped = state.prepare("SELECT n.*,p.message,e.binding AS owner,e.channel FROM chat_flow_note n JOIN chat_part p ON p.id=n.part JOIN chat_event e ON e.id=p.event WHERE n.token=?").get(token);
+  if (tapped === undefined) return false;
+  const say = (text: string) => state.plan(event.id, [{ text }], now);
+  if (Number(tapped["owner"]) !== binding.id || tapped["channel"] !== event.channel || tapped["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
+  const part = Number(tapped["part"]), card = Number(tapped["card"]), entry = Number(tapped["entry"]);
+  if (tapped["consumed"] !== null || String(tapped["expires"]) <= now.toISOString()) {
+    repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed.");
+    state.finish(event.id);
+    return true;
+  }
+  state.prepare("UPDATE chat_flow_note SET consumed=?,words=NULL WHERE part=?").run(now.toISOString(), part);
+  const held = state.event(String(tapped["held"]));
+  const words = typeof tapped["words"] === "string" ? JSON.parse(tapped["words"]) as { text?: unknown; originalLength?: unknown } : null;
+  if (held === null || words === null || typeof words.text !== "string") { repaint(state, part, event, "That message is no longer kept; nothing was changed."); state.finish(event.id); return true; }
+  if (tapped["answer"] === "no") {
+    // Passed on as the message it was, to the lead, once.
+    state.enqueue({ id: chatHash(`${held.id}:lead`), installation: held.installation, binding: held.binding, kind: "message", channel: held.channel, member: held.member,
+      ts: held.ts, thread: held.thread, payload: JSON.stringify({ ...words, lead: true }), created: now.toISOString() });
+    repaint(state, part, event, "Passed to the lead.");
+    state.finish(event.id);
+    return true;
+  }
+  if (flowChoiceAt(store, card, entry) === null) { repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed."); state.finish(event.id); return true; }
+  const done = replyAsNote(options, binding, words.text.trim(), typeof words.originalLength === "number" && words.originalLength > words.text.length, { card, entry }, repos, now);
+  if (done === null) { state.finish(event.id, true); return true; }
+  repaint(state, part, event, done.ok ? `↩️ ${done.said}` : done.said);
+  state.finish(event.id);
+  return true;
 }
 
 /**
@@ -246,11 +323,6 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
     const close = () => state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE id=?").run(now.toISOString(), id);
     const said = input.text.trim();
     if (/^cancel\.?$/i.test(said)) { close(); say(mode === "edit" ? "Left the draft as it is. The buttons on the notice still work." : "Left it where it is. The buttons on the notice still work."); return true; }
-    // A choice's reply (flow-send.ts): the note for where replies go.
-    if (flowChoiceAt(store, card, entry) !== null) {
-      answerChoiceReply(options, event, binding, said, (input.originalLength ?? 0) > input.text.length, { card, entry, close }, repos, now);
-      return true;
-    }
     const waiting = flowDecisionAt(store, card, entry);
     if (waiting === null) { retire(state, card, entry, now); say("That card has moved on since; nothing was changed."); return true; }
     if (said === "") { say(mode === "edit" ? "Send the text itself, or “cancel”." : "Say what should change, or send “cancel”."); return true; }

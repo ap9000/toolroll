@@ -22180,9 +22180,15 @@ export class Store {
   }
 
   /** Retire every choice button for one visit of a card (and its reply prompt): it was chosen, or the card moved on. */
-  retireTelegramFlowChoices(card: number, entry: number, now: Date): void {
-    this.db.prepare("UPDATE telegram_flow_choice SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(now.toISOString(), card, entry);
+  /** A choice was made (or the card moved on): every option button, reply prompt and "Use this as your note?" for that
+   * visit is spent, in Telegram and in every other chat app, whichever place it was made in. */
+  retireFlowChoices(card: number, entry: number, now: Date): void {
+    const stamp = now.toISOString();
+    this.db.prepare("UPDATE telegram_flow_choice SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
     this.retireTelegramFlowVisit(card, entry, now);
+    for (const app of ["slack", "discord", "teams"])
+      for (const table of ["flow_choice", "flow_note", "flow_prompt", "flow_action"])
+        this.db.prepare(`UPDATE ${app}_${table} SET consumed = ?${table === "flow_note" ? ", words = NULL" : ""} WHERE card = ? AND entry = ? AND consumed IS NULL`).run(stamp, card, entry);
   }
 
   // ---- v93: a teammate's question on Telegram ------------------------------------------

@@ -224,6 +224,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
     del(`${surface}_flow_action`, IN("card"), C);
     del(`${surface}_flow_prompt`, IN("card"), C);
     del(`${surface}_flow_choice`, IN("card"), C);
+    del(`${surface}_flow_note`, IN("card"), C);
     del(`${surface}_question_action`, IN("question"), questions);
     del(`${surface}_question_prompt`, IN("question"), questions);
     del(`${surface}_ask_action`, IN("turn"), U);

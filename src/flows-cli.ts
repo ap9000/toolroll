@@ -317,7 +317,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     const name = (text('name') ?? flow.name).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || flow.name;
     const redrawn = flowDigest(next) !== flowDigest(definition);
     if (!redrawn && name === flow.name) return fail('no-change', 'That\'s the flow as it is now.');
-    const elsewhere = crossProjectProblem(store, next, flow);
+    const elsewhere = crossProjectProblem(store, next, flow, who);
     if (elsewhere !== null) return refuse(flow.repo, 'invalid-steps', elsewhere);
     if (!flags.has('yes')) return preview(flow.repo, `Change the ${flow.name} flow`, [...(name === flow.name ? [] : [`Renames it to ${name}.`]), ...(redrawn ? flowTerms(next, definition) : [])], { flowId: flow.id, revision: flow.revision, definition: next });
     if (!store.saveFlow(flow.id, { name, definitionJson: JSON.stringify(next), sawRevision: flow.revision, by: who }, now)) return refuse(flow.repo, 'stale', 'Someone else changed this flow. Look again, then make yours.');

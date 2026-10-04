@@ -7204,7 +7204,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const owner = (body.get("owner") ?? "").trim();
         if (owner !== "" && owner !== flow.owner && !(store.listApprovers().some(one => one.name === owner) && store.accountCanAccess(owner, flow.repo))) return answer(400, { ok: false, said: `${owner} can't approve on this project, so they can't own this flow.` });
         // A build zone in another project files work there as the flow's owner: only in one they may file in.
-        const elsewhere = crossProjectProblem(store, saved, { repo: flow.repo, owner: owner || flow.owner });
+        const elsewhere = crossProjectProblem(store, saved, { repo: flow.repo, owner: owner || flow.owner }, who.name);
         if (elsewhere !== null) return answer(400, { ok: false, said: elsewhere });
         if (!store.saveFlow(flow.id, { name, definitionJson: JSON.stringify(saved), sawRevision: Number(body.get("revision")), by: who.name }, now)) return answer(409, { ok: false, said: "Someone else changed this flow. Reload to see their changes, then make yours again." });
         if (owner !== "" && owner !== flow.owner) store.setFlowOwner(flow.id, owner, now);

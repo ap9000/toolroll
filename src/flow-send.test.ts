@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { FLOW_SHOTS_KIND, openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
-import { advanceFlows, crossProjectProblem } from "./flow-engine.js";
+import { advanceFlows, crossProjectProblem, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, readFlowSend } from "./flow-send.js";
 import { flowFromSteps, flowTerms, validateFlowDefinition, type FlowDefinition } from "./flows.js";
 import { BLANK, buildFromGallery, GALLERY, galleryDiagram, galleryTemplateOf, SEND_RESULT, withSendResult } from "./flow-gallery.js";
@@ -315,6 +315,43 @@ describe("c3: another project, and Send me the result", () => {
     expect(filed).toHaveLength(1);
     expect(store.lookupRef(filed[0]!)?.repo).toBe(BETA);
     expect(store.getFlowCard(card)).toMatchObject({ task: filed[0], waiting: "Filed as a task" });
+  });
+
+  test("saving a build in another project needs the editor's access there too, not only the owner's", async () => {
+    const sam = addApprover(store, "sam", now, { name: "alex", token: alexToken });
+    if (!sam.ok) throw new Error("approver");
+    expect(store.setAccountProjects("sam", [ALPHA], "alex", now)).toEqual({ ok: true });
+    const elsewhere = flowFromSteps([{ id: "build", title: "Build the docs", kind: "task" as const, repo: BETA }], null);
+    expect(crossProjectProblem(store, elsewhere, { repo: ALPHA, owner: "alex" }, "sam")).toBe("Zone Build the docs: you can't file work in that project, so you can't point a build there.");
+    expect(crossProjectProblem(store, elsewhere, { repo: ALPHA, owner: "alex" }, "alex")).toBeNull();
+
+    const here = flowFromSteps([{ id: "build", title: "Build the docs", kind: "task" as const }], null);
+    const flow = store.createFlow({ repo: ALPHA, name: "Docs", by: "alex", definitionJson: JSON.stringify(here) }, now);
+    store.upsertProject(ALPHA, "alpha", now);
+    const server = createDecisionServer({ store, evidenceRoot: root, repo: ALPHA, configDir: dir });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address !== "object") throw new Error("listen");
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const save = async (name: string, token: string, definition: unknown) => {
+        const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" }))
+          .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
+        const page = await (await fetch(`${base}/flows/${flow}`, { headers: { cookie } })).text();
+        const csrf = /"csrf":"([^"]+)"/.exec(page)?.[1] ?? /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+        const response = await fetch(`${base}/flows/${flow}/save`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+          body: new URLSearchParams({ csrf, definition: JSON.stringify(definition), revision: String(store.getFlow(flow)!.revision) }) });
+        return { status: response.status, body: await response.json() as { ok: boolean; said: string } };
+      };
+      // sam may edit this flow, but can't point its build at a project they can't file in, even though its owner can.
+      expect(await save("sam", sam.token, elsewhere)).toEqual({ status: 400, body: { ok: false, said: "Zone Build the docs: you can't file work in that project, so you can't point a build there." } });
+      expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[0]).not.toHaveProperty("repo");
+      expect(await save("alex", alexToken, elsewhere)).toMatchObject({ status: 200, body: { ok: true } });
+      expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[0]).toMatchObject({ repo: BETA });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   test("every gallery template can end with Send me the result, off unless asked for", () => {

@@ -51,6 +51,7 @@ import { createDecisionServer } from "./serve.js";
 import { ToolrollSlackSocket } from "./slack.js";
 import { flowFromSteps } from "./flows.js";
 import { advanceFlows } from "./flow-engine.js";
+import { chooseFlowCard } from "./flow-send.js";
 import { runFlowSteps } from "./flow-steps.js";
 import { run as exec } from "./exec.js";
 
@@ -1158,6 +1159,38 @@ describe("Slack shared chat", () => {
     expect(String(sends().at(-1)!.args.text)).toContain("already chosen");
     expect(store.getFlowCard(card)!.stage).toBe("later");
     expect(store.flowEvents(card).at(-1)).toMatchObject({ actor: "alex", note: "Chose “Later” in Slack" });
+
+    // A reply in the notice's thread is the note.
+    const choiceTs = () => String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+    const replyInThread = async (text: string, thread: string) => {
+      receive(text, { ts: `1789700200.${String(++serial).padStart(6, "0")}`, thread_ts: thread });
+      await processSlackEvent(options);
+      await drain();
+    };
+    const second = store.addFlowCard({ flow, title: "Header spacing", description: "Cramped on phones", stage: "choose", by: "alex" }, now);
+    advanceFlows(store, repo, now);
+    await planSlackNotifications(options);
+    await drain();
+    await replyInThread("Use 16px.", choiceTs());
+    expect(store.getFlowCard(second)).toMatchObject({ stage: "build", note: "Use 16px." });
+    expect(String(sends().at(-1)!.args.text)).toContain("↩️ Sent to Build with your note.");
+
+    // Chosen in the console instead: the Slack buttons and the notice's thread are spent too, and nothing more is asked.
+    const third = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex" }, now);
+    advanceFlows(store, repo, now);
+    await planSlackNotifications(options);
+    await drain();
+    const thirdTs = choiceTs();
+    const thirdButtons = buttonsOf(sends().filter(one => one.method === "chat.postMessage" && JSON.stringify(one.args.blocks).includes("Old banner")).at(-1)!);
+    expect(chooseFlowCard(store, { card: third, choice: 0, note: null, actor: "alex", where: "Toolroll", repos: [repo] }, now)).toMatchObject({ ok: true });
+    expect(state.db.prepare("SELECT count(*) AS n FROM slack_flow_choice WHERE card=? AND consumed IS NULL").get(third)!.n).toBe(0);
+    receiveSlack(state, ID, "interactive", { ...action(thirdButtons[1]!.value!, thirdTs), message: {}, actions: [{ action_id: "toolroll_flow_choose_1", value: thirdButtons[1]!.value!, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
+    await processSlackEvent(options);
+    await drain();
+    expect(String(sends().at(-1)!.args.text)).toContain("already chosen");
+    await replyInThread("Keep it a week.", thirdTs);
+    expect(String(sends().at(-1)!.args.text)).toContain("already made");
+    expect(store.getFlowCard(third)).toMatchObject({ stage: "ship" });
   });
 
   test("a teammate's question arrives with its options and Answer in words; a tap answers it once, a stale tap changes nothing, and Answer in words takes the next message (v93)", async () => {

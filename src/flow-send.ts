@@ -193,11 +193,11 @@ export function flowChoiceAt(store: Store, cardId: number, entry: number): FlowC
 const via = (where: string) => where === "" ? "" : ` in ${where}`;
 
 /**
- * A person's choice on a card waiting at a "Person chooses" zone: an option (by its place, and the words they saw), or a
+ * A person's choice on a card waiting at a "Person chooses" zone: an option (by its place, and the words and zone they saw), or a
  * reply (`choice` null) that becomes the note for where replies go. `where` names the place it was made, for the card's
  * history and the ledger: "Telegram", "Slack", "the console".
  */
-export function chooseFlowCard(store: Store, input: { card: number; entry?: number; choice: number | null; label?: string; note: string | null; actor: string; where: string; repos: readonly string[]; evidenceRoot?: string }, now: Date): FlowDecision {
+export function chooseFlowCard(store: Store, input: { card: number; entry?: number; choice: number | null; label?: string; to?: string; note: string | null; actor: string; where: string; repos: readonly string[]; evidenceRoot?: string }, now: Date): FlowDecision {
   const card = store.getFlowCard(input.card);
   const flow = card === null ? null : store.getFlow(card.flow);
   if (card === null || flow === null || card.state !== "active" || !input.repos.includes(flow.repo)) return { ok: false, message: "That card is no longer waiting." };
@@ -210,12 +210,12 @@ export function chooseFlowCard(store: Store, input: { card: number; entry?: numb
     action: "flow choice", outcome, source: "request", detail: `${flow.name} · card ${card.id} · ${stage.title}: ${said} · via ${input.where || "Toolroll"}` });
   if (input.choice !== null) {
     const option = (stage.options ?? [])[input.choice];
-    if (option === undefined || (input.label !== undefined && option.label !== input.label)) return { ok: false, message: "Those options changed since; nothing was changed." };
+    if (option === undefined || (input.label !== undefined && option.label !== input.label) || (input.to !== undefined && option.to !== input.to)) return { ok: false, message: "Those options changed since; nothing was changed." };
     if (option.to === FLOW_END) {
       const closed = store.transact(() => {
         if (!store.moveFlowCard(card.id, { to: card.stage, outcome: "cancelled", actor: input.actor, historyNote: `Ignored: chose “${option.label}”${via(input.where)}`, expectEntry: card.entry }, now)) return false;
         store.updateFlowCard(card.id, { state: "cancelled", waiting: "Ignored" }, now);
-        store.retireTelegramFlowChoices(card.id, card.entry, now);
+        store.retireFlowChoices(card.id, card.entry, now);
         ledger("ignored", `“${option.label}”`);
         return true;
       });
@@ -223,7 +223,7 @@ export function chooseFlowCard(store: Store, input: { card: number; entry?: numb
     }
     const moved = store.transact(() => {
       if (!store.moveFlowCard(card.id, { to: option.to, outcome: "moved", actor: input.actor, historyNote: `Chose “${option.label}”${via(input.where)}`, expectEntry: card.entry }, now)) return false;
-      store.retireTelegramFlowChoices(card.id, card.entry, now);
+      store.retireFlowChoices(card.id, card.entry, now);
       ledger("chosen", `“${option.label}”`);
       return true;
     });
@@ -235,12 +235,13 @@ export function chooseFlowCard(store: Store, input: { card: number; entry?: numb
   const note = (input.note ?? "").trim();
   const target = replyTarget(stage);
   if (target === null) return { ok: false, message: "Choose one of the options; this step doesn't take a reply." };
+  if (input.to !== undefined && target !== input.to) return { ok: false, message: "Where replies go changed since; nothing was changed." };
   if (note === "") return { ok: false, message: "Say what you'd change." };
   if (note.length > 2000) return { ok: false, message: "Keep it under 2,000 characters." };
   const revision = revisionWithNote(store, card, definition.stages.find(one => one.id === target), note, input.actor, input.repos, input.evidenceRoot, now);
   const moved = store.transact(() => {
     if (!store.moveFlowCard(card.id, { to: target, outcome: "sent-back", actor: input.actor, note, ...(revision === null ? {} : { task: revision }), expectEntry: card.entry }, now)) return false;
-    store.retireTelegramFlowChoices(card.id, card.entry, now);
+    store.retireFlowChoices(card.id, card.entry, now);
     ledger("replied", `a reply to ${titleOf(target)}`);
     return true;
   });

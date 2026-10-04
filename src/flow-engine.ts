@@ -329,10 +329,13 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
   return cuts;
 }
 
-/** Why a flow can't be saved as drawn: a build zone in a project its owner may not file work in; null when none. */
-export function crossProjectProblem(store: Store, definition: FlowDefinition, flow: { repo: string; owner: string }): string | null {
-  const zone = definition.stages.find(one => one.kind === "task" && one.repo !== undefined && one.repo !== flow.repo && !store.accountCanAccess(flow.owner, one.repo));
-  return zone === undefined ? null : `Zone ${zone.title}: ${flow.owner}, who owns this flow, can't file work in that project.`;
+/** Why a flow can't be saved as drawn: a build zone in a project its owner, or whoever saves it, may not file work in; null when none. */
+export function crossProjectProblem(store: Store, definition: FlowDefinition, flow: { repo: string; owner: string }, editor: string = flow.owner): string | null {
+  const elsewhere = definition.stages.filter((one): one is FlowStage & { repo: string } => one.kind === "task" && one.repo !== undefined && one.repo !== flow.repo);
+  const owners = elsewhere.find(one => !store.accountCanAccess(flow.owner, one.repo));
+  if (owners !== undefined) return `Zone ${owners.title}: ${flow.owner}, who owns this flow, can't file work in that project.`;
+  const editors = elsewhere.find(one => !store.accountCanAccess(editor, one.repo));
+  return editors === undefined ? null : `Zone ${editors.title}: you can't file work in that project, so you can't point a build there.`;
 }
 
 export type FlowAct = { ok: true; said: string; card: number } | { ok: false; message: string };

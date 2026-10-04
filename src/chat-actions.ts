@@ -638,7 +638,7 @@ export function prepareSharedAction(
       const name = input["name"] === undefined ? flow.name : text(input, "name", 80).trim();
       const definition = input["definition"] === undefined ? before : flowDrawingOf(store, input, repo);
       const redrawn = flowDigest(definition) !== flowDigest(before);
-      const elsewhere = crossProjectProblem(store, definition, flow);
+      const elsewhere = crossProjectProblem(store, definition, flow, who.name);
       if (elsewhere !== null) throw Error(elsewhere);
       if (!redrawn && name === flow.name) throw Error("That's the flow as it is now.");
       Object.assign(request, { name, definition });
@@ -738,6 +738,8 @@ export function prepareSharedAction(
           const option = Number.isSafeInteger(input["choice"]) ? (at.options ?? [])[index] : undefined;
           if (option === undefined) throw Error(`Choose one of its ${(at.options ?? []).length} options, by number.`);
           delete request["note"];
+          // Bound to the option as shown: if the flow's options change before it is confirmed, it is refused.
+          Object.assign(state, { label: option.label, to: option.to });
           title = `Choose “${option.label}” for ${quoted(card.title)}`;
           terms.push(option.to === "end" ? `${at.title}: “${option.label}”. The card is closed as Ignored.` : `${at.title}: “${option.label}”. It moves to ${titleOf(option.to)}.`);
         } else {
@@ -746,6 +748,7 @@ export function prepareSharedAction(
           if (target === null) throw Error("This step takes one of its options, not a reply.");
           if (note === "") throw Error("Say what you'd change, or choose an option by number.");
           request["note"] = note;
+          state["to"] = target;
           title = `Reply on ${quoted(card.title)}`;
           terms.push(`${at.title}: your reply goes to ${titleOf(target)} as its note:\n${note}`);
         }
@@ -1500,7 +1503,11 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
   const acted = payload.operation === "flow_card_move" ? moveCardInFlow(store, card, String(req["zone"]), actor, now)
     : payload.operation === "flow_card_cancel" ? cancelFlowCard(store, card, actor, now)
     : payload.operation === "flow_card_choose" ? (() => {
-        const chosen = chooseFlowCard(store, { card: card.id, entry: Number(payload.state["entry"]), choice: Number.isSafeInteger(req["choice"]) ? Number(req["choice"]) - 1 : null,
+        // The option (its words and where it leads) or reply target exactly as proposed; a proposal from before carries neither and is refused.
+        const bound = payload.state;
+        if (typeof bound["to"] !== "string" || (Number.isSafeInteger(req["choice"]) && typeof bound["label"] !== "string")) return { ok: false as const, message: "Those options changed since; nothing was changed. Ask for a fresh proposal." };
+        const chosen = chooseFlowCard(store, { card: card.id, entry: Number(bound["entry"]), choice: Number.isSafeInteger(req["choice"]) ? Number(req["choice"]) - 1 : null,
+          ...(typeof bound["label"] === "string" ? { label: bound["label"] } : {}), to: bound["to"],
           note: typeof req["note"] === "string" ? req["note"] : null, actor, where: "chat", repos, ...(root === undefined ? {} : { evidenceRoot: root }) }, now);
         return chosen.ok ? { ok: true as const, said: chosen.said, card: card.id } : { ok: false as const, message: chosen.message };
       })()

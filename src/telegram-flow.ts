@@ -82,14 +82,14 @@ export function applyFlowChoiceTap(store: Store, binding: TelegramBinding, choic
   if (choice.consumedAt !== null || choice.expiresAt <= now.toISOString()) return [{ kind: "ack", text: "That was already chosen, or these buttons are too old." }];
   const visit = flowChoiceAt(store, choice.card, choice.entry);
   if (visit === null) {
-    store.retireTelegramFlowChoices(choice.card, choice.entry, now);
+    store.retireFlowChoices(choice.card, choice.entry, now);
     return [{ kind: "ack", text: "That card has moved on since; nothing was changed." }, { kind: "edit", text: `${message.text}\n\nThis card has moved on since; nothing was changed.`.slice(0, 4000) }];
   }
   if (visit.person !== binding.approver) return [{ kind: "ack", text: `Only ${visit.person} chooses here.` }];
   if (repos === null) return [{ kind: "ack", text: "Couldn't check your projects just now. Try again in a moment." }];
   const chosen = chooseFlowCard(store, { card: choice.card, entry: choice.entry, choice: choice.choice, label: choice.label, note: null, actor: binding.approver, where: "Telegram", repos }, now);
   if (!chosen.ok) return [{ kind: "ack", text: chosen.message.slice(0, 190) }];
-  store.retireTelegramFlowChoices(choice.card, choice.entry, now);
+  store.retireFlowChoices(choice.card, choice.entry, now);
   return [{ kind: "ack", text: choice.label.slice(0, 190) }, { kind: "edit", text: `${message.text}\n\n✅ You chose “${choice.label}”. ${chosen.said}`.slice(0, 4000) }];
 }
 
@@ -140,7 +140,7 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
     if (repos === null) return [{ kind: "say", text: "Couldn't check your projects just now. Reply again in a moment." }];
     const chosen = chooseFlowCard(store, { card: prompt.card, entry: prompt.entry, choice: null, note: text.trim(), actor: binding.approver, where: "Telegram", repos }, now);
     if (!chosen.ok) return [{ kind: "say", text: chosen.message }];
-    store.retireTelegramFlowChoices(prompt.card, prompt.entry, now);
+    store.retireFlowChoices(prompt.card, prompt.entry, now);
     return [{ kind: "say", text: `↩️ ${chosen.said}` }];
   }
   const waiting = flowDecisionAt(store, prompt.card, prompt.entry);

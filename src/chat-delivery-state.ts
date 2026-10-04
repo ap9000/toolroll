@@ -80,8 +80,10 @@ CREATE TABLE IF NOT EXISTS chat_flow_prompt (
 CREATE INDEX IF NOT EXISTS chat_flow_prompt_open ON chat_flow_prompt(binding, consumed);
 `;
 /** A flow's "Person chooses" zone in the chat app (flow-send.ts): one button per option (choice is its index, label its words
- * when sent) for one visit of one card, on the part it rides. A reply is the person's next message (chat_flow_prompt,
- * mode send-back). Never in CHAT_TABLES: an older database has no such table until this schema creates it. */
+ * when sent) for one visit of one card, on the part it rides. A reply in that notice's thread is the note; chat_flow_note
+ * is "Use this as your note?" Yes / No about one other message (held: its event; words: what it said, kept only until
+ * answered, as an event's own payload is cleared once it is handled), asked once per visit.
+ * Never in CHAT_TABLES: an older database has no such table until this schema creates it. */
 const CHAT_FLOW_CHOICE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_flow_choice (
  token TEXT PRIMARY KEY, part INTEGER NOT NULL REFERENCES chat_part(id),
@@ -89,6 +91,12 @@ CREATE TABLE IF NOT EXISTS chat_flow_choice (
  choice INTEGER NOT NULL, label TEXT NOT NULL, expires TEXT NOT NULL, consumed TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_flow_choice_visit ON chat_flow_choice(card, entry);
+CREATE TABLE IF NOT EXISTS chat_flow_note (
+ token TEXT PRIMARY KEY, part INTEGER NOT NULL REFERENCES chat_part(id),
+ card INTEGER NOT NULL REFERENCES flow_card(id), entry INTEGER NOT NULL,
+ held TEXT NOT NULL, words TEXT, answer TEXT NOT NULL CHECK(answer IN ('yes','no')), expires TEXT NOT NULL, consumed TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_flow_note_visit ON chat_flow_note(card, entry);
 `;
 /** v93: a teammate's question in the chat app. One button per option (choice)
  * and one to answer in words (choice NULL); that one opens a prompt the
@@ -193,6 +201,8 @@ export type ChatContent = {
   flow?: { card: number; entry: number; actions: Array<"approve" | "edit" | "send-back"> };
   /** A flow's "Person chooses" buttons ride this part: minted when it is planned. */
   choose?: { card: number; entry: number; options: Array<{ choice: number; label: string }> };
+  /** "Use this as your note?" Yes / No about the person's message `held` (an event id), for one choice's visit. */
+  note?: { card: number; entry: number; held: string };
   /** A teammate's question's buttons ride this part (v93): each option, then one to answer in words (choice null). */
   question?: { id: number; choices: Array<{ choice: string | null; label: string }> };
   /** The lead's question to its owner rides this part: its options, then "Something else". */
@@ -211,7 +221,7 @@ export class ChatState {
   prepare(sql: string) {
     return this.db.prepare(
       sql.replace(
-        /\bchat_(binding|pair|event|part|action|progress|runtime|room|meta|flow_action|flow_prompt|flow_choice|question_action|question_prompt|ask_action)\b/g,
+        /\bchat_(binding|pair|event|part|action|progress|runtime|room|meta|flow_action|flow_prompt|flow_choice|flow_note|question_action|question_prompt|ask_action)\b/g,
         `${this.channel}_$1`,
       ),
     );
@@ -487,6 +497,11 @@ export class ChatState {
             this.prepare("INSERT INTO chat_flow_choice(token,part,card,entry,choice,label,expires) VALUES(?,?,?,?,?,?,?)").run(
               randomBytes(16).toString("hex"), Number(inserted.lastInsertRowid), part.choose.card, part.choose.entry, one.choice, one.label,
               new Date(now.getTime() + 7 * 86_400_000).toISOString());
+        if (Number(inserted.changes) && part.note)
+          for (const answer of ["yes", "no"])
+            this.prepare("INSERT INTO chat_flow_note(token,part,card,entry,held,answer,expires) VALUES(?,?,?,?,?,?,?)").run(
+              randomBytes(16).toString("hex"), Number(inserted.lastInsertRowid), part.note.card, part.note.entry, part.note.held, answer,
+              new Date(now.getTime() + 86_400_000).toISOString());
         if (Number(inserted.changes) && part.flow)
           for (const action of part.flow.actions)
             this.prepare("INSERT INTO chat_flow_action(token,part,card,entry,action,expires) VALUES(?,?,?,?,?,?)").run(

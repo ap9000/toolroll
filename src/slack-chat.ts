@@ -142,7 +142,7 @@ export function receiveSlack(
       container = object(body.container);
     if (
       // toolroll_* since the rename; standing_orders_* buttons on older messages still work.
-      !/^(?:toolroll|standing_orders)_(confirm|dismiss|yes|cancel|flow_approve|flow_edit|flow_send_back|flow_choose_[0-3]|question_choice|question_words)$/.test(
+      !/^(?:toolroll|standing_orders)_(confirm|dismiss|yes|cancel|flow_approve|flow_edit|flow_send_back|flow_choose_[0-3]|flow_note_(?:yes|no)|question_choice|question_words)$/.test(
         String(action.action_id),
       ) ||
       typeof action.value !== "string" ||
@@ -533,7 +533,7 @@ export async function deliverSlackPart(
     } else
       buttons = [
         // A flow decision (v88): Approve / Edit / Send back, then the link.
-        ...(content.flow || content.choose
+        ...(content.flow || content.choose || content.note
           ? chatFlowButtons(state, row.id, now).map((one) => ({
               type: "button",
               text: { type: "plain_text", text: one.label },

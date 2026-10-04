@@ -32,8 +32,7 @@ import {
   type ChatEvent,
   type ChatIdentity,
 } from "./chat-delivery-state.js";
-import { answerChatFlowPrompt, applyChatFlowTap, flowDecisionParts, flowSendParts, openChoiceReply } from "./chat-flow.js";
-import { FLOW_CHOOSE_KEY, readFlowSend } from "./flow-send.js";
+import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisionParts, flowSendParts } from "./chat-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
 import { telegramProgressCard } from "./telegram-progress.js";
@@ -206,6 +205,9 @@ export async function processChatEvent(
     // A flow decision asked for this person's next message (Edit, Send back): it is the draft or the note.
     if (answerChatFlowPrompt({ store, state, label: options.label }, event, binding,
       { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}) }, repos, nowOf(options))) return true;
+    // A "Person chooses" notice's thread reply is the note; the first other message after it is asked about (chat-flow.ts).
+    if (answerChoiceMessage({ store, state, label: options.label }, event, binding,
+      { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}), lead: input.lead === true }, nowOf(options), repos)) return true;
     // A message to a teammate by name (v96), in someone's own chat with Toolroll: a card on its desk.
     if (event.channel === binding.channel) {
       const handed = messageTeammate(store, { who: binding.approver, repos, via: CHAT_APP_NAMES[state.channel] ?? "Chat" }, text, nowOf(options));
@@ -1024,11 +1026,6 @@ export async function planChatNotifications(
             state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
               ts: "", thread: "", payload: "{}", created: now.toISOString() });
             state.plan(id, parts, now);
-            // A "Person chooses" notice (flow-send.ts) takes a reply as well as a tap: the person's next message here.
-            const choose = FLOW_CHOOSE_KEY.exec(notification.dedupeKey);
-            const sent = choose === null ? null : store.flowSend(Number(choose[1]), Number(choose[2]));
-            if (choose !== null && sent !== null && notification.recipient === binding.approver && readFlowSend(sent.contentJson)?.reply === true)
-              openChoiceReply(state, binding, Number(choose[1]), Number(choose[2]), now);
           }
         } else if (personal && flowSendParts(store, notification) !== null) {
           // A flow's "Send to me" (flow-send.ts): what was done, with its links as buttons.

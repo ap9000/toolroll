@@ -37,7 +37,7 @@ import { CHAT_TASK_ACTIONS, chatTaskRun, chatTaskStamp, isChatTaskAction } from 
  * projects after scrubbing; full paths and arbitrary text remain redacted.
  */
 import { Buffer } from "node:buffer";
-import { MATE_ASK_OTHER, type FlowRow, type Store, type MateProposalKind, type MateTurnEvidence } from "./store.js";
+import { MATE_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type MateProposalKind, type MateTurnEvidence } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { MateToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
@@ -804,8 +804,10 @@ export const MATE_TOOLS: MateTool[] = [
     inputSchema: schema({ repo: REPO_ARG, flow: { type: "integer", minimum: 1 }, card: { type: "integer", minimum: 1 } }),
     handle: (ctx, args) => {
       const reachable = (repo: string) => ctx.who.repos.includes(repo) && ctx.store.accountCanAccess(ctx.who.name, repo);
-      const needsYou = (flow: FlowRow, definition: FlowDefinition | null, stage: string) => {
-        const at = definition?.stages.find(one => one.id === stage);
+      const needsYou = (flow: FlowRow, definition: FlowDefinition | null, card: FlowCardRow) => {
+        const at = definition?.stages.find(one => one.id === card.stage);
+        // A "Person chooses" zone waits for the card's person; a "Person decides" one for its decider.
+        if (at?.kind === "choose") return flowPersonOf(card, flow) === ctx.who.name;
         if (at?.kind !== "approval") return false;
         const decider = deciderOf(at, flow);
         return decider === null || decider === ctx.who.name;
@@ -844,12 +846,12 @@ export const MATE_TOOLS: MateTool[] = [
           })),
           cards: [...active, ...finished].map(card => ({
             card: card.id, title: card.title, ...(card.description === null ? {} : { description: card.description.slice(0, 300) }),
-            at: titleOf(card.stage) ?? card.stage, state: card.state, needsYou: card.state === "active" && needsYou(flow, definition, card.stage),
+            at: titleOf(card.stage) ?? card.stage, state: card.state, needsYou: card.state === "active" && needsYou(flow, definition, card),
             // Names never reach the model; a decision says whose it is in its own terms.
             waiting: card.state === "active" && definition.stages.find(one => one.id === card.stage)?.kind === "choose" && card.waiting !== null
               ? (flowPersonOf(card, flow) === ctx.who.name ? "Waiting for you to choose (operation choose: choice by number, or note to reply)" : "Waiting for someone else to choose")
               : card.state !== "active" || definition.stages.find(one => one.id === card.stage)?.kind !== "approval" || card.waiting === null ? card.waiting
-              : needsYou(flow, definition, card.stage) ? "Waiting for you to approve or send it back" : "Waiting for someone else to decide",
+              : needsYou(flow, definition, card) ? "Waiting for you to approve or send it back" : "Waiting for someone else to decide",
             task: card.task ?? card.primaryTask, ...(card.note === null ? {} : { lastNote: card.note.slice(0, 300) }),
             // Names never reach the model: people read as you or a teammate.
             owner: card.owner === null ? null : card.owner === ctx.who.name ? "you" : "a teammate", following: ctx.store.flowCardWatchers(card.id).includes(ctx.who.name),
@@ -875,7 +877,7 @@ export const MATE_TOOLS: MateTool[] = [
           const definition = flowDefinitionOf(flow);
           const cards = ctx.store.flowCards(flow.id, false);
           return { flow: flow.id, name: flow.name, project: repoIdOf(ctx.who, flow.repo), steps: definition === null ? "can't be read" : definition.stages.map(one => one.title).join(" → "),
-            cards: cards.length, needYou: cards.filter(card => needsYou(flow, definition, card.stage)).length, triggers: ctx.store.flowTriggers(flow.id).length };
+            cards: cards.length, needYou: cards.filter(card => needsYou(flow, definition, card)).length, triggers: ctx.store.flowTriggers(flow.id).length };
         }),
         templates: FLOW_TEMPLATES.map(one => ({ template: one.id, about: one.about })),
         // Scripts belong to a project, not a flow: they exist (and can be saved) before any flow does.
