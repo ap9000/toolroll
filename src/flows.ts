@@ -409,6 +409,46 @@ export function validateFlowDefinition(input: unknown, options: { stored?: boole
   return { version: 1, start, stages };
 }
 
+/** The instructions 0.9.26 and earlier read from a saved zone: they re-check this length on every read, and a flow with a
+ * longer one won't load. A saved zone keeps its first part under it, and the rest in `instructionsMore`, which they ignore. */
+export const FLOW_INSTRUCTIONS_STORED = 4000;
+
+/** A flow's definition as the store saves it: any zone's instructions over FLOW_INSTRUCTIONS_STORED are split, so a
+ * person who goes back a version still opens the flow (with its instructions' first part). Unchanged otherwise. */
+export function flowDefinitionForStore(json: string): string {
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return json; }
+  const stages = (raw as { stages?: unknown } | null)?.stages;
+  if (!Array.isArray(stages)) return json;
+  let split = false;
+  const kept = stages.map(one => {
+    const stage = one as Record<string, unknown> | null;
+    const words = stage?.["instructions"];
+    if (stage === null || typeof stage !== "object" || typeof words !== "string" || words.length <= FLOW_INSTRUCTIONS_STORED) return one;
+    let at = FLOW_INSTRUCTIONS_STORED;
+    if (/[\uD800-\uDBFF]/.test(words[at - 1]!)) at--;
+    split = true;
+    return { ...stage, instructions: words.slice(0, at), instructionsMore: words.slice(at) };
+  });
+  return split ? JSON.stringify({ ...(raw as object), stages: kept }) : json;
+}
+
+/** A saved flow's definition with every zone's instructions whole again (flowDefinitionForStore). */
+export function flowDefinitionFromStore(json: string): string {
+  if (!json.includes("\"instructionsMore\"")) return json;
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return json; }
+  const stages = (raw as { stages?: unknown } | null)?.stages;
+  if (!Array.isArray(stages)) return json;
+  const whole = stages.map(one => {
+    const stage = one as Record<string, unknown> | null;
+    if (stage === null || typeof stage !== "object" || typeof stage["instructionsMore"] !== "string") return one;
+    const { instructionsMore, ...rest } = stage;
+    return { ...rest, instructions: `${typeof stage["instructions"] === "string" ? stage["instructions"] : ""}${instructionsMore as string}` };
+  });
+  return JSON.stringify({ ...(raw as object), stages: whole });
+}
+
 /** A Pull request zone's merge: true is squash, the default. */
 function validateMerge(value: unknown, title: string): FlowMergeMethod {
   if (value === true) return "squash";

@@ -10,8 +10,9 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, approve } from "./scope.js";
 import { register } from "./runner.js";
-import { FLOW_GOAL_LIMIT, fitFlowText, flowAttachedMark, flowGoal, validateFlowDefinition } from "./flows.js";
-import { advanceFlows, flowGoalCuts } from "./flow-engine.js";
+import { DatabaseSync } from "node:sqlite";
+import { FLOW_GOAL_LIMIT, FLOW_INSTRUCTIONS_STORED, fitFlowText, flowAttachedMark, flowGoal, validateFlowDefinition } from "./flows.js";
+import { advanceFlows, flowDefinitionOf, flowGoalCuts } from "./flow-engine.js";
 import { storeEvidence } from "./evidence.js";
 import { TASK_TEXT_LIMITS, validateTaskText } from "./task-text.js";
 
@@ -90,6 +91,32 @@ test("instructions take the full 8000 characters with no room held back; the car
   // A flow saved earlier is read whatever its length: a limit is for writing.
   const longer = `${"x".repeat(9_000)}\n{{stage.nightly-journeys}}`;
   expect(validateFlowDefinition(drawing(longer), { stored: true }).stages[1]!.instructions).toBe(longer);
+});
+
+test("a zone's 8000-character instructions are saved so 0.9.26 and earlier still open the flow, and read back whole", () => {
+  // Those releases re-check a zone's instructions against 4000 characters on every read; a flow over it wouldn't load.
+  const full = `${"Check every page and every form. ".repeat(250)}`.slice(0, 7_970) + "\n{{stage.nightly-journeys}}";
+  // A character outside the basic plane right at the split stays whole.
+  const astral = `${"a".repeat(FLOW_INSTRUCTIONS_STORED - 1)}\u{1F600}${"b".repeat(3_000)}`;
+  const flow = store.createFlow({ repo, name: "Nightly journeys", definitionJson: JSON.stringify(validateFlowDefinition(drawing(full))), by: "operator" }, now);
+  const raw = () => {
+    const db = new DatabaseSync(join(dir, "orders.db"), { readOnly: true });
+    try { return JSON.parse(String((db.prepare("SELECT definition_json FROM flow WHERE id = ?").get(flow) as { definition_json: string }).definition_json)) as { stages: Array<Record<string, unknown>> }; }
+    finally { db.close(); }
+  };
+  const older = (stored: { stages: Array<Record<string, unknown>> }) => stored.stages.every(one => typeof one["instructions"] !== "string" || one["instructions"].trim().length <= FLOW_INSTRUCTIONS_STORED);
+  expect(older(raw())).toBe(true);
+  expect(raw().stages[1]!["instructions"]).toBe(full.slice(0, FLOW_INSTRUCTIONS_STORED));
+  expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[1]!.instructions).toBe(full);
+
+  expect(store.saveFlow(flow, { name: "Nightly journeys", definitionJson: JSON.stringify(validateFlowDefinition(drawing(astral))), sawRevision: 1, by: "operator" }, now)).toBe(true);
+  expect(older(raw())).toBe(true);
+  expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[1]!.instructions).toBe(astral);
+  // Within the older limit, nothing about the saved flow changes.
+  const short = JSON.stringify(validateFlowDefinition(drawing(ASK)));
+  expect(store.saveFlow(flow, { name: "Nightly journeys", definitionJson: short, sawRevision: 2, by: "operator" }, now)).toBe(true);
+  expect(JSON.stringify(raw())).toBe(short);
+  expect(store.getFlow(flow)!.definitionJson).toBe(short);
 });
 
 test("a card that couldn't file its work says why, and files on a later pass once the cause is gone", () => {

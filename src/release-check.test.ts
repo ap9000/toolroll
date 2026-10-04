@@ -151,11 +151,13 @@ describe("the upgrade path step", () => {
 
   test("the rollback leg: from 0.9.23 on, the release reads back whole the long text the candidate wrote, after the update", () => {
     expect(ROLLBACK_FROM).toBe("0.9.23");
-    expect(LONG_TEXT).toEqual({ goal: 8_000, note: 4_000 });
+    expect(LONG_TEXT).toEqual({ goal: 8_000, note: 4_000, instructions: 8_000 });
     expect(["0.9.11", "0.9.22", "0.9.23", "0.9.25", "0.9.26", "0.10.0"].filter(one => atLeast(one, ROLLBACK_FROM))).toEqual(["0.9.23", "0.9.25", "0.9.26", "0.10.0"]);
     const onePath = readFileSync("scripts/upgrade-path.mjs", "utf8").slice(readFileSync("scripts/upgrade-path.mjs", "utf8").indexOf("async function onePath("));
     expect(onePath.indexOf('step("rollback read"')).toBeGreaterThan(onePath.indexOf('step("inspect (updated)"'));
     expect(onePath.indexOf('step("toolroll status (rollback)"')).toBeGreaterThan(onePath.indexOf('step("rollback read"'));
+    // The release must load the flow whose zone has the candidate's longest instructions, not only the goal and note.
+    expect(onePath).toContain("couldn't load the flow whose zone has");
   });
 
   test("a completed task must stay complete under the same digest, and every fresh table must exist", () => {
