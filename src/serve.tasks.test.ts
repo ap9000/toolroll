@@ -2437,6 +2437,30 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(ceremonyOf(again, "\\/t\\/payouts\\/approve")).toContain("claude · sonnet plans, builds, and repairs");
   });
 
+  test("risky sizing is named on the task, approval, focused chat, and next-up cards", async () => {
+    const cookie = await loginAs("alex", approverToken);
+    const html = await page(cookie, "/t/payouts");
+    expect((await post(cookie, "/t/payouts/route", {
+      csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest,
+      risk: "routine", size: "medium", risky: "yes",
+    })).status).toBe(303);
+    store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
+    const task = await page(cookie, "/t/payouts");
+    expect(agentsCardOf(task)).toContain('<span class="badge">Risky</span>');
+    expect(agentsCardOf(task)).not.toContain('<span class="badge">Routine</span>');
+    const risk = "Risky: planning and building use the strongest agent you have configured.";
+    for (const path of ["/t/payouts", "/chat?task=payouts", "/next"]) {
+      const shown = await page(cookie, path);
+      const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(shown)?.[1] ?? "";
+      expect(ceremony, path).toContain(risk);
+      expect(ceremony, path).not.toContain("Routine:");
+    }
+    const scope = store.getScope("payouts")!;
+    expect(scope.riskLevel).toBe("routine");
+    expect(approve(store, "payouts", "alex", T0, scope.digest, approverToken).ok).toBe(true);
+    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<span class="badge">Risky</span>');
+  });
+
   test("a routed task whose approval lost its agents shows the closed door in words, and a proven pre-routing approval shows its profile", async () => {
     const cookie = await loginAs("alex", approverToken);
     const scope = store.getScope("payouts")!;

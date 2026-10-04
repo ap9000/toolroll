@@ -26,7 +26,7 @@ import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderInteg
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
 import { pushLimitSink } from "./provider-limits.js";
-import { installFilingSizer, ownerSizer, settleSizings, type Sizer } from "./task-sizing.js";
+import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
 import { limitsView } from "./limits-ui.js";
 import { startCodexLimits } from "./codex-limits.js";
@@ -12304,11 +12304,11 @@ async function syncCommand(flags: Map<string, string | true>, context: Context):
  * separate acts by, usually, separate parties: an agent may draft a scope, and
  * only a person may agree to it.
  */
-function scopeTask(
+async function scopeTask(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
-): number {
+): Promise<number> {
   const { store, write, json, now } = context;
   const id = positional[0];
   const goal = text(flags, "goal");
@@ -12477,6 +12477,25 @@ function scopeTask(
     asGiven !== undefined && tokenGiven !== undefined && authenticateApprover(store, asGiven, tokenGiven).ok
       ? asGiven
       : null;
+  // Size the new goal before filing its route. A replay must not classify
+  // again or change the task behind the original answer. This probe does
+  // not record a result; the composite filing below still owns the receipt.
+  let refinement: Promise<void> | null = null;
+  store.replay(mutationFrom(flags, now), "task-scope-filed", () => {
+    const ref = store.lookupRef(id);
+    const previous = store.getScope(id);
+    if (ref === null || ref.deliverable === "report" || candidateGiven !== undefined ||
+        ref.sizing?.source === "person" || approvalOf(previous).approved ||
+        previous?.proposedVia === "coordinator" || store.filedViaOf(id)?.startsWith("mcp:") ||
+        ((plannedRace !== null || plannedComparison !== null) && store.openAuthorizationFor(ref.id) !== null)) return null;
+    const input = { title: store.getTask(id)!.title, goal, outOfScope: text(flags, "not") ?? null, touches };
+    const sized = store.applySizing(id, heuristicSizing(input), { followPlanning: true }, now);
+    if (sized.ok) refinement = refineFiledSizing(store, id, input, true, context.clock);
+    return null;
+  }, () => false);
+  // Wait for bounded classification before filing so any approval in the
+  // transaction below binds the final size and route.
+  await refinement;
   // ONE replayed composite (surfaces round 1, finding 3): the filing, any
   // race/comparison terms, AND the mode seal record as a single operation —
   // a replayed key returns the FIRST answer whole instead of re-sealing

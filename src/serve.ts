@@ -12539,7 +12539,7 @@ function approvalSheetHtml(input: {
     : projection === null
       ? route.legacy === null ? "" : `<p>${escape(agentsSummaryWords(route))}</p>`
       : `<p>${escape(projection.summary)}</p>` +
-        `<p class="meta">${escape(riskTitle(route.riskLevel))}: ${escape(riskConsequence(route.riskLevel))}. Uses ${escape(projection.postureWords)}.</p>` +
+        `<p class="meta">${escape(agentsRiskWords(projection))}. Uses ${escape(projection.postureWords)}.</p>` +
         (projection.demands.length === 0 ? "" : `<ul class="meta">${projection.demands.map(one => `<li>${escape(one)}</li>`).join("")}</ul>`) +
         `<dl class="approval-roles">${projection.legs.map(leg =>
           `<div><dt>${escape(ROLE_NOUN[leg.phase])}</dt><dd><span class="mono">${escape(leg.provider)} · ${escape(leg.model)}</span> <span class="meta">${escape(chosenWords(leg))}</span>` +
@@ -12860,11 +12860,18 @@ function agentsSummaryWords(view: RouteView): string {
   return view.problem ?? "the agents cannot be read";
 }
 
+function agentsRiskWords(projection: RouteProjection): string {
+  const consequence = projection.risk === "routine" && projection.size?.risky
+    ? riskConsequence("elevated")
+    : riskConsequence(projection.risk);
+  return `${projection.riskTitle}: ${consequence}`;
+}
+
 /** Neutral metadata badges: risk, posture, and standing. */
 function agentsBadgesHtml(view: RouteView): string {
   const p = view.projection;
   return (
-    `<span class="badge">${escape(sentenceCase(riskTitle(view.riskLevel)))}</span>` +
+    `<span class="badge">${escape(sentenceCase(p?.riskTitle ?? riskTitle(view.riskLevel)))}</span>` +
     (p === null ? "" : `<span class="badge">${escape(sentenceCase(p.postureWords))}</span>`) +
     `<span class="badge">${escape(sentenceCase(agentsStandingWords(view)))}</span>`
   );
@@ -12919,8 +12926,8 @@ function agentsCeremonyHtml(view: RouteView | null | undefined): string {
     `<div class="agents-ceremony"><p class="approval-label">agents</p>` +
     sizeLineHtml(view.projection) +
     `<p class="agents-summary">${escape(view.projection.summary)}</p>` +
-    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(riskTitle(view.riskLevel)))}</span><span class="badge">${escape(sentenceCase(view.projection.postureWords))}</span></div>` +
-    `<p class="meta agents-risk-line">${escape(riskTitle(view.riskLevel))}: ${escape(riskConsequence(view.riskLevel))}.</p>` +
+    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(view.projection.riskTitle))}</span><span class="badge">${escape(sentenceCase(view.projection.postureWords))}</span></div>` +
+    `<p class="meta agents-risk-line">${escape(agentsRiskWords(view.projection))}.</p>` +
     agentsWhyHtml(view.projection) +
     `<p class="meta">These exact agents are part of what you approve; changing any of them asks for a fresh approval.</p></div>`
   );
@@ -12950,7 +12957,7 @@ function routineAgentsHtml(routine: Routine, approved: boolean, ceremony = false
   return (
     `<div class="agents-ceremony"><p class="approval-label">agents</p>` +
     `<p class="agents-summary">${escape(agentsSummary(route))}</p>` +
-    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(riskTitle(route.risk)))}</span><span class="badge">${escape(sentenceCase(postureWords(route)))}</span><span class="badge">${approved ? "frozen by the approval" : "frozen when you approve"}</span></div>` +
+    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(projection.riskTitle))}</span><span class="badge">${escape(sentenceCase(postureWords(route)))}</span><span class="badge">${approved ? "frozen by the approval" : "frozen when you approve"}</span></div>` +
     (ceremony ? agentsWhyHtml(projection) : "") +
     `<p class="meta">${approved ? "Every firing runs on exactly these agents; a configuration change cannot re-route it." : "Approving freezes exactly these agents for every firing; a configuration change afterwards cannot re-route one."}</p></div>`
   );

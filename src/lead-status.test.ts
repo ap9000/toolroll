@@ -45,9 +45,18 @@ describe("lead status commands", () => {
         outcome, outcome === "failed" ? "agent-failed" : null, NOW.toISOString(), finished ? LATER.toISOString() : null).lastInsertRowid);
   };
 
+  const draft = (store: Store, id: string, approved: boolean): void => {
+    store.handle.prepare("UPDATE task_ref SET plan = 'drafted' WHERE backend = ? AND external_id = ?").run(BUILT_IN, id);
+    store.handle.prepare(`INSERT INTO task_scope
+      (task_id, goal, proposed_at, digest, profile_state, approved_at, approved_by, approved_digest)
+      VALUES (?, 'Update the labels', ?, 'current-scope', 'resolved', ?, ?, ?)`)
+      .run(id, NOW.toISOString(), approved ? NOW.toISOString() : null, approved ? "alex" : null, approved ? "current-scope" : null);
+  };
+
   test("task wait returns 0 after the attempt it observed becomes ready", async () => {
     const seed = openStore(db);
     const ref = create(seed, "ready-after-wait", "running");
+    draft(seed, "ready-after-wait", true);
     const runId = run(seed, ref, { phase: "verifying-proof" });
     seed.close();
 
@@ -169,6 +178,62 @@ describe("lead status commands", () => {
     const lines: string[] = [];
     expect(await runOperate("task", ["wait", "still-running", "--timeout", "0"], line => lines.push(line), { databaseFile: db, now: NOW })).toBe(2);
     expect(lines).toEqual([`Timed out | run #${runId} | checks unknown | next: Wait — agent working`]);
+  });
+
+  test("approved drafted plans wait for a worker; unapproved or changed plans still need review", () => {
+    const store = openStore(":memory:");
+    try {
+      for (const id of ["approved", "unapproved", "changed", "incomplete"]) {
+        create(store, id);
+        draft(store, id, id !== "unapproved");
+      }
+      store.handle.prepare("UPDATE task_scope SET digest = 'new-scope' WHERE task_id = 'changed'").run();
+      store.handle.prepare("UPDATE task_scope SET approved_at = NULL WHERE task_id = 'incomplete'").run();
+      const status = installationStatus(store, NOW);
+      expect(status.queued).toMatchObject({ count: 4 });
+      expect(status.queued.tasks).toContainEqual({ task: "approved", reason: "ready for a worker" });
+      expect(taskWaitSnapshot(store, "approved", NOW)).toMatchObject({ outcome: "Queued", next: "Wait for a worker", terminal: false });
+      for (const id of ["unapproved", "changed", "incomplete"]) {
+        expect(status.queued.tasks).toContainEqual({ task: id, reason: "needs plan review" });
+        expect(taskWaitSnapshot(store, id, NOW)).toMatchObject({ outcome: "Needs a person", next: "Approve plan", terminal: true });
+      }
+    } finally { store.close(); }
+  });
+
+  test("live attempts appear only under Building, including those beyond the display limit", () => {
+    const store = openStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) {
+        const id = `building-${i}`;
+        const ref = create(store, id); // Dispatch can leave the task row queued.
+        if (i % 2 === 0) draft(store, id, true);
+        const runId = run(store, ref, { phase: "agent-running" });
+        store.handle.prepare(`INSERT INTO claim
+          (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at)
+          VALUES (?, ?, 1, 'worker-1', ?, ?, ?)`)
+          .run(`lease-${ref}`, ref, NOW.toISOString(), LATER.toISOString(), NOW.toISOString());
+        expect(taskWaitSnapshot(store, id, NOW)).toMatchObject({ outcome: "Running", run: runId, terminal: false });
+      }
+      const status = installationStatus(store, NOW);
+      expect(status.running).toMatchObject({ count: 10 });
+      expect(status.running.tasks).toHaveLength(8);
+      expect(status.queued).toEqual({ count: 0, reasons: [], tasks: [] });
+      expect(renderInstallationStatus(status)).toContain("Queued: none");
+
+      // Current scope changes cannot send wait back to approval mid-attempt.
+      store.handle.prepare("UPDATE task_scope SET digest = 'edited-after-admission' WHERE task_id = 'building-0'").run();
+      expect(taskWaitSnapshot(store, "building-0", NOW)).toMatchObject({ outcome: "Running", terminal: false });
+      // A real operator hold still needs attention.
+      store.hold(store.refFor(BUILT_IN, "building-0").id, "Pause this work", null, NOW);
+      expect(taskWaitSnapshot(store, "building-0", NOW)).toMatchObject({ outcome: "Needs a person", next: "Remove hold" });
+      // Released/expired claims are not Building and must not disappear from status.
+      store.handle.prepare("UPDATE claim SET released_at = ? WHERE task_ref = ?").run(NOW.toISOString(), store.refFor(BUILT_IN, "building-1").id);
+      store.handle.prepare("UPDATE claim SET expires_at = ? WHERE task_ref = ?").run(NOW.toISOString(), store.refFor(BUILT_IN, "building-2").id);
+      const after = installationStatus(store, NOW);
+      expect(after.running.count).toBe(8);
+      expect(after.queued.count).toBe(2);
+      expect(after.queued.tasks.map(one => one.task)).toEqual(["building-1", "building-2"]);
+    } finally { store.close(); }
   });
 
   test("check summaries live in run_check, first write wins, and only Strict runs are release checks", async () => {

@@ -329,7 +329,7 @@ const SECURITY_KINDS = new Set(["secret-detected", "security-release"]);
 /** A failure that leaves nothing for the lead to try: the attempts are spent. */
 const SPENT_KINDS = new Set(["attempts-exhausted", "plan-attempts-exhausted"]);
 /** What stops a finished run reading stopped (Store.stopQuiescenceFact). */
-export type StopFactKind = "open" | "alive" | "elsewhere" | "unprovable" | "unknown";
+export type StopFactKind = "open" | "alive" | "elsewhere" | "unprovable" | "unknown" | "settling";
 export type TaskAct = "filed" | "approved" | "cancelled" | "completed" | "asked";
 /** Store.stopQuiescenceFact, read safely: a deploy proves completion with this code over the INSTALLED runtime's store,
  * which may predate the method. There the older stopQuiescenceProblem decides, and its words give the kind. */
@@ -19726,6 +19726,9 @@ export class Store {
     // retained witnesses and every owned run; recovery revisits a pending
     // stop after an orphan or held supervisor finishes shutdown.
     this.recordRunProcessExits(id, result.now);
+    // Use the existing reconciliation proof now, while exits are fresh. In
+    // particular, a returned --candidate check need not await the next scan.
+    this.settleUnspawnedWitnesses(result.now, id);
     this.settleRunStop(id, result.stopSettlement ?? "finished", result.now);
     // The first Ready result is an installation fact the moment it lands,
     // not only when something later looks for it. A run that changed
@@ -25826,7 +25829,8 @@ export class Store {
    * another computer can tell, `unprovable` when nothing is known to run
    * but its exit was never recorded, `unknown` when this computer can't
    * check at all (both are what `run settle` resolves; only the first may
-   * be called not running). */
+   * be called not running). `settling` already meets the automatic
+   * reconciliation proof, so no confirmation is needed. */
   stopQuiescenceFact(runId: number): { run: number; kind: StopFactKind; problem: string } | null {
     const fact = (run: number, kind: StopFactKind, problem: string) => ({ run, kind, problem });
     const ids = this.ownedRunsOf(runId);
@@ -25838,10 +25842,13 @@ export class Store {
       const held = this.heldSessionOf(id);
       if (held !== null && held.endedAt === null) return fact(id, "alive", `run #${id}'s held supervisor has not finished shutdown`);
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
+      let incompleteSpawn = false;
       if (run.providerStartedAt !== null && witnesses.length === 0) {
         return fact(id, "unprovable", `run #${id} may have spawned before its process witness was recorded; exit is unproven`);
       }
       for (const witness of witnesses) {
+        // A recorded group exit proves the whole group ended, not just its
+        // leader. Re-probing its number could mistake reuse for the old group.
         if (witness["exited_at"] !== null) continue;
         const host = String(witness["host"]);
         const bootId = witness["boot_id"] === null || witness["boot_id"] === undefined ? null : String(witness["boot_id"]);
@@ -25864,9 +25871,9 @@ export class Store {
           if (state === "unknown") return fact(id, "unknown", `run #${id}'s ${backend} object ${container} cannot be proven empty from here`);
           continue;
         }
-        if (witness["pid"] === null) return fact(id, "unprovable", `run #${id} has an incomplete spawn witness; exit is unproven`);
+        if (witness["pid"] === null) { incompleteSpawn = true; continue; }
         const pid = Number(witness["pid"]);
-        if (processMayBeAlive(pid, witness["process_group"] === 1, { observedAt: witness["observed_at"], finishedAt: run.finishedAt })) return fact(id, "alive", `run #${id}'s process ${pid} may still be running`);
+        if (processMayBeAlive(pid, witness["process_group"] === 1, { observedAt: witness["observed_at"], finishedAt: run.finishedAt, exitedAt: witness["exited_at"] })) return fact(id, "alive", `run #${id}'s process ${pid} may still be running`);
       }
       if (run.worktree !== null) {
         try {
@@ -25877,6 +25884,8 @@ export class Store {
           if (!this.workspaceConfirmedByApprover(id)) return fact(id, "unknown", `run #${id}'s workspace occupancy could not be established`);
         }
       }
+      if (incompleteSpawn) return fact(id, this.settleableUnspawnedWitnesses(run, witnesses).length > 0 ? "settling" : "unprovable",
+        `run #${id} has an incomplete spawn witness; exit is unproven`);
     }
     return null;
   }
@@ -25957,10 +25966,11 @@ export class Store {
    * process groups is alive, it settles as never started, with a ledger
    * entry. A sole pid-less witness has no group to prove gone and stays for
    * `run settle`. Native witnesses keep their OS-only road. */
-  settleUnspawnedWitnesses(now: Date): number {
+  settleUnspawnedWitnesses(now: Date, onlyRun?: number): number {
     const candidates = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL
-        AND p.host = ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL ORDER BY p.run`).all(hostname());
+        AND p.host = ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
+        AND (? IS NULL OR p.run = ?) ORDER BY p.run`).all(hostname(), onlyRun ?? null, onlyRun ?? null);
     let settled = 0;
     for (const candidate of candidates) {
       const runId = Number(candidate["run"]);
@@ -25968,17 +25978,8 @@ export class Store {
       settled += this.transact(() => {
         const run = this.getRun(runId);
         if (run === null || run.outcome === null) return 0;
-        if (ownedProcessCount(runOwnerTag(this, runId)) > 0) return 0;
-        const held = this.heldSessionOf(runId);
-        if (held !== null && held.endedAt === null) return 0;
         const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(runId);
-        const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && row["host"] === hostname());
-        const others = rows.filter(row => !pidless.includes(row));
-        if (pidless.length === 0 || others.length === 0) return 0;
-        if (others.some(row => row["exited_at"] === null)) return 0;
-        // Exit was recorded once; the group's members are asked again now.
-        const groups = others.filter(row => row["pid"] !== null && row["host"] === hostname());
-        if (groups.length === 0 || groups.some(row => processMayBeAlive(Number(row["pid"]), row["process_group"] === 1, { observedAt: row["observed_at"], finishedAt: run.finishedAt }))) return 0;
+        const pidless = this.settleableUnspawnedWitnesses(run, rows);
         const ref = this.refById(run.taskRef);
         let count = 0;
         for (const row of pidless) {
@@ -25995,6 +25996,22 @@ export class Store {
       });
     }
     return settled;
+  }
+
+  /** The existing automatic settlement proof, shared with its read-only
+   * status. Unknown-only, foreign, native and still-running custody keep
+   * their fences; only an observed single-process exit avoids a new probe. */
+  private settleableUnspawnedWitnesses(run: Run, rows: Record<string, unknown>[]): Record<string, unknown>[] {
+    if (run.outcome === null || run.finishedAt === null || ownedProcessCount(runOwnerTag(this, run.id)) > 0) return [];
+    const held = this.heldSessionOf(run.id);
+    if (held !== null && held.endedAt === null) return [];
+    const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && row["host"] === hostname());
+    const others = rows.filter(row => !pidless.includes(row));
+    if (pidless.length === 0 || others.length === 0 || others.some(row => row["exited_at"] === null)) return [];
+    const known = others.filter(row => row["pid"] !== null && row["host"] === hostname());
+    if (known.length === 0 || known.some(row => processMayBeAlive(Number(row["pid"]), row["process_group"] === 1,
+      { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] }))) return [];
+    return pidless;
   }
 
   /** `run settle` (an approver's last resort): every witness of a finished
@@ -26020,7 +26037,7 @@ export class Store {
           if (row["exited_at"] === null) return alive(`run #${args.runId}'s process ${String(row["pid"])} belongs to ${String(row["host"])}; settle it there`);
           continue;
         }
-        if (processMayBeAlive(Number(row["pid"]), row["process_group"] === 1, { observedAt: row["observed_at"], finishedAt: run.finishedAt })) return alive(`run #${args.runId}'s process ${String(row["pid"])} is still running`);
+        if (processMayBeAlive(Number(row["pid"]), row["process_group"] === 1, { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] })) return alive(`run #${args.runId}'s process ${String(row["pid"])} is still running`);
       }
       for (const row of open) {
         if (row["pid"] === null && row["host"] !== hostname()) return alive(`run #${args.runId} has a witness from ${String(row["host"])}; settle it there`);
