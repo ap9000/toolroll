@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.21 — 2026-10-03
+
+- **Flows send you what was done.** A new "Send to me" step sends the last
+  step's summary, links and pictures to your chat apps. Every template can
+  end with one.
+- **Flows ask with your own buttons.** A "Choose" step offers 2-4 options you
+  name, for example Implement, Remix or Ignore, on Telegram, Slack, Discord,
+  Teams and the console. Reply instead to give a note.
+- **Research brings back pictures.** A research step can screenshot the
+  public pages it visits (and your project's demo, if you set one) and return
+  up to 6 examples with links. Later steps can use them all. Its browser and
+  web reads reach public addresses only.
+- A Build step can work in another project you have access to.
+
 ## 0.9.20 — 2026-10-03
 
 - **Scouts deliver again.** Claude scouts hand back their report, or a
