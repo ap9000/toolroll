@@ -976,11 +976,11 @@ describe("agreeing to a scope from the command line", () => {
   test("new CLI goals and exclusions use the canonical text policy without rewriting on rejection", async () => {
     await scopeIt();
     for (const flag of ["--goal", "--not"]) {
-      for (const value of ["a".repeat(2001), "😀".repeat(1001), "界".repeat(3000), "bad\u0000", "bad\u202e", "ok\r"]) {
+      for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(10700), "bad\u0000", "bad\u202e", "ok\r"]) {
         const args = ["task", "scope", "pay", "--goal", "valid", "--acceptance", "Works|check", "--json"];
         if (flag === "--goal") args[4] = value; else args.push(flag, value);
         expect(await run(args)).toBe(EXIT.usage);
-        expect(payload()).toMatchObject({ ok: false, message: expect.stringMatching(/2000|control or hidden/) });
+        expect(payload()).toMatchObject({ ok: false, message: expect.stringMatching(/8,000|8000|control or hidden/) });
         const check = openStore(db);
         try { expect(check.getScope("pay")?.goal).toBe("add a guard"); } finally { check.close(); }
       }

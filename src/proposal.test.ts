@@ -26,7 +26,7 @@ describe("the one filing door", () => {
   test("new filing cannot select legacy inheritance through provenance or extra fields", () => {
     const acceptance = [{ id: "c1", statement: "Works", evidence: ["check"] }];
     for (const field of ["goal", "outOfScope"]) {
-      for (const value of ["a".repeat(2001), "😀".repeat(1001), "界".repeat(3000), "bad\u0000", "bad\u202e"]) {
+      for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(10700), "bad\u0000", "bad\u202e"]) {
         const spec = { title: "New task", goal: "valid", acceptance, [field]: value,
           filedVia: "revision", inheritLegacy: true, legacy: true, revisionOf: "source", source: { task: "source" } };
         expect(fileTaskProposal(store, spec, T0)).toMatchObject({ ok: false, reason: "bad-goal" });
