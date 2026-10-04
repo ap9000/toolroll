@@ -1148,7 +1148,9 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain("risk is now elevated risk; the planner is now codex · gpt-5-codex — the earlier approval no longer covers this task; approve it again");
     expect(html).toContain('<p class="agents-summary">codex · gpt-5-codex plans; claude · sonnet builds and repairs</p>');
-    expect(html).toContain('action="/t/a/approve"');
+    // Elevated risk plans first, whatever the size: approval waits for the plan.
+    expect(store.refFor("built-in", "a").plan).toBe("requested");
+    expect(html).not.toContain('action="/t/a/approve"');
   });
 
   test("a focused chat answers a blocking decision and returns to the same conversation", async () => {

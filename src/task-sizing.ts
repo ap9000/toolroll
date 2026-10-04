@@ -16,12 +16,13 @@
  * can return is one of three sizes, a yes/no, and a short reason.
  */
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strictJsonParse } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
-import { run, type ExecResult } from "./exec.js";
+import { run, terminateOwnedProcesses, type ExecResult } from "./exec.js";
 import { JEV_MODEL, JEV_URL } from "./flow-sort.js";
 import { readProviderKey } from "./keys.js";
 import { isTaskSize, type TaskSize, type TaskSizing } from "./phase-routing.js";
@@ -100,9 +101,14 @@ export function readSizeAnswer(value: unknown): SizeAnswer | null {
 
 type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
 
-/** A small Claude model on this computer's sign-in: no tools, no MCP servers, no repository, credential keys stripped. */
+/** A small Claude model on this computer's sign-in: no tools, no MCP servers, no repository, credential keys stripped.
+ * The abort ends it: a late answer never keeps a command (or its process) waiting. */
 export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_MODEL, budgetMs = SIZING_BUDGET_MS): Sizer {
-  return async input => {
+  return async (input, signal) => {
+    if (signal.aborted) return null;
+    const owner = `sizing:${randomUUID()}`;
+    const stop = (): void => { terminateOwnedProcesses(owner); };
+    signal.addEventListener("abort", stop, { once: true });
     const dir = mkdtempSync(join(tmpdir(), "standing-orders-sizing-"));
     try {
       const prompt = [
@@ -119,13 +125,14 @@ export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_M
       const result = await runner("claude", [
         "-p", "--output-format", "json", "--json-schema", JSON.stringify(SIZING_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
         "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--model", model,
-      ], { cwd: dir, stdin: prompt, timeoutMs: budgetMs, maxBuffer: 256 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true });
-      if (result.notFound || result.timedOut || result.code !== 0) return null;
+      ], { cwd: dir, stdin: prompt, timeoutMs: budgetMs, maxBuffer: 256 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true, owner, beforeSpawn: () => !signal.aborted });
+      if (signal.aborted || result.notFound || result.timedOut || result.code !== 0) return null;
       const parsed = strictJsonParse(Buffer.from(result.stdout, "utf8"), 256 * 1024, 12);
       const body = parsed.ok && typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value) ? (parsed.value as Record<string, unknown>) : null;
       if (body === null || body["is_error"] === true || body["subtype"] !== "success") return null;
       return readSizeAnswer(body["structured_output"]);
     } finally {
+      signal.removeEventListener("abort", stop);
       rmSync(dir, { recursive: true, force: true });
     }
   };

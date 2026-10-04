@@ -105,6 +105,12 @@ export function isTaskSize(value: unknown): value is TaskSize {
   return value === "small" || value === "medium" || value === "large";
 }
 
+/** Whether a task makes no plan: a small change that is not risky, at
+ * routine risk. Elevated or high risk always plans, whatever the size. */
+export function makesNoPlan(size: TaskSizing | null | undefined, risk: RiskLevel): boolean {
+  return size != null && size.size === "small" && !size.risky && risk === "routine";
+}
+
 /** Where a size came from, in words. */
 export function sizeSourceWords(source: SizeSource): string {
   return source === "classifier" ? "sized automatically" : source === "person" ? "set by a person" : "sized from the description";
@@ -167,14 +173,21 @@ export type RouteCandidate = ExactSpec & {
 };
 
 export type PhaseCandidates = {
-  /** The operator's named LIGHT (fast) agent for this phase (`config set
-   * <phase> --tier light …`), or null/absent when none is configured. A
-   * small change builds on it. Never inferred. */
+  /** The operator's named LIGHT (fast) builder (`config set build --tier
+   * light …`), or null/absent when none is configured. A small change
+   * builds on it. Never inferred; the plan phase has none (a small change
+   * makes no plan). */
   light?: RouteCandidate | null;
   routine: RouteCandidate;
   /** The operator's named strong agent for this phase, or null when none
    * is configured. Never inferred. */
   strong: RouteCandidate | null;
+  /** v2: a tier may hold one more candidate per OTHER provider (`config
+   * set <phase> [--tier …] --also --provider … --model …`) — e.g. a
+   * routine builder on claude and on codex. At filing the one whose
+   * provider has more plan room runs. Each list holds providers other
+   * than its tier's own candidate, at most one each. */
+  alternates?: Partial<Record<CandidateTier, readonly RouteCandidate[]>>;
 };
 
 /** The repair phase's candidates: with no repair row configured the
@@ -212,8 +225,9 @@ export type PublicationAuthority = "none" | "notify" | "automerge";
 /** How much of one provider's plan is used, as it last said: the 5-hour
  * window and the weekly window, in percent; null when unknown. */
 export type ProviderRoom = { provider: ProviderId; fiveHour: number | null; weekly: number | null };
-/** Above these a provider has no headroom and is skipped when another
- * provider's candidate can take the phase. */
+/** Above these a provider has no headroom: even a candidate one tier
+ * stronger on another provider takes the phase. Below them, a tier's
+ * candidates on different providers still go to the one with more room. */
 export const HEADROOM_FIVE_HOUR_LIMIT = 80;
 export const HEADROOM_WEEKLY_LIMIT = 90;
 
@@ -269,8 +283,9 @@ export type RouteInput = {
   /** How big the change is (v2): small builds on the light tier with no
    * plan; large or risky plans and builds on the strong tier. */
   size?: TaskSizing | null;
-  /** Each provider's plan headroom at filing (v2): when a phase has
-   * candidates on both providers, a provider past its limits is skipped. */
+  /** Each provider's plan headroom at filing (v2): when a tier has
+   * candidates on more than one provider, the one with more room runs; a
+   * provider past its limits gives way even to a stronger tier. */
   headroom?: readonly ProviderRoom[];
 };
 
@@ -405,6 +420,7 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
   const overrideFor = (phase: Phase): RouteOverride | null => overrides.find(one => one.phase === phase) ?? null;
 
   const legs: RouteLeg[] = [];
+  // Elevated or high risk lifts both legs through the table, so it never reaches the small branches.
   const small = input.size?.size === "small";
   const pick = (phase: "plan" | "build" | "review"): { spec: RouteCandidate; tier: CandidateTier; reasons: string[]; moved: boolean } => {
     const chosen = pickTier(phase);
@@ -576,13 +592,19 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
 }
 
 /**
- * PLAN HEADROOM (v2): when a phase's configured candidates span providers,
- * a chosen candidate whose provider is past its limits (80% of the 5-hour
- * window, 90% of the weekly) gives way to the candidate on another
- * provider with the most room — at the same tier, or one tier stronger,
- * never weaker. Readings are the providers' own; with no reading for a
- * provider nothing moves. The choice and its reason are sealed with the
- * route.
+ * PLAN HEADROOM (v2), at filing:
+ *
+ *   - a tier with candidates on more than one provider (`--also`) runs on
+ *     the provider with more plan room — the lower window use — so work
+ *     spreads across plans before either fills;
+ *   - a chosen provider past its limits (80% of the 5-hour window, 90% of
+ *     the weekly) gives way to the roomiest other provider at the same
+ *     tier or one tier stronger, never weaker.
+ *
+ * Readings are the providers' own; a provider with no reading is unknown,
+ * never "empty", so nothing moves toward or away from it on a guess. Ties
+ * keep the tier's own candidate. The choice and its reason are sealed with
+ * the route.
  */
 function withHeadroom(
   input: RouteInput,
@@ -590,30 +612,39 @@ function withHeadroom(
   chosen: { spec: RouteCandidate; tier: CandidateTier; reasons: string[] },
 ): { spec: RouteCandidate; tier: CandidateTier; reasons: string[]; moved: boolean } {
   const rooms = input.headroom ?? [];
-  const roomOf = (provider: ProviderId): ProviderRoom | null => rooms.find(one => one.provider === provider) ?? null;
+  const roomOf = (provider: ProviderId): ProviderRoom | null => {
+    const room = rooms.find(one => one.provider === provider) ?? null;
+    return room !== null && (room.fiveHour !== null || room.weekly !== null) ? room : null;
+  };
   const current = roomOf(chosen.spec.provider);
   if (current === null) return { ...chosen, moved: false };
   const tight = tightWords(current);
-  if (tight === null) return { ...chosen, moved: false };
   const candidates = input.candidates[phase];
   const pool: { spec: RouteCandidate; tier: CandidateTier }[] = [];
-  for (const [tier, spec] of [["light", candidates.light ?? null], ["routine", candidates.routine], ["strong", candidates.strong]] as const) {
-    if (spec === null || spec.provider === chosen.spec.provider) continue;
-    if (TIER_RANK[tier] < TIER_RANK[chosen.tier] || TIER_RANK[tier] > TIER_RANK[chosen.tier] + 1) continue;
-    pool.push({ spec, tier });
+  for (const tier of ["light", "routine", "strong"] as const) {
+    const own = tier === "light" ? candidates.light ?? null : tier === "routine" ? candidates.routine : candidates.strong;
+    for (const spec of [own, ...(candidates.alternates?.[tier] ?? [])]) {
+      if (spec === null || spec.provider === chosen.spec.provider || pool.some(one => one.spec.provider === spec.provider && one.tier === tier)) continue;
+      // Not tight: only the same tier competes on room. Tight: one tier stronger may take it too.
+      if (tight === null ? tier !== chosen.tier : TIER_RANK[tier] < TIER_RANK[chosen.tier] || TIER_RANK[tier] > TIER_RANK[chosen.tier] + 1) continue;
+      pool.push({ spec, tier });
+    }
   }
   if (pool.length === 0) return { ...chosen, moved: false };
   const open = pool
     .map(one => ({ ...one, room: roomOf(one.spec.provider) }))
-    // A provider with no reading at all is unknown, never "empty".
-    .filter((one): one is { spec: RouteCandidate; tier: CandidateTier; room: ProviderRoom } => one.room !== null && (one.room.fiveHour !== null || one.room.weekly !== null) && tightWords(one.room) === null)
+    .filter((one): one is { spec: RouteCandidate; tier: CandidateTier; room: ProviderRoom } => one.room !== null && tightWords(one.room) === null)
+    .filter(one => tight !== null || usedOf(one.room) < usedOf(current))
     .sort((a, b) => usedOf(a.room) - usedOf(b.room) || TIER_RANK[a.tier] - TIER_RANK[b.tier]);
   const best = open[0];
-  if (best === undefined) return { ...chosen, reasons: [...chosen.reasons, `plan headroom: ${tight}, and no other configured ${PHASE_NOUN[phase]} has room — kept`], moved: false };
+  if (best === undefined) {
+    return tight === null ? { ...chosen, moved: false } : { ...chosen, reasons: [...chosen.reasons, `plan headroom: ${tight}, and no other configured ${PHASE_NOUN[phase]} has room — kept`], moved: false };
+  }
+  const why = tight ?? `${chosen.spec.provider} has used ${usedOf(current)}% of its plan`;
   return {
     spec: best.spec,
     tier: best.tier,
-    reasons: [...chosen.reasons.slice(0, -1), `plan headroom: ${tight} — ${best.spec.provider} has more room (${usedOf(best.room)}% used), so its ${best.tier} ${PHASE_NOUN[phase]} from ${best.spec.source} runs it`],
+    reasons: [...chosen.reasons.slice(0, -1), `plan headroom: ${why} — ${best.spec.provider} has more room (${usedOf(best.room)}% used), so its ${best.tier} ${PHASE_NOUN[phase]} from ${best.spec.source} runs it`],
     moved: true,
   };
 }
@@ -878,14 +909,15 @@ export function postureWords(route: Pick<PhaseRoute, "legs">): string {
 }
 
 /** The size line, plainly: what the size does to this route. */
-export function sizeWords(route: Pick<PhaseRoute, "legs" | "size">): string | null {
+export function sizeWords(route: Pick<PhaseRoute, "legs" | "size" | "risk">): string | null {
   if (route.size === null) return null;
   const build = route.legs.find(leg => leg.phase === "build");
   // Said from the build leg that actually runs: another demand (strict quality, screenshots) can lift it.
   const model = build?.tier === "light" ? "fast model" : build?.tier === "strong" ? "strongest model" : "everyday model";
-  if (route.size.size === "small" && !route.size.risky) return `Small change: ${model}, no plan`;
-  const label = route.size.size === "large" ? "Large change" : route.size.size === "small" ? "Small but risky change" : route.size.risky ? "Risky change" : "Medium change";
-  if (route.size.size === "medium" && !route.size.risky) return build?.tier === "strong" ? "Medium change: strongest agents" : "Medium change: everyday agents";
+  if (makesNoPlan(route.size, route.risk)) return `Small change: ${model}, no plan`;
+  // Elevated or high risk plans a small change too.
+  const label = route.size.size === "large" ? "Large change" : route.size.size === "small" ? (route.size.risky ? "Small but risky change" : "Small change") : route.size.risky ? "Risky change" : "Medium change";
+  if (route.size.size !== "large" && !route.size.risky && route.risk === "routine") return build?.tier === "strong" ? "Medium change: strongest agents" : "Medium change: everyday agents";
   return build?.tier === "strong" ? `${label}: strongest agents plan and build` : `${label}: planned first, everyday agents (no stronger agent is configured)`;
 }
 
@@ -905,10 +937,10 @@ export function chosenWords(leg: Pick<RouteLeg, "chosen" | "tier">): string {
  * plans, builds, and repairs; claude · opus reviews" — with the posture
  * said honestly (stronger agents only when one is actually selected).
  */
-export function agentsSummary(route: Pick<PhaseRoute, "legs"> & { size?: TaskSizing | null }): string {
+export function agentsSummary(route: Pick<PhaseRoute, "legs"> & { size?: TaskSizing | null; risk?: RiskLevel }): string {
   const groups: { spec: string; verbs: string[] }[] = [];
   // A small change makes no plan: its planner is not one of the agents that work on it.
-  const unplanned = route.size?.size === "small" && route.size.risky !== true;
+  const unplanned = makesNoPlan(route.size, route.risk ?? "routine");
   for (const leg of route.legs.filter(leg => leg.phase !== "review" && !(unplanned && leg.phase === "plan" && leg.chosen === "recommended"))) {
     const spec = specWords(leg);
     const group = groups.find(one => one.spec === spec);

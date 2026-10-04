@@ -20,12 +20,14 @@ import {
   routeDigestOf,
   routeFromJson,
   routeWords,
+  makesNoPlan,
   ROUTE_VERSION,
   type RouteCandidates,
   type RouteInput,
   type TaskSizing,
 } from "./phase-routing.js";
 import { openStore } from "./store.js";
+import { agentChoicesFor, resolveRouteCandidates } from "./agentconfig.js";
 
 const T0 = new Date("2026-10-04T12:00:00.000Z");
 const c = (provider: "claude" | "codex", model: string, source = "installation") => ({ provider, model, source });
@@ -102,6 +104,22 @@ describe("tiers by size", () => {
     expect(legOf(overridden, "build")).toMatchObject({ model: "sonnet", chosen: "override", recommended: { model: "haiku", tier: "light" } });
   });
 
+  test("elevated or high risk plans a small change too, and the card says so", () => {
+    for (const risk of ["elevated", "high"] as const) {
+      const route = recommendRoute(input({ risk, size: sized("small") }));
+      expect(legOf(route, "plan")).toMatchObject({ model: "opus", tier: "strong" });
+      expect(legOf(route, "plan").reasons[0]).not.toContain("no plan");
+      const projection = projectRoute(route, NO_READINESS);
+      expect(projection.sizeWords).toBe("Small change: strongest agents plan and build");
+      // The planner works on it, so the summary names it.
+      expect(projection.summary).toBe("claude · opus plans, builds, and repairs");
+    }
+    expect(makesNoPlan(sized("small"), "routine")).toBe(true);
+    expect(makesNoPlan(sized("small"), "elevated")).toBe(false);
+    expect(makesNoPlan(sized("small", true), "routine")).toBe(false);
+    expect(makesNoPlan(null, "routine")).toBe(false);
+  });
+
   test("an unsized task routes exactly as before", () => {
     const route = recommendRoute(input());
     expect(route.size).toBeNull();
@@ -147,6 +165,38 @@ describe("plan headroom", () => {
   test("headroom never moves a phase to a weaker tier, or past one tier stronger", () => {
     const strongOnly = recommendRoute(input({ risk: "high", candidates: { ...both(), build: { routine: c("codex", "gpt-5-mini"), strong: c("claude", "opus", "installation (strong)") } }, headroom: room([95, 10], [1, 1]) }));
     expect(legOf(strongOnly, "build")).toMatchObject({ provider: "claude", model: "opus" });
+  });
+
+  // A tier with a candidate on each provider (`config set build --also …`).
+  const pair = (): RouteCandidates => ({
+    plan: { routine: c("claude", "sonnet"), strong: null, alternates: { routine: [c("codex", "gpt-5.6", "installation (routine, also)")] } },
+    build: { routine: c("claude", "sonnet"), strong: c("claude", "opus", "installation (strong)"), alternates: { routine: [c("codex", "gpt-5.6", "installation (routine, also)")], strong: [c("codex", "gpt-5.6-pro", "installation (strong, also)")] } },
+    repair: { routine: null, strong: null },
+    review: { routine: c("claude", "sonnet"), strong: null },
+  });
+
+  test("a tier with a candidate on each provider runs on the one with more room, well under the limits", () => {
+    const route = recommendRoute(input({ candidates: pair(), headroom: room([30, 40], [5, 1]) }));
+    expect(legOf(route, "build")).toMatchObject({ provider: "codex", model: "gpt-5.6", tier: "routine" });
+    expect(legOf(route, "build").reasons.at(-1)).toBe("plan headroom: claude has used 40% of its plan — codex has more room (5% used), so its routine builder from installation (routine, also) runs it");
+    expect(legOf(route, "plan")).toMatchObject({ provider: "codex", model: "gpt-5.6" });
+    // Repairs follow the build to codex on its own model.
+    expect(legOf(route, "repair")).toMatchObject({ provider: "codex", model: "gpt-5.6", problem: null });
+    expect(routeFromJson(canonicalRouteJson(route))).toEqual(route);
+    // The strong tier spreads the same way.
+    expect(legOf(recommendRoute(input({ risk: "high", candidates: pair(), headroom: room([30, 40], [5, 1]) })), "build")).toMatchObject({ provider: "codex", model: "gpt-5.6-pro", tier: "strong" });
+  });
+
+  test("more room means lower use: the tier's own candidate stays when it has as much or more, or the other is unknown", () => {
+    expect(legOf(recommendRoute(input({ candidates: pair(), headroom: room([5, 1], [30, 40]) })), "build").provider).toBe("claude");
+    expect(legOf(recommendRoute(input({ candidates: pair(), headroom: room([20, 20], [20, 10]) })), "build").provider).toBe("claude");
+    expect(legOf(recommendRoute(input({ candidates: pair(), headroom: room([50, 50], [null, null]) })), "build").provider).toBe("claude");
+    expect(legOf(recommendRoute(input({ candidates: pair(), headroom: room([null, null], [1, 1]) })), "build").provider).toBe("claude");
+    // A provider past its limits never takes the work, however the other compares.
+    expect(legOf(recommendRoute(input({ candidates: pair(), headroom: room([95, 95], [85, 1]) })), "build").provider).toBe("claude");
+    // Within limits, nothing moves to a stronger tier for room alone.
+    const sameTierOnly = recommendRoute(input({ candidates: both(), headroom: room([60, 60], [1, 1]) }));
+    expect(legOf(sameTierOnly, "build").provider).toBe("claude");
   });
 
   test("readings become headroom: a passed reset is empty, a stale reading is unknown, a plan-wide week wins", () => {
@@ -242,6 +292,58 @@ describe("the store", () => {
       expect(store.refFor("built-in", "copy")).toMatchObject({ routeTier: "strong", plan: "requested" });
       // The classifier never overrides a person.
       expect(store.applySizing("copy", sized("small"), { followPlanning: true }, T0)).toEqual({ ok: false, reason: "person" });
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a tier holds one agent per provider: filing picks the one with more plan room and seals why; a light planner is refused", () => {
+    const store = openStore(":memory:");
+    try {
+      store.setPhaseConfig("installation", "plan", "claude", "sonnet", "ops", T0);
+      store.setPhaseConfig("installation", "build", "claude", "sonnet", "ops", T0);
+      store.setPhaseTierAlternate("installation", "build", "routine", "codex", "gpt-5.6", "ops", T0);
+      // The same provider as the tier's own agent is shadowed, not doubled.
+      store.setPhaseTierAlternate("installation", "build", "routine", "claude", "sonnet-alt", "ops", T0);
+      const resolved = resolveRouteCandidates(store, "/repo/shop");
+      expect(resolved.ok && resolved.candidates.build.alternates).toEqual({ routine: [{ provider: "codex", model: "gpt-5.6", source: "installation (routine, also)" }] });
+      // Both are offered as configured builders.
+      expect(agentChoicesFor(store, "/repo/shop", null).build.map(one => `${one.provider} · ${one.model}`)).toEqual(["claude · sonnet", "codex · gpt-5.6"]);
+      const window = (usedPercent: number) => [{ window: "five_hour", usedPercent, windowMinutes: 300, resetsAt: null, reached: false }];
+      store.recordProviderLimits({ provider: "claude", plan: null, windows: window(45) }, T0);
+      store.recordProviderLimits({ provider: "codex", plan: null, windows: window(2) }, T0);
+      expect(store.createConsoleTask({ id: "feat", title: "Add a filter", repo: "/repo/shop", goal: "Filter orders by date", acceptance: [{ id: "c1", statement: "It filters", evidence: ["check"] }], sizing: sized("medium") }, T0).ok).toBe(true);
+      const route = routeFromJson(store.getScope("feat")!.proposedRouteJson ?? null)!;
+      expect(legOf(route, "build")).toMatchObject({ provider: "codex", model: "gpt-5.6" });
+      expect(legOf(route, "build").reasons.at(-1)).toContain("codex has more room (2% used)");
+      expect(store.clearPhaseTierAlternates("installation", "build", "routine", "codex")).toBe(1);
+      expect(() => store.setPhaseTierConfig("installation", "plan", "light", "claude", "haiku", "ops", T0)).toThrow(/build phase only/);
+      expect(() => store.setPhaseTierAlternate("installation", "plan", "light", "codex", "gpt-5.6-mini", "ops", T0)).toThrow(/build phase only/);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("elevated or high risk asks for a plan whatever the size; a size edit keeps planning at that risk", () => {
+    const store = openStore(":memory:");
+    try {
+      store.setPhaseConfig("installation", "plan", "claude", "sonnet", "ops", T0);
+      store.setPhaseConfig("installation", "build", "claude", "sonnet", "ops", T0);
+      store.setPhaseTierConfig("installation", "build", "light", "claude", "haiku", "ops", T0);
+      expect(store.createConsoleTask({ id: "copy", title: "Fix the button label", repo: "/repo/shop", goal: "Say Save", acceptance: [{ id: "c1", statement: "It says Save", evidence: ["check"] }], sizing: sized("small") }, T0).ok).toBe(true);
+      const ref = store.refFor("built-in", "copy");
+      expect(ref.plan).toBeNull();
+      const person = { by: "alex", authenticate: () => ({ ok: true }) as const };
+      expect(store.editTaskRoute(ref.id, { ...person, risk: "elevated" }, T0).ok).toBe(true);
+      expect(store.refFor("built-in", "copy").plan).toBe("requested");
+      // Saying it is small again does not drop the plan while risk is elevated.
+      expect(store.editTaskRoute(ref.id, { ...person, size: { size: "small", risky: false } }, T0).ok).toBe(true);
+      expect(store.refFor("built-in", "copy").plan).toBe("requested");
+      // Neither does the classifier.
+      expect(store.applySizing("copy", sized("small"), { followPlanning: true }, T0)).toEqual({ ok: false, reason: "person" });
+      // Back at routine risk, a small size drops the requested plan.
+      expect(store.editTaskRoute(ref.id, { ...person, risk: "routine", size: { size: "small", risky: false } }, T0).ok).toBe(true);
+      expect(store.refFor("built-in", "copy").plan).toBeNull();
     } finally {
       store.close();
     }

@@ -2352,15 +2352,38 @@ describe("the phase route on the console (v47): one projection on the task page,
     const html = await page(cookie, "/t/payouts");
     expect(agentsCardOf(html)).toContain('<option value="small">Small change: fast model, no plan</option>');
     expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "tiny" })).status).toBe(400);
-    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" });
+    // At this task's high risk a small change still plans; at routine risk it makes no plan.
+    expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" })).status).toBe(303);
+    expect(store.refFor("built-in", "payouts")).toMatchObject({ riskLevel: "high", plan: "requested" });
+    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small", risk: "routine" });
     expect(sized.status).toBe(303);
     expect(store.refFor("built-in", "payouts").sizing).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
+    expect(store.refFor("built-in", "payouts").plan).toBeNull();
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(await page(cookie, "/t/payouts"))?.[1] ?? "";
     const sizeAt = ceremony.indexOf('<p class="agents-size"><strong>');
     expect(sizeAt).toBeGreaterThan(-1);
     expect(ceremony.indexOf('name="token"')).toBeGreaterThan(sizeAt);
     // The rubric here asks for screenshots, which lifts the builder: the size line says what actually runs.
     expect(ceremony.slice(sizeAt)).toMatch(/^<p class="agents-size"><strong>Small change: strongest model, no plan\.<\/strong> <span class="meta">set by alex<\/span><\/p>/);
+  });
+
+  test("size: setting a size keeps the risky flag, and the page can mark a task risky", async () => {
+    const cookie = await loginAs("alex", approverToken);
+    const html = await page(cookie, "/t/payouts");
+    expect(agentsCardOf(html)).toContain('<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"> Risky</label>');
+    // The form as a browser sends it: the hidden "no", then the ticked box.
+    const form = (fields: [string, string][]) =>
+      fetch(url("/t/payouts/route"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams([["csrf", csrfOf(html)], ["sawDigest", store.getScope("payouts")!.digest], ...fields]), redirect: "manual" });
+    expect((await form([["size", "small"], ["risky", "no"], ["risky", "yes"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "small", risky: true, source: "person" });
+    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<input type="checkbox" name="risky" value="yes" checked> Risky');
+    // A size alone (another client, no box) keeps the flag.
+    expect((await form([["size", "medium"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: true });
+    // Unticked on the form: not risky.
+    expect((await form([["size", "medium"], ["risky", "no"]])).status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: false });
+    expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
   test("consent: the task page, the focused chat, and the next-up triage all restate the same concise exact agents before the password, with runtime limits closed away", async () => {

@@ -688,10 +688,17 @@ Agents — which provider and model each phase runs on
                                         the STRONG agent high-risk, strict,
                                         screenshot-proof, and automerge
                                         routes reach for; never inferred
-  toolroll config set <plan|build> --tier light --provider <p> --model <m>
+  toolroll config set build --tier light --provider <p> --model <m>
       [--repo <path>] --as <you> --token <t>
                                         the fast agent small changes build
                                         on, with no plan
+  toolroll config set <plan|build> [--tier light|strong] --also
+      --provider <p> --model <m> [--repo <path>] --as <you> --token <t>
+                                        another provider's agent on the same
+                                        tier; each task runs the one whose
+                                        plan has more room
+  toolroll config clear <plan|build> [--tier light|strong] --also
+      [--provider <p>] [--repo <path>] --as <you> --token <t>
   toolroll config clear <phase> [--repo <path>] --as <you> --token <t>
 
   toolroll setup show --repo <path>  what a fresh checkout runs first
@@ -867,6 +874,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "revoke",
   // task merge: merge without waiting for the full check (Quick or Off results).
   "anyway",
+  // config set/clear: another provider's candidate on the same tier.
+  "also",
 ]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
@@ -6498,8 +6507,11 @@ async function configCommand(
       phase: one,
       strong: candidates.ok ? candidates.candidates[one].strong : null,
     }));
+    const alsoRows = [...store.listPhaseTierAlternates(INSTALLATION_SCOPE), ...(scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierAlternates(scope))];
+    // A light planner from before light became build-only is never used: said, with how to clear it.
+    const unusedLight = [INSTALLATION_SCOPE, ...(scope === INSTALLATION_SCOPE ? [] : [scope])].filter(one => store.phaseTierConfig(one, "plan", "light") !== null);
     if (json) {
-      write(envelopeJson({ ok: true, command: "config show", installation, project, resolved, fallback, strong, installationStrong: store.listPhaseTierConfig(INSTALLATION_SCOPE), projectStrong: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierConfig(scope) }));
+      write(envelopeJson({ ok: true, command: "config show", installation, project, resolved, fallback, strong, installationStrong: store.listPhaseTierConfig(INSTALLATION_SCOPE), projectStrong: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierConfig(scope), installationAlso: store.listPhaseTierAlternates(INSTALLATION_SCOPE), projectAlso: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierAlternates(scope) }));
       return EXIT.ok;
     }
     write(`Effective phase agents${scope === INSTALLATION_SCOPE ? "" : ` for ${scope}`}:`);
@@ -6518,12 +6530,19 @@ async function configCommand(
     write("  set one with: toolroll config set <phase> --tier strong --provider <p> --model <m> --as <you> --token <t>");
     write("");
     write("  light tier (small changes build on this, with no plan):");
-    for (const one of ["plan", "build"] as const) {
-      const light = candidates.ok ? candidates.candidates[one].light ?? null : null;
-      write(`  ${one.padEnd(8)} ${light === null ? "none configured — small changes keep the default above and say so" : `${light.provider} · ${light.model}  [${light.source}]`}`);
-    }
+    const light = candidates.ok ? candidates.candidates.build.light ?? null : null;
+    write(`  ${"build".padEnd(8)} ${light === null ? "none configured — small changes keep the default above and say so" : `${light.provider} · ${light.model}  [${light.source}]`}`);
+    for (const one of unusedLight) write(`  ${"plan".padEnd(8)} not used — a small change makes no plan; \`config clear plan --tier light${one === INSTALLATION_SCOPE ? "" : ` --repo ${one}`}\` removes it`);
     write("  set one with: toolroll config set build --tier light --provider <p> --model <m> --as <you> --token <t>");
     write("");
+    if (candidates.ok) {
+      const also = (["plan", "build"] as const).flatMap(one => Object.entries(candidates.candidates[one].alternates ?? {}).flatMap(([tier, list]) => (list ?? []).map(spec => `  ${one.padEnd(8)} ${tier.padEnd(8)} also ${spec.provider} · ${spec.model}  [${spec.source}]`)));
+      if (also.length > 0 || alsoRows.length > 0) {
+        write("  other providers on a tier (each task runs the one whose plan has more room):");
+        for (const line of also) write(line);
+        write("");
+      }
+    }
     write("  repair note: the repair PROVIDER always inherits the build it mends — only its model is configurable.");
     if (fallback.length > 0) {
       write("");
@@ -6780,8 +6799,44 @@ async function configCommand(
   if (tierGiven !== undefined && tierGiven !== "strong" && tierGiven !== "light") {
     return fail(write, json, `config ${action}`, "usage", "--tier is `light` or `strong` — the routine tier is the plain phase row", EXIT.usage);
   }
-  if (tierGiven === "light" && phase !== "plan" && phase !== "build") {
-    return fail(write, json, `config ${action}`, "usage", "--tier light is for plan or build — repairs resume the builder's session", EXIT.usage);
+  // A light planner would never run (a small change makes no plan): refused rather than kept and ignored.
+  // Clearing one left from before stays possible.
+  if (tierGiven === "light" && phase !== "build" && !(action === "clear" && phase === "plan" && !flag(flags, "also"))) {
+    return fail(write, json, `config ${action}`, "usage", "--tier light is for build only — a small change makes no plan, and repairs resume the builder's session", EXIT.usage);
+  }
+
+  // Another provider's candidate on the same tier (`--also`): one per provider, and at filing the one whose plan
+  // has more room runs.
+  if (flag(flags, "also")) {
+    if (phase !== "plan" && phase !== "build") {
+      return fail(write, json, `config ${action}`, "usage", "--also is for plan or build — repairs follow the build's provider", EXIT.usage);
+    }
+    const tier = (tierGiven ?? "routine") as "light" | "routine" | "strong";
+    const alsoProvider = text(flags, "provider");
+    if (alsoProvider !== undefined && !isProviderId(alsoProvider)) {
+      return fail(write, json, `config ${action}`, "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
+    }
+    if (action === "clear") {
+      const removed = store.clearPhaseTierAlternates(scope, phase, tier, alsoProvider ?? null);
+      return succeed(write, json, "config clear", { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
+        removed > 0 ? `Removed ${removed} other-provider ${tier} ${phase} agent${removed === 1 ? "" : "s"} at ${scope}; sealed routes are untouched.` : `No other-provider ${tier} ${phase} agent${alsoProvider === undefined ? "" : ` on ${alsoProvider}`} was configured at ${scope}.`,
+      ]);
+    }
+    const alsoModel = text(flags, "model");
+    if (alsoProvider === undefined || alsoModel === undefined) {
+      return fail(write, json, "config set", "usage", "--also names an exact --provider and --model — approvals bind exact routing", EXIT.usage);
+    }
+    const alsoValid = validateSpec({ provider: alsoProvider, model: alsoModel });
+    if (!alsoValid.ok) return fail(write, json, "config set", "invalid", alsoValid.problem, EXIT.usage);
+    store.setPhaseTierAlternate(scope, phase, tier, alsoProvider, alsoModel, acting.name, clock());
+    const resolvedNow = resolveRouteCandidates(store, scope === INSTALLATION_SCOPE ? null : scope);
+    const own = !resolvedNow.ok ? null : tier === "routine" ? resolvedNow.candidates[phase].routine : tier === "light" ? resolvedNow.candidates[phase].light ?? null : resolvedNow.candidates[phase].strong;
+    return succeed(write, json, "config set", { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
+      `${tier} ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} can also run ${alsoProvider} · ${alsoModel}, set by ${acting.name}.`,
+      own !== null && own.provider === alsoProvider && !own.source.includes("also")
+        ? `  ! the ${tier} ${phase} agent already runs ${alsoProvider} (${own.model}) — this one is not used while it does.`
+        : "  tasks filed from now on run on whichever provider's plan has more room; sealed routes are untouched.",
+    ]);
   }
 
   if (action === "clear") {

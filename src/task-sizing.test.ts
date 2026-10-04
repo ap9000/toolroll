@@ -22,7 +22,7 @@ import {
   SIZING_BUDGET_MS,
   type Sizer,
 } from "./task-sizing.js";
-import type { ExecResult } from "./exec.js";
+import { ownedProcessCount, run, type ExecResult } from "./exec.js";
 
 const T0 = new Date("2026-10-04T12:00:00.000Z");
 const acceptance = [{ id: "c1", statement: "It works", evidence: ["check"] }];
@@ -78,6 +78,28 @@ describe("the owner's classifiers", () => {
     expect(await claudeSizer(reply(JSON.stringify({ subtype: "success", structured_output: { size: "huge", risky: false } })))({ title: "x" }, signal)).toBeNull();
     expect(await claudeSizer(reply("not json"))({ title: "x" }, signal)).toBeNull();
     expect(await claudeSizer(reply("{}", 1))({ title: "x" }, signal)).toBeNull();
+  });
+
+  test("Claude: the budget's abort ends the classifier process, so no command waits on a late answer", async () => {
+    // A real process group standing in for a claude that never answers.
+    let owner = "";
+    const hanging = (_file: string, _args: readonly string[], options: Parameters<typeof run>[2]) => {
+      owner = String(options?.owner);
+      return run("/bin/sh", ["-c", "sleep 30"], { ...options, timeoutMs: 60_000 });
+    };
+    const started = Date.now();
+    const sized = await classifyTask({ title: "Fix a typo" }, claudeSizer(hanging), 200);
+    expect(sized).toMatchObject({ source: "heuristic", size: "small" });
+    expect(owner).toMatch(/^sizing:/);
+    // The sleeping child is gone well before its own 30 seconds.
+    await vi.waitFor(() => expect(ownedProcessCount(owner)).toBe(0), { timeout: 5_000 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // Already aborted: nothing is spawned at all.
+    const controller = new AbortController();
+    controller.abort();
+    let spawned = false;
+    expect(await claudeSizer(async () => { spawned = true; return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false } as ExecResult; })({ title: "x" }, controller.signal)).toBeNull();
+    expect(spawned).toBe(false);
   });
 
   test("Jev on OpenRouter: one size choice and one yes/no with the owner's key; ownerSizer prefers it when a key is set up", async () => {

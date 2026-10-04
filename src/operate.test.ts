@@ -2166,6 +2166,20 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload()).toMatchObject({ tier: "light", cleared: true });
   });
 
+  test("a light planner is refused, not kept and ignored; --also names another provider's agent on a tier, shown and clearable", async () => {
+    expect(await run(["config", "set", "plan", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(payload().error ?? JSON.stringify(payload())).toContain("build only");
+    expect(await run(["config", "set", "build", "--also", "--provider", "codex", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "repair", "--also", "--provider", "codex", "--model", "gpt-5.6", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--also", "--provider", "codex", "--model", "gpt-5.6", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, tier: "routine", also: true, provider: "codex", model: "gpt-5.6" });
+    await run(["config", "show"]);
+    expect(text()).toContain("other providers on a tier (each task runs the one whose plan has more room):");
+    expect(text()).toContain("build    routine  also codex · gpt-5.6  [installation (routine, also)]");
+    expect(await run(["config", "clear", "build", "--also", "--provider", "codex", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ also: true, cleared: 1 });
+  });
+
   test("task route shows one projection with reasons; --risk and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
     await run(["config", "set", "build", "--tier", "strong", "--provider", "claude", "--model", "opus", "--as", "alex", "--token", token, "--json"]);
     // Before a scope: a live recommendation.

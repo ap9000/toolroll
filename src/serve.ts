@@ -294,7 +294,7 @@ import type { BoardCard } from "./board.js";
 import { approveRoutine, describeSchedule, fireRoutine, parseSchedule, refreshRoutineAgents, routineAgentsState, routineDigestOf, validateRoutineTerms, ROUTINE_NAME, type RoutineTerms } from "./routine.js";
 import { effectivePrimary, isMessagingChannel, loadConsoleUrl, savePrimary } from "./webhooks.js";
 import { resolvePhaseAgent, resolveRoutineAuthority, INSTALLATION_SCOPE, routeOfTask, agentChoicesFor, type AgentChoice } from "./agentconfig.js";
-import { isRiskLevel, isTaskSize, projectRoute, riskTitle, riskConsequence, chosenWords, agentsSummary, postureWords, RISK_CHOICES, RISK_LEVELS, TASK_SIZES, PHASES as ROUTE_PHASES, type PhaseRoute, type RouteProjection, type RouteOverride, type RouteStamp, type RiskLevel } from "./phase-routing.js";
+import { isRiskLevel, isTaskSize, makesNoPlan, projectRoute, riskTitle, riskConsequence, chosenWords, agentsSummary, postureWords, RISK_CHOICES, RISK_LEVELS, TASK_SIZES, PHASES as ROUTE_PHASES, type PhaseRoute, type RouteProjection, type RouteOverride, type RouteStamp, type RiskLevel } from "./phase-routing.js";
 import { ALL_CREDENTIAL_ENV, isProviderId, reportsCost, PROVIDER_IDS, validModelId, validateSpec, type Phase, type ProviderId } from "./provider.js";
 import { authenticateAccount, freshIdentitySignIn, hasFreshIdentitySignIn, hashPassword, modeFilingCoverage, PLACEHOLDER_RUBRIC, profileFromJson } from "./scope.js";
 import { DEFAULT_GUARD_POLICY, passwordGuardOf, SourceBudget } from "./sign-in-guard.js";
@@ -10723,6 +10723,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // inside the transaction.
         const riskGiven = body.get("risk");
         const sizeGiven = body.get("size");
+        const riskyGiven = body.getAll("risky");
         const phaseGiven = body.get("phase");
         const clearGiven = body.get("clear-phase");
         // The agent arrives as the form's `provider|model` choice (v48) or,
@@ -10737,7 +10738,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const phase = phaseGiven ?? clearGiven;
         if (phase !== null && !(ROUTE_PHASES as readonly string[]).includes(phase)) return taskScreen(response, who, taskId, "the role is planner, builder, or revision", 400);
         if (sizeGiven !== null && !isTaskSize(sizeGiven)) return taskScreen(response, who, taskId, "size is small, medium, or large", 400);
-        if (riskGiven === null && phase === null && sizeGiven === null) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
+        if (riskyGiven.some(one => one !== "yes" && one !== "no")) return taskScreen(response, who, taskId, "risky is yes or no", 400);
+        // A size keeps the task's risky flag unless the form says otherwise; marking risky keeps the size.
+        const sizeEdit = sizeGiven === null && riskyGiven.length === 0 ? undefined : {
+          size: sizeGiven !== null && isTaskSize(sizeGiven) ? sizeGiven : ref.sizing?.size ?? "medium",
+          risky: riskyGiven.includes("yes") ? true : riskyGiven.includes("no") ? false : ref.sizing?.risky ?? false,
+        };
+        if (riskGiven === null && phase === null && sizeEdit === undefined) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
         if (phaseGiven !== null) {
           if (providerGiven === null || !isProviderId(providerGiven)) return taskScreen(response, who, taskId, "provider is claude, codex, openrouter, or gemini", 400);
           if (modelGiven === "") return taskScreen(response, who, taskId, "name the exact model id — approvals bind exact agents", 400);
@@ -10758,8 +10765,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
               return account !== null && account.revokedAt === null && account.role === "approver" ? { ok: true } : { ok: false, reason: "your login is no longer an approver" };
             },
             ...(riskGiven === null ? {} : { risk: riskGiven as RiskLevel }),
-            // A person's size replaces the classifier's whole judgement; risk is declared with the risk control.
-            ...(sizeGiven === null || !isTaskSize(sizeGiven) ? {} : { size: { size: sizeGiven, risky: false } }),
+            // A person's size replaces the classifier's; the risky flag rides with it.
+            ...(sizeEdit === undefined ? {} : { size: sizeEdit }),
             ...(phase === null
               ? {}
               : { override: phaseGiven !== null ? { phase: phase as RouteOverride["phase"], provider: providerGiven as ProviderId, model: modelGiven } : { phase: phase as RouteOverride["phase"], clear: true as const } }),
@@ -12478,7 +12485,7 @@ function approvalSheetHtml(input: {
   const planner = legOf("plan");
   // A small change makes no plan: no planner is named (a person's chosen planner still is).
   const sized = route?.projection?.size ?? null;
-  const unplanned = sized !== null && sized.size === "small" && !sized.risky && planner?.chosen === "recommended";
+  const unplanned = route?.projection != null && makesNoPlan(sized, route.projection.risk) && planner?.chosen === "recommended";
   if (planner !== undefined && !unplanned) who.push(`Planner ${agentNameWords(planner.provider, planner.model)}`);
   // What the yes allows, in plain words, right above it: the agent's
   // permissions, the per-attempt limit, and an earlier version still running.
@@ -13007,6 +13014,8 @@ function agentsCardHtml(taskId: string, view: RouteView | null | undefined, csrf
         `<button type="submit" class="secondary">Set risk</button></form>` +
         `<form method="post" action="${taskHref(taskId)}/route" class="agents-form-risk">${hidden}` +
         `<label>Size<select name="size" aria-label="task size">${TASK_SIZES.map(one => `<option value="${one}"${one === (p?.size?.size ?? "medium") ? " selected" : ""}>${escape(sizeConsequence(one, false))}</option>`).join("")}</select></label>` +
+        // The hidden "no" says the form showed the box: unticked means not risky; a request without either keeps the flag.
+        `<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"${p?.size?.risky === true ? " checked" : ""}> Risky</label>` +
         `<button type="submit" class="secondary">Set size</button></form>` +
         riskGuide +
         `<div class="agents-role-forms">${roleForms.join("")}</div>` +
@@ -14277,6 +14286,7 @@ ${THEME_DARK}
   .agents-form input, .agents-form select, .agents-form-risk select { width: 100%; min-width: 0; min-height: 2.75rem; }
   .agents-form button, .agents-form-risk button, .agents-clear button { min-height: 2.75rem; }
   .agents-form-risk { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; margin-top: .5rem; }
+  .agents-form-risk label.agents-risky { display: flex; align-items: center; gap: .4rem; min-height: 2.75rem; font-size: .85rem; }
   .agents-overrides { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .35rem; font-size: .78rem; }
   .agents-overrides li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .6rem; }
   .agents-clear { margin: 0; }
