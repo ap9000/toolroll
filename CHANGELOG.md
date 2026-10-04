@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.29 — 2026-10-04
+
+- **Tasks filed from the command line get sized too.** `task scope` now sizes
+  the task from its goal before the plan is sealed, so work the lead files
+  gets the same fast-or-strong model choice as work filed in the console.
+- **A reused process ID no longer blocks finishing a release.** Once
+  Toolroll has recorded that a process exited, a new program taking its
+  number doesn't count as the old one. Leftover process records close when the
+  run ends, and a wait that clears by itself says so instead of asking you to
+  confirm.
+- **Status shows each task once.** A task that is building appears only under
+  Building, an approved plan no longer reads as waiting for review, and risky
+  routes say "Risky" instead of "routine".
+
 ## 0.9.28 — 2026-10-04
 
 - **Each task gets the right model.** When a task is filed, a fast
