@@ -328,8 +328,11 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
     if (waiting === null) { retire(state, card, entry, now); say("That card has moved on since; nothing was changed."); return true; }
     if (said === "") { say(mode === "edit" ? "Send the text itself, or “cancel”." : "Say what should change, or send “cancel”."); return true; }
     // A long message arrives cut short (the chat keeps its first 2,000 characters): never take part of one as the draft.
-    const limit = (input.originalLength ?? 0) > input.text.length ? MATE_MESSAGE_MAX_CHARS : DRAFT_LIMIT;
-    if ((input.originalLength ?? 0) > input.text.length || said.length > DRAFT_LIMIT) { say(`That's too long to take from here. Keep it under ${limit.toLocaleString("en-US")} characters, or change it in Toolroll.`); return true; }
+    // An edit is a draft (DRAFT_LIMIT); a send-back is a note (LIMITS.note). Over it is refused with the limit, never cut.
+    const cutShort = (input.originalLength ?? 0) > input.text.length;
+    const most = mode === "edit" ? DRAFT_LIMIT : LIMITS.note;
+    const limit = cutShort ? Math.min(MATE_MESSAGE_MAX_CHARS, most) : most;
+    if (cutShort || said.length > most) { say(`That's too long to take from here. Keep it to ${limit.toLocaleString("en-US")} characters, or ${mode === "edit" ? "change it" : "send it back"} in Toolroll.`); return true; }
     if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { close(); state.finish(event.id, true); return true; }
     if (mode === "edit") {
       if (waiting.draft === null) { close(); say("This decision has no draft to edit."); return true; }
@@ -343,7 +346,7 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
         { card, entry, actions: actionsFor(fresh) }, { label: "Open", path: flowCardHref(waiting.flow.id, card) }), now);
       return true;
     }
-    const decided = decideFlowCard(store, { card, decision: "send-back", note: said.slice(0, LIMITS.note), actor: binding.approver, repos, entry }, now);
+    const decided = decideFlowCard(store, { card, decision: "send-back", note: said, actor: binding.approver, repos, entry }, now);
     if (!decided.ok) { close(); say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);

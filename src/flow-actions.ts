@@ -19,7 +19,6 @@
  * tried again, like every step.
  */
 import { createHash } from "node:crypto";
-import { TEXT_LIMITS } from "./text-limits.js";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import nodemailer from "nodemailer";
@@ -35,17 +34,10 @@ import { callProjectTool, projectToolsOf, readToolSecrets, type ToolCall, type T
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { FlowCardRow, Store } from "./store.js";
 
+/** `output` is the answer whole: the step passes it on whole up to TEXT_LIMITS.stageOutput, and attaches longer to the card, linked (flow-steps settle). */
 export type ActionOutcome = { state: "passed" | "failed" | "retry"; said: string; log?: string; output?: string;
   /** email (v91): the Message-ID it went out with, and to whom, so a reply finds the card. */
   mail?: { id: string; to: string[] } };
-const OUTPUT_CHARS = TEXT_LIMITS.stageOutput;
-/** What a step passes on: the answer whole up to OUTPUT_CHARS; past it, the start and a line saying the rest is in the step's log (which holds it). */
-const passed = (text: string) => {
-  if (text.length <= OUTPUT_CHARS) return text;
-  const mark = (rest: number) => `\n… (${rest.toLocaleString("en-US")} more characters are in the step's log)`;
-  const keep = OUTPUT_CHARS - mark(text.length).length;
-  return `${text.slice(0, keep)}${mark(text.length - keep)}`;
-};
 const clip = (text: string, cap: number) => text.length <= cap ? text : `${text.slice(0, cap - 1)}…`;
 const blank = (text: string) => redactSecretAssignments(redactSecretLines(text, scanForSecrets(text)));
 
@@ -105,9 +97,9 @@ export async function runRequest(stage: FlowStage, card: FlowCardRow, repo: stri
   const answered = blank(scrub(clip(await response.text().catch(() => ""), 64_000), secrets));
   const log = `${request.method} ${shown}\n→ ${response.status} ${response.statusText}\n\n${clip(answered, 64_000)}`;
   const first = answered.trim().split("\n")[0]?.slice(0, 160) ?? "";
-  if (response.ok) return { state: "passed", said: `${where} answered ${response.status}.`, log, output: passed(answered) };
+  if (response.ok) return { state: "passed", said: `${where} answered ${response.status}.`, log, output: answered };
   if (response.status === 429 || response.status >= 500) return { state: "retry", said: `${where} answered ${response.status}${first === "" ? "" : `: ${first}`}.`, log };
-  return { state: "failed", said: `${where} refused it (${response.status})${first === "" ? "" : `: ${first}`}.`, log, output: passed(answered) };
+  return { state: "failed", said: `${where} refused it (${response.status})${first === "" ? "" : `: ${first}`}.`, log, output: answered };
 }
 
 // ---- email ----------------------------------------------------------------------
@@ -201,6 +193,6 @@ export async function useTool(store: Store, stage: FlowStage, card: FlowCardRow,
   if (!answer.ok) return { state: "retry", said: `${call.server}: ${answer.problem}` };
   const said = blank(scrub(clip(answer.text, 64_000), values));
   const log = `${call.server} → ${call.name}\n${blank(JSON.stringify(args, null, 2)).slice(0, 4000)}\n\n${clip(said, 64_000)}`;
-  if (answer.isError) return { state: "failed", said: `${call.server} → ${call.name} said it failed${said.trim() === "" ? "" : `: ${said.trim().split("\n")[0]!.slice(0, 160)}`}.`, log, output: passed(said) };
-  return { state: "passed", said: `${call.server} → ${call.name} done.`, log, output: passed(said) };
+  if (answer.isError) return { state: "failed", said: `${call.server} → ${call.name} said it failed${said.trim() === "" ? "" : `: ${said.trim().split("\n")[0]!.slice(0, 160)}`}.`, log, output: said };
+  return { state: "passed", said: `${call.server} → ${call.name} done.`, log, output: said };
 }

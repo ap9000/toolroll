@@ -262,9 +262,12 @@ function settle(store: Store, definition: FlowDefinition, stage: FlowStage, card
     outcome = { state: "failed", said: `${outcome.said} It didn't work after three tries.` };
   }
   store.finishFlowStep(card.id, card.entry, { state: outcome.state === "passed" ? "passed" : "failed", result: outcome.said, ...kept }, now);
-  // What the steps after it read: whole up to TEXT_LIMITS.stageOutput; longer is kept whole in this step's log, and they read where.
-  const output = passOn(outcome.output ?? outcome.said, TEXT_LIMITS.stageOutput, { label: `the card's ${stage.title} step`, href: flowCardHref(card.flow, card.id) }).text;
-  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: output }, waiting: null }, now);
+  // What the steps after it read: whole up to TEXT_LIMITS.stageOutput; longer is attached whole to the card's discussion,
+  // and they read a link to it. Never cut.
+  const whole = outcome.output ?? outcome.said;
+  const passed = passOn(whole, TEXT_LIMITS.stageOutput, { label: "the card's discussion", href: flowCardHref(card.flow, card.id) });
+  if (passed.kept) store.addFlowComment({ card: card.id, author: "flow", body: `What ${stage.title} produced, in full (${whole.length.toLocaleString("en-US")} characters):\n\n${whole}`, mentions: [] }, now);
+  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: passed.text }, waiting: null }, now);
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "another zone";
   if (outcome.state === "passed") {
     // A sort names where the card goes; one it isn't sure about is a person's to place.
@@ -309,7 +312,7 @@ async function draftCard(store: Store, definition: FlowDefinition, stage: FlowSt
   const model = draftModel(store);
   const runner = io.draft ?? claudeDraftRunner();
   // Claude is told the limit before it writes; a draft over it is asked once to shorten, and one still over is kept whole
-  // in the step's log and on the card, linked from what the next steps read (settle): never cut.
+  // in the step's log and attached to the card's discussion, linked from what the next steps read (settle): never cut.
   let first: string | null = null;
   const written = await writeWithin(async shorten => {
     const answer = await runner({ model, prompt: draftPrompt(stage, card, definition, shorten === null || first === null ? null : { draft: first, ask: shorten }), timeoutMs: DRAFT_TIMEOUT });

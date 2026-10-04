@@ -53,7 +53,7 @@ export type LeadChannel = 'console' | 'terminal' | 'telegram' | 'slack' | 'disco
 /** One message on the channel, in characters: the lead writes a reply within it (it is told before it writes and asked
  * once to shorten one over it); a longer reply is split across messages, never cut. Null: no platform limit. */
 export const LEAD_REPLY_LIMITS: Record<LeadChannel, number | null> = {
-  console: null, terminal: null, telegram: PLATFORM_LIMITS.telegram, slack: PLATFORM_LIMITS.slack, discord: PLATFORM_LIMITS.discord, teams: null,
+  console: null, terminal: null, telegram: PLATFORM_LIMITS.telegram, slack: PLATFORM_LIMITS.slack, discord: PLATFORM_LIMITS.discord, teams: PLATFORM_LIMITS.teams,
 };
 
 const within = (channel: LeadChannel) => { const limit = LEAD_REPLY_LIMITS[channel]; return limit === null ? '' : ` Keep each reply within ${limit.toLocaleString('en-US')} characters, one message; a longer one is split across messages.`; };
@@ -63,7 +63,7 @@ const CHANNEL_WORDS: Record<LeadChannel, string> = {
   telegram: `Telegram on their phone: a few short lines, the most important first.${within('telegram')}`,
   slack: `A Slack thread: a few short lines; teammates may read it.${within('slack')}`,
   discord: `A Discord thread: a few short lines; teammates may read it.${within('discord')}`,
-  teams: 'A Microsoft Teams thread: a few short lines; teammates may read it.',
+  teams: `A Microsoft Teams thread: a few short lines; teammates may read it.${within('teams')}`,
 };
 
 export type LeadContextOptions = {

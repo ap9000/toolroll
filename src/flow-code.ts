@@ -69,10 +69,9 @@ export function codeOutput(stdout: string, secrets: Record<string, string>): { o
   const lines = clean.replace(/\s+$/, "").split("\n");
   const last = lines.at(-1) ?? "";
   const goto = /^goto:\s*(.{1,40})$/i.exec(last.trim());
+  // Whole: the step passes it on whole up to CODE_OUTPUT_CHARS, and attaches longer to the card, linked (flow-steps settle).
   const body = (goto === null ? lines : lines.slice(0, -1)).join("\n").trim();
-  const mark = `(The first ${(body.length - CODE_OUTPUT_CHARS).toLocaleString("en-US")} characters are in the step's log.)\n…`;
-  const shown = body.length <= CODE_OUTPUT_CHARS ? body : `${mark}${body.slice(-(CODE_OUTPUT_CHARS - mark.length))}`;
-  return { output: redactSecretLines(shown, scanForSecrets(shown)), goTo: goto === null ? null : goto[1]!.trim() };
+  return { output: redactSecretLines(body, scanForSecrets(body)), goTo: goto === null ? null : goto[1]!.trim() };
 }
 
 /** Run one script once, with the card as its input. */

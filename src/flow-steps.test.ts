@@ -259,13 +259,14 @@ describe("a draft step writes to a known limit", () => {
     expect(store.getFlowCard(card)!.outputs["reply"]).toBe("Your order ships today.");
   });
 
-  test("a draft still over the limit after the one ask is kept whole in the step's log, and the steps after read a link to it", async () => {
+  test("a draft still over the limit after the one ask is attached whole to the card, and the steps after read a link to it", async () => {
     const { flow, card } = drafting();
     const claude = writer([long, `${long} And more.`, "never asked"]);
     await runFlowSteps(store, repo, T0, io({ draft: claude.draft }));
     expect(claude.prompts).toHaveLength(2);
     const output = store.getFlowCard(card)!.outputs["reply"]!;
-    expect(output).toBe(`This is ${(long.length + 10).toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's Draft reply step: /flows/${flow}?card=${card}.`);
+    expect(output).toBe(`This is ${(long.length + 10).toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${card}.`);
+    expect(store.flowComments(card).map(one => one.body)).toEqual([`What Draft reply produced, in full (${(long.length + 10).toLocaleString("en-US")} characters):\n\n${long} And more.`]);
     const step = store.flowStepRun(card, store.getFlowCard(card)!.entry) ?? store.flowStepRun(card, 1);
     expect(step?.log).toContain(`${long} And more.`);
     expect(step?.result).toContain("kept whole");

@@ -23,8 +23,9 @@ export const TEXT_LIMITS = {
   stageOutput: 12_000,
 } as const;
 
-/** One chat message on each platform. Longer text is split across messages, never cut. */
-export const PLATFORM_LIMITS = { telegram: 4_096, discord: 2_000, slack: 4_000 } as const;
+/** One chat message on each platform. Longer text is split across messages, never cut. Teams: the text one Adaptive Card
+ * holds, well inside its 28 KB message. */
+export const PLATFORM_LIMITS = { telegram: 4_096, discord: 2_000, slack: 4_000, teams: 6_000 } as const;
 export type Platform = keyof typeof PLATFORM_LIMITS;
 
 const count = (n: number) => n.toLocaleString("en-US");
@@ -75,8 +76,8 @@ export async function writeWithin<T>(write: (shorten: string | null) => Promise<
  * Text passed on under a limit: whole when it fits; otherwise kept whole in the record named by `where` and passed on
  * as a pointer to it. Never a cut.
  */
-export function passOn(text: string, limit: number, where: { label: string; href: string | null }): { text: string; kept: boolean } {
+export function passOn(text: string, limit: number, where: { label: string; href: string | null }, holds = "a step passes on"): { text: string; kept: boolean } {
   if (text.length <= limit) return { text, kept: false };
   const at = where.href === null ? where.label : `${where.label}: ${where.href}`;
-  return { text: `This is ${count(text.length)} characters, more than the ${count(limit)} a step passes on, so it is kept whole on ${at}.`, kept: true };
+  return { text: `This is ${count(text.length)} characters, more than the ${count(limit)} ${holds}, so it is kept whole on ${at}.`, kept: true };
 }

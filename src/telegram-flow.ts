@@ -150,7 +150,7 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
   if (said === "") return [{ kind: "say", text: prompt.mode === "edit" ? "Send the text itself as a reply." : "Say what should change." }];
   if (prompt.mode === "edit") {
     if (waiting.draft === null) return [{ kind: "say", text: "This decision has no draft to edit." }];
-    if (said.length > DRAFT_LIMIT) return [{ kind: "say", text: `Keep it under ${DRAFT_LIMIT} characters.` }];
+    if (said.length > DRAFT_LIMIT) return [{ kind: "say", text: `That's ${said.length.toLocaleString("en-US")} characters. Keep it to ${DRAFT_LIMIT.toLocaleString("en-US")}, or change it in Toolroll.` }];
     const kept = keptDraft(said);
     store.updateFlowCard(waiting.card.id, { outputs: { ...waiting.card.outputs, [waiting.draft.id]: kept } }, now);
     store.addFlowComment({ card: waiting.card.id, author: binding.approver, body: "Edited the draft in Telegram.", mentions: [] }, now);
@@ -160,8 +160,10 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
     return [{ kind: "decide", keyboard: buttons.keyboard, tokens: buttons.tokens,
       text: `${waiting.flow.name}: your version of the draft for “${waiting.card.title}”\n\n${kept}\n\nApprove to send it as written.` }];
   }
+  // A note over its limit is refused with the limit, never cut.
+  if (said.length > LIMITS.note) return [{ kind: "say", text: `That's ${said.length.toLocaleString("en-US")} characters. Keep the note to ${LIMITS.note.toLocaleString("en-US")}, or send it back in Toolroll.` }];
   if (repos === null) return [{ kind: "say", text: "Couldn't check your projects just now. Reply again in a moment." }];
-  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said.slice(0, LIMITS.note), actor: binding.approver, repos, entry: prompt.entry }, now);
+  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said, actor: binding.approver, repos, entry: prompt.entry }, now);
   if (!decided.ok) return [{ kind: "say", text: decided.message }];
   store.retireTelegramFlowVisit(prompt.card, prompt.entry, now);
   return [{ kind: "say", text: `↩️ ${decided.said}` }];

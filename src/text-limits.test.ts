@@ -4,7 +4,8 @@
  */
 import { expect, test } from "vitest";
 import { LIMITS, NOTE_BYTE_CAP, validateNote } from "./decision.js";
-import { LEAD_REPLY_LIMITS } from "./lead-context.js";
+import { LEAD_REPLY_LIMITS, leadContext } from "./lead-context.js";
+import { openStore } from "./store.js";
 import { REPORT_LIMITS, parseReport } from "./scout-report.js";
 import { shapeReplyParts } from "./reply-shape.js";
 import { PART_CAP, splitParts } from "./telegram-mate.js";
@@ -63,14 +64,21 @@ test("writeWithin: within the limit is one turn; over is one shorten turn; still
 });
 
 test("text passed on is whole within the limit; over it, kept whole where it was written and linked, never cut", () => {
+  expect(passOn("n".repeat(4_001), 4_000, { label: "the card's discussion", href: "/flows/1?card=2" }, "a note holds").text).toBe("This is 4,001 characters, more than the 4,000 a note holds, so it is kept whole on the card's discussion: /flows/1?card=2.");
   expect(passOn("whole", 12_000, { label: "the card", href: "/flows/1?card=2" })).toEqual({ text: "whole", kept: false });
   const long = passOn("x".repeat(12_001), 12_000, { label: "the card's Draft step", href: "/flows/1?card=2" });
   expect(long).toEqual({ text: "This is 12,001 characters, more than the 12,000 a step passes on, so it is kept whole on the card's Draft step: /flows/1?card=2.", kept: true });
 });
 
-test("platform limits split across messages, never cut: Telegram 4096, Discord 2000, Slack 4000", () => {
-  expect(PLATFORM_LIMITS).toEqual({ telegram: 4_096, discord: 2_000, slack: 4_000 });
-  expect(LEAD_REPLY_LIMITS).toMatchObject({ telegram: 4_096, discord: 2_000, slack: 4_000, console: null, terminal: null });
+test("platform limits split across messages, never cut: Telegram 4096, Discord 2000, Slack 4000, Teams 6000", () => {
+  expect(PLATFORM_LIMITS).toEqual({ telegram: 4_096, discord: 2_000, slack: 4_000, teams: 6_000 });
+  expect(LEAD_REPLY_LIMITS).toMatchObject({ telegram: 4_096, discord: 2_000, slack: 4_000, teams: 6_000, console: null, terminal: null });
+  // The lead is told each channel's limit in the words it reads before it writes.
+  const store = openStore(":memory:");
+  for (const channel of ["telegram", "slack", "discord", "teams"] as const) {
+    expect((JSON.parse(leadContext(store, [], new Date("2026-10-04T09:00:00Z"), { channel })) as { channel: unknown }).channel).toMatchObject({ replyLimit: PLATFORM_LIMITS[channel], fit: expect.stringContaining(`within ${PLATFORM_LIMITS[channel].toLocaleString("en-US")} characters`) });
+  }
+  store.close();
   const reply = Array.from({ length: 300 }, (_, i) => `Line ${i}: the checkout keeps each line item's rounding, and the total matches the receipt.`).join("\n");
   // Telegram: its own splitter, under its message limit, every character kept in order.
   const telegram = splitParts(reply);

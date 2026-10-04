@@ -16,7 +16,7 @@ import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { cardFollowers, notifyPeople } from "./flow-people.js";
-import { keptDraft } from "./flow-draft.js";
+import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, teammateLabel } from "./teammates.js";
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
@@ -190,7 +190,7 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
           dedupeKey: `flow-decide:${card.id}:${card.entry}`, kind: "flow-decision", pushClass: "attention", ...(decider === null ? {} : { recipient: decider }),
           subject: (handoff !== null ? `${handoff.label}: ${card.title} needs ${decider === null ? "a decision" : `${decider}'s decision`}` : `${flow.name}: ${card.title} needs ${decider === null ? "a decision" : `${decider}'s decision`}`).slice(0, 200),
           body: `${handoff === null ? "" : `${handoff.said}\n\n`}${text === undefined ? `${stage.title}: approve it, or send it back with a note.`
-            : `${stage.title}: approve this draft to send it as written, edit it, or send it back with a note.\n\n${text}`}`.slice(0, 4000),
+            : `${stage.title}: approve this draft to send it as written, edit it, or send it back with a note.\n\n${text}`}`,
           link: flowCardHref(flow.id, card.id), source: { project: flow.repo },
         }, now);
         store.updateFlowCard(card.id, { waiting: `Waiting for ${who} to approve or send it back` }, now);
@@ -446,6 +446,10 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   if (input.decision === "approve") {
     // An edited draft replaces the one Claude wrote, so the steps after this send what the person approved.
     const draft = draftFor(definition, stage);
+    // A person's edit over the draft limit is refused with it, never cut. (A teammate's was asked once to shorten and is kept whole.)
+    if (draft !== null && input.teammate === undefined && typeof input.draft === "string" && input.draft.trim().length > DRAFT_CHARS) {
+      return { ok: false, message: `Keep the draft to ${DRAFT_CHARS.toLocaleString("en-US")} characters; this is ${input.draft.trim().length.toLocaleString("en-US")}.` };
+    }
     if (draft !== null && typeof input.draft === "string" && input.draft.trim() !== "" && input.draft.trim() !== card.outputs[draft.id]?.trim()) {
       store.updateFlowCard(card.id, { outputs: { ...card.outputs, [draft.id]: keptDraft(input.draft) } }, now);
       store.addFlowComment({ card: card.id, author: input.actor, body: "Edited the draft before approving it.", mentions: [] }, now);

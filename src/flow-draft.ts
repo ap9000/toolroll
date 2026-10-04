@@ -67,10 +67,10 @@ export function wholeDraft(text: string): string {
   return redactSecretLines(trimmed, scanForSecrets(trimmed));
 }
 
-/** A draft a person edited, as kept: trimmed, bounded (their editor holds them to DRAFT_CHARS), and never holding a key-shaped line. */
+/** A draft a person edited, as kept: trimmed, whole (one over DRAFT_CHARS is refused where it is written, never cut), and never holding a key-shaped line. */
 export function keptDraft(text: string): string {
   const trimmed = text.trim();
-  return clip(redactSecretLines(trimmed, scanForSecrets(trimmed)), DRAFT_CHARS);
+  return redactSecretLines(trimmed, scanForSecrets(trimmed));
 }
 
 type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;

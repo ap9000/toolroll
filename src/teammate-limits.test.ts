@@ -61,13 +61,32 @@ test("the prompt states each limit; a reply over one is asked once to shorten, a
   expect(store.getFlowCard(card)).toMatchObject({ stage: "done", outputs: { maya: "Hi Priya, your lamp arrives tomorrow." } });
 });
 
-test("a reply still over its limit after the one ask is kept whole in the turn's log, and the next zones read a link to it", async () => {
+test("a reply still over its limit after the one ask is attached whole to the card, and the next zones read a link to it", async () => {
   const card = store.addFlowCard({ flow, title: "Where is my lamp?", description: null, stage: "maya", by: "alex" }, T0);
   const maya = turns({ action: "route", answer: "Replied", text: reply, reason: "In transit." }, { action: "route", answer: "Replied", text: reply, reason: "In transit." });
   await runFlowSteps(store, repo, T0, io(maya));
   expect(maya.prompts).toHaveLength(2);
   const moved = store.getFlowCard(card)!;
   expect(moved.stage).toBe("done");
-  expect(moved.outputs["maya"]).toBe(`This is ${reply.length.toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's Maya replies step: /flows/${flow}?card=${card}.`);
+  expect(moved.outputs["maya"]).toBe(`This is ${reply.length.toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${card}.`);
+  expect(store.flowComments(card).map(one => one.body)).toEqual([`What Maya · Support wrote for the next zones, in full (${reply.length.toLocaleString("en-US")} characters):\n\n${reply}`]);
   expect(store.flowStepRun(card, 1)?.log).toContain(reply);
+});
+
+test("a send-back note still over 4,000 after the one ask is kept whole on the card, and the note links to it, never cut", async () => {
+  const stage = (id: string, kind: string, rest: Record<string, unknown> = {}) => ({ id, title: id, kind, zone: {}, instructions: null, next: null, onFail: null, ...rest });
+  const refunds = store.createFlow({ repo, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
+    stage("maya-decides", "approval", { title: "Maya decides", teammate: "maya", toOwner: true, next: "done", onFail: "rework" }), stage("rework", "inbox"), stage("done", "done"),
+  ] }) }, T0);
+  const card = store.addFlowCard({ flow: refunds, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex" }, T0);
+  const note = "The order shows two lamps, but the refund covers one; check which was returned. ".repeat(60).trim();
+  expect(note.length).toBeGreaterThan(4_000);
+  const maya = turns({ action: "send_back", note, reason: "Amounts differ." }, { action: "send_back", note, reason: "Amounts differ." });
+  await runFlowSteps(store, repo, T0, io(maya));
+  expect(maya.prompts).toHaveLength(2);
+  expect(maya.prompts[1]).toContain(`note is ${note.length.toLocaleString("en-US")} characters; the limit is 4,000.`);
+  const back = store.getFlowCard(card)!;
+  expect(back.stage).toBe("rework");
+  expect(back.note).toBe(`This is ${note.length.toLocaleString("en-US")} characters, more than the 4,000 a note holds, so it is kept whole on the card's discussion: /flows/${refunds}?card=${card}.`);
+  expect(store.flowComments(card).map(one => one.body)).toEqual([`Maya · Support's note, in full (${note.length.toLocaleString("en-US")} characters):\n\n${note}`]);
 });

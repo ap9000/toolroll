@@ -455,7 +455,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       {card.handoff != null && <p className="rounded-md bg-muted px-3 py-2 text-[13px]" data-teammate-handoff><span className="font-medium">{card.handoff.from}:</span> {card.handoff.note}</p>}
       {card.draft !== null && <>
         <Label htmlFor="flow-draft" className="text-[13px]">Draft from {card.draft.title}</Label>
-        <Textarea id="flow-draft" value={draftText} onChange={event => setDraftText(event.target.value)} rows={8} maxLength={4000} data-flow-draft-edit />
+        <Textarea id="flow-draft" value={draftText} onChange={event => setDraftText(event.target.value)} rows={8} maxLength={12000} data-flow-draft-edit />
         {draftText.trim() !== card.draft.text.trim() && <p className="text-[12px] text-muted-foreground">Approving sends your edited version on.</p>}
       </>}
       <Label htmlFor="flow-note" className="text-[13px]">{stage?.title ?? "Decision"}: approve, or send it back</Label>
