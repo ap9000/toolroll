@@ -924,15 +924,47 @@ describe("scout tasks, against real git", () => {
     store.close();
   });
 
-  test("a structured report over the caps is still refused", async () => {
+  /** A scout whose session announces its id, so its one shorten turn can resume it. */
+  const inSession = (runner: Runner): Runner => async (file, args, options) => {
+    const done = await runner(file, args, options);
+    return { ...done, stdout: JSON.stringify({ ...JSON.parse(done.stdout), session_id: "scout-session-1" }) };
+  };
+
+  test("the brief states every report limit, and a summary over its limit is asked once to shorten in the same session", async () => {
     const { runnerToken } = await setup();
-    const failed = await tick(runnerToken, planModeAgent({ kind: "report", report: { ...FOUND, report: "x".repeat(REPORT_LIMITS.document + 1) } }));
-    expect(failed).toBe(EXIT.failed);
+    const long = { ...FOUND, summary: `${"The login test reads the session cookie before the response sets it. ".repeat(40)}`.trim() };
+    expect(Buffer.byteLength(long.summary)).toBeGreaterThan(REPORT_LIMITS.summary);
+    const calls: string[][] = [];
+    const agent: Runner = async (file, args, options) => {
+      calls.push([...args]);
+      return planModeAgent({ kind: "report", report: calls.length === 1 ? long : FOUND })(file, args, options);
+    };
+    expect(await tick(runnerToken, inSession(agent))).toBe(EXIT.ok);
+    expect(prompts[0]).toContain(`summary ${REPORT_LIMITS.summary}`);
+    expect(prompts[0]).toContain("Longer text is not cut: you will be asked once to shorten it.");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]![calls[1]!.indexOf("--resume") + 1]).toBe("scout-session-1");
+    expect(prompts[1]).toContain("summary is over 2500 bytes");
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
-    expect(store.latestReportArtifact(ref.id)).toBeNull();
-    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(true);
-    expect(store.getTask("flaky")?.state).not.toBe("done");
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok && view.report.summary).toBe(FOUND.summary);
+    store.close();
+  });
+
+  test("a report still over its limits after the one shorten turn is kept whole, never cut, and reads back whole", async () => {
+    const { runnerToken } = await setup();
+    const long = { ...FOUND, summary: "s".repeat(REPORT_LIMITS.summary + 500), report: "x".repeat(REPORT_LIMITS.document + 1) };
+    let calls = 0;
+    const agent: Runner = async (file, args, options) => { calls++; return planModeAgent({ kind: "report", report: long })(file, args, options); };
+    expect(await tick(runnerToken, inSession(agent))).toBe(EXIT.ok);
+    expect(calls).toBe(2);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok && view.report.summary).toBe(long.summary);
+    expect(view?.ok && view.report.report).toBe(long.report);
+    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(false);
     store.close();
   });
 

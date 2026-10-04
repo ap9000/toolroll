@@ -25,6 +25,7 @@
  * made through chooseFlowCard, by that person alone, for exactly that visit,
  * and spend that visit's buttons in every chat app.
  */
+import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowSendPaths, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend } from "./flow-send.js";
@@ -217,7 +218,7 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
 function replyAsNote(options: { store: Store; state: ChatState; label: string }, binding: ChatBinding, said: string, cutShort: boolean, visit: { card: number; entry: number }, repos: readonly string[], now: Date): { ok: true; said: string } | { ok: false; said: string } | null {
   const { store } = options;
   if (said === "") return { ok: false, said: "Say what you'd change." };
-  if (cutShort || said.length > 2000) return { ok: false, said: "That's too long to take from here. Keep it under 2,000 characters, or reply in Toolroll." };
+  if (cutShort || said.length > LIMITS.note) return { ok: false, said: `That's too long to take from here. Keep it to ${Math.min(LIMITS.note, MATE_MESSAGE_MAX_CHARS).toLocaleString("en-US")} characters, or reply in Toolroll.` };
   if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) return null;
   const chosen = chooseFlowCard(store, { card: visit.card, entry: visit.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
   return chosen.ok ? { ok: true, said: chosen.said } : { ok: false, said: chosen.message };
@@ -342,7 +343,7 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
         { card, entry, actions: actionsFor(fresh) }, { label: "Open", path: flowCardHref(waiting.flow.id, card) }), now);
       return true;
     }
-    const decided = decideFlowCard(store, { card, decision: "send-back", note: said.slice(0, 2000), actor: binding.approver, repos, entry }, now);
+    const decided = decideFlowCard(store, { card, decision: "send-back", note: said.slice(0, LIMITS.note), actor: binding.approver, repos, entry }, now);
     if (!decided.ok) { close(); say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);

@@ -21,9 +21,10 @@
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
 import type { FlowDefinition, FlowStage } from "./flows.js";
 import { decideFlowCard, draftFor, flowCardHref } from "./flow-engine.js";
-import { keptDraft } from "./flow-draft.js";
+import { wholeDraft } from "./flow-draft.js";
 import { notifyPeople } from "./flow-people.js";
-import { claudeTurnRunner, parseSoul, readTurn, teammateActor, teammateLabel, TURN_TIMEOUT_MS, turnPrompt, type TurnAnswer, type TurnContext, type TurnRunner } from "./teammates.js";
+import { claudeTurnRunner, parseSoul, readTurn, teammateActor, teammateLabel, TURN_TIMEOUT_MS, turnOverruns, turnPrompt, type TurnAnswer, type TurnContext, type TurnRunner } from "./teammates.js";
+import { passOn, shortenAsk, TEXT_LIMITS } from "./text-limits.js";
 import { callName, callOutcome, callWords, inputProblem, makeCall, offeredTools, refreshGrants, ruleFor, type OfferedTool, type ToolIo } from "./teammate-tools.js";
 import { answerSuggestion, considerSuggestion, memoriesFor, remember } from "./teammate-memory.js";
 import { replyToAsker } from "./teammate-desk.js";
@@ -116,11 +117,14 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     for (const call of store.teammateCallsOn(card.id, card.entry).filter(one => one.state === "approved" && one.undoOf === null)) await makeCall(store, call, flow.repo, io, now);
   }
   const log: string[] = [];
+  /** The one shorten turn this run allows: an answer over a limit is asked once, then kept whole. */
+  let shorten: { answer: string; ask: string } | undefined;
+  let shortened = false;
   for (let turn = 1; ; turn++) {
     const made = store.teammateCallsOn(card.id, card.entry).length;
     const spent = made >= CALLS_PER_VISIT || turn > TURNS_PER_RUN;
     const tools = spent ? [] : offeredTools(store, mate);
-    const context = contextOf(store, flow, definition, stage, card, mate, tools, spent && made > 0);
+    const context = { ...contextOf(store, flow, definition, stage, card, mate, tools, spent && made > 0), ...(shorten === undefined ? {} : { shorten }) };
     const asked = Date.now();
     const reply = await (io.turn ?? claudeTurnRunner())({ model, prompt: turnPrompt(context), timeoutMs: TURN_TIMEOUT_MS });
     // v97: every turn is kept with what it cost, for its weekly report.
@@ -129,6 +133,15 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     const answer = readTurn(reply.value, context);
     if (answer === null) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
     const header = `${context.name} (${model}) · ${(reply.ms / 1000).toFixed(1)} s`;
+    const over = turnOverruns(answer);
+    if (over.length > 0 && !shortened) {
+      shortened = true;
+      shorten = { answer: JSON.stringify(answer), ask: shortenAsk(over) };
+      log.push(`${header}\n\nOver a limit, asked once to shorten: ${over.map(one => `${one.field} ${one.length} of ${one.limit}`).join(", ")}.\n\n${JSON.stringify(answer)}`);
+      turn--;
+      continue;
+    }
+    shorten = undefined;
     if (answer.remember !== "") remember(store, mate, answer.remember, { source: "teammate", card: card.id, by: teammateActor({ name: context.name }) }, now);
     if (answer.action !== "use_tool") {
       const outcome = carryOut(store, flow, definition, stage, card, mate, context, answer, now, io, header);
@@ -197,7 +210,7 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
     const draft = draftFor(definition, stage);
     const decided = decideFlowCard(store, {
       card: card.id, decision: answer.action === "approve" ? "approve" : "send-back", note: answer.action === "approve" ? answer.reason || null : answer.note, actor, repos, teammate: mate.handle, entry: card.entry,
-      ...(answer.action === "approve" && draft !== null && answer.text !== "" ? { draft: keptDraft(answer.text) } : {}),
+      ...(answer.action === "approve" && draft !== null && answer.text !== "" ? { draft: wholeDraft(answer.text) } : {}),
       ...(io.evidenceRoot === undefined ? {} : { evidenceRoot: io.evidenceRoot }),
     }, now);
     if (!decided.ok) return { state: "failed", said: decided.message, log, decisionJson };
@@ -229,7 +242,8 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   }
   // route: the answer names where the card goes; its text is what the next zones use.
   const picked = handleAnswers(stage).find(one => one.answer.toLowerCase() === answer.answer.toLowerCase())!;
-  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: keptDraft(answer.text) } }, now);
+  // What the next zones read: whole up to what a step passes on; longer is kept whole in this turn's log, and they read where.
+  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: passOn(wholeDraft(answer.text), TEXT_LIMITS.stageOutput, { label: `the card's ${stage.title} step`, href: flowCardHref(flow.id, card.id) }).text } }, now);
   const said = `Sent “${card.title}” to ${titleOf(picked.to)}${picked.answer === CARRY_ON ? "" : ` (${picked.answer})`}${answer.reason === "" ? "" : `: ${answer.reason}`}`;
   event("handled", said);
   // v96: a zone that answers whoever asked sends what it wrote back to them, under its name.

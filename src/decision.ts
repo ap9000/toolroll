@@ -15,6 +15,8 @@
  * has already failed the milestone sentence.
  */
 
+import { TEXT_LIMITS } from "./text-limits.js";
+
 export type ParsedOption = {
   id: string;
   label: string;
@@ -50,12 +52,12 @@ export const LIMITS = {
   optionId: 40,
   assignee: 120,
   options: 6,
-  /** UTF-16 code units; the byte backstop lives in validateNote. */
-  note: 500,
+  /** UTF-16 code units (TEXT_LIMITS.note: revise feedback, steering and decision notes); the byte backstop lives in validateNote. */
+  note: TEXT_LIMITS.note,
 } as const;
 
 /** Bytes an operator's note may occupy — the UTF-8 backstop under LIMITS.note. */
-export const NOTE_BYTE_CAP = 2_000;
+export const NOTE_BYTE_CAP = TEXT_LIMITS.noteBytes;
 
 /**
  * Unicode that reorders or breaks lines invisibly: bidi controls and the

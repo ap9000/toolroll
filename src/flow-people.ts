@@ -27,6 +27,14 @@ export function mentionsIn(body: string, people: readonly string[]): string[] {
 type CardEvent = { key: string; subject: string; body: string; attention?: boolean };
 
 /** One notification per person, to that person only. The actor never notifies themself. */
+/** A notice's body: whole up to 2,000 characters; longer, its start and a line saying the rest is on the card it links. */
+const NOTICE_CHARS = 2000;
+function noticeBody(body: string): string {
+  if (body.length <= NOTICE_CHARS) return body;
+  const mark = "\n… (the rest is on the card)";
+  return `${body.slice(0, NOTICE_CHARS - mark.length)}${mark}`;
+}
+
 export function notifyPeople(store: Store, card: FlowCardRow, people: Iterable<string>, actor: string | null, event: CardEvent, now: Date): string[] {
   const flow = store.getFlow(card.flow);
   if (flow === null) return [];
@@ -36,7 +44,7 @@ export function notifyPeople(store: Store, card: FlowCardRow, people: Iterable<s
     const queued = store.enqueueNotification({
       dedupeKey: `flow-card:${card.id}:${event.key}:${person}`, kind: "flow-card", recipient: person,
       ...(event.attention === true ? { pushClass: "attention" as const } : {}),
-      subject: `${flow.name}: ${event.subject}`.slice(0, 200), body: event.body.slice(0, 2000), link: flowCardHref(flow.id, card.id), source: { project: flow.repo },
+      subject: `${flow.name}: ${event.subject}`.slice(0, 200), body: noticeBody(event.body), link: flowCardHref(flow.id, card.id), source: { project: flow.repo },
     }, now);
     if (queued) sent.push(person);
   }

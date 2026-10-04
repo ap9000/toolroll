@@ -378,7 +378,7 @@ describe("the operations console", () => {
   test("valid Unicode goals and exclusions fit the web form transport and preserve new-task settings on rejection", async () => {
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
-    const fields = { csrf, title: "Unicode request", goal: "😀".repeat(1000), not: "界".repeat(2000), acceptance: "c1: Works | check", "planning-policy": "choice", "permission-mode": "auto", "quality-mode": "default" };
+    const fields = { csrf, title: "Unicode request", goal: "😀".repeat(4000), not: "界".repeat(8000), acceptance: "c1: Works | check", "planning-policy": "choice", "permission-mode": "auto", "quality-mode": "default" };
     const refused = await post("/tasks/add", cookie, { ...fields, goal: fields.goal + "a", id: "unicode-new", scout: "1", after: "t-1" });
     expect(refused.status).toBe(400);
     const window = new Window();
@@ -406,13 +406,13 @@ describe("the operations console", () => {
     const cookie = await login();
     const taskHtml = await (await fetch(url("/t/t-edit"), { headers: { cookie } })).text();
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(taskHtml)?.[1] ?? "";
-    for (const value of ["a".repeat(2001), "😀".repeat(1001), "界".repeat(3000), "bad\u202e", "bad\u0000", "ok\r"]) {
+    for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(8001), "bad\u202e", "bad\u0000", "ok\r"]) {
       const fields = { csrf, goal: "valid", not: "exclusion", touches: "src/y.ts", acceptance: "c1: Works | check", [field]: value };
       for (const path of ["/tasks/add", "/t/t-edit/scope"]) {
         const response = await fetch(url(path), { method: "POST", headers: { cookie }, body: new URLSearchParams({ ...fields, title: "New task", sawDigest: original.digest, "planning-policy": "choice", "permission-mode": "auto", "budget-usd": "12", "quality-mode": "strict" }), redirect: "manual" });
         expect(response.status).toBe(400);
         const html = await response.text();
-        expect(html).toContain(value.length > 2000 ? `${field === "goal" ? "Goal" : "Exclusions"} must be 2000 characters or fewer.` : "cannot contain control or hidden characters.");
+        expect(html).toContain(value.length > 8000 ? `${field === "goal" ? "Goal" : "Exclusions"} is ${value.length.toLocaleString("en-US")} characters; the limit is 8,000. Shorten it.` : "cannot contain control or hidden characters.");
         const window = new Window();
         window.document.body.innerHTML = html;
         const form = window.document.querySelector(path === "/tasks/add" ? ".task-composer" : ".scope-editor")!;

@@ -235,3 +235,39 @@ describe("a button shared as a form", () => {
     expect(flowFormPage(store, "x".repeat(32), T0).status).toBe(404);
   });
 });
+
+describe("a draft step writes to a known limit", () => {
+  const drafting = () => {
+    const flow = flowOf([{ title: "New questions", kind: "inbox" }, { id: "reply", title: "Draft reply", kind: "draft", instructions: "Answer {{card.title}}" }, { title: "Done", kind: "done" }]);
+    const card = store.addFlowCard({ flow, title: "Where is my order?", description: null, stage: "reply", by: "alex" }, T0);
+    return { flow, card };
+  };
+  const writer = (answers: string[]) => {
+    const prompts: string[] = [];
+    return { prompts, draft: async (request: { prompt: string }) => { prompts.push(request.prompt); return { ok: true as const, text: answers[prompts.length - 1]!, ms: 5 }; } };
+  };
+  const long = "Thanks for asking. ".repeat(700).trim();
+
+  test("its prompt states the limit; a draft over it is asked once to shorten, and the shortened one is kept", async () => {
+    const { card } = drafting();
+    const claude = writer([long, "Your order ships today."]);
+    await runFlowSteps(store, repo, T0, io({ draft: claude.draft }));
+    expect(claude.prompts).toHaveLength(2);
+    expect(claude.prompts[0]).toContain("The draft: at most 12,000 characters.");
+    expect(claude.prompts[1]).toContain(`draft is ${long.length.toLocaleString("en-US")} characters; the limit is 12,000.`);
+    expect(claude.prompts[1]).toContain(long);
+    expect(store.getFlowCard(card)!.outputs["reply"]).toBe("Your order ships today.");
+  });
+
+  test("a draft still over the limit after the one ask is kept whole in the step's log, and the steps after read a link to it", async () => {
+    const { flow, card } = drafting();
+    const claude = writer([long, `${long} And more.`, "never asked"]);
+    await runFlowSteps(store, repo, T0, io({ draft: claude.draft }));
+    expect(claude.prompts).toHaveLength(2);
+    const output = store.getFlowCard(card)!.outputs["reply"]!;
+    expect(output).toBe(`This is ${(long.length + 10).toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's Draft reply step: /flows/${flow}?card=${card}.`);
+    const step = store.flowStepRun(card, store.getFlowCard(card)!.entry) ?? store.flowStepRun(card, 1);
+    expect(step?.log).toContain(`${long} And more.`);
+    expect(step?.result).toContain("kept whole");
+  });
+});

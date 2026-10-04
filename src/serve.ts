@@ -518,10 +518,13 @@ export const SIGN_IN_LINK_MS = 10 * 60_000;
 const LEAD_BY_DEFAULT_FACT = "lead-on-by-default";
 /** The installation fact that the phone card was put away. */
 const PHONE_CARD_FACT = "phone-card-dismissed";
-const BODY_CAP = 16 * 1024;
+// A note is at most NOTE_BYTE_CAP (16,000) UTF-8 bytes, which URL encoding
+// can triple: room for one whole, before canonical text validation.
+const BODY_CAP = 64 * 1024;
 // URL encoding can triple UTF-8 bytes. Admit the existing bounded task
-// fields (including paths and rubric) before canonical text validation.
-const TASK_FORM_BODY_CAP = 256 * 1024;
+// fields (a goal and exclusions of 32,000 bytes each, paths and rubric)
+// before canonical text validation.
+const TASK_FORM_BODY_CAP = 1024 * 1024;
 /** A cookie idles out after half a day and dies outright after a week. */
 const SESSION_IDLE_MS = 12 * 60 * 60_000;
 const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60_000;
@@ -7232,7 +7235,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (verb === "decide") {
         const decision = body.get("decision") === "approve" ? "approve" : body.get("decision") === "send-back" ? "send-back" : null;
         if (decision === null) return answer(400, { ok: false, said: "Approve it or send it back." });
-        const note = (body.get("note") ?? "").trim().slice(0, 2000) || null;
+        const note = (body.get("note") ?? "").trim() || null;
+        if (note !== null && note.length > LIMITS.note) return answer(400, { ok: false, said: `Keep the note to ${LIMITS.note.toLocaleString("en-US")} characters; this is ${note.length.toLocaleString("en-US")}.` });
         const decided = decideFlowCard(store, { card: target.id, decision, note, actor: who.name, repos: projects, evidenceRoot, draft: body.get("draft") }, now);
         return decided.ok ? settle(decided.said) : answer(409, { ok: false, said: decided.message });
       }
@@ -24008,7 +24012,7 @@ function runReportView(artifacts: Artifact[], root: string): RunReportView | nul
     return { ok: false, artifactId: artifact.id, problem: "the report file could not be read" };
   }
   if (!read.ok) return { ok: false, artifactId: artifact.id, problem: read.problem };
-  const parsed = parseReport(read.content.toString("utf8"));
+  const parsed = parseReport(read.content.toString("utf8"), { stored: true });
   if (!parsed.ok) return { ok: false, artifactId: artifact.id, problem: artifact.truncated ? "the report was shortened at storage and cannot be read; the missing part was never captured" : "the stored report is not a report this console can read" };
   return { ok: true, artifactId: artifact.id, title: parsed.report.title, summary: parsed.report.summary, document: parsed.report.report, followUps: parsed.report.followUps.length, truncated: artifact.truncated,
     items: parsed.report.items, shots: reportShotsOf(artifacts, root, artifact.run, parsed.report.images) };

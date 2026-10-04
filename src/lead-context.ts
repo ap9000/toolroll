@@ -7,6 +7,7 @@
  * chats it works with (one line each), the channel, what needs them now,
  * projects by name with their active decisions, then the rest. Over 8 KB, the
  * least important goes first: the rest, then people, then decisions. */
+import { PLATFORM_LIMITS } from './text-limits.js';
 import type { Store } from './store.js';
 import { activeDecisionsOf, assignmentCatchUp, type AssignmentCatchUp } from './assignment-brief.js';
 import { publicChatText } from './chat-display.js';
@@ -49,12 +50,19 @@ function followThrough(store: Store, owner: string, thread: number) {
 export const LEAD_CONTEXT_MAX_BYTES = 8_000;
 /** Where this turn's conversation happens. */
 export type LeadChannel = 'console' | 'terminal' | 'telegram' | 'slack' | 'discord' | 'teams';
+/** One message on the channel, in characters: the lead writes a reply within it (it is told before it writes and asked
+ * once to shorten one over it); a longer reply is split across messages, never cut. Null: no platform limit. */
+export const LEAD_REPLY_LIMITS: Record<LeadChannel, number | null> = {
+  console: null, terminal: null, telegram: PLATFORM_LIMITS.telegram, slack: PLATFORM_LIMITS.slack, discord: PLATFORM_LIMITS.discord, teams: null,
+};
+
+const within = (channel: LeadChannel) => { const limit = LEAD_REPLY_LIMITS[channel]; return limit === null ? '' : ` Keep each reply within ${limit.toLocaleString('en-US')} characters, one message; a longer one is split across messages.`; };
 const CHANNEL_WORDS: Record<LeadChannel, string> = {
   console: 'The Toolroll console in a browser: cards and links show beside your reply.',
   terminal: 'The Toolroll CLI in a terminal: plain text only.',
-  telegram: 'Telegram on their phone: a few short lines, the most important first.',
-  slack: 'A Slack thread: a few short lines; teammates may read it.',
-  discord: 'A Discord thread: a few short lines; teammates may read it.',
+  telegram: `Telegram on their phone: a few short lines, the most important first.${within('telegram')}`,
+  slack: `A Slack thread: a few short lines; teammates may read it.${within('slack')}`,
+  discord: `A Discord thread: a few short lines; teammates may read it.${within('discord')}`,
   teams: 'A Microsoft Teams thread: a few short lines; teammates may read it.',
 };
 
@@ -144,7 +152,7 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
     you: { firstName, ...localNow(now, options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) },
     aboutYou,
     people: { people: [] as string[], teammates: [] as string[], teams: [] as string[] },
-    channel: options.channel === undefined ? null : { id: options.channel, fit: CHANNEL_WORDS[options.channel] },
+    channel: options.channel === undefined ? null : { id: options.channel, fit: CHANNEL_WORDS[options.channel], replyLimit: LEAD_REPLY_LIMITS[options.channel] },
     needsYou: brief.assignments.filter(needs).map(task),
     ...(options.owner === undefined || options.thread === undefined ? {} : followThrough(store, options.owner, options.thread)),
     projects,

@@ -8,7 +8,8 @@
 import { assignmentOf } from "./assignment.js";
 import { filerFor } from "./approval-policy.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
-import { deciderOf, durationWords, fillFlowText, fitFlowText, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
+import { passOn, TEXT_LIMITS } from "./text-limits.js";
+import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
 import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { requestResultChanges } from "./result-actions.js";
@@ -229,9 +230,9 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
     const report = stage.kind === "report";
     // Waiting cards try again every pass, so a cause that's fixed (a shorter zone, a freed backlog) files the work then.
     const wait = (why: string) => { const waiting = `Couldn't file the work: ${why} It tries again on the next pass.`; if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now); };
-    // The goal fits a task: the zone's words whole, long filled-in values (a script's output) cut in the middle.
-    // The agent is given them in full (flowGoalCuts).
-    const goal = fitFlowText(flowWorkTemplate(stage.instructions ?? card.title, card), card);
+    // The goal fits a task: the zone's words whole and the card's details whole; a value too long for the goal (a
+    // script's output) is attached instead, and the agent is given it in full (flowGoalCuts). Nothing is cut.
+    const goal = flowGoal(stage.instructions ?? card.title, card, id => titleIn(definition, id));
     if (goal === null) { wait(`${stage.title}'s instructions are too long for a task. Open the flow and shorten them.`); return; }
     if (repo !== flow.repo && !store.accountCanAccess(flow.owner, repo)) { wait(`${flow.owner}, who owns this flow, can't file work in ${repo}. Choose another project for ${stage.title}, or give them access.`); return; }
     // Filed exactly once however many passes advance this project: the card is claimed (still this entry, in this zone,
@@ -278,7 +279,8 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
     if (stage.kind === "report") {
       const ref = store.lookupRef(current);
       const summary = ref === null ? null : reportSummaryFor(store, options.evidenceRoot, ref.id);
-      outputs[stage.id] = summary !== null && "summary" in summary ? summary.summary.slice(0, 6000) : "The report is ready on its task.";
+      // The summary whole (a report's summary is within TEXT_LIMITS.reportSummary bytes; an older, longer one is linked).
+      outputs[stage.id] = summary !== null && "summary" in summary ? passOn(summary.summary, TEXT_LIMITS.stageOutput, { label: `task ${current}`, href: null }).text : "The report is ready on its task.";
       // {{stage.<id>.items}} and {{stage.<id>.report}}: what it found and the whole report, for the zones after it.
       // A visit's report replaces the last visit's, so nothing stale is left behind.
       const view = ref === null || options.evidenceRoot === undefined ? null : readVerifiedReport(store, options.evidenceRoot, ref.id);
@@ -313,6 +315,10 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
 /** What a flow task's goal had to cut, whole, for the agent doing it: each value its zone fills in from the card that the
  * goal doesn't hold in full. Empty when the task didn't come from a flow card or nothing was cut. Script output and
  * card text can come from outside, so the brief quotes these as untrusted data. */
+/** The most of one attached value the agent's brief carries: more than any card value holds (a whole report is at most
+ * 64 KiB), so in practice an attachment is never shortened. */
+const FLOW_ATTACHED_LIMIT = 128_000;
+
 export function flowGoalCuts(store: Store, taskId: string, goal: string): { label: string; text: string }[] {
   try { return goalCuts(store, taskId, goal); } catch { return []; } // context, never a reason a build can't start
 }
@@ -324,7 +330,6 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
   const definition = flow === null ? null : flowDefinitionOf(flow);
   const stage = definition?.stages.find(one => one.id === card!.stage);
   if (card === null || definition == null || stage === undefined || (stage.kind !== "task" && stage.kind !== "report")) return [];
-  const labels: Record<string, string> = { "card.title": "The card's title", "card.description": "The card's description", note: "The note it was sent back with" };
   const cuts: { label: string; text: string }[] = [];
   const seen = new Set<string>();
   for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+)(?:\.(items|report))?)\s*\}\}/g)) {
@@ -332,8 +337,7 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
     seen.add(match[1]!);
     const text = fillFlowText(`{{${match[1]}}}`, card);
     if (text === "" || goal.includes(text)) continue;
-    const part = match[3] === "items" ? "listed" : match[3] === "report" ? "reported in full" : "found";
-    cuts.push({ label: labels[match[1]!] ?? `What ${titleIn(definition, match[2]!)} ${part}`, text: text.slice(0, 50_000) });
+    cuts.push({ label: flowValueLabel(match[1]!, id => titleIn(definition, id)), text: text.slice(0, FLOW_ATTACHED_LIMIT) });
   }
   return cuts;
 }

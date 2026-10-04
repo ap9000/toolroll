@@ -1,12 +1,16 @@
 /** New task text only. Historical signed terms are read by sealRevision,
  * never re-authored through this validator. Character counts deliberately
- * retain the existing JavaScript/HTML UTF-16 policy (2000 code units).
- * UTF-8 byte limits remain explicit storage bounds beside that policy. */
+ * retain the existing JavaScript/HTML UTF-16 policy (TEXT_LIMITS.goal code units).
+ * UTF-8 byte limits remain explicit storage bounds beside that policy. Reading
+ * a stored goal never re-validates it, so a longer goal stays readable by a
+ * runtime with lower limits. */
 import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
-export const TASK_TEXT_LIMITS = { title: 200, text: 2_000, textBytes: 8_000 } as const;
+export const TASK_TEXT_LIMITS = { title: 200, text: TEXT_LIMITS.goal, textBytes: TEXT_LIMITS.goalBytes } as const;
+const n = (value: number) => value.toLocaleString("en-US");
 export const TASK_SCOPE_TEXT_SCHEMA = { type: "string", maxLength: TASK_TEXT_LIMITS.text,
-  description: "At most 2000 UTF-16 code units and 8000 UTF-8 bytes; no control or disguised text." } as const;
+  description: `At most ${n(TASK_TEXT_LIMITS.text)} characters (UTF-16 code units) and ${n(TASK_TEXT_LIMITS.textBytes)} UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again.` } as const;
 
 export type TaskTextRefusal = { ok: false; reason: "bad-title" | "bad-goal"; message: string };
 const dishonest = (text: string) => hasForbiddenControls(text) || hasDisguisedText(text);
@@ -22,8 +26,8 @@ export function validateScopeText(fields: { goal?: string; outOfScope?: string |
   ] as const) {
     if (value == null) continue;
     if (required && value.trim() === "") return { ok: false, reason, message: `${label} cannot be empty.` };
-    if (value.length > TASK_TEXT_LIMITS.text) return { ok: false, reason, message: `${label} must be 2000 characters or fewer.` };
-    if (overBytes(value, BYTE_CAPS.text)) return { ok: false, reason, message: `${label} must be 8000 UTF-8 bytes or fewer.` };
+    if (value.length > TASK_TEXT_LIMITS.text) return { ok: false, reason, message: `${label} is ${n(value.length)} characters; the limit is ${n(TASK_TEXT_LIMITS.text)}. Shorten it.` };
+    if (overBytes(value, BYTE_CAPS.text)) return { ok: false, reason, message: `${label} is ${n(Buffer.byteLength(value, "utf8"))} UTF-8 bytes; the limit is ${n(TASK_TEXT_LIMITS.textBytes)}. Shorten it.` };
     if (dishonest(value)) return { ok: false, reason, message: `${label} cannot contain control or hidden characters.` };
   }
   const touches = fields.touches ?? [];

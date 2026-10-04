@@ -295,7 +295,7 @@ export function readVerifiedReport(store: Store, root: string, taskRef: number):
     return { ok: false, run: artifact.run, problem: "the report file could not be read" };
   }
   if (!verified.ok) return { ok: false, run: artifact.run, problem: `the report does not verify (${verified.problem})` };
-  const parsed = parseReport(verified.content.toString("utf8"));
+  const parsed = parseReport(verified.content.toString("utf8"), { stored: true });
   if (!parsed.ok) return { ok: false, run: artifact.run, problem: "the stored report is not a report this build can read" };
   return { ok: true, run: artifact.run, report: parsed.report, shots: reportShotsOf(store.artifactsFor(artifact.run), root, artifact.run, parsed.report.images) };
 }

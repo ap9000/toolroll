@@ -20,6 +20,7 @@
  * replies go. Both go through chooseFlowCard, for exactly that visit.
  */
 import { randomBytes } from "node:crypto";
+import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, draftFor, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
@@ -160,7 +161,7 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
       text: `${waiting.flow.name}: your version of the draft for “${waiting.card.title}”\n\n${kept}\n\nApprove to send it as written.` }];
   }
   if (repos === null) return [{ kind: "say", text: "Couldn't check your projects just now. Reply again in a moment." }];
-  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said.slice(0, 2000), actor: binding.approver, repos, entry: prompt.entry }, now);
+  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said.slice(0, LIMITS.note), actor: binding.approver, repos, entry: prompt.entry }, now);
   if (!decided.ok) return [{ kind: "say", text: decided.message }];
   store.retireTelegramFlowVisit(prompt.card, prompt.entry, now);
   return [{ kind: "say", text: `↩️ ${decided.said}` }];

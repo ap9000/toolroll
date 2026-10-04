@@ -1,4 +1,4 @@
-import { validateScopeText } from "./task-text.js";
+import { TASK_TEXT_LIMITS, validateScopeText } from "./task-text.js";
 /**
  * Proposals over the MCP gateway (mate arc v3, §9). A coordinator may
  * propose what the mate may propose — next, reserve, hold, unhold, scope,
@@ -131,7 +131,7 @@ function buildPayload(store: Store, who: VerifiedCoordinator, kind: CoordinatorP
     const badText = validateScopeText({ goal: args["goal"], outOfScope: args["not"] as string | null | undefined ?? null });
     if (badText !== null) return bad(badText.message);
     const not = args["not"] as string | null | undefined ?? null;
-    if (!honestText(args["goal"], 2_000) || (not !== null && not.trim() !== "" && !honestText(not, 2_000))) return bad("Task text cannot contain credentials.");
+    if (!honestText(args["goal"], TASK_TEXT_LIMITS.text) || (not !== null && not.trim() !== "" && !honestText(not, TASK_TEXT_LIMITS.text))) return bad("Task text cannot contain credentials.");
     const touches = readTouches(args["touches"]);
     if (touches === null) return bad("touches is up to 50 plain paths");
     const acceptance = readAcceptanceArg(args["acceptance"]);

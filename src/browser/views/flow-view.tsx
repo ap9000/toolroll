@@ -407,7 +407,7 @@ function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserF
       <div className="flex flex-wrap gap-2">{choose.options.map(option => <Button key={option.choice} size="sm" variant={option.choice === 0 ? "default" : "outline"} disabled={busy}
         onClick={() => void act({ choice: String(option.choice), label: option.label, entry: String(choose.entry) })} data-flow-choice={option.choice}>{option.label}</Button>)}</div>
       {choose.reply && <>
-        <Textarea value={note} onChange={event => setNote(event.target.value)} rows={2} maxLength={2000} placeholder="Or say what you'd change" aria-label="What you'd change" />
+        <Textarea value={note} onChange={event => setNote(event.target.value)} rows={2} maxLength={4000} placeholder="Or say what you'd change" aria-label="What you'd change" />
         <Button size="sm" variant="outline" className="self-start" disabled={busy || note.trim() === ""} onClick={() => void act({ note, entry: String(choose.entry) })}>Send reply</Button>
       </>}
     </>}
@@ -653,7 +653,7 @@ function TeammateSettings({ stage, others, view, update }: { stage: BrowserFlowS
         : <select className={SELECT} aria-label="Teammate" value={stage.teammate ?? ""} onChange={event => update({ teammate: event.target.value })}>
           {mates.map(one => <option key={one.handle} value={one.handle}>{one.label}{one.working ? "" : " (paused)"}</option>)}</select>}
     </Field>
-    <Field label="What to do here"><Textarea rows={4} value={stage.instructions ?? ""} maxLength={4000} onChange={event => update({ instructions: event.target.value })} aria-label="What to do here" placeholder="Read the customer's reply and decide what happens next." /></Field>
+    <Field label="What to do here"><Textarea rows={4} value={stage.instructions ?? ""} maxLength={8000} onChange={event => update({ instructions: event.target.value })} aria-label="What to do here" placeholder="Read the customer's reply and decide what happens next." /></Field>
     <Answers routes={stage.routes ?? []} others={others} set={routes => update({ routes })} hint="It picks one, and writes what the next zones send. With none, it moves the card on to “Then”." />
     <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" className="mt-0.5 size-4" checked={stage.reply === true} onChange={event => update({ reply: event.target.checked ? true : undefined })} data-teammate-reply />
       <span>Answer whoever asked<span className="block text-[12px] text-muted-foreground">What it writes goes back to the person who added the card, in their chat app.</span></span></label>
@@ -752,7 +752,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       </select>
     </Field>
     {stage.kind === "draft" && <Field label="What Claude should write" hint="Claude reads the card and what earlier zones said. Put a “Person decides” zone next to read and edit it first.">
-      <Textarea rows={5} value={stage.instructions ?? ""} maxLength={4000} onChange={event => update({ instructions: event.target.value })} aria-label="What Claude should write" />
+      <Textarea rows={5} value={stage.instructions ?? ""} maxLength={8000} onChange={event => update({ instructions: event.target.value })} aria-label="What Claude should write" />
     </Field>}
     {(stage.kind === "task" || stage.kind === "report") && <Field label="What the agent should do" hint={"Fill-ins: {{card.title}}, {{card.description}}, {{note}} (the latest send-back note), {{stage.<zone id>}} (an earlier zone's report; a research zone adds .items and .report)."}>
       <Textarea rows={7} value={stage.instructions ?? ""} onChange={event => update({ instructions: event.target.value })} aria-label="What the agent should do" />

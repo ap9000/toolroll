@@ -73,10 +73,18 @@ describe("filing", () => {
       ok: false,
       reason: "invalid-note",
     });
-    expect(store.fileSteerNote("t-1", "alex", "x".repeat(3_000), T0)).toMatchObject({
+    expect(store.fileSteerNote("t-1", "alex", "x".repeat(4_001), T0)).toMatchObject({
       ok: false,
       reason: "invalid-note",
+      problem: "a note is at most 4000 characters",
     });
+  });
+
+  test("a steering note takes up to 4000 characters, whole", () => {
+    const note = `${"prefer the parser fix first, then the totals. ".repeat(100)}`.slice(0, 4_000).trim();
+    const filed = store.fileSteerNote("t-1", "alex", note, T0);
+    expect(filed.ok).toBe(true);
+    expect(store.listSteerNotes(store.refFor("built-in", "t-1").id).map(one => one.note)).toContain(note);
   });
 
   test("a finished task supersedes pending notes in the same transaction", () => {
