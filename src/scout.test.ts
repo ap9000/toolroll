@@ -22,6 +22,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
 import { SCOUT_BROWSER, scoutBrowser, scrubUrl } from "./scout.js";
 import * as projectTools from "./project-tools.js";
+import * as browserCheck from "./scout-browser.js";
 import { createServer, request as httpRequest } from "node:http";
 import { readVerifiedReport } from "./evidence.js";
 import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
@@ -604,6 +605,11 @@ describe("scout tasks, against real git", () => {
     expect(launch[launch.indexOf("--proxy-server") + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(launch[launch.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
     expect(launch).not.toContain("--allow-unrestricted-file-access");
+    // Chrome's own sandbox can't start inside the agent fence (run 2356): off only when the fence holds the browser.
+    expect(scoutBrowser({ command: "npx", args: [] }, "/tmp/shots", "http://127.0.0.1:1", true)?.[SCOUT_BROWSER]).toMatchObject({ args: expect.arrayContaining(["--no-sandbox"]) });
+    expect(JSON.stringify(scoutBrowser({ command: "npx", args: [] }, "/tmp/shots", "http://127.0.0.1:1"))).not.toContain("--no-sandbox");
+    // Screenshots are saved by their full path in the image folder, which is never the checkout.
+    expect(prompts.at(-1)).toContain(join(folderSeen, "home.png"));
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     // The folder was the run's own, outside the checkout, and is gone afterwards.
     expect(folderSeen).not.toBe("");
@@ -739,6 +745,38 @@ describe("scout tasks, against real git", () => {
     expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
     expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
     expect(scoutBrowser(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
+  });
+
+  test("a browser that can't start is found before research, said once in the brief and the report, and not offered", async () => {
+    const { runnerToken } = await setup();
+    const checked: { args: readonly string[]; env: Record<string, string | undefined> }[] = [];
+    const failing = vi.spyOn(browserCheck, "preflightFor").mockImplementation(() => async (launch, options) => {
+      checked.push({ args: launch.args, env: options.env });
+      return { ok: false, reason: "Target crashed" };
+    });
+    try {
+      expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
+    } finally {
+      failing.mockRestore();
+    }
+    // Checked once, as the scout would get it: its proxy, loopback included, and its proxy environment.
+    expect(checked).toHaveLength(1);
+    const proxy = String(checked[0]!.args[checked[0]!.args.indexOf("--proxy-server") + 1]);
+    expect(proxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(checked[0]!.args[checked[0]!.args.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
+    expect(checked[0]!.env["HTTPS_PROXY"]).toBe(proxy);
+    expect(checked[0]!.env["NO_PROXY"]).toBeUndefined();
+    // The scout is told once and gets no browser; its web research still goes through the proxy.
+    expect(prompts.at(-1)).toContain("The browser couldn't start (Target crashed), so this run has no screenshots");
+    expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
+    expect(browserLaunch(argvSeen)).toEqual([]);
+    expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
+    expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    const store = openStore(db);
+    const view = readVerifiedReport(store, join(base, "evidence"), store.refFor("built-in", "flaky").id);
+    expect(view !== null && view.ok && view.report.report).toContain("_No screenshots: the browser couldn't start (Target crashed)._");
+    store.close();
   });
 
   test("secrets are scrubbed from item and image URLs, captions and file names before they are stored or passed on", async () => {
