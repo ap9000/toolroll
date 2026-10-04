@@ -39,10 +39,13 @@ export type OneClick = { id: string; label: string; url: string; about: string; 
 export const ONE_CLICK: readonly OneClick[] = [
   { id: "stripe", label: "Stripe", url: "https://mcp.stripe.com/", about: "Payments, customers, refunds and invoices." },
   { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", about: "Pages and databases: search, read and write." },
-  { id: "linear", label: "Linear", url: "https://mcp.linear.app/mcp", about: "Issues, projects and comments." },
-  { id: "sentry", label: "Sentry", url: "https://mcp.sentry.dev/mcp", about: "Errors and issues, with their stack traces." },
+  { id: "linear", label: "Linear", url: "https://mcp.linear.app/mcp", about: "Issues, projects and comments.",
+    reads: ["issue", "project", "team", "comment", "label", "cycle", "document", "status", "statuses", "user"] },
+  { id: "sentry", label: "Sentry", url: "https://mcp.sentry.dev/mcp", about: "Errors and issues, with their stack traces.",
+    reads: ["organization", "project", "issue", "detail", "details", "event", "trace", "release", "tag", "attachment"] },
   { id: "atlassian", label: "Jira and Confluence", url: "https://mcp.atlassian.com/v1/mcp", about: "Jira issues and Confluence pages." },
-  { id: "intercom", label: "Intercom", url: "https://mcp.intercom.com/mcp", about: "Customer conversations and contacts." },
+  { id: "intercom", label: "Intercom", url: "https://mcp.intercom.com/mcp", about: "Customer conversations and contacts.",
+    reads: ["conversation", "contact"] },
   { id: "attio", label: "Attio", url: "https://mcp.attio.com/mcp", about: "Your CRM: people, companies, deals and notes." },
   { id: "zapier", label: "Zapier", url: "https://mcp.zapier.com/api/mcp/mcp", about: "Thousands of apps, through the actions you choose in Zapier." },
   { id: "square", label: "Square", url: "https://mcp.squareup.com/mcp", about: "Payments, orders, customers and catalog." },
@@ -51,8 +54,10 @@ export const ONE_CLICK: readonly OneClick[] = [
   { id: "webflow", label: "Webflow", url: "https://mcp.webflow.com/mcp", about: "Sites, pages and CMS items." },
   { id: "wix", label: "Wix", url: "https://mcp.wix.com/mcp", about: "Your Wix site, store and bookings." },
   { id: "canva", label: "Canva", url: "https://mcp.canva.com/mcp", about: "Designs: search, create and export." },
-  { id: "vercel", label: "Vercel", url: "https://mcp.vercel.com/", about: "Projects, deployments and logs." },
-  { id: "cloudflare", label: "Cloudflare", url: "https://mcp.cloudflare.com/mcp", about: "Workers, DNS and your Cloudflare account." },
+  { id: "vercel", label: "Vercel", url: "https://mcp.vercel.com/", about: "Projects, deployments and logs.",
+    reads: ["team", "project", "deployment", "build", "runtime", "log", "logs", "vercel", "documentation"] },
+  { id: "cloudflare", label: "Cloudflare", url: "https://mcp.cloudflare.com/mcp", about: "Workers, DNS and your Cloudflare account.",
+    reads: ["account", "worker", "workers", "observability", "analytics", "log", "logs", "page", "pages", "project", "deployment"] },
   // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
   { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.",
     reads: ["screen", "flow", "app", "site", "element", "pattern", "ui", "ios", "android", "web"] },
@@ -158,8 +163,8 @@ const renewTried = new Map<string, number>();
 
 type Fetch = typeof fetch;
 type Server = { authorize: string; token: string; register: string; scopes: string[]; resource: string | null };
-/** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). */
-export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number };
+/** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). `kit` or `template` is the page it returns to. */
+export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number };
 
 const json = async (fetcher: Fetch, url: string): Promise<Record<string, unknown> | null> => {
   try {
@@ -209,7 +214,7 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
  * client, and hand back the address to send the person to (and the visit the
  * callback finishes). The person's password was checked before this.
  */
-export async function startConnect(input: { service: string; repo: string; by: string; origin: string; kit?: string | null }, fetcher: Fetch = fetch, now = Date.now()): Promise<{ ok: true; go: string; state: string; visit: ConnectVisit } | { ok: false; said: string }> {
+export async function startConnect(input: { service: string; repo: string; by: string; origin: string; kit?: string | null; template?: string | null }, fetcher: Fetch = fetch, now = Date.now()): Promise<{ ok: true; go: string; state: string; visit: ConnectVisit } | { ok: false; said: string }> {
   const service = oneClickOf(input.service);
   if (service === null) return { ok: false, said: "Choose a service from the list." };
   const server = await discoverSignIn(service.url, fetcher);
@@ -240,7 +245,7 @@ export async function startConnect(input: { service: string; repo: string; by: s
   go.searchParams.set("state", state);
   go.searchParams.set("resource", resource);
   if (server.scopes.length > 0) go.searchParams.set("scope", server.scopes.join(" "));
-  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS } };
+  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS } };
 }
 
 /** The spec a connected service joins the project with: its MCP address, signed in with the token its sign-in gave. */

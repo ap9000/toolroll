@@ -12,7 +12,7 @@ import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
-import { addToolTo, projectToolsOf } from "./project-tools.js";
+import { addToolTo, catalogTool, projectToolsOf } from "./project-tools.js";
 import { connectedSpec } from "./mcp-connect.js";
 import { T0 } from "../test/serve-kit.js";
 
@@ -152,4 +152,82 @@ test("the React workspace's Settings → Tools is the same page: named buttons, 
   const stale = await post(cookie, "/settings/tools/connect", { ...fields, shown: BENTO, service: "stripe", password: token });
   expect(decodeURIComponent(stale.headers.get("location") ?? "")).toContain("The project changed; connect again.");
   expect(signIns).toHaveLength(1);
+});
+
+test("a gallery template shows its tools for the project, offers Connect first and comes back to the template", async () => {
+  // PostHog signed in on bentoportfolio; Sentry added from the common tools list, so not connected by signing in.
+  expect(addToolTo(store, BENTO, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home })).toMatchObject({ ok: true });
+  const { label: _sentry, ...sentry } = catalogTool("sentry")!;
+  expect(addToolTo(store, BENTO, sentry, "the common tools list", "alex", T0, { home })).toMatchObject({ ok: true });
+  const cookie = await login();
+  const get = async (path: string) => (await fetch(`${base}${path}`, { headers: { cookie } })).text();
+  const card = (html: string, id: string) => new RegExp(`<article class="gallery-card" data-template="${id}">[\\s\\S]*?</article>`).exec(html)?.[0] ?? "";
+
+  // The gallery: each card's marks (the Integrations mark) and where this project stands with each tool.
+  const gallery = await get(`/flows/new?repo=${encodeURIComponent(BENTO)}`);
+  expect(card(gallery, "metrics-digest")).toContain('<li data-tool="posthog" data-state="connected"><span class="brand-mark" data-connected="true" aria-hidden="true"><svg');
+  expect(card(gallery, "metrics-digest")).toContain('<strong>PostHog</strong><span class="integration-state integration-state--connected"><i aria-hidden="true"></i>Connected</span>');
+  expect(card(gallery, "ui-inspiration")).toMatch(/<li data-tool="mobbin" data-state="open"><span class="brand-mark" data-connected="false"[^>]*>.*<\/span><strong>Mobbin<\/strong><span class="integration-state integration-state--not-set-up"><i aria-hidden="true"><\/i>Not connected<\/span>/);
+  expect(card(gallery, "error-to-fix")).toContain('data-tool="sentry" data-state="taken"');
+  expect(card(gallery, "error-to-fix")).toContain("Added another way");
+  expect(card(gallery, "figma-to-pr")).toContain('data-tool="figma-desktop" data-state="open"');
+  expect(card(gallery, "fix-ci")).not.toContain("gallery-tools");
+  // Another project, another state.
+  expect(card(await get(`/flows/new?repo=${encodeURIComponent(ORDERS)}`), "metrics-digest")).toContain('data-tool="posthog" data-state="open"');
+
+  // Connected: no Connect, and Create flow is the main action.
+  const digest = await get(`/flows/new/metrics-digest?repo=${encodeURIComponent(BENTO)}`);
+  expect(digest).toContain('<div class="gallery-connect" data-tool="posthog" data-state="connected">');
+  expect(digest).not.toContain('action="/settings/tools/connect"');
+  expect(digest).toContain('<button type="submit" name="intent" value="create">Create flow</button>');
+  // Set up another way: no Connect here; the Tools page is where to change it.
+  const errors = await get(`/flows/new/error-to-fix?repo=${encodeURIComponent(BENTO)}`);
+  expect(errors).not.toContain('action="/settings/tools/connect"');
+  expect(errors).toContain("set up another way. To connect Sentry here, remove it on <a href=\"/settings/tools?repo=%2Frepo%2Fbentoportfolio\">Tools</a>.");
+  expect(errors).toContain(`data-needs-tool="sentry">“Find the cause” needs Sentry, which isn't connected.</p>`);
+
+  // Not connected: its Connect (with the password) comes first; the preview names the zone that needs it; Create stays, quieter.
+  const figma = await get(`/flows/new/figma-to-pr?repo=${encodeURIComponent(BENTO)}`);
+  expect(figma).toContain('<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button name="service" value="figma-desktop">Connect Figma (desktop app)</button>');
+  expect(figma.indexOf('action="/settings/tools/connect"')).toBeLessThan(figma.indexOf("data-gallery-use"));
+  expect(figma).toContain(`data-needs-tool="figma-desktop">“Build the frame” needs Figma (desktop app), which isn't connected.</p>`);
+  expect(figma).toContain('value="create" class="secondary" data-without-tools>Create flow</button>');
+  const fields = formOf(figma, "/settings/tools/connect");
+  expect(fields).toMatchObject({ repo: BENTO, shown: BENTO, template: "figma-to-pr" });
+
+  // A wrong password, a stale project and a failed local connection all come back to the template, for the same project.
+  const wrong = await post(cookie, "/settings/tools/connect", { ...fields, service: "figma-desktop", password: "nope" });
+  expect(decodeURIComponent(wrong.headers.get("location") ?? "")).toBe(`/flows/new/figma-to-pr?repo=${BENTO}&problem=Enter your Toolroll password to connect a tool.`);
+  const stale = await post(cookie, "/settings/tools/connect", { ...fields, shown: ORDERS, service: "figma-desktop", password: token });
+  expect(decodeURIComponent(stale.headers.get("location") ?? "")).toBe(`/flows/new/figma-to-pr?repo=${ORDERS}&problem=The project changed; connect again.`);
+  const offline = await post(cookie, "/settings/tools/connect", { ...fields, service: "figma-desktop", password: token });
+  const back = decodeURIComponent(offline.headers.get("location") ?? "");
+  expect(back).toMatch(/^\/flows\/new\/figma-to-pr\?repo=\/repo\/bentoportfolio&problem=/);
+  expect(projectToolsOf(store, BENTO).map(one => one.name)).not.toContain("figma-desktop");
+  const failed = await get(back.replace(/problem=(.*)$/, (_all, words: string) => `problem=${encodeURIComponent(words)}`));
+  expect(failed).toContain('<p class="problem" role="alert">');
+  expect(failed).toContain("Connect Figma (desktop app)</button>");
+
+  // A sign-in elsewhere: started from the template, the service's answer comes back to that template and project.
+  const page = await get(`/flows/new/ui-inspiration?repo=${encodeURIComponent(ORDERS)}`);
+  const signIn = formOf(page, "/settings/tools/connect");
+  expect(signIn).toMatchObject({ repo: ORDERS, shown: ORDERS, template: "ui-inspiration" });
+  expect(page).toContain("You sign in on Mobbin, then come back here.");
+  const started = await post(cookie, "/settings/tools/connect", { ...signIn, service: "stripe", password: token });
+  // A template names only its own tools: Stripe isn't one of UI inspiration's, so it goes back to the Tools page as ever.
+  expect(started.status).toBe(200);
+  expect(await declined(started)).toBe(`/settings/tools?repo=${ORDERS}&problem=Stripe wasn't connected to standing-orders: access was declined.`);
+  const mobbin = await post(cookie, "/settings/tools/connect", { ...signIn, service: "mobbin", password: token });
+  // Mobbin's sign-in isn't answered here (the replayed fetch knows Stripe only): the reason comes back to the template.
+  expect(decodeURIComponent(mobbin.headers.get("location") ?? "")).toBe(`/flows/new/ui-inspiration?repo=${ORDERS}&problem=Mobbin didn't offer a sign-in just now. Try again in a minute.`);
+  // An unknown template is never a place to go back to.
+  const forged = await post(cookie, "/settings/tools/connect", { ...signIn, template: "../../evil", service: "figma-desktop", password: "nope" });
+  expect(decodeURIComponent(forged.headers.get("location") ?? "")).toBe(`/settings/tools?repo=${ORDERS}&connect=figma-desktop&problem=Enter your Toolroll password to connect a tool.`);
+
+  // Created without the tool: the flow is made all the same.
+  const preview = await post(cookie, "/flows/new/figma-to-pr", { csrf: fields["csrf"]!, repo: BENTO, name: "", intent: "preview" });
+  const previewed = /name="previewed" value="([^"]*)"/.exec(await preview.text())![1]!;
+  const made = await post(cookie, "/flows/new/figma-to-pr", { csrf: fields["csrf"]!, repo: BENTO, name: "", intent: "create", previewed });
+  expect(made.status).toBe(303);
+  expect(store.listFlows([BENTO]).map(one => one.name)).toEqual(["Figma frame to pull request"]);
 });
