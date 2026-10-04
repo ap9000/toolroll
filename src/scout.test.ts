@@ -21,6 +21,7 @@ import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
 import { SCOUT_BROWSER, scoutBrowserLaunch, scrubUrl } from "./scout.js";
+import { connectedSpec } from "./mcp-connect.js";
 import * as projectTools from "./project-tools.js";
 import * as browserCheck from "./scout-browser.js";
 import { createServer, request as httpRequest } from "node:http";
@@ -578,6 +579,43 @@ describe("scout tasks, against real git", () => {
     const result = { type: "result", subtype: "success", is_error: false, result: "", structured_output: { kind: "report", report } };
     return { ...OK, stdout: JSON.stringify(result) };
   };
+
+  test("a scout may read the project's connected services, read-only actions only, and looks in Mobbin first; none when nothing is connected", async () => {
+    const { runnerToken, approverToken } = await setup();
+    const allowedOf = () => String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",");
+    // Nothing connected: research, fetch and the browser, no service.
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
+    expect(allowedOf().filter(tool => tool.startsWith("mcp__") && !tool.startsWith(`mcp__${SCOUT_BROWSER}__`))).toEqual([]);
+    expect(prompts.at(-1)).not.toContain("Mobbin");
+    expect(prompts.at(-1)).not.toContain("connected");
+
+    await run(["task", "add", "how do others onboard", "--id", "onboard", "--repo", repo, "--report", "--json"], reportingAgent);
+    await run(["task", "scope", "onboard", "--goal", "Find how good apps onboard new people", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
+    const store = openStore(db);
+    const digest = store.getScope("onboard")?.digest as string;
+    const connect = (id: string, tools: string[]) => {
+      expect(projectTools.addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: base })).toMatchObject({ ok: true });
+      store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools, problem: null }));
+    };
+    connect("mobbin", ["search_screens", "search_flows", "save_to_collection"]);
+    connect("posthog", ["query-run", "insight-create-from-query", "feature-flag-get-all"]);
+    connect("figma", ["get_screenshot"]);
+    store.close();
+    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+    // This run launches Mobbin and PostHog (their sign-ins are set); Figma is left out of it.
+    const launched = vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: ["mobbin", "posthog"].map(id => ({ spec: connectedSpec(id)!, digest: "d", values: {} })), skipped: [] }));
+    expect(payload().ok).toBe(true);
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "onboard", outcome: "reported" }));
+    expect(launched).toHaveBeenCalled();
+    const allowed = allowedOf();
+    expect(allowed).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", `mcp__${SCOUT_BROWSER}__browser_navigate`]));
+    expect(allowed.filter(tool => tool.startsWith("mcp__") && !tool.startsWith(`mcp__${SCOUT_BROWSER}__`)))
+      .toEqual(["mcp__mobbin__search_screens", "mcp__mobbin__search_flows", "mcp__posthog__query-run"]);
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
+    expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
+    expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
+  });
 
   test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {
     const { runnerToken } = await setup();

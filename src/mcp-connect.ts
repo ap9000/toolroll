@@ -13,12 +13,18 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { addToolTo, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ToolSpec } from "./project-tools.js";
+import { addToolTo, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
 
+/**
+ * A one-click service. `reads` names its read-only actions, the ones a
+ * research step may use (what it's for: never anything that changes it).
+ */
+export type OneClick = { id: string; label: string; url: string; about: string; reads?: RegExp };
+
 /** Services verified to connect this way (their servers speak streamable HTTP and register clients on the spot). */
-export const ONE_CLICK: readonly { id: string; label: string; url: string; about: string }[] = [
+export const ONE_CLICK: readonly OneClick[] = [
   { id: "stripe", label: "Stripe", url: "https://mcp.stripe.com/", about: "Payments, customers, refunds and invoices." },
   { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", about: "Pages and databases: search, read and write." },
   { id: "linear", label: "Linear", url: "https://mcp.linear.app/mcp", about: "Issues, projects and comments." },
@@ -35,6 +41,12 @@ export const ONE_CLICK: readonly { id: string; label: string; url: string; about
   { id: "canva", label: "Canva", url: "https://mcp.canva.com/mcp", about: "Designs: search, create and export." },
   { id: "vercel", label: "Vercel", url: "https://mcp.vercel.com/", about: "Projects, deployments and logs." },
   { id: "cloudflare", label: "Cloudflare", url: "https://mcp.cloudflare.com/mcp", about: "Workers, DNS and your Cloudflare account." },
+  // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
+  { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.", reads: /(^|[-_])search/i },
+  { id: "figma", label: "Figma", url: "https://mcp.figma.com/mcp", about: "Design files and frames.", reads: /^get_/ },
+  { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.",
+    reads: /(^|-)(query|insights?)(-|$)|^(event-definitions-list|properties-list)$/ },
+  { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.", reads: /monitor|incident/i },
 ];
 const loopback = (value: string) => { try { const url = new URL(value); return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname); } catch { return false; } };
 /**
@@ -46,7 +58,8 @@ const loopback = (value: string) => { try { const url = new URL(value); return u
 export function oneClickServices(environment: NodeJS.ProcessEnv = process.env): typeof ONE_CLICK {
   const [id = "", label = "", url = ""] = (envValue(environment, "TEST_CONNECT") ?? "").split("|");
   if (!/^[a-z0-9-]{1,40}$/.test(id) || label === "" || !loopback(url)) return ONE_CLICK;
-  const standIn = { id, label, url, about: ONE_CLICK.find(one => one.id === id)?.about ?? "A service on this computer." };
+  const known = ONE_CLICK.find(one => one.id === id);
+  const standIn: OneClick = { id, label, url, about: known?.about ?? "A service on this computer.", ...(known?.reads === undefined ? {} : { reads: known.reads }) };
   return ONE_CLICK.some(one => one.id === id) ? ONE_CLICK.map(one => one.id === id ? standIn : one) : [...ONE_CLICK, standIn];
 }
 export const oneClickOf = (id: string) => oneClickServices().find(one => one.id === id) ?? null;
@@ -58,6 +71,32 @@ export function connectionsOf(store: Store, repo: string): { id: string; label: 
     const had = tools.find(one => one.name === service.id);
     return { id: service.id, label: service.label, about: service.about, state: had === undefined ? "open" : had.spec.url === service.url && had.spec.bearer === ACCESS ? "connected" : "taken" };
   });
+}
+
+/** Words in an action's name that mean it changes something: never a read, whatever a service's pattern says. */
+const CHANGES = new Set(["create", "update", "delete", "remove", "add", "set", "edit", "write", "post", "put", "patch", "send", "upload", "switch", "move",
+  "archive", "unarchive", "ack", "acknowledge", "resolve", "reopen", "pause", "resume", "enable", "disable", "escalate", "publish", "invite", "cancel",
+  "import", "merge", "assign", "mute", "unmute", "trigger", "start", "stop", "duplicate", "rename", "save", "approve"]);
+const changes = (action: string) => action.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).some(word => CHANGES.has(word));
+
+/**
+ * What a research step may use of a project's connected services: each
+ * signed-in service's read-only actions, as its last test listed them, named
+ * the way Claude allows them (`mcp__<service>__<action>`). A service not
+ * connected, without read-only actions, or left out of this run (`launched`)
+ * gives nothing.
+ */
+export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null): { services: { id: string; label: string }[]; allowed: string[] } {
+  const services: { id: string; label: string }[] = [], allowed: string[] = [];
+  for (const service of oneClickServices()) {
+    const tool = tools.find(one => one.name === service.id);
+    if (service.reads === undefined || tool === undefined || tool.spec.url !== service.url || tool.spec.bearer !== ACCESS || (launched !== null && !launched.has(tool.name))) continue;
+    const reads = (tool.lastTest?.ok ? tool.lastTest.tools : []).filter(action => /^[A-Za-z0-9_.-]{1,64}$/.test(action) && service.reads!.test(action) && !changes(action));
+    if (reads.length === 0) continue;
+    services.push({ id: service.id, label: service.label });
+    allowed.push(...reads.map(action => `mcp__${service.id}__${action}`));
+  }
+  return { services, allowed };
 }
 
 /** The secrets a connected tool keeps: the bearer the MCP server takes, and what refreshing it needs. */
@@ -104,6 +143,7 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
   const path = issuer.pathname === "/" ? "" : issuer.pathname.replace(/\/$/, "");
   const meta = await json(fetcher, `${issuer.origin}/.well-known/oauth-authorization-server${path}`)
     ?? await json(fetcher, `${issuer.origin}/.well-known/oauth-authorization-server`)
+    ?? (path === "" ? null : await json(fetcher, `${issuer.origin}${path}/.well-known/openid-configuration`))
     ?? await json(fetcher, `${issuer.origin}/.well-known/openid-configuration`);
   if (meta === null || !https(meta["authorization_endpoint"]) || !https(meta["token_endpoint"]) || !https(meta["registration_endpoint"])) return null;
   const methods = Array.isArray(meta["code_challenge_methods_supported"]) ? meta["code_challenge_methods_supported"] as unknown[] : ["S256"];

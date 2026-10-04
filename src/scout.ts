@@ -40,7 +40,8 @@ import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
-import { catalogTool, type ToolSpec } from "./project-tools.js";
+import { catalogTool, projectToolsOf, toolLaunchFor, type ToolSpec } from "./project-tools.js";
+import { researchToolsOf } from "./mcp-connect.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
 import { invokeAgent } from "./invoke.js";
@@ -175,6 +176,7 @@ function scoutBrief(
   structured: boolean,
   browser: { folder: string; demoUrl: string | null } | { problem: string } | null,
   web = true,
+  services: readonly { id: string; label: string }[] = [],
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -201,6 +203,12 @@ function scoutBrief(
       ? ["You may search the web and fetch pages for this research. Cite the URL",
           "of every source you use. Never download anything else, and never run downloaded code."]
       : ["The web is unavailable in this run: research from the repository alone."]),
+    ...(services.length === 0
+      ? []
+      : [`You may also read from this project's connected ${services.map(one => one.label).join(", ")} (read-only: never change anything there).`,
+          ...(services.some(one => one.id === "mobbin")
+            ? ["When you study screens or flows, look in Mobbin first for real screens of that kind, and cite each one you use."]
+            : [])]),
     ...(browser === null
       ? ["No browser is available for screenshots in this run, so leave images empty."]
       : "problem" in browser
@@ -257,6 +265,17 @@ function scoutBrief(
     "Each follow-up becomes a task the operator may file with one tap — write",
     "its goal as the contract a builder would be held to.",
   ].join("\n");
+}
+
+/** What of the project's connected services this run may read (none when they can't be read). */
+function connectedResearch(store: Store, taskRef: number, runId: number): ReturnType<typeof researchToolsOf> {
+  try {
+    const repo = store.refById(taskRef)?.repo ?? null;
+    if (repo === null) return { services: [], allowed: [] };
+    return researchToolsOf(projectToolsOf(store, repo), new Set(toolLaunchFor(store, runId).tools.map(one => one.spec.name)));
+  } catch {
+    return { services: [], allowed: [] };
+  }
 }
 
 export async function scout(store: Store, request: ScoutRequest): Promise<ScoutOutcome> {
@@ -387,19 +406,21 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     const browser = browserServer === null ? null : scoutBrowser(browserServer.url);
     const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null);
     const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
+    // The project's signed-in services, read-only actions only: allowed by name, so `dontAsk` refuses every other one.
+    const research = proxy === null || !structured ? { services: [], allowed: [] } : connectedResearch(store, request.taskRef, request.runId);
     invoked = await invokeAgent(
       store,
       request.runId,
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, briefBrowser, proxy !== null),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, briefBrowser, proxy !== null, research.services),
         maxTurns,
         // Read-only by policy AND by check: `dontAsk` with only research and
         // screenshot tools allowed is the permission posture (plan mode
         // blocked the screenshots too); the clean-tree proof below is the law.
         permissionMode: request.permissionMode ?? "dontAsk",
-        allowedTools: proxy === null ? [] : browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS,
+        allowedTools: proxy === null ? [] : [...(browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS), ...research.allowed],
         ...(browser === null ? {} : { extraMcpServers: browser }),
         skipPermissions: false,
         resumeSession: null,
