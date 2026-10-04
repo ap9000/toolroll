@@ -59,7 +59,7 @@ test("the code becomes tokens in the tool's secrets file, never the database, an
   const { fetcher, seen } = stripe();
   const started = await startConnect({ service: "stripe", repo, by: "alex", origin: "http://127.0.0.1:4180" }, fetcher, T0.getTime());
   if (!started.ok) throw new Error(started.said);
-  expect(await finishConnect(store, started.visit, "code-1", T0, { fetcher, home: dir, test: false })).toEqual({ ok: true, said: "Stripe is connected." });
+  expect(await finishConnect(store, started.visit, "code-1", T0, { fetcher, home: dir, test: false })).toEqual({ ok: true, said: "Stripe is connected to shop." });
   expect(new URLSearchParams(seen.at(-1)!.body).get("code_verifier")).toBe(started.visit.verifier);
   expect(Object.fromEntries(new URLSearchParams(seen.at(-1)!.body))).toMatchObject({ grant_type: "authorization_code", code: "code-1", client_id: "client-7", resource: "https://mcp.stripe.com" });
   const [tool] = projectToolsOf(store, repo);

@@ -13,6 +13,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
+import { basename } from "node:path";
 import { addToolTo, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -251,10 +252,12 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   }
   setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource,
     ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }), ...(visit.clientSecret === null ? {} : { [CLIENT_SECRET]: visit.clientSecret }) }, home);
-  if (options.test === false) return { ok: true, said: `${service.label} is connected.` };
+  // The success line names the project it went to: the page and chat may be looking at another.
+  const to = basename(visit.repo);
+  if (options.test === false) return { ok: true, said: `${service.label} is connected to ${to}.` };
   const tested = await testToolOf(store, visit.repo, spec.name, now, { home, ...(options.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) });
-  return tested?.ok ? { ok: true, said: `${service.label} is connected: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a teammate use it from its page.` }
-    : { ok: true, said: `${service.label} is signed in, but its test didn't pass yet: ${tested?.problem ?? "no answer"}.` };
+  return tested?.ok ? { ok: true, said: `${service.label} is connected to ${to}: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a teammate use it from its page.` }
+    : { ok: true, said: `${service.label} is signed in for ${to}, but its test didn't pass yet: ${tested?.problem ?? "no answer"}.` };
 }
 
 /** Keep connected services signed in: any token expiring within ten minutes is refreshed (the worker's pass, and before a teammate's call). */

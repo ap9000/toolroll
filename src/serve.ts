@@ -24,7 +24,7 @@ import { SlackState } from "./slack-state.js";
 import { CHAT_ACTIONS, OWNER_ACTIONS, sharedActionPayload, sharedActionNeedsReview, sharedActionReviewPath, mintSharedActionReview } from './chat-actions.js';
 import { changeSkills, githubSkill, importSkill, readSkillsSnapshot, reviseSkillTest, skillTestResult, skillsView, testSkill, type SkillFile } from "./project-skills.js";
 import { skillsHtml, skillsScript, skillsSnapshotHtml, skillTestFeedbackHtml, SKILLS_CSS } from "./skills-ui.js";
-import { toolsHtml, TOOLS_CSS, type ToolsView } from "./tools-ui.js";
+import { toolsHtml, toolsProjectPicker, TOOLS_CSS, TOOLS_PROJECT_SCRIPT, type ToolsView } from "./tools-ui.js";
 import { flowFallbackHtml, flowImportHtml, flowsListHtml, flowView, FLOW_IMPORT_SCRIPT, FLOWS_CSS } from "./flows-ui.js";
 import { exportFlow, fetchFlowFile, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike, type FlowImportPlan } from "./flow-share.js";
 import { BLANK_SOUL, TEAMMATE_CSS, teammatePageHtml, teammatesListHtml } from "./teammates-ui.js";
@@ -1352,7 +1352,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const service = oneClickOf(visit.service)!;
     const kit = visit.kit === null ? null : kitOf(visit.kit);
     const back = kit === null ? `/settings/tools?repo=${encodeURIComponent(visit.repo)}` : `/kits/${kit.id}?repo=${encodeURIComponent(visit.repo)}`;
-    if (url.searchParams.has("error")) return done(back, "problem", url.searchParams.get("error") === "access_denied" ? `${service.label} wasn't connected: access was declined.` : `${service.label} wasn't connected.`);
+    const to = projectName(visit.repo);
+    if (url.searchParams.has("error")) return done(back, "problem", url.searchParams.get("error") === "access_denied" ? `${service.label} wasn't connected to ${to}: access was declined.` : `${service.label} wasn't connected to ${to}.`);
     const code = url.searchParams.get("code") ?? "";
     if (!/^[\x21-\x7e]{4,2048}$/.test(code)) return done(back, "problem", `${service.label} didn't send a sign-in code. Connect again.`);
     const now = clock();
@@ -1362,7 +1363,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const set = kit === null || !kit.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kit, visit.repo);
     if (set !== null && store.teammateGrant(set.mate.id, service.id) === null) {
       const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome });
-      if (granted.ok) return done(back, "said", `${service.label} is connected, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
+      if (granted.ok) return done(back, "said", `${service.label} is connected to ${to}, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
     }
     return done(back, "said", finished.said);
   }
@@ -4122,16 +4123,20 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-      const selector = projects.length > 1 ? `<form class="tools" method="get" action="/settings/tools"><label>Project<select name="repo">${projects.map(p => `<option value="${escape(p)}"${p === chosen ? " selected" : ""}>${escape(p.split("/").at(-1) ?? p)}</option>`).join("")}</select></label><button>Show project</button></form>` : "";
+      const kit = kitOf(url.searchParams.get("kit") ?? "")?.id ?? null, wanted = oneClickOf(url.searchParams.get("connect") ?? "")?.id ?? null;
+      // Choosing a project opens it at once (keeping a kit's Connect), so every form below acts on the project shown.
+      const selector = toolsProjectPicker(projects, chosen, { ...(kit === null ? {} : { kit }), ...(wanted === null ? {} : { connect: wanted }) });
       let content = "<p>Add a project to give its builds tools.</p>";
       if (chosen) {
         try {
           const approver = who.role === "approver" && who.via === "cookie";
-          content = toolsHtml(toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kitOf(url.searchParams.get("kit") ?? "")?.id ?? null, oneClickOf(url.searchParams.get("connect") ?? "")?.id ?? null), who.via === "cookie" ? who.session.csrf : "", approver,
+          const view = toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kit, wanted);
+          if (approver) view.others = projects.filter(one => one !== chosen).map(one => ({ repo: one, project: projectName(one), open: connectionsOf(store, one).filter(c => c.state === "open").map(c => c.id) }));
+          content = toolsHtml(view, who.via === "cookie" ? who.session.csrf : "", approver,
             { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
         } catch { content = '<p class="problem" role="alert">Tools are unavailable. Reload to retry.</p>'; }
       }
-      return sendScreen(response, 200, screen("Tools", `<p><a href="/settings">Settings</a></p><h1>Tools</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings") }));
+      return sendScreen(response, 200, screen("Tools", `<p><a href="/settings">Settings</a></p><h1>Tools</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings"), functional: { script: SETTINGS_AUTOSAVE_SCRIPT + TOOLS_PROJECT_SCRIPT } }));
     }
     // Settings → Project: what Toolroll holds for a project; an instance operator deletes it here.
     if (url.pathname === "/settings/project") {
@@ -7664,15 +7669,28 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/tools/connect") {
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to connect tools.", "/settings/tools");
       const repo = body.get("repo") ?? "";
-      if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-      const service = oneClickOf(body.get("service") ?? "");
+      const reachable = (one: string) => visible(one) && [...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(one);
+      if (!reachable(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+      // "Also connect to …": a service connected on the shown project, signed in again for another project.
+      const also = body.get("also");
+      const split = also === null ? -1 : also.indexOf(":");
+      const service = oneClickOf(also === null ? body.get("service") ?? "" : split > 0 ? also.slice(0, split) : "");
+      const target = also === null ? repo : split > 0 ? also.slice(split + 1) : "";
       const kit = kitOf(body.get("kit") ?? "")?.id ?? null;
-      const back = (words: string) => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}${service === null ? "" : `&connect=${service.id}`}&problem=${encodeURIComponent(words)}#connect`);
+      const back = (words: string, page = repo) => redirect(response, `/settings/tools?repo=${encodeURIComponent(page)}${kit === null ? "" : `&kit=${kit}`}${service === null || also !== null ? "" : `&connect=${service.id}`}&problem=${encodeURIComponent(words)}#connect`);
+      // The page posts the project it showed; a post from a page showing another project is stale.
+      const shown = body.get("shown") ?? "";
+      if (shown !== repo) return back("The project changed; connect again.", reachable(shown) ? shown : repo);
       if (service === null) return back("Choose a service to connect.");
+      if (also !== null) {
+        if (!reachable(target)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+        if (connectionsOf(store, repo).find(one => one.id === service.id)?.state !== "connected") return back(`${service.label} isn't connected to ${projectName(repo)}.`);
+        if (connectionsOf(store, target).find(one => one.id === service.id)?.state !== "open") return back(`${projectName(target)} already has ${service.label}.`);
+      }
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
       const origin = consoleOrigin(request.headers.host);
       if (origin === null) return back("Connect tools from this computer (localhost) or from your https address.");
-      const started = await startConnect({ service: service.id, repo, by: who.name, origin, kit }, options.connectFetch ?? fetch);
+      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null }, options.connectFetch ?? fetch);
       if (!started.ok) return back(started.said);
       for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
       connectVisits.set(started.state, started.visit);
@@ -7683,6 +7701,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const repo = body.get("repo") ?? "";
       if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
       const back = (key: "said" | "problem", words: string, anchor = "") => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}${anchor}`);
+      // As for Connect: a post from a page that showed another project is refused, never applied here.
+      const shown = body.get("shown") ?? "";
+      if (shown !== repo) {
+        const page = visible(shown) && [...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(shown) ? shown : repo;
+        return redirect(response, `/settings/tools?repo=${encodeURIComponent(page)}&problem=${encodeURIComponent("The project changed; try again.")}`);
+      }
       const action = body.get("action") ?? "";
       const name = body.get("name") ?? "";
       // Anything that adds what a build can run or reach, or a secret, needs the password.

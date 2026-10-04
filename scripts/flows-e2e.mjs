@@ -458,7 +458,7 @@ createInterface({ input: process.stdin }).on("line", line => {
     // A project tool, added the way the Tools page adds one, and tested.
     const csrf = await page.locator('input[name="csrf"]').first().inputValue();
     for (const form of [{ action: "add-custom", name: "chat", transport: "stdio", target: `${process.execPath} ${echo}`, password: alexPassword }, { action: "test", name: "chat" }]) {
-      const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf, repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
+      const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf, repo, shown: repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
       if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
     }
     // The flow: call the web server, post to the tool, email whoever asked.
