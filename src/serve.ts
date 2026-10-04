@@ -34,7 +34,7 @@ import { CONNECT_CALLBACK, connectionsOf, finishConnect, localConnectOf, oneClic
 import { KITS_CSS, kitPageHtml, kitsGalleryHtml } from "./kits-ui.js";
 import { STARTERS_CSS, startersHtml } from "./flow-starters-ui.js";
 import { GALLERY_CSS, galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
-import { galleryDefaults, galleryDiagram, galleryTemplateOf, previewGallery, useGalleryTemplate, type GalleryAnswers, type GalleryPreview } from "./flow-gallery.js";
+import { galleryDefaults, galleryDiagram, galleryTemplateOf, galleryToolsOf, previewGallery, useGalleryTemplate, type GalleryAnswers, type GalleryPreview } from "./flow-gallery.js";
 import { starterForWork, starterOf, startersFor, switchOnStarter } from "./flow-starters.js";
 import { createTeammateFrom, labelOf, nameOf, saveSoul, setTeammateState, teammateSettings, sendTeammateSummaries } from "./teammate-admin.js";
 import { editMemory, forgetMemory, tellTeammate } from "./teammate-memory.js";
@@ -1356,7 +1356,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (visit === undefined || visit.expires < Date.now() || store.accountOf(visit.by)?.role !== "approver") return done("/settings/tools", "problem", "That sign-in expired. Connect again.");
     const service = oneClickOf(visit.service)!;
     const kit = visit.kit === null ? null : kitOf(visit.kit);
-    const back = kit === null ? `/settings/tools?repo=${encodeURIComponent(visit.repo)}` : `/kits/${kit.id}?repo=${encodeURIComponent(visit.repo)}`;
+    // Started from a gallery template's page: back to it, for the same project.
+    const template = visit.template === null ? null : galleryTemplateOf(visit.template);
+    const back = template !== null ? `/flows/new/${template.id}?repo=${encodeURIComponent(visit.repo)}`
+      : kit === null ? `/settings/tools?repo=${encodeURIComponent(visit.repo)}` : `/kits/${kit.id}?repo=${encodeURIComponent(visit.repo)}`;
     const to = projectName(visit.repo);
     if (url.searchParams.has("error")) return done(back, "problem", url.searchParams.get("error") === "access_denied" ? `${service.label} wasn't connected to ${to}: access was declined.` : `${service.label} wasn't connected to ${to}.`);
     const code = url.searchParams.get("code") ?? "";
@@ -1924,13 +1927,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // ---- reads ---------------------------------------------------------------
 
   /** A gallery template's page (Flows → New → Use this): its questions, the preview of these answers, and Create. */
-  function sendGalleryUse(response: ServerResponse, who: Who, template: NonNullable<ReturnType<typeof galleryTemplateOf>>, projects: readonly string[], repo: string, given: GalleryAnswers | null, name: string, notice: string | null): void {
+  function sendGalleryUse(response: ServerResponse, who: Who, template: NonNullable<ReturnType<typeof galleryTemplateOf>>, projects: readonly string[], repo: string, given: GalleryAnswers | null, name: string, notice: string | null, said: string | null = null): void {
     const answers = given ?? galleryDefaults(store, template, repo);
     let preview: GalleryPreview | null = null, problem = notice;
     try { preview = previewGallery(store, template, repo, answers, who.name, clock()); }
     catch (error) { problem = error instanceof Error ? error.message : "That can't be made here."; }
+    const diagram = preview?.built.definition ?? galleryDiagram(template);
     const html = galleryUseHtml({ template, projects: projects.map(path => ({ path, name: projectName(path) })), repo, answers, name, preview, problem,
-      csrf: who.via === "cookie" ? who.session.csrf : "", diagram: preview?.built.definition ?? galleryDiagram(template) });
+      csrf: who.via === "cookie" ? who.session.csrf : "", diagram, tools: preview?.tools ?? galleryToolsOf(template, diagram, connectionsOf(store, repo)), said });
     return sendScreen(response, problem !== null && preview === null && notice !== null ? 400 : 200, screen(template.name, `<p><a href="/flows/new">New flow</a></p><h1>${escape(template.name)}</h1>${html}`, { chrome: chromeFor(repo, "flows") }));
   }
 
@@ -3476,8 +3480,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/flows/new") {
       const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
       const canUse = who.via === "cookie" && who.role === "approver" && projects.length > 0;
-      const repo = url.searchParams.get("repo");
-      return sendScreen(response, 200, screen("New flow", `<p><a href="/flows">Flows</a></p><h1>New flow</h1>${galleryHtml({ repo: repo !== null && projects.includes(repo) ? repo : null, canUse })}`, { chrome: chromeFor(project, "flows") }));
+      // The chosen project, else the one being looked at: its tools are what each card says is connected.
+      const asked = url.searchParams.get("repo");
+      const repo = asked !== null && projects.includes(asked) ? asked : project !== null && projects.includes(project) ? project : null;
+      return sendScreen(response, 200, screen("New flow", `<p><a href="/flows">Flows</a></p><h1>New flow</h1>${galleryHtml({ repo, canUse, connections: repo === null ? null : connectionsOf(store, repo) })}`, { chrome: chromeFor(repo ?? project, "flows") }));
     }
     const galleryRead = /^\/flows\/new\/([a-z-]{1,40})$/.exec(url.pathname);
     if (galleryRead !== null) {
@@ -3488,7 +3494,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (projects.length === 0) return refuse(response, who, 409, "Add a project first.", "/projects");
       const asked = url.searchParams.get("repo");
       const repo = asked !== null && projects.includes(asked) ? asked : project !== null && projects.includes(project) ? project : projects[0]!;
-      return sendGalleryUse(response, who, template, projects, repo, null, template.name, null);
+      // Back from a Connect started on this page: how it went.
+      const problem = url.searchParams.get("problem"), said = url.searchParams.get("said");
+      return sendGalleryUse(response, who, template, projects, repo, null, template.name, problem === null ? null : problem.slice(0, 400), said === null ? null : said.slice(0, 400));
     }
     if (url.pathname === "/flows") {
       const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
@@ -4194,7 +4202,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         canSwitch: who.via === "cookie" && who.role === "approver" && !store.isDemo(), suggested: starterOf(url.searchParams.get("starter") ?? "")?.id ?? null,
         said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }) +
         // Every template, beside the starters: Use this opens its page for this project.
-        `<h2 class="gallery-heading">Templates</h2>${galleryHtml({ repo: chosen, canUse: who.via === "cookie" && who.role === "approver" && !store.isDemo() })}`;
+        `<h2 class="gallery-heading">Templates</h2>${galleryHtml({ repo: chosen, canUse: who.via === "cookie" && who.role === "approver" && !store.isDemo(), connections: connectionsOf(store, chosen) })}`;
       return sendScreen(response, 200, screen("Flows", `<p><a href="/settings">Settings</a></p><h1>Flows</h1>${content}`, { chrome: chromeFor(chosen || project, "settings") }));
     }
     // Settings → Integrations: which integrations work. The list is the last checks; a render never waits on one.
@@ -7685,10 +7693,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const local = service === null && also === null ? localConnectOf(body.get("service") ?? "") : null;
       const chosen = service ?? local;
       const target = also === null ? repo : split > 0 ? also.slice(split + 1) : "";
-      const kit = kitOf(body.get("kit") ?? "")?.id ?? null;
+      // From a gallery template that uses this tool: it comes back to that template's page, for this project.
+      const gallery = also === null && chosen !== null ? galleryTemplateOf(body.get("template") ?? "") : null;
+      const template = gallery !== null && (gallery.tools ?? []).includes(chosen!.id) ? gallery.id : null;
+      const kit = template === null ? kitOf(body.get("kit") ?? "")?.id ?? null : null;
       // A Connect that fails comes back to its own button, where the reason is said (no #fragment: one stops the alert's
       // autofocus); an "Also connect to" refusal goes back to the Connect card.
-      const back = (words: string, page = repo) => redirect(response, `/settings/tools?repo=${encodeURIComponent(page)}${kit === null ? "" : `&kit=${kit}`}${chosen === null || also !== null ? "" : `&connect=${chosen.id}`}&problem=${encodeURIComponent(words)}${also === null ? "" : "#connect"}`);
+      const back = (words: string, page = repo) => template !== null ? redirect(response, `/flows/new/${template}?repo=${encodeURIComponent(page)}&problem=${encodeURIComponent(words)}`)
+        : redirect(response, `/settings/tools?repo=${encodeURIComponent(page)}${kit === null ? "" : `&kit=${kit}`}${chosen === null || also !== null ? "" : `&connect=${chosen.id}`}&problem=${encodeURIComponent(words)}${also === null ? "" : "#connect"}`);
       // The page posts the project it showed; a post from a page showing another project is stale.
       const shown = body.get("shown") ?? "";
       if (shown !== repo) return back("The project changed; connect again.", reachable(shown) ? shown : repo);
@@ -7709,14 +7721,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (!added.ok) return back(added.message);
         }
         const tested = await testToolOf(store, repo, local.id, clock(), { home: toolHome, omitEnv: ALL_CREDENTIAL_ENV });
-        if (tested?.ok) return redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}&said=${encodeURIComponent(`${local.label} is connected: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}.`)}#tool-${local.id}`);
+        const connected = `${local.label} is connected: ${tested?.tools.length ?? 0} action${tested?.tools.length === 1 ? "" : "s"}.`;
+        if (tested?.ok) return redirect(response, template !== null ? `/flows/new/${template}?repo=${encodeURIComponent(repo)}&said=${encodeURIComponent(connected)}`
+          : `/settings/tools?repo=${encodeURIComponent(repo)}${kit === null ? "" : `&kit=${kit}`}&said=${encodeURIComponent(connected)}#tool-${local.id}`);
         if (had === undefined) removeToolFrom(store, repo, local.id, who.name, clock(), toolHome);
         return back(tested?.problem ?? `${local.label} didn't answer.`);
       }
       if (service === null) return back("Choose a service to connect.");
       const origin = consoleOrigin(request.headers.host);
       if (origin === null) return back("Connect tools from this computer (localhost) or from your https address.");
-      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null }, options.connectFetch ?? fetch);
+      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template }, options.connectFetch ?? fetch);
       if (!started.ok) return back(started.said);
       for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
       connectVisits.set(started.state, started.visit);

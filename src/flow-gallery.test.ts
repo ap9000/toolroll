@@ -13,16 +13,19 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
-import { galleryUseHtml } from "./flow-gallery-ui.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { galleryHtml, galleryUseHtml, stepStrip } from "./flow-gallery-ui.js";
+import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { codeOutput } from "./flow-code.js";
+import { addToolTo } from "./project-tools.js";
+import { connectedSpec, connectionsOf, ONE_CLICK } from "./mcp-connect.js";
 
 const T0 = new Date("2026-10-01T09:00:00.000Z");
 /** Sample answers a person might give, none of them the defaults. */
-const SAMPLE: GalleryAnswers = { label: "bug-report", branch: "release", time: "23:00", schedule: "weekdays 03:00", command: "npm run journeys -- --real-models", outdated: "pip" };
+const SAMPLE: GalleryAnswers = { label: "bug-report", branch: "release", time: "23:00", schedule: "weekdays 03:00", command: "npm run journeys -- --real-models", outdated: "pip", team: "web" };
 const NEW = {
-  ship: ["Overnight bug bash", "Dependency PR babysitter", "Release notes writer", "Docs follow the code", "PR second opinion"],
-  health: ["Fix failing CI", "Flaky test hunter", "Morning plane review", "Nightly real-model journeys", "Weekly upkeep", "Error to fix"],
-  users: ["Feedback to feature"],
+  ship: ["Overnight bug bash", "Dependency PR babysitter", "Release notes writer", "Docs follow the code", "PR second opinion", "UI inspiration", "Figma frame to pull request", "Linear issues to PRs"],
+  health: ["Fix failing CI", "Flaky test hunter", "Morning plane review", "Nightly real-model journeys", "Weekly upkeep", "Error to fix", "Outage to cause", "Worker errors to fix", "Failed deploy to fix"],
+  users: ["Feedback to feature", "Metrics digest", "Fix the biggest drop-off", "Support to bug fix"],
 };
 const BUSINESS = ["Research flow", "Spam filter", "Lead routing", "Exception routing", "Email replies", "Reply and follow up", "Decisions that don't stall"];
 
@@ -53,9 +56,10 @@ describe("flow gallery", () => {
         // No template merges anything; a pull request it opens waits for a person.
         expect(definition.stages.filter(one => one.merge !== undefined), template.id).toEqual([]);
         expect(preview.built.never, template.id).toMatch(/^(Never|Does nothing)/);
-        // Every new template's pull requests open only after a person decided (the plane review's fix is a task under the usual approvals).
-        if (template.id !== "morning-plane-review" && template.id !== "issues-to-prs") {
-          const unapproved = reachableWithout(definition.stages, definition.start, one => one.kind === "approval");
+        // Every new template's pull requests open only after a person decided or chose (the plane review's fix, and a build asked for
+        // by a button, a labelled issue or a failed deploy, is a task under the usual approvals).
+        if (!["morning-plane-review", "issues-to-prs", "figma-to-pr", "linear-to-prs", "failed-deploy"].includes(template.id)) {
+          const unapproved = reachableWithout(definition.stages, definition.start, one => one.kind === "approval" || one.kind === "choose");
           expect(definition.stages.filter(one => one.kind === "pull-request" && unapproved.has(one.id)).map(one => one.id), template.id).toEqual([]);
         }
       }
@@ -72,6 +76,94 @@ describe("flow gallery", () => {
     expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "fix-ci")!, repo, { branch: "no spaces please" })).toThrow("That branch name isn't valid.");
     expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "nightly-journeys")!, repo, { schedule: "whenever" })).toThrow("Say when like");
     expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "fix-ci")!, plain, {})).toThrow("This project isn't on GitHub");
+  });
+
+  test("c2: the integration templates put each tool to work: existing zones and triggers, a person decides, research only reads, nothing merges", () => {
+    // Each: its tools, the zones that use them, its zones in order, and how cards start.
+    const TEN: Record<string, { tools: string[]; uses: string[]; kinds: string[]; trigger: string }> = {
+      "ui-inspiration": { tools: ["mobbin"], uses: ["Find examples"], kinds: ["report", "choose", "task", "pull-request", "send", "done"], trigger: "schedule" },
+      "metrics-digest": { tools: ["posthog"], uses: ["Read the numbers"], kinds: ["report", "send", "done"], trigger: "schedule" },
+      "fix-drop-off": { tools: ["posthog"], uses: ["Find the drop-off"], kinds: ["report", "choose", "task", "pull-request", "send", "done"], trigger: "schedule" },
+      "outage-to-cause": { tools: ["betterstack"], uses: ["Find the cause"], kinds: ["report", "choose", "task", "pull-request", "done"], trigger: "webhook" },
+      "figma-to-pr": { tools: ["figma-desktop"], uses: ["Build the frame"], kinds: ["task", "pull-request", "send", "done"], trigger: "button" },
+      "worker-errors": { tools: ["cloudflare"], uses: ["Read the errors", "Find the cause"], kinds: ["report", "sort", "report", "choose", "task", "pull-request", "done", "done"], trigger: "schedule" },
+      "failed-deploy": { tools: ["vercel"], uses: ["Find the cause"], kinds: ["report", "task", "pull-request", "send", "done"], trigger: "webhook" },
+      "linear-to-prs": { tools: ["linear"], uses: ["Comment on the issue"], kinds: ["task", "pull-request", "check", "tool", "done"], trigger: "linear" },
+      "support-to-fix": { tools: ["intercom"], uses: ["Rank the bugs"], kinds: ["report", "choose", "task", "pull-request", "send", "done"], trigger: "schedule" },
+      "error-to-fix": { tools: ["sentry"], uses: ["Find the cause"], kinds: ["sort", "report", "task", "approval", "pull-request", "inbox", "done", "done"], trigger: "webhook" },
+    };
+    const tooled = GALLERY.filter(one => (one.tools ?? []).length > 0);
+    expect(tooled.map(one => one.id).sort()).toEqual(Object.keys(TEN).sort());
+    for (const template of tooled) {
+      const want = TEN[template.id]!;
+      // A tool is a one-click service or the Figma desktop app, nothing else.
+      expect(template.tools, template.id).toEqual(want.tools);
+      for (const tool of template.tools!) expect([...ONE_CLICK.map(one => one.id), "figma-desktop"], template.id).toContain(tool);
+      // Laid out from steps by flowFromSteps, never drawn by hand.
+      expect(template.steps, template.id).toBeDefined();
+      expect(template.definition, template.id).toBeUndefined();
+      const preview = previewGallery(store, template, repo, SAMPLE, "alex", T0);
+      const { definition, triggers } = preview.built;
+      expect(definition.stages.map(one => one.kind), template.id).toEqual(want.kinds);
+      expect(triggers.map(one => one["kind"]), template.id).toEqual([want.trigger]);
+      expect(preview.startsFrom, template.id).toHaveLength(1);
+      expect(definition.stages.some(one => one.merge !== undefined), template.id).toBe(false);
+      expect(template.never, template.id).toMatch(/^Never/);
+      // Its preview names its tools, the zones that use them, and that this project hasn't connected them.
+      expect(preview.tools, template.id).toEqual(want.tools.map(id => ({ id, label: expect.any(String), state: "open", zones: want.uses })));
+      // Research names its tool and only reads.
+      for (const stage of definition.stages.filter(one => one.kind === "report")) {
+        expect(stage.instructions, `${template.id} ${stage.id}`).toMatch(/[Rr]ead only/);
+        expect(want.uses, `${template.id} ${stage.id}`).toContain(stage.title);
+      }
+      // A person decides with a choice: each has a way to build and a way to ignore, and a reply goes to the build.
+      for (const stage of definition.stages.filter(one => one.kind === "choose")) {
+        expect(stage.options!.map(one => one.label).at(-1), template.id).toBe("Ignore");
+        expect(definition.stages.find(one => one.id === stage.onFail)?.kind, template.id).toBe("task");
+      }
+    }
+    // Answers land: a weekly schedule, a Linear team and label, the comment through Linear's own tool.
+    const linear = buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, SAMPLE);
+    expect(linear.triggers).toEqual([{ kind: "linear", team: "WEB", label: "bug-report" }]);
+    expect(linear.definition.stages.find(one => one.kind === "tool")!.tool).toEqual({ server: "linear", name: "create_comment", args: JSON.stringify({ issueId: "{{stage.issue-key}}", body: "A pull request is ready: {{stage.pull-request}}" }) });
+    // The issue key comes from the card's source as the Linear trigger stored it, never guessed: none skips the comment.
+    const key = linear.definition.stages.find(one => one.id === "issue-key")!;
+    expect(key).toMatchObject({ kind: "check", runIn: "folder", routes: [{ answer: "Found", to: "comment" }, { answer: "None", to: "done" }] });
+    expect(linear.scripts).toEqual([expect.objectContaining({ name: "linear-issue-key", body: LINEAR_KEY })]);
+    const keyOf = (source: unknown, description: string) => codeOutput(execFileSync("/bin/sh", ["-c", LINEAR_KEY], { input: JSON.stringify({
+      card: { id: 1, title: "Fix it", description, email: null, note: null, owner: "alex", source },
+      outputs: { build: { zone: "Build it", text: '"source":{"kind":"linear","label":"Linear ENG-999"}' } } }), encoding: "utf8" }), {});
+    expect(keyOf({ kind: "linear", label: "Linear ENG-123", url: "https://linear.app/x/issue/ENG-123" }, "From Linear ENG-123:\n\nIt breaks.")).toEqual({ output: "ENG-123", goTo: "Found" });
+    expect(keyOf(null, "Mentions ENG-77 and \"label\":\"Linear ENG-55\"")).toEqual({ output: "none", goTo: "None" });
+    expect(keyOf({ kind: "github", label: "Linear ENG-1", url: null }, "")).toEqual({ output: "none", goTo: "None" });
+    expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, { team: "eng team" })).toThrow("Say the Linear team as its short key, like ENG.");
+    expect(buildFromGallery(store, GALLERY.find(one => one.id === "metrics-digest")!, repo, SAMPLE).triggers).toEqual([{ kind: "schedule", schedule: expect.stringMatching(/^weekdays 03:00/), title: "Metrics digest" }]);
+    // Connected, the preview says so and names no missing tool.
+    expect(addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+    expect(previewGallery(store, GALLERY.find(one => one.id === "metrics-digest")!, repo, {}, "alex", T0).tools).toEqual([{ id: "posthog", label: "PostHog", state: "connected", zones: ["Read the numbers"] }]);
+    // The card: each tool's mark and state for the chosen project; without one, the mark alone.
+    const html = galleryHtml({ repo, canUse: true, connections: connectionsOf(store, repo) });
+    expect(html).toContain('<li data-tool="posthog" data-state="connected"><span class="brand-mark" data-connected="true" aria-hidden="true">');
+    expect(html).toContain('<li data-tool="figma-desktop" data-state="open"><span class="brand-mark" data-connected="false" aria-hidden="true"><svg');
+    const unchosen = galleryHtml({ repo: null, canUse: true, connections: connectionsOf(store, repo) });
+    expect(unchosen).toContain('<li data-tool="posthog" data-state="unknown">');
+    expect(unchosen).not.toContain("integration-state");
+  });
+
+  test("c1: a template's steps read in order, a person's from their side, its main path only and no Done", () => {
+    const strip = (id: string) => stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!))
+      .replace(/<span aria-hidden="true">→<\/span>/g, " → ").replace(/<b data-person>([^<]+)<\/b>/g, "[$1]").replace(/<[^>]+>/g, "");
+    expect(strip("fix-drop-off")).toBe("Find the drop-off → [You choose] → Build the fix → Pull request → Sent to you");
+    // A sort shows its main way, not Ignore; a check that just ends when it passes shows the work it starts.
+    expect(strip("worker-errors")).toBe("Read the errors → Worth fixing? → Find the cause → [You choose] → Fix it → Pull request");
+    expect(strip("weekly-upkeep")).toBe("Anything outdated? → Update them → [You approve] → Pull request");
+    // A failure path is not the main one.
+    expect(strip("email-replies")).toBe("Write the reply → [You approve] → Email it");
+    for (const template of [...GALLERY, BLANK]) {
+      const shown = strip(template.id);
+      expect(shown, template.id).not.toMatch(/Done|Ignore/);
+      expect(shown.length, template.id).toBeGreaterThan(0);
+    }
   });
 
   test("c1: the gallery shows the templates grouped, and each is created from its page with sample answers", async () => {
@@ -97,7 +189,9 @@ describe("flow gallery", () => {
       expect(group("ops")).toEqual(BUSINESS);
       expect(gallery.match(/>Use this<\/a>/g)).toHaveLength(GALLERY.length);
       expect(gallery).toContain('<li>Dependabot or Renovate</li>');
-      expect(gallery).toContain('<svg class="gallery-zones"');
+      // Each card names its steps in order, not a drawing.
+      expect(gallery).not.toContain("gallery-zones");
+      expect(gallery.match(/<ol class="gallery-steps" aria-label="Steps">/g)).toHaveLength(GALLERY.length);
       // The Flows list leads to it; Settings → Flows shows it beside the starters.
       expect(await get("/flows")).toContain('<a class="button-link" href="/flows/new">New flow</a>');
       const settings = await get(`/settings/flows?repo=${encodeURIComponent(repo)}`);

@@ -9,8 +9,11 @@
  * shared flow file later. Every one is built only from existing zone and trigger kinds, and none merges:
  * a pull request it opens waits for a person.
  *
- * Every template can end with "Send me the result" (a "Send to me" zone before its end), off unless asked for
- * (`send-result: yes`): what the flow did reaches the person in their chat apps.
+ * A template that puts a connected tool to work names it (`tools`): a one-click service (ONE_CLICK) or the Figma
+ * desktop app. Its research steps read that tool and only read; a build gets the project's tools as any build does.
+ *
+ * Every template without its own send zone can end with "Send me the result" (a "Send to me" zone before its end),
+ * off unless asked for (`send-result: yes`): what the flow did reaches the person in their chat apps.
  */
 import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
@@ -19,6 +22,7 @@ import { saveScript, validateScript } from "./flow-scripts.js";
 import { isToolrollRepo, planeReviewSteps } from "./flow-starters.js";
 import { addFlowTriggerTo, describeTrigger, githubRepoOf, scheduleFromWords, validateTriggerConfig } from "./flow-triggers.js";
 import { choiceTargets, clockTime, flowFromSteps, flowTerms, FLOW_TEMPLATES, ISSUE_LABEL, type FlowDefinition, type FlowStage, type FlowStepInput } from "./flows.js";
+import { connectionsOf, localConnectOf, oneClickOf } from "./mcp-connect.js";
 import { publishingOf } from "./pull-request-flow.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -31,7 +35,7 @@ export const GALLERY_GROUPS = [
 export type GalleryGroup = (typeof GALLERY_GROUPS)[number]["id"];
 
 /** What a template may ask, besides the project. */
-export type AskKey = "label" | "branch" | "schedule" | "time" | "command" | "outdated";
+export type AskKey = "label" | "branch" | "schedule" | "time" | "command" | "outdated" | "team";
 export type GalleryAsk = { key: AskKey; default: string; label: string; hint?: string };
 
 /** Weekly upkeep's package managers: what each runs. A script that fails (exits non-zero) when something is out of date. */
@@ -50,6 +54,8 @@ export type GalleryTemplate = {
   promise: string;
   /** What it needs to work, in a word or two each. */
   needs: string[];
+  /** The project tools it puts to work: one-click service ids (ONE_CLICK) or "figma-desktop". */
+  tools?: readonly string[];
   /** Watches a GitHub repository, so the project must be on GitHub. */
   github?: boolean;
   asks: GalleryAsk[];
@@ -65,6 +71,9 @@ export type GalleryTemplate = {
   never: string;
 };
 
+/** The card's Linear issue key, read from its source as the Linear trigger stored it ("Linear ENG-123"); "none" skips the comment. */
+export const LINEAR_KEY = `key="$(sed -n 's/.*"source":{"kind":"linear","label":"Linear \\([A-Z][A-Z0-9]*-[0-9][0-9]*\\)".*/\\1/p' | head -n 1)"
+if [ -n "$key" ]; then echo "$key"; echo "goto: Found"; else echo none; echo "goto: None"; fi`;
 const NEVER_MERGES = "Never merges. Each pull request waits for you.";
 const work = (text: string) => `${text}\n\nChanges asked for (if any): {{note}}`;
 const research = (text: string) => `${text}\n\nFeedback to address (if any): {{note}}`;
@@ -73,6 +82,11 @@ const pr: FlowStepInput = { id: "pull-request", title: "Pull request", kind: "pu
 const drawn = (id: string) => structuredClone(FLOW_TEMPLATES.find(one => one.id === id)!.definition);
 const about = (id: string) => FLOW_TEMPLATES.find(one => one.id === id)!.about;
 const SORTS = "OpenRouter (Jev sorts)";
+const WEEKLY: GalleryAsk = { key: "schedule", default: "monday 09:00", label: "When", hint: "Like “monday 09:00”." };
+const weekly = (title: string) => ({ kind: "schedule", schedule: "{{ask.schedule}}", title });
+const send = (title: string): FlowStepInput => ({ id: "send", title, kind: "send" });
+/** A person's choice: build it, or end there. A reply goes to the build as its note. */
+const choose = (title: string, yes: string, build: string): FlowStepInput => ({ id: "choose", title, kind: "choose", options: [{ label: yes, goesTo: build }, { label: "Ignore", goesTo: "end" }], ifReplied: build });
 
 export const GALLERY: readonly GalleryTemplate[] = [
   // ---------------------------------------------------------------- Ship code
@@ -171,6 +185,50 @@ export const GALLERY: readonly GalleryTemplate[] = [
     id: "effort-routing", name: "Effort routing", group: "ship", promise: "Small changes go straight to a build; big ones get a plan and a person first.", needs: [SORTS], asks: [], definition: drawn("effort-routing"), triggers: [],
     does: [about("effort-routing")], never: "Never builds a big change before you approve its plan.",
   },
+  {
+    id: "ui-inspiration", name: "UI inspiration", group: "ship", tools: ["mobbin"],
+    promise: "Each week, three real app examples for one part of your UI, ready to build.",
+    needs: ["GitHub"], asks: [WEEKLY],
+    steps: [
+      { id: "find", title: "Find examples", kind: "report", instructions: research("Pick one surface of this project (a screen or a flow) that no recent commit or earlier inspiration covered.\n\nWith Mobbin, read only: find 3 real app examples for it. For each: the pattern, why it fits here, how it plugs into this code (files and components), and a Mobbin screenshot.") },
+      choose("Implement, remix or ignore?", "Implement", "build"),
+      { id: "build", title: "Build it", kind: "task", instructions: work("Build the chosen example from the report into this project with its own components. A note below is a remix: follow it.\n\nThe report:\n{{stage.find}}") },
+      pr,
+      send("Send the result"),
+    ],
+    triggers: [weekly("UI inspiration")],
+    does: ["Picks one part of your UI {{ask.schedule-words}} and finds 3 Mobbin examples for it, each with a screenshot.", "You choose Implement or Ignore, or reply with a remix note.", "What you choose is built as a task, under your usual approvals, and opens a pull request.", "The result is sent to you."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "figma-to-pr", name: "Figma frame to pull request", group: "ship", tools: ["figma-desktop"],
+    promise: "Paste a Figma frame link; get it built in your own components.",
+    needs: ["GitHub"], asks: [],
+    steps: [
+      { id: "build", title: "Build the frame", kind: "task", instructions: work("Build this Figma frame in the project's own components and styles: {{card.title}}\n\n{{card.description}}\n\nRead the frame with the Figma desktop app's tools (its code, screenshot and variables). Reuse existing components; add one only where none fits. Take screenshots before and after, on desktop and phone.") },
+      pr,
+      send("Send before and after"),
+    ],
+    triggers: [{ kind: "button", label: "Build a Figma frame", questions: ["Figma frame link", "Notes (optional)"] }],
+    does: ["Adds a “Build a Figma frame” button that asks for the frame link.", "Builds the frame in your components as a task, under your usual approvals, with desktop and phone screenshots.", "Opens a pull request and sends you before and after."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "linear-to-prs", name: "Linear issues to PRs", group: "ship", tools: ["linear"],
+    promise: "Labelled Linear issues are built, and the issue gets the pull request link.",
+    needs: ["GitHub", "A Linear API key"], asks: [{ key: "team", default: "ENG", label: "Linear team", hint: "Its short key, like ENG." }, { key: "label", default: ISSUE_LABEL, label: "Issue label" }],
+    // The issue's key comes from the card's source ("Linear ENG-123"), as the trigger stored it, never from a model.
+    scripts: [{ name: "linear-issue-key", about: "Prints the Linear issue the card came from, or none.", body: LINEAR_KEY, timeoutMinutes: 1 }],
+    steps: [
+      { id: "build", title: "Build it", kind: "task", instructions: work("Build this issue: {{card.title}}\n\n{{card.description}}") },
+      pr,
+      { id: "issue-key", title: "Find the issue key", kind: "check", script: "{{script.linear-issue-key}}", runIn: "folder", routes: [{ answer: "Found", goesTo: "comment" }, { answer: "None", goesTo: "Done" }] },
+      { id: "comment", title: "Comment on the issue", kind: "tool", server: "linear", tool: "create_comment", args: { issueId: "{{stage.issue-key}}", body: "A pull request is ready: {{stage.pull-request}}" } },
+    ],
+    triggers: [{ kind: "linear", team: "{{ask.team}}", label: "{{ask.label}}" }],
+    does: ["Watches {{ask.team}} issues labelled “{{ask.label}}” in Linear.", "Builds each one as a task, under your usual approvals, and opens a pull request.", "Comments the pull request link on the issue, through Linear."],
+    never: NEVER_MERGES,
+  },
   // ---------------------------------------------------------- Keep it healthy
   {
     id: "fix-ci", name: "Fix failing CI", group: "health",
@@ -245,7 +303,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
     never: NEVER_MERGES,
   },
   {
-    id: "error-to-fix", name: "Error to fix", group: "health",
+    id: "error-to-fix", name: "Error to fix", group: "health", tools: ["sentry"],
     promise: "New errors from Sentry or any error tracker are sorted, researched and fixed.",
     needs: ["A webhook from Sentry or another tracker", SORTS], asks: [],
     steps: [
@@ -254,7 +312,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
           { answer: "Fix it", means: "It comes from our code and is new, frequent, or hurts people", goesTo: "find-cause" },
           { answer: "Ignore", means: "Noise: bots, browser extensions, a third party's outage, or something known and expected", goesTo: "ignored" },
         ], ifNotSure: "by-hand" },
-      { id: "find-cause", title: "Find the cause", kind: "report", instructions: research("An error came in: {{card.title}}\n\n{{card.description}}\n\nFind the cause in this code: cite the files and lines, say why it happens and what change fixes it.") },
+      { id: "find-cause", title: "Find the cause", kind: "report", instructions: research("An error came in: {{card.title}}\n\n{{card.description}}\n\nWith Sentry, read the issue's stack trace and latest events. Read only. Find the cause in this code: cite the files and lines, say why it happens and what change fixes it.") },
       { id: "fix", title: "Fix it", kind: "task", instructions: work("Fix this error, with a regression check where one fits: {{card.title}}\n\nThe report:\n{{stage.find-cause}}") },
       owner("review", "Review the fix"),
       { ...pr, next: "Done" },
@@ -265,6 +323,56 @@ export const GALLERY: readonly GalleryTemplate[] = [
     triggers: [{ kind: "webhook", title: "Error", titleField: "data.issue.title", bodyField: "data.issue.culprit" }],
     does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Sentry or another error tracker.", "Jev keeps errors in your code that are new or frequent, and drops noise; ones it isn't sure about wait for you.",
       "Each kept error is researched, then fixed as a task, under your usual approvals.", "What you approve opens a pull request."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "outage-to-cause", name: "Outage to cause", group: "health", tools: ["betterstack"],
+    promise: "A Better Stack incident gets its likely cause, and a fix if you want one.",
+    needs: ["A webhook from Better Stack", "GitHub"], asks: [],
+    steps: [
+      { id: "find-cause", title: "Find the cause", kind: "report", instructions: research("A Better Stack incident: {{card.title}}\n\n{{card.description}}\n\nWith Better Stack, read the incident and its monitor's recent history. Read this project's commits and deploys from before it started. Read only. Say the likely cause, with times, and what change fixes it.") },
+      choose("Fix or ignore?", "Fix", "fix"),
+      { id: "fix", title: "Fix it", kind: "task", instructions: work("Fix the cause of this outage, with a regression check where one fits.\n\nThe report:\n{{stage.find-cause}}") },
+      pr,
+    ],
+    triggers: [{ kind: "webhook", title: "Incident", titleField: "data.attributes.name" }],
+    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Better Stack.", "Reads the incident, its monitor's history and your recent commits and deploys, and sends you the likely cause.", "You choose Fix or Ignore; a fix is built as a task, under your usual approvals, and opens a pull request."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "worker-errors", name: "Worker errors to fix", group: "health", tools: ["cloudflare"],
+    promise: "Each week, Cloudflare Workers and Pages errors worth fixing get a fix.",
+    needs: ["GitHub", SORTS], asks: [WEEKLY],
+    steps: [
+      { id: "read", title: "Read the errors", kind: "report", instructions: research("With Cloudflare, read this week's Workers and Pages errors and analytics. Read only. List each error with its count, its Worker or Pages project, and when it started. Say “No errors” if there are none.") },
+      { id: "worth-fixing", title: "Worth fixing?", kind: "sort", question: "Do these errors come from this project's code, often enough to fix now?",
+        answers: [
+          { answer: "Fix it", means: "Errors from our own code that are new, frequent or hurt people", goesTo: "find-cause" },
+          { answer: "Ignore", means: "No errors, or only noise: bots, a provider's outage, something known", goesTo: "ignored" },
+        ], ifNotSure: "find-cause" },
+      { id: "find-cause", title: "Find the cause", kind: "report", instructions: research("Errors worth fixing:\n{{stage.read}}\n\nWith Cloudflare, read the worst one's logs. Read only. Find the cause in this code, citing files and lines, and say what change fixes it.") },
+      choose("Fix or ignore?", "Fix", "fix"),
+      { id: "fix", title: "Fix it", kind: "task", instructions: work("Fix this error, with a regression check where one fits.\n\nThe report:\n{{stage.find-cause}}") },
+      { ...pr, next: "Done" },
+      { id: "done", title: "Done", kind: "done" },
+      { id: "ignored", title: "Ignored", kind: "done" },
+    ],
+    triggers: [weekly("Worker errors")],
+    does: ["Reads your Cloudflare Workers and Pages errors and analytics {{ask.schedule-words}}.", "Jev decides whether they're worth fixing; if so, finds the cause and sends you a report.", "You choose Fix or Ignore; a fix is built as a task, under your usual approvals, and opens a pull request."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "failed-deploy", name: "Failed deploy to fix", group: "health", tools: ["vercel"],
+    promise: "A failed Vercel deployment gets its cause found and a fix opened.",
+    needs: ["A webhook from Vercel", "GitHub"], asks: [],
+    steps: [
+      { id: "find-cause", title: "Find the cause", kind: "report", instructions: research("A Vercel deployment failed: {{card.title}}\n\n{{card.description}}\n\nWith Vercel, read the deployment's build log. Read only. Find the cause in this code, citing files and lines, and say what change fixes it.") },
+      { id: "fix", title: "Fix it", kind: "task", instructions: work("Fix this failed deployment without weakening any check.\n\nThe report:\n{{stage.find-cause}}") },
+      pr,
+      send("Send the fix"),
+    ],
+    triggers: [{ kind: "webhook", title: "Failed deployment", titleField: "payload.deployment.name" }],
+    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Vercel for failed deployments.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
     never: NEVER_MERGES,
   },
   // ---------------------------------------------------------- Hear from users
@@ -299,6 +407,48 @@ export const GALLERY: readonly GalleryTemplate[] = [
     id: "triage", name: "Issue triage", group: "users", promise: "Jev sorts new issues into bugs, ideas and questions, and says how urgent each is.", needs: [SORTS], asks: [], definition: drawn("triage"), triggers: [],
     does: [about("triage")], never: "Never closes an issue or replies without your approval.",
   },
+  {
+    id: "metrics-digest", name: "Metrics digest", group: "users", tools: ["posthog"],
+    promise: "Each week, this week against last: signups, activation, retention and top events.",
+    needs: [], asks: [WEEKLY],
+    steps: [
+      { id: "read", title: "Read the numbers", kind: "report", instructions: research("With PostHog, compare this week with last week. Read only. Give signups, activation, retention and the top 10 events, each with its change. Name the biggest change and its likely cause (a release, a campaign, a broken step), citing this week's commits where they fit.") },
+      send("Send the digest"),
+    ],
+    triggers: [weekly("Metrics digest")],
+    does: ["Compares this week's PostHog numbers with last week's, {{ask.schedule-words}}.", "Names the biggest change and its likely cause.", "Sends you the digest."],
+    never: "Never changes PostHog or your code.",
+  },
+  {
+    id: "fix-drop-off", name: "Fix the biggest drop-off", group: "users", tools: ["posthog"],
+    promise: "Each week, the funnel step losing the most people gets a proposed fix.",
+    needs: ["GitHub"], asks: [WEEKLY],
+    steps: [
+      { id: "find", title: "Find the drop-off", kind: "report", instructions: research("With PostHog, find the funnel step that lost the most people this week. Read only. Give the funnel, the step, how many reached it and how many left. Propose one fix in this code, citing files.") },
+      choose("Implement or ignore?", "Implement", "build"),
+      { id: "build", title: "Build the fix", kind: "task", instructions: work("Build the proposed fix for this drop-off.\n\nThe report:\n{{stage.find}}") },
+      pr,
+      send("Send the result"),
+    ],
+    triggers: [weekly("Biggest drop-off")],
+    does: ["Finds the PostHog funnel step losing the most people {{ask.schedule-words}}, with the numbers and one proposed fix.", "You choose Implement or Ignore.", "A fix is built as a task, under your usual approvals, opens a pull request and is sent to you."],
+    never: NEVER_MERGES,
+  },
+  {
+    id: "support-to-fix", name: "Support to bug fix", group: "users", tools: ["intercom"],
+    promise: "Each week, the bugs your customers hit most, ranked, with a fix for the one you pick.",
+    needs: ["GitHub"], asks: [WEEKLY],
+    steps: [
+      { id: "group", title: "Rank the bugs", kind: "report", instructions: research("With Intercom, read this week's conversations. Read only. Group the bug reports by problem, rank them by how many people hit each, and number them, with a count and one example conversation each.") },
+      { id: "choose", title: "Which to fix?", kind: "choose", options: [{ label: "Fix the top one", goesTo: "fix" }, { label: "Ignore", goesTo: "end" }], ifReplied: "fix" },
+      { id: "fix", title: "Fix it", kind: "task", instructions: work("Fix the bug chosen from this ranking: the top one, unless the note names another by number. Add a regression check where one fits.\n\nThe ranking:\n{{stage.group}}") },
+      pr,
+      send("Send the result"),
+    ],
+    triggers: [weekly("Support bugs")],
+    does: ["Reads your Intercom conversations {{ask.schedule-words}} and ranks the bug reports by how many people hit each.", "You fix the top one, reply with the number of another, or ignore them.", "The fix is built as a task, under your usual approvals, opens a pull request and is sent to you."],
+    never: NEVER_MERGES,
+  },
   // ------------------------------------------------------------------ Operations
   ...([
     ["research", "Research a question, have a person check it, then share it.", [], "Never shares an answer you haven't checked."],
@@ -318,6 +468,25 @@ export const BLANK: GalleryTemplate = { id: "blank", name: "Blank flow", group: 
 
 export const galleryTemplateOf = (id: string): GalleryTemplate | null => id === BLANK.id ? BLANK : GALLERY.find(one => one.id === id) ?? null;
 
+/** A tool a template uses: where the chosen project stands with it (null with no project), and the zones that use it. */
+export type GalleryTool = { id: string; label: string; state: "connected" | "open" | "taken" | null; zones: string[] };
+
+/** A tool's name ("Mobbin", "Figma (desktop app)"); null for an id that's neither a one-click service nor an app on this computer. */
+export const galleryToolLabel = (id: string): string | null => oneClickOf(id)?.label ?? localConnectOf(id)?.label ?? null;
+
+/** The zones that use a tool: a tool step on it, or a research or build step that names it ("With Mobbin, …"). */
+export function zonesUsing(definition: FlowDefinition, id: string): string[] {
+  const label = galleryToolLabel(id);
+  if (label === null) return [];
+  const word = new RegExp(`\\b${label.replace(/\s*\(.*\)$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+  return definition.stages.filter(one => one.tool?.server === id || ((one.kind === "report" || one.kind === "task") && word.test(one.instructions ?? ""))).map(one => one.title);
+}
+
+/** A template's tools, each with its state in a project's connections (connectionsOf), or none without a project. */
+export function galleryToolsOf(template: GalleryTemplate, definition: FlowDefinition, connections: readonly { id: string; state: "connected" | "open" | "taken" }[] | null): GalleryTool[] {
+  return (template.tools ?? []).map(id => ({ id, label: galleryToolLabel(id) ?? id, state: connections === null ? null : connections.find(one => one.id === id)?.state ?? "open", zones: zonesUsing(definition, id) }));
+}
+
 export type GalleryAnswers = Record<string, string>;
 
 /** Each question's default for a project: the branch pull requests go to, when that's set up. */
@@ -336,12 +505,17 @@ const oneLine = (value: string, cap: number, what: string) => {
 /** The optional last step every template offers, and the answer that turns it on. */
 export const SEND_RESULT = { key: "send-result", title: "Send me the result", does: "When a card finishes, sends you what was done (its summary, links and screenshots) in your chat apps." } as const;
 
-/** A flow with "Send me the result" before its end: every path into its main Done zone passes through it first. */
+/** A template that already sends its result to the person: it isn't offered "Send me the result" again. */
+export const sendsAlready = (template: GalleryTemplate) => galleryDiagram(template).stages.some(one => one.kind === "send");
+
+/** A flow with "Send me the result" before its end: every path into its main Done zone passes through it first.
+ * A flow that already has a send zone is left as it is, so nobody gets the result twice. */
 export function withSendResult(definition: FlowDefinition): FlowDefinition {
+  if (definition.stages.some(one => one.kind === "send")) return definition;
   // Its main end: Done, else an end that isn't a filtered-out one (drawn in rose), else any end.
   const ends = definition.stages.filter(one => one.kind === "done");
   const end = ends.find(one => one.id === "done") ?? ends.find(one => one.zone.color !== "rose") ?? ends[0];
-  if (end === undefined || definition.stages.some(one => one.kind === "send" && one.next === end.id)) return definition;
+  if (end === undefined) return definition;
   let id = "send-result";
   for (let n = 2; definition.stages.some(one => one.id === id); n++) id = `send-result-${n}`;
   const into = (to: string) => to === end.id ? id : to;
@@ -382,7 +556,10 @@ export function checkAnswers(template: GalleryTemplate, given: GalleryAnswers): 
       answers["schedule"] = zoned === null ? said : `${said} ${localTimeZone()}`;
       answers["schedule-words"] = scheduleWords(said);
     } else if (ask.key === "command") answers["command"] = oneLine(value, 500, "test command");
-    else if (ask.key === "outdated") {
+    else if (ask.key === "team") {
+      if (!/^[A-Za-z0-9]{1,12}$/.test(value)) throw new Error("Say the Linear team as its short key, like ENG.");
+      answers["team"] = value.toUpperCase();
+    } else if (ask.key === "outdated") {
       const manager = OUTDATED_COMMANDS[value as keyof typeof OUTDATED_COMMANDS];
       if (manager === undefined) throw new Error("Choose npm, pip or cargo.");
       answers["outdated"] = value;
@@ -445,6 +622,8 @@ export function buildFromGallery(store: Store, template: GalleryTemplate, repo: 
   const github = githubRepoOf(repo);
   const drawn = template.definition !== undefined ? structuredClone(template.definition)
     : flowFromSteps(fill(template.ownSteps !== undefined && isToolrollRepo(repo) ? template.ownSteps : template.steps!, answers, names, github), null);
+  // One that already sends doesn't take the answer, so it reads as it was asked.
+  if (drawn.stages.some(one => one.kind === "send")) delete answers[SEND_RESULT.key];
   const sends = answers[SEND_RESULT.key] === "yes";
   const definition = sends ? withSendResult(drawn) : drawn;
   return { template, repo, answers, definition, triggers: fill(template.triggers, answers, names, github), scripts,
@@ -458,7 +637,7 @@ export function galleryDiagram(template: GalleryTemplate): FlowDefinition {
   return flowFromSteps(fill(template.steps!, checkAnswers(template, {}), names, null), null);
 }
 
-export type GalleryPreview = { built: GalleryBuilt; startsFrom: string[]; steps: string[]; digest: string };
+export type GalleryPreview = { built: GalleryBuilt; startsFrom: string[]; steps: string[]; tools: GalleryTool[]; digest: string };
 
 /** What using a template will do, in words, before anything is made: its triggers checked as the flow will have them. Throws. */
 export function previewGallery(store: Store, template: GalleryTemplate, repo: string, given: GalleryAnswers, actor: string, now: Date): GalleryPreview {
@@ -467,7 +646,7 @@ export function previewGallery(store: Store, template: GalleryTemplate, repo: st
   const startsFrom = built.triggers.map(trigger => describeTrigger(validateTriggerConfig({ ...trigger, zone: trigger["zone"] ?? built.definition.start }, { store, flow: draft, definition: built.definition, actor }), store));
   const steps = flowTerms(built.definition, null);
   if (built.scripts.some(one => !one.existing)) steps.push(...built.scripts.filter(one => !one.existing).map(one => `Adds the ${one.name} script to this project: ${one.body.split("\n")[0]}${one.body.includes("\n") ? " …" : ""}`));
-  return { built, startsFrom, steps, digest: galleryDigest(template.id, repo, built.answers) };
+  return { built, startsFrom, steps, tools: galleryToolsOf(template, built.definition, connectionsOf(store, repo)), digest: galleryDigest(template.id, repo, built.answers) };
 }
 
 /** What a preview showed: the template, the project and the answers. Creating checks the person saw these. */

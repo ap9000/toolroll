@@ -328,3 +328,49 @@ test("a research launch gets only connected services' read-only actions: Codex e
     build.cleanup();
   }
 });
+
+test("the gallery's research tools read only: Sentry, Cloudflare, Vercel, Intercom and Linear keep their reads and withhold every write", () => {
+  // Action names as each service's MCP server lists them.
+  const services: Record<string, { reads: string[]; writes: string[] }> = {
+    sentry: { reads: ["find_organizations", "find_projects", "find_issues", "get_issue_details", "search_events", "search_issues", "get_trace_details", "find_releases", "get_event_attachment"],
+      writes: ["update_issue", "create_project", "create_team", "create_dsn", "update_project", "analyze_issue_with_seer", "find_dsns"] },
+    cloudflare: { reads: ["accounts_list", "workers_list", "workers_get_worker", "query_worker_observability", "search"],
+      writes: ["execute", "set_active_account", "workers_get_worker_code_and_deploy", "kv_namespace_create", "d1_database_query"] },
+    vercel: { reads: ["list_teams", "list_projects", "get_project", "list_deployments", "get_deployment", "get_deployment_build_logs", "search_vercel_documentation"],
+      writes: ["deploy_to_vercel", "get_access_to_vercel_url", "web_fetch_vercel_url", "buy_domain", "check_domain_availability_and_price"] },
+    intercom: { reads: ["search", "fetch", "search_conversations", "get_conversation", "search_contacts", "get_contact"],
+      writes: ["reply_to_conversation", "close_conversation", "create_contact", "update_contact", "assign_conversation"] },
+    linear: { reads: ["list_issues", "get_issue", "list_comments", "list_teams", "list_issue_statuses", "get_user", "list_cycles", "list_projects"],
+      writes: ["create_comment", "create_issue", "update_issue", "create_project", "update_project", "create_issue_label"] },
+  };
+  for (const [id, { reads, writes }] of Object.entries(services)) {
+    const subjects = ONE_CLICK.find(one => one.id === id)!.reads!;
+    for (const action of reads) expect(readsOnly(action, subjects), `${id} ${action}`).toBe(true);
+    for (const action of writes) expect(readsOnly(action, subjects), `${id} ${action}`).toBe(false);
+    expect(addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+    store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools: [...reads, ...writes], problem: null }));
+  }
+  // A research launch gets exactly the reads, by server.
+  expect(researchToolsOf(projectToolsOf(store, repo)).reads).toEqual(Object.fromEntries(Object.entries(services).map(([id, one]) => [id, one.reads])));
+});
+
+test("a build gets the project's Figma desktop app with every action", () => {
+  const { label: _label, ...figma } = catalogTool("figma-desktop")!;
+  expect(addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+  let recorded = "";
+  const runs = {
+    projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(),
+    getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "figma-frame" }), getScope: () => null, toolSealFor: () => null,
+    recordRunTools: (_run: number, json: string) => { recorded = json; },
+  } as unknown as Parameters<typeof prepareRunTools>[0];
+  for (const provider of ["claude", "codex"] as const) {
+    const build = prepareRunTools(runs, 9, provider, { home: dir, now: T0, includeModel: false });
+    try {
+      expect(JSON.parse(recorded), provider).toMatchObject({ tools: [{ name: "figma-desktop" }], skipped: [] });
+      if (provider === "codex") expect(build.argv.join(" ")).toContain("figma-desktop");
+      expect(build.argv.join(" "), provider).not.toContain("enabled_tools");
+    } finally {
+      build.cleanup();
+    }
+  }
+});
