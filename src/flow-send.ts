@@ -76,6 +76,14 @@ function resultOf(store: Store, taskId: string, now: Date, evidenceRoot: string 
   };
 }
 
+/** A research task's latest delivered report, when its run saved screenshots: what that step produced to show. */
+function reportShotsOf(store: Store, taskId: string): { taskId: string; run: number } | null {
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const run = store.runsFor(ref.id).find(one => one.finishedAt !== null && one.role === "scout");
+  return run !== undefined && run.outcome === "built" && store.artifactsFor(run.id).some(one => one.kind === "screenshot") ? { taskId, run: run.id } : null;
+}
+
 /** What a visit sends its person, worked out from the card as it is now. */
 export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, evidenceRoot?: string): FlowSendContent {
   const before = stepBefore(store, definition, card);
@@ -104,7 +112,8 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
   const options = stage.kind === "choose" ? (stage.options ?? []).map((one, choice) => ({ choice, label: one.label })) : undefined;
   return {
     title: cut(plain(before === null ? card.title : `${card.title} · ${before.title}`), 200), ...(before === null ? {} : { from: before.title }),
-    summary: plain(lines.join("\n\n")), links, shots: result?.shots ?? null,
+    // After research, its own screenshots are what that step produced; otherwise the build's.
+    summary: plain(lines.join("\n\n")), links, shots: (report === null ? null : reportShotsOf(store, report)) ?? result?.shots ?? null,
     ...(options === undefined ? {} : { options, reply: replyTarget(stage) !== null }),
   };
 }
