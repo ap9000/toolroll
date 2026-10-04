@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.23 — 2026-10-04
+
+- After a research step, a flow's message to you now carries that research's
+  screenshots. Before, it only looked for a build's.
+
 ## 0.9.22 — 2026-10-04
 
 - **Research takes screenshots again.** The research step's browser now runs
