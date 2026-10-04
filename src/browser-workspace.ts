@@ -89,7 +89,8 @@ export type BrowserLimits = { tiles: BrowserLimitTile[] };
 export type BrowserSettingsView = {
   kind: 'settings';
   said: string | null;
-  tiles: BrowserLink[];
+  /** The settings destinations under short headings; a chat app's tile says whether it is connected and gets alerts. */
+  groups: BrowserSettingsGroup[];
   theme: 'system' | 'light' | 'dark';
   /** The signal colour chosen for this browser (Settings → Appearance), "#rrggbb"; chart magenta by default. */
   accent: string;
@@ -125,6 +126,7 @@ export type BrowserSettingsView = {
   /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
   updates?: BrowserUpdates | null;
 };
+export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */

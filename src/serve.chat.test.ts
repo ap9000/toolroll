@@ -1945,8 +1945,8 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
   let dir: string;
   let approverToken: string;
 
-  const login = async (): Promise<string> => {
-    const response = await fetch(`${base}/login`, {
+  const login = async (at = base): Promise<string> => {
+    const response = await fetch(`${at}/login`, {
       method: "POST",
       body: new URLSearchParams({ name: "alex", token: approverToken }),
       redirect: "manual",
@@ -2149,6 +2149,51 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(store.telegramDigest().everyMs).toBeNull();
     const anonymous = await fetch(`${base}/settings/telegram-digest`, { method: "POST", body: new URLSearchParams({ every: "60" }) });
     expect(anonymous.status).toBe(401);
+  });
+
+  test("Settings groups every destination once, the same with and without the script, and each chat app says its state", async () => {
+    const withApps = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), telegramTokenFile: join(dir, "telegram-token"), configDir: dir });
+    await new Promise<void>(resolve => withApps.listen(0, "127.0.0.1", resolve));
+    const address = withApps.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    const at = `http://127.0.0.1:${address.port}`;
+    const cookie = await login(at);
+    const overview = async () => {
+      const page = await (await fetch(`${at}/settings`, { headers: { cookie } })).text();
+      const data = await (await fetch(`${at}/settings?format=workspace`, { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+      const view = data.view as import("./browser-workspace.js").BrowserSettingsView;
+      const nav = /<nav class="settings-tiles"[\s\S]*?<\/nav>/.exec(page)?.[0] ?? "";
+      return { view, nav, chat: Object.fromEntries(view.groups.flatMap(group => group.tiles).filter(tile => tile.status).map(tile => [tile.label, tile.status!.words])) };
+    };
+    try {
+      // Only a Telegram token: it is the one service, so it gets the alerts.
+      let { view, nav, chat } = await overview();
+      expect(view.groups.map(group => group.title)).toEqual(["Agents", "Automation", "Chat apps", "Access and rules", "System"]);
+      const hrefs = view.groups.flatMap(group => group.tiles.map(tile => tile.href));
+      expect(new Set(hrefs).size).toBe(hrefs.length);
+      expect([...hrefs].sort()).toEqual(["approval", "backups", "data", "discord", "flows", "integrations", "knowledge", "lead", "learning", "models", "monitoring", "policy",
+        "project", "retention", "sessions", "sign-in", "skills", "slack", "storage", "teams", "telegram", "tools", "updates"].map(one => `/settings/${one}`));
+      // The page without the script lists the same headings and links, in the same order.
+      expect([...nav.matchAll(/<h2>([^<]+)<\/h2>/g)].map(one => one[1])).toEqual(view.groups.map(group => group.title));
+      expect([...nav.matchAll(/<a href="([^"]+)"/g)].map(one => one[1])).toEqual(hrefs);
+      expect(chat).toEqual({ Telegram: "Gets alerts", Slack: "Not set up", Discord: "Not set up", Teams: "Not set up" });
+      expect(nav).toContain('provider-status--ok"><i aria-hidden="true"></i>Gets alerts');
+
+      // Two services and no choice: neither claims the alerts.
+      writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/T000/B000/XXXX\n", { mode: 0o600 });
+      ({ chat } = await overview());
+      expect(chat).toMatchObject({ Telegram: "Connected", Slack: "Connected" });
+
+      // A saved delivery problem is a warning, never "Connected".
+      store.acquireBridgeLease("777000", "bridge", 60_000, T0);
+      store.setTelegramPush("777000", { url: "https://console.example/telegram", problem: "Telegram could not reach that address" }, T0);
+      ({ view, nav, chat } = await overview());
+      expect(chat.Telegram).toBe("Has a problem");
+      expect(view.groups.find(group => group.title === "Chat apps")?.tiles[0]?.status?.tone).toBe("warn");
+      expect(nav).toContain('provider-status--warn"><i aria-hidden="true"></i>Has a problem');
+    } finally {
+      await new Promise<void>(resolve => withApps.close(() => resolve()));
+    }
   });
 
   test("Settings chooses the global permission default and each task can override the sealed profile", async () => {
