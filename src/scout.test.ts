@@ -20,7 +20,9 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
-import { SCOUT_BROWSER } from "./scout.js";
+import { SCOUT_BROWSER, scoutBrowser, scrubUrl } from "./scout.js";
+import * as projectTools from "./project-tools.js";
+import { request as httpRequest } from "node:http";
 import { readVerifiedReport } from "./evidence.js";
 import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -529,14 +531,19 @@ describe("scout tasks, against real git", () => {
     return bytes;
   };
   let folderSeen = "";
-  /** Where the scout's browser saves its screenshots: its `--output-dir`, from the launch's own MCP config. */
-  const browserFolder = (args: readonly string[]): string => {
+  /** The scout browser's launch arguments, from the launch's own MCP config (none when it has no browser). */
+  const browserLaunch = (args: readonly string[]): string[] => {
     for (const [at, arg] of args.entries()) {
       if (arg !== "--mcp-config" || !String(args[at + 1]).startsWith("{")) continue;
       const browser = JSON.parse(String(args[at + 1])).mcpServers?.[SCOUT_BROWSER];
-      if (browser !== undefined) return String(browser.args[browser.args.indexOf("--output-dir") + 1]);
+      if (browser !== undefined) return (browser.args as unknown[]).map(String);
     }
-    return "";
+    return [];
+  };
+  /** Where the scout's browser saves its screenshots: its `--output-dir`. */
+  const browserFolder = (args: readonly string[]): string => {
+    const launch = browserLaunch(args);
+    return launch.includes("--output-dir") ? String(launch[launch.indexOf("--output-dir") + 1]) : "";
   };
   /** A scout that saves screenshots in its output folder, some of which the runner must refuse. */
   const imagingAgent = (images: Record<string, Buffer | { link: string }>, report: Record<string, unknown>, outside?: Buffer): Runner => async (_file, args, options) => {
@@ -579,7 +586,8 @@ describe("scout tasks, against real git", () => {
       { ...FOUND, items, images }, png());
     expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
-    expect(prompts.at(-1)).toContain("never download anything else, and never run downloaded code");
+    expect(prompts.at(-1)).toContain("Never download anything else, and never run downloaded code");
+    expect(prompts.at(-1)).not.toContain("plan file");
     expect(prompts.at(-1)).toContain("Cite the URL");
     // The real scout can take them: research and screenshot tools allowed, nothing that edits or runs commands.
     expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
@@ -587,6 +595,11 @@ describe("scout tasks, against real git", () => {
     expect(allowed).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", `mcp__${SCOUT_BROWSER}__browser_navigate`, `mcp__${SCOUT_BROWSER}__browser_take_screenshot`]));
     expect(allowed.some(tool => /^(Bash|Write|Edit|NotebookEdit)\b/.test(tool))).toBe(false);
     expect(argvSeen).toContain("--strict-mcp-config");
+    // Its browser goes through the public-web-only proxy, loopback included, and never opens files.
+    const launch = browserLaunch(argvSeen);
+    expect(launch[launch.indexOf("--proxy-server") + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(launch[launch.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
+    expect(launch).not.toContain("--allow-unrestricted-file-access");
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     // The folder was the run's own, outside the checkout, and is gone afterwards.
     expect(folderSeen).not.toBe("");
@@ -613,6 +626,74 @@ describe("scout tasks, against real git", () => {
       expect(view.report.report).toContain("../outside.png (not a PNG or JPEG file name in the screenshot folder)");
     }
     store.close();
+  });
+
+  test("while the scout runs, its browser's proxy refuses this machine and private addresses", async () => {
+    const { runnerToken } = await setup();
+    const answers: number[] = [];
+    const probing: Runner = async (_file, args, options) => {
+      const launch = browserLaunch(args);
+      const proxy = new URL(String(launch[launch.indexOf("--proxy-server") + 1]));
+      const through = (path: string, method = "GET") => new Promise<number>((done, fail) => {
+        const sent = httpRequest({ host: proxy.hostname, port: Number(proxy.port), method, path, headers: { host: "x" } });
+        sent.on("connect", (answer, socket) => { socket.destroy(); done(answer.statusCode ?? 0); });
+        sent.on("response", answer => { answer.resume(); done(answer.statusCode ?? 0); });
+        sent.on("error", fail);
+        sent.end();
+      });
+      answers.push(await through("http://127.0.0.1:9/"), await through("http://localhost/"), await through("http://10.0.0.1/"),
+        await through("169.254.169.254:443", "CONNECT"), await through("[::1]:443", "CONNECT"));
+      return planModeAgent({ kind: "report", report: FOUND })(_file, args, options);
+    };
+    expect(await tick(runnerToken, probing)).toBe(EXIT.ok);
+    expect(answers).toEqual([403, 403, 403, 403, 403]);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+  });
+
+  test("with no Playwright entry the scout researches without a browser instead of failing", async () => {
+    const { runnerToken } = await setup();
+    const missing = vi.spyOn(projectTools, "catalogTool").mockImplementation(() => null);
+    try {
+      expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
+    } finally {
+      missing.mockRestore();
+    }
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(browserLaunch(argvSeen)).toEqual([]);
+    expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
+    expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
+    expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
+    expect(scoutBrowser(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
+  });
+
+  test("secrets are scrubbed from item and image URLs, captions and file names before they are stored or passed on", async () => {
+    const { runnerToken } = await setup();
+    const token = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5";
+    const secretFile = `${token}.png`;
+    const items = [
+      { title: "The callback leaks its token", why: "It is in the address bar.", url: `https://app.example.com/callback?access_token=${token}&page=2#id_token=abc`, image: secretFile },
+      { title: "A signed download link", why: "It is shared publicly.", url: `https://files.example.com/${token}/report.pdf?X-Amz-Signature=deadbeef`, image: null },
+    ];
+    const images = [{ file: secretFile, caption: `Signed in with ${token}`, url: `https://app.example.com/callback?code=1234&state=ok` }];
+    expect(await tick(runnerToken, imagingAgent({ [secretFile]: png() }, { ...FOUND, items, images }))).toBe(EXIT.ok);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok).toBe(true);
+    if (view !== null && view.ok) {
+      expect(view.report.items.map(one => one.url)).toEqual([
+        "https://app.example.com/callback?access_token=REDACTED&page=2",
+        "https://files.example.com/REDACTED/report.pdf?X-Amz-Signature=REDACTED",
+      ]);
+      expect(view.report.images).toEqual([expect.objectContaining({ file: "screenshot-1.png", url: "https://app.example.com/callback?code=REDACTED&state=ok" })]);
+      expect(view.report.images[0]!.caption).toContain("[redacted");
+      expect(view.report.items[0]!.image).toBe("screenshot-1.png");
+      const stored = store.artifactsFor(view.run);
+      expect(JSON.stringify(stored)).not.toContain(token);
+      expect(readFileSync(join(base, "evidence", String(view.run), "report.json"), "utf8")).not.toContain(token);
+    }
+    store.close();
+    expect(scrubUrl("https://example.com/pricing?plan=annual").url).toBe("https://example.com/pricing?plan=annual");
   });
 
   test("structured output never skips the clean-tree proof", async () => {

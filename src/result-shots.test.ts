@@ -155,6 +155,23 @@ describe("a scout's report", () => {
   });
 });
 
+describe("a scout's screenshots are queued once, by its report", () => {
+  test("a failure or a second message about the same scout run queues nothing more; only \"report ready\" does, once per person", () => {
+    store.setNotificationPreference("alex", { screenshots: "all" }, "alex", now);
+    store.createTask({ id: "scout-2", title: "Which rival is cheapest?" }, now);
+    const ref = store.refFor("built-in", "scout-2").id;
+    store.placeTask(ref, ALPHA, {}, now);
+    const run = store.startRun({ taskRef: ref, leaseId: "l-scout-2", runner: RUNNER, role: "scout", branch: "so/scout-2", worktree: "/pool/scout-2", ...legacy, now });
+    storeEvidence(store, root, run, "screenshot", "report-image-1.png", png(1280, 800, 3), "scout screenshot pricing.png (validated png) from https://rival.example/pricing", now);
+    store.enqueueNotification({ source: { run }, dedupeKey: `scout-failed:${ref}:${run}`, kind: "scout-failed", subject: "scout-2: the scout failed", body: "" }, now);
+    store.enqueueNotification({ source: { run }, dedupeKey: `run-finished:${run}`, kind: "run-finished", subject: "scout-2 finished", body: "" }, now);
+    expect(shotRows()).toEqual([]);
+    store.enqueueNotification({ source: { run }, dedupeKey: `report:${ref}:${run}`, kind: "report-ready", subject: "scout-2: report ready", body: "" }, now);
+    store.enqueueNotification({ source: { run }, dedupeKey: `report:${ref}:${run}:again`, kind: "report-ready", subject: "scout-2: report ready", body: "" }, now);
+    expect(shotRows().map(one => [one.recipient, one.run])).toEqual([["alex", run]]);
+  });
+});
+
 describe("c2: Telegram", () => {
   const pair = () => {
     const code = mintPairingCode();

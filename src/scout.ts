@@ -41,7 +41,8 @@ import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
-import { catalogTool } from "./project-tools.js";
+import { catalogTool, type ToolSpec } from "./project-tools.js";
+import { startScoutProxy } from "./scout-net.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -62,10 +63,14 @@ const SCOUT_BROWSER_TOOLS = ["browser_navigate", "browser_navigate_back", "brows
  * clean-tree proof.
  */
 export const SCOUT_ALLOWED_TOOLS: readonly string[] = ["WebSearch", "WebFetch", ...SCOUT_BROWSER_TOOLS.map(tool => `mcp__${SCOUT_BROWSER}__${tool}`)];
+const SCOUT_RESEARCH_TOOLS: readonly string[] = ["WebSearch", "WebFetch"];
 
-function scoutBrowser(imageFolder: string): Record<string, unknown> {
-  const playwright = catalogTool("playwright")!;
-  return { [SCOUT_BROWSER]: { type: "stdio", command: playwright.command, args: [...playwright.args, "--isolated", "--output-dir", imageFolder], env: {} } };
+/** The scout's browser launch, or null when this install has no Playwright entry (the scout then researches without
+ * screenshots). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
+ * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. */
+export function scoutBrowser(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): Record<string, unknown> | null {
+  if (tool === null || tool.command === null) return null;
+  return { [SCOUT_BROWSER]: { type: "stdio", command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"], env: {} } };
 }
 
 export type ScoutRequest = {
@@ -100,6 +105,10 @@ export type ScoutRequest = {
   /** Where the scout may save screenshots: outside the checkout, so the clean-tree proof still holds. Left out, a
    * fresh temporary folder is made for this run and removed after it. */
   outputDir?: string;
+  /** The project's own demo or dev server, the one non-public address the scout's browser may open. */
+  demoUrl?: string | null;
+  /** The browser to launch; left out, the catalog's Playwright entry. Null runs the scout without one. */
+  browserTool?: Pick<ToolSpec, "command" | "args"> | null;
 };
 
 export type ReportArtifact = {
@@ -145,7 +154,7 @@ function scoutBrief(
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
   structured: boolean,
-  outputDir: string,
+  browser: { folder: string; demoUrl: string | null } | null,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -169,13 +178,18 @@ function scoutBrief(
     "finish; any other change discards your session and its report.",
     "",
     "You may search the web and fetch pages for this research. Cite the URL",
-    "of every source you use. You may take screenshots (PNG or JPEG) of",
-    "public pages you actually visited, and of this project's own UI (its",
-    "demo or dev server, if one is already running). Open the page with the",
-    `\`${SCOUT_BROWSER}\` browser, then take its screenshot with a plain file`,
-    "name such as home.png; it is saved in this folder outside the",
-    `repository: \`${outputDir}\`. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
-    "Never screenshot a page you did not visit, never download anything else, and never run downloaded code.",
+    "of every source you use. Never download anything else, and never run downloaded code.",
+    ...(browser === null
+      ? ["No browser is available for screenshots in this run, so leave images empty."]
+      : [
+          "You may take screenshots (PNG or JPEG) of public web pages you actually",
+          `visited${browser.demoUrl === null ? "" : `, and of this project's own UI at \`${inert(browser.demoUrl, 500)}\``}. The browser`,
+          "opens public web pages only. Open the page with the",
+          `\`${SCOUT_BROWSER}\` browser, then take its screenshot with a plain file`,
+          "name such as home.png; it is saved in this folder outside the",
+          `repository: \`${browser.folder}\`. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
+          "Never screenshot a page you did not visit.",
+        ]),
     answeredBlock,
     ...(structured
       ? [
@@ -186,8 +200,7 @@ function scoutBrief(
           "a phone; you will be resumed with the answer.",
           "",
           'When you have your findings, end with kind "report" and the report',
-          "below as your final structured output — you can't write files here,",
-          "and a plan file never reaches the operator. Only if",
+          "below as your final structured output. Only if",
           "structured output is unavailable, write the decision JSON to",
           `\`${mailbox}\` or the report JSON to \`${reportFile}\` instead:`,
         ]
@@ -322,22 +335,31 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     if (!wrotePlanFile && touchesPlanFile(event)) wrotePlanFile = true;
     liveLog?.observe(event);
   };
+  // The browser, when this install has one: launched behind its public-web-only proxy (review 826).
+  const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
+  const demoUrl = request.demoUrl ?? null;
+  let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
   let invoked;
   try {
+    if (structured && browserTool !== null && browserTool.command !== null) {
+      // A proxy that cannot start leaves the scout without a browser, never without its research.
+      proxy = await startScoutProxy({ demoUrl }).catch(() => null);
+    }
+    const browser = proxy === null ? null : scoutBrowser(browserTool, imageFolder, proxy.url);
     invoked = await invokeAgent(
       store,
       request.runId,
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, imageFolder),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, browser === null ? null : { folder: imageFolder, demoUrl }),
         maxTurns,
         // Read-only by policy AND by check: `dontAsk` with only research and
         // screenshot tools allowed is the permission posture (plan mode
         // blocked the screenshots too); the clean-tree proof below is the law.
         permissionMode: request.permissionMode ?? "dontAsk",
-        allowedTools: SCOUT_ALLOWED_TOOLS,
-        extraMcpServers: scoutBrowser(imageFolder),
+        allowedTools: browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS,
+        ...(browser === null ? {} : { extraMcpServers: browser }),
         skipPermissions: false,
         resumeSession: null,
         ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
@@ -356,6 +378,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     );
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
+    await proxy?.close();
     liveLog?.close();
   }
 
@@ -494,8 +517,11 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     // finding 8): a scout that quotes a key it found has the line redacted
     // in every field BEFORE the report is stored, paged, or shown — the
     // same high-confidence detector the diff capture uses.
-    const { report: clean, redacted } = redactReport(validated);
-    const report = keepImages(clean);
+    // File names, URLs and captions too (review 826): a screenshot is read by the name the scout gave it, but
+    // stored, captioned and passed on only under its scrubbed one.
+    const names = scrubbedImageNames(validated.images);
+    const { report, redacted: redactedText } = redactReport(keepImages(validated, names));
+    const redacted = redactedText || [...names].some(([file, name]) => file !== name);
 
     // The whole VALIDATED payload is the artifact: re-serialized from the
     // parsed shape, so what the page renders is exactly what passed the
@@ -534,18 +560,20 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
   /** Each image the report names, verified and stored as screenshot evidence with its sha256, caption and source
    * URL. One that isn't a plain PNG or JPEG file in the output folder, or is over the size cap, is left out, its
    * item keeps no picture, and the report says so; the findings themselves still arrive. */
-  function keepImages(report: ParsedReport): ParsedReport {
+  function keepImages(report: ParsedReport, names: ReadonlyMap<string, string>): ParsedReport {
     const kept: ReportImage[] = [];
     const refused: string[] = [];
     for (const image of report.images) {
+      const file = names.get(image.file) ?? image.file;
+      const url = scrubUrl(image.url).url;
       const checked = readReportImage(imageFolder, image.file);
       if (!checked.ok) {
-        refused.push(`${image.file.slice(0, 100)} (${checked.problem})`);
+        refused.push(`${file.slice(0, 100)} (${checked.problem})`);
         continue;
       }
       const name = `report-image-${kept.length + 1}.${checked.kind === "png" ? "png" : "jpg"}`;
-      const artifact = storeEvidence(store, root, request.runId, "screenshot", name, checked.bytes, `scout screenshot ${image.file} (validated ${checked.kind}) from ${image.url.slice(0, 500)}`, clock());
-      kept.push({ file: image.file, caption: image.caption, url: image.url, sha256: createHash("sha256").update(checked.bytes).digest("hex"), artifact });
+      const artifact = storeEvidence(store, root, request.runId, "screenshot", name, checked.bytes, `scout screenshot ${file} (validated ${checked.kind}) from ${url.slice(0, 500)}`, clock());
+      kept.push({ file, caption: image.caption, url, sha256: createHash("sha256").update(checked.bytes).digest("hex"), artifact });
     }
     const files = new Set(kept.map(one => one.file));
     const note = refused.length === 0 ? "" : `\n\n_Screenshots left out: ${refused.join("; ")}._`;
@@ -554,7 +582,10 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       ...report,
       report: document,
       images: kept,
-      items: report.items.map(item => (item.image !== null && !files.has(item.image) ? { ...item, image: null } : item)),
+      items: report.items.map(item => {
+        const image = item.image === null ? null : names.get(item.image) ?? item.image;
+        return { ...item, image: image !== null && files.has(image) ? image : null };
+      }),
     };
   }
 }
@@ -643,11 +674,76 @@ function redactReport(report: ParsedReport): { report: ParsedReport; redacted: b
       summary: clean(report.summary),
       report: clean(report.report),
       followUps: report.followUps.map(one => ({ title: clean(one.title), goal: clean(one.goal) })),
-      items: report.items.map(one => ({ ...one, title: clean(one.title), why: clean(one.why) })),
-      images: report.images.map(one => ({ ...one, caption: clean(one.caption) })),
+      items: report.items.map(one => ({ ...one, title: clean(one.title), why: clean(one.why), url: link(one.url) })),
+      images: report.images.map(one => ({ ...one, caption: clean(one.caption), url: link(one.url) })),
     },
     redacted,
   };
+  function link(url: string): string {
+    const scrubbed = scrubUrl(url);
+    if (scrubbed.scrubbed) redacted = true;
+    return scrubbed.url;
+  }
+}
+
+/** Query and fragment names that carry credentials in a link: an access token, a signed URL's signature, a code. */
+const SECRET_PARAM = /token|key|secret|sig|auth|pass|pwd|session|sid|code|credential|jwt|bearer|otp|nonce/i;
+
+/** A cited link without its secrets: credential-shaped query values and path parts become REDACTED, a fragment
+ * that carries one is dropped, and a link still showing one keeps only its origin. Unchanged when it has none. */
+export function scrubUrl(text: string): { url: string; scrubbed: boolean } {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return { url: text, scrubbed: false };
+  }
+  let scrubbed = false;
+  if (url.username !== "" || url.password !== "") {
+    url.username = "";
+    url.password = "";
+    scrubbed = true;
+  }
+  if (url.search !== "") {
+    const pairs = [...url.searchParams].map(([name, value]): [string, string] => {
+      if (!SECRET_PARAM.test(name) && scanForSecrets(value).length === 0) return [name, value];
+      scrubbed = true;
+      return [name, "REDACTED"];
+    });
+    if (scrubbed) url.search = new URLSearchParams(pairs).toString();
+  }
+  if (url.hash !== "" && (SECRET_PARAM.test(url.hash) || scanForSecrets(safeDecode(url.hash)).length > 0)) {
+    url.hash = "";
+    scrubbed = true;
+  }
+  const parts = url.pathname.split("/");
+  if (parts.some(part => scanForSecrets(safeDecode(part)).length > 0)) {
+    url.pathname = parts.map(part => (scanForSecrets(safeDecode(part)).length > 0 ? "REDACTED" : part)).join("/");
+    scrubbed = true;
+  }
+  if (!scrubbed) return { url: text, scrubbed: false };
+  return { url: scanForSecrets(safeDecode(url.href)).length > 0 ? `${url.origin}/` : url.href, scrubbed: true };
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+/** Each image's name as stored and shown: its own, unless it carries a credential, then `screenshot-<n>`. */
+function scrubbedImageNames(images: readonly ReportImage[]): Map<string, string> {
+  const taken = new Set(images.map(one => one.file));
+  return new Map(images.map((one, index) => {
+    if (scanForSecrets(one.file).length === 0) return [one.file, one.file];
+    const extension = /\.jpe?g$/i.test(one.file) ? ".jpg" : ".png";
+    let name = `screenshot-${index + 1}${extension}`;
+    for (let again = 2; taken.has(name); again += 1) name = `screenshot-${index + 1}-${again}${extension}`;
+    taken.add(name);
+    return [one.file, name];
+  }));
 }
 
 function cleanup(worktree: string, names: readonly string[]): void {

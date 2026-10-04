@@ -26791,11 +26791,13 @@ export class Store {
    */
   private enqueueResultShots(source: Notification, now: Date): void {
     if (source.run === null || source.taskRef === null || source.project === null || source.recipient !== null) return;
-    // A scout's report is its result: its "report ready" carries the screenshots it saved.
-    const ready = (isLifecycleNotification(source) && source.kind === "run-finished") || source.kind === "report-ready";
-    if (!ready && !/fail/.test(source.kind)) return;
     const run = this.getRun(source.run);
-    if (run === null || !["builder", "repair", "scout"].includes(run.role) || run.contestant !== null) return;
+    if (run === null || run.contestant !== null) return;
+    // One path per role (review 826): a scout's report is its result, so only its "report ready" carries the
+    // screenshots it saved; a build's are carried by its finished or failed message.
+    const carries = run.role === "scout" ? source.kind === "report-ready"
+      : ["builder", "repair"].includes(run.role) && ((isLifecycleNotification(source) && source.kind === "run-finished") || /fail/.test(source.kind));
+    if (!carries) return;
     if (!this.artifactsFor(run.id).some(one => one.kind === "screenshot")) return;
     const people = this.db.prepare("SELECT account FROM notification_preference WHERE screenshots IN ('first', 'all') ORDER BY account").all().map(row => String(row["account"]));
     for (const account of people) {
