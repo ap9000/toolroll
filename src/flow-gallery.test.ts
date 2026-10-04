@@ -13,8 +13,9 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
-import { galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { galleryHtml, galleryUseHtml, stepStrip } from "./flow-gallery-ui.js";
+import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { codeOutput } from "./flow-code.js";
 import { addToolTo } from "./project-tools.js";
 import { connectedSpec, connectionsOf, ONE_CLICK } from "./mcp-connect.js";
 
@@ -87,7 +88,7 @@ describe("flow gallery", () => {
       "figma-to-pr": { tools: ["figma-desktop"], uses: ["Build the frame"], kinds: ["task", "pull-request", "send", "done"], trigger: "button" },
       "worker-errors": { tools: ["cloudflare"], uses: ["Read the errors", "Find the cause"], kinds: ["report", "sort", "report", "choose", "task", "pull-request", "done", "done"], trigger: "schedule" },
       "failed-deploy": { tools: ["vercel"], uses: ["Find the cause"], kinds: ["report", "task", "pull-request", "send", "done"], trigger: "webhook" },
-      "linear-to-prs": { tools: ["linear"], uses: ["Comment on the issue"], kinds: ["task", "pull-request", "draft", "tool", "done"], trigger: "linear" },
+      "linear-to-prs": { tools: ["linear"], uses: ["Comment on the issue"], kinds: ["task", "pull-request", "check", "tool", "done"], trigger: "linear" },
       "support-to-fix": { tools: ["intercom"], uses: ["Rank the bugs"], kinds: ["report", "choose", "task", "pull-request", "send", "done"], trigger: "schedule" },
       "error-to-fix": { tools: ["sentry"], uses: ["Find the cause"], kinds: ["sort", "report", "task", "approval", "pull-request", "inbox", "done", "done"], trigger: "webhook" },
     };
@@ -125,6 +126,16 @@ describe("flow gallery", () => {
     const linear = buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, SAMPLE);
     expect(linear.triggers).toEqual([{ kind: "linear", team: "WEB", label: "bug-report" }]);
     expect(linear.definition.stages.find(one => one.kind === "tool")!.tool).toEqual({ server: "linear", name: "create_comment", args: JSON.stringify({ issueId: "{{stage.issue-key}}", body: "A pull request is ready: {{stage.pull-request}}" }) });
+    // The issue key comes from the card's source as the Linear trigger stored it, never guessed: none skips the comment.
+    const key = linear.definition.stages.find(one => one.id === "issue-key")!;
+    expect(key).toMatchObject({ kind: "check", runIn: "folder", routes: [{ answer: "Found", to: "comment" }, { answer: "None", to: "done" }] });
+    expect(linear.scripts).toEqual([expect.objectContaining({ name: "linear-issue-key", body: LINEAR_KEY })]);
+    const keyOf = (source: unknown, description: string) => codeOutput(execFileSync("/bin/sh", ["-c", LINEAR_KEY], { input: JSON.stringify({
+      card: { id: 1, title: "Fix it", description, email: null, note: null, owner: "alex", source },
+      outputs: { build: { zone: "Build it", text: '"source":{"kind":"linear","label":"Linear ENG-999"}' } } }), encoding: "utf8" }), {});
+    expect(keyOf({ kind: "linear", label: "Linear ENG-123", url: "https://linear.app/x/issue/ENG-123" }, "From Linear ENG-123:\n\nIt breaks.")).toEqual({ output: "ENG-123", goTo: "Found" });
+    expect(keyOf(null, "Mentions ENG-77 and \"label\":\"Linear ENG-55\"")).toEqual({ output: "none", goTo: "None" });
+    expect(keyOf({ kind: "github", label: "Linear ENG-1", url: null }, "")).toEqual({ output: "none", goTo: "None" });
     expect(() => buildFromGallery(store, GALLERY.find(one => one.id === "linear-to-prs")!, repo, { team: "eng team" })).toThrow("Say the Linear team as its short key, like ENG.");
     expect(buildFromGallery(store, GALLERY.find(one => one.id === "metrics-digest")!, repo, SAMPLE).triggers).toEqual([{ kind: "schedule", schedule: expect.stringMatching(/^weekdays 03:00/), title: "Metrics digest" }]);
     // Connected, the preview says so and names no missing tool.
@@ -137,6 +148,22 @@ describe("flow gallery", () => {
     const unchosen = galleryHtml({ repo: null, canUse: true, connections: connectionsOf(store, repo) });
     expect(unchosen).toContain('<li data-tool="posthog" data-state="unknown">');
     expect(unchosen).not.toContain("integration-state");
+  });
+
+  test("c1: a template's steps read in order, a person's from their side, its main path only and no Done", () => {
+    const strip = (id: string) => stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!))
+      .replace(/<span aria-hidden="true">→<\/span>/g, " → ").replace(/<b data-person>([^<]+)<\/b>/g, "[$1]").replace(/<[^>]+>/g, "");
+    expect(strip("fix-drop-off")).toBe("Find the drop-off → [You choose] → Build the fix → Pull request → Sent to you");
+    // A sort shows its main way, not Ignore; a check that just ends when it passes shows the work it starts.
+    expect(strip("worker-errors")).toBe("Read the errors → Worth fixing? → Find the cause → [You choose] → Fix it → Pull request");
+    expect(strip("weekly-upkeep")).toBe("Anything outdated? → Update them → [You approve] → Pull request");
+    // A failure path is not the main one.
+    expect(strip("email-replies")).toBe("Write the reply → [You approve] → Email it");
+    for (const template of [...GALLERY, BLANK]) {
+      const shown = strip(template.id);
+      expect(shown, template.id).not.toMatch(/Done|Ignore/);
+      expect(shown.length, template.id).toBeGreaterThan(0);
+    }
   });
 
   test("c1: the gallery shows the templates grouped, and each is created from its page with sample answers", async () => {
@@ -162,7 +189,9 @@ describe("flow gallery", () => {
       expect(group("ops")).toEqual(BUSINESS);
       expect(gallery.match(/>Use this<\/a>/g)).toHaveLength(GALLERY.length);
       expect(gallery).toContain('<li>Dependabot or Renovate</li>');
-      expect(gallery).toContain('<svg class="gallery-zones"');
+      // Each card names its steps in order, not a drawing.
+      expect(gallery).not.toContain("gallery-zones");
+      expect(gallery.match(/<ol class="gallery-steps" aria-label="Steps">/g)).toHaveLength(GALLERY.length);
       // The Flows list leads to it; Settings → Flows shows it beside the starters.
       expect(await get("/flows")).toContain('<a class="button-link" href="/flows/new">New flow</a>');
       const settings = await get(`/settings/flows?repo=${encodeURIComponent(repo)}`);

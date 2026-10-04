@@ -12,8 +12,8 @@
  * A template that puts a connected tool to work names it (`tools`): a one-click service (ONE_CLICK) or the Figma
  * desktop app. Its research steps read that tool and only read; a build gets the project's tools as any build does.
  *
- * Every template can end with "Send me the result" (a "Send to me" zone before its end), off unless asked for
- * (`send-result: yes`): what the flow did reaches the person in their chat apps.
+ * Every template without its own send zone can end with "Send me the result" (a "Send to me" zone before its end),
+ * off unless asked for (`send-result: yes`): what the flow did reaches the person in their chat apps.
  */
 import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
@@ -71,6 +71,9 @@ export type GalleryTemplate = {
   never: string;
 };
 
+/** The card's Linear issue key, read from its source as the Linear trigger stored it ("Linear ENG-123"); "none" skips the comment. */
+export const LINEAR_KEY = `key="$(sed -n 's/.*"source":{"kind":"linear","label":"Linear \\([A-Z][A-Z0-9]*-[0-9][0-9]*\\)".*/\\1/p' | head -n 1)"
+if [ -n "$key" ]; then echo "$key"; echo "goto: Found"; else echo none; echo "goto: None"; fi`;
 const NEVER_MERGES = "Never merges. Each pull request waits for you.";
 const work = (text: string) => `${text}\n\nChanges asked for (if any): {{note}}`;
 const research = (text: string) => `${text}\n\nFeedback to address (if any): {{note}}`;
@@ -214,10 +217,12 @@ export const GALLERY: readonly GalleryTemplate[] = [
     id: "linear-to-prs", name: "Linear issues to PRs", group: "ship", tools: ["linear"],
     promise: "Labelled Linear issues are built, and the issue gets the pull request link.",
     needs: ["GitHub", "A Linear API key"], asks: [{ key: "team", default: "ENG", label: "Linear team", hint: "Its short key, like ENG." }, { key: "label", default: ISSUE_LABEL, label: "Issue label" }],
+    // The issue's key comes from the card's source ("Linear ENG-123"), as the trigger stored it, never from a model.
+    scripts: [{ name: "linear-issue-key", about: "Prints the Linear issue the card came from, or none.", body: LINEAR_KEY, timeoutMinutes: 1 }],
     steps: [
       { id: "build", title: "Build it", kind: "task", instructions: work("Build this issue: {{card.title}}\n\n{{card.description}}") },
       pr,
-      { id: "issue-key", title: "Find the issue key", kind: "draft", instructions: "Reply with only the identifier of the issue this card came from, like ENG-123." },
+      { id: "issue-key", title: "Find the issue key", kind: "check", script: "{{script.linear-issue-key}}", runIn: "folder", routes: [{ answer: "Found", goesTo: "comment" }, { answer: "None", goesTo: "Done" }] },
       { id: "comment", title: "Comment on the issue", kind: "tool", server: "linear", tool: "create_comment", args: { issueId: "{{stage.issue-key}}", body: "A pull request is ready: {{stage.pull-request}}" } },
     ],
     triggers: [{ kind: "linear", team: "{{ask.team}}", label: "{{ask.label}}" }],
@@ -500,12 +505,17 @@ const oneLine = (value: string, cap: number, what: string) => {
 /** The optional last step every template offers, and the answer that turns it on. */
 export const SEND_RESULT = { key: "send-result", title: "Send me the result", does: "When a card finishes, sends you what was done (its summary, links and screenshots) in your chat apps." } as const;
 
-/** A flow with "Send me the result" before its end: every path into its main Done zone passes through it first. */
+/** A template that already sends its result to the person: it isn't offered "Send me the result" again. */
+export const sendsAlready = (template: GalleryTemplate) => galleryDiagram(template).stages.some(one => one.kind === "send");
+
+/** A flow with "Send me the result" before its end: every path into its main Done zone passes through it first.
+ * A flow that already has a send zone is left as it is, so nobody gets the result twice. */
 export function withSendResult(definition: FlowDefinition): FlowDefinition {
+  if (definition.stages.some(one => one.kind === "send")) return definition;
   // Its main end: Done, else an end that isn't a filtered-out one (drawn in rose), else any end.
   const ends = definition.stages.filter(one => one.kind === "done");
   const end = ends.find(one => one.id === "done") ?? ends.find(one => one.zone.color !== "rose") ?? ends[0];
-  if (end === undefined || definition.stages.some(one => one.kind === "send" && one.next === end.id)) return definition;
+  if (end === undefined) return definition;
   let id = "send-result";
   for (let n = 2; definition.stages.some(one => one.id === id); n++) id = `send-result-${n}`;
   const into = (to: string) => to === end.id ? id : to;
@@ -612,6 +622,8 @@ export function buildFromGallery(store: Store, template: GalleryTemplate, repo: 
   const github = githubRepoOf(repo);
   const drawn = template.definition !== undefined ? structuredClone(template.definition)
     : flowFromSteps(fill(template.ownSteps !== undefined && isToolrollRepo(repo) ? template.ownSteps : template.steps!, answers, names, github), null);
+  // One that already sends doesn't take the answer, so it reads as it was asked.
+  if (drawn.stages.some(one => one.kind === "send")) delete answers[SEND_RESULT.key];
   const sends = answers[SEND_RESULT.key] === "yes";
   const definition = sends ? withSendResult(drawn) : drawn;
   return { template, repo, answers, definition, triggers: fill(template.triggers, answers, names, github), scripts,

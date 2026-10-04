@@ -47,7 +47,10 @@ const measure = async (tab, name) => {
     const taps = [...document.querySelectorAll('.gallery-card .button-link, .gallery-actions button, .gallery-connect button, .gallery-use input:not([type=hidden]):not([type=checkbox]), .gallery-use select, .gallery-preview summary')].map(one => one.getBoundingClientRect()).filter(one => one.height > 0);
     const buttons = [...document.querySelectorAll('.gallery-card .button-link, .gallery-actions button, .gallery-connect button')];
     const marks = [...document.querySelectorAll('.gallery-tools .brand-mark, .gallery-connect .brand-mark')].map(one => Math.round(one.getBoundingClientRect().width));
-    return { overflow: document.documentElement.scrollWidth > innerWidth, smallestTap: taps.length === 0 ? null : Math.min(...taps.map(one => Math.round(one.height))),
+    // Each step strip wraps inside its card or page, and a person's steps carry the accent chip.
+    const strips = [...document.querySelectorAll('.gallery-steps')];
+    const stripOverflow = strips.some(one => one.scrollWidth > one.clientWidth + 1 || [...one.children].some(li => li.getBoundingClientRect().right > one.getBoundingClientRect().right + 1));
+    return { overflow: document.documentElement.scrollWidth > innerWidth || stripOverflow, strips: strips.length, smallestTap: taps.length === 0 ? null : Math.min(...taps.map(one => Math.round(one.height))),
       wrappedButton: buttons.some(one => one.getBoundingClientRect().height > 60), marks: [...new Set(marks)] };
   });
   checks.push({ name, ...facts });
@@ -94,8 +97,22 @@ try {
     if (needs !== "“Find examples” needs Mobbin, which isn't connected.") fail(`${name} needs`, needs, errors);
     await tab.screenshot({ path: join(out, `${name}-ui-inspiration-preview.png`) });
 
+    // It sends its result already, so "Send me the result" isn't offered again.
+    if (await tab.locator('[data-send-result]').count() !== 0) fail(`${name} ui-inspiration offers a second send`, null, errors);
+
+    // Added another way: it reads as there, not missing; Create flow keeps its normal weight.
+    await tab.goto(`${url}/flows/new/error-to-fix?repo=${encodeURIComponent(repo)}`);
+    const taken = await tab.locator('[data-tool-taken="sentry"]').textContent();
+    if (taken !== '“Find the cause” uses Sentry, added another way.' || await tab.locator('[data-needs-tool], [data-without-tools], .gallery-connect form').count() !== 0) fail(`${name} taken`, taken, errors);
+    await check('error-to-fix taken');
+    await tab.locator('.gallery-preview').evaluate(one => one.scrollIntoView({ block: 'start' }));
+    await tab.screenshot({ path: join(out, `${name}-error-to-fix-taken.png`) });
+
     // A connected tool, with its long steps open.
     await tab.goto(`${url}/flows/new/fix-drop-off?repo=${encodeURIComponent(repo)}`);
+    const strip = await tab.locator('.gallery-use .gallery-steps').innerText();
+    if (strip.replace(/\s+/g, ' ').trim() !== 'Find the drop-off → You choose → Build the fix → Pull request → Sent to you') fail(`${name} strip`, strip, errors);
+    await tab.screenshot({ path: join(out, `${name}-fix-drop-off-top.png`) });
     await tab.locator('.gallery-preview details').evaluate(one => { one.open = true; });
     await check('fix-drop-off expanded', () => false);
     if (await tab.locator('.gallery-connect form').count() !== 0) fail(`${name} connected offers Connect`, null, errors);
