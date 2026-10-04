@@ -22,7 +22,6 @@ import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
 import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
-import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
   evidenceRoot,
@@ -43,6 +42,8 @@ import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
 import { catalogTool, type ToolSpec } from "./project-tools.js";
 import { startScoutProxy } from "./scout-net.js";
+import * as browserCheck from "./scout-browser.js";
+import { invokeAgent } from "./invoke.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -66,20 +67,29 @@ export const SCOUT_ALLOWED_TOOLS: readonly string[] = ["WebSearch", "WebFetch", 
 const SCOUT_RESEARCH_TOOLS: readonly string[] = ["WebSearch", "WebFetch"];
 
 /** The scout's browser launch, or null when this install has no Playwright entry (the scout then researches without
- * screenshots). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
- * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. */
-export function scoutBrowser(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): Record<string, unknown> | null {
+ * screenshots). The worker runs it outside the agent fence with Chrome's own sandbox on (run 2356, review 828:
+ * scout-browser.ts). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
+ * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. Screenshots are saved
+ * in `imageFolder`. */
+export function scoutBrowserLaunch(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): browserCheck.BrowserLaunch | null {
   if (tool === null || tool.command === null) return null;
-  return { [SCOUT_BROWSER]: { type: "stdio", command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"], env: {} } };
+  return { command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"] };
+}
+
+/** What the fenced scout gets: the running browser's loopback address, nothing it could launch itself. */
+export function scoutBrowser(url: string): Record<string, unknown> {
+  return { [SCOUT_BROWSER]: { type: "http", url } };
 }
 
 /** What would let the scout's own requests skip its proxy: never passed on while one runs. */
 const PROXY_BYPASS_ENV: readonly string[] = ["NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
 
 /** The scout's environment while its proxy runs (review 827): web fetch and the provider's own traffic go through
- * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable. */
-export function scoutProxyEnv(proxy: string): Record<string, string> {
-  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy };
+ * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable.
+ * The one direct address is its own browser's port, when it has one (review 828): the proxy refuses loopback. */
+export function scoutProxyEnv(proxy: string, browserUrl: string | null = null): Record<string, string> {
+  const direct = browserUrl === null ? {} : { NO_PROXY: new URL(browserUrl).host, no_proxy: new URL(browserUrl).host };
+  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, ...direct };
 }
 
 export type ScoutRequest = {
@@ -163,7 +173,7 @@ function scoutBrief(
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
   structured: boolean,
-  browser: { folder: string; demoUrl: string | null } | null,
+  browser: { folder: string; demoUrl: string | null } | { problem: string } | null,
   web = true,
 ): string {
   const answeredBlock =
@@ -193,15 +203,21 @@ function scoutBrief(
       : ["The web is unavailable in this run: research from the repository alone."]),
     ...(browser === null
       ? ["No browser is available for screenshots in this run, so leave images empty."]
-      : [
-          "You may take screenshots (PNG or JPEG) of public web pages you actually",
-          `visited${browser.demoUrl === null ? "" : `, and of this project's own UI at \`${inert(browser.demoUrl, 500)}\``}. The browser`,
-          "opens public web pages only. Open the page with the",
-          `\`${SCOUT_BROWSER}\` browser, then take its screenshot with a plain file`,
-          "name such as home.png; it is saved in this folder outside the",
-          `repository: \`${browser.folder}\`. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
-          "Never screenshot a page you did not visit.",
-        ]),
+      : "problem" in browser
+        ? [
+            `The browser couldn't start (${inert(browser.problem, 200)}), so this run has no screenshots:`,
+            "leave images empty. The report already says so; don't repeat it.",
+          ]
+        : [
+            "You may take screenshots (PNG or JPEG) of public web pages you actually",
+            `visited${browser.demoUrl === null ? "" : `, and of this project's own UI at \`${inert(browser.demoUrl, 500)}\``}. The browser`,
+            "opens public web pages only. Open the page with the",
+            `\`${SCOUT_BROWSER}\` browser, then save its screenshot by its full path in`,
+            `this folder outside the repository, such as \`${join(browser.folder, "home.png")}\`,`,
+            "and name it by its plain file name (home.png) in the report. A screenshot",
+            `saved anywhere else is not kept. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
+            "Never screenshot a page you did not visit.",
+          ]),
     answeredBlock,
     ...(structured
       ? [
@@ -353,17 +369,31 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
   const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
   const demoUrl = request.demoUrl ?? null;
   let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
+  let browserServer: browserCheck.ScoutBrowserServer | null = null;
+  let browserProblem: string | null = null;
   let invoked;
   try {
     proxy = await startScoutProxy({ demoUrl }).catch(() => null);
-    const browser = proxy === null || !structured ? null : scoutBrowser(browserTool, imageFolder, proxy.url);
+    const launch = proxy === null || !structured ? null : scoutBrowserLaunch(browserTool, imageFolder, proxy.url);
+    // The preflight (run 2356, review 828): the worker starts the browser outside the fence and opens a public page
+    // through the proxy before research begins. One that can't start is said once, in the brief and the report, and
+    // the scout researches without it.
+    const started = launch === null || proxy === null ? null : await browserCheck.starterFor(agent !== undefined)(launch, {
+      env: { ...withoutEnv(process.env, [...AGENT_ENV_DENYLIST, ...PROXY_BYPASS_ENV]), ...scoutProxyEnv(proxy.url) },
+      folder: imageFolder,
+    }).catch((error: unknown): browserCheck.BrowserStart => ({ ok: false, reason: error instanceof Error ? error.message : String(error) }));
+    if (started !== null && started.ok) browserServer = started.server;
+    browserProblem = started !== null && !started.ok ? started.reason : null;
+    const browser = browserServer === null ? null : scoutBrowser(browserServer.url);
+    const proxyEnv = proxy === null ? {} : scoutProxyEnv(proxy.url, browserServer?.url ?? null);
+    const briefBrowser = browserProblem !== null ? { problem: browserProblem } : browser === null ? null : { folder: imageFolder, demoUrl };
     invoked = await invokeAgent(
       store,
       request.runId,
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, browser === null ? null : { folder: imageFolder, demoUrl }, proxy !== null),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, briefBrowser, proxy !== null),
         maxTurns,
         // Read-only by policy AND by check: `dontAsk` with only research and
         // screenshot tools allowed is the permission posture (plan mode
@@ -380,8 +410,8 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       {
         cwd: worktree,
         idleTimeoutMs: timeoutMs,
-        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV)],
-        ...(proxy === null ? {} : { env: scoutProxyEnv(proxy.url) }),
+        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV.filter(name => !(name in proxyEnv)))],
+        ...(proxy === null ? {} : { env: proxyEnv }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -390,6 +420,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     );
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
+    await browserServer?.close();
     await proxy?.close();
     liveLog?.close();
   }
@@ -589,7 +620,9 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       kept.push({ file, caption: image.caption, url, sha256: createHash("sha256").update(checked.bytes).digest("hex"), artifact });
     }
     const files = new Set(kept.map(one => one.file));
-    const note = refused.length === 0 ? "" : `\n\n_Screenshots left out: ${refused.join("; ")}._`;
+    const note =
+      (browserProblem === null ? "" : `\n\n_No screenshots: the browser couldn't start (${browserProblem})._`) +
+      (refused.length === 0 ? "" : `\n\n_Screenshots left out: ${refused.join("; ")}._`);
     const document = note !== "" && Buffer.byteLength(report.report + note, "utf8") <= REPORT_LIMITS.document ? report.report + note : report.report;
     return {
       ...report,
@@ -757,6 +790,12 @@ function scrubbedImageNames(images: readonly ReportImage[]): Map<string, string>
     taken.add(name);
     return [one.file, name];
   }));
+}
+
+function withoutEnv(env: NodeJS.ProcessEnv, names: readonly string[]): Record<string, string | undefined> {
+  const kept: Record<string, string | undefined> = { ...env };
+  for (const name of names) delete kept[name];
+  return kept;
 }
 
 function cleanup(worktree: string, names: readonly string[]): void {
