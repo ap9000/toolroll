@@ -2,6 +2,7 @@
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
 import type { TeamSnapshot } from './team-contract.js';
+import type { BrandIconId } from './brand-icons.js';
 import type { AssignmentSnapshot } from './assignment.js';
 import { browserCrewFromIndex } from './browser-crew.js';
 export { browserCrewFromIndex, browserWorkActionHref } from './browser-crew.js';
@@ -126,7 +127,8 @@ export type BrowserSettingsView = {
   /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
   updates?: BrowserUpdates | null;
 };
-export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
+/** A tile's `brand` is a chat app's logo (brand-mark.ts), drawn in place of its icon. */
+export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; brand?: BrandIconId; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */

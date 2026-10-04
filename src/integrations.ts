@@ -63,6 +63,8 @@ export type Integration = {
   lastErrorAt: string | null;
   usedBy: string[];
   action: IntegrationAction;
+  /** A project's own MCP tool: it shows a letter, never a logo matched by name. */
+  custom?: true;
 };
 
 export const STATE_WORDS: Record<IntegrationState, string> = { connected: "Connected", "not-set-up": "Not set up", broken: "Broken" };
@@ -106,6 +108,7 @@ type Target = {
   usedBy: string[];
   activity: Activity;
   probe: ((io: IntegrationIo) => Promise<ProbeResult>) | null;
+  custom?: true;
 };
 
 const PROBE_MS = 8_000;
@@ -434,7 +437,7 @@ function targets(io: IntegrationIo): Target[] {
       const href = `/settings/tools?repo=${encodeURIComponent(repo)}#tool-${encodeURIComponent(tool.name)}`;
       const test = tool.lastTest;
       list.push({
-        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo),
+        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo), ...(tool.source === "custom" ? { custom: true as const } : {}),
         setup: place(href), fix: place(href), usedBy: [`Tasks in ${basename(repo)}`],
         activity: test === null ? NO_ACTIVITY : test.ok ? { okAt: test.at, error: null, errorAt: null, failing: false } : { okAt: null, error: test.problem, errorAt: test.at, failing: false },
         probe: async check => {
@@ -483,7 +486,7 @@ function targets(io: IntegrationIo): Target[] {
 // ---------------------------------------------------------------- the list
 
 function combine(target: Target, row: CheckRow | undefined): Integration {
-  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy };
+  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy, ...(target.custom ? { custom: true as const } : {}) };
   const checked = target.probe === null || row !== undefined;
   const lastSuccessAt = later(row?.okAt ?? null, target.activity.okAt);
   const checkError = row?.error ?? null, checkErrorAt = row?.errorAt ?? null;

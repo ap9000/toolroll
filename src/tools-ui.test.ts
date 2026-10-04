@@ -30,6 +30,8 @@ test("a problem that isn't one service's Connect stays at the top", () => {
 
 test("Figma's desktop app has its own Connect, with its one line of how", () => {
   const html = toolsHtml(view("figma-desktop"), "csrf", true);
-  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-tile connect-local" id="connect-figma-desktop" data-state="open" aria-label="Connect Figma (desktop app) to shop"><i aria-hidden="true">F</i><strong>Figma (desktop app)</strong><span>Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.</span></button>');
+  // Figma's desktop app wears Figma's own mark, in the same frame as every tile.
+  expect(html).toContain('<button name="service" value="figma-desktop" class="connect-tile connect-local" id="connect-figma-desktop" data-state="open" aria-label="Connect Figma (desktop app) to shop"><span class="brand-mark" data-connected="false" aria-hidden="true"><svg');
+  expect(html).toContain('</span><strong>Figma (desktop app)</strong><span>Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.</span></button>');
   expect(html).toContain('<button name="service" value="figma-desktop" class="connect-wanted">Connect Figma (desktop app) to shop</button>');
 });

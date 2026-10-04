@@ -1,20 +1,21 @@
 /** Settings, rebuilt with shadcn/ui. Every control posts to the same server
  * route as before (CSRF included); choices save the moment they change and
  * the server's confirmation arrives as a toast. */
-import { Activity, Bot, BookOpen, ChevronRight, Clock, Cpu, Database, Download, FileCheck, Folder, HardDrive, Hash, KeyRound, LineChart, Lock, MessageSquare, Monitor, Moon, Plug, RefreshCw, Send, ShieldCheck, Sparkles, Sun, Users, Workflow, Wrench } from "lucide-react";
+import { Activity, Bot, BookOpen, ChevronRight, Clock, Cpu, Database, Download, FileCheck, Folder, HardDrive, KeyRound, LineChart, Lock, Monitor, Moon, Plug, RefreshCw, ShieldCheck, Sparkles, Sun, Workflow, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { BrowserSettingsView } from "../../browser-workspace.js";
 import { accentNote, accentTokens, normalHex } from "../../accent-colors.js";
 import { digestTimes } from "../../digest-times.js";
+import { BrandIcon } from "../brand-mark.js";
 import {
   Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, CollapsibleContent, CollapsibleTrigger,
   Input, Label, RadioCard, RadioGroup, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Switch, cn, toast,
 } from "../components/ui/index.js";
 
 const TILE_ICONS: Record<string, ReactNode> = {
-  "/settings/lead": <Bot />, "/settings/flows": <Workflow />, "/settings/integrations": <Plug />, "/settings/models": <Cpu />, "/settings/skills": <Sparkles />, "/settings/tools": <Wrench />, "/settings/knowledge": <BookOpen />, "/settings/telegram": <Send />,
-  "/settings/slack": <Hash />, "/settings/discord": <MessageSquare />, "/settings/teams": <Users />, "/settings/learning": <LineChart />,
+  "/settings/lead": <Bot />, "/settings/flows": <Workflow />, "/settings/integrations": <Plug />, "/settings/models": <Cpu />, "/settings/skills": <Sparkles />, "/settings/tools": <Wrench />, "/settings/knowledge": <BookOpen />,
+  "/settings/learning": <LineChart />,
   "/settings/sign-in": <Lock />, "/settings/sessions": <KeyRound />, "/settings/project": <Folder />, "/settings/policy": <FileCheck />, "/settings/approval": <ShieldCheck />,
   "/settings/monitoring": <Activity />, "/settings/retention": <Clock />, "/settings/storage": <HardDrive />, "/settings/updates": <RefreshCw />, "/settings/backups": <Database />, "/settings/data": <Download />,
 };
@@ -463,8 +464,8 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
       {view.groups.map(group => <section key={group.title} aria-labelledby={`settings-${slug(group.title)}`} className="grid gap-2 phone:gap-1.5">
         <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>
         <div className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
-          {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&_svg]:size-[18px] [&_svg]:shrink-0 [&_svg]:text-primary">
-            {TILE_ICONS[tile.href]}
+          {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
+            {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
             <span className="grid min-w-0 gap-0.5">{tile.label}
               {tile.status && <span className="flex items-center gap-1.5 text-[13px] font-normal text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
         </div>
