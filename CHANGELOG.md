@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.31 — 2026-10-04
+
+- **Flow templates for your integrations.** Nine new templates put connected
+  tools to work: UI inspiration (Mobbin), Metrics digest and Fix the biggest
+  drop-off (PostHog), Outage to cause (Better Stack), Figma frame to pull
+  request, Worker errors to fix (Cloudflare), Failed deploy to fix (Vercel),
+  Linear issues to PRs, and Support to bug fix (Intercom). Error to fix now
+  reads stack traces through Sentry. Each card shows its tool's logo and
+  whether it's connected; one that isn't offers Connect first. Research steps
+  only read, and nothing merges.
+- **Templates show their steps.** The unlabeled boxes on each template are
+  now a named step strip, like "Find the drop-off → You choose → Build the fix
+  → Pull request → Sent to you", with your steps marked.
+
 ## 0.9.30 — 2026-10-04
 
 - **Long tasks can be planned.** 0.9.28 let task goals run to 8,000
