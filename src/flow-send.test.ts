@@ -414,3 +414,11 @@ async function tap(script: ReturnType<typeof scripted>, data: string, messageId:
   script.updates.push([{ update_id: next++, callback_query: { id: `cb-${next}`, data, from: { id: CHAT }, message: { message_id: messageId, chat: { id: CHAT, type: "private" }, text } } }]);
   await pass(script);
 }
+
+describe("an install without Slack, Discord or Teams", () => {
+  test("retiring a card's choices skips chat-app tables that were never created", () => {
+    const names = ["slack", "discord", "teams"].flatMap(app => ["flow_choice", "flow_note", "flow_prompt", "flow_action"].map(table => `${app}_${table}`));
+    for (const name of names) store.handle.prepare(`DROP TABLE IF EXISTS ${name}`).run();
+    expect(() => store.retireFlowChoices(1, 1, new Date("2026-10-03T12:00:00Z"))).not.toThrow();
+  });
+});

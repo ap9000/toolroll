@@ -22186,9 +22186,13 @@ export class Store {
     const stamp = now.toISOString();
     this.db.prepare("UPDATE telegram_flow_choice SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
     this.retireTelegramFlowVisit(card, entry, now);
+    // A chat app's flow tables exist only once that app's chat state created them; an install without it has none.
+    const names = ["slack", "discord", "teams"].flatMap(app => ["flow_choice", "flow_note", "flow_prompt", "flow_action"].map(table => `${app}_${table}`));
+    const present = new Set(this.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`).all(...names).map(row => String(row["name"])));
     for (const app of ["slack", "discord", "teams"])
       for (const table of ["flow_choice", "flow_note", "flow_prompt", "flow_action"])
-        this.db.prepare(`UPDATE ${app}_${table} SET consumed = ?${table === "flow_note" ? ", words = NULL" : ""} WHERE card = ? AND entry = ? AND consumed IS NULL`).run(stamp, card, entry);
+        if (present.has(`${app}_${table}`))
+          this.db.prepare(`UPDATE ${app}_${table} SET consumed = ?${table === "flow_note" ? ", words = NULL" : ""} WHERE card = ? AND entry = ? AND consumed IS NULL`).run(stamp, card, entry);
   }
 
   // ---- v93: a teammate's question on Telegram ------------------------------------------
