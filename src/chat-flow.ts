@@ -27,7 +27,9 @@
  */
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
-import { chooseFlowCard, flowChoiceAt, flowSendPaths, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend } from "./flow-send.js";
+import { chooseFlowCard, flowChoiceAt, flowSendPaths, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend, type FlowSendContent } from "./flow-send.js";
+import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
+import { renderReply } from "./reply-shape.js";
 import { deciderOf, replyTarget } from "./flows.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -79,12 +81,27 @@ function sendLinks(paths: { label: string; path: string }[]): Pick<ChatContent, 
   return { ...(paths[0] === undefined ? {} : { link: paths[0] }), ...(paths.length > 1 ? { also: paths.slice(1) } : {}) };
 }
 
+/** The most an item list's part carries here, as the app renders it — a Slack section (2,800), Discord's plain message
+ * content (2,000), a Teams message as long as Telegram's — less room for the line a tap adds under it. */
+const ITEMS_LIMIT: Record<ChatApp, number> = { slack: PART_CHARS - 300, discord: 2000 - 300, teams: 4096 - 300 };
+type ChatApp = "slack" | "discord" | "teams";
+
+/** After research (flow-items.ts): the message with each item numbered under the summary, its words cleaned as every
+ * other flow message's are, in as few parts as the app's limit allows (one, unless head, links and tail alone overflow). */
+function itemsText(content: FlowSendContent, subject: string, app: ChatApp | undefined): string[] | null {
+  if (app === undefined || content.items === undefined || content.items.length === 0) return null;
+  const message = cleanFlowMessage({ head: subject, summary: content.summary, items: content.items, tail: flowSendTail(content) }, chatFlowText);
+  return fitFlowMessage(message, ITEMS_LIMIT[app], shaped => renderReply(shaped, app).length);
+}
+
 /** A "Send to me" notice as chat parts: what was done, then its links; null when it isn't one. */
-export function flowSendParts(store: Store, notification: { dedupeKey: string; subject: string; body: string }): ChatContent[] | null {
+export function flowSendParts(store: Store, notification: { dedupeKey: string; subject: string; body: string }, app?: ChatApp): ChatContent[] | null {
   const visit = FLOW_SEND_KEY.exec(notification.dedupeKey);
   const kept = visit === null ? null : store.flowSend(Number(visit[1]), Number(visit[2]));
   const content = kept === null ? null : readFlowSend(kept.contentJson);
   if (content === null) return null;
+  const voiced = itemsText(content, notification.subject, app);
+  if (voiced !== null) return voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true } : { text, voice: true, ...sendLinks(flowSendPaths(content)) });
   const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
   return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, ...sendLinks(flowSendPaths(content)) });
 }
@@ -93,7 +110,7 @@ export function flowSendParts(store: Store, notification: { dedupeKey: string; s
  * A "flow-decision" notice as chat parts, or null when it isn't one (or the
  * card has already moved on, and there is nothing left to decide).
  */
-export function flowDecisionParts(store: Store, notification: { dedupeKey: string; subject: string; body: string; link: string | null }): ChatContent[] | null {
+export function flowDecisionParts(store: Store, notification: { dedupeKey: string; subject: string; body: string; link: string | null }, app?: ChatApp): ChatContent[] | null {
   const choose = FLOW_CHOOSE_KEY.exec(notification.dedupeKey);
   if (choose !== null) {
     const visit = flowChoiceAt(store, Number(choose[1]), Number(choose[2]));
@@ -101,6 +118,9 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
     const content = kept === null ? null : readFlowSend(kept.contentJson);
     if (visit === null || content === null) return null;
     const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label);
+    const voiced = itemsText(content, notification.subject, app);
+    if (voiced !== null) return voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true }
+      : { text, voice: true, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });
     const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
     return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece }
       : { text: piece, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });
@@ -134,7 +154,9 @@ const retire = (state: ChatState, card: number, entry: number, now: Date): void 
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
   const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
   const before = row === undefined ? { text: "" } : JSON.parse(String(row["payload"])) as ChatContent;
-  const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, PART_CHARS + 400), edit: event.ts, ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
+  // An item list (flow-items.ts) stays whole and keeps its bold titles and labelled links; only plain text is capped.
+  const content: ChatContent = { text: before.voice === true ? `${before.text}\n\n${line}` : `${before.text}\n\n${line}`.slice(0, PART_CHARS + 400), edit: event.ts, ...(before.voice === true ? { voice: true as const } : {}),
+    ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
   state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(JSON.stringify(content), part);
 }
 

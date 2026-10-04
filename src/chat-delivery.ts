@@ -1021,17 +1021,17 @@ export async function planChatNotifications(
           }
         } else if (notification.kind === "flow-decision") {
           // The draft as written, and Approve / Edit / Send back on its last part; a card that moved on is not news.
-          const parts = flowDecisionParts(store, notification);
+          const parts = flowDecisionParts(store, notification, state.channel);
           if (parts !== null) {
             state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
               ts: "", thread: "", payload: "{}", created: now.toISOString() });
             state.plan(id, parts, now);
           }
-        } else if (personal && flowSendParts(store, notification) !== null) {
+        } else if (personal && flowSendParts(store, notification, state.channel) !== null) {
           // A flow's "Send to me" (flow-send.ts): what was done, with its links as buttons.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
             ts: "", thread: "", payload: "{}", created: now.toISOString() });
-          state.plan(id, flowSendParts(store, notification)!, now);
+          state.plan(id, flowSendParts(store, notification, state.channel)!, now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A teammate's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,

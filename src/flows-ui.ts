@@ -11,6 +11,7 @@ import { projectToolsOf, secretsSetFor, toolStanding } from "./project-tools.js"
 import type { FlowCardRow, FlowRow, Store } from "./store.js";
 import { flowFingerprint } from "./flow-live.js";
 import { flowChoiceAt, readFlowSend, type FlowSendContent } from "./flow-send.js";
+import { itemCaption, whyLines } from "./flow-items.js";
 import { FLOW_FILE_MAX_BYTES, type FlowFile, type FlowImportPlan } from "./flow-share.js";
 import { googleConnected } from "./google-mail.js";
 import { mailboxReady } from "./mailbox.js";
@@ -138,7 +139,10 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     // On the card itself: where it came from (the card's title is right above), and only the links the panel doesn't already have.
     const own = new Set([`/flows/${flow.id}?card=${card.id}`, ...(task === null ? [] : [`/t/${encodeURIComponent(task)}`])]);
     const sentView = (content: FlowSendContent) => ({ title: content.from === undefined ? "What was done" : `From ${content.from}`, summary: content.summary,
-      links: content.links.map(one => ({ label: one.label, href: "url" in one ? one.url : one.path })).filter(one => !own.has(one.href)) });
+      links: content.links.map(one => ({ label: one.label, href: "url" in one ? one.url : one.path })).filter(one => !own.has(one.href)),
+      // After research: the same numbered items the message carried, each beside its screenshot.
+      ...(content.items === undefined ? {} : { items: content.items.map((item, index) => ({ number: index + 1, title: item.title, lines: whyLines(item.why), source: item.source, url: item.url,
+        image: item.shot === null || content.shots === null ? null : { src: `/r/${content.shots.run}/evidence/${item.shot}`, caption: itemCaption(index + 1, item) } })) }) });
     return {
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state, waiting: card.waiting,
       task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },

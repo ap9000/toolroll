@@ -19,6 +19,7 @@ import { imageDimensions, readVerifiedProofForRun, readVerifiedReport, RETENTION
 import { resultImageFileName, verifyResultImage } from "./chat-evidence.js";
 import { publicChatText } from "./chat-display.js";
 import { chatTitle } from "./chat-voice.js";
+import { itemCaption, readFlowItems } from "./flow-items.js";
 import { FLOW_SHOTS_KIND, RESULT_SHOTS_KIND, type Notification, type ResultScreenshots, type Store } from "./store.js";
 import type { ChatContent, ChatState } from "./chat-delivery-state.js";
 
@@ -47,6 +48,8 @@ export type ResultShot = {
   caption: string;
   /** Within Telegram's photo limits, so it shows an inline preview. */
   photo: boolean;
+  /** Captioned with its item's number (flow-items.ts): an album shows it on this photo, not only on the first. */
+  numbered?: true;
 };
 
 export type ResultShotsPlan =
@@ -82,6 +85,21 @@ function reportCaptions(store: Store, root: string, taskRef: number, run: number
   return captions;
 }
 
+/** A flow visit's item screenshots from this run, in item order, each with its numbered caption (flow-items.ts). */
+function itemCaptions(store: Store, dedupeKey: string | undefined, run: number): Map<number, string> {
+  const captions = new Map<number, string>();
+  const visit = /^flow-shots:([1-9][0-9]{0,14}):([1-9][0-9]{0,9})$/.exec(dedupeKey ?? "");
+  const kept = visit === null ? null : store.flowSend(Number(visit[1]), Number(visit[2]));
+  if (kept === null) return captions;
+  let content: { shots?: { run?: unknown } | null; items?: unknown };
+  try { content = JSON.parse(kept.contentJson) as typeof content; } catch { return captions; }
+  if (content.shots?.run !== run) return captions;
+  readFlowItems(content.items).forEach((item, index) => {
+    if (item.shot !== null && !captions.has(item.shot)) captions.set(item.shot, publicChatText(itemCaption(index + 1, item), 200).trim());
+  });
+  return captions;
+}
+
 function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
   const size = imageDimensions(bytes, format);
   if (size === null || size.width === 0 || size.height === 0) return false;
@@ -96,7 +114,7 @@ function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
  * no wait in between, or asks again.
  */
 export function resultShotsFor(store: Store, evidenceRoot: string | undefined, repos: readonly string[],
-  row: Pick<Notification, "kind" | "recipient" | "taskId" | "taskRef" | "run">, sent: ReadonlySet<number> = new Set()): ResultShotsPlan {
+  row: Pick<Notification, "kind" | "recipient" | "taskId" | "taskRef" | "run"> & { dedupeKey?: string }, sent: ReadonlySet<number> = new Set()): ResultShotsPlan {
   if (!isShotsKind(row.kind) || row.recipient === null || row.taskId === null || row.taskRef === null || row.run === null) return { kind: "none", why: "none" };
   // A flow's "Send to me" or "Person chooses" asked for them: up to four, whatever the person chose for results.
   const limit = row.kind === FLOW_SHOTS_KIND ? RESULT_SHOTS_MAX : resultShotLimit(store.notificationPreference(row.recipient).screenshots);
@@ -111,7 +129,13 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   const family = store.taskFamilyOf(row.taskId, repos, false);
   const latest = store.runsFor(row.taskRef).find(one => one.finishedAt !== null && ["builder", "repair", "scout"].includes(one.role));
   if (family?.current.id !== row.taskId || latest?.id !== row.run) return line("a newer result replaced this one");
-  const chosen = store.artifactsFor(row.run).filter(one => one.kind === "screenshot").slice(0, limit);
+  // After research, a flow's message numbers the report's items (flow-items.ts): their screenshots go first, in that
+  // order, each captioned with its item's number, so "2." here is item 2 in the text.
+  const items = row.kind === FLOW_SHOTS_KIND ? itemCaptions(store, row.dedupeKey, row.run) : new Map<number, string>();
+  const order = [...items.keys()];
+  const rank = (id: number) => { const at = order.indexOf(id); return at < 0 ? order.length : at; };
+  const chosen = store.artifactsFor(row.run).filter(one => one.kind === "screenshot")
+    .map((one, at) => ({ one, at })).sort((a, b) => rank(a.one.id) - rank(b.one.id) || a.at - b.at).map(({ one }) => one).slice(0, limit);
   if (chosen.length === 0) return { kind: "none", why: "none" };
   const captions = ownCaptions(store, evidenceRoot, row.run);
   const reported = latest.role === "scout" ? reportCaptions(store, evidenceRoot, row.taskRef, row.run) : new Map<number, string>();
@@ -124,11 +148,12 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
       return line(verified.problem);
     }
     const own = captions.get(SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1] ?? "") ?? reported.get(artifact.id) ?? null;
+    const item = items.get(artifact.id);
     shots.push({
       artifact: artifact.id, sha256: artifact.sha256, bytes: verified.bytes, format: verified.format,
       fileName: resultImageFileName(row.taskId, row.run, artifact.id, verified.format),
-      caption: index === 0 ? (own === null ? title : `${title} · ${own}`) : own ?? `${title} · screenshot ${index + 1}`,
-      photo: isPhoto(verified.bytes, verified.format),
+      caption: item !== undefined ? item : index === 0 ? (own === null ? title : `${title} · ${own}`) : own ?? `${title} · screenshot ${index + 1}`,
+      photo: isPhoto(verified.bytes, verified.format), ...(item === undefined ? {} : { numbered: true as const }),
     });
   }
   const remaining = shots.filter(one => !sent.has(one.artifact));

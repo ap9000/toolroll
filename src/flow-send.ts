@@ -16,7 +16,9 @@
 import { assignmentOf } from "./assignment.js";
 import { withActor } from "./actor.js";
 import { flowCardHref, flowDefinitionOf, revisionWithNote, type FlowDecision } from "./flow-engine.js";
+import { itemPlug, itemSource, readFlowItems, type FlowSendItem } from "./flow-items.js";
 import { notifyPeople } from "./flow-people.js";
+import { readVerifiedReport } from "./evidence.js";
 import { FLOW_END, replyTarget, type FlowDefinition, type FlowStage } from "./flows.js";
 import { FLOW_SHOTS_KIND, type FlowCardRow, type FlowRow, type Store } from "./store.js";
 
@@ -40,6 +42,8 @@ export type FlowSendContent = {
   links: FlowSendLink[];
   /** The build's result whose screenshots go with it, when it saved any. */
   shots: { taskId: string; run: number } | null;
+  /** After research: the report's items, numbered in this order in every message and screenshot caption (flow-items.ts). */
+  items?: FlowSendItem[];
   /** choose: the options as they were offered, and whether a reply is taken. */
   options?: { choice: number; label: string }[];
   reply?: boolean;
@@ -84,6 +88,18 @@ function reportShotsOf(store: Store, taskId: string): { taskId: string; run: num
   return run !== undefined && run.outcome === "built" && store.artifactsFor(run.id).some(one => one.kind === "screenshot") ? { taskId, run: run.id } : null;
 }
 
+/** A research task's report items, each with its source, how it plugs in, and its screenshot from that run. */
+function reportItemsOf(store: Store, taskId: string, shots: { run: number } | null, evidenceRoot: string | undefined): FlowSendItem[] {
+  const ref = store.lookupRef(taskId);
+  const view = ref === null || evidenceRoot === undefined ? null : readVerifiedReport(store, evidenceRoot, ref.id);
+  if (view === null || !view.ok) return [];
+  return view.report.items.map(item => {
+    const image = item.image === null ? undefined : view.report.images.find(one => one.file === item.image);
+    const shot = item.image === null || shots?.run !== view.run ? null : view.shots.find(one => one.file === item.image)?.artifactId ?? null;
+    return { title: plain(item.title), why: plain(item.why), url: item.url, source: itemSource(item.url), plug: plain(itemPlug(item.why, image?.caption ?? null)), shot };
+  });
+}
+
 /** What a visit sends its person, worked out from the card as it is now. */
 export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, evidenceRoot?: string): FlowSendContent {
   const before = stepBefore(store, definition, card);
@@ -110,10 +126,12 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
   if (report !== null) links.push({ label: "Report", path: `/t/${encodeURIComponent(report)}` });
   links.push({ label: "Card", path: flowCardHref(flow.id, card.id) });
   const options = stage.kind === "choose" ? (stage.options ?? []).map((one, choice) => ({ choice, label: one.label })) : undefined;
+  // After research, its own screenshots are what that step produced; otherwise the build's.
+  const shots = (report === null ? null : reportShotsOf(store, report)) ?? result?.shots ?? null;
+  const items = report === null ? [] : reportItemsOf(store, report, shots?.taskId === report ? shots : null, evidenceRoot);
   return {
     title: cut(plain(before === null ? card.title : `${card.title} · ${before.title}`), 200), ...(before === null ? {} : { from: before.title }),
-    // After research, its own screenshots are what that step produced; otherwise the build's.
-    summary: plain(lines.join("\n\n")), links, shots: (report === null ? null : reportShotsOf(store, report)) ?? result?.shots ?? null,
+    summary: plain(lines.join("\n\n")), links, shots, ...(items.length === 0 ? {} : { items }),
     ...(options === undefined ? {} : { options, reply: replyTarget(stage) !== null }),
   };
 }
@@ -122,7 +140,11 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
 export function readFlowSend(json: string): FlowSendContent | null {
   try {
     const raw = JSON.parse(json) as FlowSendContent;
-    return typeof raw.title === "string" && typeof raw.summary === "string" && Array.isArray(raw.links) ? raw : null;
+    if (typeof raw.title !== "string" || typeof raw.summary !== "string" || !Array.isArray(raw.links)) return null;
+    if (raw.items === undefined) return raw;
+    const items = readFlowItems(raw.items);
+    const { items: _, ...rest } = raw;
+    return items.length === 0 ? rest : { ...rest, items };
   } catch { return null; }
 }
 
@@ -182,8 +204,13 @@ export function chooseStep(store: Store, flow: FlowRow, definition: FlowDefiniti
 
 /** The words above a choice's buttons: what was done, then what to do. */
 export function flowChooseBody(content: FlowSendContent): string {
+  return [content.summary, ...flowSendTail(content)].join("\n\n");
+}
+
+/** What a sent visit's message ends with, after its summary (and items): its pull request, and for a choice what to do. */
+export function flowSendTail(content: FlowSendContent): string[] {
   const pull = content.links.find((one): one is { label: string; url: string } => "url" in one);
-  return [content.summary, ...(pull === undefined ? [] : [`${pull.label}: ${pull.url}`]), content.reply === true ? `Choose one. ${REPLY_ASK}` : "Choose one."].join("\n\n");
+  return [...(pull === undefined ? [] : [`${pull.label}: ${pull.url}`]), ...(content.options === undefined ? [] : [content.reply === true ? `Choose one. ${REPLY_ASK}` : "Choose one."])];
 }
 
 export type FlowChoiceVisit = { card: FlowCardRow; flow: FlowRow; stage: FlowStage; definition: FlowDefinition; person: string };
