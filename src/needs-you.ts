@@ -12,7 +12,7 @@ export type NeedKey =
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
   | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "earlier-version" | "other";
 /** What the work waits for when no person can act. */
-export type WaitKey = "build-stopping" | "other-computer" | "card-reply" | "card-time" | "card-ci";
+export type WaitKey = "build-stopping" | "build-finishing" | "other-computer" | "card-reply" | "card-time" | "card-ci";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
 export type NeedActionCode =
@@ -104,6 +104,7 @@ export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
 };
 
 export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> = {
+  "build-finishing": () => "Finishing up; this clears on its own.",
   "build-stopping": context => `Waiting for ${build(context)} to stop. Nothing is needed from you.`,
   "other-computer": context => `Waiting for the computer that ran ${build(context)} to confirm it stopped.`,
   "card-reply": () => "Waiting for a reply.",
@@ -134,9 +135,10 @@ export function waitSentence(key: WaitKey | undefined, reason: string | null, co
 /** A finished run Toolroll can't prove stopped (store.stopQuiescenceFact):
  * a person can confirm it only when nothing of it may still be running.
  * `unknown`: Toolroll can't check, so the person confirms they checked. */
-export function processNeedOf(fact: { run: number; kind: "open" | "alive" | "elsewhere" | "unprovable" | "unknown" } | null):
+export function processNeedOf(fact: { run: number; kind: "open" | "alive" | "elsewhere" | "unprovable" | "unknown" | "settling" } | null):
   { need: "confirm-stopped" | "check-stopped"; build: number } | { wait: WaitKey; build: number } | null {
   if (fact === null) return null;
+  if (fact.kind === "settling") return { wait: "build-finishing", build: fact.run };
   if (fact.kind === "unprovable") return { need: "confirm-stopped", build: fact.run };
   if (fact.kind === "unknown") return { need: "check-stopped", build: fact.run };
   return { wait: fact.kind === "elsewhere" ? "other-computer" : "build-stopping", build: fact.run };

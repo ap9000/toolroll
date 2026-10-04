@@ -73,7 +73,7 @@ describe("every reason", () => {
       expect(status.tone, key).toBe("neutral");
       expect(status.need, key).toBeNull();
       expect(hasInternalWords(status.sentence), key).toBe(false);
-      expect(status.sentence, key).toMatch(/^Waiting /);
+      expect(status.sentence, key).toMatch(key === "build-finishing" ? /^Finishing up; this clears on its own\.$/ : /^Waiting /);
     }
   });
 
@@ -101,6 +101,7 @@ describe("every reason", () => {
     expect(processNeedOf({ run: 9, kind: "unprovable" })).toEqual({ need: "confirm-stopped", build: 9 });
     expect(processNeedOf({ run: 9, kind: "alive" })).toEqual({ wait: "build-stopping", build: 9 });
     expect(processNeedOf({ run: 9, kind: "open" })).toEqual({ wait: "build-stopping", build: 9 });
+    expect(processNeedOf({ run: 9, kind: "settling" })).toEqual({ wait: "build-finishing", build: 9 });
     expect(processNeedOf({ run: 9, kind: "elsewhere" })).toEqual({ wait: "other-computer", build: 9 });
     // Toolroll can't look at all: the person checks; it never says nothing is running.
     expect(processNeedOf({ run: 9, kind: "unknown" })).toEqual({ need: "check-stopped", build: 9 });
@@ -258,6 +259,47 @@ describe("Confirm it stopped, end to end", () => {
     writeFileSync(join(store.getRun(run)!.worktree!, MARKER), `${process.pid} builder-1 group\n`);
     expect(store.stopQuiescenceFact(run)?.kind).toBe("alive");
     expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "test" }, NOW)).toMatchObject({ ok: false, reason: "alive" });
+  });
+
+  test.each([false, true])("an exited witness permits completion without changing a passed check (group=%s)", async group => {
+    const id = group ? "reused-group" : "reused-process", run = built(id, "Verify the release candidate");
+    // This live PID represents an unrelated process. Its historical witness
+    // exited before the run ended; no birth lookup or permission is needed.
+    witness(run, process.pid);
+    store.raw().prepare("UPDATE run_process SET exited_at=?, process_group=? WHERE run=?").run(NOW.toISOString(), group ? 1 : 0, run);
+    store.recordRunCheck(run, { status: "passed", exitCode: 0, suites: [] }, NOW);
+    if (!group) expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "The check ended." }, NOW)).toMatchObject({ ok: true });
+    expect(store.stopQuiescenceFact(run)).toBeNull();
+    const read = assignment(id);
+    expect(read.state).toBe("ready-to-check");
+    expect(read.primaryAction?.code).not.toBe("confirm-stopped");
+    const checks = store.raw().prepare("SELECT * FROM run_check WHERE run=?").all(run);
+    const completed = await post(`/t/${id}/complete`, { csrf: csrfOf(await page(`/t/${id}`)), run: String(run), receipt: read.receipt!.digest, accept: "1" });
+    expect(completed.status).toBe(303);
+    expect(assignment(id).state).toBe("complete");
+    expect(store.raw().prepare("SELECT * FROM run_check WHERE run=?").all(run)).toEqual(checks);
+  });
+
+  test("a self-clearing gap reads Finishing up across task, result, list and catch-up without confirmation", async () => {
+    const id = "finishing-check", run = built(id, "Verify the prepared release");
+    witness(run, process.pid);
+    store.raw().prepare("UPDATE run_process SET exited_at=? WHERE run=?").run(NOW.toISOString(), run);
+    witness(run, null);
+    const sentence = "Finishing up; this clears on its own.";
+    expect(store.stopQuiescenceFact(run)?.kind).toBe("settling");
+    expect(assignmentPresentationOf(assignment(id)).taskStatus.sentence).toBe(sentence);
+    expect(listed("needs-you").items.some(one => one.rootId === id)).toBe(false);
+    expect(listed().items.find(one => one.rootId === id)?.status.detail).toBe(sentence);
+    const task = workspaceOf(await page(`/t/${id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
+    expect(task.status?.status.sentence).toBe(sentence);
+    expect(task.confirmStopped).toBeNull();
+    const result = workspaceOf(await page(`/review?result=${id}&run=${run}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+    expect(result.selected!.panel!.status?.sentence).toBe(sentence);
+    expect(result.selected!.panel!.need?.confirm).toBeFalsy();
+    // Catch-up lists human actions; this wait must never become a request.
+    expect(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root))).not.toContain(`/t/${id}#confirm-stopped`);
+    expect(store.settleUnspawnedWitnesses(NOW, run)).toBe(1);
+    expect(assignment(id).state).toBe("ready-to-check");
   });
 
   test("Waiting rows are not counted as Needs you, and settled custody leaves it", () => {

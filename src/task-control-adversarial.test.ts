@@ -372,20 +372,24 @@ describe("a failed or interrupted spawn never leaves a run unprovable", () => {
     expect(f.store.stopQuiescenceProblem(f.id)).toBeNull();
   });
 
-  test("c2: reconcile settles a pid-less witness once the run finished and its process groups are gone, with a ledger entry", async () => {
+  test("c2: run end settles a pid-less witness once its process groups are gone, with a ledger entry", async () => {
     const f = fixture();
     f.store.recordRunProcess(f.id, await gone(), new Date());
     const orphan = f.store.reserveRunProcess(f.id, new Date());
     // An open run never settles.
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
     f.store.finishRun(f.id, { outcome: "built", now: new Date() });
-    expect(f.store.stopQuiescenceProblem(f.id)).toContain("incomplete spawn witness");
-    expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(1);
     expect(witnesses(f).every(row => typeof row.exited_at === "string")).toBe(true);
     expect(f.store.stopQuiescenceProblem(f.id)).toBeNull();
     const entry = f.store.actionLedger({ repos: null }).find(one => one.action === "process witness settled");
     expect(entry).toMatchObject({ runId: f.id, taskId: "draft", outcome: "never started", detail: expect.stringContaining(`witness ${orphan}`) });
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
+    // An older finished run missed that immediate pass. Status and the
+    // reconciliation use the same proof, without asking a person to act.
+    f.store.raw().prepare("UPDATE run_process SET exited_at=NULL WHERE id=?").run(orphan);
+    expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("settling");
+    expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(1);
+    expect(f.store.stopQuiescenceProblem(f.id)).toBeNull();
   });
 
   test("c2: reconcile leaves a pid-less witness while a process group of the run lives, or when it is the run's only witness", async () => {
@@ -395,10 +399,13 @@ describe("a failed or interrupted spawn never leaves a run unprovable", () => {
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
     const child = await live();
     f.store.recordRunProcess(f.id, child.pid!, new Date());
-    // Even a recorded exit is rechecked against the live group.
+    expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
+    expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("alive");
+    // Automatic settlement keeps its group probe, even for a recorded exit.
+    // Quiescence trusts that exit but retains the remaining unknown witness.
     f.store.raw().prepare("UPDATE run_process SET exited_at=? WHERE run=? AND pid=?").run(new Date().toISOString(), f.id, child.pid!);
     expect(f.store.settleUnspawnedWitnesses(new Date())).toBe(0);
-    expect(f.store.stopQuiescenceProblem(f.id)).toContain("incomplete spawn witness");
+    expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("unprovable");
   });
 
   test("c3: run settle records the approver's reason and refuses while a process of the run is alive", async () => {

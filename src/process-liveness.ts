@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-type HistoricalWitness = { observedAt: unknown; finishedAt: unknown };
+type HistoricalWitness = { observedAt: unknown; finishedAt: unknown; exitedAt?: unknown };
 
 /** Only the exact UTC millisecond format stored by the writer is evidence. */
 function timestamp(value: unknown): number | null {
@@ -40,6 +40,10 @@ function newerMacProcess(pid: number, witness: HistoricalWitness | undefined): b
  * unknown stays occupied. This concerns the historical identity, not whether
  * the numeric PID/PGID is currently populated by unrelated processes. */
 export function processMayBeAlive(pid: number, group: boolean, witness?: HistoricalWitness): boolean {
+  // A recorded single-process exit is final: this number can now belong to
+  // someone else, even before the run ends. A leader's exit proves nothing
+  // about its group's remaining members, so groups keep the OS probe.
+  if (!group && witness?.exitedAt != null) return false;
   if (!Number.isSafeInteger(pid) || pid <= 0) return true;
   if (group && process.platform !== "win32") {
     let absent = false;
