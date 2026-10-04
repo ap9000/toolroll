@@ -322,7 +322,7 @@ export type BrowserFailure = { line: string; evidence: string | null; suggestion
 export type BrowserRunChecks = { action: string; level: "quick" | "full"; returnTo: string };
 /** One zone on a flow's canvas: its step, where it leads, and where it sits. */
 export type BrowserFlowStage = {
-  id: string; title: string; kind: "inbox" | "task" | "report" | "approval" | "check" | "pull-request" | "update" | "notify" | "sort" | "draft" | "request" | "email" | "tool" | "wait" | "teammate" | "done";
+  id: string; title: string; kind: "inbox" | "task" | "report" | "approval" | "check" | "pull-request" | "update" | "notify" | "sort" | "draft" | "request" | "email" | "tool" | "wait" | "teammate" | "send" | "choose" | "done";
   zone: { x: number; y: number; w: number; h: number; color: string };
   instructions: string | null; planning: "auto" | "required" | "skip" | null; approver: string | null; message: string | null;
   /** An approval zone the flow's owner decides. */
@@ -345,6 +345,10 @@ export type BrowserFlowStage = {
   teammate?: string | undefined;
   /** v96: a teammate zone sends what the teammate writes back to whoever asked. */
   reply?: boolean | undefined;
+  /** A "Person chooses" zone's buttons: each one's words and the zone it leads to ("end" ignores the card). */
+  options?: { label: string; to: string }[] | undefined;
+  /** A Build zone in another project: its path. */
+  repo?: string | undefined;
   next: string | null; onFail: string | null;
 };
 
@@ -373,6 +377,10 @@ export type BrowserFlowCard = {
     call?: { why: string; rule: string } | null } | null;
   /** v92: what the teammate said when it handed this decision to a person. */
   handoff?: { from: string; note: string } | null;
+  /** Waiting at a "Person chooses" zone: what was sent, its options and whether the viewer is the one who chooses. */
+  choose?: { entry: number; title: string; summary: string; links: { label: string; href: string }[]; person: string; mine: boolean; options: { choice: number; label: string }[]; reply: boolean } | null;
+  /** What a "Send to me" (or an earlier choice) last sent the card's person. */
+  sent?: { title: string; summary: string; links: { label: string; href: string }[]; person: string; at: string } | null;
   /** v94: every tool call teammates made or asked to make on this card, oldest first: the receipts. */
   calls?: { id: number; who: string; words: string; state: string; outcome: string; why: string; result: string | null; at: string;
     /** v97: the teammate's id and the action that undoes this call, when a person can press Undo. */
@@ -434,6 +442,8 @@ export type BrowserFlowView = {
   live: string | null;
   canEdit: boolean;
   approvers: string[];
+  /** The projects a Build zone may work in: the flow's own first, then others the viewer can reach. */
+  projects?: { path: string; name: string }[];
   kinds: { kind: BrowserFlowStage["kind"]; label: string; about: string }[];
   colors: string[];
 };

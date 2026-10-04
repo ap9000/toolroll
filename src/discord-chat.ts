@@ -403,11 +403,11 @@ export async function deliverDiscordPart(
     } else if (!content.image)
       buttons = [
         // A flow decision (v88): Approve / Edit / Send back, then the link.
-        ...(content.flow
+        ...(content.flow || content.choose || content.note
           ? chatFlowButtons(state, row.id, now).map((one) => ({
               type: 2,
               style: one.action === "approve" ? 3 : 2,
-              label: one.label,
+              label: one.label.slice(0, 80),
               custom_id: `so_${one.token}`,
             }))
           : []),

@@ -85,6 +85,12 @@ export type Invocation = {
    * report rides the terminal result event instead of a file plan mode
    * would refuse to write. Ignored by providers without `--json-schema`. */
   jsonSchema?: Readonly<Record<string, unknown>>;
+  /** Claude tools allowed without asking, for a `dontAsk` launch: the scout's
+   * research and screenshot tools, and nothing that edits or runs commands. */
+  allowedTools?: readonly string[];
+  /** More MCP servers for this launch only, beside the project's own (the
+   * scout's headless browser). Claude-only; ignored for a review. */
+  extraMcpServers?: Readonly<Record<string, unknown>>;
 };
 
 export type ProviderRunner = (
@@ -368,7 +374,10 @@ const claudeArgv = (invocation: Invocation): string[] => [
         // Headless (run 2085): a wakeup, cron job or monitor needs a later
         // turn that a -p process never gets. Denied at the harness too.
         "--disallowedTools", HEADLESS_DISALLOWED_TOOLS.join(","),
-        ...(invocation.toolArgv ?? []), ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : []),
+        ...(invocation.allowedTools === undefined || invocation.allowedTools.length === 0 ? [] : ["--allowedTools", invocation.allowedTools.join(",")]),
+        ...(invocation.toolArgv ?? []),
+        ...(invocation.extraMcpServers === undefined ? [] : ["--mcp-config", JSON.stringify({ mcpServers: invocation.extraMcpServers })]),
+        ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : []),
         ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
 

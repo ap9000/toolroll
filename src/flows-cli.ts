@@ -10,7 +10,7 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { envelopeJson } from './envelope.js';
-import { addCardToFlow, advanceFlows, flowDefinitionOf } from './flow-engine.js';
+import { addCardToFlow, advanceFlows, crossProjectProblem, flowDefinitionOf } from './flow-engine.js';
 import { saveScript } from './flow-scripts.js';
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike } from './flow-share.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
@@ -197,6 +197,8 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     }
     const flowName = name || template?.label || '';
     if (flowName === '') return fail('usage', 'Name the flow with --name.', EXIT.usage);
+    const elsewhere = crossProjectProblem(store, definition, { repo: project, owner: who });
+    if (elsewhere !== null) return refuse(project, 'invalid-steps', elsewhere);
     const terms = flowTerms(definition, null);
     if (template?.trigger !== undefined) {
       const draft: FlowRow = { id: 0, repo: project, name: flowName, definitionJson: JSON.stringify(definition), revision: 1, state: 'active', createdBy: who, createdAt: now.toISOString(), updatedBy: who, updatedAt: now.toISOString(), owner: who };
@@ -315,6 +317,8 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     const name = (text('name') ?? flow.name).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || flow.name;
     const redrawn = flowDigest(next) !== flowDigest(definition);
     if (!redrawn && name === flow.name) return fail('no-change', 'That\'s the flow as it is now.');
+    const elsewhere = crossProjectProblem(store, next, flow, who);
+    if (elsewhere !== null) return refuse(flow.repo, 'invalid-steps', elsewhere);
     if (!flags.has('yes')) return preview(flow.repo, `Change the ${flow.name} flow`, [...(name === flow.name ? [] : [`Renames it to ${name}.`]), ...(redrawn ? flowTerms(next, definition) : [])], { flowId: flow.id, revision: flow.revision, definition: next });
     if (!store.saveFlow(flow.id, { name, definitionJson: JSON.stringify(next), sawRevision: flow.revision, by: who }, now)) return refuse(flow.repo, 'stale', 'Someone else changed this flow. Look again, then make yours.');
     record(flow.repo, 'accepted', `flow #${flow.id}`);
@@ -385,7 +389,7 @@ function listed(store: Store, flow: FlowRow): Listed {
   const cards = store.flowCards(flow.id, false);
   return { id: flow.id, name: flow.name, repo: flow.repo, project: projectName(flow.repo), zones: definition?.stages.map(one => one.title) ?? [],
     triggers: store.flowTriggers(flow.id).filter(one => one.state === 'active').length, cardsWaiting: cards.length,
-    needDecision: cards.filter(card => definition?.stages.find(one => one.id === card.stage)?.kind === 'approval').length };
+    needDecision: cards.filter(card => ['approval', 'choose'].includes(definition?.stages.find(one => one.id === card.stage)?.kind ?? '')).length };
 }
 
 /** One zone and every path out of it, by zone id. */
@@ -400,6 +404,8 @@ function zoneOf(stage: FlowStage, flow: FlowRow) {
     ...(stage.script === null ? {} : { script: stage.script }),
     ...(stage.merge === undefined ? {} : { merge: stage.merge }),
     ...(stage.teammate === undefined ? {} : { teammate: stage.teammate }),
+    ...(stage.options === undefined ? {} : { options: stage.options.map(one => ({ label: one.label, to: one.to })) }),
+    ...(stage.repo === undefined ? {} : { repo: stage.repo }),
   };
 }
 
@@ -433,7 +439,7 @@ function showLines(flow: ReturnType<typeof describeFlow>): string[] {
       ...('answers' in zone && zone.answers !== undefined ? zone.answers.map(one => `     ${one.answer} → ${title(one.to)}`) : []),
       ...('routes' in zone && zone.routes !== undefined ? zone.routes.map(one => `     ${one.answer} → ${title(one.to)}`) : []),
       ...(zone.next === null ? [] : [`     next → ${title(zone.next)}`]),
-      ...(zone.ifFails === null ? [] : [`     ${zone.kind === 'approval' ? 'sent back' : zone.kind === 'sort' ? 'not sure' : zone.kind === 'wait' ? 'no reply' : 'if it fails'} → ${title(zone.ifFails)}`]),
+      ...(zone.ifFails === null ? [] : [`     ${zone.kind === 'approval' ? 'sent back' : zone.kind === 'sort' ? 'not sure' : zone.kind === 'wait' ? 'no reply' : zone.kind === 'choose' ? 'a reply' : 'if it fails'} → ${title(zone.ifFails)}`]),
     ]),
     '', 'Triggers',
     ...(flow.triggers.length === 0 ? ['  none — add one with toolroll flows trigger add'] : flow.triggers.map(one => `  #${one.id} ${one.state === 'active' ? '' : `(${one.state}) `}${one.words} → ${title(one.zone)}${one.lastOutcome === null ? '' : ` · last: ${one.lastOutcome}`}`)),

@@ -9,13 +9,14 @@ import { assignmentOf } from "./assignment.js";
 import { filerFor } from "./approval-policy.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { deciderOf, durationWords, fillFlowText, fitFlowText, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
-import { reportSummaryFor } from "./report-summary.js";
+import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
-import { scanForSecrets } from "./evidence.js";
+import { readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { cardFollowers, notifyPeople } from "./flow-people.js";
 import { keptDraft } from "./flow-draft.js";
+import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, teammateLabel } from "./teammates.js";
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
 
@@ -41,6 +42,7 @@ function fill(template: string, card: FlowCardRow): string {
 }
 
 const titleIn = (definition: FlowDefinition, id: string) => definition.stages.find(one => one.id === id)?.title ?? id;
+const flowDefinitionStage = (definition: FlowDefinition, id: string) => definition.stages.find(one => one.id === id);
 
 /** A teammate's name as its soul file gives it (its handle when the file can't be read). */
 function teammateName(mate: TeammateRow): string {
@@ -102,7 +104,7 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
   if (stage.limit !== undefined && stage.kind !== "wait" && stage.kind !== "done") {
     const entered = Date.parse(store.flowCardEnteredAt(card.id) ?? card.updatedAt);
     if (now.getTime() >= entered + stage.limit.minutes * 60_000) {
-      const decider = stage.kind === "approval" ? deciderOf(stage, flow) : null;
+      const decider = stage.kind === "approval" ? deciderOf(stage, flow) : stage.kind === "choose" ? flowPersonOf(card, flow) : null;
       const to = stage.limit.to;
       notifyPeople(store, card, [decider ?? card.owner ?? flow.owner], null, { key: `limit:${card.entry}`, attention: true,
         subject: `“${card.title}” has waited ${durationWords(stage.limit.minutes)} in ${stage.title}`,
@@ -194,9 +196,18 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
       }
       return;
     }
+    case "send":
+      // What the step before produced, to the card's person in each chat app they paired and on the card; then on.
+      sendStep(store, flow, definition, stage, card, now, options.evidenceRoot);
+      onward("ok");
+      return;
+    case "choose":
+      // The same, with the zone's options as buttons: the card waits for the person's choice (chooseFlowCard).
+      chooseStep(store, flow, definition, stage, card, now, options.evidenceRoot);
+      return;
     case "task":
     case "report":
-      workStage(store, flow, stage, card, now, options, outcome, onward);
+      workStage(store, flow, definition, stage, card, now, options, outcome, onward);
       return;
     case "check":
     case "pull-request":
@@ -211,7 +222,9 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
   }
 }
 
-function workStage(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCardRow, now: Date, options: { evidenceRoot?: string }, outcome: FlowAdvance, onward: (result: "ok" | "fail", note?: string | null, task?: string | null) => void): void {
+function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, options: { evidenceRoot?: string }, outcome: FlowAdvance, onward: (result: "ok" | "fail", note?: string | null, task?: string | null) => void): void {
+  // A build may work in another project (its zone's repo), one the flow's owner may file in; research stays in the flow's.
+  const repo = stage.kind === "task" && stage.repo !== undefined ? stage.repo : flow.repo;
   if (card.task === null) {
     const report = stage.kind === "report";
     // Waiting cards try again every pass, so a cause that's fixed (a shorter zone, a freed backlog) files the work then.
@@ -220,6 +233,7 @@ function workStage(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCard
     // The agent is given them in full (flowGoalCuts).
     const goal = fitFlowText(flowWorkTemplate(stage.instructions ?? card.title, card), card);
     if (goal === null) { wait(`${stage.title}'s instructions are too long for a task. Open the flow and shorten them.`); return; }
+    if (repo !== flow.repo && !store.accountCanAccess(flow.owner, repo)) { wait(`${flow.owner}, who owns this flow, can't file work in ${repo}. Choose another project for ${stage.title}, or give them access.`); return; }
     // Filed exactly once however many passes advance this project: the card is claimed (still this entry, in this zone,
     // with no task) in the same transaction that files its task, so another pass finds it claimed and leaves it.
     const filed = store.transact(() => {
@@ -227,13 +241,13 @@ function workStage(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCard
       if (fresh === null || fresh.state !== "active" || fresh.entry !== card.entry || fresh.stage !== stage.id || fresh.task !== null) return null;
       const made = fileTaskProposal(store, {
         title: (report ? `${stage.title}: ${card.title}` : card.title).slice(0, 200),
-        repo: flow.repo,
+        repo,
         goal,
         filedVia: `flow:${flow.id}`, filedBy: filerFor(card.createdBy), // who made the card asked for the work (an owner can be reassigned by anyone)
         deliverable: report ? "report" : "branch",
         planning: report ? "skip" : stage.planning ?? "auto",
         acceptance: report ? ACCEPTANCE.report : ACCEPTANCE.task,
-        admittedRepos: [flow.repo],
+        admittedRepos: [repo],
       }, now);
       if (made.ok) store.updateFlowCard(card.id, { task: made.id, ...(report || fresh.primaryTask !== null ? {} : { primaryTask: made.id }), waiting: "Filed as a task" }, now);
       return made;
@@ -244,14 +258,14 @@ function workStage(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCard
     return;
   }
   // A send back may have made a revision: follow the task's current version.
-  const family = store.taskFamilyOf(card.task, [flow.repo], false);
+  const family = store.taskFamilyOf(card.task, [repo], false);
   const current = family?.current.id ?? card.task;
   const task = store.getTask(current);
   if (task === null) { store.updateFlowCard(card.id, { waiting: "Its task is gone. Move the card to try again." }, now); return; }
   if (task.state === "done") {
     // A build whose project checks failed is done but not good: it takes the failure path, like a failed build.
     if (stage.kind === "task") {
-      const checks = assignmentOf(store, current, now, { principal: "operator", repos: [flow.repo] }, options.evidenceRoot)?.receipt?.checks ?? null;
+      const checks = assignmentOf(store, current, now, { principal: "operator", repos: [repo] }, options.evidenceRoot)?.receipt?.checks ?? null;
       if (checks?.status === "failed") {
         const said = `The checks failed on its result: ${checks.detail}`;
         store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: `${said} (task ${current})` }, primaryTask: current }, now);
@@ -265,11 +279,21 @@ function workStage(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCard
       const ref = store.lookupRef(current);
       const summary = ref === null ? null : reportSummaryFor(store, options.evidenceRoot, ref.id);
       outputs[stage.id] = summary !== null && "summary" in summary ? summary.summary.slice(0, 6000) : "The report is ready on its task.";
+      // {{stage.<id>.items}} and {{stage.<id>.report}}: what it found and the whole report, for the zones after it.
+      // A visit's report replaces the last visit's, so nothing stale is left behind.
+      const view = ref === null || options.evidenceRoot === undefined ? null : readVerifiedReport(store, options.evidenceRoot, ref.id);
+      const found = view?.ok === true ? reportFillIns(view.report) : { items: "", report: "" };
+      for (const [part, text] of Object.entries(found)) {
+        if (text === "") delete outputs[`${stage.id}.${part}`];
+        else outputs[`${stage.id}.${part}`] = text;
+      }
     } else {
       outputs[stage.id] = `Result ready on task ${current}.`;
     }
     store.updateFlowCard(card.id, { outputs, ...(stage.kind === "task" ? { primaryTask: current } : {}), waiting: null }, now);
-    onward("ok");
+    // A "Send to me" or "Person chooses" zone next reads what this task produced: the task goes with the card there.
+    const following = stage.next === null ? undefined : flowDefinitionStage(definition, stage.next);
+    onward("ok", undefined, following?.kind === "send" || following?.kind === "choose" ? current : undefined);
     return;
   }
   if (task.state === "failed" || task.state === "cancelled") {
@@ -303,14 +327,24 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
   const labels: Record<string, string> = { "card.title": "The card's title", "card.description": "The card's description", note: "The note it was sent back with" };
   const cuts: { label: string; text: string }[] = [];
   const seen = new Set<string>();
-  for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+))\s*\}\}/g)) {
+  for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+)(?:\.(items|report))?)\s*\}\}/g)) {
     if (seen.has(match[1]!)) continue;
     seen.add(match[1]!);
     const text = fillFlowText(`{{${match[1]}}}`, card);
     if (text === "" || goal.includes(text)) continue;
-    cuts.push({ label: labels[match[1]!] ?? `What ${titleIn(definition, match[2]!)} found`, text: text.slice(0, 50_000) });
+    const part = match[3] === "items" ? "listed" : match[3] === "report" ? "reported in full" : "found";
+    cuts.push({ label: labels[match[1]!] ?? `What ${titleIn(definition, match[2]!)} ${part}`, text: text.slice(0, 50_000) });
   }
   return cuts;
+}
+
+/** Why a flow can't be saved as drawn: a build zone in a project its owner, or whoever saves it, may not file work in; null when none. */
+export function crossProjectProblem(store: Store, definition: FlowDefinition, flow: { repo: string; owner: string }, editor: string = flow.owner): string | null {
+  const elsewhere = definition.stages.filter((one): one is FlowStage & { repo: string } => one.kind === "task" && one.repo !== undefined && one.repo !== flow.repo);
+  const owners = elsewhere.find(one => !store.accountCanAccess(flow.owner, one.repo));
+  if (owners !== undefined) return `Zone ${owners.title}: ${flow.owner}, who owns this flow, can't file work in that project.`;
+  const editors = elsewhere.find(one => !store.accountCanAccess(editor, one.repo));
+  return editors === undefined ? null : `Zone ${editors.title}: you can't file work in that project, so you can't point a build there.`;
 }
 
 export type FlowAct = { ok: true; said: string; card: number } | { ok: false; message: string };
@@ -370,6 +404,23 @@ export function draftFor(definition: FlowDefinition, stage: FlowStage): FlowStag
     ?? definition.stages.find(one => one.kind === "teammate" && (one.next === stage.id || (one.routes ?? []).some(route => route.to === stage.id))) ?? null;
 }
 
+/** Back to a build zone with a finished result: a revision of that same work, carrying the note; null when it isn't one. */
+export function revisionWithNote(store: Store, card: FlowCardRow, target: FlowStage | undefined, note: string, actor: string, repos: readonly string[], evidenceRoot: string | undefined, now: Date): string | null {
+  if (target?.kind !== "task" || card.primaryTask === null || evidenceRoot === undefined) return null;
+  // The build's own project (a zone may build in another) must be one the person can reach.
+  const repo = store.lookupRef(card.primaryTask)?.repo ?? null;
+  if (repo !== null && !repos.includes(repo)) return null;
+  const snapshot = assignmentOf(store, card.primaryTask, now, { principal: "operator", repos });
+  const runId = snapshot?.receipt?.runId;
+  const runTask = runId === undefined ? null : store.externalIdFor(store.getRun(runId)?.taskRef ?? -1);
+  if (runId === undefined || runTask === null) return null;
+  const revised = requestResultChanges(store, evidenceRoot, {
+    run: runId, source: revisionSourceOf(store.getScope(runTask)?.digest ?? null), actor, repos,
+    batch: "", note, path: "", line: "", request: `flow-${card.id}-${card.entry}`, allowMode: true,
+  }, now);
+  return revised.ok ? revised.id : null;
+}
+
 export function decideFlowCard(store: Store, input: { card: number; decision: "approve" | "send-back"; note: string | null; actor: string; repos: readonly string[]; evidenceRoot?: string;
   /** The draft as the person left it: approving sends this version on. */
   draft?: string | null;
@@ -407,20 +458,7 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   if (stage.onFail === null) return { ok: false, message: "This zone has nowhere to send work back to." };
   if (input.note === null || input.note.trim() === "") return { ok: false, message: "Say what should change." };
   const target = definition.stages.find(one => one.id === stage.onFail);
-  // Back to a build zone with a finished result: a revision of that same work, carrying the note.
-  let revision: string | null = null;
-  if (target?.kind === "task" && card.primaryTask !== null && input.evidenceRoot !== undefined) {
-    const snapshot = assignmentOf(store, card.primaryTask, now, { principal: "operator", repos: input.repos });
-    const runId = snapshot?.receipt?.runId;
-    const runTask = runId === undefined ? null : store.externalIdFor(store.getRun(runId)?.taskRef ?? -1);
-    if (runId !== undefined && runTask !== null) {
-      const revised = requestResultChanges(store, input.evidenceRoot, {
-        run: runId, source: revisionSourceOf(store.getScope(runTask)?.digest ?? null), actor: input.actor, repos: input.repos,
-        batch: "", note: input.note.trim(), path: "", line: "", request: `flow-${card.id}-${card.entry}`, allowMode: true,
-      }, now);
-      if (revised.ok) revision = revised.id;
-    }
-  }
+  const revision = revisionWithNote(store, card, target, input.note.trim(), input.actor, input.repos, input.evidenceRoot, now);
   store.moveFlowCard(card.id, { to: stage.onFail, outcome: "sent-back", actor: input.actor, note: input.note.trim(), ...(revision === null ? {} : { task: revision }), expectEntry: card.entry }, now);
   if (card.owner !== null) notifyPeople(store, card, [card.owner], input.actor, { key: `sent-back:${card.entry}`, subject: `${input.actor} sent “${card.title}” back`, body: `Sent back to ${target?.title ?? stage.onFail}:\n\n${input.note.trim()}`, attention: true }, now);
   return { ok: true, said: revision === null ? `Sent back to ${target?.title ?? stage.onFail} with your note.` : `Sent back to ${target?.title ?? stage.onFail}: a revision was made with your note.` };

@@ -39,9 +39,10 @@ import { acceptAndCompleteAsOperator, assignmentOf } from "./assignment.js";
 import { getDecision, recordDecision, retireDecision } from "./project-memory.js";
 import { resumeTaskStop, taskControlOf } from "./task-control.js";
 import { addToolTo, catalogTool, projectToolsOf, removeToolFrom, toolCommandLine, validateToolSpec, type ToolSpec } from "./project-tools.js";
-import { deciderOf, FLOW_KIND_WORDS, flowDigest, flowTerms, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
+import { deciderOf, FLOW_KIND_WORDS, flowDigest, flowTerms, replyTarget, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
 import { saveScript, scriptDigest, validateScript } from "./flow-scripts.js";
-import { addCardToFlow, advanceFlows, cancelFlowCard, decideFlowCard, flowCardHref, flowCardText, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
+import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, flowCardHref, flowCardText, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
+import { chooseFlowCard, flowPersonOf } from "./flow-send.js";
 import type { FlowCardRow, FlowRow, FlowTriggerRow } from "./store.js";
 import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCard } from "./flow-people.js";
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, scheduleFromWords, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
@@ -112,6 +113,7 @@ export const CHAT_ACTIONS = {
   flow_card_move: { label: "Move card", protected: false, password: false },
   flow_card_approve: { label: "Approve", protected: false, password: false },
   flow_card_send_back: { label: "Send back", protected: false, password: false },
+  flow_card_choose: { label: "Choose", protected: false, password: false },
   flow_card_cancel: { label: "Cancel card", protected: false, password: false },
   flow_card_comment: { label: "Comment", protected: false, password: false },
   flow_card_assign: { label: "Set owner", protected: false, password: false },
@@ -180,6 +182,7 @@ export const CHAT_ACTION_FIELDS: Record<ChatAction, readonly string[]> = {
   flow_card_move: ["card", "zone"],
   flow_card_approve: ["card", "note"],
   flow_card_send_back: ["card", "note"],
+  flow_card_choose: ["card", "choice", "note"],
   flow_card_cancel: ["card"],
   flow_card_comment: ["card", "note"],
   flow_card_assign: ["card", "owner"],
@@ -606,6 +609,8 @@ export function prepareSharedAction(
     if (operation === "flow_create") {
       const name = text(input, "name", 80).trim();
       const definition = flowDrawingOf(store, input, repo);
+      const elsewhere = crossProjectProblem(store, definition, { repo, owner: who.name });
+      if (elsewhere !== null) throw Error(elsewhere);
       request["name"] = name;
       request["definition"] = definition;
       state = {};
@@ -633,6 +638,8 @@ export function prepareSharedAction(
       const name = input["name"] === undefined ? flow.name : text(input, "name", 80).trim();
       const definition = input["definition"] === undefined ? before : flowDrawingOf(store, input, repo);
       const redrawn = flowDigest(definition) !== flowDigest(before);
+      const elsewhere = crossProjectProblem(store, definition, flow, who.name);
+      if (elsewhere !== null) throw Error(elsewhere);
       if (!redrawn && name === flow.name) throw Error("That's the flow as it is now.");
       Object.assign(request, { name, definition });
       state = { flow: flow.id, revision: flow.revision };
@@ -720,6 +727,31 @@ export function prepareSharedAction(
       } else if (operation === "flow_card_cancel") {
         title = `Take ${quoted(card.title)} out of the flow`;
         terms.push("The card leaves the flow. Any tasks it filed stay as they are.");
+      } else if (operation === "flow_card_choose") {
+        // "Person chooses" (flow-send.ts): one of the zone's own options, or a reply that becomes the note.
+        if (at?.kind !== "choose") throw Error("That card isn't waiting for a choice.");
+        const person = flowPersonOf(card, flowTarget!.flow);
+        if (person !== who.name) throw Error(`Only ${person} chooses here.`);
+        const titleOf = (id: string) => definition.stages.find(one => one.id === id)?.title ?? id;
+        if (input["choice"] !== undefined && input["choice"] !== null) {
+          const index = Number(input["choice"]) - 1;
+          const option = Number.isSafeInteger(input["choice"]) ? (at.options ?? [])[index] : undefined;
+          if (option === undefined) throw Error(`Choose one of its ${(at.options ?? []).length} options, by number.`);
+          delete request["note"];
+          // Bound to the option as shown: if the flow's options change before it is confirmed, it is refused.
+          Object.assign(state, { label: option.label, to: option.to });
+          title = `Choose “${option.label}” for ${quoted(card.title)}`;
+          terms.push(option.to === "end" ? `${at.title}: “${option.label}”. The card is closed as Ignored.` : `${at.title}: “${option.label}”. It moves to ${titleOf(option.to)}.`);
+        } else {
+          const note = input["note"] === undefined ? "" : text(input, "note", 2000).trim();
+          const target = replyTarget(at);
+          if (target === null) throw Error("This step takes one of its options, not a reply.");
+          if (note === "") throw Error("Say what you'd change, or choose an option by number.");
+          request["note"] = note;
+          state["to"] = target;
+          title = `Reply on ${quoted(card.title)}`;
+          terms.push(`${at.title}: your reply goes to ${titleOf(target)} as its note:\n${note}`);
+        }
       } else {
         if (at?.kind !== "approval") throw Error("That card isn't waiting for a decision.");
         const decider = deciderOf(at, flowTarget!.flow);
@@ -1470,6 +1502,15 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
   }
   const acted = payload.operation === "flow_card_move" ? moveCardInFlow(store, card, String(req["zone"]), actor, now)
     : payload.operation === "flow_card_cancel" ? cancelFlowCard(store, card, actor, now)
+    : payload.operation === "flow_card_choose" ? (() => {
+        // The option (its words and where it leads) or reply target exactly as proposed; a proposal from before carries neither and is refused.
+        const bound = payload.state;
+        if (typeof bound["to"] !== "string" || (Number.isSafeInteger(req["choice"]) && typeof bound["label"] !== "string")) return { ok: false as const, message: "Those options changed since; nothing was changed. Ask for a fresh proposal." };
+        const chosen = chooseFlowCard(store, { card: card.id, entry: Number(bound["entry"]), choice: Number.isSafeInteger(req["choice"]) ? Number(req["choice"]) - 1 : null,
+          ...(typeof bound["label"] === "string" ? { label: bound["label"] } : {}), to: bound["to"],
+          note: typeof req["note"] === "string" ? req["note"] : null, actor, where: "chat", repos, ...(root === undefined ? {} : { evidenceRoot: root }) }, now);
+        return chosen.ok ? { ok: true as const, said: chosen.said, card: card.id } : { ok: false as const, message: chosen.message };
+      })()
     : (() => {
         const decided = decideFlowCard(store, { card: card.id, decision: payload.operation === "flow_card_approve" ? "approve" : "send-back", note: typeof req["note"] === "string" ? req["note"] : null, actor, repos, ...(root === undefined ? {} : { evidenceRoot: root }) }, now);
         return decided.ok ? { ok: true as const, said: decided.said, card: card.id } : { ok: false as const, message: decided.message };

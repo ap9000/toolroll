@@ -18,7 +18,15 @@ export type ParsedReport = {
   report: string;
   /** Proposed follow-ups: each files as a task in the same repository. */
   followUps: { title: string; goal: string }[];
+  /** What the scout found, as a short list later steps can read: each cites its URL, and may show one of `images`. */
+  items: ReportItem[];
+  /** Screenshots the scout saved during the run. From the scout, `file` names a file in its output folder; once
+   * stored, the runner adds the bytes' sha256 and the evidence row that holds them. */
+  images: ReportImage[];
 };
+
+export type ReportItem = { title: string; why: string; url: string; image: string | null };
+export type ReportImage = { file: string; caption: string; url: string; sha256?: string; artifact?: number };
 
 export type ReportParseResult =
   | { ok: true; report: ParsedReport }
@@ -34,7 +42,16 @@ export const REPORT_LIMITS = {
   followUps: 5,
   followUpTitle: 200,
   followUpGoal: 2_000,
+  items: 6,
+  itemTitle: 200,
+  itemWhy: 1_000,
+  url: 2_000,
+  images: 8,
+  caption: 300,
 } as const;
+
+/** A screenshot's name in the scout's output folder: one plain file name, PNG or JPEG, never a path. */
+export const REPORT_IMAGE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.(?:png|jpe?g)$/i;
 
 const REPORT_SHAPE = {
   type: "object",
@@ -48,6 +65,24 @@ const REPORT_SHAPE = {
         type: "object",
         properties: { title: { type: "string" }, goal: { type: "string" } },
         required: ["title", "goal"],
+        additionalProperties: false,
+      },
+    },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { title: { type: "string" }, why: { type: "string" }, url: { type: "string" }, image: { type: "string" } },
+        required: ["title", "why", "url"],
+        additionalProperties: false,
+      },
+    },
+    images: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { file: { type: "string" }, caption: { type: "string" }, url: { type: "string" } },
+        required: ["file", "caption", "url"],
         additionalProperties: false,
       },
     },
@@ -185,6 +220,73 @@ export function parseReport(raw: string): ReportParseResult {
     }
   }
 
+  const images = listOf(body["images"], "images", REPORT_LIMITS.images, problems, (entry, at) => {
+    // Any one line here: the runner refuses an image that isn't a plain file name in its output folder, not the report.
+    const file = prose(entry["file"], `${at}.file`, REPORT_LIMITS.caption, problems);
+    const caption = prose(entry["caption"], `${at}.caption`, REPORT_LIMITS.caption, problems);
+    const url = link(entry["url"], `${at}.url`, problems);
+    if (file !== null && /[\n\r]/.test(file)) problems.push({ reason: `${at}-file-multiline`, message: `${at}.file must be one line` });
+    if (caption !== null && /[\n\r]/.test(caption)) problems.push({ reason: `${at}-caption-multiline`, message: `${at}.caption must be one line` });
+    const sha256 = entry["sha256"];
+    if (sha256 !== undefined && (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256))) problems.push({ reason: `${at}-sha256`, message: `${at}.sha256 must be a sha256 hex digest` });
+    const artifact = entry["artifact"];
+    if (artifact !== undefined && (typeof artifact !== "number" || !Number.isSafeInteger(artifact) || artifact <= 0)) problems.push({ reason: `${at}-artifact`, message: `${at}.artifact must be an evidence id` });
+    if (file === null || caption === null || url === null || /[\n\r]/.test(file) || /[\n\r]/.test(caption)) return null;
+    return { file, caption, url, ...(typeof sha256 === "string" ? { sha256 } : {}), ...(typeof artifact === "number" ? { artifact } : {}) };
+  });
+  const files = new Set<string>();
+  for (const one of images) {
+    if (files.has(one.file)) problems.push({ reason: "images-duplicate", message: `images names ${one.file} twice` });
+    files.add(one.file);
+  }
+  const items = listOf(body["items"], "items", REPORT_LIMITS.items, problems, (entry, at) => {
+    const itemTitle = prose(entry["title"], `${at}.title`, REPORT_LIMITS.itemTitle, problems);
+    const why = prose(entry["why"], `${at}.why`, REPORT_LIMITS.itemWhy, problems);
+    const url = link(entry["url"], `${at}.url`, problems);
+    const image = entry["image"] === undefined || entry["image"] === null || entry["image"] === "" ? null : entry["image"];
+    if (itemTitle !== null && /[\n\r]/.test(itemTitle)) problems.push({ reason: `${at}-title-multiline`, message: `${at}.title must be one line` });
+    if (image !== null && (typeof image !== "string" || !files.has(image))) problems.push({ reason: `${at}-image`, message: `${at}.image must name one of images by its file` });
+    if (itemTitle === null || why === null || url === null || /[\n\r]/.test(itemTitle) || (image !== null && (typeof image !== "string" || !files.has(image)))) return null;
+    return { title: itemTitle, why, url, image: image as string | null };
+  });
+
   if (problems.length > 0) return { ok: false, problems };
-  return { ok: true, report: { title: title as string, summary: summary as string, report: document as string, followUps } };
+  return { ok: true, report: { title: title as string, summary: summary as string, report: document as string, followUps, items, images } };
+}
+
+/** An optional capped list of objects, each read by `one`; problems are reported, never thrown. */
+function listOf<T>(value: unknown, field: string, cap: number, problems: ReportProblem[], one: (entry: Record<string, unknown>, at: string) => T | null): T[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    problems.push({ reason: `bad-${field}`, message: `${field} must be an array (got ${describe(value)})` });
+    return [];
+  }
+  if (value.length > cap) {
+    problems.push({ reason: `${field}-too-many`, message: `${field} lists ${value.length} — cap is ${cap}` });
+    return [];
+  }
+  const kept: T[] = [];
+  for (const [index, entry] of value.entries()) {
+    const at = `${field}[${index}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      problems.push({ reason: `${at}-shape`, message: `${at} must be an object` });
+      continue;
+    }
+    const read = one(entry as Record<string, unknown>, at);
+    if (read !== null) kept.push(read);
+  }
+  return kept;
+}
+
+/** A cited web address: http or https, one line, no credentials. */
+function link(value: unknown, field: string, problems: ReportProblem[]): string | null {
+  const text = prose(value, field, REPORT_LIMITS.url, problems);
+  if (text === null) return null;
+  let url: URL | null = null;
+  try { url = new URL(text); } catch { url = null; }
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || /\s/.test(text) || url.username !== "" || url.password !== "") {
+    problems.push({ reason: `${field}-not-a-link`, message: `${field} must be an http or https address` });
+    return null;
+  }
+  return text;
 }

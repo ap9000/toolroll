@@ -3,8 +3,8 @@
  * its promise, a small drawing of its zones, what it needs and "Use this". A template's page asks only what it
  * needs, previews in plain words what it will do and never do, and creates it — the same answers it previewed.
  */
-import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, OUTDATED_COMMANDS, type GalleryAnswers, type GalleryPreview, type GalleryTemplate } from "./flow-gallery.js";
-import type { FlowDefinition } from "./flows.js";
+import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, OUTDATED_COMMANDS, SEND_RESULT, type GalleryAnswers, type GalleryPreview, type GalleryTemplate } from "./flow-gallery.js";
+import { choiceTargets, type FlowDefinition } from "./flows.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -19,7 +19,7 @@ export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{ma
   `.gallery .gallery-card a.button-link{align-self:flex-start;min-height:36px;background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line)}` +
   `.gallery-blank{margin-top:20px}` +
   `.gallery-use{max-width:720px;min-width:0}.gallery-use .gallery-zones{height:88px;margin:4px 0 12px}.gallery-use form{display:grid;gap:12px;margin:0}.gallery-use label{display:grid;gap:4px;font-weight:500}` +
-  `.gallery-use label small{font-weight:400;color:var(--so-muted)}` +
+  `.gallery-use label small{font-weight:400;color:var(--so-muted)}.gallery-use label.gallery-check{display:flex;align-items:flex-start;gap:8px;font-weight:500}.gallery-use label.gallery-check input{margin-top:3px;width:16px;height:16px;min-height:0;flex:none}.gallery-use label.gallery-check small{display:block}` +
   `.gallery-use input:not([type=hidden]),.gallery-use select{box-sizing:border-box;width:100%;max-width:100%;min-height:32px;padding:0 10px;border:1px solid var(--so-input-line);border-radius:8px;background:var(--so-paper);color:var(--so-ink);font:inherit}` +
   `.gallery-preview{display:grid;gap:8px;padding:16px;border:1px solid var(--so-line);border-radius:10px;background:var(--so-paper);min-width:0}.gallery-preview h2{margin:0;font-size:.9375rem}` +
   `.gallery-preview ul{margin:0;padding-left:18px;line-height:1.55}.gallery-preview p{margin:0;overflow-wrap:anywhere}.gallery-preview .gallery-never{font-weight:600}` +
@@ -38,11 +38,11 @@ export function zonesDiagram(definition: FlowDefinition, label: string): string 
   const pad = 40;
   const box = `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`;
   const centre = (id: string | null) => { const at = definition.stages.find(one => one.id === id)?.zone; return at === undefined ? null : { x: at.x + at.w / 2, y: at.y + at.h / 2 }; };
-  const lines = definition.stages.flatMap(stage => [stage.next, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? [])].map(to => {
+  const lines = definition.stages.flatMap(stage => [stage.next, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage)].map(to => {
     const from = centre(stage.id), end = centre(to);
     return from === null || end === null ? "" : `<line x1="${from.x}" y1="${from.y}" x2="${end.x}" y2="${end.y}" vector-effect="non-scaling-stroke"/>`;
   })).join("");
-  const rects = definition.stages.map(one => `<rect x="${one.zone.x}" y="${one.zone.y}" width="${one.zone.w}" height="${one.zone.h}" rx="36" data-person="${one.kind === "approval"}" vector-effect="non-scaling-stroke"/>`).join("");
+  const rects = definition.stages.map(one => `<rect x="${one.zone.x}" y="${one.zone.y}" width="${one.zone.w}" height="${one.zone.h}" rx="36" data-person="${one.kind === "approval" || one.kind === "choose"}" vector-effect="non-scaling-stroke"/>`).join("");
   return `<svg class="gallery-zones" viewBox="${box}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${e(label)}">${lines}${rects}</svg>`;
 }
 
@@ -82,13 +82,13 @@ export function galleryUseHtml(input: {
     `<p class="gallery-never">${e(input.preview.built.never)}</p>` +
     (input.preview.startsFrom.length === 0 ? `<p class="meta">Cards start when you add them.</p>` : input.preview.startsFrom.map(one => `<p class="meta">Starts from: ${e(one)}</p>`).join("")) +
     `<details><summary>Every step</summary><ol>${input.preview.steps.map(one => `<li>${e(one.replace(/^\d+\.\s/, ""))}</li>`).join("")}</ol></details></section>`;
-  const asks = template.asks.length > 0 || input.projects.length > 1;
   return `<section class="gallery-use" data-gallery-template="${e(template.id)}">` +
     (input.problem === null ? "" : `<p class="problem" role="alert">${e(input.problem)}</p>`) +
     `<p>${e(template.promise)}</p>${input.diagram === null ? "" : zonesDiagram(input.diagram, `Zones: ${input.diagram.stages.map(one => one.title).join(", ")}`)}${needsList(template)}` +
     `<form method="post" action="/flows/new/${e(template.id)}" data-gallery-use><input type="hidden" name="csrf" value="${e(input.csrf)}">` +
     `<input type="hidden" name="previewed" value="${e(input.preview?.digest ?? "")}">${project}${template.asks.map(field).join("")}` +
-    `<label>Name<input name="name" value="${e(input.name)}" maxlength="80"></label>${preview}` +
-    `<p class="gallery-actions">${input.preview === null ? "" : `<button type="submit" name="intent" value="create">Create flow</button>`}${asks || input.preview === null ? `<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button>` : ""}</p>` +
+    `<label>Name<input name="name" value="${e(input.name)}" maxlength="80"></label>` +
+    `<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" ? " checked" : ""} data-send-result><span>${e(SEND_RESULT.title)}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>${preview}` +
+    `<p class="gallery-actions">${input.preview === null ? "" : `<button type="submit" name="intent" value="create">Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>` +
     `</form><p class="meta"><a href="/flows/new">All templates</a></p></section>`;
 }

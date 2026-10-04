@@ -14,13 +14,18 @@
  * Every button is one opaque token for one visit of one card, placed on the
  * message it rides. A card that moved on answers so; a tap from anyone but
  * the paired person and chat never reaches here (telegram.ts checks it).
+ *
+ * A "Person chooses" visit (flow-send.ts) has one button per option the flow
+ * names; a reply to that message instead of a tap is the note for where
+ * replies go. Both go through chooseFlowCard, for exactly that visit.
  */
 import { randomBytes } from "node:crypto";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, draftFor, flowDefinitionOf } from "./flow-engine.js";
+import { chooseFlowCard, flowChoiceAt, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
 import { deciderOf, type FlowStage } from "./flows.js";
-import type { InlineButton } from "./telegram-mate.js";
-import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowPrompt } from "./store.js";
+import { phoneLinkButton, type InlineButton } from "./telegram-mate.js";
+import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
 
 export const FLOW_DECIDE_KEY = /^flow-decide:([1-9][0-9]{0,14}):([1-9][0-9]{0,9})$/;
 const DRAFT_LIMIT = 4000;
@@ -49,6 +54,43 @@ export function flowButtons(store: Store, binding: TelegramBinding, waiting: Wai
   const second = [edit === null ? null : { text: "✏️ Edit", callback_data: edit.token }, back === null ? null : { text: "↩️ Send back", callback_data: back.token }]
     .filter((one): one is { text: string; callback_data: string } => one !== null);
   return { keyboard: [[{ text: "✅ Approve", callback_data: approve.token }], ...(second.length === 0 ? [] : [second])], tokens: all.map(one => one.token) };
+}
+
+/** What a "Send to me" or "Person chooses" visit sent, read back for its message. */
+export function flowSentContent(store: Store, card: number, entry: number): FlowSendContent | null {
+  const kept = store.flowSend(card, entry);
+  return kept === null ? null : readFlowSend(kept.contentJson);
+}
+
+/** A sent visit's links as one row of buttons: Toolroll's pages under the trusted origin, and its pull request. */
+export function flowSendKeyboardRow(origin: string | null, content: FlowSendContent): InlineButton[] {
+  const pages = origin === null ? [] : flowSendPaths(content).flatMap(one => phoneLinkButton(origin, one) ?? []);
+  const pull = content.links.flatMap(one => "url" in one ? [{ text: one.label, url: one.url }] : []);
+  return [...pages.slice(0, 1), ...pull, ...pages.slice(1)].slice(0, 3);
+}
+
+/** A choice's buttons for one visit, one option to a row, minted before the send; `place` stamps the message they landed on. */
+export function flowChoiceButtons(store: Store, binding: TelegramBinding, visit: FlowChoiceVisit, content: FlowSendContent, now: Date): { keyboard: InlineButton[][]; tokens: string[] } {
+  // Only the options the zone still offers as they were sent: a flow changed since sends no stale button.
+  const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label).map(one => ({ ...one, token: randomBytes(16).toString("hex") }));
+  store.createTelegramFlowChoices({ binding: binding.id, chatId: binding.chatId, card: visit.card.id, entry: visit.card.entry }, options, now);
+  return { keyboard: options.map(one => [{ text: one.label, callback_data: one.token }]), tokens: options.map(one => one.token) };
+}
+
+/** A tapped option, applied inside the update's transaction. */
+export function applyFlowChoiceTap(store: Store, binding: TelegramBinding, choice: TelegramFlowChoice, message: { text: string }, repos: readonly string[] | null, now: Date): FlowTapEffect[] {
+  if (choice.consumedAt !== null || choice.expiresAt <= now.toISOString()) return [{ kind: "ack", text: "That was already chosen, or these buttons are too old." }];
+  const visit = flowChoiceAt(store, choice.card, choice.entry);
+  if (visit === null) {
+    store.retireFlowChoices(choice.card, choice.entry, now);
+    return [{ kind: "ack", text: "That card has moved on since; nothing was changed." }, { kind: "edit", text: `${message.text}\n\nThis card has moved on since; nothing was changed.`.slice(0, 4000) }];
+  }
+  if (visit.person !== binding.approver) return [{ kind: "ack", text: `Only ${visit.person} chooses here.` }];
+  if (repos === null) return [{ kind: "ack", text: "Couldn't check your projects just now. Try again in a moment." }];
+  const chosen = chooseFlowCard(store, { card: choice.card, entry: choice.entry, choice: choice.choice, label: choice.label, note: null, actor: binding.approver, where: "Telegram", repos }, now);
+  if (!chosen.ok) return [{ kind: "ack", text: chosen.message.slice(0, 190) }];
+  store.retireFlowChoices(choice.card, choice.entry, now);
+  return [{ kind: "ack", text: choice.label.slice(0, 190) }, { kind: "edit", text: `${message.text}\n\n✅ You chose “${choice.label}”. ${chosen.said}`.slice(0, 4000) }];
 }
 
 export type FlowTapEffect =
@@ -90,6 +132,17 @@ export type FlowReplyEffect =
 /** A reply to an Edit or Send back prompt, applied inside the update's transaction. */
 export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: TelegramFlowPrompt, text: string, repos: readonly string[] | null, now: Date): FlowReplyEffect[] {
   if (prompt.binding !== binding.id) return [];
+  // A reply to a choice's message (flow-send.ts): the note for where replies go.
+  const choosing = flowChoiceAt(store, prompt.card, prompt.entry);
+  if (choosing !== null) {
+    if (choosing.person !== binding.approver) return [{ kind: "say", text: `Only ${choosing.person} chooses here.` }];
+    if (text.trim() === "") return [{ kind: "say", text: "Say what you'd change." }];
+    if (repos === null) return [{ kind: "say", text: "Couldn't check your projects just now. Reply again in a moment." }];
+    const chosen = chooseFlowCard(store, { card: prompt.card, entry: prompt.entry, choice: null, note: text.trim(), actor: binding.approver, where: "Telegram", repos }, now);
+    if (!chosen.ok) return [{ kind: "say", text: chosen.message }];
+    store.retireFlowChoices(prompt.card, prompt.entry, now);
+    return [{ kind: "say", text: `↩️ ${chosen.said}` }];
+  }
   const waiting = flowDecisionAt(store, prompt.card, prompt.entry);
   if (waiting === null) { store.retireTelegramFlowVisit(prompt.card, prompt.entry, now); return [{ kind: "say", text: "That card has moved on since; nothing was changed." }]; }
   const said = text.trim();

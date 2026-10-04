@@ -351,6 +351,36 @@ CREATE INDEX IF NOT EXISTS mate_ask_thread ON mate_ask (thread, turn);
 `;
 /** Decisions in the chat app (chat-decide.ts; no version bump: additive only). A token names one act on one card (the chat and message it rides); `digest` is
  * what the card showed — a receipt, a revision source, a task stamp, a plan or a commit. */
+/** A flow's "Send to me" and "Person chooses" zones (no version bump: additive only). flow_send keeps what one visit sent its
+ * person (shown on the card, and read again by every chat app that delivers it); telegram_flow_choice is one opaque button
+ * per option for one visit of one card, placed on the message it rides. A reply to that message is the note
+ * (telegram_flow_prompt, mode send-back). The chat apps keep their buttons beside their messages (chat-delivery-state.ts). */
+export const FLOW_SEND_SCHEMA = `
+CREATE TABLE IF NOT EXISTS flow_send (
+  card         INTEGER NOT NULL REFERENCES flow_card(id),
+  entry        INTEGER NOT NULL,
+  stage        TEXT NOT NULL,
+  person       TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY (card, entry)
+);
+CREATE TABLE IF NOT EXISTS telegram_flow_choice (
+  token       TEXT PRIMARY KEY,
+  binding     INTEGER NOT NULL REFERENCES telegram_binding(id) ON DELETE RESTRICT,
+  card        INTEGER NOT NULL REFERENCES flow_card(id),
+  entry       INTEGER NOT NULL,
+  choice      INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  chat_id     TEXT NOT NULL,
+  message_id  TEXT,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS telegram_flow_choice_visit ON telegram_flow_choice (card, entry);
+`;
+
 export const CHAT_DECIDE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_decide_action (
   token       TEXT PRIMARY KEY,
@@ -1429,6 +1459,9 @@ export const RESULT_SCREENSHOTS: readonly ResultScreenshots[] = ["off", "first",
 export type NotificationPreference = { mode: NotificationMode; digestAt: string | null; digestOn: string | null; updatedAt: string | null; screenshots: ResultScreenshots };
 /** One person's saved screenshots following a result message: its own outbox row, addressed to them (result-shots.ts). */
 export const RESULT_SHOTS_KIND = "result-screenshots";
+/** The screenshots a flow's "Send to me" or "Person chooses" visit sends its person (flow-send.ts): up to four, whatever
+ * their result-screenshots choice, since the flow asked for them. */
+export const FLOW_SHOTS_KIND = "flow-screenshots";
 /** Tasks filed this close together share one chat message. */
 export const QUIET_GROUP_MS = 60_000;
 export function isDigestTime(value: string): boolean {
@@ -1907,6 +1940,10 @@ export type TelegramTeamChat = {
 export type TelegramFlowAction = { token: string; binding: number; card: number; entry: number; action: "approve" | "edit" | "send-back"; chatId: string; messageId: string | null; expiresAt: string; consumedAt: string | null };
 /** A prompt the bot sent after Edit or Send back: a reply to it is the new draft, or the note. */
 export type TelegramFlowPrompt = { chatId: string; messageId: string; binding: number; card: number; entry: number; mode: "edit" | "send-back" };
+/** One option's button on a "Person chooses" message (flow-send.ts). */
+export type TelegramFlowChoice = { token: string; binding: number; card: number; entry: number; choice: number; label: string; chatId: string; messageId: string | null; expiresAt: string; consumedAt: string | null };
+/** What a "Send to me" or "Person chooses" visit sent its person (flow-send.ts). */
+export type FlowSendRow = { card: number; entry: number; stage: string; person: string; contentJson: string; createdAt: string };
 
 export type TelegramBinding = {
   id: number;
@@ -5228,6 +5265,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MATE_ASK_SCHEMA);
   // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
   db.exec(CHAT_DECIDE_SCHEMA);
+  // A flow's "Send to me" and "Person chooses" zones (no version bump: additive only).
+  db.exec(FLOW_SEND_SCHEMA);
   db.exec(SPEND_SCHEMA);
   // Sign-in pauses: one row per incident of a provider's sign-in no longer working.
   db.exec(PROVIDER_AUTH_SCHEMA);
@@ -22102,6 +22141,60 @@ export class Store {
     return { chatId: String(row["chat_id"]), messageId: String(row["message_id"]), binding: Number(row["binding"]), card: Number(row["card"]), entry: Number(row["entry"]), mode: String(row["mode"]) as TelegramFlowPrompt["mode"] };
   }
 
+  // ---- "Send to me" and "Person chooses" (flow-send.ts) ------------------------------------------
+
+  /** What one visit sent: recorded once, the first time (a later pass finds it kept). */
+  recordFlowSend(row: Omit<FlowSendRow, "createdAt">, now: Date): boolean {
+    return Number(this.db.prepare("INSERT OR IGNORE INTO flow_send (card, entry, stage, person, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(row.card, row.entry, row.stage, row.person, row.contentJson, now.toISOString()).changes) === 1;
+  }
+
+  flowSend(card: number, entry: number): FlowSendRow | null {
+    const row = this.db.prepare("SELECT * FROM flow_send WHERE card = ? AND entry = ?").get(card, entry);
+    return row === undefined ? null : { card: Number(row["card"]), entry: Number(row["entry"]), stage: String(row["stage"]), person: String(row["person"]), contentJson: String(row["content_json"]), createdAt: String(row["created_at"]) };
+  }
+
+  /** Every visit's send for a card, newest first: what the card shows it sent. */
+  flowSends(card: number): FlowSendRow[] {
+    return this.db.prepare("SELECT * FROM flow_send WHERE card = ? ORDER BY entry DESC").all(card).map(row => ({ card: Number(row["card"]), entry: Number(row["entry"]), stage: String(row["stage"]),
+      person: String(row["person"]), contentJson: String(row["content_json"]), createdAt: String(row["created_at"]) }));
+  }
+
+  createTelegramFlowChoices(at: { binding: number; chatId: string; card: number; entry: number }, choices: readonly { token: string; choice: number; label: string }[], now: Date, days = 7): void {
+    const stamp = now.toISOString(), expires = new Date(now.getTime() + days * 86_400_000).toISOString();
+    const insert = this.db.prepare("INSERT INTO telegram_flow_choice (token, binding, card, entry, choice, label, chat_id, message_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)");
+    for (const one of choices) insert.run(one.token, at.binding, at.card, at.entry, one.choice, one.label, at.chatId, stamp, expires);
+  }
+
+  getTelegramFlowChoice(token: string): TelegramFlowChoice | null {
+    if (!/^[0-9a-f]{32}$/.test(token)) return null;
+    const row = this.db.prepare("SELECT * FROM telegram_flow_choice WHERE token = ?").get(token);
+    if (row === undefined) return null;
+    return { token: String(row["token"]), binding: Number(row["binding"]), card: Number(row["card"]), entry: Number(row["entry"]), choice: Number(row["choice"]), label: String(row["label"]),
+      chatId: String(row["chat_id"]), messageId: row["message_id"] === null ? null : String(row["message_id"]), expiresAt: String(row["expires_at"]), consumedAt: row["consumed_at"] === null ? null : String(row["consumed_at"]) };
+  }
+
+  placeTelegramFlowChoices(tokens: readonly string[], messageId: string): void {
+    const place = this.db.prepare("UPDATE telegram_flow_choice SET message_id = ? WHERE token = ?");
+    for (const token of tokens) place.run(messageId, token);
+  }
+
+  /** Retire every choice button for one visit of a card (and its reply prompt): it was chosen, or the card moved on. */
+  /** A choice was made (or the card moved on): every option button, reply prompt and "Use this as your note?" for that
+   * visit is spent, in Telegram and in every other chat app, whichever place it was made in. */
+  retireFlowChoices(card: number, entry: number, now: Date): void {
+    const stamp = now.toISOString();
+    this.db.prepare("UPDATE telegram_flow_choice SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
+    this.retireTelegramFlowVisit(card, entry, now);
+    // A chat app's flow tables exist only once that app's chat state created them; an install without it has none.
+    const names = ["slack", "discord", "teams"].flatMap(app => ["flow_choice", "flow_note", "flow_prompt", "flow_action"].map(table => `${app}_${table}`));
+    const present = new Set(this.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`).all(...names).map(row => String(row["name"])));
+    for (const app of ["slack", "discord", "teams"])
+      for (const table of ["flow_choice", "flow_note", "flow_prompt", "flow_action"])
+        if (present.has(`${app}_${table}`))
+          this.db.prepare(`UPDATE ${app}_${table} SET consumed = ?${table === "flow_note" ? ", words = NULL" : ""} WHERE card = ? AND entry = ? AND consumed IS NULL`).run(stamp, card, entry);
+  }
+
   // ---- v93: a teammate's question on Telegram ------------------------------------------
 
   createTelegramQuestionActions(at: { binding: number; chatId: string; question: number }, choices: readonly { token: string; choice: string | null }[], now: Date, days = 7): void {
@@ -26072,6 +26165,11 @@ export class Store {
     this.recordPolicy(by, repo, "builds at once", String(before), String(after), now);
   }
 
+  /** Review 827: a project's demo URL changed (`off` when it has none). */
+  recordProjectDemo(by: string, repo: string, before: string | null, after: string | null, now: Date): void {
+    this.recordPolicy(by, repo, "demo URL", before ?? "off", after ?? "off", now);
+  }
+
   /** Forward only, and only under the live generation. A stale poller moves nothing. */
   /** v98: an update Telegram pushed, kept until the bridge applies it; false when it's already kept or applied. */
   queueTelegramUpdate(botId: string, updateId: number, payload: string, now: Date): boolean {
@@ -26791,10 +26889,13 @@ export class Store {
    */
   private enqueueResultShots(source: Notification, now: Date): void {
     if (source.run === null || source.taskRef === null || source.project === null || source.recipient !== null) return;
-    const ready = isLifecycleNotification(source) && source.kind === "run-finished";
-    if (!ready && !/fail/.test(source.kind)) return;
     const run = this.getRun(source.run);
-    if (run === null || !["builder", "repair"].includes(run.role) || run.contestant !== null) return;
+    if (run === null || run.contestant !== null) return;
+    // One path per role (review 826): a scout's report is its result, so only its "report ready" carries the
+    // screenshots it saved; a build's are carried by its finished or failed message.
+    const carries = run.role === "scout" ? source.kind === "report-ready"
+      : ["builder", "repair"].includes(run.role) && ((isLifecycleNotification(source) && source.kind === "run-finished") || /fail/.test(source.kind));
+    if (!carries) return;
     if (!this.artifactsFor(run.id).some(one => one.kind === "screenshot")) return;
     const people = this.db.prepare("SELECT account FROM notification_preference WHERE screenshots IN ('first', 'all') ORDER BY account").all().map(row => String(row["account"]));
     for (const account of people) {

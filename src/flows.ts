@@ -35,6 +35,13 @@
  *               waits for CI, and moves on when it passes or down the
  *               failure path, naming the failing check, when it fails. It
  *               can merge once checks pass, only after a person approved.
+ * - send      — "Send to me": sends the card's person (its owner, else the
+ *               flow's) what the step before produced — its summary, links
+ *               and images — in each chat app they paired and on the card,
+ *               then moves on.
+ * - choose    — "Person chooses": the same content, with 2 to 4 buttons the
+ *               flow names (each leads to a zone, or ends the card as
+ *               Ignored). A reply instead is the {{note}} for where replies go.
  * - done      — the end.
  *
  * The engine is deterministic and model-free: it runs in the worker's pass
@@ -42,7 +49,7 @@
  */
 import { createHash } from "node:crypto";
 
-export const FLOW_STAGE_KINDS = ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "teammate", "done"] as const;
+export const FLOW_STAGE_KINDS = ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "teammate", "send", "choose", "done"] as const;
 export type FlowStageKind = (typeof FLOW_STAGE_KINDS)[number];
 export const FLOW_COLORS = ["slate", "blue", "violet", "amber", "green", "rose"] as const;
 export type FlowColor = (typeof FLOW_COLORS)[number];
@@ -67,6 +74,12 @@ export type FlowWait = { for: "reply" | "time" | "hours"; minutes: number; from?
 /** How a Pull request zone merges once checks pass. */
 export const FLOW_MERGE_METHODS = ["squash", "merge", "rebase"] as const;
 export type FlowMergeMethod = (typeof FLOW_MERGE_METHODS)[number];
+/** A choose zone's option: its button's words, and the zone it leads to (FLOW_END closes the card as Ignored). */
+export type FlowChoice = { label: string; to: string };
+/** Where a choose option that ends the card leads. */
+export const FLOW_END = "end";
+/** How many options a choose zone offers. */
+export const CHOICES_MIN = 2, CHOICES_MAX = 4;
 /** A time limit on a zone (v91): after this long, the person it waits on is reminded, and a Holding or
  * "Person decides" zone can move the card on (`to`). */
 export type FlowLimit = { minutes: number; to: string | null };
@@ -111,6 +124,10 @@ export type FlowStage = {
   teammate?: string;
   /** v96: a "Teammate handles it" zone sends what the teammate writes back to whoever asked (the person who added the card, its chat thread, or the teammate's manager). */
   reply?: boolean;
+  /** choose: the buttons the person picks from, in order. Its onFail is where a reply goes, with the reply as {{note}}. */
+  options?: FlowChoice[];
+  /** task: the project it builds in, when not the flow's own (one the flow's owner may file in). */
+  repo?: string;
   /** pull-request: merge once checks pass, this way. Only allowed after a "Person decides" zone, and a card merges only when a person approved it after it was built. */
   merge?: FlowMergeMethod;
   /** Where a card goes when this zone's step succeeds, and when it fails or is sent back (sort: when it isn't sure). */
@@ -137,6 +154,8 @@ export const FLOW_KIND_WORDS: Record<FlowStageKind, { label: string; about: stri
   sort: { label: "Sort", about: "Jev reads the card in under a second and sends it where its answer leads. Cards it isn't sure about take the not-sure path." },
   wait: { label: "Wait", about: "Waits for a reply to the card's email, or for a set time. A reply moves the card on; if none comes in time, it takes the no-reply path." },
   teammate: { label: "Teammate handles it", about: "An AI teammate reads the card, decides where it goes within its rules, and writes what the next zones send. When its rules say to ask, it asks you first." },
+  send: { label: "Send to me", about: "Sends the card's owner what the step before produced: its summary, links and any screenshots, in each chat app they use and on the card. Then moves on." },
+  choose: { label: "Person chooses", about: "Sends the card's owner what was done with 2 to 4 buttons you name, in their chat apps and here. Each leads to a zone or ignores the card; a reply instead goes where replies go, as the note." },
   done: { label: "Done", about: "The end of the flow." },
 };
 
@@ -307,7 +326,7 @@ function validateLimit(input: unknown, kind: FlowStageKind, title: string): Flow
   const minutes = durationMinutes(raw["minutes"]);
   if (minutes === null) throw new Error(`Zone ${title}: say how long a card may wait, from 1 minute to 30 days.`);
   const to = text(raw["to"], 32);
-  if (to !== null && kind !== "inbox" && kind !== "approval") throw new Error(`Zone ${title}: only Holding and "Person decides" zones move a card on when it waits too long; other zones remind.`);
+  if (to !== null && kind !== "inbox" && kind !== "approval" && kind !== "choose") throw new Error(`Zone ${title}: only Holding, "Person decides" and "Person chooses" zones move a card on when it waits too long; other zones remind.`);
   return { minutes, to };
 }
 
@@ -353,8 +372,10 @@ export function validateFlowDefinition(input: unknown, options: { stored?: boole
       ...((kind === "approval" || kind === "teammate") && stage["teammate"] !== undefined && stage["teammate"] !== null && stage["teammate"] !== "" ? { teammate: validateTeammate(stage["teammate"], title) } : {}),
       ...(kind === "teammate" ? validateRoutes(stage, title) : {}),
       ...(kind === "teammate" && stage["reply"] === true ? { reply: true } : {}),
+      ...(kind === "choose" ? { options: validateChoices(stage["options"], title) } : {}),
+      ...(kind === "task" && stage["repo"] !== undefined && stage["repo"] !== null && stage["repo"] !== "" ? { repo: validateRepo(stage["repo"], title) } : {}),
       ...(() => { const limit = validateLimit(stage["limit"], kind as FlowStageKind, title); return limit === null ? {} : { limit }; })(),
-      next: kind === "sort" ? null : text(stage["next"], 32),
+      next: kind === "sort" || kind === "choose" ? null : text(stage["next"], 32),
       onFail: text(stage["onFail"], 32),
     };
   });
@@ -364,7 +385,9 @@ export function validateFlowDefinition(input: unknown, options: { stored?: boole
     ids.add(stage.id);
   }
   for (const stage of stages) {
-    for (const target of [stage.next, stage.onFail, stage.limit?.to ?? null, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? [])]) if (target !== null && !ids.has(target)) throw new Error(`Zone ${stage.title} points at a zone that no longer exists.`);
+    for (const target of [stage.next, stage.onFail, stage.limit?.to ?? null, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage)]) if (target !== null && !ids.has(target)) throw new Error(`Zone ${stage.title} points at a zone that no longer exists.`);
+    if (stage.options !== undefined && ids.has(FLOW_END) && stage.options.some(one => one.to === FLOW_END)) throw new Error(`Zone ${stage.title}: an option that ends the card can't be told apart from the zone called ${FLOW_END}. Rename that zone.`);
+    if (stage.options?.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an option can't send cards back into the same zone.`);
     if (stage.limit?.to === stage.id) throw new Error(`Zone ${stage.title}: a card that waits too long can't move back into the same zone.`);
     if (stage.routes?.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an answer can't send cards back into the same zone.`);
     if (stage.sort !== null && stage.sort.answers.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an answer can't send cards back into the same zone.`);
@@ -404,9 +427,42 @@ export function reachableWithout(stages: readonly FlowStage[], start: string, st
     const stage = stages.find(one => one.id === id);
     if (stage === undefined || seen.has(stage.id) || stop(stage)) continue;
     seen.add(stage.id);
-    queue.push(...[stage.next, stage.onFail, stage.limit?.to ?? null, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? [])].filter((one): one is string => one !== null));
+    queue.push(...[stage.next, stage.onFail, stage.limit?.to ?? null, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage)].filter((one): one is string => one !== null));
   }
   return seen;
+}
+
+/** The zones a choose zone's options lead to (an option that ends the card leads to none). */
+export function choiceTargets(stage: Pick<FlowStage, "options">): string[] {
+  return (stage.options ?? []).map(one => one.to).filter(to => to !== FLOW_END);
+}
+
+/** Where a reply to a choice goes, as its {{note}}: the zone's reply path, else its first option that leads somewhere; null when none does. */
+export function replyTarget(stage: Pick<FlowStage, "options" | "onFail">): string | null {
+  return stage.onFail ?? choiceTargets(stage)[0] ?? null;
+}
+
+/** A choose zone's options, checked: 2 to 4, each with short words of its own and where it leads. */
+function validateChoices(input: unknown, title: string): FlowChoice[] {
+  const raw = Array.isArray(input) ? input : [];
+  if (raw.length < CHOICES_MIN || raw.length > CHOICES_MAX) throw new Error(`Zone ${title}: give it ${CHOICES_MIN} to ${CHOICES_MAX} options.`);
+  const seen = new Set<string>();
+  return raw.map(one => {
+    const row = (one ?? {}) as Record<string, unknown>;
+    const label = text(row["label"], 40);
+    const to = text(row["to"], 32);
+    if (label === null || to === null) throw new Error(`Zone ${title}: each option needs a few words and where it leads.`);
+    if (seen.has(label.toLowerCase())) throw new Error(`Zone ${title}: two options are called ${label}.`);
+    seen.add(label.toLowerCase());
+    return { label, to };
+  });
+}
+
+/** A build zone's project, when it isn't the flow's: its path. Whether the flow's owner may file there is checked when work is filed. */
+function validateRepo(value: unknown, title: string): string {
+  const repo = text(value, 1000);
+  if (repo === null) throw new Error(`Zone ${title}: choose the project it builds in.`);
+  return repo;
 }
 
 /** A teammate's handle on a zone (v92): which teammate works it. Whether it exists is the project's to say, when a card arrives. */
@@ -460,7 +516,8 @@ export function flowDigest(definition: FlowDefinition): string {
   return createHash("sha256").update(JSON.stringify({ start: definition.start, terms })).digest("hex").slice(0, 32);
 }
 
-const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|note|stage\.([a-z0-9-]+))\s*\}\}/g;
+/** {{stage.<id>}} is an earlier zone's output; a report zone also fills {{stage.<id>.items}} and {{stage.<id>.report}}. */
+const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|note|stage\.([a-z0-9-]+(?:\.(?:items|report))?))\s*\}\}/g;
 type FlowFillCard = { title: string; description: string | null; note: string | null; outputs: Record<string, string> };
 
 /** Fill a zone's text from the card: title, description, the latest note and earlier zones' reports. */
@@ -567,10 +624,15 @@ export type FlowStepInput = {
   teammate?: string;
   /** v96: a teammate step sends what it writes back to whoever asked. */
   reply?: boolean;
+  /** choose: 2 to 4 buttons, each with its words and the step it goes to ("end" ignores the card); where a reply goes instead
+   * (the reply is its {{note}}; the nearest earlier build or research step when left out). ifNoReply (with remindAfter) moves it on. */
+  options?: { label?: string; goesTo?: string }[]; ifReplied?: string;
+  /** task: the project it builds in (path), when not the flow's own. */
+  repo?: string;
   next?: string; ifFails?: string; ifNotSure?: string;
 };
 
-const KIND_COLORS: Record<FlowStageKind, FlowColor> = { inbox: "slate", task: "blue", report: "violet", approval: "amber", check: "blue", "pull-request": "blue", update: "green", notify: "green", sort: "violet", draft: "violet", request: "blue", email: "green", tool: "blue", wait: "slate", teammate: "violet", done: "green" };
+const KIND_COLORS: Record<FlowStageKind, FlowColor> = { inbox: "slate", task: "blue", report: "violet", approval: "amber", check: "blue", "pull-request": "blue", update: "green", notify: "green", sort: "violet", draft: "violet", request: "blue", email: "green", tool: "blue", wait: "slate", teammate: "violet", send: "green", choose: "amber", done: "green" };
 /** A step id as the lead may write it (sort_by_hand, Sort-By-Hand) in the one form zones use. */
 const idOf = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
 const slugOf = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 28) || "zone";
@@ -656,16 +718,19 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
   drafts.forEach(({ step, old, id, title, kind }, index) => {
     const earlier = stages.slice();
     const following = drafts.slice(index + 1).find(() => true) ?? null;
-    const next = kind === "done" || kind === "sort" ? null
+    const next = kind === "done" || kind === "sort" || kind === "choose" ? null
       : typeof step.next === "string" && step.next.trim() !== "" ? find(step.next, title)
       : following?.id ?? drafts.find(one => one.kind === "done")!.id;
     const keptFail = old?.onFail !== null && old?.onFail !== undefined && drafts.some(one => one.id === old.onFail) ? old.onFail : null;
     const worker = [...earlier].reverse().find(one => one.kind === "task" || one.kind === "report");
     const notSure = kind === "sort" && typeof step.ifNotSure === "string" && step.ifNotSure.trim() !== "" ? step.ifNotSure
-      : kind === "wait" && typeof step.ifNoReply === "string" && step.ifNoReply.trim() !== "" ? step.ifNoReply : step.ifFails;
+      : kind === "wait" && typeof step.ifNoReply === "string" && step.ifNoReply.trim() !== "" ? step.ifNoReply
+      : kind === "choose" ? step.ifReplied : step.ifFails;
     const onFail = kind === "done" ? null
       : typeof notSure === "string" && notSure.trim() !== "" ? find(notSure, title)
       : keptFail ?? (kind === "approval" ? worker?.id ?? (drafts[0]!.id === id ? null : drafts[0]!.id)
+        // A reply to a choice says what to change: it goes back to the work before it, as its note.
+        : kind === "choose" ? worker?.id ?? null
         // Red CI goes back to the build before it, carrying the failing check.
         : kind === "pull-request" ? [...earlier].reverse().find(one => one.kind === "task")?.id ?? null : null);
     // "owner": whoever owns the flow when the card arrives.
@@ -675,7 +740,7 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
       : step.decider === null || /^(anyone|any approver|anybody)$/i.test(step.decider.trim()) ? null : step.decider.trim();
     stages.push({
       id, title, kind,
-      zone: old?.zone ?? { x: 0, y: 0, w: 260, h: kind === "done" || kind === "notify" ? 220 : 300, color: KIND_COLORS[kind] },
+      zone: old?.zone ?? { x: 0, y: 0, w: 260, h: kind === "done" || kind === "notify" || kind === "send" ? 220 : 300, color: KIND_COLORS[kind] },
       // A kept step on our default instructions gets the default again, so it reads any research step added before it.
       instructions: kind === "teammate" ? step.instructions?.trim() || old?.instructions || "Read the card and decide what happens next."
         : kind === "draft" ? step.instructions?.trim() || old?.instructions || DRAFT_DEFAULT
@@ -705,15 +770,22 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
       ...((kind === "approval" || kind === "teammate") && (step.teammate === undefined ? old?.teammate !== undefined : !/^(nobody|none|no one)$/i.test(step.teammate.trim())) ? { teammate: idOf(step.teammate ?? old!.teammate!) } : {}),
       ...(kind === "teammate" ? step.routes !== undefined ? step.routes.length === 0 ? {} : { routes: step.routes.map(one => ({ answer: String(one.answer ?? "").trim(), to: find(String(one.goesTo ?? ""), title) })) } : old?.routes === undefined ? {} : { routes: old.routes } : {}),
       ...(kind === "teammate" && (step.reply ?? old?.reply) === true ? { reply: true } : {}),
-      ...(() => { const limit = kind === "wait" || kind === "done" ? null : limitFromStep(step, old?.limit ?? null, title, ref => find(ref, title)); return limit === null ? {} : { limit }; })(),
+      ...(kind === "choose" ? { options: choicesFromStep(step, old?.options ?? null, title, ref => find(ref, title)) } : {}),
+      ...(kind === "task" && (step.repo ?? old?.repo) !== undefined && (step.repo ?? old?.repo)!.trim() !== "" ? { repo: (step.repo ?? old?.repo)!.trim() } : {}),
+      ...(() => {
+        // "If no reply" on a choice is where it moves once the reminder comes.
+        const asked = kind === "choose" && step.thenMoveTo === undefined && typeof step.ifNoReply === "string" ? { ...step, thenMoveTo: step.ifNoReply } : step;
+        if (kind === "choose" && asked.thenMoveTo !== undefined && asked.remindAfter === undefined && old?.limit === undefined) throw new Error(`Step ${title}: say how long to wait for a choice first, with remindAfter (like "2 days").`);
+        const limit = kind === "wait" || kind === "done" ? null : limitFromStep(asked, old?.limit ?? null, title, ref => find(ref, title)); return limit === null ? {} : { limit };
+      })(),
       next, onFail,
     });
   });
   // {{stage.<ref>}} in a step's words names a step as the lead wrote it (draftReply, Draft reply):
   // it is rewritten to that step's id, the same way the steps themselves are named.
-  const refs = (text: string) => text.replace(/\{\{\s*stage\.([A-Za-z0-9_ -]{1,60}?)\s*\}\}/g, (whole, ref: string) => {
+  const refs = (text: string) => text.replace(/\{\{\s*stage\.([A-Za-z0-9_ -]{1,60}?)(\.items|\.report)?\s*\}\}/g, (whole, ref: string, part: string | undefined) => {
     const hit = drafts.find(one => one.id === ref) ?? drafts.find(one => one.id === idOf(ref) || one.id.replace(/-/g, "") === idOf(ref).replace(/-/g, "") || one.title.toLowerCase() === ref.trim().toLowerCase());
-    return hit === undefined ? whole : `{{stage.${hit.id}}}`;
+    return hit === undefined ? whole : `{{stage.${hit.id}${part ?? ""}}}`;
   });
   for (const stage of stages) {
     if (stage.instructions !== null) stage.instructions = refs(stage.instructions);
@@ -726,14 +798,14 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
   // A new flow that branches (a sort, or a script's answers) is laid out in columns by step instead,
   // each branch below the one before, so no arrow crosses a zone.
   const placed = stages.filter(one => kept.get(one.id)?.zone === one.zone).map(one => one.zone);
-  const branches = previous === null && stages.some(one => (one.sort?.answers.length ?? 0) > 0 || (one.routes?.length ?? 0) > 0);
+  const branches = previous === null && stages.some(one => (one.sort?.answers.length ?? 0) > 0 || (one.routes?.length ?? 0) > 0 || choiceTargets(one).length > 0);
   const columns = new Map<string, number>();
   if (branches) {
     const queue = [stages[0]!.id];
     columns.set(stages[0]!.id, 0);
     while (queue.length > 0) {
       const id = queue.shift()!, stage = stages.find(one => one.id === id)!;
-      for (const to of [...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), stage.next, stage.onFail]) {
+      for (const to of [...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage), stage.next, stage.onFail]) {
         if (to === null || to === "" || columns.has(to)) continue;
         columns.set(to, columns.get(id)! + 1);
         queue.push(to);
@@ -761,6 +833,19 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
     placed.push(at);
   });
   return validateFlowDefinition({ version: 1, start: stages[0]!.id, stages });
+}
+
+/** A choose step's options: each with its words and the step it goes to ("end", or no step, ignores the card); kept ones carry over. */
+function choicesFromStep(step: FlowStepInput, old: FlowChoice[] | null, title: string, find: (ref: string) => string): FlowChoice[] {
+  if (!Array.isArray(step.options) || step.options.length === 0) {
+    if (old !== null) return old;
+    throw new Error(`Step ${title}: give it ${CHOICES_MIN} to ${CHOICES_MAX} options, each with a label and the step it goes to (or "end").`);
+  }
+  return step.options.map(one => {
+    const label = String(one?.label ?? "").trim();
+    const goes = typeof one?.goesTo === "string" ? one.goesTo.trim() : "";
+    return { label, to: goes === "" || /^(end|ignore|ignored|stop|close)$/i.test(goes) ? FLOW_END : find(goes) };
+  });
 }
 
 /** A sort step as the lead describes it: answers name the steps they go to; what it leaves out carries over from the zone it keeps. */
@@ -796,6 +881,7 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
         : `The agent looks into the card and writes a short report${notes}, plus any note it was sent back with.`);
     }
     if (stage.kind === "task" && stage.planning !== "auto") lines.push(stage.planning === "required" ? "Plans first." : "Builds without a plan.");
+    if (stage.kind === "task" && stage.repo !== undefined) lines.push(`Builds in another project: ${stage.repo}`);
     if (stage.kind === "draft") lines.push(`Claude writes: ${plain(stage.instructions ?? "")}`, `Then → ${to(stage.next)}`);
     else if (stage.kind === "request" && stage.request !== undefined) {
       const headers = Object.keys(stage.request.headers);
@@ -811,6 +897,10 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
       ...(stage.routes === undefined || stage.routes.length === 0 ? [`Then → ${to(stage.next)}`] : stage.routes.map(one => `${one.answer} → ${to(one.to)}`)),
       `It asks the flow's owner when its rules say to.${stage.reply === true ? " It sends what it writes back to whoever asked." : ""}${stage.onFail === null ? "" : ` If it can't → ${to(stage.onFail)}`}`);
     else if (stage.kind === "notify") lines.push(`Posts: ${plain(stage.message ?? "")}`, `Then → ${to(stage.next)}`);
+    else if (stage.kind === "send") lines.push("Sends the card's owner (or the flow's) what the step before produced: its summary, links and any screenshots, in each chat app they use.", `Then → ${to(stage.next)}`);
+    else if (stage.kind === "choose") lines.push("Sends the card's owner (or the flow's) what the step before produced, and asks them to choose:",
+      ...(stage.options ?? []).map(one => `${one.label} → ${one.to === FLOW_END ? "ignores the card." : to(one.to)}`),
+      `Or a reply with what they'd change → ${replyTarget(stage) === null ? "not possible." : to(replyTarget(stage))}`);
     else if (stage.kind === "update") lines.push(`Comments on the issue the card came from: ${plain(stage.message ?? "")}${stage.close === true ? " Then closes it (Linear: moves it to done)." : ""}`, `Then → ${to(stage.next)}${stage.onFail === null ? "" : ` If it can't → ${to(stage.onFail)}`}`);
     else if (stage.kind === "sort" && stage.sort !== null) {
       const percent = Math.round(stage.sort.sureAt * 100);
@@ -852,6 +942,7 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
   if (definition.stages.some(one => one.kind === "request" || one.kind === "email" || one.kind === "tool")) terms.push("Web request, email and tool steps send what they're given outside this computer, with no one checking unless a decision comes before them.");
   if (definition.stages.some(one => one.kind === "pull-request")) terms.push(`Pull request steps push the card's branch to GitHub and open a pull request under this project's pull request setup.${definition.stages.some(one => one.merge !== undefined) ? " A merge happens only after a person approves the card; nothing merges without one." : " Nothing merges on its own."}`);
   if (definition.stages.some(one => one.kind === "draft")) terms.push("Draft steps send each card's text to Claude through the lead chat's sign-in. Nothing a draft writes is sent until a later step sends it.");
+  if (definition.stages.some(one => one.kind === "task" && one.repo !== undefined)) terms.push("A build step in another project files its task there, only when the flow's owner may file work in that project.");
   if (definition.stages.some(one => one.teammate !== undefined)) terms.push("AI teammates decide and act within their soul files' rules, reading each card through Claude on this computer's sign-in; they never approve code tasks or merges.");
   return terms;
 }

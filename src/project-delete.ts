@@ -223,6 +223,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
     del(`${surface}_action`, IN("proposal"), proposals);
     del(`${surface}_flow_action`, IN("card"), C);
     del(`${surface}_flow_prompt`, IN("card"), C);
+    del(`${surface}_flow_choice`, IN("card"), C);
+    del(`${surface}_flow_note`, IN("card"), C);
     del(`${surface}_question_action`, IN("question"), questions);
     del(`${surface}_question_prompt`, IN("question"), questions);
     del(`${surface}_ask_action`, IN("turn"), U);
@@ -233,6 +235,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("telegram_proposal_action", IN("proposal"), proposals);
   del("telegram_flow_action", IN("card"), C);
   del("telegram_flow_prompt", IN("card"), C);
+  del("telegram_flow_choice", IN("card"), C);
+  del("flow_send", IN("card"), C);
   del("telegram_question_action", IN("question"), questions);
   del("telegram_question_prompt", IN("question"), questions);
   del("chat_decide_action", IN("task_id"), K);

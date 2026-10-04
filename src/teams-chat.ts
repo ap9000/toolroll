@@ -184,7 +184,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       }
     } else if (!content.image) {
       // A flow decision (v88): Approve / Edit / Send back, then the link.
-      const flow = content.flow ? chatFlowButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label, data: { so: one.token }, ...(one.action === "approve" ? { style: "positive" } : {}) })) : [];
+      const flow = content.flow || content.choose || content.note ? chatFlowButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label, data: { so: one.token }, ...(one.action === "approve" ? { style: "positive" } : {}) })) : [];
       // A teammate's question (v93): its options, then "Answer in words".
       const asked = content.question ? chatQuestionButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token } })) : [];
       // The lead's question to its owner: its options, then "Something else".

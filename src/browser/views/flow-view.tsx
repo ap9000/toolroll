@@ -9,7 +9,7 @@
 import { NEEDS } from "../../needs-you.js";
 import { Background, BackgroundVariant, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineChart, ListChecks, MessageSquareReply, Copy, Flag, GitPullRequest, Hammer, Inbox, Megaphone, MessageSquare, MousePointerClick, Pencil, PenLine, Plus, Search, Split, Globe, Mail, Wrench, SquareKanban, UserCheck, Webhook, Workflow, X, Zap } from "lucide-react";
+import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineChart, ListChecks, MessageSquareReply, Copy, Flag, GitPullRequest, Hammer, Inbox, Megaphone, MessageSquare, MousePointerClick, Pencil, PenLine, Plus, Search, Send, Signpost, Split, Globe, Mail, Wrench, SquareKanban, UserCheck, Webhook, Workflow, X, Zap } from "lucide-react";
 import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -31,6 +31,7 @@ const KIND_ICONS: Record<BrowserFlowStage["kind"], ReactNode> = {
   check: <ListChecks className="size-3.5" aria-hidden="true" />, "pull-request": <GitPullRequest className="size-3.5" aria-hidden="true" />, update: <MessageSquareReply className="size-3.5" aria-hidden="true" />,
   sort: <Split className="size-3.5" aria-hidden="true" />, draft: <PenLine className="size-3.5" aria-hidden="true" />,
   request: <Globe className="size-3.5" aria-hidden="true" />, email: <Mail className="size-3.5" aria-hidden="true" />, tool: <Wrench className="size-3.5" aria-hidden="true" />, wait: <Hourglass className="size-3.5" aria-hidden="true" />, teammate: <Bot className="size-3.5" aria-hidden="true" />,
+  send: <Send className="size-3.5" aria-hidden="true" />, choose: <Signpost className="size-3.5" aria-hidden="true" />,
 };
 
 
@@ -369,6 +370,50 @@ function CardPeople({ card, view, csrf, apply }: { card: BrowserFlowCard; view: 
   </div>;
 }
 
+/** Links a "Send to me" or "Person chooses" sent: Toolroll's pages here, a pull request in a new tab. */
+function SentLinks({ links }: { links: { label: string; href: string }[] }) {
+  return <div className="flex flex-wrap gap-x-3 gap-y-1">{links.map(link => <a key={link.label} className="text-[13px] font-medium text-primary underline-offset-4 hover:underline" href={link.href}
+    {...(link.href.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{link.label}</a>)}</div>;
+}
+
+/** What a "Send to me" last sent the card's person. */
+function SentBox({ sent }: { sent: NonNullable<BrowserFlowCard["sent"]> }) {
+  return <details className="rounded-md border px-3 py-2" data-flow-sent>
+    <summary className="cursor-pointer text-[13px] font-medium">Sent to {sent.person} · {when(sent.at)}</summary>
+    <div className="mt-2 flex flex-col gap-2">
+      <p className="text-[12px] text-muted-foreground">{sent.title}</p>
+      <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{sent.summary}</p>
+      {sent.links.length > 0 && <SentLinks links={sent.links} />}
+    </div>
+  </details>;
+}
+
+/** "Person chooses": what was done, the flow's options, and a reply instead — for the person it waits on. Others see who it waits on. */
+function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserFlowCard["choose"]>; base: string; csrf: string; apply: (result: Said) => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const act = async (fields: Record<string, string>) => {
+    setBusy(true);
+    const result = await send(`${base}/choose`, fields, csrf);
+    setBusy(false);
+    apply(result);
+    if (result.ok) setNote("");
+  };
+  return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-flow-choose>
+    <p className="text-[12px] text-muted-foreground">{choose.title}</p>
+    <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{choose.summary}</p>
+    {choose.links.length > 0 && <SentLinks links={choose.links} />}
+    {!choose.mine ? <p className="text-[12.5px] text-muted-foreground">Waiting for {choose.person} to choose.</p> : <>
+      <div className="flex flex-wrap gap-2">{choose.options.map(option => <Button key={option.choice} size="sm" variant={option.choice === 0 ? "default" : "outline"} disabled={busy}
+        onClick={() => void act({ choice: String(option.choice), label: option.label, entry: String(choose.entry) })} data-flow-choice={option.choice}>{option.label}</Button>)}</div>
+      {choose.reply && <>
+        <Textarea value={note} onChange={event => setNote(event.target.value)} rows={2} maxLength={2000} placeholder="Or say what you'd change" aria-label="What you'd change" />
+        <Button size="sm" variant="outline" className="self-start" disabled={busy || note.trim() === ""} onClick={() => void act({ note, entry: String(choose.entry) })}>Send reply</Button>
+      </>}
+    </>}
+  </div>;
+}
+
 function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void }) {
   const [note, setNote] = useState("");
   const [draftText, setDraftText] = useState(card.draft?.text ?? "");
@@ -387,7 +432,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
         <h2 className="text-[15px] font-semibold leading-snug">{card.title}</h2>
-        <p className="mt-0.5 text-[12px] text-muted-foreground">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : "Cancelled"} · added by {card.createdBy}</p>
+        <p className="mt-0.5 text-[12px] text-muted-foreground">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : card.waiting === "Ignored" ? "Ignored" : "Cancelled"} · added by {card.createdBy}</p>
         {card.sorted !== null && <div className="mt-1.5 flex"><SortChip sorted={card.sorted} /></div>}
       </div>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
@@ -395,8 +440,10 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
     {card.source !== null && <p className="text-[12px] text-muted-foreground">From {card.source.url === null ? card.source.label
       : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{card.source.label}</a>}</p>}
     {card.description !== null && <p className="whitespace-pre-wrap text-[13px]">{card.description}</p>}
-    {card.waiting !== null && card.question == null && <p className="rounded-md bg-muted px-3 py-2 text-[13px]">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
+    {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-[13px]">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
     {card.question != null && <TeammateQuestion question={card.question} csrf={csrf} apply={apply} />}
+    {card.choose != null && <ChooseBox choose={card.choose} base={`${view.flow.href}/cards/${card.id}`} csrf={csrf} apply={apply} />}
+    {card.sent != null && <SentBox sent={card.sent} />}
     {card.question != null && card.deadline != null && <p className="text-[12px] text-muted-foreground">{deadlineWords(card.deadline)}</p>}
     <CardPeople card={card} view={view} csrf={csrf} apply={apply} />
     {card.task !== null && <a className="text-[13px] font-medium text-primary underline-offset-4 hover:underline" href={card.task.href}>Open its task</a>}
@@ -697,7 +744,9 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
         ...(event.target.value === "wait" ? { wait: stage.wait ?? { for: "reply", minutes: 3 * 24 * 60 } } : {}),
         ...(event.target.value === "teammate" ? { teammate: stage.teammate ?? view.teammates?.[0]?.handle, instructions: stage.instructions ?? "Read the card and decide what happens next." }
           : event.target.value !== "approval" ? { teammate: undefined } : {}),
-        ...(event.target.value === "wait" || event.target.value === "done" ? { limit: undefined } : event.target.value !== "inbox" && event.target.value !== "approval" && stage.limit !== undefined ? { limit: { ...stage.limit, to: null } } : {}),
+        ...(event.target.value === "wait" || event.target.value === "done" ? { limit: undefined } : event.target.value !== "inbox" && event.target.value !== "approval" && event.target.value !== "choose" && stage.limit !== undefined ? { limit: { ...stage.limit, to: null } } : {}),
+        ...(event.target.value === "choose" ? { next: null, options: stage.options ?? [{ label: "Looks good", to: others.find(one => one.kind === "done")?.id ?? others[0]?.id ?? "end" }, { label: "Ignore", to: "end" }] } : { options: undefined }),
+        ...(event.target.value === "task" ? {} : { repo: undefined }),
         ...(event.target.value === "sort" ? { next: null, sort: stage.sort ?? { question: "What kind of card is this?", answers: others.slice(0, 2).map(one => ({ answer: one.title.slice(0, 40), means: one.title, to: one.id })), sureAt: 0.8, notes: [] } } : {}) })}>
         {view.kinds.map(one => <option key={one.kind} value={one.kind}>{one.label}</option>)}
       </select>
@@ -705,9 +754,16 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
     {stage.kind === "draft" && <Field label="What Claude should write" hint="Claude reads the card and what earlier zones said. Put a “Person decides” zone next to read and edit it first.">
       <Textarea rows={5} value={stage.instructions ?? ""} maxLength={4000} onChange={event => update({ instructions: event.target.value })} aria-label="What Claude should write" />
     </Field>}
-    {(stage.kind === "task" || stage.kind === "report") && <Field label="What the agent should do" hint={"Fill-ins: {{card.title}}, {{card.description}}, {{note}} (the latest send-back note), {{stage.<zone id>}} (an earlier zone's report)."}>
+    {(stage.kind === "task" || stage.kind === "report") && <Field label="What the agent should do" hint={"Fill-ins: {{card.title}}, {{card.description}}, {{note}} (the latest send-back note), {{stage.<zone id>}} (an earlier zone's report; a research zone adds .items and .report)."}>
       <Textarea rows={7} value={stage.instructions ?? ""} onChange={event => update({ instructions: event.target.value })} aria-label="What the agent should do" />
     </Field>}
+    {stage.kind === "task" && (view.projects ?? []).length > 1 && <Field label="Builds in" hint="Another project files its task there, as the flow's owner, under that project's approvals.">
+      <select className={select} aria-label="Builds in" value={stage.repo ?? view.projects![0]!.path} onChange={event => update({ repo: event.target.value === view.projects![0]!.path ? undefined : event.target.value })}>
+        {view.projects!.map((one, index) => <option key={one.path} value={one.path}>{index === 0 ? `${one.name} (this flow's project)` : one.name}</option>)}
+        {stage.repo !== undefined && !view.projects!.some(one => one.path === stage.repo) && <option value={stage.repo}>{stage.repo} (not yours)</option>}
+      </select>
+    </Field>}
+    {stage.kind === "choose" && <ChooseSettings options={stage.options ?? []} others={others} set={options => update({ options })} />}
     {stage.kind === "task" && <Field label="Plan first?">
       <select className={select} aria-label="Plan first?" value={stage.planning ?? "auto"} onChange={event => update({ planning: event.target.value as "auto" | "required" | "skip" })}>
         <option value="auto">Let Toolroll decide</option><option value="required">Always plan first</option><option value="skip">Build directly</option>
@@ -751,7 +807,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       </div>
         : <Field label={stage.wait.for === "reply" ? "For up to" : "How long"}><Duration minutes={stage.wait.minutes} label={stage.wait.for === "reply" ? "For up to" : "How long"} set={minutes => update({ wait: { ...stage.wait!, minutes } })} /></Field>}
     </>}
-    {stage.kind !== "done" && stage.kind !== "sort" && <Field label={stage.kind === "wait" && stage.wait?.for === "reply" ? "When they reply" : "Then"}>
+    {stage.kind !== "done" && stage.kind !== "sort" && stage.kind !== "choose" && <Field label={stage.kind === "wait" && stage.wait?.for === "reply" ? "When they reply" : "Then"}>
       <select className={select} aria-label={stage.kind === "wait" && stage.wait?.for === "reply" ? "When they reply" : "Then"} value={stage.next ?? ""} onChange={event => update({ next: event.target.value || null })}>
         <option value="">Wait here</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
@@ -761,9 +817,9 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
         <option value="">Stay here for a person</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
     </Field>}
-    {(stage.kind === "approval" || stage.kind === "task" || stage.kind === "report" || stage.kind === "check" || stage.kind === "pull-request" || stage.kind === "update" || stage.kind === "sort" || stage.kind === "request" || stage.kind === "email" || stage.kind === "tool" || stage.kind === "teammate") && <Field label={stage.kind === "approval" ? "If sent back" : stage.kind === "sort" ? "If it isn't sure" : stage.kind === "teammate" ? "If it can't handle it" : stage.kind === "pull-request" ? "If checks fail" : "If it fails"}>
-      <select className={select} aria-label={stage.kind === "approval" ? "If sent back" : stage.kind === "sort" ? "If it isn't sure" : stage.kind === "teammate" ? "If it can't handle it" : stage.kind === "pull-request" ? "If checks fail" : "If it fails"} value={stage.onFail ?? ""} onChange={event => update({ onFail: event.target.value || null })}>
-        <option value="">{stage.kind === "approval" ? "Can't be sent back" : stage.kind === "sort" ? "Wait here for a person" : "Wait here"}</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
+    {(stage.kind === "approval" || stage.kind === "task" || stage.kind === "report" || stage.kind === "check" || stage.kind === "pull-request" || stage.kind === "update" || stage.kind === "sort" || stage.kind === "request" || stage.kind === "email" || stage.kind === "tool" || stage.kind === "teammate" || stage.kind === "choose") && <Field label={FAIL_LABELS[stage.kind] ?? "If it fails"} {...(stage.kind === "choose" ? { hint: "Their reply is the note there ({{note}})." } : {})}>
+      <select className={select} aria-label={FAIL_LABELS[stage.kind] ?? "If it fails"} value={stage.onFail ?? ""} onChange={event => update({ onFail: event.target.value || null })}>
+        <option value="">{stage.kind === "approval" ? "Can't be sent back" : stage.kind === "sort" ? "Wait here for a person" : stage.kind === "choose" ? "Where the first option goes" : "Wait here"}</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
     </Field>}
     {stage.kind !== "wait" && stage.kind !== "done" && <TimeLimit stage={stage} others={others} update={update} />}
@@ -776,6 +832,25 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       {view.start !== stage.id && <Button variant="outline" size="sm" onClick={makeStart}>New cards start here</Button>}
       <Button variant="ghost" size="sm" className="text-destructive" onClick={remove} disabled={stages.length <= 1}>Delete zone</Button>
     </div>
+  </div>;
+}
+
+/** What a zone's failure path is called in its settings. */
+const FAIL_LABELS: Partial<Record<BrowserFlowStage["kind"], string>> = { approval: "If sent back", sort: "If it isn't sure", teammate: "If it can't handle it", "pull-request": "If checks fail", choose: "If they reply" };
+
+/** A "Person chooses" zone's buttons: 2 to 4, each with its words and where it leads (or ignoring the card). */
+function ChooseSettings({ options, others, set }: { options: { label: string; to: string }[]; others: BrowserFlowStage[]; set: (options: { label: string; to: string }[]) => void }) {
+  const change = (index: number, change: Partial<{ label: string; to: string }>) => set(options.map((one, at) => at === index ? { ...one, ...change } : one));
+  return <div className="grid gap-2" data-choose-options>
+    <span className="text-[13px] font-medium">Buttons</span>
+    {options.map((option, index) => <div key={index} className="flex flex-wrap items-center gap-2">
+      <Input className="min-w-0 flex-1" value={option.label} maxLength={40} onChange={event => change(index, { label: event.target.value })} aria-label={`Button ${index + 1}`} />
+      <select className={cn(SELECT, "min-w-0 flex-1")} aria-label={`Button ${index + 1} goes to`} value={option.to} onChange={event => change(index, { to: event.target.value })}>
+        <option value="end">Ignore the card</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
+      </select>
+      {options.length > 2 && <Button type="button" variant="ghost" size="icon" onClick={() => set(options.filter((_, at) => at !== index))} aria-label={`Remove button ${index + 1}`}><X className="size-4" /></Button>}
+    </div>)}
+    {options.length < 4 && <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => set([...options, { label: "", to: others[0]?.id ?? "end" }])}><Plus className="size-4" />Add a button</Button>}
   </div>;
 }
 
@@ -793,15 +868,15 @@ function Duration({ minutes, label, set }: { minutes: number; label: string; set
 
 /** v91: how long a card may sit in a zone before the person it waits on is reminded (and, for Holding and decisions, where it goes then). */
 function TimeLimit({ stage, others, update }: { stage: BrowserFlowStage; others: BrowserFlowStage[]; update: (change: Partial<BrowserFlowStage>) => void }) {
-  const moves = stage.kind === "inbox" || stage.kind === "approval";
+  const moves = stage.kind === "inbox" || stage.kind === "approval" || stage.kind === "choose";
   return <div className="grid gap-2" data-time-limit>
     <label className="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" className="size-4 accent-[var(--so-accent)]" checked={stage.limit !== undefined}
       onChange={event => update({ limit: event.target.checked ? { minutes: 24 * 60, to: null } : undefined })} />Time limit</label>
     {stage.limit !== undefined && <>
-      <Field label="Remind after" hint={stage.kind === "approval" ? "Whoever decides hears about it once." : "The card's owner (or the flow's) hears about it once."}>
+      <Field label="Remind after" hint={stage.kind === "approval" ? "Whoever decides hears about it once." : stage.kind === "choose" ? "Whoever chooses hears about it once." : "The card's owner (or the flow's) hears about it once."}>
         <Duration minutes={stage.limit.minutes} label="Remind after" set={minutes => update({ limit: { ...stage.limit!, minutes } })} />
       </Field>
-      {moves && <Field label="Then">
+      {moves && <Field label={stage.kind === "choose" ? "If no reply" : "Then"}>
         <select className={SELECT} aria-label="After the time limit" value={stage.limit.to ?? ""} onChange={event => update({ limit: { ...stage.limit!, to: event.target.value || null } })}>
           <option value="">Keep it here</option>{others.map(one => <option key={one.id} value={one.id}>Move it to {one.title}</option>)}
         </select>
@@ -1344,7 +1419,8 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       const fail = stage.onFail === null ? undefined : stages.find(one => one.id === stage.onFail);
       const limitTo = stage.limit?.to == null ? undefined : stages.find(one => one.id === stage.limit!.to);
       // A sort zone (or a script zone's answers, v90): one arrow to each zone its answers lead to, named by those answers.
-      const picks = stage.kind === "sort" && stage.sort !== null ? stage.sort.answers : stage.kind === "check" || stage.kind === "teammate" ? stage.routes ?? [] : [];
+      const picks = stage.kind === "sort" && stage.sort !== null ? stage.sort.answers : stage.kind === "check" || stage.kind === "teammate" ? stage.routes ?? []
+        : stage.kind === "choose" ? (stage.options ?? []).filter(one => one.to !== "end").map(one => ({ answer: one.label, to: one.to })) : [];
       const answers = picks.length > 0 ? [...new Set(picks.map(one => one.to))].flatMap(to => {
         const target = stages.find(one => one.id === to);
         if (target === undefined) return [];
@@ -1360,7 +1436,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
           ...(stage.kind === "wait" && stage.wait?.for === "reply" ? { label: "replied", labelStyle: { fontSize: 11, fontWeight: 600, fill: "var(--color-foreground)" }, labelBgStyle: { fill: "var(--color-card)" } } : {}) }]),
         // Outside editing, a failure that lands where one of its answers already goes is that arrow, not a second one crossing the canvas.
         ...(fail === undefined || (!editing && answers.some(one => one.target === fail.id)) ? [] : [{ id: `${stage.id}->fail`, source: stage.id, target: fail.id, sourceHandle: sides(stage, fail, true).source, targetHandle: sides(stage, fail, true).target,
-          type: "smoothstep", pathOptions: { offset: 28, borderRadius: 10 }, label: stage.kind === "approval" ? "sent back" : stage.kind === "sort" ? "not sure" : stage.kind === "wait" ? "no reply" : "fails", labelStyle: { fontSize: 11, fill: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" },
+          type: "smoothstep", pathOptions: { offset: 28, borderRadius: 10 }, label: stage.kind === "approval" ? "sent back" : stage.kind === "sort" ? "not sure" : stage.kind === "wait" ? "no reply" : stage.kind === "choose" ? "reply" : "fails", labelStyle: { fontSize: 11, fill: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" },
           labelBgStyle: { fill: "var(--color-card)" }, markerEnd: { type: MarkerType.ArrowClosed, color: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" },
           style: { strokeWidth: 1.5, strokeDasharray: "6 4", stroke: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" }, deletable: editing }]),
         // A time limit that moves the card on (v91): a dashed arrow named by the time.
@@ -1393,6 +1469,13 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       // From a sort zone, a new arrow is a new answer, named after where it goes until it's renamed.
       const target = stages.find(one => one.id === connection.target);
       if (target !== undefined && from.sort.answers.length < 12) updateStage(from.id, { sort: { ...from.sort, answers: [...from.sort.answers, { answer: target.title.slice(0, 40), means: target.title, to: target.id }] } });
+      setSelected({ zone: from.id });
+      return;
+    }
+    if (from?.kind === "choose" && connection.sourceHandle !== "fail") {
+      // From a "Person chooses" zone, a new arrow is a new button, named after where it goes until it's renamed.
+      const target = stages.find(one => one.id === connection.target);
+      if (target !== undefined && (from.options ?? []).length < 4) updateStage(from.id, { options: [...from.options ?? [], { label: target.title.slice(0, 40), to: target.id }] });
       setSelected({ zone: from.id });
       return;
     }

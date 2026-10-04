@@ -28,14 +28,15 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateNote } from "./decision.js";
-import { resultShotsFor, type ResultShot } from "./result-shots.js";
+import { isShotsKind, resultShotsFor, type ResultShot } from "./result-shots.js";
 import { isLifecycleNotification, isTelegramProgressNotification, RESULT_SHOTS_KIND, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
 import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, type QuietView } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
 import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubjectOf } from "./lead-voice.js";
 import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team.js";
-import { applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowDecisionAt } from "./telegram-flow.js";
+import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowDecisionAt, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
+import { flowChoiceAt, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { focusContextFor, taskInCeiling } from "./chat-channel.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, dropDecideTokens, hasLiveDecideTokens, linksFor, placeDecidePrompt, decideOffer, decideTargetOf, isDecideToken, mergedText, mintDecideButtons, offerFingerprint, openPromptFor, placeDecideTokens, recordChatMerge, retireDecideTokens,
@@ -761,7 +762,7 @@ async function deliverOutbox(
     // Routine progress facts are not a problem to fix: a first pairing
     // starts from now and settles them as history. Anything else pending
     // is named, once per pass, as before.
-    if (store.listNotifications("pending").some(row => !isLifecycleNotification(row) && row.kind !== RESULT_SHOTS_KIND)) report.problems.push("outbox rows are pending but no chat is paired — `toolroll bridge telegram pair`");
+    if (store.listNotifications("pending").some(row => !isLifecycleNotification(row) && !isShotsKind(row.kind))) report.problems.push("outbox rows are pending but no chat is paired — `toolroll bridge telegram pair`");
     return;
   }
   const digest = store.telegramDigest();
@@ -1096,7 +1097,7 @@ async function deliverOutboxTo(
       return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
     };
     let outcome: { ok: true; receipt: string | null } | { ok: false; error: string };
-    if (rows.length === 1 && row.kind === RESULT_SHOTS_KIND) outcome = await shotsSender(row);
+    if (rows.length === 1 && isShotsKind(row.kind)) outcome = await shotsSender(row);
     else if (rows.length === 1 && row.kind === LEAD_SAY_KIND) outcome = await leadSayOutcome(row);
     else if (quiet && rows.length === 1 && isTaskFact(row)) outcome = await quietOutcome(row);
     else {
@@ -1137,7 +1138,7 @@ function isUrgent(notification: Notification): boolean {
 /** A routine fact the digest may carry. Screenshots are never urgent (they follow their result message, which the
  * task's order fence holds them behind) and never a digest line: they go as their own photos once it has gone. */
 function joinsDigest(notification: Notification): boolean {
-  return !isUrgent(notification) && notification.kind !== RESULT_SHOTS_KIND;
+  return !isUrgent(notification) && !isShotsKind(notification.kind);
 }
 
 /** The digest text: a header with the count and the window, then one
@@ -1233,16 +1234,23 @@ async function deliverOne(
     const decided = offer === null ? null : mintDecideButtons(store, decideSeat(binding), target!, offer, clock());
     const parts = split(offer?.text ?? `${notificationIdentity(notification, title !== undefined && mentions(words, title) ? undefined : title)}${words}`);
     const fallback = offer === null ? decideFallbackLink(target) : null;
-    const button = fallback !== null ? (() => { try { return phoneLinkButton(phoneOrigin?.() ?? null, fallback); } catch { return null; } })()
+    let button = fallback !== null ? (() => { try { return phoneLinkButton(phoneOrigin?.() ?? null, fallback); } catch { return null; } })()
       : offer === null && notification.link !== null && !alreadyAccepted && current ? factButton(phoneOrigin, notification.link) : null;
     // A flow card waiting on a decision (v86): Approve, Edit, Send back on the last part, for this visit only.
     const visit = FLOW_DECIDE_KEY.exec(notification.dedupeKey);
     const waiting = visit === null ? null : flowDecisionAt(store, Number(visit[1]), Number(visit[2]));
     const flowKeys = waiting === null ? null : flowButtons(store, binding, waiting, clock());
+    // A flow's "Send to me" or "Person chooses" (flow-send.ts): its links as buttons, and a choice's options above them.
+    const sentVisit = FLOW_SEND_KEY.exec(notification.dedupeKey) ?? FLOW_CHOOSE_KEY.exec(notification.dedupeKey);
+    const sent = sentVisit === null ? null : flowSentContent(store, Number(sentVisit[1]), Number(sentVisit[2]));
+    const choosing = sent === null || !FLOW_CHOOSE_KEY.test(notification.dedupeKey) || notification.recipient !== binding.approver ? null : flowChoiceAt(store, Number(sentVisit![1]), Number(sentVisit![2]));
+    const choiceKeys = choosing === null || sent === null ? null : flowChoiceButtons(store, binding, choosing, sent, clock());
+    const sentRow = sent === null ? null : (() => { try { return flowSendKeyboardRow(phoneOrigin?.() ?? null, sent); } catch { return []; } })();
+    if (sentRow !== null) button = sentRow.length === 0 ? null : sentRow;
     // A teammate's question (v93): its options and "Answer in words", for the person it asks.
-    const asked = flowKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
+    const asked = flowKeys === null && choiceKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
-    const keys = flowKeys ?? questionKeys;
+    const keys = flowKeys ?? choiceKeys ?? questionKeys;
     let last: string | null = null;
     for (const [index, part] of parts.entries()) {
       const final = index === parts.length - 1;
@@ -1256,6 +1264,11 @@ async function deliverOne(
       last = sent.messageId;
     }
     if (flowKeys !== null && last !== null) store.placeTelegramFlowActions(flowKeys.tokens, last);
+    if (choiceKeys !== null && last !== null) {
+      store.placeTelegramFlowChoices(choiceKeys.tokens, last);
+      // A reply to this message, instead of a tap, is the person's note (applyFlowReply).
+      if (sent?.reply === true) store.recordTelegramFlowPrompt({ chatId: binding.chatId, messageId: last, binding: binding.id, card: choosing!.card.id, entry: choosing!.card.entry, mode: "send-back" }, clock(), 7 * 24);
+    }
     if (questionKeys !== null && last !== null) store.placeTelegramQuestionActions(questionKeys.tokens, last);
     if (decided !== null && last !== null) placeDecideTokens(store, decided.tokens, last);
     return { ok: true, receipt: receiptFor(botId, binding.chatId, last) };
@@ -1552,7 +1565,7 @@ async function enrolledForMessage(context: Context, update: Update): Promise<rea
 async function projectsForTap(context: Context, update: Update): Promise<readonly string[] | null> {
   const callback = update.callback_query;
   // Flow decision buttons (v86) work with or without the lead's conversation on this phone.
-  const flowTap = callback !== undefined && context.store.getTelegramFlowAction(callback.data ?? "") !== null;
+  const flowTap = callback !== undefined && (context.store.getTelegramFlowAction(callback.data ?? "") !== null || context.store.getTelegramFlowChoice(callback.data ?? "") !== null);
   // So do a result's, plan's or pull request's own buttons (chat-decide.ts).
   const decideTap = callback !== undefined && isDecideToken(context.store, callback.data ?? "");
   if (callback === undefined || context.readProjects === undefined || (context.conversation === undefined && !flowTap && !decideTap)) return null;
@@ -1561,7 +1574,7 @@ async function projectsForTap(context: Context, update: Update): Promise<readonl
     binding === null || callback.from === undefined ||
     callback.message?.chat === undefined ||
     // Proposal cards and task picks read the chat's project ceiling.
-    (context.store.getTelegramProposalAction(callback.data ?? "") === null && context.store.getTelegramFlowAction(callback.data ?? "") === null && !decideTap && !(callback.data ?? "").startsWith("pick:"))
+    (context.store.getTelegramProposalAction(callback.data ?? "") === null && !flowTap && !decideTap && !(callback.data ?? "").startsWith("pick:"))
   ) return null;
   const chat = callback.message.chat;
   const chatId = String(chat.id);
@@ -2186,6 +2199,17 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
         const id = (answer.result as { message_id?: number } | undefined)?.message_id;
         if (answer.ok && Number.isSafeInteger(id)) store.recordTelegramFlowPrompt({ ...effect.prompt, messageId: String(id) }, clock());
       });
+    }
+    return;
+  }
+  // A "Person chooses" option (flow-send.ts): the card goes where it leads, or is ignored.
+  const choiceAction = store.getTelegramFlowChoice(token);
+  if (choiceAction !== null) {
+    if (choiceAction.binding !== binding.id || choiceAction.chatId !== tapChat || (choiceAction.messageId !== null && choiceAction.messageId !== String(message.message_id))) { report.ignored++; return; }
+    const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
+    for (const effect of applyFlowChoiceTap(store, binding, choiceAction, { text: message.text ?? "" }, repos, clock())) {
+      if (effect.kind === "ack") ack(effect.text);
+      else if (effect.kind === "edit") editText(effect.text);
     }
     return;
   }

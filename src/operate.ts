@@ -293,6 +293,7 @@ import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODEL
 import { resolvePhaseAgent, resolveScopeProfile, resolveScopeChain, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
 import { isRiskLevel, legOf, projectRoute, riskConsequence, routeDigestOf, routeWords, RISK_LEVELS, PHASES as ROUTE_PHASES, type ReadinessLookup, type ReadinessObservation, type RiskLevel, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
+import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { clearWebhook, effectivePrimary, isMessagingChannel, loadConsoleUrl, loadPrimary, loadWebhookTargets, phoneOrigin, saveConsoleUrl, savePrimary, saveWebhook, webhookPass, SLACK_ENV, DISCORD_ENV } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
@@ -412,6 +413,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll project concurrency [<n>] --repo <p>
                                         how many of a project's tasks build at once (default 2, never past the
                                         worker's capacity); an approver changes it with <n>
+  toolroll project demo [<url>|off] --repo <p>
+                                        the project's own demo or dev server, the one non-public address a
+                                        report's scout may screenshot
   toolroll task evidence <id>        the task's evidence pack as JSON (--html for a printable page; --out <file>)
   toolroll storage                   where the disk goes: database, build checkouts, releases, evidence, leftover test temp folders
   toolroll storage clean [--yes]     preview removing finished tasks' clean checkouts (their branches stay) and test temp folders older than a day; --yes removes them
@@ -1238,6 +1242,7 @@ async function dispatch(
       if (positional[0] === "rules") return projectRulesCommand(positional, flags, context);
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
+      if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
     case "assignment":
       // The person's own lead (its lead token) claims as the lead; coordinator credentials keep their own path.
@@ -3916,6 +3921,7 @@ async function tickCommand(
         onProviderSpawn: pid => { worktrees.recordProviderOccupancy(scoutLeased.worktree.path, runner, pid, scoutLeased.worktree.leaseEpoch); },
         evidenceRoot: context.evidenceRoot,
         answers: scoutAnswers,
+        demoUrl: projectDemoUrl(context.databaseFile, repo),
         provider: spec.provider,
         model: proof.effective.model,
         ...(proof.effective.maxTurns === undefined ? {} : { maxTurns: proof.effective.maxTurns }),
@@ -13289,6 +13295,36 @@ async function projectConcurrencyCommand(positional: readonly string[], flags: M
     words(changed.after),
     ...(changed.before > changed.after ? ["Builds already running carry on; the new number applies to the next one."] : []),
   ]);
+}
+
+/** `project demo [<url>|off] --repo <p>` (review 827): the project's own demo or dev server, which its scouts may
+ * screenshot. Changing it is an approver's act. */
+async function projectDemoCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project demo";
+  const allowed = new Set(["repo", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project demo option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  if (positional.length > 2 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project demo [<url>|off] --repo <project path>.", EXIT.usage);
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...("error" in registered ? [] : registered.repos)])];
+  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const words = (url: string | null): string => url === null ? `${repo}: no demo; scouts screenshot public pages only.` : `${repo}: scouts may also screenshot ${url}.`;
+  const given = positional[1];
+  if (given === undefined) {
+    const current = projectDemoUrl(context.databaseFile, repo);
+    return succeed(context.write, context.json, command, { repo, demoUrl: current }, () => [words(current)]);
+  }
+  const url = given.trim().toLowerCase() === "off" ? null : parseDemoUrl(given);
+  if (url === null && given.trim().toLowerCase() !== "off") return fail(context.write, context.json, command, "usage", "The demo is an http or https address without a sign-in, or off.", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);
+  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project sets its demo: pass --as and --token (or use the remembered login).", EXIT.refused);
+  }
+  const changed = saveProjectDemo(context.databaseFile, repo, url);
+  context.store.recordProjectDemo(acting.name, repo, changed.before, changed.after, context.clock());
+  return succeed(context.write, context.json, command, { repo, before: changed.before, demoUrl: changed.after }, () => [words(changed.after)]);
 }
 
 /** Write a pack or export where asked (never over an existing file), or to the terminal. */

@@ -8,6 +8,9 @@
  * where an answer goes and `{{script.<name>}}` where its script's name goes — so it can be written out as a
  * shared flow file later. Every one is built only from existing zone and trigger kinds, and none merges:
  * a pull request it opens waits for a person.
+ *
+ * Every template can end with "Send me the result" (a "Send to me" zone before its end), off unless asked for
+ * (`send-result: yes`): what the flow did reaches the person in their chat apps.
  */
 import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
@@ -15,7 +18,7 @@ import { flowDefinitionOf } from "./flow-engine.js";
 import { saveScript, validateScript } from "./flow-scripts.js";
 import { isToolrollRepo, planeReviewSteps } from "./flow-starters.js";
 import { addFlowTriggerTo, describeTrigger, githubRepoOf, scheduleFromWords, validateTriggerConfig } from "./flow-triggers.js";
-import { clockTime, flowFromSteps, flowTerms, FLOW_TEMPLATES, ISSUE_LABEL, type FlowDefinition, type FlowStepInput } from "./flows.js";
+import { choiceTargets, clockTime, flowFromSteps, flowTerms, FLOW_TEMPLATES, ISSUE_LABEL, type FlowDefinition, type FlowStage, type FlowStepInput } from "./flows.js";
 import { publishingOf } from "./pull-request-flow.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -330,9 +333,37 @@ const oneLine = (value: string, cap: number, what: string) => {
   return said;
 };
 
+/** The optional last step every template offers, and the answer that turns it on. */
+export const SEND_RESULT = { key: "send-result", title: "Send me the result", does: "When a card finishes, sends you what was done (its summary, links and screenshots) in your chat apps." } as const;
+
+/** A flow with "Send me the result" before its end: every path into its main Done zone passes through it first. */
+export function withSendResult(definition: FlowDefinition): FlowDefinition {
+  // Its main end: Done, else an end that isn't a filtered-out one (drawn in rose), else any end.
+  const ends = definition.stages.filter(one => one.kind === "done");
+  const end = ends.find(one => one.id === "done") ?? ends.find(one => one.zone.color !== "rose") ?? ends[0];
+  if (end === undefined || definition.stages.some(one => one.kind === "send" && one.next === end.id)) return definition;
+  let id = "send-result";
+  for (let n = 2; definition.stages.some(one => one.id === id); n++) id = `send-result-${n}`;
+  const into = (to: string) => to === end.id ? id : to;
+  const stages: FlowStage[] = definition.stages.map(one => ({
+    ...one, next: one.next === null ? null : into(one.next), onFail: one.onFail === null ? null : into(one.onFail),
+    ...(one.limit === undefined ? {} : { limit: { ...one.limit, to: one.limit.to === null ? null : into(one.limit.to) } }),
+    sort: one.sort === null ? null : { ...one.sort, answers: one.sort.answers.map(answer => ({ ...answer, to: into(answer.to) })) },
+    ...(one.routes === undefined ? {} : { routes: one.routes.map(route => ({ ...route, to: into(route.to) })) }),
+    ...(one.options === undefined || choiceTargets(one).length === 0 ? {} : { options: one.options.map(option => ({ ...option, to: into(option.to) })) }),
+  }));
+  // Where the end was, and the end moves along to make room.
+  const send: FlowStage = { id, title: SEND_RESULT.title, kind: "send", zone: { ...end.zone, color: "green", h: 220 }, instructions: null, planning: null, approver: null,
+    message: null, close: null, script: null, sort: null, next: end.id, onFail: null };
+  const moved = stages.map(one => one.id === end.id ? { ...one, zone: { ...one.zone, x: one.zone.x + Math.max(300, one.zone.w + 40) } } : one);
+  return { ...definition, ...(definition.start === end.id ? { start: id } : {}), stages: [...moved.filter(one => one.id !== end.id), send, moved.find(one => one.id === end.id)!] };
+}
+
 /** The answers, checked in plain words, with what they fill in. Throws. */
 export function checkAnswers(template: GalleryTemplate, given: GalleryAnswers): GalleryAnswers {
   const answers: GalleryAnswers = {};
+  // Off unless asked for; only said when on, so a template's answers read as before.
+  if (given[SEND_RESULT.key] === "yes") answers[SEND_RESULT.key] = "yes";
   for (const ask of template.asks) {
     const value = String(given[ask.key] ?? ask.default).trim();
     if (ask.key === "label") answers["label"] = oneLine(value, 50, "label");
@@ -412,10 +443,12 @@ export function buildFromGallery(store: Store, template: GalleryTemplate, repo: 
     return { name, about: draft.about, body: draft.body, timeoutMinutes: draft.timeoutMinutes, existing };
   });
   const github = githubRepoOf(repo);
-  const definition = template.definition !== undefined ? structuredClone(template.definition)
+  const drawn = template.definition !== undefined ? structuredClone(template.definition)
     : flowFromSteps(fill(template.ownSteps !== undefined && isToolrollRepo(repo) ? template.ownSteps : template.steps!, answers, names, github), null);
+  const sends = answers[SEND_RESULT.key] === "yes";
+  const definition = sends ? withSendResult(drawn) : drawn;
   return { template, repo, answers, definition, triggers: fill(template.triggers, answers, names, github), scripts,
-    does: fill(template.does, answers, names, github), never: template.never };
+    does: [...fill(template.does, answers, names, github), ...(sends && definition !== drawn ? [SEND_RESULT.does] : [])], never: template.never };
 }
 
 /** A template's zones as its defaults draw them, for the gallery's small drawing; no project needed. */

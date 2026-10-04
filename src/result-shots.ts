@@ -15,11 +15,11 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { imageDimensions, readVerifiedProofForRun, RETENTION_NOTE } from "./evidence.js";
+import { imageDimensions, readVerifiedProofForRun, readVerifiedReport, RETENTION_NOTE } from "./evidence.js";
 import { resultImageFileName, verifyResultImage } from "./chat-evidence.js";
 import { publicChatText } from "./chat-display.js";
 import { chatTitle } from "./chat-voice.js";
-import { RESULT_SHOTS_KIND, type Notification, type ResultScreenshots, type Store } from "./store.js";
+import { FLOW_SHOTS_KIND, RESULT_SHOTS_KIND, type Notification, type ResultScreenshots, type Store } from "./store.js";
 import type { ChatContent, ChatState } from "./chat-delivery-state.js";
 
 /** "Up to 4": the most screenshots one result ever sends. */
@@ -70,6 +70,18 @@ function ownCaptions(store: Store, root: string, run: number): Map<string, strin
   return captions;
 }
 
+/** A scout's screenshots keep the captions its report gave them, by evidence id. */
+function reportCaptions(store: Store, root: string, taskRef: number, run: number): Map<number, string> {
+  const captions = new Map<number, string>();
+  const view = readVerifiedReport(store, root, taskRef);
+  if (view === null || !view.ok || view.run !== run) return captions;
+  for (const image of view.report.images) {
+    const words = publicChatText(image.caption, 200).trim();
+    if (image.artifact !== undefined && words !== "" && !words.includes("[sensitive text hidden]")) captions.set(image.artifact, words);
+  }
+  return captions;
+}
+
 function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
   const size = imageDimensions(bytes, format);
   if (size === null || size.width === 0 || size.height === 0) return false;
@@ -85,8 +97,9 @@ function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
  */
 export function resultShotsFor(store: Store, evidenceRoot: string | undefined, repos: readonly string[],
   row: Pick<Notification, "kind" | "recipient" | "taskId" | "taskRef" | "run">, sent: ReadonlySet<number> = new Set()): ResultShotsPlan {
-  if (row.kind !== RESULT_SHOTS_KIND || row.recipient === null || row.taskId === null || row.taskRef === null || row.run === null) return { kind: "none", why: "none" };
-  const limit = resultShotLimit(store.notificationPreference(row.recipient).screenshots);
+  if (!isShotsKind(row.kind) || row.recipient === null || row.taskId === null || row.taskRef === null || row.run === null) return { kind: "none", why: "none" };
+  // A flow's "Send to me" or "Person chooses" asked for them: up to four, whatever the person chose for results.
+  const limit = row.kind === FLOW_SHOTS_KIND ? RESULT_SHOTS_MAX : resultShotLimit(store.notificationPreference(row.recipient).screenshots);
   if (limit === 0) return { kind: "none", why: "off" };
   const title = chatTitle(store, row.taskId);
   const line = (why: string): ResultShotsPlan => ({ kind: "line", text: `Screenshots for ${title} weren't sent: ${why}.` });
@@ -101,6 +114,7 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   const chosen = store.artifactsFor(row.run).filter(one => one.kind === "screenshot").slice(0, limit);
   if (chosen.length === 0) return { kind: "none", why: "none" };
   const captions = ownCaptions(store, evidenceRoot, row.run);
+  const reported = latest.role === "scout" ? reportCaptions(store, evidenceRoot, row.taskRef, row.run) : new Map<number, string>();
   const shots: ResultShot[] = [];
   for (const [index, artifact] of chosen.entries()) {
     const verified = verifyResultImage(store, evidenceRoot, repos, { taskId: row.taskId, run: row.run, artifact: artifact.id, sha256: artifact.sha256 });
@@ -109,7 +123,7 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
       if (existsSync(join(evidenceRoot, String(row.run), RETENTION_NOTE))) return { kind: "none", why: "pruned" };
       return line(verified.problem);
     }
-    const own = captions.get(SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1] ?? "") ?? null;
+    const own = captions.get(SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1] ?? "") ?? reported.get(artifact.id) ?? null;
     shots.push({
       artifact: artifact.id, sha256: artifact.sha256, bytes: verified.bytes, format: verified.format,
       fileName: resultImageFileName(row.taskId, row.run, artifact.id, verified.format),
@@ -119,6 +133,11 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   }
   const remaining = shots.filter(one => !sent.has(one.artifact));
   return remaining.length === 0 ? { kind: "none", why: "sent" } : { kind: "send", taskId: row.taskId, run: row.run, shots: remaining };
+}
+
+/** A row that carries a result's screenshots: one a person asked for with results, or one a flow sends them. */
+export function isShotsKind(kind: string): boolean {
+  return kind === RESULT_SHOTS_KIND || kind === FLOW_SHOTS_KIND;
 }
 
 /** A screenshot whose result message is not posted yet waits for that message's own next try (at least a second). */
