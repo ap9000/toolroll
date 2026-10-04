@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.25 — 2026-10-04
+
+- **Connect by signing in: Mobbin, Figma, PostHog and Better Stack.** Settings
+  → Tools has a Connect button for each. You sign in once in the browser; no
+  keys.
+- **Research can read your connected tools.** A research step gets only their
+  reading actions (list, get, search and the like), never anything that
+  changes something. With Mobbin connected, UI research looks there first for
+  real app screens. Codex research runs are held to the same rule.
+
 ## 0.9.24 — 2026-10-04
 
 - **Settings, grouped.** The Settings home puts its tiles under five headings
