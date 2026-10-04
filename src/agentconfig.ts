@@ -311,6 +311,20 @@ export type CandidatesResolution =
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
 
 export function resolveRouteCandidates(store: Store, repo: string | null, pins: { plan?: ExactSpec | null; build?: ExactSpec | null } = {}): CandidatesResolution {
+  // The LIGHT tier (v2): the operator's named fast agent for a phase,
+  // project over installation, never inherited and never inferred.
+  const lightOf = (phase: Phase): { ok: true; light: RouteCandidate | null } | { ok: false; problem: string } => {
+    const project = repo === null ? null : store.phaseTierConfig(repo, phase, "light");
+    const row = project ?? store.phaseTierConfig(INSTALLATION_SCOPE, phase, "light");
+    if (row === null) return { ok: true, light: null };
+    const source = project !== null ? "project (light)" : "installation (light)";
+    if (!isProviderId(row.provider) || row.model === null || row.model === "") {
+      return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]} names ${row.provider}${row.model === null || row.model === "" ? " with no model" : ` · ${row.model}`} — a light agent is an exact pair: \`config set ${phase} --tier light --provider … --model …\`, or \`--clear\` it` };
+    }
+    const valid = validateSpec({ provider: row.provider, model: row.model });
+    if (!valid.ok) return { ok: false, problem: `the ${source} ${PHASE_NOUN[phase]}: ${valid.problem}` };
+    return { ok: true, light: { provider: row.provider, model: row.model, source } };
+  };
   const strongOf = (phase: Phase): { ok: true; strong: RouteCandidate | null } | { ok: false; problem: string } => {
     const strongProject = repo === null ? null : store.phaseTierConfig(repo, phase, "strong");
     const strongInstallation = store.phaseTierConfig(INSTALLATION_SCOPE, phase, "strong");
@@ -358,7 +372,9 @@ export function resolveRouteCandidates(store: Store, repo: string | null, pins: 
     }
     if (!routine.ok) return { ok: false, phase, problem: routine.problem };
     if (!strong.ok) return { ok: false, phase, problem: strong.problem };
-    out[phase] = { routine: routine.routine, strong: strong.strong };
+    const light = phase === "review" ? { ok: true as const, light: null } : lightOf(phase);
+    if (!light.ok) return { ok: false, phase, problem: light.problem };
+    out[phase] = { routine: routine.routine, strong: strong.strong, ...(light.light === null ? {} : { light: light.light }) };
   }
   // Repair: the configured row is optional (inherit is the law when none
   // exists), but a row that EXISTS must be exact — a provider the policy
@@ -454,6 +470,8 @@ export function routeOfTask(store: Store, taskId: string, ref: TaskRef | null, n
     candidates: candidates.candidates,
     overrides,
     pins: { plan: planPin.pin, build: buildPin.pin },
+    size: ref?.sizing ?? null,
+    headroom: store.planHeadroom(now),
   });
   return { kind: "route", route, source: "live" };
 }
@@ -538,8 +556,8 @@ export function agentChoicesFor(store: Store, repo: string | null, route: PhaseR
   const configuredFor = (phase: Phase): RouteCandidate[] => {
     const tiers = candidates.candidates[phase];
     const own: (RouteCandidate | null)[] = phase === "repair"
-      ? [tiers.routine, tiers.strong, candidates.candidates.build.routine, candidates.candidates.build.strong]
-      : [tiers.routine, tiers.strong];
+      ? [tiers.routine, tiers.strong, candidates.candidates.build.light ?? null, candidates.candidates.build.routine, candidates.candidates.build.strong]
+      : [phase === "review" ? null : candidates.candidates[phase].light ?? null, tiers.routine, tiers.strong];
     const out: RouteCandidate[] = [];
     for (const one of own) {
       if (one === null || out.some(seen => sameSpec(seen, one))) continue;

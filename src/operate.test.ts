@@ -2146,6 +2146,26 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload()).toMatchObject({ tier: "strong", cleared: true });
   });
 
+  test("config set --tier light names the fast builder; task route --size is an approver's override that re-files the route and says it plainly", async () => {
+    expect(await run(["config", "set", "repair", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, tier: "light", provider: "claude", model: "haiku" });
+    await run(["config", "show"]);
+    expect(text()).toContain("light tier (small changes build on this, with no plan):");
+    expect(text()).toContain("build    claude · haiku  [installation (light)]");
+    expect(await run(["task", "scope", "payouts", "--goal", "Say Save, not Submit", "--acceptance", "copy: says Save | check", "--json"])).toBe(0);
+    expect(await run(["task", "route", "payouts", "--size", "tiny", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["task", "route", "payouts", "--size", "small", "--json"])).toBe(2);
+    expect(await run(["task", "route", "payouts", "--size", "small", "--as", "alex", "--token", token])).toBe(0);
+    expect(text()).toContain("size         Small change: fast model, no plan — set by alex");
+    expect(text()).toContain("build  claude · haiku  [recommended · fast]");
+    await run(["task", "route", "payouts", "--json"]);
+    expect(payload().size).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
+    expect(await run(["config", "clear", "build", "--tier", "light", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ tier: "light", cleared: true });
+  });
+
   test("task route shows one projection with reasons; --risk and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
     await run(["config", "set", "build", "--tier", "strong", "--provider", "claude", "--model", "opus", "--as", "alex", "--token", token, "--json"]);
     // Before a scope: a live recommendation.

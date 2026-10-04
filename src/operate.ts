@@ -26,6 +26,8 @@ import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderInteg
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
 import { pushLimitSink } from "./provider-limits.js";
+import { installFilingSizer, ownerSizer, settleSizings, type Sizer } from "./task-sizing.js";
+import { tierLines, tierReport } from "./tier-report.js";
 import { limitsView } from "./limits-ui.js";
 import { startCodexLimits } from "./codex-limits.js";
 import { packageVersion, startMonitoring, targetOf } from "./monitoring.js";
@@ -291,7 +293,7 @@ import { TEMPLATES, templateByName } from "./templates.js";
 import { planTournament, planComparison, contestNoun, jointApprovalDigest, admitContest, crossReadyBarrier, finalizeContestant, recoverContests, maybeAggregate as contestMaybeAggregate, sweepContestCleanup, escalateOverdueContests } from "./contest.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveScopeChain, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
-import { isRiskLevel, legOf, projectRoute, riskConsequence, routeDigestOf, routeWords, RISK_LEVELS, PHASES as ROUTE_PHASES, type ReadinessLookup, type ReadinessObservation, type RiskLevel, type RouteOverride, type RouteStamp } from "./phase-routing.js";
+import { isRiskLevel, isTaskSize, legOf, projectRoute, riskConsequence, routeDigestOf, routeWords, RISK_LEVELS, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RiskLevel, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
@@ -389,6 +391,8 @@ export type OperateOptions = {
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
+  filingSizer?: Sizer;
 };
 
 export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
@@ -606,6 +610,7 @@ Capabilities — what the work needs, recorded and probed, never valued
                                         the repo, asks you questions, and
                                         proposes a scope you approve
   toolroll task route <id> [--risk routine|elevated|high]
+      [--size small|medium|large] [--risky yes|no]
       [--phase plan|build|repair --provider <p> [--model <m>] | --clear-phase <phase>]
       --as <you> --token <t>            which agent plans, builds, and repairs
                                         this task, with the reason for
@@ -683,6 +688,10 @@ Agents — which provider and model each phase runs on
                                         the STRONG agent high-risk, strict,
                                         screenshot-proof, and automerge
                                         routes reach for; never inferred
+  toolroll config set <plan|build> --tier light --provider <p> --model <m>
+      [--repo <path>] --as <you> --token <t>
+                                        the fast agent small changes build
+                                        on, with no plan
   toolroll config clear <phase> [--repo <path>] --as <you> --token <t>
 
   toolroll setup show --repo <path>  what a fresh checkout runs first
@@ -826,7 +835,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "provider", "plan-model", "plan-provider", "public-url", "editor",
   "command", "timeout-seconds", "setup-digest", "stop-grace", "title", "name", "every", "lines",
   "label", "reviewers", "limit", "role", "key-file", "weekly-usd", "daily-turns", "per-hour", "token-file", "race", "compare", "race-per-usd", "race-total-usd", "race-count", "race-agents", "budget-usd", "build-usd", "sync-max-age", "merge-method",
-  "phase", "risk", "tier", "clear-phase",
+  "phase", "risk", "tier", "clear-phase", "size", "risky",
   "run", "containment", "agent",
   // onboard: the starter flows to switch on.
   "starter",
@@ -996,6 +1005,9 @@ export async function runOperate(
   }
   // v105: a Claude turn anywhere in this command says its plan's usage windows; keep the latest.
   const dropLimitSink = pushLimitSink(reading => store.recordProviderLimits(reading, new Date()));
+  // Filed tasks are sized by the owner's own fast classifier (never in tests, the demo, or with NO_TASK_CLASSIFIER).
+  const sizer = options.filingSizer ?? (process.env["VITEST"] !== undefined || envValue(process.env, "NO_TASK_CLASSIFIER") !== undefined || store.isDemo() ? null : ownerSizer());
+  const dropSizer = sizer === null ? () => {} : installFilingSizer(sizer);
 
   // One `Date` per command is fine for a lookup and wrong for a pass that
   // runs an agent for half an hour: leases granted, extended, and released
@@ -1049,6 +1061,9 @@ export async function runOperate(
     if (isDatabaseBusy(error)) return databaseFailure(write, json, command, file, error);
     return fail(write, json, command, "failed", describe(error), EXIT.failed);
   } finally {
+    // A classification still in flight (at most its five-second budget) lands before the database closes.
+    await settleSizings();
+    dropSizer();
     dropLimitSink();
     store.close();
   }
@@ -6502,6 +6517,13 @@ async function configCommand(
     }
     write("  set one with: toolroll config set <phase> --tier strong --provider <p> --model <m> --as <you> --token <t>");
     write("");
+    write("  light tier (small changes build on this, with no plan):");
+    for (const one of ["plan", "build"] as const) {
+      const light = candidates.ok ? candidates.candidates[one].light ?? null : null;
+      write(`  ${one.padEnd(8)} ${light === null ? "none configured — small changes keep the default above and say so" : `${light.provider} · ${light.model}  [${light.source}]`}`);
+    }
+    write("  set one with: toolroll config set build --tier light --provider <p> --model <m> --as <you> --token <t>");
+    write("");
     write("  repair note: the repair PROVIDER always inherits the build it mends — only its model is configurable.");
     if (fallback.length > 0) {
       write("");
@@ -6753,12 +6775,22 @@ async function configCommand(
   // reaches for when risk, quality, evidence, or publication demand it.
   // Authenticated and audited exactly like the routine row; existing
   // approvals are untouched — a sealed route never re-resolves.
+  // The LIGHT tier (v2): the fast agent a small change builds on.
   const tierGiven = text(flags, "tier");
-  if (tierGiven !== undefined && tierGiven !== "strong") {
-    return fail(write, json, `config ${action}`, "usage", "--tier is `strong` — the routine tier is the plain phase row", EXIT.usage);
+  if (tierGiven !== undefined && tierGiven !== "strong" && tierGiven !== "light") {
+    return fail(write, json, `config ${action}`, "usage", "--tier is `light` or `strong` — the routine tier is the plain phase row", EXIT.usage);
+  }
+  if (tierGiven === "light" && phase !== "plan" && phase !== "build") {
+    return fail(write, json, `config ${action}`, "usage", "--tier light is for plan or build — repairs resume the builder's session", EXIT.usage);
   }
 
   if (action === "clear") {
+    if (tierGiven === "light") {
+      const clearedLight = store.clearPhaseTierConfig(scope, phase, "light");
+      return succeed(write, json, "config clear", { scope, phase, tier: "light", cleared: clearedLight }, () => [
+        clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
+      ]);
+    }
     if (tierGiven === "strong") {
       const clearedStrong = store.clearPhaseTierConfig(scope, phase, "strong");
       return succeed(write, json, "config clear", { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
@@ -6779,6 +6811,16 @@ async function configCommand(
   const valid = validateSpec({ provider: providerGiven, model: modelGiven });
   if (!valid.ok) {
     return fail(write, json, "config set", "invalid", valid.problem, EXIT.usage);
+  }
+  if (tierGiven === "light") {
+    if (modelGiven === null) {
+      return fail(write, json, "config set", "usage", `a light ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
+    }
+    store.setPhaseTierConfig(scope, phase, "light", providerGiven, modelGiven, acting.name, clock());
+    return succeed(write, json, "config set", { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
+      `light ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven} · ${modelGiven}, set by ${acting.name}.`,
+      "  small changes filed from now on build on it with no plan; sealed routes are untouched.",
+    ]);
   }
   if (tierGiven === "strong") {
     if (phase === "review" && providerGiven === "gemini") {
@@ -12576,7 +12618,9 @@ async function routeTaskCommand(
   const providerGiven = text(flags, "provider");
   const modelGiven = text(flags, "model");
   const digestGiven = text(flags, "digest");
-  const editing = riskGiven !== undefined || phaseGiven !== undefined || clearGiven !== undefined;
+  const sizeGiven = text(flags, "size");
+  const riskyGiven = text(flags, "risky");
+  const editing = riskGiven !== undefined || phaseGiven !== undefined || clearGiven !== undefined || sizeGiven !== undefined || riskyGiven !== undefined;
 
   const show = (): number => {
     const scope = store.getScope(id);
@@ -12589,7 +12633,7 @@ async function routeTaskCommand(
       write,
       json,
       "task route",
-      { id, risk: current.riskLevel ?? scope?.riskLevel ?? "routine", riskConsequence: riskConsequence(current.riskLevel ?? scope?.riskLevel ?? "routine"), source: routed !== null && routed.kind === "route" ? routed.source : routed?.kind ?? null, route: view, overrides: current.routeOverrides ?? [], digest: scope?.digest ?? null, approval: approvalOf(scope) },
+      { id, risk: current.riskLevel ?? scope?.riskLevel ?? "routine", riskConsequence: riskConsequence(current.riskLevel ?? scope?.riskLevel ?? "routine"), size: current.sizing ?? null, source: routed !== null && routed.kind === "route" ? routed.source : routed?.kind ?? null, route: view, overrides: current.routeOverrides ?? [], digest: scope?.digest ?? null, approval: approvalOf(scope) },
       () =>
         routed === null
           ? [`${id}: no route can be recommended yet — ${scope === null ? "place the task in a repository and file a scope" : scope.unresolvedReason ?? "the phase configuration cannot resolve"}`]
@@ -12629,6 +12673,17 @@ async function routeTaskCommand(
   if (riskGiven !== undefined && !isRiskLevel(riskGiven)) {
     return fail(write, json, "task route", "usage", `--risk is one of ${RISK_LEVELS.join(", ")}`, EXIT.usage);
   }
+  if (sizeGiven !== undefined && !isTaskSize(sizeGiven)) {
+    return fail(write, json, "task route", "usage", `--size is one of ${TASK_SIZES.join(", ")}`, EXIT.usage);
+  }
+  if (riskyGiven !== undefined && riskyGiven !== "yes" && riskyGiven !== "no") {
+    return fail(write, json, "task route", "usage", "--risky is yes or no", EXIT.usage);
+  }
+  // A person's size outranks the classifier's; an unnamed half keeps what the task has.
+  const sizeEdit = sizeGiven === undefined && riskyGiven === undefined ? undefined : {
+    size: (sizeGiven as TaskSize | undefined) ?? ref.sizing?.size ?? "medium",
+    risky: riskyGiven === undefined ? ref.sizing?.risky ?? false : riskyGiven === "yes",
+  };
   if (phaseGiven !== undefined && clearGiven !== undefined) {
     return fail(write, json, "task route", "usage", "say --phase … --provider … --model … OR --clear-phase …, not both", EXIT.usage);
   }
@@ -12657,6 +12712,7 @@ async function routeTaskCommand(
         return authenticated.ok ? { ok: true } : { ok: false, reason: authenticated.reason };
       },
       ...(riskGiven === undefined ? {} : { risk: riskGiven as RiskLevel }),
+      ...(sizeEdit === undefined ? {} : { size: sizeEdit }),
       ...(phase === undefined
         ? {}
         : { override: phaseGiven !== undefined ? { phase: phase as RouteOverride["phase"], provider: providerGiven as ProviderId, model: modelGiven as string } : { phase: phase as RouteOverride["phase"], clear: true as const } }),
@@ -13464,11 +13520,14 @@ function spendCommand(flags: Map<string, string | true>, context: Context): numb
   // v105: subscription work is $0; what binds it is its plan's windows, as the provider last said.
   const limits = context.store.providerLimits();
   const windows = limitsView(limits, [], { project: repo => basename(repo), teammate: id => String(id) }, context.clock())?.tiles ?? [];
-  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits }, () => [
+  // Sized routing: each tier's tasks, time to a result and plan use, and what the tiers saved.
+  const tiers = tierReport(context.store.handle, month.from, month.to, items);
+  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved } }, () => [
     `${month.name}: ${spendUsd(total)} (${items.length} pieces of work${unpriced > 0 ? `, ${unpriced} unpriced` : ""}; subscription work is $0)`,
     ...windows.map(tile => `  ${`${tile.name} ${tile.window}`.padEnd(24)} ${tile.value}% · ${tile.detail}`),
     ...[...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([repo, microusd]) => `  ${basename(repo).padEnd(24)} ${spendUsd(microusd)}`),
     ...budgets.map(one => `  budget ${budgetLabel(one, names.get(Number(one.key))).replace(/'s$/, "").padEnd(24)} ${spendUsd(one.spentMicrousd)} of ${spendUsd(one.limitMicrousd)} (${one.percent}%)${one.hardStop ? "" : " alerts only"}`),
+    ...tierLines(tiers, spendUsd),
   ]);
 }
 

@@ -46,7 +46,7 @@ import { parseAcceptanceCriteria, ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type Accept
 import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
-import { agentsSummary, chosenWords, isRiskLevel, PHASES, postureWords, RISK_CHOICES, riskConsequence, riskTitle, routeProblems, sameSpec, specWords, type PhaseRoute } from "./phase-routing.js";
+import { agentsSummary, chosenWords, isRiskLevel, isTaskSize, PHASES, postureWords, RISK_CHOICES, riskConsequence, riskTitle, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
 import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_STAGE_KINDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, type FlowDefinition } from "./flows.js";
@@ -426,6 +426,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
   const base = {
     task: taskId,
     risk: { level: risk, title: riskTitle(risk), consequence: riskConsequence(risk) },
+    size: ref.sizing == null ? null : { size: ref.sizing.size, risky: ref.sizing.risky, reason: ref.sizing.reason, source: sizeSourceWords(ref.sizing.source) },
     riskChoices: RISK_CHOICES.map(one => ({ risk: one.risk, title: one.title, consequence: one.consequence })),
     editable,
     editableWhy,
@@ -443,6 +444,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
     standing: routed.source === "approved" ? "approved" : routed.source === "proposed" ? "awaiting approval" : "recommended",
     summary: agentsSummary(route),
     posture: postureWords(route),
+    sizeWords: sizeWords(route),
     demands: route.demands.filter(reason => !/review/i.test(reason)),
     agents: route.legs.filter(leg => leg.phase !== "review").map(leg => ({ role: ROLE_WORD[leg.phase], provider: leg.provider, model: leg.model, chosen: chosenWords(leg), reasons: leg.reasons.map(reason => reason.replace("builder and reviewer", "builder")), problem: leg.problem })),
     problems: routeProblems(route),
@@ -1727,11 +1729,13 @@ export const MATE_TOOLS: MateTool[] = [
   },
   {
     name: "propose_agents",
-    description: "Read get_agents. Change risk/configured role model or clear override; stales approval, refuses running work.",
+    description: "Read get_agents. Change risk, size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
     inputSchema: schema(
       {
         task: TASK_ARG,
         risk: { type: "string", enum: ["routine", "elevated", "high"] },
+        size: { type: "string", enum: ["small", "medium", "large"] },
+        risky: { type: "boolean" },
         role: { type: "string", enum: ["planner", "builder", "repair"] },
         agent: schema({ provider: { type: "string", maxLength: 20 }, model: { type: "string", maxLength: 120 } }, ["provider", "model"]),
         clear: { type: "boolean" },
@@ -1751,7 +1755,13 @@ export const MATE_TOOLS: MateTool[] = [
       if (roleWord !== undefined && (phase === null || phase === "review")) return { ok: false, message: "role is planner, builder, or repair" };
       const clear = args["clear"] === true;
       const agent = args["agent"];
-      if (risk === undefined && phase === null) return { ok: false, message: "say what changes: a risk, or a role with an agent (or clear: true)" };
+      const size = args["size"];
+      const risky = args["risky"];
+      if (size !== undefined && !isTaskSize(size)) return { ok: false, message: "size is small, medium, or large" };
+      if (risky !== undefined && typeof risky !== "boolean") return { ok: false, message: "risky is true or false" };
+      const sized = ctx.store.refForId(ref.id)?.sizing ?? null;
+      const sizeChange = size === undefined && risky === undefined ? null : { size: (size as TaskSize | undefined) ?? sized?.size ?? "medium", risky: (risky as boolean | undefined) ?? sized?.risky ?? false };
+      if (risk === undefined && phase === null && sizeChange === null) return { ok: false, message: "say what changes: a risk, a size, or a role with an agent (or clear: true)" };
       if (phase !== null && !clear && (agent === null || typeof agent !== "object")) return { ok: false, message: "a role change names an agent from get_agents, or clear: true" };
       if (phase === null && (clear || agent !== undefined)) return { ok: false, message: "an agent or clear needs the role it applies to" };
       if (args["why"] !== undefined && !honest(args["why"], 400)) return { ok: false, message: "why is plain text ≤400" };
@@ -1787,6 +1797,7 @@ export const MATE_TOOLS: MateTool[] = [
         taskTitle: task.title,
         repoId: ref.repoId,
         ...(risk === undefined ? {} : { risk, riskConsequence: riskConsequence(risk) }),
+        ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
         ...(phase === null ? {} : { phase, role: ROLE_WORD[phase] }),
         ...(chosen === null ? {} : { provider: chosen.provider, model: chosen.model }),
         ...(clear ? { clear: true } : {}),
@@ -1803,6 +1814,7 @@ export const MATE_TOOLS: MateTool[] = [
           kind: "agents",
           task: taskId,
           ...(risk === undefined ? {} : { risk }),
+          ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
           ...(phase === null ? {} : { role: ROLE_WORD[phase], ...(chosen === null ? { clear: true } : { agent: chosen }) }),
           awaiting: view["approval"] === "approved" ? "the operator's confirmation — the current approval will then need renewing" : "the operator's confirmation",
         },

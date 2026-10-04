@@ -58,6 +58,8 @@ import {
   canonicalRouteJson,
   exactModelId,
   isRiskLevel,
+  isTaskSize,
+  headroomFrom,
   legOf,
   overridesFromJson,
   phaseOfRole,
@@ -68,6 +70,9 @@ import {
   routeStampProblem,
   ROUTE_ERA,
   type ExactSpec,
+  type ProviderRoom,
+  type TaskSize,
+  type TaskSizing,
   type PhaseRoute,
   type PublicationAuthority,
   type RouteStamp,
@@ -728,6 +733,12 @@ export type TaskRef = {
    * list is malformed; the next filing goes unresolved rather than routing
    * as if nobody had overridden anything. */
   routeOverrides?: RouteOverride[] | null;
+  /** v2 routing: how big the change is (sized at filing by the classifier
+   * or the description, or set by a person); null when never sized. */
+  sizing?: TaskSizing | null;
+  /** The build tier the task's latest filed route chose (light, routine,
+   * strong — or override/pinned when a person or a pin chose the agent). */
+  routeTier?: string | null;
   /** Plan pins (P2/C7): read ONLY by the plan phase; precedence plan pin
    * > plan flags > plan config > installation > default. */
   planProvider: string | null;
@@ -2375,7 +2386,7 @@ CREATE TABLE IF NOT EXISTS fallback_config (
 CREATE TABLE IF NOT EXISTS phase_tier_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  tier       TEXT NOT NULL CHECK (tier IN ('strong')),
+  tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
   provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
   model      TEXT,
   updated_at TEXT NOT NULL,
@@ -5272,6 +5283,14 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PROVIDER_AUTH_SCHEMA);
   // The sign-in pause the dispatch gate last left this task waiting on (null: none), for the work index.
   addColumn(db, "task_ref", "auth_wait_pause", "INTEGER REFERENCES provider_auth_pause(id)");
+  // Sized routing (no version bump: additive, and a wider tier check whose rows carry over): how big each task is,
+  // who sized it and why, and the build tier its route chose; the light tier joins the strong one.
+  addColumn(db, "task_ref", "size", "TEXT CHECK (size IN ('small','medium','large'))");
+  addColumn(db, "task_ref", "size_risky", "INTEGER CHECK (size_risky IN (0, 1))");
+  addColumn(db, "task_ref", "size_source", "TEXT CHECK (size_source IN ('classifier','heuristic','person'))");
+  addColumn(db, "task_ref", "size_reason", "TEXT");
+  addColumn(db, "task_ref", "route_tier", "TEXT");
+  widenPhaseTierSchema(db);
   db.exec(REVIEW_SCHEMA);
   db.exec(RETENTION_SCHEMA);
   // 1-day evidence: an older file's retention_setting only allowed 7 days or more (no version bump: its rows carry over).
@@ -8680,6 +8699,41 @@ function hasColumn(db: Database, table: string, column: string): boolean {
     .some(row => String(row["name"]) === column);
 }
 
+/** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
+ * the wider one, keeping every row, in one transaction. A file already widened is untouched. */
+function widenPhaseTierSchema(db: Database): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'phase_tier_config'").get();
+  if (row === undefined || /'light'/.test(String(row["sql"]))) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`CREATE TABLE phase_tier_config_next (
+  scope      TEXT NOT NULL,
+  phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
+  tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  model      TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  PRIMARY KEY (scope, phase, tier)
+)`);
+    db.exec("INSERT INTO phase_tier_config_next SELECT scope, phase, tier, provider, model, updated_at, updated_by FROM phase_tier_config");
+    db.exec("DROP TABLE phase_tier_config");
+    db.exec("ALTER TABLE phase_tier_config_next RENAME TO phase_tier_config");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** A task's stored size, or null when it was never sized (or reads as nothing this code writes). */
+function sizingOfRow(row: Record<string, unknown>): TaskSizing | null {
+  if (!isTaskSize(row["size"])) return null;
+  const source = row["size_source"];
+  if (source !== "classifier" && source !== "heuristic" && source !== "person") return null;
+  return { size: row["size"], risky: Number(row["size_risky"] ?? 0) === 1, source, reason: row["size_reason"] == null ? "" : String(row["size_reason"]) };
+}
+
 function addColumn(db: Database, table: string, column: string, definition: string): void {
   if (hasColumn(db, table, column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -10330,9 +10384,18 @@ export class Store {
           candidates: candidatesResolved.candidates,
           overrides,
           pins: { plan: planPin.pin, build: buildPin.pin, repair: repairPin },
+          // v2: the task's size and each provider's plan headroom, sealed
+          // with the route like every other input.
+          size: ref?.sizing ?? null,
+          headroom: this.planHeadroom(new Date(scope.proposedAt)),
         });
         const problems = routeProblems(route);
         if (problems.length > 0) unresolvedReason = problems.join("; ");
+      }
+      // The tier the build leg runs on, recorded per task for the spend report.
+      if (route !== null && ref !== null) {
+        const buildLeg = legOf(route, "build");
+        this.db.prepare("UPDATE task_ref SET route_tier = ? WHERE id = ?").run(buildLeg.chosen === "recommended" ? buildLeg.tier : buildLeg.chosen, ref.id);
       }
       if (unresolvedReason !== null) {
         // Fail closed: an explicit profile does not outrank a route that
@@ -15559,6 +15622,8 @@ export class Store {
        * exactly as the source's was, never over the installation's
        * defaults of the day. */
       riskLevel?: RiskLevel;
+      /** How big the change is, sized at filing (v2 routing). */
+      sizing?: TaskSizing;
       routeOverridesJson?: string | null;
       agentPin?: { provider: string; model: string | null } | null;
       planPin?: { provider: string; model: string | null } | null;
@@ -15662,6 +15727,7 @@ export class Store {
       if (spec.routeOverridesJson !== undefined && spec.routeOverridesJson !== null) {
         this.db.prepare("UPDATE task_ref SET route_overrides_json = ? WHERE id = ?").run(spec.routeOverridesJson, ref.id);
       }
+      if (spec.sizing !== undefined) this.writeSizing(ref.id, spec.sizing);
       if (spec.agentPin !== undefined && spec.agentPin !== null) this.pinTaskAgent(ref.id, spec.agentPin.provider, spec.agentPin.model);
       if (spec.planPin !== undefined && spec.planPin !== null) {
         this.db.prepare("UPDATE task_ref SET plan_provider = ?, plan_model = ? WHERE id = ?").run(spec.planPin.provider, spec.planPin.model, ref.id);
@@ -16074,7 +16140,7 @@ export class Store {
   /** The operator's named STRONG candidate for a phase at a scope, or null.
    * Read by the routing policy only — a phase_config row stays the routine
    * tier, so every pre-v47 resolution is untouched. */
-  phaseTierConfig(scope: string, phase: string, tier: "strong"): { provider: string; model: string | null; updatedAt: string; updatedBy: string } | null {
+  phaseTierConfig(scope: string, phase: string, tier: "light" | "strong"): { provider: string; model: string | null; updatedAt: string; updatedBy: string } | null {
     const row = this.db.prepare("SELECT * FROM phase_tier_config WHERE scope = ? AND phase = ? AND tier = ?").get(scope, phase, tier);
     if (row === undefined) return null;
     return {
@@ -16085,13 +16151,13 @@ export class Store {
     };
   }
 
-  listPhaseTierConfig(scope: string): { phase: string; tier: "strong"; provider: string; model: string | null; updatedAt: string; updatedBy: string }[] {
+  listPhaseTierConfig(scope: string): { phase: string; tier: "light" | "strong"; provider: string; model: string | null; updatedAt: string; updatedBy: string }[] {
     return this.db
       .prepare("SELECT * FROM phase_tier_config WHERE scope = ? ORDER BY phase, tier")
       .all(scope)
       .map(row => ({
         phase: String(row["phase"]),
-        tier: "strong" as const,
+        tier: row["tier"] === "light" ? ("light" as const) : ("strong" as const),
         provider: String(row["provider"]),
         model: row["model"] === null ? null : String(row["model"]),
         updatedAt: String(row["updated_at"]),
@@ -16099,7 +16165,7 @@ export class Store {
       }));
   }
 
-  setPhaseTierConfig(scope: string, phase: string, tier: "strong", provider: string, model: string | null, by: string, now: Date): void {
+  setPhaseTierConfig(scope: string, phase: string, tier: "light" | "strong", provider: string, model: string | null, by: string, now: Date): void {
     this.db
       .prepare(
         `INSERT INTO phase_tier_config (scope, phase, tier, provider, model, updated_at, updated_by)
@@ -16110,9 +16176,15 @@ export class Store {
       .run(scope, phase, tier, provider, model, now.toISOString(), by);
   }
 
-  clearPhaseTierConfig(scope: string, phase: string, tier: "strong"): boolean {
+  clearPhaseTierConfig(scope: string, phase: string, tier: "light" | "strong"): boolean {
     const { changes } = this.db.prepare("DELETE FROM phase_tier_config WHERE scope = ? AND phase = ? AND tier = ?").run(scope, phase, tier);
     return Number(changes) > 0;
+  }
+
+  /** Each provider's plan headroom right now, from the latest readings of
+   * its usage windows — the routing policy's headroom input at filing. */
+  planHeadroom(now: Date): ProviderRoom[] {
+    return headroomFrom(this.providerLimits(), now);
   }
 
   /** How far the plane may carry this repo's results unattended: a live
@@ -16144,6 +16216,8 @@ export class Store {
       by: string;
       authenticate: () => { ok: true } | { ok: false; reason: string };
       risk?: RiskLevel;
+      /** v2: a person's size for the task — it outranks the classifier's. */
+      size?: { size: TaskSize; risky: boolean };
       override?: { phase: RouteOverride["phase"]; provider: ProviderId; model: string } | { phase: RouteOverride["phase"]; clear: true };
       expectDigest?: string | null;
       /** v48: the agent must be one of the CONFIGURED, role-valid choices
@@ -16162,7 +16236,7 @@ export class Store {
       if (!authenticated.ok) return { ok: false as const, reason: "unauthenticated" as const, detail: authenticated.reason };
       const ref = this.refForId(taskRef);
       if (ref === null) return { ok: false as const, reason: "no-task" as const, detail: "no such task" };
-      if (edit.risk === undefined && edit.override === undefined) return { ok: false as const, reason: "nothing" as const, detail: "nothing to change" };
+      if (edit.risk === undefined && edit.override === undefined && edit.size === undefined) return { ok: false as const, reason: "nothing" as const, detail: "nothing to change" };
       if (this.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "live-claim" as const, detail: "this task is running — the agents cannot change under a live claim" };
       if (this.activeTournamentTerms(taskRef) !== null) return { ok: false as const, reason: "contest-open" as const, detail: "tournament terms are on file — its lanes decide the agents; exclude or settle the contest first" };
       const before = this.getScope(ref.externalId);
@@ -16194,6 +16268,11 @@ export class Store {
       if (edit.risk !== undefined) {
         this.db.prepare("UPDATE task_ref SET risk_level = ? WHERE id = ?").run(edit.risk, taskRef);
       }
+      if (edit.size !== undefined) {
+        const sizing: TaskSizing = { size: edit.size.size, risky: edit.size.risky, source: "person", reason: `set by ${edit.by}` };
+        this.writeSizing(taskRef, sizing);
+        this.planToSizing(taskRef, sizing, now);
+      }
       let overrides = ref.routeOverrides ?? [];
       if (edit.override !== undefined) {
         const kept = overrides.filter(one => one.phase !== edit.override!.phase);
@@ -16219,6 +16298,60 @@ export class Store {
       }
       this.bumpWake();
       return { ok: true as const, scope: refiled, staled, replanned, overrides: overridesFromJson(canonicalOverridesJson(overrides)) ?? [] };
+    });
+  }
+
+  /** Store a task's size (v2 routing); the next scope filing routes by it. */
+  writeSizing(taskRef: number, sizing: TaskSizing): void {
+    this.db
+      .prepare("UPDATE task_ref SET size = ?, size_risky = ?, size_source = ?, size_reason = ? WHERE id = ?")
+      .run(sizing.size, sizing.risky ? 1 : 0, sizing.source, sizing.reason.slice(0, 300), taskRef);
+  }
+
+  /** Planning follows the size while nothing has run: a small change drops
+   * a plan that is only requested; a large or risky one asks for a plan.
+   * A drafted plan is never discarded. */
+  private planToSizing(taskRef: number, sizing: TaskSizing, now: Date): "requested" | "cleared" | null {
+    const ref = this.refForId(taskRef);
+    if (ref === null || ref.repo === null || ref.deliverable === "report") return null;
+    if (sizing.size === "small" && !sizing.risky) {
+      if (ref.plan !== "requested" || this.hasLiveClaim(taskRef, now)) return null;
+      this.db.prepare("UPDATE task_ref SET plan = NULL WHERE id = ? AND plan = 'requested'").run(taskRef);
+      return "cleared";
+    }
+    if ((sizing.size === "large" || sizing.risky) && ref.plan === null) return this.requestPlan(taskRef, now).ok ? "requested" : null;
+    return null;
+  }
+
+  /**
+   * The classifier's answer, applied after filing (v2 routing): filing never
+   * waits for it, so its size lands here — only while the task is still
+   * unapproved, unclaimed, and not sized by a person. The scope is re-filed
+   * under its own words so the route (and its digest) carries the size, and
+   * planning follows it unless the filer chose planning explicitly.
+   */
+  applySizing(
+    taskId: string,
+    sizing: TaskSizing,
+    options: { followPlanning: boolean },
+    now: Date,
+  ): { ok: true; changed: boolean; planning: "requested" | "cleared" | null } | { ok: false; reason: "no-task" | "person" | "running" | "approved" } {
+    return this.transact(() => {
+      const ref = this.lookupRef(taskId);
+      if (ref === null) return { ok: false as const, reason: "no-task" as const };
+      if (ref.sizing?.source === "person") return { ok: false as const, reason: "person" as const };
+      if (this.hasLiveClaim(ref.id, now)) return { ok: false as const, reason: "running" as const };
+      const scope = this.getScope(taskId);
+      if (scope !== null && scope.approvedAt !== null && scope.approvedDigest === scope.digest) return { ok: false as const, reason: "approved" as const };
+      const before = ref.sizing ?? null;
+      if (before !== null && before.size === sizing.size && before.risky === sizing.risky && before.source === sizing.source && before.reason === sizing.reason) {
+        return { ok: true as const, changed: false, planning: null };
+      }
+      this.writeSizing(ref.id, sizing);
+      if (scope !== null) this.refileScope(taskId, now);
+      const planning = options.followPlanning ? this.planToSizing(ref.id, sizing, now) : null;
+      this.bumpWake();
+      return { ok: true as const, changed: true, planning };
     });
   }
 
@@ -28252,6 +28385,8 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
     routeOverrides: overridesFromJson(
       row["route_overrides_json"] === null || row["route_overrides_json"] === undefined ? null : String(row["route_overrides_json"]),
     ),
+    sizing: sizingOfRow(row),
+    routeTier: row["route_tier"] === null || row["route_tier"] === undefined ? null : String(row["route_tier"]),
     planProvider:
       row["plan_provider"] === null || row["plan_provider"] === undefined
         ? null

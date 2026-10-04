@@ -72,12 +72,17 @@ export function exactModelId(v: unknown): v is string {
   return exactModel(v);
 }
 
-export const ROUTE_VERSION = 1;
+/** v2 adds the task's size (small / medium / large, risky or not), the
+ * light tier, and plan headroom. A v1 route — sealed before sizing — still
+ * reads back exactly and keeps its own digest domain. */
+export const ROUTE_VERSION = 2;
+export type RouteVersion = 1 | 2;
 /** The durable route ERA a scope row carries once it was filed under this
  * policy: NULL on a row proven to predate v47 (legacy — the sealed profile
  * alone governs), this value on every row filed since. A row with an era
- * and no readable route is corrupt and fails closed. */
-export const ROUTE_ERA = ROUTE_VERSION;
+ * and no readable route is corrupt and fails closed. The era marks a ROUTED
+ * row; which route version it holds rides in the snapshot itself. */
+export const ROUTE_ERA = 1;
 export const PHASES: readonly Phase[] = ["plan", "build", "repair", "review"];
 /** The review leg remains readable in signed history but is no longer scheduled. */
 export const ACTIVE_PHASES: readonly Phase[] = ["plan", "build", "repair"];
@@ -87,6 +92,33 @@ export const RISK_LEVELS: readonly RiskLevel[] = ["routine", "elevated", "high"]
 
 export function isRiskLevel(value: unknown): value is RiskLevel {
   return value === "routine" || value === "elevated" || value === "high";
+}
+
+/** How big a change the task is, sized once at filing (by the classifier,
+ * by the description when it cannot answer, or by a person). */
+export type TaskSize = "small" | "medium" | "large";
+export const TASK_SIZES: readonly TaskSize[] = ["small", "medium", "large"];
+export type SizeSource = "classifier" | "heuristic" | "person";
+export type TaskSizing = { size: TaskSize; risky: boolean; source: SizeSource; reason: string };
+
+export function isTaskSize(value: unknown): value is TaskSize {
+  return value === "small" || value === "medium" || value === "large";
+}
+
+/** Where a size came from, in words. */
+export function sizeSourceWords(source: SizeSource): string {
+  return source === "classifier" ? "sized automatically" : source === "person" ? "set by a person" : "sized from the description";
+}
+
+/** Strict read of a stored sizing: exact keys, known words, bounded reason. */
+export function parseSizing(raw: unknown): TaskSizing | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  if (!exactKeysOf(v, ["size", "risky", "source", "reason"])) return null;
+  if (!isTaskSize(v["size"]) || typeof v["risky"] !== "boolean") return null;
+  if (v["source"] !== "classifier" && v["source"] !== "heuristic" && v["source"] !== "person") return null;
+  if (typeof v["reason"] !== "string" || v["reason"].length > 300) return null;
+  return { size: v["size"], risky: v["risky"], source: v["source"], reason: v["reason"] };
 }
 
 export function riskTitle(risk: RiskLevel): string {
@@ -101,7 +133,7 @@ export function riskTitle(risk: RiskLevel): string {
  */
 export function riskConsequence(risk: RiskLevel): string {
   if (risk === "high") return "every active role — planner, builder, and repair — uses the strongest agent you have configured";
-  if (risk === "elevated") return "planning and building keep the everyday agents unless the work itself asks for more (strict quality or screenshots)";
+  if (risk === "elevated") return "planning and building use the strongest agent you have configured";
   return "every role uses the everyday configured agent unless the work itself asks for more (strict quality, screenshots, or a self-merging mode)";
 }
 
@@ -123,7 +155,8 @@ export type ReadinessObservation = {
   runner: string;
 };
 
-export type CandidateTier = "routine" | "strong";
+export type CandidateTier = "light" | "routine" | "strong";
+const TIER_RANK: Record<CandidateTier, number> = { light: 0, routine: 1, strong: 2 };
 
 /** An exact agent: provider and model id, both required. */
 export type ExactSpec = { provider: ProviderId; model: string };
@@ -134,6 +167,10 @@ export type RouteCandidate = ExactSpec & {
 };
 
 export type PhaseCandidates = {
+  /** The operator's named LIGHT (fast) agent for this phase (`config set
+   * <phase> --tier light …`), or null/absent when none is configured. A
+   * small change builds on it. Never inferred. */
+  light?: RouteCandidate | null;
   routine: RouteCandidate;
   /** The operator's named strong agent for this phase, or null when none
    * is configured. Never inferred. */
@@ -172,6 +209,52 @@ export type RouteEvidenceKind = "check" | "screenshot" | "changed-path" | "manua
  * mode that merges by itself (automerge). */
 export type PublicationAuthority = "none" | "notify" | "automerge";
 
+/** How much of one provider's plan is used, as it last said: the 5-hour
+ * window and the weekly window, in percent; null when unknown. */
+export type ProviderRoom = { provider: ProviderId; fiveHour: number | null; weekly: number | null };
+/** Above these a provider has no headroom and is skipped when another
+ * provider's candidate can take the phase. */
+export const HEADROOM_FIVE_HOUR_LIMIT = 80;
+export const HEADROOM_WEEKLY_LIMIT = 90;
+
+/** The latest plan-window readings as headroom: a window whose reset time
+ * has passed counts as empty; a reading older than its own window is
+ * unknown. Weekly is the plan-wide week (`seven_day`), else the fullest
+ * model-specific week. */
+export function headroomFrom(
+  limits: readonly { provider: string; window: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null; observedAt: string }[],
+  now: Date,
+): ProviderRoom[] {
+  const out = new Map<ProviderId, ProviderRoom>();
+  const value = (one: (typeof limits)[number]): number | null => {
+    if (one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime()) return 0;
+    const age = now.getTime() - Date.parse(one.observedAt);
+    if (!Number.isFinite(age) || (one.windowMinutes !== null && age > one.windowMinutes * 60_000)) return null;
+    return one.usedPercent;
+  };
+  for (const one of limits) {
+    if (!isProviderId(one.provider)) continue;
+    const room = out.get(one.provider) ?? { provider: one.provider, fiveHour: null, weekly: null };
+    const used = value(one);
+    if (one.window === "five_hour") room.fiveHour = used;
+    else if (one.window === "seven_day") room.weekly = used;
+    else if (/^seven_day_/.test(one.window) && used !== null && room.weekly === null) room.weekly = used;
+    out.set(one.provider, room);
+  }
+  // A plan-wide week beats a model's week: re-read seven_day last.
+  for (const one of limits) if (isProviderId(one.provider) && one.window === "seven_day") out.get(one.provider)!.weekly = value(one);
+  return [...out.values()].sort((a, b) => PROVIDER_ID_LIST.indexOf(a.provider) - PROVIDER_ID_LIST.indexOf(b.provider));
+}
+
+function tightWords(room: ProviderRoom): string | null {
+  if (room.fiveHour !== null && room.fiveHour > HEADROOM_FIVE_HOUR_LIMIT) return `${room.provider} has used ${room.fiveHour}% of its 5-hour window`;
+  if (room.weekly !== null && room.weekly > HEADROOM_WEEKLY_LIMIT) return `${room.provider} has used ${room.weekly}% of its weekly window`;
+  return null;
+}
+function usedOf(room: ProviderRoom): number {
+  return Math.max(room.fiveHour ?? 0, room.weekly ?? 0);
+}
+
 export type RouteInput = {
   risk: RiskLevel;
   qualityMode: QualityMode;
@@ -183,6 +266,12 @@ export type RouteInput = {
    * plan request's plan pin, and — when an explicit approved profile files
    * the scope — its repair model on the build provider. */
   pins?: { plan?: ExactSpec | null; build?: ExactSpec | null; repair?: ExactSpec | null };
+  /** How big the change is (v2): small builds on the light tier with no
+   * plan; large or risky plans and builds on the strong tier. */
+  size?: TaskSizing | null;
+  /** Each provider's plan headroom at filing (v2): when a phase has
+   * candidates on both providers, a provider past its limits is skipped. */
+  headroom?: readonly ProviderRoom[];
 };
 
 export type RouteLeg = {
@@ -206,7 +295,7 @@ export type RouteLeg = {
 };
 
 export type PhaseRoute = {
-  version: typeof ROUTE_VERSION;
+  version: RouteVersion;
   risk: RiskLevel;
   qualityMode: QualityMode;
   publication: PublicationAuthority;
@@ -220,6 +309,9 @@ export type PhaseRoute = {
   demands: string[];
   legs: RouteLeg[];
   overrides: RouteOverride[];
+  /** The task's size as it was routed (v2); null on a v1 route or an
+   * unsized task. */
+  size: TaskSizing | null;
 };
 
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
@@ -244,8 +336,18 @@ const DEMANDS: readonly Demand[] = [
   },
   {
     when: input => input.risk === "elevated",
-    phases: ["review"],
-    reason: "risk is elevated — the review runs on the strongest configured reviewer",
+    phases: ["plan", "build", "repair", "review"],
+    reason: "risk is elevated — planning and building use the strongest configured agent",
+  },
+  {
+    when: input => input.size?.size === "large",
+    phases: ["plan", "build", "repair"],
+    reason: "a large change — planning and building use the strongest configured agent",
+  },
+  {
+    when: input => input.size?.risky === true,
+    phases: ["plan", "build", "repair"],
+    reason: "a risky change — planning and building use the strongest configured agent",
   },
   {
     when: input => input.qualityMode === "strict",
@@ -303,9 +405,22 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
   const overrideFor = (phase: Phase): RouteOverride | null => overrides.find(one => one.phase === phase) ?? null;
 
   const legs: RouteLeg[] = [];
-  const pick = (phase: "plan" | "build" | "review"): { spec: RouteCandidate; tier: CandidateTier; reasons: string[] } => {
+  const small = input.size?.size === "small";
+  const pick = (phase: "plan" | "build" | "review"): { spec: RouteCandidate; tier: CandidateTier; reasons: string[]; moved: boolean } => {
+    const chosen = pickTier(phase);
+    return phase === "review" ? { ...chosen, moved: false } : withHeadroom(input, phase, chosen);
+  };
+  const pickTier = (phase: "plan" | "build" | "review"): { spec: RouteCandidate; tier: CandidateTier; reasons: string[] } => {
     const demanded = demandedTier(input, phase);
     const candidates = input.candidates[phase];
+    if (demanded.tier === "routine" && small && phase === "build") {
+      const light = candidates.light ?? null;
+      if (light !== null) return { spec: light, tier: "light", reasons: ["small change — a fast model builds it and no plan is made", `light builder from ${light.source}`] };
+      return { spec: candidates.routine, tier: "routine", reasons: ["small change — no plan is made; no light builder is configured, so the configured builder runs it", `configured builder from ${candidates.routine.source}`] };
+    }
+    if (demanded.tier === "routine" && small && phase === "plan") {
+      return { spec: candidates.routine, tier: "routine", reasons: ["small change — no plan is made", `configured planner from ${candidates.routine.source}`] };
+    }
     if (demanded.tier === "strong") {
       if (candidates.strong !== null) {
         return { spec: candidates.strong, tier: "strong", reasons: [...demanded.reasons, `strong ${PHASE_NOUN[phase]} from ${candidates.strong.source}`] };
@@ -338,11 +453,14 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
   }
 
   // build — pin > override > recommendation.
+  let buildMoved = false;
   const build = (() => {
     const rec = pick("build");
+    buildMoved = rec.moved;
     const pin = input.pins?.build ?? null;
     const override = overrideFor("build");
     const recommended = { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier };
+    if (pin !== null || override !== null) buildMoved = false;
     const leg: RouteLeg =
       pin !== null
         ? { phase: "build", provider: pin.provider, model: pin.model, tier: rec.tier, chosen: "pinned", recommended, reasons: [`pinned to ${specWords(pin)} by the firing that filed this task — nothing overrides a pin`], problem: null }
@@ -366,7 +484,14 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     let tier: CandidateTier;
     let reasons: string[];
     let problem: string | null = null;
-    if (demanded.tier === "strong" && candidates.strong !== null) {
+    // A build moved to another provider for headroom takes its repairs
+    // with it: repair rows on the provider it left cannot resume its session.
+    const usedRow = demanded.tier === "strong" && candidates.strong !== null ? candidates.strong : candidates.routine;
+    if (buildMoved && usedRow !== null && usedRow.provider !== build.provider) {
+      model = build.model;
+      tier = "routine";
+      reasons = [`the build moved to ${build.provider} for plan headroom — repairs resume its session with the build model (${build.model})`];
+    } else if (demanded.tier === "strong" && candidates.strong !== null) {
       if (candidates.strong.provider === build.provider) {
         model = candidates.strong.model;
         tier = "strong";
@@ -446,6 +571,50 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     demands,
     legs,
     overrides,
+    size: input.size ?? null,
+  };
+}
+
+/**
+ * PLAN HEADROOM (v2): when a phase's configured candidates span providers,
+ * a chosen candidate whose provider is past its limits (80% of the 5-hour
+ * window, 90% of the weekly) gives way to the candidate on another
+ * provider with the most room — at the same tier, or one tier stronger,
+ * never weaker. Readings are the providers' own; with no reading for a
+ * provider nothing moves. The choice and its reason are sealed with the
+ * route.
+ */
+function withHeadroom(
+  input: RouteInput,
+  phase: "plan" | "build",
+  chosen: { spec: RouteCandidate; tier: CandidateTier; reasons: string[] },
+): { spec: RouteCandidate; tier: CandidateTier; reasons: string[]; moved: boolean } {
+  const rooms = input.headroom ?? [];
+  const roomOf = (provider: ProviderId): ProviderRoom | null => rooms.find(one => one.provider === provider) ?? null;
+  const current = roomOf(chosen.spec.provider);
+  if (current === null) return { ...chosen, moved: false };
+  const tight = tightWords(current);
+  if (tight === null) return { ...chosen, moved: false };
+  const candidates = input.candidates[phase];
+  const pool: { spec: RouteCandidate; tier: CandidateTier }[] = [];
+  for (const [tier, spec] of [["light", candidates.light ?? null], ["routine", candidates.routine], ["strong", candidates.strong]] as const) {
+    if (spec === null || spec.provider === chosen.spec.provider) continue;
+    if (TIER_RANK[tier] < TIER_RANK[chosen.tier] || TIER_RANK[tier] > TIER_RANK[chosen.tier] + 1) continue;
+    pool.push({ spec, tier });
+  }
+  if (pool.length === 0) return { ...chosen, moved: false };
+  const open = pool
+    .map(one => ({ ...one, room: roomOf(one.spec.provider) }))
+    // A provider with no reading at all is unknown, never "empty".
+    .filter((one): one is { spec: RouteCandidate; tier: CandidateTier; room: ProviderRoom } => one.room !== null && (one.room.fiveHour !== null || one.room.weekly !== null) && tightWords(one.room) === null)
+    .sort((a, b) => usedOf(a.room) - usedOf(b.room) || TIER_RANK[a.tier] - TIER_RANK[b.tier]);
+  const best = open[0];
+  if (best === undefined) return { ...chosen, reasons: [...chosen.reasons, `plan headroom: ${tight}, and no other configured ${PHASE_NOUN[phase]} has room — kept`], moved: false };
+  return {
+    spec: best.spec,
+    tier: best.tier,
+    reasons: [...chosen.reasons.slice(0, -1), `plan headroom: ${tight} — ${best.spec.provider} has more room (${usedOf(best.room)}% used), so its ${best.tier} ${PHASE_NOUN[phase]} from ${best.spec.source} runs it`],
+    moved: true,
   };
 }
 
@@ -507,6 +676,8 @@ export function canonicalRouteJson(route: PhaseRoute): string {
       problem: leg.problem,
     })),
     overrides: route.overrides.map(one => ({ phase: one.phase, provider: one.provider, model: one.model, by: one.by, at: one.at })),
+    // v2 carries the size it was routed for; a v1 snapshot's bytes never change.
+    ...(route.version === 1 ? {} : { size: route.size === null ? null : { size: route.size.size, risky: route.size.risky, source: route.size.source, reason: route.size.reason } }),
   });
 }
 
@@ -515,7 +686,7 @@ export function canonicalRouteJson(route: PhaseRoute): string {
  * route digest can never collide with a profile or chain digest. */
 export function routeDigestOf(route: PhaseRoute): string {
   return createHash("sha256")
-    .update(`standing-orders:route:v${ROUTE_VERSION}:${canonicalRouteJson(route)}`, "utf8")
+    .update(`standing-orders:route:v${route.version}:${canonicalRouteJson(route)}`, "utf8")
     .digest("hex")
     .slice(0, 32);
 }
@@ -553,8 +724,15 @@ export function routeFromJson(json: string | null): PhaseRoute | null {
   // Exact keys (v48 integrity): the snapshot carries what canonicalRouteJson
   // writes and nothing else — on the route, on every leg, on every leg's
   // recommendation, and on every override.
-  if (!exactKeysOf(r, ["version", "risk", "qualityMode", "publication", "evidence", "posture", "demands", "legs", "overrides"])) return null;
-  if (r["version"] !== ROUTE_VERSION) return null;
+  // A v1 route (sealed before sizing) reads back exactly as it was written:
+  // no size, routine and strong tiers only.
+  const version = r["version"];
+  if (version !== 1 && version !== 2) return null;
+  const v1Keys = ["version", "risk", "qualityMode", "publication", "evidence", "posture", "demands", "legs", "overrides"];
+  if (!exactKeysOf(r, version === 1 ? v1Keys : [...v1Keys, "size"])) return null;
+  const tierOk = (tier: unknown): tier is CandidateTier => tier === "routine" || tier === "strong" || (version === 2 && tier === "light");
+  const size = version === 1 || r["size"] === null ? null : parseSizing(r["size"]);
+  if (version === 2 && r["size"] !== null && size === null) return null;
   if (!isRiskLevel(r["risk"])) return null;
   if (r["qualityMode"] !== "default" && r["qualityMode"] !== "strict") return null;
   if (r["publication"] !== "none" && r["publication"] !== "notify" && r["publication"] !== "automerge") return null;
@@ -571,7 +749,7 @@ export function routeFromJson(json: string | null): PhaseRoute | null {
     if (leg["phase"] !== PHASES[index]) return null;
     if (!str(leg["provider"]) || !isProviderId(leg["provider"])) return null;
     if (!exactModel(leg["model"])) return null;
-    if (leg["tier"] !== "routine" && leg["tier"] !== "strong") return null;
+    if (!tierOk(leg["tier"])) return null;
     if (leg["chosen"] !== "recommended" && leg["chosen"] !== "override" && leg["chosen"] !== "pinned") return null;
     const rec = leg["recommended"];
     if (rec === null || typeof rec !== "object" || Array.isArray(rec)) return null;
@@ -579,7 +757,7 @@ export function routeFromJson(json: string | null): PhaseRoute | null {
     if (!exactKeysOf(recommended, ["provider", "model", "tier"])) return null;
     if (!str(recommended["provider"]) || !isProviderId(recommended["provider"])) return null;
     if (!exactModel(recommended["model"])) return null;
-    if (recommended["tier"] !== "routine" && recommended["tier"] !== "strong") return null;
+    if (!tierOk(recommended["tier"])) return null;
     if (!stringList(leg["reasons"])) return null;
     if (!strOrNull(leg["problem"])) return null;
     legs.push({
@@ -599,7 +777,7 @@ export function routeFromJson(json: string | null): PhaseRoute | null {
   const overrides = parseOverrides(r["overrides"]);
   if (overrides === null) return null;
   return {
-    version: ROUTE_VERSION,
+    version,
     risk: r["risk"],
     qualityMode: r["qualityMode"],
     publication: r["publication"],
@@ -608,6 +786,7 @@ export function routeFromJson(json: string | null): PhaseRoute | null {
     demands: [...r["demands"]],
     legs,
     overrides,
+    size,
   };
 }
 
@@ -682,11 +861,32 @@ export type RouteProjection = {
   halted: boolean;
   /** Every stated leg problem, phase-prefixed. */
   problems: string[];
+  /** The size the route was made for (v2), or null. */
+  size: TaskSizing | null;
+  /** The plain line an approval card leads with — "Small change: fast
+   * model, no plan" — or null on an unsized route. */
+  sizeWords: string | null;
+  /** Why it was sized so, and by whom, or null. */
+  sizeReason: string | null;
 };
 
 /** What actually runs: stronger agents only when a leg draws from one. */
 export function postureWords(route: Pick<PhaseRoute, "legs">): string {
-  return drawsStrong(route.legs.filter(leg => leg.phase !== "review")) ? "stronger configured agents" : "everyday configured agents";
+  const active = route.legs.filter(leg => leg.phase !== "review");
+  if (drawsStrong(active)) return "stronger configured agents";
+  return active.some(leg => leg.phase === "build" && leg.chosen === "recommended" && leg.tier === "light") ? "a fast configured agent" : "everyday configured agents";
+}
+
+/** The size line, plainly: what the size does to this route. */
+export function sizeWords(route: Pick<PhaseRoute, "legs" | "size">): string | null {
+  if (route.size === null) return null;
+  const build = route.legs.find(leg => leg.phase === "build");
+  // Said from the build leg that actually runs: another demand (strict quality, screenshots) can lift it.
+  const model = build?.tier === "light" ? "fast model" : build?.tier === "strong" ? "strongest model" : "everyday model";
+  if (route.size.size === "small" && !route.size.risky) return `Small change: ${model}, no plan`;
+  const label = route.size.size === "large" ? "Large change" : route.size.size === "small" ? "Small but risky change" : route.size.risky ? "Risky change" : "Medium change";
+  if (route.size.size === "medium" && !route.size.risky) return build?.tier === "strong" ? "Medium change: strongest agents" : "Medium change: everyday agents";
+  return build?.tier === "strong" ? `${label}: strongest agents plan and build` : `${label}: planned first, everyday agents (no stronger agent is configured)`;
 }
 
 export function readinessWords(state: ReadinessState, reason: string | null): string {
@@ -696,7 +896,7 @@ export function readinessWords(state: ReadinessState, reason: string | null): st
 }
 
 export function chosenWords(leg: Pick<RouteLeg, "chosen" | "tier">): string {
-  return leg.chosen === "override" ? "overridden" : leg.chosen === "pinned" ? "pinned" : leg.tier === "strong" ? "recommended · strong" : "recommended";
+  return leg.chosen === "override" ? "overridden" : leg.chosen === "pinned" ? "pinned" : leg.tier === "strong" ? "recommended · strong" : leg.tier === "light" ? "recommended · fast" : "recommended";
 }
 
 /**
@@ -705,9 +905,11 @@ export function chosenWords(leg: Pick<RouteLeg, "chosen" | "tier">): string {
  * plans, builds, and repairs; claude · opus reviews" — with the posture
  * said honestly (stronger agents only when one is actually selected).
  */
-export function agentsSummary(route: Pick<PhaseRoute, "legs">): string {
+export function agentsSummary(route: Pick<PhaseRoute, "legs"> & { size?: TaskSizing | null }): string {
   const groups: { spec: string; verbs: string[] }[] = [];
-  for (const leg of route.legs.filter(leg => leg.phase !== "review")) {
+  // A small change makes no plan: its planner is not one of the agents that work on it.
+  const unplanned = route.size?.size === "small" && route.size.risky !== true;
+  for (const leg of route.legs.filter(leg => leg.phase !== "review" && !(unplanned && leg.phase === "plan" && leg.chosen === "recommended"))) {
     const spec = specWords(leg);
     const group = groups.find(one => one.spec === spec);
     if (group === undefined) groups.push({ spec, verbs: [PHASE_VERB[leg.phase]] });
@@ -749,6 +951,10 @@ export function projectRoute(route: PhaseRoute, readiness: ReadinessLookup): Rou
     summary: agentsSummary(route),
     halted: legs.some(leg => leg.readiness === "unavailable"),
     problems: routeProblems(route),
+    size: route.size,
+    sizeWords: sizeWords(route),
+    // A person's size already says who set it.
+    sizeReason: route.size === null ? null : route.size.source === "person" && route.size.reason !== "" ? route.size.reason : `${route.size.reason === "" ? "" : `${route.size.reason} · `}${sizeSourceWords(route.size.source)}`,
   };
 }
 
@@ -758,6 +964,7 @@ export function routeWords(projection: RouteProjection, indent = "  "): string[]
   const pad = `${indent}             `;
   return [
     `${indent}route        ${projection.riskTitle.toLowerCase()} · ${projection.postureWords} · ${projection.digest}`,
+    ...(projection.sizeWords === null ? [] : [`${indent}size         ${projection.sizeWords} — ${projection.sizeReason}`]),
     `${pad}${projection.summary}`,
     ...projection.legs.flatMap(leg => [`${pad}${leg.words}`, ...leg.reasons.map(reason => `${pad}    ${reason}`)]),
     ...(projection.halted ? [`${pad}HALTED: a provider on this route is reported unavailable — nothing substitutes; override the phase or restore the provider`] : []),
