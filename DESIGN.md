@@ -480,6 +480,10 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 - **Style:** a raised track (12px corners, 2px inset, 32px tall) holding 8px-cornered triggers in muted 13px / 500. The active trigger is a paper pill with ink text and the pill shadow. The tab counts next to the labels are Geist Mono 11px. The "Needs you" count becomes a filled accent pill when it is above zero, and every other count stays muted.
 - **Link tabs:** filters stay real URLs (the Tasks views, a task's Overview / Ask), so Back and bookmarks work.
 
+### Integration marks
+- **One mark everywhere an integration shows** (Tools tiles and cards, Integrations rows, the Settings home chat apps): `brandMarkHtml` or `BrandMark` in `brand-mark.ts`. A 32px neutral-soft tile with 8px corners (28px at 760px and below) holds the logo at 20px (18px), monochrome in `currentColor`: ink when connected, muted otherwise, in light and dark.
+- **Logos** are generated into `src/brand-icons.ts` by `scripts/brand-icons.mjs`: one 24x24 path each, the mark's larger side 20 and centred. Never per-brand colours, stretched or redrawn marks. A service without a logo, or a custom tool, shows its first letter in the same tile.
+
 ### Task row (signature)
 The row is the unit of the control plane. It has three columns and one colour at most. The first column holds the title (13.5px / 500, underlined on hover) and a muted meta line under it (the project, a centred dot, the age in tabular figures), plus any detail line. The second holds the status badge in a column shared by the whole list (a subgrid), so badges line up down the list. The third holds a single outline action with a trailing arrow. A problem line inside a row is vermilion 12.5px text. Rows are divided by hairlines and fill with raised on hover.
 

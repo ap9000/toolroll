@@ -6,6 +6,7 @@
  */
 import { STATE_WORDS, type Integration, type IntegrationGroup } from "./integrations.js";
 import { whenUtc } from "./when-html.js";
+import { brandMarkHtml } from "./brand-mark.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const when = (at: string) => whenUtc(at);
@@ -13,7 +14,7 @@ const when = (at: string) => whenUtc(at);
 export const INTEGRATIONS_CSS = `.integrations{max-width:760px;min-width:0}.integrations h2{margin:24px 0 6px;font-size:.9375rem}` +
   `.integrations .integration{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;align-items:start;padding:12px 0;border-top:1px solid var(--so-line);min-width:0}` +
   `.integrations .integration>:not(.integration-action),.integrations .integration-body>*{grid-column:1}.integrations .integration-body{display:contents}.integrations .integration:first-of-type{border-top:0}.integrations .integration-head{margin:0;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;min-width:0}` +
-  `.integrations .integration-head strong{overflow-wrap:anywhere}.integrations .integration p{margin:2px 0 0;min-width:0;overflow-wrap:anywhere}` +
+  `.integrations .integration .integration-body>*{margin-left:42px}.integrations .integration-head strong{overflow-wrap:anywhere}.integrations .integration p{margin:2px 0 0;min-width:0;overflow-wrap:anywhere}` +
   `.integrations .integration-action{grid-column:2;grid-row:1 / span 3;align-self:center;margin:0}.integrations .integration-action button,.integrations .integration-action .button-link{min-height:44px;white-space:nowrap}` +
   `.integrations .integration .integration-action button{width:auto}.integrations .integration .integration-action a.integration-quiet{background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line)}` +
   `.integrations .integration-fix{color:var(--so-danger)}.integrations code{overflow-wrap:anywhere}.integrations details{margin-top:4px;font-size:.8125rem}.integrations summary{cursor:pointer;padding:4px 0}` +
@@ -23,7 +24,7 @@ export const INTEGRATIONS_CSS = `.integrations{max-width:760px;min-width:0}.inte
   `.integration-state--not-set-up,.integration-state--checking{color:var(--so-muted);background:var(--so-neutral-soft)}` +
   // A phone: the action sits at the right of the name line, and the facts under it run on as one line.
   `@media (max-width:760px){.integrations h2{margin:16px 0 0}.integrations .integration{gap:0 12px;padding:6px 0 8px}.integrations .integration-head{min-height:44px}` +
-  `.integrations .integration-action{grid-row:1;align-self:center}.integrations .integration-body{display:block;grid-column:1 / -1;line-height:1.35}` +
+  `.integrations .integration-action{grid-row:1;align-self:center}.integrations .integration-body{display:block;grid-column:1 / -1;line-height:1.35;padding-left:38px}.integrations .integration .integration-body>*{margin-left:0}` +
   `.integrations .integration-body>p{margin:0}.integrations .integration-body>p.meta{display:inline}.integrations .integration-body>p.meta+p.meta::before{content:" · "}` +
   `.integrations .integration-body>:not(.meta){margin-top:4px}.integrations .integration-body>:not(.meta)+p.meta{display:block;margin-top:2px}.integrations details{margin-top:2px}}`;
 
@@ -43,6 +44,11 @@ function action(one: Integration, csrf: string): string {
   return "";
 }
 
+/** Which mark a row shows: email is Gmail's only when the account is a Gmail address. */
+function markFor(one: Integration): string {
+  return one.key === "email" && /@(gmail|googlemail)\.com$/i.test(one.account ?? "") ? "gmail" : one.key;
+}
+
 function row(one: Integration, csrf: string): string {
   const badge = !one.checked && one.state === "connected"
     ? `<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
@@ -57,7 +63,7 @@ function row(one: Integration, csrf: string): string {
     ? `<p class="meta">Failed ${when(one.lastErrorAt ?? "")}</p>`
     : `<details><summary>Last error ${one.lastErrorAt === null ? "" : when(one.lastErrorAt)}</summary><p class="meta">${e(one.lastError)}</p></details>`;
   return `<div class="integration" data-integration="${e(one.key)}" data-state="${one.state}">` +
-    `<p class="integration-head"><strong>${e(one.name)}</strong> ${badge}</p>` +
+    `<p class="integration-head">${brandMarkHtml(markFor(one), one.name, one.state === "connected")}<strong>${e(one.name)}</strong> ${badge}</p>` +
     action(one, csrf) +
     `<div class="integration-body">${facts === "" ? "" : `<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
 }

@@ -126,7 +126,8 @@ export type BrowserSettingsView = {
   /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
   updates?: BrowserUpdates | null;
 };
-export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
+/** A tile's `brand` is a chat app's logo (brand-mark.ts), shown instead of an icon. */
+export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; brand?: string; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */
