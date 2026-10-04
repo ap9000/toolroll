@@ -144,8 +144,9 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },
       createdBy: card.createdBy, updatedAt: card.updatedAt,
       canDecide,
-      // What a "Send to me" sent shows once, in its own box (sent), not again here.
-      outputs: Object.entries(card.outputs).filter(([id]) => stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
+      // What a "Send to me" sent shows once, in its own box (sent), not again here; a report zone's items and full report
+      // (`<id>.items`, `<id>.report`) are for later zones, and its summary is shown.
+      outputs: Object.entries(card.outputs).filter(([id]) => !id.includes(".") && stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
       history: [...moves, ...owned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
       source: card.source,
       owner: card.owner, watchers, watching: watchers.includes(viewer.name),

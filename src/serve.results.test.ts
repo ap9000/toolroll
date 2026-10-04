@@ -1691,7 +1691,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // An investigation: a scout run whose deliverable is a report.
     const scoutRef = seed("t-scout", "investigate the drift", "/repo/main", { acceptance: [{ id: "c1", statement: "A report names the drift", evidence: ["manual-review"] }] });
     const scoutRun = store.startRun({ taskRef: scoutRef, leaseId: "lease-scout", runner: "night-shift-1", provider: "claude", role: "scout", branch: "standing-orders/t-scout", worktree: "/pool/t-scout", now: T0, ...presented(store, scoutRef, "builder") });
-    const report = { title: "Where the drift lives", summary: "Two rounding sites disagree. The footer sums unrounded rows while the ledger rounds each line.", report: "# Drift\n\n<script>alert(1)</script> is text here.", followUps: [{ title: "Round the footer", goal: "Sum rounded rows." }] };
+    const report = { title: "Where the drift lives", summary: "Two rounding sites disagree. The footer sums unrounded rows while the ledger rounds each line.", report: "# Drift\n\n<script>alert(1)</script> is text here.", followUps: [{ title: "Round the footer", goal: "Sum rounded rows." }],
+      items: [{ title: "The footer <b>sums</b> raw rows", why: "Totals drift by a cent.", url: "https://shop.example.com/cart", image: "footer.png" }],
+      // Its screenshot's evidence is gone: named, never a broken picture.
+      images: [{ file: "footer.png", caption: "The cart footer", url: "https://shop.example.com/cart", sha256: "0".repeat(64), artifact: 999_999 }] };
     storeEvidence(store, evidenceRoot, scoutRun, "report", "report.json", Buffer.from(JSON.stringify(report), "utf8"), "scout report (validated)", T0);
     // Native report runs settle as built/report-delivered without a builder handoff.
     store.finishRun(scoutRun, { outcome: "built", reason: "report-delivered", committed: false, now: T0 });
@@ -1747,7 +1750,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(html).not.toContain("The build finished without a concise handoff.");
     }
     expect(scout).toContain('data-result-lead="report"');
-    expect(scout).toContain('<article class="result-report" data-result-report="ok"><h3>Where the drift lives</h3><pre class="recap plan-doc">');
+    expect(scout).toContain('<article class="result-report" data-result-report="ok"><h3>Where the drift lives</h3><div class="report-items" data-report-items="1">');
+    expect(scout).toContain("The footer &lt;b&gt;sums&lt;/b&gt; raw rows");
+    expect(scout).toContain('href="https://shop.example.com/cart" rel="noopener noreferrer nofollow"');
+    expect(scout).toContain("Screenshot unavailable: the saved screenshot is missing");
     // The outcome line is the summary's first sentence; the full summary is said once, behind the agent's disclosure.
     expect(scout).toContain('<details class="result-notes" data-result-notes-agent><summary>What the agent reported</summary><p class="recap">Two rounding sites disagree. The footer sums unrounded rows while the ledger rounds each line.</p></details>');
     expect(renderedHtmlOf(scout).split("The footer sums unrounded rows while the ledger rounds each line.").length - 1).toBe(1);

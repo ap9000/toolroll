@@ -754,7 +754,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
     {stage.kind === "draft" && <Field label="What Claude should write" hint="Claude reads the card and what earlier zones said. Put a “Person decides” zone next to read and edit it first.">
       <Textarea rows={5} value={stage.instructions ?? ""} maxLength={4000} onChange={event => update({ instructions: event.target.value })} aria-label="What Claude should write" />
     </Field>}
-    {(stage.kind === "task" || stage.kind === "report") && <Field label="What the agent should do" hint={"Fill-ins: {{card.title}}, {{card.description}}, {{note}} (the latest send-back note), {{stage.<zone id>}} (an earlier zone's report)."}>
+    {(stage.kind === "task" || stage.kind === "report") && <Field label="What the agent should do" hint={"Fill-ins: {{card.title}}, {{card.description}}, {{note}} (the latest send-back note), {{stage.<zone id>}} (an earlier zone's report; a research zone adds .items and .report)."}>
       <Textarea rows={7} value={stage.instructions ?? ""} onChange={event => update({ instructions: event.target.value })} aria-label="What the agent should do" />
     </Field>}
     {stage.kind === "task" && (view.projects ?? []).length > 1 && <Field label="Builds in" hint="Another project files its task there, as the flow's owner, under that project's approvals.">

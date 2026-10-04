@@ -8,18 +8,22 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover } from "./scope.js";
+import { addApprover, approve } from "./scope.js";
+import { register } from "./runner.js";
 import { FLOW_CUT, FLOW_GOAL_LIMIT, fitFlowText, flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { advanceFlows, flowGoalCuts } from "./flow-engine.js";
+import { storeEvidence } from "./evidence.js";
 
-let dir: string, repo: string, store: Store;
+let dir: string, repo: string, store: Store, operator: string;
 const now = new Date("2026-09-30T23:00:00Z");
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "flow-goal-")));
   repo = join(dir, "site");
   mkdirSync(repo);
   store = openStore(join(dir, "orders.db"));
-  if (!addApprover(store, "operator", now).ok) throw Error("account");
+  const added = addApprover(store, "operator", now);
+  if (!added.ok) throw Error("account");
+  operator = added.token;
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -95,4 +99,49 @@ test("a card that couldn't file its work says why, and files on a later pass onc
   const filed = store.getFlowCard(card)!;
   expect(filed.waiting).toBe("Filed as a task");
   expect(store.getScope(filed.task!)!.goal.length).toBeLessThanOrEqual(FLOW_GOAL_LIMIT);
+});
+
+test("a research zone's items and full report reach the next zone, beside its summary", () => {
+  const steps = { version: 1, start: "research", stages: [
+    { id: "research", title: "Research", kind: "report", instructions: "Find what slows checkout.", next: "build" },
+    { id: "build", title: "Build", kind: "task", instructions: "Fix these:\n{{stage.research.items}}\n\nSummary: {{stage.research}}\n\nReport:\n{{stage.research.report}}", next: "done" },
+    { id: "done", title: "Done", kind: "done" },
+  ] };
+  const flow = store.createFlow({ repo, name: "Checkout", definitionJson: JSON.stringify(validateFlowDefinition(steps)), by: "operator" }, now);
+  for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "operator", now);
+  const card = store.addFlowCard({ flow, title: "Checkout is slow", description: null, stage: "research", by: "operator" }, now);
+  expect(advanceFlows(store, repo, now).filed).toHaveLength(1);
+  // The research task finishes with a scout's report: two items, one with a screenshot.
+  const task = store.getFlowCard(card)!.task!;
+  const ref = store.lookupRef(task)!.id;
+  register(store, { name: "worker-1", host: "test", capacity: 4, repos: [repo], now, newToken: () => "tok-worker-1" });
+  const approved = approve(store, task, "operator", now, store.getScope(task)!.digest, operator);
+  if (!approved.ok) throw new Error(JSON.stringify(approved));
+  const authority = store.routeAuthorityFor(ref, "builder");
+  if (!authority?.ok) throw new Error("route fixture");
+  const run = store.startRun({ taskRef: ref, leaseId: "lease-scout", runner: "worker-1", role: "scout", branch: "scout/checkout", worktree: "/pool/checkout", route: authority.stamp, now });
+  const report = { title: "Checkout is slow in two places", summary: "The payment iframe and the tax lookup block the page.", report: "## Findings\nThe tax lookup runs on every keystroke.", followUps: [],
+    items: [
+      { title: "The payment iframe loads late", why: "It waits for three analytics scripts.", url: "https://shop.example.com/checkout", image: "checkout.png" },
+      { title: "Tax lookup on every keystroke", why: "Each call takes 400 ms.\nIt blocks typing.", url: "https://shop.example.com/api/tax" },
+    ],
+    images: [{ file: "checkout.png", caption: "The checkout page", url: "https://shop.example.com/checkout" }] };
+  storeEvidence(store, dir, run, "report", "report.json", Buffer.from(JSON.stringify(report)), "scout handoff (verified tree)", now);
+  store.finishRun(run, { outcome: "built", reason: "report-delivered", now });
+  store.setTaskState(task, "done", now);
+  const later = new Date(now.getTime() + 60_000);
+  advanceFlows(store, repo, later, { evidenceRoot: dir });
+  const moved = store.getFlowCard(card)!;
+  expect(moved.stage).toBe("build");
+  expect(moved.outputs).toMatchObject({
+    research: report.summary,
+    "research.items": "1. The payment iframe loads late\n   It waits for three analytics scripts.\n   https://shop.example.com/checkout\n2. Tax lookup on every keystroke\n   Each call takes 400 ms. It blocks typing.\n   https://shop.example.com/api/tax",
+    "research.report": report.report,
+  });
+  advanceFlows(store, repo, later, { evidenceRoot: dir });
+  const goal = store.getScope(store.getFlowCard(card)!.task!)!.goal;
+  expect(goal).toContain("Fix these:\n1. The payment iframe loads late");
+  expect(goal).toContain("https://shop.example.com/api/tax");
+  expect(goal).toContain(`Summary: ${report.summary}`);
+  expect(goal).toContain("Report:\n## Findings\nThe tax lookup runs on every keystroke.");
 });

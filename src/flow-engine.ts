@@ -9,11 +9,11 @@ import { assignmentOf } from "./assignment.js";
 import { filerFor } from "./approval-policy.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { deciderOf, durationWords, fillFlowText, fitFlowText, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
-import { reportSummaryFor } from "./report-summary.js";
+import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
-import { scanForSecrets } from "./evidence.js";
+import { readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { cardFollowers, notifyPeople } from "./flow-people.js";
 import { keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
@@ -279,6 +279,14 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
       const ref = store.lookupRef(current);
       const summary = ref === null ? null : reportSummaryFor(store, options.evidenceRoot, ref.id);
       outputs[stage.id] = summary !== null && "summary" in summary ? summary.summary.slice(0, 6000) : "The report is ready on its task.";
+      // {{stage.<id>.items}} and {{stage.<id>.report}}: what it found and the whole report, for the zones after it.
+      // A visit's report replaces the last visit's, so nothing stale is left behind.
+      const view = ref === null || options.evidenceRoot === undefined ? null : readVerifiedReport(store, options.evidenceRoot, ref.id);
+      const found = view?.ok === true ? reportFillIns(view.report) : { items: "", report: "" };
+      for (const [part, text] of Object.entries(found)) {
+        if (text === "") delete outputs[`${stage.id}.${part}`];
+        else outputs[`${stage.id}.${part}`] = text;
+      }
     } else {
       outputs[stage.id] = `Result ready on task ${current}.`;
     }
@@ -319,12 +327,13 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
   const labels: Record<string, string> = { "card.title": "The card's title", "card.description": "The card's description", note: "The note it was sent back with" };
   const cuts: { label: string; text: string }[] = [];
   const seen = new Set<string>();
-  for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+))\s*\}\}/g)) {
+  for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+)(?:\.(items|report))?)\s*\}\}/g)) {
     if (seen.has(match[1]!)) continue;
     seen.add(match[1]!);
     const text = fillFlowText(`{{${match[1]}}}`, card);
     if (text === "" || goal.includes(text)) continue;
-    cuts.push({ label: labels[match[1]!] ?? `What ${titleIn(definition, match[2]!)} found`, text: text.slice(0, 50_000) });
+    const part = match[3] === "items" ? "listed" : match[3] === "report" ? "reported in full" : "found";
+    cuts.push({ label: labels[match[1]!] ?? `What ${titleIn(definition, match[2]!)} ${part}`, text: text.slice(0, 50_000) });
   }
   return cuts;
 }

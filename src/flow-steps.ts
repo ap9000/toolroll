@@ -360,7 +360,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
       if (prepared.code !== 0) return { state: "failed", said: `The project's setup failed before ${script.name} ran (exit ${prepared.code}).\n${tail(`${prepared.stdout}\n${prepared.stderr}`)}`, log, exitCode: prepared.code };
     }
     const definition = flowDefinitionOf(flow);
-    const titleOf = (id: string) => definition?.stages.find(one => one.id === id)?.title ?? id;
+    const titleOf = (id: string) => definition?.stages.find(one => one.id === id.split(".")[0])?.title ?? id;
     // The card as data: never part of a command.
     const input = {
       card: { id: card.id, title: card.title, description: card.description, email: cardEmailOf(card) || null, note: card.note, owner: card.owner, source: card.source === null ? null : { kind: card.source.kind, label: card.source.label, url: card.source.url } },

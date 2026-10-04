@@ -20,8 +20,12 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
+import { SCOUT_BROWSER, scoutBrowser, scrubUrl } from "./scout.js";
+import * as projectTools from "./project-tools.js";
+import { createServer, request as httpRequest } from "node:http";
 import { readVerifiedReport } from "./evidence.js";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { Runner } from "./builder.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
@@ -64,6 +68,25 @@ describe("the report parser (422 rule)", () => {
     expect(twoParagraphs.ok).toBe(false);
     if (!twoParagraphs.ok) expect(twoParagraphs.problems.map(one => one.reason)).toContain("summary-paragraphs");
     expect(parseReport(JSON.stringify({ title: "t", summary: "one line,\nwrapped.", report: "r" })).ok).toBe(true);
+  });
+
+  test("items and images: capped, cited with http(s) URLs, and an item's picture names one of the images", () => {
+    const item = (index: number) => ({ title: `Finding ${index}`, why: "It matters.", url: `https://example.com/${index}` });
+    const good = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r",
+      items: [{ ...item(1), image: "home.png" }, item(2)], images: [{ file: "home.png", caption: "The home page", url: "https://example.com/" }] }));
+    expect(good.ok).toBe(true);
+    if (good.ok) {
+      expect(good.report.items).toEqual([{ ...item(1), image: "home.png" }, { ...item(2), image: null }]);
+      expect(good.report.images).toEqual([{ file: "home.png", caption: "The home page", url: "https://example.com/" }]);
+    }
+    const old = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r" }));
+    expect(old.ok && old.report.items.length === 0 && old.report.images.length === 0).toBe(true);
+    const reasons = (body: Record<string, unknown>) => { const read = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r", ...body })); return read.ok ? [] : read.problems.map(one => one.reason); };
+    expect(reasons({ items: Array.from({ length: REPORT_LIMITS.items + 1 }, (_, index) => item(index)) })).toContain("items-too-many");
+    expect(reasons({ images: Array.from({ length: REPORT_LIMITS.images + 1 }, (_, index) => ({ file: `${index}.png`, caption: "c", url: "https://example.com/" })) })).toContain("images-too-many");
+    expect(reasons({ items: [{ ...item(1), image: "nowhere.png" }] })).toContain("items[0]-image");
+    expect(reasons({ items: [{ ...item(1), url: "file:///etc/passwd" }] })).toContain("items[0].url-not-a-link");
+    expect(reasons({ images: [{ file: "a.png", caption: "two\nlines", url: "https://example.com/" }] })).toContain("images[0]-caption-multiline");
   });
 });
 
@@ -452,6 +475,8 @@ describe("scout tasks, against real git", () => {
   const planWrite = (options: Parameters<Runner>[2]) =>
     options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/Users/someone/.claude/plans/you-are-a-scout-quiet-otter.md", content: "# Findings" } }] } });
   let argvSeen: string[] = [];
+  let envSeen: Record<string, string> | undefined;
+  let omitSeen: readonly string[] = [];
   const ASKED = {
     urgency: "blocking",
     recap: "Two suites fail differently.",
@@ -464,6 +489,8 @@ describe("scout tasks, against real git", () => {
   };
   const planModeAgent = (structured: unknown, files: { report?: unknown } = {}): Runner => async (_file, args, options) => {
     argvSeen = [...args];
+    envSeen = options?.env;
+    omitSeen = options?.omitEnv ?? [];
     const prompt = String(args[args.indexOf("-p") + 1] ?? "");
     prompts.push(prompt);
     planWrite(options);
@@ -476,13 +503,13 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: JSON.stringify(result) };
   };
 
-  test("a Claude scout under plan mode returns its report as structured output and the run succeeds", async () => {
+  test("a Claude scout returns its report as structured output and the run succeeds", async () => {
     const { runnerToken } = await setup();
     const reported = await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }));
     expect(reported).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
-    // Plan mode is unchanged; the report schema rides beside it.
-    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    // Read-only by permission (dontAsk, no edit tools allowed); the report schema rides beside it.
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     const schema = JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}");
     expect(schema).toMatchObject({ required: ["kind"], properties: { kind: { enum: ["report", "question"] } } });
@@ -495,6 +522,253 @@ describe("scout tasks, against real git", () => {
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
     expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
     store.close();
+  });
+
+  /** A real-enough PNG: signature and IHDR, so it sniffs and measures like a screenshot. */
+  const png = (width = 1280, height = 800, size = 2_048) => {
+    const bytes = Buffer.alloc(size);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
+    bytes.writeUInt32BE(13, 8);
+    bytes.write("IHDR", 12, "ascii");
+    bytes.writeUInt32BE(width, 16);
+    bytes.writeUInt32BE(height, 20);
+    return bytes;
+  };
+  let folderSeen = "";
+  /** The scout browser's launch arguments, from the launch's own MCP config (none when it has no browser). */
+  const browserLaunch = (args: readonly string[]): string[] => {
+    for (const [at, arg] of args.entries()) {
+      if (arg !== "--mcp-config" || !String(args[at + 1]).startsWith("{")) continue;
+      const browser = JSON.parse(String(args[at + 1])).mcpServers?.[SCOUT_BROWSER];
+      if (browser !== undefined) return (browser.args as unknown[]).map(String);
+    }
+    return [];
+  };
+  /** Where the scout's browser saves its screenshots: its `--output-dir`. */
+  const browserFolder = (args: readonly string[]): string => {
+    const launch = browserLaunch(args);
+    return launch.includes("--output-dir") ? String(launch[launch.indexOf("--output-dir") + 1]) : "";
+  };
+  /** A scout that saves screenshots in its output folder, some of which the runner must refuse. */
+  const imagingAgent = (images: Record<string, Buffer | { link: string }>, report: Record<string, unknown>, outside?: Buffer): Runner => async (_file, args, options) => {
+    const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+    prompts.push(prompt);
+    argvSeen = [...args];
+    folderSeen = browserFolder(args);
+    expect(prompt).toContain(folderSeen);
+    expect(folderSeen.startsWith(realpathSync(options?.cwd ?? ""))).toBe(false);
+    for (const [name, content] of Object.entries(images)) {
+      if (Buffer.isBuffer(content)) await writeFile(join(folderSeen, name), content);
+      else symlinkSync(content.link, join(folderSeen, name));
+    }
+    if (outside !== undefined) await writeFile(join(folderSeen, "..", "outside.png"), outside);
+    const result = { type: "result", subtype: "success", is_error: false, result: "", structured_output: { kind: "report", report } };
+    return { ...OK, stdout: JSON.stringify(result) };
+  };
+
+  test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {
+    const { runnerToken } = await setup();
+    const shot = png();
+    const secret = join(base, "secret.png");
+    await writeFile(secret, png());
+    const items = [
+      { title: "The pricing page hides the annual plan", why: "Visitors only see monthly prices.", url: "https://example.com/pricing", image: "pricing.png" },
+      { title: "The sign-up form asks for a phone number", why: "It is required and unexplained.", url: "https://example.com/signup", image: "huge.png" },
+      { title: "Docs link to a dead page", why: "The quick start 404s.", url: "https://example.com/docs", image: "notes.png" },
+      { title: "Footer copy is out of date", why: "It says 2024.", url: "https://example.com/", image: "linked.png" },
+      { title: "A file outside the folder", why: "Must not be read.", url: "https://example.com/x", image: "../outside.png" },
+    ];
+    const images = [
+      { file: "pricing.png", caption: "The pricing page", url: "https://example.com/pricing" },
+      { file: "huge.png", caption: "The sign-up form", url: "https://example.com/signup" },
+      { file: "notes.png", caption: "Not an image", url: "https://example.com/docs" },
+      { file: "linked.png", caption: "A link elsewhere", url: "https://example.com/" },
+      { file: "../outside.png", caption: "Outside", url: "https://example.com/x" },
+    ];
+    const agent = imagingAgent(
+      { "pricing.png": shot, "huge.png": png(1280, 800, 5 * 1024 * 1024 + 1), "notes.png": Buffer.from("just text, named like a picture"), "linked.png": { link: secret } },
+      { ...FOUND, items, images }, png());
+    expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(prompts.at(-1)).toContain("Never download anything else, and never run downloaded code");
+    expect(prompts.at(-1)).not.toContain("plan file");
+    expect(prompts.at(-1)).toContain("Cite the URL");
+    // The real scout can take them: research and screenshot tools allowed, nothing that edits or runs commands.
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
+    const allowed = String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",");
+    expect(allowed).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", `mcp__${SCOUT_BROWSER}__browser_navigate`, `mcp__${SCOUT_BROWSER}__browser_take_screenshot`]));
+    expect(allowed.some(tool => /^(Bash|Write|Edit|NotebookEdit)\b/.test(tool))).toBe(false);
+    expect(argvSeen).toContain("--strict-mcp-config");
+    // Its browser goes through the public-web-only proxy, loopback included, and never opens files.
+    const launch = browserLaunch(argvSeen);
+    expect(launch[launch.indexOf("--proxy-server") + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(launch[launch.indexOf("--proxy-bypass") + 1]).toBe("<-loopback>");
+    expect(launch).not.toContain("--allow-unrestricted-file-access");
+    expect(argvSeen).not.toContain("--dangerously-skip-permissions");
+    // The folder was the run's own, outside the checkout, and is gone afterwards.
+    expect(folderSeen).not.toBe("");
+    expect(existsSync(folderSeen)).toBe(false);
+
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.runsFor(ref.id)[0]).toMatchObject({ role: "scout", outcome: "built", reason: "report-delivered" });
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok).toBe(true);
+    if (view !== null && view.ok) {
+      const sha = createHash("sha256").update(shot).digest("hex");
+      expect(view.report.images).toEqual([expect.objectContaining({ file: "pricing.png", caption: "The pricing page", url: "https://example.com/pricing", sha256: sha })]);
+      const artifact = store.artifactsFor(view.run).find(one => one.id === view.report.images[0]!.artifact);
+      expect(artifact).toMatchObject({ kind: "screenshot", sha256: sha });
+      expect(artifact?.capture).toContain("https://example.com/pricing");
+      expect(store.artifactsFor(view.run).filter(one => one.kind === "screenshot")).toHaveLength(1);
+      expect(view.shots).toEqual([expect.objectContaining({ file: "pricing.png", artifactId: artifact!.id, problem: null })]);
+      // Every item arrives; only the verified picture stays tied to its item.
+      expect(view.report.items.map(one => one.image)).toEqual(["pricing.png", null, null, null, null]);
+      expect(view.report.report).toContain("huge.png (over 5 MB)");
+      expect(view.report.report).toContain("notes.png (not a PNG or JPEG)");
+      expect(view.report.report).toContain("linked.png (a link, not a file)");
+      expect(view.report.report).toContain("../outside.png (not a PNG or JPEG file name in the screenshot folder)");
+    }
+    store.close();
+  });
+
+  test("while the scout runs, its browser's proxy refuses this machine and private addresses", async () => {
+    const { runnerToken } = await setup();
+    const answers: number[] = [];
+    const probing: Runner = async (_file, args, options) => {
+      const launch = browserLaunch(args);
+      const proxy = new URL(String(launch[launch.indexOf("--proxy-server") + 1]));
+      const through = (path: string, method = "GET") => new Promise<number>((done, fail) => {
+        const sent = httpRequest({ host: proxy.hostname, port: Number(proxy.port), method, path, headers: { host: "x" } });
+        sent.on("connect", (answer, socket) => { socket.destroy(); done(answer.statusCode ?? 0); });
+        sent.on("response", answer => { answer.resume(); done(answer.statusCode ?? 0); });
+        sent.on("error", fail);
+        sent.end();
+      });
+      answers.push(await through("http://127.0.0.1:9/"), await through("http://localhost/"), await through("http://10.0.0.1/"),
+        await through("169.254.169.254:443", "CONNECT"), await through("[::1]:443", "CONNECT"));
+      return planModeAgent({ kind: "report", report: FOUND })(_file, args, options);
+    };
+    expect(await tick(runnerToken, probing)).toBe(EXIT.ok);
+    expect(answers).toEqual([403, 403, 403, 403, 403]);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+  });
+
+  test("web fetch goes through the browser's proxy, and the project's demo set with `project demo` is the one non-public page it reaches", async () => {
+    const { runnerToken, approverToken } = await setup();
+    const demo = createServer((_incoming, outgoing) => outgoing.end("the demo"));
+    await new Promise<void>(done => demo.listen(0, "127.0.0.1", () => done()));
+    const demoPort = (demo.address() as { port: number }).port;
+    try {
+      // Setting it is an approver's act; only http(s) without a sign-in; `off` clears it.
+      await run(["project", "demo", `http://127.0.0.1:${demoPort}/app`, "--repo", repo, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "refused" });
+      await run(["project", "demo", "file:///etc/passwd", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "usage" });
+      await run(["project", "demo", "http://me:pw@127.0.0.1/", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "usage" });
+      await run(["project", "demo", `http://127.0.0.1:${demoPort}/app`, "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, before: null, demoUrl: `http://127.0.0.1:${demoPort}/app` });
+      await run(["project", "demo", "--repo", repo, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, demoUrl: `http://127.0.0.1:${demoPort}/app` });
+
+      const answers: (number | string)[] = [];
+      const probing: Runner = async (file, args, options) => {
+        const launch = browserLaunch(args);
+        const browserProxy = String(launch[launch.indexOf("--proxy-server") + 1]);
+        // HTTP(S)_PROXY is the browser's own proxy, and nothing lets a request skip it.
+        expect(options?.env?.["HTTPS_PROXY"]).toBe(browserProxy);
+        expect(options?.env?.["HTTP_PROXY"]).toBe(browserProxy);
+        expect(options?.env?.["https_proxy"]).toBe(browserProxy);
+        expect(options?.omitEnv).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
+        const proxy = new URL(options?.env?.["HTTP_PROXY"] ?? "");
+        const get = (path: string) => new Promise<number | string>((done, fail) => {
+          const sent = httpRequest({ host: proxy.hostname, port: Number(proxy.port), path, headers: { host: new URL(path).host } }, answer => {
+            let body = "";
+            answer.on("data", chunk => { body += String(chunk); });
+            answer.on("end", () => done(answer.statusCode === 200 ? body : answer.statusCode ?? 0));
+          });
+          sent.on("error", fail);
+          sent.end();
+        });
+        answers.push(await get(`http://127.0.0.1:${demoPort}/app`), await get(`http://127.0.0.1:${demoPort + 1}/`), await get("http://10.0.0.1/"));
+        return planModeAgent({ kind: "report", report: FOUND })(file, args, options);
+      };
+      expect(await tick(runnerToken, probing)).toBe(EXIT.ok);
+      expect(answers).toEqual(["the demo", 403, 403]);
+      expect(prompts.at(-1)).toContain(`this project's own UI at \`http://127.0.0.1:${demoPort}/app\``);
+
+      await run(["project", "demo", "off", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, before: `http://127.0.0.1:${demoPort}/app`, demoUrl: null });
+      const store = openStore(db);
+      expect(store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'demo URL' ORDER BY rowid").all()).toEqual([
+        { actor: "alex", detail: `off → http://127.0.0.1:${demoPort}/app` },
+        { actor: "alex", detail: `http://127.0.0.1:${demoPort}/app → off` },
+      ]);
+      store.close();
+    } finally {
+      await new Promise<void>(done => demo.close(() => done()));
+    }
+  });
+
+  test("a report whose only secret was in an image's URL is marked redacted", async () => {
+    const { runnerToken } = await setup();
+    const images = [{ file: "callback.png", caption: "The callback page", url: "https://app.example.com/callback?code=1234&state=ok" }];
+    expect(await tick(runnerToken, imagingAgent({ "callback.png": png() }, { ...FOUND, images }))).toBe(EXIT.ok);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.latestReportArtifact(ref.id)?.redacted).toBe(true);
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view !== null && view.ok && view.report.images[0]!.url).toBe("https://app.example.com/callback?code=REDACTED&state=ok");
+    store.close();
+  });
+
+  test("with no Playwright entry the scout researches without a browser instead of failing", async () => {
+    const { runnerToken } = await setup();
+    const missing = vi.spyOn(projectTools, "catalogTool").mockImplementation(() => null);
+    try {
+      expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
+    } finally {
+      missing.mockRestore();
+    }
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    expect(browserLaunch(argvSeen)).toEqual([]);
+    expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
+    // The proxy runs whenever a scout does: web fetch goes through it even without a browser (review 827).
+    expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
+    expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
+    expect(scoutBrowser(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
+  });
+
+  test("secrets are scrubbed from item and image URLs, captions and file names before they are stored or passed on", async () => {
+    const { runnerToken } = await setup();
+    const token = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5";
+    const secretFile = `${token}.png`;
+    const items = [
+      { title: "The callback leaks its token", why: "It is in the address bar.", url: `https://app.example.com/callback?access_token=${token}&page=2#id_token=abc`, image: secretFile },
+      { title: "A signed download link", why: "It is shared publicly.", url: `https://files.example.com/${token}/report.pdf?X-Amz-Signature=deadbeef`, image: null },
+    ];
+    const images = [{ file: secretFile, caption: `Signed in with ${token}`, url: `https://app.example.com/callback?code=1234&state=ok` }];
+    expect(await tick(runnerToken, imagingAgent({ [secretFile]: png() }, { ...FOUND, items, images }))).toBe(EXIT.ok);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view?.ok).toBe(true);
+    if (view !== null && view.ok) {
+      expect(view.report.items.map(one => one.url)).toEqual([
+        "https://app.example.com/callback?access_token=REDACTED&page=2",
+        "https://files.example.com/REDACTED/report.pdf?X-Amz-Signature=REDACTED",
+      ]);
+      expect(view.report.images).toEqual([expect.objectContaining({ file: "screenshot-1.png", url: "https://app.example.com/callback?code=REDACTED&state=ok" })]);
+      expect(view.report.images[0]!.caption).toContain("[redacted");
+      expect(view.report.items[0]!.image).toBe("screenshot-1.png");
+      const stored = store.artifactsFor(view.run);
+      expect(JSON.stringify(stored)).not.toContain(token);
+      expect(readFileSync(join(base, "evidence", String(view.run), "report.json"), "utf8")).not.toContain(token);
+    }
+    store.close();
+    expect(scrubUrl("https://example.com/pricing?plan=annual").url).toBe("https://example.com/pricing?plan=annual");
   });
 
   test("structured output never skips the clean-tree proof", async () => {
@@ -549,7 +823,7 @@ describe("scout tasks, against real git", () => {
     const { runnerToken, approverToken } = await setup();
     expect(await tick(runnerToken, planModeAgent({ kind: "question", decision: ASKED }))).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "parked" }));
-    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(prompts.at(-1)).toContain('kind "question"');
     const store = openStore(db);
     const decision = store.listDecisions("unanswered")[0];
@@ -603,6 +877,7 @@ describe("scout tasks, against real git", () => {
     const { runnerToken } = await setup("codex");
     const codexScout: Runner = async (_file, args, options) => {
       argvSeen = [...args];
+      envSeen = options?.env;
       const prompt = String(args.at(-1) ?? "");
       prompts.push(prompt);
       const name = REPORT_FILE.exec(prompt)?.[0];
@@ -616,6 +891,8 @@ describe("scout tasks, against real git", () => {
     };
     expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    // No browser, but its web traffic still goes through the scout's proxy (review 827).
+    expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(argvSeen[0]).toBe("exec");
     expect(argvSeen).not.toContain("--json-schema");
     expect(prompts.at(-1)).toMatch(/write JSON to a file named exactly\n`STANDING-ORDERS-REPORT-/);

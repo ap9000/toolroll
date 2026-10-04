@@ -15,7 +15,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { imageDimensions, readVerifiedProofForRun, RETENTION_NOTE } from "./evidence.js";
+import { imageDimensions, readVerifiedProofForRun, readVerifiedReport, RETENTION_NOTE } from "./evidence.js";
 import { resultImageFileName, verifyResultImage } from "./chat-evidence.js";
 import { publicChatText } from "./chat-display.js";
 import { chatTitle } from "./chat-voice.js";
@@ -70,6 +70,18 @@ function ownCaptions(store: Store, root: string, run: number): Map<string, strin
   return captions;
 }
 
+/** A scout's screenshots keep the captions its report gave them, by evidence id. */
+function reportCaptions(store: Store, root: string, taskRef: number, run: number): Map<number, string> {
+  const captions = new Map<number, string>();
+  const view = readVerifiedReport(store, root, taskRef);
+  if (view === null || !view.ok || view.run !== run) return captions;
+  for (const image of view.report.images) {
+    const words = publicChatText(image.caption, 200).trim();
+    if (image.artifact !== undefined && words !== "" && !words.includes("[sensitive text hidden]")) captions.set(image.artifact, words);
+  }
+  return captions;
+}
+
 function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
   const size = imageDimensions(bytes, format);
   if (size === null || size.width === 0 || size.height === 0) return false;
@@ -102,6 +114,7 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   const chosen = store.artifactsFor(row.run).filter(one => one.kind === "screenshot").slice(0, limit);
   if (chosen.length === 0) return { kind: "none", why: "none" };
   const captions = ownCaptions(store, evidenceRoot, row.run);
+  const reported = latest.role === "scout" ? reportCaptions(store, evidenceRoot, row.taskRef, row.run) : new Map<number, string>();
   const shots: ResultShot[] = [];
   for (const [index, artifact] of chosen.entries()) {
     const verified = verifyResultImage(store, evidenceRoot, repos, { taskId: row.taskId, run: row.run, artifact: artifact.id, sha256: artifact.sha256 });
@@ -110,7 +123,7 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
       if (existsSync(join(evidenceRoot, String(row.run), RETENTION_NOTE))) return { kind: "none", why: "pruned" };
       return line(verified.problem);
     }
-    const own = captions.get(SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1] ?? "") ?? null;
+    const own = captions.get(SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1] ?? "") ?? reported.get(artifact.id) ?? null;
     shots.push({
       artifact: artifact.id, sha256: artifact.sha256, bytes: verified.bytes, format: verified.format,
       fileName: resultImageFileName(row.taskId, row.run, artifact.id, verified.format),

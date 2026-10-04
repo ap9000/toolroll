@@ -12,16 +12,16 @@ import { skillsContext } from "./project-skills.js";
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative, isAbsolute } from "node:path";
 import { run } from "./exec.js";
 import { auditOf } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parseReport, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportProblem } from "./scout-report.js";
+import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
 import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
@@ -30,7 +30,9 @@ import {
   quarantineMailboxes,
   readMailbox,
   reportFileName,
+  SCREENSHOT_BYTE_CAP,
   storeEvidence,
+  validateScreenshotBytes,
   writeEvidenceFile,
 } from "./evidence.js";
 import type { Runner } from "./builder.js";
@@ -39,12 +41,46 @@ import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
+import { catalogTool, type ToolSpec } from "./project-tools.js";
+import { startScoutProxy } from "./scout-net.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_SCOUT_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_SCOUT_TURNS = CLAUDE_LIMITS.maxTurns;
 const DEFAULT_PULSE_MS = 60_000;
+
+/** The scout's own headless browser: the pinned Playwright tool, saving its
+ * screenshots straight into the run's image folder. */
+export const SCOUT_BROWSER = "toolroll-browser";
+const SCOUT_BROWSER_TOOLS = ["browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_wait_for", "browser_resize", "browser_take_screenshot", "browser_close"];
+
+/**
+ * What a Claude scout may use without asking (`dontAsk` denies the rest):
+ * reading the checkout (always allowed), web search and fetch for research,
+ * and its browser for screenshots. Nothing that edits a file or runs a
+ * command, so the read-only posture holds by permission as well as by the
+ * clean-tree proof.
+ */
+export const SCOUT_ALLOWED_TOOLS: readonly string[] = ["WebSearch", "WebFetch", ...SCOUT_BROWSER_TOOLS.map(tool => `mcp__${SCOUT_BROWSER}__${tool}`)];
+const SCOUT_RESEARCH_TOOLS: readonly string[] = ["WebSearch", "WebFetch"];
+
+/** The scout's browser launch, or null when this install has no Playwright entry (the scout then researches without
+ * screenshots). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
+ * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. */
+export function scoutBrowser(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): Record<string, unknown> | null {
+  if (tool === null || tool.command === null) return null;
+  return { [SCOUT_BROWSER]: { type: "stdio", command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"], env: {} } };
+}
+
+/** What would let the scout's own requests skip its proxy: never passed on while one runs. */
+const PROXY_BYPASS_ENV: readonly string[] = ["NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
+
+/** The scout's environment while its proxy runs (review 827): web fetch and the provider's own traffic go through
+ * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable. */
+export function scoutProxyEnv(proxy: string): Record<string, string> {
+  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy };
+}
 
 export type ScoutRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */
@@ -75,6 +111,13 @@ export type ScoutRequest = {
   git?: Runner;
   /** Answered questions from earlier scouting rounds, for the brief. */
   answers?: readonly { question: string; choice: string; note: string | null }[];
+  /** Where the scout may save screenshots: outside the checkout, so the clean-tree proof still holds. Left out, a
+   * fresh temporary folder is made for this run and removed after it. */
+  outputDir?: string;
+  /** The project's own demo or dev server, the one non-public address the scout's browser may open. */
+  demoUrl?: string | null;
+  /** The browser to launch; left out, the catalog's Playwright entry. Null runs the scout without one. */
+  browserTool?: Pick<ToolSpec, "command" | "args"> | null;
 };
 
 export type ReportArtifact = {
@@ -120,6 +163,8 @@ function scoutBrief(
   reportFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
   structured: boolean,
+  browser: { folder: string; demoUrl: string | null } | null,
+  web = true,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -141,6 +186,22 @@ function scoutBrief(
     "create any file (other than the two protocol files named below),",
     "stage, commit, or switch branches. The workspace is checked after you",
     "finish; any other change discards your session and its report.",
+    "",
+    ...(web
+      ? ["You may search the web and fetch pages for this research. Cite the URL",
+          "of every source you use. Never download anything else, and never run downloaded code."]
+      : ["The web is unavailable in this run: research from the repository alone."]),
+    ...(browser === null
+      ? ["No browser is available for screenshots in this run, so leave images empty."]
+      : [
+          "You may take screenshots (PNG or JPEG) of public web pages you actually",
+          `visited${browser.demoUrl === null ? "" : `, and of this project's own UI at \`${inert(browser.demoUrl, 500)}\``}. The browser`,
+          "opens public web pages only. Open the page with the",
+          `\`${SCOUT_BROWSER}\` browser, then take its screenshot with a plain file`,
+          "name such as home.png; it is saved in this folder outside the",
+          `repository: \`${browser.folder}\`. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
+          "Never screenshot a page you did not visit.",
+        ]),
     answeredBlock,
     ...(structured
       ? [
@@ -151,8 +212,7 @@ function scoutBrief(
           "a phone; you will be resumed with the answer.",
           "",
           'When you have your findings, end with kind "report" and the report',
-          "below as your final structured output — plan mode will not let you",
-          "write a file, and a plan file never reaches the operator. Only if",
+          "below as your final structured output. Only if",
           "structured output is unavailable, write the decision JSON to",
           `\`${mailbox}\` or the report JSON to \`${reportFile}\` instead:`,
         ]
@@ -170,16 +230,30 @@ function scoutBrief(
     '  "title": "one line",',
     '  "summary": "one paragraph the operator reads first",',
     '  "report": "the report as markdown: what you found, the evidence, the risks",',
-    '  "followUps": [{ "title": "one line", "goal": "what success looks like" }]',
+    '  "followUps": [{ "title": "one line", "goal": "what success looks like" }],',
+    '  "items": [{ "title": "one line", "why": "why it matters", "url": "https://…", "image": "home.png" }],',
+    '  "images": [{ "file": "home.png", "caption": "one line", "url": "the page it shows" }]',
     "}",
     `Caps: title ${REPORT_LIMITS.title}, summary ${REPORT_LIMITS.summary}, report ${REPORT_LIMITS.document} bytes,`,
-    `up to ${REPORT_LIMITS.followUps} follow-ups (title ${REPORT_LIMITS.followUpTitle}, goal ${REPORT_LIMITS.followUpGoal}).`,
+    `up to ${REPORT_LIMITS.followUps} follow-ups (title ${REPORT_LIMITS.followUpTitle}, goal ${REPORT_LIMITS.followUpGoal}),`,
+    `up to ${REPORT_LIMITS.items} items (the findings later steps read; image optional, naming one of images),`,
+    `up to ${REPORT_LIMITS.images} images (screenshots you saved, each with its caption and the URL it shows).`,
     "Each follow-up becomes a task the operator may file with one tap — write",
     "its goal as the contract a builder would be held to.",
   ].join("\n");
 }
 
 export async function scout(store: Store, request: ScoutRequest): Promise<ScoutOutcome> {
+  const made = request.outputDir === undefined ? mkdtempSync(join(tmpdir(), "toolroll-scout-")) : null;
+  try {
+    return await scoutWith(store, request, made ?? request.outputDir!);
+  } finally {
+    // The verified images are evidence by now; what is left here is never read again.
+    if (made !== null) rmSync(made, { recursive: true, force: true });
+  }
+}
+
+async function scoutWith(store: Store, request: ScoutRequest, outputDir: string): Promise<ScoutOutcome> {
   const {
     taskId,
     taskRef,
@@ -200,6 +274,15 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
   const leased = store.getWorktree(worktree);
   if (leased === null || leased.releasedAt !== null || leased.runner !== runner || leased.taskRef !== taskRef || !leased.verified) {
     return { ok: false, kind: "failure", reason: "not-leased", message: `${worktree} is not this task's leased workspace` };
+  }
+  // Screenshots go outside the checkout, or saving one would break the clean-tree proof.
+  let imageFolder: string;
+  try {
+    imageFolder = realpathSync(outputDir);
+    const inside = relative(realpathSync(worktree), imageFolder);
+    if (inside === "" || (!inside.startsWith("..") && !isAbsolute(inside))) throw new Error("the folder is inside the workspace");
+  } catch (error) {
+    return { ok: false, kind: "failure", reason: "output-folder", message: `the scout's screenshot folder can't be used: ${error instanceof Error ? error.message : String(error)}` };
   }
 
   const revision = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
@@ -264,19 +347,30 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     if (!wrotePlanFile && touchesPlanFile(event)) wrotePlanFile = true;
     liveLog?.observe(event);
   };
+  // Every scout runs behind its public-web-only proxy (reviews 826, 827): its browser, when this install has one,
+  // and its web fetch both go through it. A proxy that cannot start leaves the scout without the web, reading only
+  // the checkout, never with an unfiltered one.
+  const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
+  const demoUrl = request.demoUrl ?? null;
+  let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
   let invoked;
   try {
+    proxy = await startScoutProxy({ demoUrl }).catch(() => null);
+    const browser = proxy === null || !structured ? null : scoutBrowser(browserTool, imageFolder, proxy.url);
     invoked = await invokeAgent(
       store,
       request.runId,
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, browser === null ? null : { folder: imageFolder, demoUrl }, proxy !== null),
         maxTurns,
-        // Read-only by policy AND by check: plan mode is the permission
-        // posture; the clean-tree proof below is the law.
-        permissionMode: request.permissionMode ?? "plan",
+        // Read-only by policy AND by check: `dontAsk` with only research and
+        // screenshot tools allowed is the permission posture (plan mode
+        // blocked the screenshots too); the clean-tree proof below is the law.
+        permissionMode: request.permissionMode ?? "dontAsk",
+        allowedTools: proxy === null ? [] : browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS,
+        ...(browser === null ? {} : { extraMcpServers: browser }),
         skipPermissions: false,
         resumeSession: null,
         ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
@@ -286,7 +380,8 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       {
         cwd: worktree,
         idleTimeoutMs: timeoutMs,
-        omitEnv: AGENT_ENV_DENYLIST,
+        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV)],
+        ...(proxy === null ? {} : { env: scoutProxyEnv(proxy.url) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -295,6 +390,7 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     );
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
+    await proxy?.close();
     liveLog?.close();
   }
 
@@ -433,7 +529,12 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
     // finding 8): a scout that quotes a key it found has the line redacted
     // in every field BEFORE the report is stored, paged, or shown — the
     // same high-confidence detector the diff capture uses.
-    const { report, redacted } = redactReport(validated);
+    // File names, URLs and captions too (review 826): a screenshot is read by the name the scout gave it, but
+    // stored, captioned and passed on only under its scrubbed one.
+    const names = scrubbedImageNames(validated.images);
+    const imageUrlScrubbed = validated.images.some(image => scrubUrl(image.url).scrubbed);
+    const { report, redacted: redactedText } = redactReport(keepImages(validated, names));
+    const redacted = redactedText || imageUrlScrubbed || [...names].some(([file, name]) => file !== name);
 
     // The whole VALIDATED payload is the artifact: re-serialized from the
     // parsed shape, so what the page renders is exactly what passed the
@@ -468,6 +569,53 @@ export async function scout(store: Store, request: ScoutRequest): Promise<ScoutO
       };
     }
   }
+
+  /** Each image the report names, verified and stored as screenshot evidence with its sha256, caption and source
+   * URL. One that isn't a plain PNG or JPEG file in the output folder, or is over the size cap, is left out, its
+   * item keeps no picture, and the report says so; the findings themselves still arrive. */
+  function keepImages(report: ParsedReport, names: ReadonlyMap<string, string>): ParsedReport {
+    const kept: ReportImage[] = [];
+    const refused: string[] = [];
+    for (const image of report.images) {
+      const file = names.get(image.file) ?? image.file;
+      const url = scrubUrl(image.url).url;
+      const checked = readReportImage(imageFolder, image.file);
+      if (!checked.ok) {
+        refused.push(`${file.slice(0, 100)} (${checked.problem})`);
+        continue;
+      }
+      const name = `report-image-${kept.length + 1}.${checked.kind === "png" ? "png" : "jpg"}`;
+      const artifact = storeEvidence(store, root, request.runId, "screenshot", name, checked.bytes, `scout screenshot ${file} (validated ${checked.kind}) from ${url.slice(0, 500)}`, clock());
+      kept.push({ file, caption: image.caption, url, sha256: createHash("sha256").update(checked.bytes).digest("hex"), artifact });
+    }
+    const files = new Set(kept.map(one => one.file));
+    const note = refused.length === 0 ? "" : `\n\n_Screenshots left out: ${refused.join("; ")}._`;
+    const document = note !== "" && Buffer.byteLength(report.report + note, "utf8") <= REPORT_LIMITS.document ? report.report + note : report.report;
+    return {
+      ...report,
+      report: document,
+      images: kept,
+      items: report.items.map(item => {
+        const image = item.image === null ? null : names.get(item.image) ?? item.image;
+        return { ...item, image: image !== null && files.has(image) ? image : null };
+      }),
+    };
+  }
+}
+
+/** One screenshot from the scout's output folder: a plain file name (never a path), a regular file (never a link),
+ * at most SCREENSHOT_BYTE_CAP, and a PNG or JPEG by its signature. */
+export function readReportImage(folder: string, file: string): { ok: true; bytes: Buffer; kind: "png" | "jpeg" } | { ok: false; problem: string } {
+  if (!REPORT_IMAGE_FILE.test(file)) return { ok: false, problem: "not a PNG or JPEG file name in the screenshot folder" };
+  const found = readMailbox(join(folder, file), SCREENSHOT_BYTE_CAP);
+  if (!found.ok) {
+    if (found.missing) return { ok: false, problem: "not in the screenshot folder" };
+    if (found.bytesOriginal !== undefined) return { ok: false, problem: `over ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB` };
+    return { ok: false, problem: /symlink/.test(found.problem) ? "a link, not a file" : "not a regular file" };
+  }
+  const checked = validateScreenshotBytes(found.raw);
+  if (!checked.ok) return { ok: false, problem: /signature/.test(checked.problem) ? "not a PNG or JPEG" : checked.problem };
+  return { ok: true, bytes: found.raw, kind: checked.kind };
 }
 
 /** What Claude's structured output handed back, or null when the turn
@@ -539,9 +687,76 @@ function redactReport(report: ParsedReport): { report: ParsedReport; redacted: b
       summary: clean(report.summary),
       report: clean(report.report),
       followUps: report.followUps.map(one => ({ title: clean(one.title), goal: clean(one.goal) })),
+      items: report.items.map(one => ({ ...one, title: clean(one.title), why: clean(one.why), url: link(one.url) })),
+      images: report.images.map(one => ({ ...one, caption: clean(one.caption), url: link(one.url) })),
     },
     redacted,
   };
+  function link(url: string): string {
+    const scrubbed = scrubUrl(url);
+    if (scrubbed.scrubbed) redacted = true;
+    return scrubbed.url;
+  }
+}
+
+/** Query and fragment names that carry credentials in a link: an access token, a signed URL's signature, a code. */
+const SECRET_PARAM = /token|key|secret|sig|auth|pass|pwd|session|sid|code|credential|jwt|bearer|otp|nonce/i;
+
+/** A cited link without its secrets: credential-shaped query values and path parts become REDACTED, a fragment
+ * that carries one is dropped, and a link still showing one keeps only its origin. Unchanged when it has none. */
+export function scrubUrl(text: string): { url: string; scrubbed: boolean } {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return { url: text, scrubbed: false };
+  }
+  let scrubbed = false;
+  if (url.username !== "" || url.password !== "") {
+    url.username = "";
+    url.password = "";
+    scrubbed = true;
+  }
+  if (url.search !== "") {
+    const pairs = [...url.searchParams].map(([name, value]): [string, string] => {
+      if (!SECRET_PARAM.test(name) && scanForSecrets(value).length === 0) return [name, value];
+      scrubbed = true;
+      return [name, "REDACTED"];
+    });
+    if (scrubbed) url.search = new URLSearchParams(pairs).toString();
+  }
+  if (url.hash !== "" && (SECRET_PARAM.test(url.hash) || scanForSecrets(safeDecode(url.hash)).length > 0)) {
+    url.hash = "";
+    scrubbed = true;
+  }
+  const parts = url.pathname.split("/");
+  if (parts.some(part => scanForSecrets(safeDecode(part)).length > 0)) {
+    url.pathname = parts.map(part => (scanForSecrets(safeDecode(part)).length > 0 ? "REDACTED" : part)).join("/");
+    scrubbed = true;
+  }
+  if (!scrubbed) return { url: text, scrubbed: false };
+  return { url: scanForSecrets(safeDecode(url.href)).length > 0 ? `${url.origin}/` : url.href, scrubbed: true };
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+/** Each image's name as stored and shown: its own, unless it carries a credential, then `screenshot-<n>`. */
+function scrubbedImageNames(images: readonly ReportImage[]): Map<string, string> {
+  const taken = new Set(images.map(one => one.file));
+  return new Map(images.map((one, index) => {
+    if (scanForSecrets(one.file).length === 0) return [one.file, one.file];
+    const extension = /\.jpe?g$/i.test(one.file) ? ".jpg" : ".png";
+    let name = `screenshot-${index + 1}${extension}`;
+    for (let again = 2; taken.has(name); again += 1) name = `screenshot-${index + 1}-${again}${extension}`;
+    taken.add(name);
+    return [one.file, name];
+  }));
 }
 
 function cleanup(worktree: string, names: readonly string[]): void {
