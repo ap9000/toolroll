@@ -16,9 +16,16 @@
  * Every button is one opaque token for one visit of one card, on the part it
  * rides: a tap on any other message, from anyone but the paired person, or
  * for a card that moved on, changes nothing.
+ *
+ * A "Send to me" visit (flow-send.ts) is one notice with its links; a "Person
+ * chooses" visit is the same with the zone's own options as buttons, and its
+ * notice opens a prompt so the person's next message, instead of a tap, is
+ * their reply (the note for where replies go). Choices are made through
+ * chooseFlowCard, by that person alone, for exactly that visit.
  */
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
+import { chooseFlowCard, flowChoiceAt, flowSendPaths, FLOW_CHOOSE_KEY, FLOW_SEND_KEY, readFlowSend, REPLY_ASK } from "./flow-send.js";
 import { deciderOf } from "./flows.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -64,11 +71,40 @@ function decisionParts(text: string, visit: { card: number; entry: number; actio
   return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, flow: visit, ...(link === null ? {} : { link }) });
 }
 
+/** In a chat app the reply is the person's next message: said plainly, once. */
+const CHAT_REPLY_ASK = "Or reply with what you'd change: your next message here is your reply (“cancel” skips it).";
+
+/** A sent visit's links as a part's buttons: the first as its link, the rest beside it. */
+function sendLinks(paths: { label: string; path: string }[]): Pick<ChatContent, "link" | "also"> {
+  return { ...(paths[0] === undefined ? {} : { link: paths[0] }), ...(paths.length > 1 ? { also: paths.slice(1) } : {}) };
+}
+
+/** A "Send to me" notice as chat parts: what was done, then its links; null when it isn't one. */
+export function flowSendParts(store: Store, notification: { dedupeKey: string; subject: string; body: string }): ChatContent[] | null {
+  const visit = FLOW_SEND_KEY.exec(notification.dedupeKey);
+  const kept = visit === null ? null : store.flowSend(Number(visit[1]), Number(visit[2]));
+  const content = kept === null ? null : readFlowSend(kept.contentJson);
+  if (content === null) return null;
+  const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
+  return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, ...sendLinks(flowSendPaths(content)) });
+}
+
 /**
  * A "flow-decision" notice as chat parts, or null when it isn't one (or the
  * card has already moved on, and there is nothing left to decide).
  */
 export function flowDecisionParts(store: Store, notification: { dedupeKey: string; subject: string; body: string; link: string | null }): ChatContent[] | null {
+  const choose = FLOW_CHOOSE_KEY.exec(notification.dedupeKey);
+  if (choose !== null) {
+    const visit = flowChoiceAt(store, Number(choose[1]), Number(choose[2]));
+    const kept = visit === null ? null : store.flowSend(visit.card.id, visit.card.entry);
+    const content = kept === null ? null : readFlowSend(kept.contentJson);
+    if (visit === null || content === null) return null;
+    const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label);
+    const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body.replace(REPLY_ASK, CHAT_REPLY_ASK)}`));
+    return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece }
+      : { text: piece, choose: { card: visit.card.id, entry: visit.card.entry, options }, ...sendLinks(flowSendPaths(content)) });
+  }
   const visit = FLOW_DECIDE_KEY.exec(notification.dedupeKey);
   const waiting = visit === null ? null : flowDecisionAt(store, Number(visit[1]), Number(visit[2]));
   if (waiting === null) return null;
@@ -76,14 +112,25 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
     notification.link === null ? null : { label: "Open", path: notification.link });
 }
 
-/** The live buttons on one part, in the order they were minted. */
-export function chatFlowButtons(state: ChatState, part: number, now: Date): Array<{ token: string; action: ChatFlowAction; label: string }> {
-  return (state.prepare("SELECT token,action FROM chat_flow_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; action: ChatFlowAction }>)
-    .map(one => ({ token: String(one.token), action: one.action, label: CHAT_FLOW_LABELS[one.action] }));
+/** A choice's notice opens its reply: the person's next message in their chat with Toolroll is the note, unless it is “cancel”. */
+export function openChoiceReply(state: ChatState, binding: ChatBinding, card: number, entry: number, now: Date): void {
+  state.prepare("INSERT INTO chat_flow_prompt(binding,card,entry,mode,created,expires) VALUES(?,?,?,?,?,?)")
+    .run(binding.id, card, entry, "send-back", now.toISOString(), new Date(now.getTime() + PROMPT_MS).toISOString());
+}
+
+/** The live buttons on one part, in the order they were minted: a decision's, then a choice's options in their order.
+ * `key` is unique on the part (Slack names each button by it). */
+export function chatFlowButtons(state: ChatState, part: number, now: Date): Array<{ token: string; action: ChatFlowAction | "choose"; label: string; key: string }> {
+  const decide = (state.prepare("SELECT token,action FROM chat_flow_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; action: ChatFlowAction }>)
+    .map(one => ({ token: String(one.token), action: one.action, label: CHAT_FLOW_LABELS[one.action], key: one.action.replace("-", "_") }));
+  const choose = (state.prepare("SELECT token,choice,label FROM chat_flow_choice WHERE part=? AND consumed IS NULL AND expires>? ORDER BY choice").all(part, now.toISOString()) as Array<{ token: string; choice: number; label: string }>)
+    .map(one => ({ token: String(one.token), action: "choose" as const, label: String(one.label), key: `choose_${Number(one.choice)}` }));
+  return [...decide, ...choose];
 }
 
 const retire = (state: ChatState, card: number, entry: number, now: Date): void => {
   state.prepare("UPDATE chat_flow_action SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
+  state.prepare("UPDATE chat_flow_choice SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
   state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
 };
 
@@ -103,7 +150,7 @@ function repaint(state: ChatState, part: number, event: ChatEvent, line: string)
 export function applyChatFlowTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
   const { store, state } = options;
   const action = state.prepare("SELECT a.*,p.message,e.binding AS owner,e.channel FROM chat_flow_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE a.token=?").get(token);
-  if (action === undefined) return false;
+  if (action === undefined) return applyChatChoiceTap(options, event, binding, token, repos, now);
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, the chat and the exact message the button rode.
   if (Number(action["owner"]) !== binding.id || action["channel"] !== event.channel || action["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
@@ -141,6 +188,49 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
   return true;
 }
 
+/** A tapped option of a "Person chooses" notice; false when the token isn't one. */
+function applyChatChoiceTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
+  const { store, state } = options;
+  const tapped = state.prepare("SELECT c.*,p.message,e.binding AS owner,e.channel FROM chat_flow_choice c JOIN chat_part p ON p.id=c.part JOIN chat_event e ON e.id=p.event WHERE c.token=?").get(token);
+  if (tapped === undefined) return false;
+  const say = (text: string) => state.plan(event.id, [{ text }], now);
+  // Bound to the person, the chat and the exact message the button rode.
+  if (Number(tapped["owner"]) !== binding.id || tapped["channel"] !== event.channel || tapped["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
+  if (tapped["consumed"] !== null || String(tapped["expires"]) <= now.toISOString()) { say("That was already chosen, or these buttons are too old."); return true; }
+  const card = Number(tapped["card"]), entry = Number(tapped["entry"]), part = Number(tapped["part"]);
+  const visit = flowChoiceAt(store, card, entry);
+  if (visit === null) {
+    retire(state, card, entry, now);
+    repaint(state, part, event, "This card has moved on since; nothing was changed.");
+    state.finish(event.id);
+    return true;
+  }
+  if (visit.person !== binding.approver) { say(`Only ${visit.person} chooses here.`); return true; }
+  if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { state.finish(event.id, true); return true; }
+  const label = String(tapped["label"]);
+  const chosen = chooseFlowCard(store, { card, entry, choice: Number(tapped["choice"]), label, note: null, actor: binding.approver, where: options.label, repos }, now);
+  if (!chosen.ok) { say(chosen.message); return true; }
+  retire(state, card, entry, now);
+  store.retireTelegramFlowChoices(card, entry, now);
+  repaint(state, part, event, `✅ You chose “${label}”. ${chosen.said}`);
+  state.finish(event.id);
+  return true;
+}
+
+/** A message while a choice's reply is open: the note for where replies go. */
+function answerChoiceReply(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, said: string, cutShort: boolean, prompt: { card: number; entry: number; close: () => void }, repos: readonly string[], now: Date): void {
+  const { store, state } = options;
+  const say = (text: string) => state.plan(event.id, [{ text }], now);
+  if (said === "") { say("Say what you'd change, or send “cancel”."); return; }
+  if (cutShort || said.length > DRAFT_LIMIT) { say(`That's too long to take from here. Keep it under 2,000 characters, or reply in Toolroll.`); return; }
+  if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { prompt.close(); state.finish(event.id, true); return; }
+  const chosen = chooseFlowCard(store, { card: prompt.card, entry: prompt.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
+  if (!chosen.ok) { prompt.close(); say(chosen.message); return; }
+  retire(state, prompt.card, prompt.entry, now);
+  store.retireTelegramFlowChoices(prompt.card, prompt.entry, now);
+  say(`↩️ ${chosen.said}`);
+}
+
 /**
  * A message from the person while a prompt is open: the new draft or the
  * note. false when no prompt is open (the message goes on as usual).
@@ -156,6 +246,11 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
     const close = () => state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE id=?").run(now.toISOString(), id);
     const said = input.text.trim();
     if (/^cancel\.?$/i.test(said)) { close(); say(mode === "edit" ? "Left the draft as it is. The buttons on the notice still work." : "Left it where it is. The buttons on the notice still work."); return true; }
+    // A choice's reply (flow-send.ts): the note for where replies go.
+    if (flowChoiceAt(store, card, entry) !== null) {
+      answerChoiceReply(options, event, binding, said, (input.originalLength ?? 0) > input.text.length, { card, entry, close }, repos, now);
+      return true;
+    }
     const waiting = flowDecisionAt(store, card, entry);
     if (waiting === null) { retire(state, card, entry, now); say("That card has moved on since; nothing was changed."); return true; }
     if (said === "") { say(mode === "edit" ? "Send the text itself, or “cancel”." : "Say what should change, or send “cancel”."); return true; }

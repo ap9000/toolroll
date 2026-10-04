@@ -50,7 +50,8 @@ import { saveScript } from "./flow-scripts.js";
 import { flowInsights } from "./flow-insights.js";
 import { FORM_PATH, flowFormPage, receiveFlowForm, shareFlowButton, stopSharingFlowButton } from "./flow-triggers.js";
 import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, receiveFlowHook, removeFlowTrigger, renewFlowHook, removeLinearKey, saveHooksBase, saveLinearKey, saveLinearSigningSecret, type TriggerIo } from "./flow-triggers.js";
-import { addCardToFlow, advanceFlows, cancelFlowCard, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
+import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
+import { chooseFlowCard } from "./flow-send.js";
 import { FLOW_TEMPLATES, validateFlowDefinition } from "./flows.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
@@ -7051,7 +7052,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (who.via !== "cookie" || who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "Sign in as an approver to create flows.", "/flows/new");
       const repo = body.get("repo") ?? "";
       if (!projects.includes(repo)) return refuse(response, who, 404, "Choose one of your projects.", "/flows/new");
-      const answers: GalleryAnswers = Object.fromEntries(template.asks.map(ask => [ask.key, body.get(ask.key) ?? ""]));
+      const answers: GalleryAnswers = { ...Object.fromEntries(template.asks.map(ask => [ask.key, body.get(ask.key) ?? ""])), ...(body.get("send-result") === "yes" ? { "send-result": "yes" } : {}) };
       const name = (body.get("name") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || template.name;
       if (body.get("intent") !== "create") return sendGalleryUse(response, who, template, projects, repo, answers, name, null);
       // What's made is what was previewed: changed answers are previewed again first.
@@ -7062,7 +7063,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (!used.ok) return sendGalleryUse(response, who, template, projects, repo, answers, name, used.said);
       return redirect(response, `/flows/${used.flow}`);
     }
-    const flowPost = /^\/flows\/([1-9][0-9]{0,9})\/(save|cards|archive|triggers|linear-key|hooks-address|scripts|secrets)$/.exec(url.pathname) ?? /^\/flows\/([1-9][0-9]{0,9})\/cards\/([1-9][0-9]{0,9})\/(move|decide|cancel|comment|assign|watch)$/.exec(url.pathname);
+    const flowPost = /^\/flows\/([1-9][0-9]{0,9})\/(save|cards|archive|triggers|linear-key|hooks-address|scripts|secrets)$/.exec(url.pathname) ?? /^\/flows\/([1-9][0-9]{0,9})\/cards\/([1-9][0-9]{0,9})\/(move|decide|choose|cancel|comment|assign|watch)$/.exec(url.pathname);
     const triggerPost = /^\/flows\/([1-9][0-9]{0,9})\/triggers\/([1-9][0-9]{0,9})\/(pause|resume|remove|check|press|renew|secret|share|unshare)$/.exec(url.pathname);
     if (url.pathname === "/flows/new" || url.pathname === "/flows/example" || url.pathname === "/flows/import" || flowPost !== null || triggerPost !== null) {
       const now = clock();
@@ -7202,6 +7203,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // The owner (v86) is whom "the owner decides" zones ask: someone who can approve on this project.
         const owner = (body.get("owner") ?? "").trim();
         if (owner !== "" && owner !== flow.owner && !(store.listApprovers().some(one => one.name === owner) && store.accountCanAccess(owner, flow.repo))) return answer(400, { ok: false, said: `${owner} can't approve on this project, so they can't own this flow.` });
+        // A build zone in another project files work there as the flow's owner: only in one they may file in.
+        const elsewhere = crossProjectProblem(store, saved, { repo: flow.repo, owner: owner || flow.owner });
+        if (elsewhere !== null) return answer(400, { ok: false, said: elsewhere });
         if (!store.saveFlow(flow.id, { name, definitionJson: JSON.stringify(saved), sawRevision: Number(body.get("revision")), by: who.name }, now)) return answer(409, { ok: false, said: "Someone else changed this flow. Reload to see their changes, then make yours again." });
         if (owner !== "" && owner !== flow.owner) store.setFlowOwner(flow.id, owner, now);
         return settle("Saved.");
@@ -7231,6 +7235,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const note = (body.get("note") ?? "").trim().slice(0, 2000) || null;
         const decided = decideFlowCard(store, { card: target.id, decision, note, actor: who.name, repos: projects, evidenceRoot, draft: body.get("draft") }, now);
         return decided.ok ? settle(decided.said) : answer(409, { ok: false, said: decided.message });
+      }
+      if (verb === "choose") {
+        // "Person chooses": one of the zone's options (by its place and words), or a reply that becomes the note.
+        const choice = /^[0-9]$/.test(body.get("choice") ?? "") ? Number(body.get("choice")) : null;
+        const chosen = chooseFlowCard(store, { card: target.id, ...(/^[1-9][0-9]{0,9}$/.test(body.get("entry") ?? "") ? { entry: Number(body.get("entry")) } : {}), choice,
+          ...(choice !== null && body.get("label") !== null ? { label: body.get("label")! } : {}), note: choice === null ? body.get("note") : null, actor: who.name, where: "Toolroll", repos: projects, evidenceRoot }, now);
+        return chosen.ok ? settle(chosen.said) : answer(409, { ok: false, said: chosen.message });
       }
       if (verb === "comment") {
         const commented = commentOnFlowCard(store, target, who.name, body.get("body"), now);

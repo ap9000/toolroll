@@ -21,6 +21,8 @@ import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from 
 import { DISCORD_REFUSED, DiscordError, type DiscordApi } from "./discord-api.js";
 import { deliverDiscordPart, planDiscordNotifications, type DiscordChatOptions } from "./discord-chat.js";
 import { planTeamsNotifications } from "./teams-chat.js";
+import { flowFromSteps } from "./flows.js";
+import { advanceFlows } from "./flow-engine.js";
 
 const T0 = new Date("2026-10-03T09:00:00.000Z");
 const BOT = "777000";
@@ -68,6 +70,15 @@ function result(id: string, shots: { name: string; bytes: Buffer; caption?: stri
   return { ref, run };
 }
 const shotRows = () => store.listNotifications("all").filter(one => one.kind === RESULT_SHOTS_KIND);
+/** A flow's "Send to me" right after a build that saved these screenshots: it sends them whatever the person chose for results. */
+function flowSend(id: string, shots = THREE): void {
+  result(id, shots);
+  const flow = store.createFlow({ repo: ALPHA, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "build", title: "Build", kind: "task" }, { id: "tell", title: "Send me the result", kind: "send" }], null)) }, now);
+  const card = store.addFlowCard({ flow, title: "Is the site current?", description: null, stage: "build", by: "alex" }, now);
+  store.updateFlowCard(card, { primaryTask: id, outputs: { build: "Checked every page." } }, now);
+  store.moveFlowCard(card, { to: "tell", outcome: "ok", actor: "flow", task: id }, now);
+  advanceFlows(store, ALPHA, now, { evidenceRoot: root });
+}
 const THREE = [
   { name: "phone.png", bytes: png(390, 844, 1), caption: "the home page on a phone" },
   { name: "desk.png", bytes: png(1440, 900, 2), caption: "the home page on a desktop" },
@@ -425,6 +436,41 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     const files = wire.calls.filter(one => one.file !== undefined);
     expect(files).toHaveLength(1);
     expect(files[0]!.body.message_reference).toMatchObject({ message_id: "3000000000000020000" });
+  });
+
+  test("a flow's Send to me: Slack uploads in its thread, Discord replies to it with files, Teams links — up to four, with screenshots off for results", async () => {
+    expect(store.notificationPreference("alex").screenshots).toBe("off");
+    const wire = slack();
+    flowSend("flow-slack");
+    expect(shotRows()).toEqual([]);
+    await planSlackNotifications(wire.options);
+    await wire.drain();
+    const notice = wire.calls.find(one => one.method === "chat.postMessage" && JSON.stringify(one.args.blocks).includes("Checked every page."))!;
+    const ts = wire.calls.filter(one => one.method === "chat.postMessage").indexOf(notice);
+    const shared = wire.calls.filter(one => one.method === "files.completeUploadExternal");
+    expect(shared).toHaveLength(3);
+    expect(new Set(shared.map(one => one.args.thread_ts))).toEqual(new Set([`1789700000.${String(100 + ts).padStart(6, "0")}`]));
+
+    const d = discord();
+    await planDiscordNotifications(d.options);
+    await d.drain();
+    const posted = d.calls.filter(one => one.method === "POST" && one.file === undefined && JSON.stringify(one.body).includes("Checked every page."));
+    expect(posted).toHaveLength(1);
+    const files = d.calls.filter(one => one.file !== undefined);
+    expect(files).toHaveLength(3);
+    const replyTo = (files[0]!.body.message_reference as { message_id: string }).message_id;
+    expect(files.every(one => (one.body.message_reference as { message_id: string }).message_id === replyTo)).toBe(true);
+
+    const state = new ChatState(store, "teams");
+    const identity = { installation: "teams-installation", app: "teams-app", bot: "28:teams-app", workspace: "Synthetic tenant" };
+    state.lease(identity.installation, "test", now);
+    const code = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, now);
+    expect(state.pair(identity, chatHash(code), "29:member-abcdefghij", "a:conversation-1", now)).not.toBeNull();
+    await planTeamsNotifications({ store, identity, api: async () => ({}), owner: "test", current: () => true, readProjects: async () => [ALPHA],
+      evidenceRoot: root, origin: () => "https://console.example", clock: () => now });
+    const parts = state.prepare("SELECT payload FROM chat_part").all().map(one => JSON.parse(String(one.payload)) as ChatContent);
+    expect(parts.find(one => one.text.includes("Checked every page."))).toMatchObject({ link: { label: "Result", path: "/t/flow-slack" }, also: [{ label: "Card", path: "/flows/1?card=1" }] });
+    expect(parts.filter(one => one.image !== undefined).map(one => one.text)).toEqual(["Is the site current? · the home page on a phone · 3 screenshots"]);
   });
 
   test("Teams: one message that links to the saved result", async () => {

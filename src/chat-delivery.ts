@@ -32,7 +32,8 @@ import {
   type ChatEvent,
   type ChatIdentity,
 } from "./chat-delivery-state.js";
-import { answerChatFlowPrompt, applyChatFlowTap, flowDecisionParts } from "./chat-flow.js";
+import { answerChatFlowPrompt, applyChatFlowTap, flowDecisionParts, flowSendParts, openChoiceReply } from "./chat-flow.js";
+import { FLOW_CHOOSE_KEY, readFlowSend } from "./flow-send.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
 import { telegramProgressCard } from "./telegram-progress.js";
@@ -43,8 +44,8 @@ import { leadChannelOf } from "./lead-context.js";
 import { promiseChannelOf } from "./lead-commitments.js";
 import { phoneText, PHONE_HELP, phoneCommand, phoneStatus, phoneTaskView, phoneTaskChoices, phoneTaskListText, resolvePhoneTask, phoneFocusText, PHONE_NO_MATCH, PHONE_BACK_TO_LEAD } from "./telegram-status.js";
 import { applyRoomInbound, conversationRow, roomCardApprover, roomCommand, roomGrantAllowed, roomMessagesAfter, roomMessageText, teamDomain } from "./chat-rooms.js";
-import { isTelegramProgressNotification, proposalTaskOf, RESULT_SHOTS_KIND, type Notification, type Store } from "./store.js";
-import { resultShotsFor } from "./result-shots.js";
+import { isTelegramProgressNotification, proposalTaskOf, type Notification, type Store } from "./store.js";
+import { isShotsKind, resultShotsFor } from "./result-shots.js";
 import { messageTeammate } from "./teammate-desk.js";
 import { CHAT_APP_NAMES } from "./flow-triggers.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
@@ -840,6 +841,16 @@ function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, not
   // The result's message here: its finished-work batch (quiet), its progress card (every step), or the result's own
   // notice. The transport threads the screenshots under it once it is posted, and holds them until then.
   const follows = (() => {
+    // A flow's screenshots follow the "Send to me" or "Person chooses" notice they go with.
+    const visit = /^flow-shots:([1-9][0-9]*):([1-9][0-9]*)$/.exec(notification.dedupeKey);
+    if (visit !== null) {
+      for (const key of [`flow-send:${visit[1]}:${visit[2]}`, `flow-choose:${visit[1]}:${visit[2]}`]) {
+        const notice = store.handle.prepare("SELECT id FROM notification WHERE dedupe_key=?").get(key);
+        const part = notice === undefined ? undefined : state.prepare("SELECT id FROM chat_part WHERE event=? ORDER BY id DESC LIMIT 1").get(chatHash(`${state.channel}:notice:${binding.id}:${Number(notice["id"])}`));
+        if (part !== undefined) return Number(part.id);
+      }
+      return null;
+    }
     const batch = notification.taskRef === null ? null : store.chatBatchMessageFor(`${state.channel}:${binding.id}`, notification.taskRef, notification.run);
     if (batch !== null) return Number(batch);
     const card = state.prepare("SELECT part FROM chat_progress WHERE binding=? AND run=?").get(binding.id, notification.run);
@@ -913,7 +924,7 @@ export async function planChatNotifications(
         // Only when I'm needed (the default): the task's one card is edited in place, and a new message
         // follows only when this person is needed. Every step keeps the branches below unchanged.
         const quiet = !personal && isTaskFact(notification) && store.notificationPreference(binding.approver).mode === "quiet";
-        if (notification.kind === RESULT_SHOTS_KIND) {
+        if (isShotsKind(notification.kind)) {
           planResultShots(options, binding, notification, repos, id, now);
           return;
         }
@@ -1013,7 +1024,17 @@ export async function planChatNotifications(
             state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
               ts: "", thread: "", payload: "{}", created: now.toISOString() });
             state.plan(id, parts, now);
+            // A "Person chooses" notice (flow-send.ts) takes a reply as well as a tap: the person's next message here.
+            const choose = FLOW_CHOOSE_KEY.exec(notification.dedupeKey);
+            const sent = choose === null ? null : store.flowSend(Number(choose[1]), Number(choose[2]));
+            if (choose !== null && sent !== null && notification.recipient === binding.approver && readFlowSend(sent.contentJson)?.reply === true)
+              openChoiceReply(state, binding, Number(choose[1]), Number(choose[2]), now);
           }
+        } else if (personal && flowSendParts(store, notification) !== null) {
+          // A flow's "Send to me" (flow-send.ts): what was done, with its links as buttons.
+          state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
+            ts: "", thread: "", payload: "{}", created: now.toISOString() });
+          state.plan(id, flowSendParts(store, notification)!, now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A teammate's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,

@@ -311,4 +311,35 @@ describe("Teams shared chat", () => {
     expect(store.getFlowCard(card)).toMatchObject({ stage: "draft", note: "Mention the 5-day wait." });
     expect(lastText()).toBe("↩️ Sent back to Write the reply with your note.");
   });
+
+  test("a flow choice in Teams: the flow's own options as buttons, a tap moves the card, and the next message instead is the note", async () => {
+    expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
+    now = new Date(now.getTime() + 30_000);
+    const flow = store.createFlow({ repo, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
+      { id: "build", title: "Build", kind: "task" },
+      { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
+      { id: "ship", title: "Ship", kind: "inbox" },
+    ], null)) }, now);
+    const choiceCard = () => String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
+    const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
+    advanceFlows(store, repo, now);
+    await planTeamsNotifications(options); await drain();
+    expect(lastText()).toContain("Totals are off by a cent");
+    expect(lastText()).toContain("Or reply with what you'd change: your next message here is your reply (“cancel” skips it).");
+    expect(lastActions().map(action => action["title"])).toEqual(["Ship it", "Ignore", "Card"]);
+    const ship = lastActions().find(action => action["title"] === "Ship it") as { data: Record<string, unknown> };
+    expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: choiceCard(), value: ship.data })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(store.getFlowCard(first)).toMatchObject({ stage: "ship" });
+    expect(sends().some(call => call.method === "PUT" && JSON.stringify(call.body).includes("You chose “Ship it”. Ship it. Moved to Ship."))).toBe(true);
+
+    const second = store.addFlowCard({ flow, title: "Header spacing", description: "The header is cramped on phones", stage: "choose", by: "alex" }, now);
+    advanceFlows(store, repo, now);
+    await planTeamsNotifications(options); await drain();
+    expect(receive(activity(DM_ALEX, ALEX, "Use 16px, not 12px."))).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(store.getFlowCard(second)).toMatchObject({ stage: "build", note: "Use 16px, not 12px." });
+    expect(lastText()).toBe("↩️ Sent to Build with your note.");
+    expect(store.flowEvents(second).at(-1)).toMatchObject({ outcome: "sent-back", actor: "alex" });
+  });
 });

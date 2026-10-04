@@ -84,9 +84,11 @@ function stepOf(stage: FlowStage, ask: (parameter: FlowFileParameter) => string)
   if (stage.merge !== undefined) step["merge"] = stage.merge;
   if (stage.teammate !== undefined) step["teammate"] = stage.teammate;
   if (stage.reply === true) step["reply"] = true;
+  // A choice's buttons; "end" ignores the card. A build in another project names a path on this computer, so it stays here.
+  if (stage.options !== undefined) step["options"] = stage.options.map(one => ({ label: one.label, goesTo: one.to }));
   if (stage.limit !== undefined) Object.assign(step, { remindAfter: words(stage.limit.minutes), ...(stage.limit.to === null ? {} : { thenMoveTo: stage.limit.to }) });
   if (stage.next !== null) step["next"] = stage.next;
-  if (stage.onFail !== null) step[stage.kind === "sort" ? "ifNotSure" : stage.kind === "wait" ? "ifNoReply" : "ifFails"] = stage.onFail;
+  if (stage.onFail !== null) step[stage.kind === "sort" ? "ifNotSure" : stage.kind === "wait" ? "ifNoReply" : stage.kind === "choose" ? "ifReplied" : "ifFails"] = stage.onFail;
   step["at"] = { x: stage.zone.x, y: stage.zone.y, w: stage.zone.w, h: stage.zone.h, color: stage.zone.color };
   return step;
 }
@@ -168,7 +170,7 @@ function scrubber(values: readonly string[], names: readonly string[]): (text: s
 }
 
 /** Structural fields: ids and references, never prose. Scrubbing them would break the flow's paths. */
-const STRUCTURAL = new Set(["format", "id", "kind", "goesTo", "next", "ifFails", "ifNotSure", "ifNoReply", "thenMoveTo", "zone", "script", "language", "planning", "runIn", "waitFor", "method", "watch", "from", "delivery", "color", "merge"]);
+const STRUCTURAL = new Set(["format", "id", "kind", "goesTo", "next", "ifFails", "ifNotSure", "ifNoReply", "ifReplied", "thenMoveTo", "zone", "script", "language", "planning", "runIn", "waitFor", "method", "watch", "from", "delivery", "color", "merge"]);
 
 function scrubDeep(value: unknown, scrub: (text: string) => string, key: string | null, inScripts: boolean): unknown {
   if (typeof value === "string") return key !== null && (STRUCTURAL.has(key) || (inScripts && key === "name")) ? value : scrub(value);
@@ -246,7 +248,7 @@ function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: 
   const toOwner = kind === "approval" && typeof decider === "string" && decider.trim().toLowerCase() === "owner";
   const anyone = decider === undefined || decider === null || (typeof decider === "string" && /^(anyone|any approver|)$/i.test(decider.trim()));
   const at = object("at") ?? {};
-  const failKey = step["ifNotSure"] ?? step["ifNoReply"] ?? step["ifFails"];
+  const failKey = step["ifNotSure"] ?? step["ifNoReply"] ?? step["ifReplied"] ?? step["ifFails"];
   const minutes = (value: unknown) => value === undefined ? undefined : durationMinutes(value) ?? refuse(`Zone ${title}: say a time like "3 days" (up to 30 days).`);
   const sureAt = step["sureAt"];
   return {
@@ -264,6 +266,7 @@ function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: 
     ...(kind === "tool" ? { tool: { server: step["server"], name: step["tool"], args: typeof step["args"] === "object" && step["args"] !== null ? JSON.stringify(step["args"]) : step["args"] } } : {}),
     ...(kind === "wait" ? { wait: step["waitFor"] === "hours" ? { for: "hours", from: step["from"], to: step["until"], timeZone: step["timeZone"] } : { for: step["waitFor"] ?? "reply", minutes: minutes(step["wait"] ?? "3 days") } } : {}),
     merge: step["merge"], teammate: step["teammate"], reply: step["reply"],
+    ...(kind === "choose" ? { options: (list("options") ?? []).map(one => ({ label: one["label"], to: one["goesTo"] === "end" ? "end" : find(one["goesTo"], title) })) } : {}),
     ...(step["remindAfter"] === undefined ? {} : { limit: { minutes: minutes(step["remindAfter"]), to: find(step["thenMoveTo"], title) } }),
     next: find(step["next"], title), onFail: find(failKey, title),
   };

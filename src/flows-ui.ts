@@ -10,6 +10,7 @@ import { flowSecretNames, readEmailSettings, sendingReady } from "./flow-actions
 import { projectToolsOf, secretsSetFor, toolStanding } from "./project-tools.js";
 import type { FlowCardRow, FlowRow, Store } from "./store.js";
 import { flowFingerprint } from "./flow-live.js";
+import { flowChoiceAt, readFlowSend, type FlowSendContent } from "./flow-send.js";
 import { FLOW_FILE_MAX_BYTES, type FlowFile, type FlowImportPlan } from "./flow-share.js";
 import { googleConnected } from "./google-mail.js";
 import { mailboxReady } from "./mailbox.js";
@@ -28,7 +29,7 @@ export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects:
   const rows = flows.map(flow => {
     const cards = store.flowCards(flow.id, false);
     const definition = flowDefinitionOf(flow);
-    const waiting = cards.filter(card => definition?.stages.find(one => one.id === card.stage)?.kind === "approval").length;
+    const waiting = cards.filter(card => ["approval", "choose"].includes(definition?.stages.find(one => one.id === card.stage)?.kind ?? "")).length;
     const buttons = store.flowTriggers(flow.id).filter(one => one.state === "active").flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; });
     const trouble = troubleWords(flowInsights(store, flow, new Date(), 7));
     return `<article class="card"><div class="flow-row"><h2><a href="/flows/${flow.id}">${e(flow.name)}</a></h2><span class="flow-counts">${e(projectName(flow.repo))} · ${cards.length} card${cards.length === 1 ? "" : "s"} in progress${waiting > 0 ? ` · ${waiting} waiting for a decision` : ""}${trouble === null ? "" : ` · ${e(trouble)}`}</span></div>` +
@@ -79,7 +80,8 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
     case "approved": return `Approved${who}${note}`;
     case "sent-back": return `Sent back to ${title(event.toStage)}${who}${note}`;
     case "fail": return `Moved to ${title(event.toStage)} after a problem${note}`;
-    case "cancelled": return `Cancelled${who}`;
+    // "Ignore" on a choice closes the card (flow-send.ts): said as such, with what was chosen and where.
+    case "cancelled": return event.note?.startsWith("Ignored") ? `Ignored${who}${event.note.slice("Ignored".length)}` : `Cancelled${who}`;
     case "ok": return event.fromStage !== null && sorts.has(event.fromStage) ? `Sorted into ${title(event.toStage)}` : `Moved on to ${title(event.toStage)}${note}`;
     default: return `Moved to ${title(event.toStage)}${who}${note}`;
   }
@@ -129,21 +131,33 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       } catch { handoff = null; }
     }
     const asker = asked === null || asked.state !== "open" ? null : store.getTeammate(asked.teammate);
+    // "Person chooses" (flow-send.ts): what was sent, and the options, for the person it waits on; the latest send otherwise.
+    const choosing = card.state === "active" && stage?.kind === "choose" ? flowChoiceAt(store, card.id, card.entry) : null;
+    const latest = store.flowSends(card.id)[0] ?? null;
+    const sentContent = latest === null ? null : readFlowSend(latest.contentJson);
+    // On the card itself: where it came from (the card's title is right above), and only the links the panel doesn't already have.
+    const own = new Set([`/flows/${flow.id}?card=${card.id}`, ...(task === null ? [] : [`/t/${encodeURIComponent(task)}`])]);
+    const sentView = (content: FlowSendContent) => ({ title: content.from === undefined ? "What was done" : `From ${content.from}`, summary: content.summary,
+      links: content.links.map(one => ({ label: one.label, href: "url" in one ? one.url : one.path })).filter(one => !own.has(one.href)) });
     return {
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state, waiting: card.waiting,
       task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },
       createdBy: card.createdBy, updatedAt: card.updatedAt,
       canDecide,
-      outputs: Object.entries(card.outputs).map(([id, text]) => ({ stage: id, title: title(id), text })),
+      // What a "Send to me" sent shows once, in its own box (sent), not again here.
+      outputs: Object.entries(card.outputs).filter(([id]) => stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
       history: [...moves, ...owned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
       source: card.source,
       owner: card.owner, watchers, watching: watchers.includes(viewer.name),
-      mine: card.owner === viewer.name || watchers.includes(viewer.name) || canDecide,
+      mine: card.owner === viewer.name || watchers.includes(viewer.name) || canDecide || choosing?.person === viewer.name,
       comments: discussion.filter(one => one.kind === "comment").map(one => ({ id: one.id, author: one.author, body: one.body, mentions: one.mentions, at: one.at })),
       sorted: decision === null ? null : { chip: sortChip(decision), confident: decision.confident },
       draft: shown === null || card.state !== "active" || card.outputs[shown.id] === undefined ? null : { zone: shown.id, title: shown.title, text: card.outputs[shown.id]! },
       deadline,
       handoff,
+      choose: choosing === null || sentContent === null || latest?.entry !== card.entry ? null : { entry: card.entry, ...sentView(sentContent), person: choosing.person, mine: choosing.person === viewer.name,
+        options: (sentContent.options ?? []).filter(one => choosing.stage.options?.[one.choice]?.label === one.label), reply: sentContent.reply === true },
+      sent: sentContent === null || (choosing !== null && latest?.entry === card.entry) ? null : { ...sentView(sentContent), person: latest!.person, at: latest!.createdAt },
       question: asked === null || asked.state !== "open" || asker === null ? null
         : { id: asked.id, from: labelOf(asker), question: asked.question, options: asked.options, askedOf: asked.askedOf, mine: asked.askedOf === viewer.name,
           call: pending === null ? null : { why: pending.why, rule: pending.result ?? "" } },
@@ -196,6 +210,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     live: flowFingerprint(store, flow.id),
     canEdit: viewer.approver,
     approvers: store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, flow.repo)),
+    projects: [flow.repo, ...setup.repos.filter(one => one !== flow.repo)].map(path => ({ path, name: projectName(path) })),
     kinds: FLOW_STAGE_KINDS.map(kind => ({ kind, label: FLOW_KIND_WORDS[kind].label, about: FLOW_KIND_WORDS[kind].about })),
     colors: [...FLOW_COLORS],
   };

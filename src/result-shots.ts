@@ -19,7 +19,7 @@ import { imageDimensions, readVerifiedProofForRun, RETENTION_NOTE } from "./evid
 import { resultImageFileName, verifyResultImage } from "./chat-evidence.js";
 import { publicChatText } from "./chat-display.js";
 import { chatTitle } from "./chat-voice.js";
-import { RESULT_SHOTS_KIND, type Notification, type ResultScreenshots, type Store } from "./store.js";
+import { FLOW_SHOTS_KIND, RESULT_SHOTS_KIND, type Notification, type ResultScreenshots, type Store } from "./store.js";
 import type { ChatContent, ChatState } from "./chat-delivery-state.js";
 
 /** "Up to 4": the most screenshots one result ever sends. */
@@ -85,8 +85,9 @@ function isPhoto(bytes: Buffer, format: "png" | "jpeg"): boolean {
  */
 export function resultShotsFor(store: Store, evidenceRoot: string | undefined, repos: readonly string[],
   row: Pick<Notification, "kind" | "recipient" | "taskId" | "taskRef" | "run">, sent: ReadonlySet<number> = new Set()): ResultShotsPlan {
-  if (row.kind !== RESULT_SHOTS_KIND || row.recipient === null || row.taskId === null || row.taskRef === null || row.run === null) return { kind: "none", why: "none" };
-  const limit = resultShotLimit(store.notificationPreference(row.recipient).screenshots);
+  if (!isShotsKind(row.kind) || row.recipient === null || row.taskId === null || row.taskRef === null || row.run === null) return { kind: "none", why: "none" };
+  // A flow's "Send to me" or "Person chooses" asked for them: up to four, whatever the person chose for results.
+  const limit = row.kind === FLOW_SHOTS_KIND ? RESULT_SHOTS_MAX : resultShotLimit(store.notificationPreference(row.recipient).screenshots);
   if (limit === 0) return { kind: "none", why: "off" };
   const title = chatTitle(store, row.taskId);
   const line = (why: string): ResultShotsPlan => ({ kind: "line", text: `Screenshots for ${title} weren't sent: ${why}.` });
@@ -119,6 +120,11 @@ export function resultShotsFor(store: Store, evidenceRoot: string | undefined, r
   }
   const remaining = shots.filter(one => !sent.has(one.artifact));
   return remaining.length === 0 ? { kind: "none", why: "sent" } : { kind: "send", taskId: row.taskId, run: row.run, shots: remaining };
+}
+
+/** A row that carries a result's screenshots: one a person asked for with results, or one a flow sends them. */
+export function isShotsKind(kind: string): boolean {
+  return kind === RESULT_SHOTS_KIND || kind === FLOW_SHOTS_KIND;
 }
 
 /** A screenshot whose result message is not posted yet waits for that message's own next try (at least a second). */

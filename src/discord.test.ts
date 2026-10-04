@@ -1119,6 +1119,43 @@ test("a flow decision in Discord: the draft with Approve / Edit / Send back, Edi
   expect(buttonsOf(repainted).map(one => one.label)).toEqual(["Open"]);
 });
 
+test("a flow choice in Discord: the flow's own options as buttons, the next message instead is the note, and Ignore closes a card as Ignored", async () => {
+  now = new Date(now.getTime() + 30_000);
+  const flow = store.createFlow({ repo, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
+    { id: "build", title: "Build", kind: "task" },
+    { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
+    { id: "ship", title: "Ship", kind: "inbox" },
+  ], null)) }, now);
+  type Button = { label: string; custom_id?: string; style: number };
+  const buttonsOf = (call: { body: Record<string, unknown> }) => ((call.body.components as Array<{ components: Button[] }>)[0]?.components ?? []);
+  const choicePart = () => String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+  const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
+  advanceFlows(store, repo, now);
+  await planDiscordNotifications(options);
+  await drain();
+  expect(sentText()).toContain("Totals are off by a cent");
+  expect(buttonsOf(sends().at(-1)!).map(one => one.label)).toEqual(["Ship it", "Ignore", "Card"]);
+  receive("Round half-even instead.");
+  await processDiscordEvent(options);
+  await drain();
+  expect(store.getFlowCard(first)).toMatchObject({ stage: "build", note: "Round half-even instead." });
+  expect(sentText()).toContain("Sent to Build with your note.");
+
+  const second = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex" }, now);
+  advanceFlows(store, repo, now);
+  await planDiscordNotifications(options);
+  await drain();
+  const ignore = buttonsOf(sends().at(-1)!).find(one => one.label === "Ignore")!.custom_id!.slice(3);
+  await tap(ignore, choicePart());
+  expect(store.getFlowCard(second)).toMatchObject({ state: "cancelled", waiting: "Ignored" });
+  expect(sentText()).toContain("You chose “Ignore”. Ignored. The card is closed.");
+  // Every choice is ledgered with the person and where it was made (newest first).
+  expect(store.actionLedger({ repos: [repo] }).filter(one => one.action === "flow choice").map(one => [one.actor, one.outcome, one.detail])).toEqual([
+    ["alex", "ignored", "Fixes · card 2 · What next?: “Ignore” · via Discord"],
+    ["alex", "replied", "Fixes · card 1 · What next?: a reply to Build · via Discord"],
+  ]);
+});
+
 test("a Discord channel feeds a flow: 'flow N' connects it, anyone's message is a card answered in reply, and a reply to it joins the card (v89)", async () => {
   now = new Date(now.getTime() + 30_000);
   const flow = store.createFlow({ repo, name: "Requests", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);

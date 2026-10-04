@@ -14,7 +14,7 @@ import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
 import { galleryUseHtml } from "./flow-gallery-ui.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, previewGallery, type GalleryAnswers } from "./flow-gallery.js";
+import { BLANK, buildFromGallery, GALLERY, galleryDiagram, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
 
 const T0 = new Date("2026-10-01T09:00:00.000Z");
 /** Sample answers a person might give, none of them the defaults. */
@@ -147,6 +147,17 @@ describe("flow gallery", () => {
       expect(changed.status).toBe(200);
       expect(await changed.text()).toContain("Your answers changed. Check the preview, then create the flow.");
       expect(store.listFlows([repo])).toHaveLength(count);
+      // "Send me the result": off by default on every template's page; ticked, the flow ends with it.
+      const research = await get(`/flows/new/research?repo=${encodeURIComponent(repo)}`);
+      expect(research).toContain(`<input type="checkbox" name="send-result" value="yes" data-send-result><span>Send me the result`);
+      const ticked = await post("/flows/new/research", { csrf, repo, name: "Answers", intent: "preview", "send-result": "yes" });
+      const tickedPage = await ticked.text();
+      expect(tickedPage).toContain('value="yes" checked data-send-result');
+      expect(tickedPage).toContain(SEND_RESULT.does);
+      const made = await post("/flows/new/research", { csrf, repo, name: "Answers", intent: "create", "send-result": "yes", previewed: /name="previewed" value="([^"]*)"/.exec(tickedPage)![1]! });
+      expect(made.status).toBe(303);
+      const answers = flowDefinitionOf(store.getFlow(Number(/^\/flows\/(\d+)$/.exec(made.headers.get("location") ?? "")?.[1]))!)!;
+      expect(answers.stages.map(one => [one.id, one.kind, one.next])).toEqual([["inbox", "inbox", "research"], ["research", "report", "check"], ["check", "approval", "share"], ["share", "notify", "send-result"], ["send-result", "send", "done"], ["done", "done", null]]);
       // A project that isn't on GitHub can't use a GitHub template: the page says why and offers no Create.
       const fixCi = GALLERY.find(one => one.id === "fix-ci")!;
       let problem = "";
