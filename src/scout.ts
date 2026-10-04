@@ -73,6 +73,15 @@ export function scoutBrowser(tool: Pick<ToolSpec, "command" | "args"> | null, im
   return { [SCOUT_BROWSER]: { type: "stdio", command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"], env: {} } };
 }
 
+/** What would let the scout's own requests skip its proxy: never passed on while one runs. */
+const PROXY_BYPASS_ENV: readonly string[] = ["NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
+
+/** The scout's environment while its proxy runs (review 827): web fetch and the provider's own traffic go through
+ * the same public-web-only proxy as its browser, so only public addresses (and the project's demo) are reachable. */
+export function scoutProxyEnv(proxy: string): Record<string, string> {
+  return { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy };
+}
+
 export type ScoutRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */
   maxBudgetUsd?: number;
@@ -155,6 +164,7 @@ function scoutBrief(
   answers: readonly { question: string; choice: string; note: string | null }[],
   structured: boolean,
   browser: { folder: string; demoUrl: string | null } | null,
+  web = true,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -177,8 +187,10 @@ function scoutBrief(
     "stage, commit, or switch branches. The workspace is checked after you",
     "finish; any other change discards your session and its report.",
     "",
-    "You may search the web and fetch pages for this research. Cite the URL",
-    "of every source you use. Never download anything else, and never run downloaded code.",
+    ...(web
+      ? ["You may search the web and fetch pages for this research. Cite the URL",
+          "of every source you use. Never download anything else, and never run downloaded code."]
+      : ["The web is unavailable in this run: research from the repository alone."]),
     ...(browser === null
       ? ["No browser is available for screenshots in this run, so leave images empty."]
       : [
@@ -335,30 +347,29 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     if (!wrotePlanFile && touchesPlanFile(event)) wrotePlanFile = true;
     liveLog?.observe(event);
   };
-  // The browser, when this install has one: launched behind its public-web-only proxy (review 826).
+  // Every scout runs behind its public-web-only proxy (reviews 826, 827): its browser, when this install has one,
+  // and its web fetch both go through it. A proxy that cannot start leaves the scout without the web, reading only
+  // the checkout, never with an unfiltered one.
   const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
   const demoUrl = request.demoUrl ?? null;
   let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
   let invoked;
   try {
-    if (structured && browserTool !== null && browserTool.command !== null) {
-      // A proxy that cannot start leaves the scout without a browser, never without its research.
-      proxy = await startScoutProxy({ demoUrl }).catch(() => null);
-    }
-    const browser = proxy === null ? null : scoutBrowser(browserTool, imageFolder, proxy.url);
+    proxy = await startScoutProxy({ demoUrl }).catch(() => null);
+    const browser = proxy === null || !structured ? null : scoutBrowser(browserTool, imageFolder, proxy.url);
     invoked = await invokeAgent(
       store,
       request.runId,
       { provider: request.provider ?? "claude", model: request.model ?? null },
       {
         phase: "plan",
-        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, browser === null ? null : { folder: imageFolder, demoUrl }),
+        brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, browser === null ? null : { folder: imageFolder, demoUrl }, proxy !== null),
         maxTurns,
         // Read-only by policy AND by check: `dontAsk` with only research and
         // screenshot tools allowed is the permission posture (plan mode
         // blocked the screenshots too); the clean-tree proof below is the law.
         permissionMode: request.permissionMode ?? "dontAsk",
-        allowedTools: browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS,
+        allowedTools: proxy === null ? [] : browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS,
         ...(browser === null ? {} : { extraMcpServers: browser }),
         skipPermissions: false,
         resumeSession: null,
@@ -369,7 +380,8 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       {
         cwd: worktree,
         idleTimeoutMs: timeoutMs,
-        omitEnv: AGENT_ENV_DENYLIST,
+        omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV)],
+        ...(proxy === null ? {} : { env: scoutProxyEnv(proxy.url) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -520,8 +532,9 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     // File names, URLs and captions too (review 826): a screenshot is read by the name the scout gave it, but
     // stored, captioned and passed on only under its scrubbed one.
     const names = scrubbedImageNames(validated.images);
+    const imageUrlScrubbed = validated.images.some(image => scrubUrl(image.url).scrubbed);
     const { report, redacted: redactedText } = redactReport(keepImages(validated, names));
-    const redacted = redactedText || [...names].some(([file, name]) => file !== name);
+    const redacted = redactedText || imageUrlScrubbed || [...names].some(([file, name]) => file !== name);
 
     // The whole VALIDATED payload is the artifact: re-serialized from the
     // parsed shape, so what the page renders is exactly what passed the

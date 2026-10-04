@@ -22,7 +22,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
 import { SCOUT_BROWSER, scoutBrowser, scrubUrl } from "./scout.js";
 import * as projectTools from "./project-tools.js";
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { readVerifiedReport } from "./evidence.js";
 import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -475,6 +475,8 @@ describe("scout tasks, against real git", () => {
   const planWrite = (options: Parameters<Runner>[2]) =>
     options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/Users/someone/.claude/plans/you-are-a-scout-quiet-otter.md", content: "# Findings" } }] } });
   let argvSeen: string[] = [];
+  let envSeen: Record<string, string> | undefined;
+  let omitSeen: readonly string[] = [];
   const ASKED = {
     urgency: "blocking",
     recap: "Two suites fail differently.",
@@ -487,6 +489,8 @@ describe("scout tasks, against real git", () => {
   };
   const planModeAgent = (structured: unknown, files: { report?: unknown } = {}): Runner => async (_file, args, options) => {
     argvSeen = [...args];
+    envSeen = options?.env;
+    omitSeen = options?.omitEnv ?? [];
     const prompt = String(args[args.indexOf("-p") + 1] ?? "");
     prompts.push(prompt);
     planWrite(options);
@@ -650,6 +654,75 @@ describe("scout tasks, against real git", () => {
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
   });
 
+  test("web fetch goes through the browser's proxy, and the project's demo set with `project demo` is the one non-public page it reaches", async () => {
+    const { runnerToken, approverToken } = await setup();
+    const demo = createServer((_incoming, outgoing) => outgoing.end("the demo"));
+    await new Promise<void>(done => demo.listen(0, "127.0.0.1", () => done()));
+    const demoPort = (demo.address() as { port: number }).port;
+    try {
+      // Setting it is an approver's act; only http(s) without a sign-in; `off` clears it.
+      await run(["project", "demo", `http://127.0.0.1:${demoPort}/app`, "--repo", repo, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "refused" });
+      await run(["project", "demo", "file:///etc/passwd", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "usage" });
+      await run(["project", "demo", "http://me:pw@127.0.0.1/", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: false, reason: "usage" });
+      await run(["project", "demo", `http://127.0.0.1:${demoPort}/app`, "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, before: null, demoUrl: `http://127.0.0.1:${demoPort}/app` });
+      await run(["project", "demo", "--repo", repo, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, demoUrl: `http://127.0.0.1:${demoPort}/app` });
+
+      const answers: (number | string)[] = [];
+      const probing: Runner = async (file, args, options) => {
+        const launch = browserLaunch(args);
+        const browserProxy = String(launch[launch.indexOf("--proxy-server") + 1]);
+        // HTTP(S)_PROXY is the browser's own proxy, and nothing lets a request skip it.
+        expect(options?.env?.["HTTPS_PROXY"]).toBe(browserProxy);
+        expect(options?.env?.["HTTP_PROXY"]).toBe(browserProxy);
+        expect(options?.env?.["https_proxy"]).toBe(browserProxy);
+        expect(options?.omitEnv).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
+        const proxy = new URL(options?.env?.["HTTP_PROXY"] ?? "");
+        const get = (path: string) => new Promise<number | string>((done, fail) => {
+          const sent = httpRequest({ host: proxy.hostname, port: Number(proxy.port), path, headers: { host: new URL(path).host } }, answer => {
+            let body = "";
+            answer.on("data", chunk => { body += String(chunk); });
+            answer.on("end", () => done(answer.statusCode === 200 ? body : answer.statusCode ?? 0));
+          });
+          sent.on("error", fail);
+          sent.end();
+        });
+        answers.push(await get(`http://127.0.0.1:${demoPort}/app`), await get(`http://127.0.0.1:${demoPort + 1}/`), await get("http://10.0.0.1/"));
+        return planModeAgent({ kind: "report", report: FOUND })(file, args, options);
+      };
+      expect(await tick(runnerToken, probing)).toBe(EXIT.ok);
+      expect(answers).toEqual(["the demo", 403, 403]);
+      expect(prompts.at(-1)).toContain(`this project's own UI at \`http://127.0.0.1:${demoPort}/app\``);
+
+      await run(["project", "demo", "off", "--repo", repo, "--as", "alex", "--token", approverToken, "--json"], reportingAgent);
+      expect(payload()).toMatchObject({ ok: true, before: `http://127.0.0.1:${demoPort}/app`, demoUrl: null });
+      const store = openStore(db);
+      expect(store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'demo URL' ORDER BY rowid").all()).toEqual([
+        { actor: "alex", detail: `off → http://127.0.0.1:${demoPort}/app` },
+        { actor: "alex", detail: `http://127.0.0.1:${demoPort}/app → off` },
+      ]);
+      store.close();
+    } finally {
+      await new Promise<void>(done => demo.close(() => done()));
+    }
+  });
+
+  test("a report whose only secret was in an image's URL is marked redacted", async () => {
+    const { runnerToken } = await setup();
+    const images = [{ file: "callback.png", caption: "The callback page", url: "https://app.example.com/callback?code=1234&state=ok" }];
+    expect(await tick(runnerToken, imagingAgent({ "callback.png": png() }, { ...FOUND, images }))).toBe(EXIT.ok);
+    const store = openStore(db);
+    const ref = store.refFor("built-in", "flaky");
+    expect(store.latestReportArtifact(ref.id)?.redacted).toBe(true);
+    const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
+    expect(view !== null && view.ok && view.report.images[0]!.url).toBe("https://app.example.com/callback?code=REDACTED&state=ok");
+    store.close();
+  });
+
   test("with no Playwright entry the scout researches without a browser instead of failing", async () => {
     const { runnerToken } = await setup();
     const missing = vi.spyOn(projectTools, "catalogTool").mockImplementation(() => null);
@@ -661,6 +734,8 @@ describe("scout tasks, against real git", () => {
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     expect(browserLaunch(argvSeen)).toEqual([]);
     expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
+    // The proxy runs whenever a scout does: web fetch goes through it even without a browser (review 827).
+    expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
     expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
     expect(scoutBrowser(null, "/tmp/shots", "http://127.0.0.1:1")).toBeNull();
@@ -802,6 +877,7 @@ describe("scout tasks, against real git", () => {
     const { runnerToken } = await setup("codex");
     const codexScout: Runner = async (_file, args, options) => {
       argvSeen = [...args];
+      envSeen = options?.env;
       const prompt = String(args.at(-1) ?? "");
       prompts.push(prompt);
       const name = REPORT_FILE.exec(prompt)?.[0];
@@ -815,6 +891,8 @@ describe("scout tasks, against real git", () => {
     };
     expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
+    // No browser, but its web traffic still goes through the scout's proxy (review 827).
+    expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(argvSeen[0]).toBe("exec");
     expect(argvSeen).not.toContain("--json-schema");
     expect(prompts.at(-1)).toMatch(/write JSON to a file named exactly\n`STANDING-ORDERS-REPORT-/);

@@ -1,10 +1,11 @@
 /**
- * The scout's browser reaches only the public web (review 826): every
- * request it makes goes through this local proxy, which resolves the host
+ * The scout reaches only the public web (reviews 826, 827): every request
+ * its browser and its web fetch make goes through this local proxy, which resolves the host
  * itself and refuses anything that is not a public internet address —
  * loopback, private, link-local, carrier-grade NAT, multicast and reserved
- * ranges, in IPv4 and IPv6 — then connects to the very address it checked,
- * so a name that re-resolves somewhere private gets nowhere. The one
+ * ranges, in IPv4 and IPv6 — then connects to the very addresses it
+ * checked, each in turn until one answers, so a name that re-resolves
+ * somewhere private gets nowhere. The one
  * exception is the project's own demo URL, when one is set, matched by its
  * exact scheme, host and port. Redirects and a page's own requests pass
  * through the same check; file: never reaches a proxy, and the pinned
@@ -64,6 +65,33 @@ function demoTarget(demoUrl: string | null | undefined): Target | null {
   }
 }
 
+/** How long one address may take to answer before the next is tried. */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+/**
+ * A connection to the first of the checked addresses that answers, tried in turn (review 827): a host whose IPv6
+ * address is unreachable from here is still reached over IPv4. Null when none answers.
+ */
+export async function connectFirst(addresses: readonly string[], port: number, timeoutMs = CONNECT_TIMEOUT_MS): Promise<Socket | null> {
+  for (const address of addresses) {
+    const socket = await new Promise<Socket | null>(done => {
+      const attempt = connect({ host: address, port });
+      const give = (value: Socket | null): void => {
+        attempt.removeAllListeners("connect").removeAllListeners("error").removeAllListeners("timeout");
+        attempt.setTimeout(0);
+        if (value === null) attempt.destroy();
+        done(value);
+      };
+      attempt.setTimeout(timeoutMs);
+      attempt.once("connect", () => give(attempt));
+      attempt.once("error", () => give(null));
+      attempt.once("timeout", () => give(null));
+    });
+    if (socket !== null) return socket;
+  }
+  return null;
+}
+
 export type ScoutProxy = { url: string; close: () => Promise<void> };
 
 /**
@@ -75,8 +103,8 @@ export async function startScoutProxy(options: { demoUrl?: string | null; lookup
   const demo = demoTarget(options.demoUrl);
   const sockets = new Set<Socket>();
 
-  /** The one address this request may reach, or why it may not. */
-  const resolve = async (target: Target): Promise<{ ok: true; address: string } | { ok: false; why: string }> => {
+  /** The addresses this request may reach, in the resolver's order, or why it may not. */
+  const resolve = async (target: Target): Promise<{ ok: true; addresses: readonly string[] } | { ok: false; why: string }> => {
     const host = target.host.replace(/^\[|\]$/g, "").toLowerCase();
     const isDemo = demo !== null && demo.scheme === target.scheme && demo.host.replace(/^\[|\]$/g, "") === host && demo.port === target.port;
     let addresses: readonly string[];
@@ -86,9 +114,9 @@ export async function startScoutProxy(options: { demoUrl?: string | null; lookup
       return { ok: false, why: "the host does not resolve" };
     }
     if (addresses.length === 0) return { ok: false, why: "the host does not resolve" };
-    if (isDemo) return { ok: true, address: addresses[0]! };
+    if (isDemo) return { ok: true, addresses };
     if (!addresses.every(isPublicAddress)) return { ok: false, why: "not a public internet address" };
-    return { ok: true, address: addresses[0]! };
+    return { ok: true, addresses };
   };
   const refuse = (target: string, why: string): void => {
     try { options.refused?.(target, why); } catch { /* a listener's trouble is not the browser's */ }
@@ -115,10 +143,17 @@ export async function startScoutProxy(options: { demoUrl?: string | null; lookup
         outgoing.writeHead(403, { "content-type": "text/plain" }).end("Toolroll's scout browser opens only public web pages.");
         return;
       }
+      const upstream = await connectFirst(reached.addresses, target.port);
+      if (upstream === null) {
+        outgoing.writeHead(502).end();
+        return;
+      }
+      sockets.add(upstream);
+      upstream.on("close", () => sockets.delete(upstream));
       const headers = { ...incoming.headers };
       delete headers["proxy-connection"];
       delete headers["proxy-authorization"];
-      const forward = httpRequest({ host: reached.address, port: target.port, method: incoming.method, path: `${url.pathname}${url.search}`, headers, setHost: false }, answer => {
+      const forward = httpRequest({ createConnection: () => upstream, method: incoming.method, path: `${url.pathname}${url.search}`, headers, setHost: false }, answer => {
         outgoing.writeHead(answer.statusCode ?? 502, answer.headers);
         answer.pipe(outgoing);
       });
@@ -140,15 +175,18 @@ export async function startScoutProxy(options: { demoUrl?: string | null; lookup
         client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
         return;
       }
-      const upstream = connect({ host: reached.address, port: target!.port }, () => {
-        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (head.length > 0) upstream.write(head);
-        upstream.pipe(client);
-        client.pipe(upstream);
-      });
+      const upstream = await connectFirst(reached.addresses, target!.port);
+      if (upstream === null) {
+        if (!client.destroyed) client.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
       sockets.add(upstream);
       upstream.on("close", () => { sockets.delete(upstream); client.destroy(); });
-      upstream.on("error", () => { if (!client.destroyed) client.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"); });
+      upstream.on("error", () => client.destroy());
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
     })();
   });
   server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });

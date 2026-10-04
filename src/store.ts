@@ -26072,6 +26072,11 @@ export class Store {
     this.recordPolicy(by, repo, "builds at once", String(before), String(after), now);
   }
 
+  /** Review 827: a project's demo URL changed (`off` when it has none). */
+  recordProjectDemo(by: string, repo: string, before: string | null, after: string | null, now: Date): void {
+    this.recordPolicy(by, repo, "demo URL", before ?? "off", after ?? "off", now);
+  }
+
   /** Forward only, and only under the live generation. A stale poller moves nothing. */
   /** v98: an update Telegram pushed, kept until the bridge applies it; false when it's already kept or applied. */
   queueTelegramUpdate(botId: string, updateId: number, payload: string, now: Date): boolean {

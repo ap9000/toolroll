@@ -4,7 +4,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { createServer, request, type Server } from "node:http";
-import { isPublicAddress, startScoutProxy, type Lookup } from "./scout-net.js";
+import { connectFirst, isPublicAddress, startScoutProxy, type Lookup } from "./scout-net.js";
 
 describe("which addresses are public", () => {
   test("loopback, private, link-local, CGNAT, multicast, reserved and IPv4-in-IPv6 forms are not; ordinary internet addresses are", () => {
@@ -86,6 +86,32 @@ describe("the scout browser's proxy", () => {
     } finally {
       await proxy.close();
     }
+  });
+
+  test("each checked address is tried in turn: one that refuses falls back to the next (review 827)", async () => {
+    // The demo's name resolves first to an IPv6 address nothing listens on here, then to its IPv4 one.
+    const both: Lookup = async host => (host === "demo.dual" ? ["::1", "127.0.0.1"] : lookup(host));
+    const proxy = await startScoutProxy({ lookup: both, demoUrl: `http://demo.dual:${demoPort}` });
+    try {
+      expect(await get(proxy.url, `http://demo.dual:${demoPort}/`)).toEqual({ status: 200, body: "the demo" });
+    } finally {
+      await proxy.close();
+    }
+    const tunnelled = await startScoutProxy({ lookup: both, demoUrl: `https://demo.dual:${demoPort}` });
+    try {
+      expect(await tunnel(tunnelled.url, `demo.dual:${demoPort}`)).toBe(200);
+    } finally {
+      await tunnelled.close();
+    }
+    const first = await connectFirst(["::1", "127.0.0.1"], demoPort);
+    expect(first?.remoteAddress).toBe("127.0.0.1");
+    first?.destroy();
+    // None answering is a refusal, not a hang.
+    const dead = createServer();
+    await new Promise<void>(done => dead.listen(0, "127.0.0.1", () => done()));
+    const deadPort = (dead.address() as { port: number }).port;
+    await new Promise<void>(done => dead.close(() => done()));
+    expect(await connectFirst(["127.0.0.1"], deadPort)).toBeNull();
   });
 
   test("an https demo is reached through a tunnel to the address the proxy checked", async () => {
