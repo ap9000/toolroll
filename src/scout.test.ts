@@ -20,6 +20,7 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS } from "./scout-report.js";
+import { SCOUT_BROWSER } from "./scout.js";
 import { readVerifiedReport } from "./evidence.js";
 import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -496,13 +497,13 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: JSON.stringify(result) };
   };
 
-  test("a Claude scout under plan mode returns its report as structured output and the run succeeds", async () => {
+  test("a Claude scout returns its report as structured output and the run succeeds", async () => {
     const { runnerToken } = await setup();
     const reported = await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }));
     expect(reported).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
-    // Plan mode is unchanged; the report schema rides beside it.
-    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    // Read-only by permission (dontAsk, no edit tools allowed); the report schema rides beside it.
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     const schema = JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}");
     expect(schema).toMatchObject({ required: ["kind"], properties: { kind: { enum: ["report", "question"] } } });
@@ -527,13 +528,23 @@ describe("scout tasks, against real git", () => {
     bytes.writeUInt32BE(height, 20);
     return bytes;
   };
-  const FOLDER = /folder outside the repository: `([^`]+)`/;
   let folderSeen = "";
+  /** Where the scout's browser saves its screenshots: its `--output-dir`, from the launch's own MCP config. */
+  const browserFolder = (args: readonly string[]): string => {
+    for (const [at, arg] of args.entries()) {
+      if (arg !== "--mcp-config" || !String(args[at + 1]).startsWith("{")) continue;
+      const browser = JSON.parse(String(args[at + 1])).mcpServers?.[SCOUT_BROWSER];
+      if (browser !== undefined) return String(browser.args[browser.args.indexOf("--output-dir") + 1]);
+    }
+    return "";
+  };
   /** A scout that saves screenshots in its output folder, some of which the runner must refuse. */
   const imagingAgent = (images: Record<string, Buffer | { link: string }>, report: Record<string, unknown>, outside?: Buffer): Runner => async (_file, args, options) => {
     const prompt = String(args[args.indexOf("-p") + 1] ?? "");
     prompts.push(prompt);
-    folderSeen = FOLDER.exec(prompt)?.[1] ?? "";
+    argvSeen = [...args];
+    folderSeen = browserFolder(args);
+    expect(prompt).toContain(folderSeen);
     expect(folderSeen.startsWith(realpathSync(options?.cwd ?? ""))).toBe(false);
     for (const [name, content] of Object.entries(images)) {
       if (Buffer.isBuffer(content)) await writeFile(join(folderSeen, name), content);
@@ -570,6 +581,13 @@ describe("scout tasks, against real git", () => {
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     expect(prompts.at(-1)).toContain("never download anything else, and never run downloaded code");
     expect(prompts.at(-1)).toContain("Cite the URL");
+    // The real scout can take them: research and screenshot tools allowed, nothing that edits or runs commands.
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
+    const allowed = String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",");
+    expect(allowed).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", `mcp__${SCOUT_BROWSER}__browser_navigate`, `mcp__${SCOUT_BROWSER}__browser_take_screenshot`]));
+    expect(allowed.some(tool => /^(Bash|Write|Edit|NotebookEdit)\b/.test(tool))).toBe(false);
+    expect(argvSeen).toContain("--strict-mcp-config");
+    expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     // The folder was the run's own, outside the checkout, and is gone afterwards.
     expect(folderSeen).not.toBe("");
     expect(existsSync(folderSeen)).toBe(false);
@@ -649,7 +667,7 @@ describe("scout tasks, against real git", () => {
     const { runnerToken, approverToken } = await setup();
     expect(await tick(runnerToken, planModeAgent({ kind: "question", decision: ASKED }))).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "parked" }));
-    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(prompts.at(-1)).toContain('kind "question"');
     const store = openStore(db);
     const decision = store.listDecisions("unanswered")[0];

@@ -41,12 +41,32 @@ import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
+import { catalogTool } from "./project-tools.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_SCOUT_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_SCOUT_TURNS = CLAUDE_LIMITS.maxTurns;
 const DEFAULT_PULSE_MS = 60_000;
+
+/** The scout's own headless browser: the pinned Playwright tool, saving its
+ * screenshots straight into the run's image folder. */
+export const SCOUT_BROWSER = "toolroll-browser";
+const SCOUT_BROWSER_TOOLS = ["browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_wait_for", "browser_resize", "browser_take_screenshot", "browser_close"];
+
+/**
+ * What a Claude scout may use without asking (`dontAsk` denies the rest):
+ * reading the checkout (always allowed), web search and fetch for research,
+ * and its browser for screenshots. Nothing that edits a file or runs a
+ * command, so the read-only posture holds by permission as well as by the
+ * clean-tree proof.
+ */
+export const SCOUT_ALLOWED_TOOLS: readonly string[] = ["WebSearch", "WebFetch", ...SCOUT_BROWSER_TOOLS.map(tool => `mcp__${SCOUT_BROWSER}__${tool}`)];
+
+function scoutBrowser(imageFolder: string): Record<string, unknown> {
+  const playwright = catalogTool("playwright")!;
+  return { [SCOUT_BROWSER]: { type: "stdio", command: playwright.command, args: [...playwright.args, "--isolated", "--output-dir", imageFolder], env: {} } };
+}
 
 export type ScoutRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */
@@ -149,12 +169,13 @@ function scoutBrief(
     "finish; any other change discards your session and its report.",
     "",
     "You may search the web and fetch pages for this research. Cite the URL",
-    "of every source you use. You may save screenshots (headless Playwright,",
-    "PNG or JPEG) of public pages you actually visited, and of this",
-    "project's own UI (its demo or dev server, if it has one), into this",
-    `folder outside the repository: \`${outputDir}\`. Use plain file names`,
-    `such as home.png; at most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB. Never screenshot a page you`,
-    "did not visit, never download anything else, and never run downloaded code.",
+    "of every source you use. You may take screenshots (PNG or JPEG) of",
+    "public pages you actually visited, and of this project's own UI (its",
+    "demo or dev server, if one is already running). Open the page with the",
+    `\`${SCOUT_BROWSER}\` browser, then take its screenshot with a plain file`,
+    "name such as home.png; it is saved in this folder outside the",
+    `repository: \`${outputDir}\`. At most ${REPORT_LIMITS.images}, each under ${SCREENSHOT_BYTE_CAP / (1024 * 1024)} MB.`,
+    "Never screenshot a page you did not visit, never download anything else, and never run downloaded code.",
     answeredBlock,
     ...(structured
       ? [
@@ -165,8 +186,8 @@ function scoutBrief(
           "a phone; you will be resumed with the answer.",
           "",
           'When you have your findings, end with kind "report" and the report',
-          "below as your final structured output — plan mode will not let you",
-          "write a file, and a plan file never reaches the operator. Only if",
+          "below as your final structured output — you can't write files here,",
+          "and a plan file never reaches the operator. Only if",
           "structured output is unavailable, write the decision JSON to",
           `\`${mailbox}\` or the report JSON to \`${reportFile}\` instead:`,
         ]
@@ -311,9 +332,12 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         phase: "plan",
         brief: projectSkillContext + scoutBrief(request.taskTitle, request.goal, request.outOfScope, mailbox, reportFile, request.answers ?? [], structured, imageFolder),
         maxTurns,
-        // Read-only by policy AND by check: plan mode is the permission
-        // posture; the clean-tree proof below is the law.
-        permissionMode: request.permissionMode ?? "plan",
+        // Read-only by policy AND by check: `dontAsk` with only research and
+        // screenshot tools allowed is the permission posture (plan mode
+        // blocked the screenshots too); the clean-tree proof below is the law.
+        permissionMode: request.permissionMode ?? "dontAsk",
+        allowedTools: SCOUT_ALLOWED_TOOLS,
+        extraMcpServers: scoutBrowser(imageFolder),
         skipPermissions: false,
         resumeSession: null,
         ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
