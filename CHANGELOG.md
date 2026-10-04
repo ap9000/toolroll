@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.27 — 2026-10-04
+
+- **Integrations show their real logos.** Every integration has its own mark
+  in one style and size, ink when connected and muted otherwise, across Tools,
+  Integrations and the Settings home. The marks come from Simple Icons and
+  svgl and ship inside Toolroll. Services with no open logo keep a letter
+  tile.
+- **Research messages explain each example.** After a research step, the chat
+  message lists every example: the pattern, why it fits, how it would plug
+  in, and its link. Screenshots are numbered to match.
+
 ## 0.9.26 — 2026-10-04
 
 - **Connecting a tool goes to the project you see.** On Settings → Tools,
