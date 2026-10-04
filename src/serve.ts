@@ -6,7 +6,7 @@ import { ADD_TESTS_ACTION, followUpChecksOf, requestFollowUpChecks, fileAddTests
 import { CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, suggestQuickCommand, type CheckLevel } from './check-levels.js';
 import { repositoryContextHtml } from './repository-context-ui.js';
 import { browserAssetsAvailable, browserWorkspaceDocument, serveBrowserAsset } from './browser-shell.js';
-import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
+import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserSettingsGroup, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
 import { configureLeadFollow, leadFollowStatus, runLeadFollowPass } from './lead-follow.js';
 import { cancelCommitment, conditionWords, openCommitments } from './lead-commitments.js';
 import { startMaintenance } from './maintenance.js';
@@ -4442,7 +4442,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         })(), (() => {
           const chosen = store.notificationPreference(who.name);
           return { mode: chosen.mode, digestAt: chosen.digestAt, screenshots: chosen.screenshots, projects: notificationProjects(store, who.name) };
-        })()),
+        })(), telegramTrouble(store, loadBotToken(process.env, options.telegramTokenFile))),
       );
     }
 
@@ -15829,7 +15829,7 @@ button.pick-file { min-height: 1.75rem; padding: 0 .55rem; font-size: .75rem; }
 `;
 
 /** Appearance: a three-way segmented switch, one tap per choice. */
-const THEME_CONTROLS_CSS = `.task-repo select{width:100%;min-height:2.75rem;font-size:1rem}.task-repo-add{margin:.35rem .1rem .5rem}.task-repo-add a{display:inline-flex;align-items:center;min-height:2.25rem}details.result-request-open.result-request-form>summary{border:0;background:transparent;padding:.5rem 0;min-height:2.75rem;font-weight:600;display:list-item;list-style:revert}details.result-request-open.result-request-form>summary::-webkit-details-marker{display:revert}form.js-autosave button[type=submit]{display:none}.provider-row{border-bottom:1px solid var(--so-line);padding:.35rem 0}.provider-row:first-of-type{border-top:1px solid var(--so-line)}.provider-head{display:flex;align-items:center;gap:.75rem;margin:.4rem 0 0}.provider-status{display:inline-flex;align-items:center;gap:.4rem;color:var(--so-muted);font-size:.875rem}.provider-status i{width:.5rem;height:.5rem;border-radius:50%;background:var(--so-muted)}.provider-status--ok i{background:var(--so-success)}.provider-status--warn i{background:var(--so-attention)}.provider-status--off i{background:transparent;border:1.5px solid var(--so-muted)}details.provider-manage>summary{cursor:pointer;color:var(--so-accent-text);font-size:.875rem;min-height:2.5rem;display:list-item;padding-block:.5rem}.card.props .row{display:grid;gap:.1rem;margin:0 0 .75rem}.card.props .row>.meta{display:block;font-size:.75rem}.card.props .row>.meta::first-letter{text-transform:uppercase}.card.props .row>.mono{font-family:var(--font-sans);font-size:.875rem}.card.props .row>.mono .seal{font-family:var(--font-mono);font-size:.8125rem}details.evidence-files{margin:1rem 0}details.evidence-files>summary{cursor:pointer;min-height:2.75rem;display:list-item;padding-block:.7rem;font-weight:600}details.evidence-files ul{list-style:none;margin:0;padding:0}details.evidence-files li{display:flex;justify-content:space-between;gap:1rem;padding:.5rem 0;border-bottom:1px solid var(--so-line)}.result-action .result-feedback-link{display:inline-flex;align-items:center;min-height:2.5rem;padding:.5rem 1rem;border:1px solid var(--so-input-line);border-radius:.5rem;background:var(--so-paper);color:var(--so-ink);font-weight:600;text-decoration:none}@media(hover:hover) and (pointer:fine){.result-action .result-feedback-link:hover{background:var(--so-raised)}}.so-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}.verdict{margin:.5rem 0 .75rem}.verdict-chips{display:flex;flex-wrap:wrap;gap:.4rem;list-style:none;padding:0;margin:0}.verdict-chip{display:inline-flex;align-items:center;gap:.3rem;min-height:1.75rem;padding:.2rem .65rem;border-radius:999px;font-size:.8125rem;font-weight:600;background:var(--so-neutral-soft);color:var(--so-neutral-ink)}.verdict-chip svg{width:.9rem;height:.9rem}.verdict-chip--success{background:var(--so-success-soft);color:var(--so-success)}.verdict-chip--danger{background:var(--so-danger-soft);color:var(--so-danger)}.verdict-chip--warning{background:var(--so-warning-soft);color:var(--so-warning)}.verdict-chip--info{background:var(--so-info-soft);color:var(--so-info)}.verdict-by{margin:.4rem 0 0}details.result-request-open{margin:.5rem 0}details.result-request-open>summary{display:inline-flex;align-items:center;min-height:2.5rem;padding:.5rem 1rem;border:1px solid var(--so-input-line);border-radius:.5rem;background:var(--so-paper);color:var(--so-ink);font-weight:600;cursor:pointer;list-style:none}details.result-request-open>summary::-webkit-details-marker{display:none}details.result-request-open[open]>summary{margin-bottom:.75rem}.settings-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr));gap:.5rem;margin:0 0 2rem}.settings-tiles a{display:flex;align-items:center;gap:.6rem;min-height:3rem;padding:.65rem .8rem;border:1px solid var(--so-line);border-radius:.625rem;background:var(--so-paper);color:var(--so-ink);text-decoration:none;font-weight:550;font-size:.875rem}@media(hover:hover) and (pointer:fine){.settings-tiles a:hover{border-color:var(--so-input-line);background:var(--so-raised)}}.settings-tiles svg{width:1.1rem;height:1.1rem;flex-shrink:0;color:var(--so-accent-text)}details.settings-more{margin:.25rem 0 1.25rem}details.settings-more>summary{cursor:pointer;min-height:2.75rem;display:list-item;padding-block:.7rem;font-weight:550}details.settings-more>summary .meta{font-weight:400;margin-left:.35rem}.settings-changed{margin-top:-.25rem}.appearance{margin:0 0 28px}.appearance h2{margin:0 0 10px}.theme-switch{display:inline-flex;flex-wrap:nowrap;max-width:100%;gap:4px;padding:4px;margin:0;border:1px solid var(--so-line);border-radius:10px;background:var(--so-raised)}.theme-switch .theme-choice,.so-native-region .theme-switch .theme-choice{flex:1 1 0;width:auto;white-space:nowrap;min-height:40px;padding:8px 16px;border:0;border-radius:7px;background:transparent;color:var(--so-muted);font:inherit;font-weight:550;box-shadow:none;cursor:pointer}@media(hover:hover) and (pointer:fine){.theme-switch .theme-choice:hover{color:var(--so-ink)}}.theme-switch .theme-choice[aria-pressed="true"]{background:var(--so-paper);color:var(--so-ink);box-shadow:0 1px 2px rgb(0 0 0 / .1)}.appearance .meta{margin:8px 0 0}@media(max-width:600px){.theme-switch .theme-choice{min-height:44px}}.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:18rem;overflow:auto}`;
+const THEME_CONTROLS_CSS = `.task-repo select{width:100%;min-height:2.75rem;font-size:1rem}.task-repo-add{margin:.35rem .1rem .5rem}.task-repo-add a{display:inline-flex;align-items:center;min-height:2.25rem}details.result-request-open.result-request-form>summary{border:0;background:transparent;padding:.5rem 0;min-height:2.75rem;font-weight:600;display:list-item;list-style:revert}details.result-request-open.result-request-form>summary::-webkit-details-marker{display:revert}form.js-autosave button[type=submit]{display:none}.provider-row{border-bottom:1px solid var(--so-line);padding:.35rem 0}.provider-row:first-of-type{border-top:1px solid var(--so-line)}.provider-head{display:flex;align-items:center;gap:.75rem;margin:.4rem 0 0}.provider-status{display:inline-flex;align-items:center;gap:.4rem;color:var(--so-muted);font-size:.875rem}.provider-status i{width:.5rem;height:.5rem;border-radius:50%;background:var(--so-muted)}.provider-status--ok i{background:var(--so-success)}.provider-status--warn i{background:var(--so-attention)}.provider-status--off i{background:transparent;border:1.5px solid var(--so-muted)}details.provider-manage>summary{cursor:pointer;color:var(--so-accent-text);font-size:.875rem;min-height:2.5rem;display:list-item;padding-block:.5rem}.card.props .row{display:grid;gap:.1rem;margin:0 0 .75rem}.card.props .row>.meta{display:block;font-size:.75rem}.card.props .row>.meta::first-letter{text-transform:uppercase}.card.props .row>.mono{font-family:var(--font-sans);font-size:.875rem}.card.props .row>.mono .seal{font-family:var(--font-mono);font-size:.8125rem}details.evidence-files{margin:1rem 0}details.evidence-files>summary{cursor:pointer;min-height:2.75rem;display:list-item;padding-block:.7rem;font-weight:600}details.evidence-files ul{list-style:none;margin:0;padding:0}details.evidence-files li{display:flex;justify-content:space-between;gap:1rem;padding:.5rem 0;border-bottom:1px solid var(--so-line)}.result-action .result-feedback-link{display:inline-flex;align-items:center;min-height:2.5rem;padding:.5rem 1rem;border:1px solid var(--so-input-line);border-radius:.5rem;background:var(--so-paper);color:var(--so-ink);font-weight:600;text-decoration:none}@media(hover:hover) and (pointer:fine){.result-action .result-feedback-link:hover{background:var(--so-raised)}}.so-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}.verdict{margin:.5rem 0 .75rem}.verdict-chips{display:flex;flex-wrap:wrap;gap:.4rem;list-style:none;padding:0;margin:0}.verdict-chip{display:inline-flex;align-items:center;gap:.3rem;min-height:1.75rem;padding:.2rem .65rem;border-radius:999px;font-size:.8125rem;font-weight:600;background:var(--so-neutral-soft);color:var(--so-neutral-ink)}.verdict-chip svg{width:.9rem;height:.9rem}.verdict-chip--success{background:var(--so-success-soft);color:var(--so-success)}.verdict-chip--danger{background:var(--so-danger-soft);color:var(--so-danger)}.verdict-chip--warning{background:var(--so-warning-soft);color:var(--so-warning)}.verdict-chip--info{background:var(--so-info-soft);color:var(--so-info)}.verdict-by{margin:.4rem 0 0}details.result-request-open{margin:.5rem 0}details.result-request-open>summary{display:inline-flex;align-items:center;min-height:2.5rem;padding:.5rem 1rem;border:1px solid var(--so-input-line);border-radius:.5rem;background:var(--so-paper);color:var(--so-ink);font-weight:600;cursor:pointer;list-style:none}details.result-request-open>summary::-webkit-details-marker{display:none}details.result-request-open[open]>summary{margin-bottom:.75rem}.settings-tiles{display:grid;gap:1.25rem;margin:0 0 2rem}.settings-tiles h2{margin:0 0 .5rem;font-size:.875rem;font-weight:600;color:var(--so-muted)}.settings-tiles section>div{display:grid;grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr));gap:.5rem}.settings-tiles a>span{display:grid;gap:.1rem;min-width:0}.settings-tiles .provider-status{font-weight:400;font-size:.8125rem}.settings-tiles a{display:flex;align-items:center;gap:.6rem;min-height:3rem;padding:.65rem .8rem;border:1px solid var(--so-line);border-radius:.625rem;background:var(--so-paper);color:var(--so-ink);text-decoration:none;font-weight:550;font-size:.875rem}@media(hover:hover) and (pointer:fine){.settings-tiles a:hover{border-color:var(--so-input-line);background:var(--so-raised)}}.settings-tiles svg{width:1.1rem;height:1.1rem;flex-shrink:0;color:var(--so-accent-text)}details.settings-more{margin:.25rem 0 1.25rem}details.settings-more>summary{cursor:pointer;min-height:2.75rem;display:list-item;padding-block:.7rem;font-weight:550}details.settings-more>summary .meta{font-weight:400;margin-left:.35rem}.settings-changed{margin-top:-.25rem}.appearance{margin:0 0 28px}.appearance h2{margin:0 0 10px}.theme-switch{display:inline-flex;flex-wrap:nowrap;max-width:100%;gap:4px;padding:4px;margin:0;border:1px solid var(--so-line);border-radius:10px;background:var(--so-raised)}.theme-switch .theme-choice,.so-native-region .theme-switch .theme-choice{flex:1 1 0;width:auto;white-space:nowrap;min-height:40px;padding:8px 16px;border:0;border-radius:7px;background:transparent;color:var(--so-muted);font:inherit;font-weight:550;box-shadow:none;cursor:pointer}@media(hover:hover) and (pointer:fine){.theme-switch .theme-choice:hover{color:var(--so-ink)}}.theme-switch .theme-choice[aria-pressed="true"]{background:var(--so-paper);color:var(--so-ink);box-shadow:0 1px 2px rgb(0 0 0 / .1)}.appearance .meta{margin:8px 0 0}@media(max-width:600px){.theme-switch .theme-choice{min-height:44px}}.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:18rem;overflow:auto}`;
 /** The page CSS this module writes itself (not the imported modules'), for the stylesheet contract tests. */
 export const PAGE_CSS = STYLE + THEME_CONTROLS_CSS;
 /** The Inbox tabs (console v2): a segmented track of real links; the dot marks a tab with something new, on phones only. */
@@ -25802,6 +25802,11 @@ function capsPage(chrome: Chrome, caps: Capability[] | null, gaps: Gap[], repo: 
   ].join("\n"), { chrome });
 }
 
+/** Whether the bot's saved delivery state reports a problem (no new check runs). */
+function telegramTrouble(store: Store, bot: TokenSource | null): boolean {
+  return bot !== null && (store.telegramPush(bot.botId)?.problem ?? null) !== null;
+}
+
 /** v98: how the bot's messages reach Toolroll, in words: pushed to the public address, or asked for. */
 function telegramDeliveryWords(store: Store, bot: TokenSource | null): string | null {
   if (bot === null) return null;
@@ -25836,6 +25841,7 @@ function settingsPage(
   updates: BrowserUpdates | null = null,
   firstResult: string | null = null,
   chatNotices: { mode: "quiet" | "all"; digestAt: string | null; screenshots?: ResultScreenshots; projects?: { repo: string; name: string; muted: boolean }[] } | null = null,
+  telegramFailing = false,
 ): Screen {
   const permissionCard =
     permissionDefault === null
@@ -26056,7 +26062,7 @@ function settingsPage(
   const view: BrowserSettingsView = {
     kind: "settings",
     said: problem,
-    tiles: SETTINGS_TILES.map(([href, label]) => ({ href, label })),
+    groups: settingsGroups(messaging, telegramFailing),
     theme,
     accent: requestContext.getStore()?.accent ?? DEFAULT_ACCENT,
     accentPresets: ACCENT_PRESETS,
@@ -26089,7 +26095,7 @@ function settingsPage(
   };
   return screen("Settings", [
     "<h1>Settings</h1>",
-    settingsTiles(),
+    settingsTiles(view.groups),
     appearanceCard(csrf),
     permissionCard,
     qualityCard,
@@ -26187,37 +26193,71 @@ async function latestReleaseFor(latest: (() => Promise<{ version: string }>) | u
   return value;
 }
 
-/** Settings destinations as a scannable grid: an icon and a name each. */
-function settingsTiles(): string {
-  const tiles = SETTINGS_TILE_ICONS;
-  return `<nav class="settings-tiles" aria-label="Settings sections">${tiles.map(([href, label, icon]) => `<a href="${href}">${strokeIcon(icon)}<span>${label}</span></a>`).join("")}</nav>`;
+/** Settings destinations under short headings: an icon and a name each, and a chat app's state. */
+function settingsTiles(groups: BrowserSettingsGroup[]): string {
+  return `<nav class="settings-tiles" aria-label="Settings sections">${groups.map(group =>
+    `<section aria-label="${escape(group.title)}"><h2>${escape(group.title)}</h2><div>${group.tiles.map(tile =>
+      `<a href="${escape(tile.href)}">${strokeIcon(SETTINGS_TILE_ICONS.get(tile.href) ?? "")}<span>${escape(tile.label)}${tile.status === undefined ? "" :
+        `<span class="provider-status provider-status--${tile.status.tone}"><i aria-hidden="true"></i>${escape(tile.status.words)}</span>`}</span></a>`).join("")}</div></section>`).join("")}</nav>`;
 }
-const SETTINGS_TILE_ICONS: [string, string, string][] = [
-    ["/settings/flows", "Flows", `<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/>`],
-    ["/settings/integrations", "Integrations", `<path d="M9 2v6M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/>`],
+
+/** Each destination once, in order: a group's heading, then its [href, label, icon] tiles. */
+const SETTINGS_GROUPS: [string, [string, string, string][]][] = [
+  ["Agents", [
     ["/settings/lead", "Lead", `<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>`],
     ["/settings/models", "Models", `<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>`],
     ["/settings/skills", "Skills", `<path d="m12 3 1.9 5.8L20 10l-5 3.6L16.8 20 12 16.4 7.2 20 9 13.6 4 10l6.1-1.2z"/>`],
     ["/settings/tools", "Tools", `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>`],
     ["/settings/knowledge", "Knowledge", `<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>`],
+    ["/settings/learning", "Learning", `<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>`],
+  ]],
+  ["Automation", [
+    ["/settings/flows", "Flows", `<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/>`],
+    ["/settings/integrations", "Integrations", `<path d="M9 2v6M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/>`],
+  ]],
+  ["Chat apps", [
     ["/settings/telegram", "Telegram", `<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>`],
     ["/settings/slack", "Slack", `<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>`],
     ["/settings/discord", "Discord", `<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`],
     ["/settings/teams", "Teams", `<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>`],
-    ["/settings/learning", "Learning", `<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>`],
+  ]],
+  ["Access and rules", [
     ["/settings/sign-in", "Sign-in", `<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`],
     ["/settings/sessions", "Sessions & tokens", `<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>`],
     ["/settings/project", "Project", `<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>`],
     ["/settings/policy", "Policy", `<path d="M9 12l2 2 4-4"/><rect x="4" y="3" width="16" height="18" rx="2"/>`],
     ["/settings/approval", "Approval rules", `<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>`],
+  ]],
+  ["System", [
     ["/settings/monitoring", "Monitoring", `<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>`],
     ["/settings/retention", "Retention", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`],
     ["/settings/storage", "Storage", `<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/>`],
     ["/settings/updates", "Updates", `<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>`],
     ["/settings/backups", "Backups", `<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>`],
     ["/settings/data", "Data", `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>`],
+  ]],
 ];
-const SETTINGS_TILES = SETTINGS_TILE_ICONS.map(([href, label]) => [href, label] as const);
+const SETTINGS_TILE_ICONS = new Map(SETTINGS_GROUPS.flatMap(([, tiles]) => tiles.map(([href, , icon]) => [href, icon] as const)));
+const CHAT_APP_TILES: Record<string, string> = { "/settings/telegram": "telegram", "/settings/slack": "slack", "/settings/discord": "discord", "/settings/teams": "teams" };
+
+/**
+ * The settings groups, with each chat app's state from what the server already holds: not set up,
+ * connected, or getting alerts (only when that service was chosen, or is the only one).
+ * A Telegram bot whose saved delivery state reports a problem says so instead. With no config folder
+ * the state is unknown, so the tiles carry none.
+ */
+export function settingsGroups(messaging: { channel: string | null; implicit: boolean; configured: string[] } | null, telegramFailing = false): BrowserSettingsGroup[] {
+  return SETTINGS_GROUPS.map(([title, tiles]) => ({
+    title,
+    tiles: tiles.map(([href, label]) => {
+      const app = CHAT_APP_TILES[href];
+      if (app === undefined || messaging === null) return { href, label };
+      if (!messaging.configured.includes(app)) return { href, label, status: { tone: "off" as const, words: "Not set up" } };
+      if (app === "telegram" && telegramFailing) return { href, label, status: { tone: "warn" as const, words: "Has a problem" } };
+      return { href, label, status: { tone: "ok" as const, words: messaging.channel === app && !messaging.implicit ? "Gets alerts" : "Connected" } };
+    }),
+  }));
+}
 
 /** Light, dark or the device's choice, one tap each. Per browser (a cookie). */
 function appearanceCard(csrf: string): string {

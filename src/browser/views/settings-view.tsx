@@ -1,7 +1,7 @@
 /** Settings, rebuilt with shadcn/ui. Every control posts to the same server
  * route as before (CSRF included); choices save the moment they change and
  * the server's confirmation arrives as a toast. */
-import { Bot, BookOpen, ChevronRight, Cpu, Hash, LineChart, MessageSquare, Monitor, Moon, Plug, Send, Sparkles, Sun, Users, Workflow, Wrench } from "lucide-react";
+import { Activity, Bot, BookOpen, ChevronRight, Clock, Cpu, Database, Download, FileCheck, Folder, HardDrive, Hash, KeyRound, LineChart, Lock, MessageSquare, Monitor, Moon, Plug, RefreshCw, Send, ShieldCheck, Sparkles, Sun, Users, Workflow, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { BrowserSettingsView } from "../../browser-workspace.js";
@@ -15,7 +15,11 @@ import {
 const TILE_ICONS: Record<string, ReactNode> = {
   "/settings/lead": <Bot />, "/settings/flows": <Workflow />, "/settings/integrations": <Plug />, "/settings/models": <Cpu />, "/settings/skills": <Sparkles />, "/settings/tools": <Wrench />, "/settings/knowledge": <BookOpen />, "/settings/telegram": <Send />,
   "/settings/slack": <Hash />, "/settings/discord": <MessageSquare />, "/settings/teams": <Users />, "/settings/learning": <LineChart />,
+  "/settings/sign-in": <Lock />, "/settings/sessions": <KeyRound />, "/settings/project": <Folder />, "/settings/policy": <FileCheck />, "/settings/approval": <ShieldCheck />,
+  "/settings/monitoring": <Activity />, "/settings/retention": <Clock />, "/settings/storage": <HardDrive />, "/settings/updates": <RefreshCw />, "/settings/backups": <Database />, "/settings/data": <Download />,
 };
+
+const slug = (words: string) => words.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
 function Csrf({ csrf }: { csrf: string }) { return <input type="hidden" name="csrf" value={csrf} />; }
 
@@ -455,9 +459,16 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
   useEffect(() => { if (said) toast(said.charAt(0).toUpperCase() + said.slice(1)); }, [said]);
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 phone:gap-3">
     <h1 className="sr-only">Settings</h1>
-    <nav aria-label="Settings sections" className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
-      {view.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 text-sm font-semibold phone:min-h-11 transition-colors hover:bg-accent [&_svg]:size-[18px] [&_svg]:text-primary">
-        {TILE_ICONS[tile.href]}{tile.label}</a>)}
+    <nav aria-label="Settings sections" className="grid gap-4 phone:gap-3">
+      {view.groups.map(group => <section key={group.title} aria-labelledby={`settings-${slug(group.title)}`} className="grid gap-2 phone:gap-1.5">
+        <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>
+        <div className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
+          {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&_svg]:size-[18px] [&_svg]:shrink-0 [&_svg]:text-primary">
+            {TILE_ICONS[tile.href]}
+            <span className="grid min-w-0 gap-0.5">{tile.label}
+              {tile.status && <span className="flex items-center gap-1.5 text-[13px] font-normal text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
+        </div>
+      </section>)}
     </nav>
     <Section title="Appearance"><Themes view={view} csrf={csrf} /></Section>
     <Section id="accent" title="Accent colour" description="The one colour that marks what needs you."><AccentPicker view={view} csrf={csrf} /></Section>
