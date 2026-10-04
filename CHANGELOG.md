@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.26 — 2026-10-04
+
+- **Connecting a tool goes to the project you see.** On Settings → Tools,
+  changing the project switches the page at once. Every button names its
+  project ("Connect Mobbin to standing-orders"), and a post from a page that
+  showed another project is refused. You can also add a connected service to
+  another project in one step.
+- **Figma connects through its desktop app.** Figma doesn't let other apps
+  sign in to its online server, so Toolroll uses the desktop app's Dev Mode
+  server instead, with no key. A Connect that fails now says why right at the
+  button.
+- **Flow cards move on while builds run.** Moves, triggers and steps run on
+  their own 15-second beat, and a finished step moves its card at once.
+
 ## 0.9.25 — 2026-10-04
 
 - **Connect by signing in: Mobbin, Figma, PostHog and Better Stack.** Settings
