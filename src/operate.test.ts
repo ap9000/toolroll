@@ -2180,6 +2180,22 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload()).toMatchObject({ also: true, cleared: 1 });
   });
 
+  test("risky sizing labels the route in task show and the approval card", async () => {
+    expect(await run(["config", "set", "build", "--tier", "strong", "--provider", "claude", "--model", "opus", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(await run(["task", "scope", "payouts", "--goal", "Prevent duplicate payouts", "--acceptance", "pay: never double-sends | check", "--json"])).toBe(0);
+    expect(await run(["task", "route", "payouts", "--size", "medium", "--risky", "yes", "--as", "alex", "--token", token])).toBe(0);
+    expect(text()).toContain("route        risky · stronger configured agents");
+    await run(["task", "show", "payouts"]);
+    expect(text()).toContain("route        risky · stronger configured agents");
+    const store = openStore(db);
+    try { store.setPlanState(store.refFor("built-in", "payouts").id, "drafted"); }
+    finally { store.close(); }
+    await run(["task", "approve", "payouts"]);
+    expect(text()).toContain("route        risky · stronger configured agents");
+    await run(["task", "show", "payouts", "--json"]);
+    expect(payload().route).toMatchObject({ risk: "routine", riskTitle: "Risky", size: { risky: true } });
+  });
+
   test("task route shows one projection with reasons; --risk and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
     await run(["config", "set", "build", "--tier", "strong", "--provider", "claude", "--model", "opus", "--as", "alex", "--token", token, "--json"]);
     // Before a scope: a live recommendation.

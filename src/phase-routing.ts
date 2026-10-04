@@ -975,7 +975,7 @@ export function projectRoute(route: PhaseRoute, readiness: ReadinessLookup): Rou
   return {
     digest: routeDigestOf(route),
     risk: route.risk,
-    riskTitle: riskTitle(route.risk),
+    riskTitle: route.risk === "routine" && route.size?.risky ? "Risky" : riskTitle(route.risk),
     posture: drawsStrong(legs) ? "strong" : "economy",
     postureWords: postureWords(route),
     demands: route.demands.filter(reason => !/review/i.test(reason)),

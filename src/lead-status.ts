@@ -159,16 +159,18 @@ export function taskWaitSnapshot(store: Store, taskId: string, now: Date, watche
     const next = holdKind === "operator" ? "Remove hold" : holdKind === "revision" ? "Review plan" : holdKind === "stop" ? "Resume or close attempt" : holdKind === "contest" ? "Choose a result" : "Review task";
     return answer("Needs a person", next, true, 1, "needs-person");
   }
-  if (task["plan"] === "drafted") return answer("Needs a person", "Approve plan", true, 1, "needs-person");
-  if (Number(task["strikes"] ?? 0) >= 3) return answer("Needs a person", "Review repeated failures", true, 1, "needs-person");
   // An admitted attempt is already the work being watched. Its immutable
   // approval snapshot lives on the run, so a damaged or later-edited current
   // scope must not make `wait` abandon that attempt before it settles.
   if (attempt !== undefined) return answer("Running", phase === null ? "Wait for attempt" : `Wait — ${phase}`, false, null, null);
 
-  const scope = store.handle.prepare("SELECT digest, approved_digest, profile_state FROM task_scope WHERE task_id = ?").get(taskId);
+  const scope = store.handle.prepare(`SELECT digest, approved_digest, profile_state,
+    (approved_at IS NOT NULL AND approved_by IS NOT NULL AND approved_digest = digest) AS approved
+    FROM task_scope WHERE task_id = ?`).get(taskId);
+  if (task["plan"] === "drafted" && Number(scope?.["approved"]) !== 1) return answer("Needs a person", "Approve plan", true, 1, "needs-person");
+  if (Number(task["strikes"] ?? 0) >= 3) return answer("Needs a person", "Review repeated failures", true, 1, "needs-person");
   if (scope === undefined) return answer("Needs a person", "Add scope", true, 1, "needs-person");
-  if (scope["approved_digest"] !== scope["digest"] || scope["profile_state"] !== "resolved") return answer("Needs a person", "Approve task", true, 1, "needs-person");
+  if (Number(scope["approved"]) !== 1 || scope["profile_state"] !== "resolved") return answer("Needs a person", "Approve task", true, 1, "needs-person");
   if (state === "running" && attempt === undefined) {
     const liveClaim = store.handle.prepare(`SELECT 1 AS hit FROM claim INDEXED BY claim_by_task
       WHERE task_ref = ? AND released_at IS NULL AND expires_at > ?
@@ -190,11 +192,11 @@ function queueReason(row: Record<string, unknown>): string {
   if (hold === "stop") return "stopped";
   if (hold === "contest") return "needs a result choice";
   if (hold === "backoff") return "retrying later";
-  if (row["plan"] === "drafted") return "needs plan review";
+  if (row["plan"] === "drafted" && Number(row["approved"]) !== 1) return "needs plan review";
   if (Number(row["strikes"] ?? 0) >= 3) return "stalled after failures";
   if (Number(row["blocked"] ?? 0) === 1) return "waiting for another task";
   if (row["scope_digest"] == null) return "needs a scope";
-  if (row["approved_digest"] !== row["scope_digest"] || row["profile_state"] !== "resolved") return "needs approval";
+  if (Number(row["approved"]) !== 1 || row["profile_state"] !== "resolved") return "needs approval";
   return "ready for a worker";
 }
 
@@ -211,7 +213,7 @@ export function repairStaleStatuses(store: Store, now: Date): { exitsRecorded: n
 
 /** `viewer`: the person asking (the lead asks as its person); null when nobody is known, which shows no lead. */
 export function installationStatus(store: Store, now: Date, viewer: string | null = currentActor()?.account ?? null): InstallationStatus {
-  const runningRows = store.handle.prepare(`SELECT run.id, run.role, run.phase, ref.external_id AS task
+  const runningRows = store.handle.prepare(`SELECT run.id, run.role, run.phase, ref.id AS task_ref, ref.external_id AS task
     FROM run INDEXED BY work_unfinished
     JOIN task_ref AS ref ON ref.id = run.task_ref
     JOIN claim ON claim.lease_id = run.lease_id
@@ -225,8 +227,10 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
     return { task: String(row["task"]), run: Number(row["id"]), phase };
   });
 
-  const queuedRows = store.handle.prepare(`SELECT task.id, ref.plan, ref.strikes, scope.digest AS scope_digest,
-      scope.approved_digest, scope.profile_state,
+  const runningRefs = new Set(runningRows.map(row => Number(row["task_ref"])));
+  const queuedRows = store.handle.prepare(`SELECT task.id, ref.id AS task_ref, ref.plan, ref.strikes, scope.digest AS scope_digest,
+      scope.profile_state,
+      (scope.approved_at IS NOT NULL AND scope.approved_by IS NOT NULL AND scope.approved_digest = scope.digest) AS approved,
       EXISTS (SELECT 1 FROM task_edge WHERE task_edge.blocked = task.id
         AND EXISTS (SELECT 1 FROM task AS blocker WHERE blocker.id = task_edge.blocker AND blocker.state <> 'done')) AS blocked,
       (SELECT owner_kind FROM hold INDEXED BY hold_by_task WHERE hold.task_ref = ref.id AND (hold.until IS NULL OR hold.until > ?)
@@ -234,7 +238,8 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
     FROM task INDEXED BY task_by_state
     JOIN task_ref AS ref INDEXED BY sqlite_autoindex_task_ref_1 ON ref.backend = ? AND ref.external_id = task.id
     LEFT JOIN task_scope AS scope ON scope.task_id = task.id
-    WHERE task.state = 'queued'`).all(now.toISOString(), BUILT_IN);
+    WHERE task.state = 'queued'`).all(now.toISOString(), BUILT_IN)
+    .filter(row => !runningRefs.has(Number(row["task_ref"])));
   const reasons = new Map<string, number>();
   const queuedTasks: { task: string; reason: string }[] = [];
   const pauses = openAuthPauses(store);

@@ -95,6 +95,23 @@ describe("tiers by size", () => {
     expect(route.demands[0]).toBe("risk is elevated — planning and building use the strongest configured agent");
   });
 
+  test("route headers name risky sizing without changing the declared risk or sealed route", () => {
+    for (const size of ["small", "medium", "large"] as const) {
+      const route = recommendRoute(input({ size: sized(size, true) }));
+      const sealed = canonicalRouteJson(route);
+      const projection = projectRoute(route, NO_READINESS);
+      expect(projection).toMatchObject({ risk: "routine", riskTitle: "Risky", digest: routeDigestOf(route) });
+      expect(routeWords(projection)[0]).toContain("route        risky · stronger configured agents");
+      expect(canonicalRouteJson(route)).toBe(sealed);
+    }
+    expect(projectRoute(recommendRoute(input({ size: sized("large") })), NO_READINESS).riskTitle).toBe("Routine");
+    expect(projectRoute(recommendRoute(input()), NO_READINESS).riskTitle).toBe("Routine");
+    for (const risk of ["elevated", "high"] as const) {
+      expect(projectRoute(recommendRoute(input({ risk, size: sized("small", true) })), NO_READINESS).riskTitle)
+        .toBe(risk === "high" ? "High risk" : "Elevated risk");
+    }
+  });
+
   test("a demanding fact outranks a small size, and a person's override outranks the tier", () => {
     const strict = recommendRoute(input({ size: sized("small"), qualityMode: "strict" }));
     expect(legOf(strict, "build").tier).toBe("strong");
