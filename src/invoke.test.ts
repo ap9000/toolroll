@@ -1054,3 +1054,22 @@ describe("the architecture rule", () => {
     expect(invokers.sort()).toEqual(["build-review.ts", "builder.ts", "planner.ts", "scout.ts"]);
   });
 });
+
+describe("a held session's project tools", () => {
+  test("a research run gets none of them; a build gets them as launched", async () => {
+    const { heldReadOnly } = await import("./invoke.js");
+    const legacy = { route: { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const } };
+    const store = openStore(":memory:");
+    try {
+      const now = new Date("2026-10-04T12:00:00Z");
+      store.createTask({ id: "look", title: "Look" }, now);
+      const ref = store.refFor("built-in", "look").id;
+      const scout = store.startRun({ taskRef: ref, leaseId: "l-look", runner: "w", branch: "so-scout/look", worktree: "/w/look", role: "scout", ...legacy, now });
+      store.createTask({ id: "make", title: "Make" }, now);
+      const buildRef = store.refFor("built-in", "make").id;
+      const build = store.startRun({ taskRef: buildRef, leaseId: "l-make", runner: "w", branch: "so/make", worktree: "/w/make", ...legacy, now });
+      expect(heldReadOnly(store, scout)).toEqual({});
+      expect(heldReadOnly(store, build)).toBeUndefined();
+    } finally { store.close(); }
+  });
+});

@@ -691,6 +691,12 @@ export async function invokeAgent(
  * hold belongs to the coordinator, never to a promise chain that would
  * stall the watch.
  */
+/** What a held session may use of the project's tools: a research run, which may only read and isn't told here which
+ * actions are read-only, gets none at all; any other run gets them as launched. */
+export function heldReadOnly(store: Store, runId: number): Readonly<Record<string, readonly string[]>> | undefined {
+  return store.getRun(runId)?.role === "scout" ? {} : undefined;
+}
+
 export async function invokeHeldAgent(
   store: Store,
   runId: number,
@@ -757,7 +763,7 @@ export async function invokeHeldAgent(
   const isolatedDb = isolatedAgentDatabase(runId);
   // The project's tools (v80), as for every build: exactly its MCP servers;
   // and the agent fence around Toolroll's own secrets.
-  const heldTools = runTools(store, runId, spec, keyHome, clock, undefined);
+  const heldTools = runTools(store, runId, spec, keyHome, clock, heldReadOnly(store, runId));
   const heldFence = runFence(store, runId, keyHome);
   argv = [...argv, ...heldTools.argv, ...(heldFence.length > 0 ? ["--settings", claudeFenceSettings(heldFence)] : [])];
   const heldLaunch = fenceLaunch("claude", heldFence);
