@@ -19,6 +19,7 @@ import { Buffer } from "node:buffer";
 import { mateToolLabel, type MateProgress } from "./mate-progress.js";
 import { createHash } from "node:crypto";
 import type { ChatConfig, DirectChatProviderId, MateProposalKind, MateSession, MateThread, MateTurnEvidence, Store, SubscriptionChatProviderId } from "./store.js";
+import { mateTimeoutNotice } from "./store.js";
 import { RESULT_IMAGES_PER_TURN_CAP } from "./chat-evidence.js";
 import type { Integration } from "./integrations.js";
 import type { VerifiedApprover } from "./principal.js";
@@ -141,7 +142,7 @@ export type MateTurnOutcome =
   | { ok: true; replayed?: false; turn: number; reply: string; activity: string; proposals: number; steps: number; stoppedAtCap: boolean; settledMicrousd: number }
   | { ok: true; replayed: true; turn: number }
   | { ok: false; refused: MateRefusal; message: string }
-  | { ok: false; turn: number; failed: MateFailure; message: string; unknownSpend: boolean };
+  | { ok: false; turn: number; failed: MateFailure; message: string; unknownSpend: boolean; saved?: boolean };
 
 /** What happened, what it means, and one next step: plain words a person can act on, never internal terms. */
 export const MATE_REFUSAL_COPY: Record<MateRefusal, string> = {
@@ -180,7 +181,7 @@ export const MATE_CHANNEL_COPY: Record<MateChannelProblem, string> = {
 export const MATE_FAILURE_COPY = {
   stopped: "This reply was stopped before it finished, from another window or by a newer message. Nothing it proposed was kept. Send your message again if you still need an answer.",
   ended: "Your sign-in or this conversation ended while the lead was answering. Nothing it proposed was kept. Sign in again or start a new chat, then send your message again.",
-  tooLong: "The reply took too long and was stopped. Nothing it proposed was kept. Send your message again, or ask for less at once.",
+  tooLong: mateTimeoutNotice(false),
   secretRead: "Something the lead read looked like a password or key, so it stopped before sending it anywhere. Nothing was kept. Remove the password or key from that task or note, then ask again.",
   secretReply: "The lead's reply contained something that looked like a password or key, so it was thrown away. Nothing was kept. Ask again, without asking for a password or key.",
   paused: "An earlier reply stopped before its cost was known, so chat is paused. This message wasn't answered. Confirm that earlier reply on the Chat page, then send again.",
@@ -189,7 +190,7 @@ export const MATE_FAILURE_COPY = {
   unreadable: "The chat provider sent back an answer that couldn't be read, so it was thrown away. Nothing was kept. Send your message again.",
   signIn: "The chat provider couldn't answer; its sign-in may have expired. Nothing was kept. Sign in to it again on this computer, then send your message again.",
   refused: "The chat provider turned the request down. Nothing was kept or charged. Try again in a minute; if it keeps happening, check the provider in Settings → Lead.",
-  tooLongUnknownCost: "The reply took too long and was stopped, and its cost isn't known yet, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
+  tooLongUnknownCost: mateTimeoutNotice(false, true),
   lostUnknownCost: "The chat provider stopped responding partway through, and the cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   unreadableUnknownCost: "The chat provider sent back an answer that couldn't be read, and its cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   empty: "The lead sent back an empty answer. Nothing was kept. Send your message again.",
@@ -199,7 +200,7 @@ export const MATE_FAILURE_COPY = {
 /** A failed turn's saved reason as plain words, for a surface that reads the turn back later (a restart, a delivery retry). */
 export function mateFailureText(reason: string | null): string {
   switch (reason) {
-    case "timeout": return MATE_FAILURE_COPY.tooLong;
+    case "timeout": case "crashed": return MATE_FAILURE_COPY.tooLong;
     case "malformed-reply": return MATE_FAILURE_COPY.unreadable;
     case "secret-refused": return MATE_FAILURE_COPY.secretReply;
     case "latched": return MATE_FAILURE_COPY.paused;
@@ -208,6 +209,17 @@ export function mateFailureText(reason: string | null): string {
     case "provider-error": return MATE_FAILURE_COPY.refused;
     default: return "The lead's reply didn't finish. Nothing it proposed was kept. Send your message again.";
   }
+}
+
+/** How long a provider that ignored its abort at the turn's deadline is waited for before the turn ends without it.
+ * Its process group was already killed at the deadline; this only bounds the wait for the transport to say so. */
+export const MATE_ABORT_GRACE_MS = 5_000;
+const LATE = Symbol("late");
+/** The work's own result, or LATE once `ms` passes: the turn's clock, not the work, decides when the person hears back. */
+function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<typeof LATE>(resolve => { timer = setTimeout(() => resolve(LATE), Math.max(0, ms)); });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
 const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
@@ -398,6 +410,20 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
     store.dropMateAsk(turnId);
     return { ok: false, turn: turnId, failed, message, unknownSpend };
   };
+  /** The turn stopped at its deadline: the notice is saved in the thread with whatever its completed tool calls proposed, in
+   * the same write that ends the turn, so a refresh, another device or a restart shows the same outcome. */
+  const timedOut = (unknownSpend: boolean): MateTurnOutcome => {
+    now = clock();
+    const message = mateTimeoutNotice(proposals > 0, unknownSpend);
+    const saved = store.finalizeMateTurn(turnId, started.generation, { state: "failed", settledMicrousd: settled, unknownSpend, tokensIn, tokensOut, failureReason: "timeout", keepProposals: true, message: { text: message, activity: activitySummary(reads, proposals, steps) } }, now);
+    store.dropMateAsk(turnId);
+    if (!saved) return { ok: false, turn: turnId, failed: "superseded", message: MATE_FAILURE_COPY.stopped, unknownSpend: false };
+    return { ok: false, turn: turnId, failed: "timeout", message, unknownSpend, saved: true };
+  };
+  const deadlineLeft = (): number => TURN_WALL_CLOCK_MS - (clock().getTime() - turnStartedAt);
+  /** The channel's standing, bounded by the turn's deadline: a lookup that never answers cannot hold the turn open. */
+  const revalidated = async (): Promise<{ ok: true } | { ok: false; reason: MateChannelProblem } | typeof LATE> =>
+    input.revalidate === undefined ? { ok: true } : settleBy(input.revalidate(), deadlineLeft() + MATE_ABORT_GRACE_MS);
   /** The turn's own row, re-read: still running under our generation, or someone ended it under us. */
   const stillOurs = (): boolean => {
     const row = store.getMateTurn(turnId);
@@ -405,8 +431,9 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
   };
   // The channel lookup can await external state. Re-read all local authority
   // AFTER it resolves, immediately before sending context or using a tool.
-  const guard = (channel: { ok: true } | { ok: false; reason: MateChannelProblem }): MateTurnOutcome | null => {
+  const guard = (channel: { ok: true } | { ok: false; reason: MateChannelProblem } | typeof LATE): MateTurnOutcome | null => {
     if (!stillOurs()) return { ok: false, turn: turnId, failed: "superseded", message: MATE_FAILURE_COPY.stopped, unknownSpend: false };
+    if (channel === LATE) return timedOut(false);
     if (!channel.ok) return fail("revoked", MATE_CHANNEL_COPY[channel.reason] ?? MATE_CHANNEL_COPY["access-changed"], false);
     const standing = reproveApprover(store, who);
     const liveSession = store.getMateSession(session.id);
@@ -433,11 +460,11 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
     return claim;
   };
   while (steps < maxSteps) {
-    const blocked = guard(input.revalidate === undefined ? { ok: true } : await input.revalidate());
+    const blocked = guard(await revalidated());
     if (blocked !== null) return blocked;
     now = clock();
     const remainingMs = TURN_WALL_CLOCK_MS - (now.getTime() - turnStartedAt);
-    if (remainingMs <= 0) return fail("timeout", MATE_FAILURE_COPY.tooLong, false);
+    if (remainingMs <= 0) return timedOut(false);
     const request = direct ? composeDirect(input.key as string) : composeSubscription();
     // Tool results join the outbound body: scanned again before every dispatch.
     const outbound = typeof request === "string" ? request : request.body;
@@ -458,20 +485,20 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
     progress({ kind: "step", turn: turnId, step: steps });
     const requestBytes = Buffer.byteLength(outbound, "utf8");
     let result: Awaited<ReturnType<typeof performMateRequest>>;
+    // The turn owns its deadline (lead-stall, release check 2438): at the deadline the request is aborted, which ends a
+    // harness's whole process group, and a provider that still has not settled MATE_ABORT_GRACE_MS later is left behind.
+    // Whatever it says after that is never read; the turn has already ended with its notice.
+    const controller = new AbortController();
+    const abortAt = setTimeout(() => controller.abort(), remainingMs);
+    const settle = (work: Promise<typeof result>): Promise<typeof result> => settleBy(work, remainingMs + MATE_ABORT_GRACE_MS)
+      .then(value => value === LATE || controller.signal.aborted ? { ok: false as const, problem: "timeout" } : value)
+      .finally(() => clearTimeout(abortAt));
     if (direct) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), remainingMs);
-      try {
-        result = await performMateRequest(request as { url: string; headers: Record<string, string>; body: string }, directProvider, controller.signal, fetcher);
-      } catch {
-        result = { ok: false, problem: "network" };
-      } finally {
-        clearTimeout(timer);
-      }
+      result = await settle(performMateRequest(request as { url: string; headers: Record<string, string>; body: string }, directProvider, controller.signal, fetcher)
+        .catch(() => ({ ok: false as const, problem: "network" })));
     } else {
       const runner = input.subscriptionRunner ?? performSubscriptionMateRequest;
-      try {
-        result = await runner({
+      result = await settle((async () => runner({
           provider: subscriptionProvider as SubscriptionChatProviderId,
           model: config.model,
           system: MATE_CONTRACT,
@@ -479,13 +506,11 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
           history,
           tools: MATE_TOOL_SCHEMAS,
           timeoutMs: remainingMs,
+          signal: controller.signal,
           // The reply as it is written; text that looks like a secret is
           // never shown (the finished reply is scanned again before saving).
-          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); } }),
-        });
-      } catch {
-        result = { ok: false, problem: "provider-error" };
-      }
+          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (!controller.signal.aborted && scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); } }),
+        }))().catch(() => ({ ok: false as const, problem: "provider-error" })));
     }
     now = clock();
     const finishStep = (outcome: Parameters<Store["finalizeChatTurn"]>[2]): boolean => store.finalizeChatTurn(step.id, stepStarted.generation, outcome, now);
@@ -500,7 +525,8 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
               : result.problem === "malformed-reply"
                 ? MATE_FAILURE_COPY.unreadable
                 : MATE_FAILURE_COPY.signIn;
-        return fail(result.problem === "timeout" ? "timeout" : result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", message, false);
+        if (result.problem === "timeout") return timedOut(false);
+        return fail(result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", message, false);
       }
       if (result.problem.startsWith("status-")) {
         // The provider ANSWERED with an error: nothing billed for this step.
@@ -509,7 +535,7 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
       }
       if (result.problem === "timeout") {
         finishStep({ state: "failed", failureReason: "timeout", settledMicrousd: null, unknownSpend: true });
-        return fail("timeout", MATE_FAILURE_COPY.tooLongUnknownCost, true);
+        return timedOut(true);
       }
       if (result.problem === "network") {
         finishStep({ state: "failed", failureReason: "provider-error", settledMicrousd: null, unknownSpend: true });
@@ -538,7 +564,7 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
     // After the wait (finding 5): the row may have been failed under us by
     // a revocation or the sweep — then nothing the model said runs; and the
     // approver must still stand before any tool runs as them.
-    const changed = guard(input.revalidate === undefined ? { ok: true } : await input.revalidate());
+    const changed = guard(await revalidated());
     if (changed !== null) return changed;
 
     if (answer.calls.length === 0) {
@@ -568,7 +594,7 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
     history.push({ role: "assistant", text: answer.text, calls: answer.calls });
     for (const [index, call] of answer.calls.entries()) {
       if (index > 0) {
-        const changed = guard(input.revalidate === undefined ? { ok: true } : await input.revalidate());
+        const changed = guard(await revalidated());
         if (changed !== null) return changed;
       }
       progress({ kind: "tool", turn: turnId, step: steps, label: mateToolLabel(call.name) });

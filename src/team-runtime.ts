@@ -160,7 +160,8 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
         // original queued request; wait for changed budget/concurrency facts.
         const state=admission(claim.actor,claim.conversationId);
         if(domain.defer(claim,result.message,clock()))waiting.set(claim.messageId,state.stamp);
-      } else domain.finish(claim, { status: 'unknownSpend' in result && result.unknownSpend ? 'uncertain' : 'failed', error: result.message, ...('turn' in result ? { turnId: result.turn } : {}) }, clock());
+      // A turn that saved its outcome in the thread (stopped at its deadline) is said there, not again on the message.
+      } else domain.finish(claim, { status: 'unknownSpend' in result && result.unknownSpend ? 'uncertain' : 'failed', ...('saved' in result && result.saved ? {} : { error: result.message }), ...('turn' in result ? { turnId: result.turn } : {}) }, clock());
     } catch {
       // An exception may have followed native admission. Preserve an explicit
       // uncertain result; never turn a transport error into another attempt.

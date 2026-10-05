@@ -83,6 +83,27 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(store.listMateMessages(store.liveMateThreadFor("alex", { kind: "task", key: "b" })!.id, 10)[0]!.text).toMatch(/^From the lead chat — Guidance for the next attempt: /);
   });
 
+  test("a proposal kept by a turn stopped at its deadline confirms; a draft of a turn that failed otherwise never existed", () => {
+    session();
+    const turnWith = (outcome: { failureReason: string; keepProposals: boolean }) => {
+      const thread = store.openMateThread("alex", who.ceilingDigest, clock()).thread;
+      const opened = store.openMateTurn({ approver: "alex", session: store.activeMateSession("alex")!.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+      if (!opened.ok) throw new Error(opened.reason);
+      const started = store.startMateTurn(opened.id, clock());
+      if (!started.ok) throw new Error("start");
+      const id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind: "hold", payload: { task: "a", reason: "later" }, ceilingDigest: who.ceilingDigest }, clock());
+      store.finalizeMateTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, ...outcome }, clock());
+      clockAt += 1_000;
+      return id;
+    };
+    const kept = turnWith({ failureReason: "timeout", keepProposals: true });
+    expect(store.getMateProposal(kept)?.state).toBe("pending");
+    expect(confirmMateProposal(store, who, kept, clock(), { via: "web" })).toMatchObject({ ok: true });
+    const dropped = turnWith({ failureReason: "malformed-reply", keepProposals: false });
+    expect(store.getMateProposal(dropped)).toBeNull();
+    expect(confirmMateProposal(store, who, dropped, clock(), { via: "web" })).toMatchObject({ ok: false });
+  });
+
   test("chat task actions share retry, planning and dependency records; stale cards and cycles refuse", () => {
     session();
     const make = (task: string, operation: string, dependency?: string) => {

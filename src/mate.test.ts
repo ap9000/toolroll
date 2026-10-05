@@ -1,10 +1,10 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { openStore, type ChatConfig, type Store } from "./store.js";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { mateTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
-import { MATE_MAX_STEPS, MATE_STEP_TEXT_CAP_BYTES, MATE_TOOL_CALL_CAP_BYTES, MATE_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, mateWorstCaseForPrice, parseMateProviderWrapper, subscriptionCredentialKey } from "./converse.js";
-import { runMateTurn, historyFor, MATE_CHANNEL_COPY, MATE_FAILURE_COPY, MATE_REFUSAL_COPY } from "./mate.js";
+import { MATE_MAX_STEPS, MATE_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, MATE_TOOL_CALL_CAP_BYTES, MATE_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, mateWorstCaseForPrice, parseMateProviderWrapper, subscriptionCredentialKey } from "./converse.js";
+import { runMateTurn, historyFor, MATE_ABORT_GRACE_MS, MATE_CHANNEL_COPY, MATE_FAILURE_COPY, MATE_REFUSAL_COPY } from "./mate.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { MATE_MAX_PROPOSALS_PER_TURN, executeMateTool, redactForMate } from "./mate-tools.js";
 import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
@@ -595,7 +595,7 @@ describe("the mate's turn", () => {
     expect(Buffer.byteLength(escaped, "utf8")).toBeLessThanOrEqual(2 * MATE_TOOL_RESULT_CAP_BYTES);
   });
 
-  test("a crash mid-loop: the sweep charges the whole reservation when a step is unproven, deletes the drafts, and latches", () => {
+  test("a crash mid-loop: the sweep charges the whole reservation when a step is unproven, keeps the drafts with its notice, and latches", () => {
     const live = session();
     const t = thread();
     const opened = store.openMateTurn(
@@ -621,8 +621,114 @@ describe("the mate's turn", () => {
     store.sweepStaleMateTurns(later);
     expect(store.getMateTurn(opened.id)).toMatchObject({ state: "failed", failureReason: "crashed", settledMicrousd: 10_000, steps: 2 });
     expect(store.getMateSession(live.id)?.spentMicrousd).toBe(10_000);
-    expect(store.listMateProposals(t.id)).toEqual([]);
+    // The completed tool call's proposal stands; the thread says the reply took too long and that its cost paused chat.
+    expect(store.listMateProposals(t.id)).toMatchObject([{ turn: opened.id, state: "pending" }]);
+    expect(store.listMateMessages(t.id, 5).at(-1)).toMatchObject({ role: "assistant", turn: opened.id, text: mateTimeoutNotice(true, true) });
     expect(store.openMateTurn({ approver: "alex", session: live.id, thread: t.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 1000 }, later)).toMatchObject({ ok: false, reason: "latched" });
+  });
+
+  // Release check 2438: propose_flow succeeded, then the provider never finished its final step and the person saw nothing.
+  describe("a turn past its deadline", () => {
+    const SUB: ChatConfig = { ...CONFIG, provider: "claude-subscription", model: "default", weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
+    const proposed = { ok: true as const, answer: { text: "Holding it.", calls: [{ id: "h1", name: "propose_hold", args: { task: "other-1", reason: "not this week" } }], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null } };
+    const replied = (text: string) => ({ ok: true as const, answer: { text, calls: [], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null } });
+    beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    test("a provider that answers a tool call and then never finishes: the notice and the proposal are saved by the deadline plus grace, its run is aborted, and a late answer changes nothing", async () => {
+      const live = session(0, "alex", subscriptionCredentialKey("claude-subscription"));
+      const t = thread();
+      const signals: AbortSignal[] = [];
+      let finishLate: ((value: ReturnType<typeof replied>) => void) | null = null;
+      let hung!: () => void;
+      const hanging = new Promise<void>(resolve => { hung = resolve; });
+      const subscriptionRunner: SubscriptionMateRunner = request => {
+        signals.push(request.signal!);
+        if (signals.length === 1) return Promise.resolve(proposed);
+        hung();
+        // Ignores its abort entirely, like a harness stuck in swap.
+        return new Promise(resolve => { finishLate = resolve; });
+      };
+      let settled = false;
+      const running = runMateTurn({ store, who, session: live, thread: t, config: SUB, key: null, message: "hold the nightly digest", subscriptionRunner, clock })
+        .finally(() => { settled = true; });
+      await hanging;
+      await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS);
+      expect(signals[1]?.aborted).toBe(true);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(MATE_ABORT_GRACE_MS);
+      const outcome = await running;
+      expect(outcome).toMatchObject({ ok: false, failed: "timeout", saved: true, unknownSpend: false, message: mateTimeoutNotice(true) });
+      const turnId = (outcome as { turn: number }).turn;
+      expect(store.getMateTurn(turnId)).toMatchObject({ state: "failed", failureReason: "timeout" });
+      expect(store.listMateMessages(t.id, 5).map(one => [one.role, one.text])).toEqual([["operator", "hold the nightly digest"], ["assistant", mateTimeoutNotice(true)]]);
+      expect(store.listMateProposals(t.id)).toMatchObject([{ turn: turnId, kind: "hold", state: "pending" }]);
+      expect(store.raw().prepare("SELECT state, failure_reason FROM chat_turn WHERE mate_turn = ? ORDER BY id").all(turnId).map(row => [row["state"], row["failure_reason"]]))
+        .toEqual([["answered", null], ["failed", "timeout"]]);
+      // The provider answers long after: nothing it says is saved or acted on.
+      finishLate!(replied("Done, all held."));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.listMateMessages(t.id, 5)).toHaveLength(2);
+      expect(store.getMateTurn(turnId)?.state).toBe("failed");
+      // The next message is not blocked by the stuck one.
+      const next = await runMateTurn({ store, who, session: live, thread: t, config: SUB, key: null, message: "anything else?", subscriptionRunner: async () => replied("Nothing else needs you."), clock });
+      expect(next).toMatchObject({ ok: true, reply: "Nothing else needs you." });
+    });
+
+    test("a very slow provider: the turn ends at its deadline with the notice, and nothing was proposed", async () => {
+      const live = session(0, "alex", subscriptionCredentialKey("claude-subscription"));
+      const t = thread();
+      let started!: () => void;
+      const waiting = new Promise<void>(resolve => { started = resolve; });
+      const subscriptionRunner: SubscriptionMateRunner = request => {
+        started();
+        // Honours its abort, but would have answered at four minutes.
+        return new Promise(resolve => {
+          const late = setTimeout(() => resolve(replied("Finally.")), 240_000);
+          request.signal?.addEventListener("abort", () => { clearTimeout(late); resolve({ ok: false, problem: "timeout" }); });
+        });
+      };
+      const running = runMateTurn({ store, who, session: live, thread: t, config: SUB, key: null, message: "what needs me?", subscriptionRunner, clock });
+      await waiting;
+      await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS);
+      expect(await running).toMatchObject({ ok: false, failed: "timeout", saved: true, message: MATE_FAILURE_COPY.tooLong });
+      expect(store.listMateMessages(t.id, 5).at(-1)).toMatchObject({ role: "assistant", text: MATE_FAILURE_COPY.tooLong });
+      expect(MATE_FAILURE_COPY.tooLong).toBe("The reply took too long and was stopped. Send your message again, or ask for less at once.");
+      expect(store.listMateProposals(t.id)).toEqual([]);
+    });
+
+    test("a direct request whose body never ends is abandoned at the deadline plus grace and latches its unknown cost", async () => {
+      const t = thread();
+      let started!: () => void;
+      const waiting = new Promise<void>(resolve => { started = resolve; });
+      let step = 0;
+      const fetcher = (async () => {
+        if (++step === 1) return answer([call("propose_hold", { task: "other-1", reason: "not this week" })]);
+        started();
+        return new Promise<Response>(() => undefined);
+      }) as unknown as typeof fetch;
+      const running = turn("hold the digest", fetcher, { thread: t });
+      await waiting;
+      await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS + MATE_ABORT_GRACE_MS);
+      expect(await running).toMatchObject({ ok: false, failed: "timeout", saved: true, unknownSpend: true, message: mateTimeoutNotice(true, true) });
+      expect(store.listMateProposals(t.id)).toMatchObject([{ kind: "hold", state: "pending" }]);
+      expect(store.latchedChatTurns(CREDENTIAL)).toHaveLength(1);
+    });
+
+    test("a channel check that never answers cannot hold the turn open", async () => {
+      const live = session(0, "alex", subscriptionCredentialKey("claude-subscription"));
+      const t = thread();
+      let checks = 0;
+      let stuck!: () => void;
+      const waiting = new Promise<void>(resolve => { stuck = resolve; });
+      const running = runMateTurn({ store, who, session: live, thread: t, config: SUB, key: null, message: "hold it", clock,
+        subscriptionRunner: async () => proposed,
+        revalidate: () => { if (++checks < 4) return Promise.resolve({ ok: true as const }); stuck(); return new Promise(() => undefined); } });
+      await waiting;
+      await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS + MATE_ABORT_GRACE_MS);
+      expect(await running).toMatchObject({ ok: false, failed: "timeout", saved: true });
+      expect(store.listMateProposals(t.id)).toMatchObject([{ state: "pending" }]);
+    });
   });
 
   test("the latch is re-checked before every step: another approver's unknown-cost turn stops this loop between steps", async () => {

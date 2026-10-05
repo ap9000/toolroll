@@ -32,6 +32,10 @@ function role(value: unknown): TeamRole {
   if (value !== 'viewer' && value !== 'contributor' && value !== 'manager') refuse('invalid', 'Choose Viewer, Contributor or Manager.');
   return value;
 }
+/** A failed turn's words for its message: none when the turn said why in the thread itself (it stopped at its deadline). */
+function savedFailure(reason: unknown): string | null {
+  return reason === 'timeout' || reason === 'crashed' ? null : String(reason ?? 'The saved turn failed.');
+}
 function hash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -317,7 +321,7 @@ export class TeamLeads {
         const uncertain=this.deliveryUncertain(Number(row['turn_id']));
         const cancelled=Number(row['stop_requested'])===1||!this.authorStillAllowed(row);
         const status=uncertain?'uncertain':cancelled?'cancelled':row['turn_state']==='answered'?'answered':'failed';
-        const error=uncertain?'Delivery could not be confirmed. Inspect saved activity before continuing.':cancelled?'Stopped or conversation access changed.':status==='failed'?String(row['failure_reason']??'The saved turn failed.'):null;
+        const error=uncertain?'Delivery could not be confirmed. Inspect saved activity before continuing.':cancelled?'Stopped or conversation access changed.':status==='failed'?savedFailure(row['failure_reason']):null;
         const result=this.db.prepare("UPDATE team_message SET status=?,error=?,generation=generation+1,revision=revision+1 WHERE message=? AND status='running' AND generation=?").run(status,error,Number(row['message']),Number(row['generation']));
         if(Number(result.changes)===1){changed++;this.event(String(row['lead']),String(row['conversation']),'message-reconciled',String(row['author']),now);}
       }return changed;
@@ -335,7 +339,7 @@ export class TeamLeads {
       for(const row of rows){
         const turn=row['turn_id']===null?null:this.store.getMateTurn(Number(row['turn_id']));
         const status=turn?.state==='answered'?'answered':turn?.state==='failed'&&!this.deliveryUncertain(turn.id)?'failed':'uncertain';
-        const error=status==='uncertain'?'Delivery unconfirmed after the previous worker stopped. Inspect activity before continuing.':status==='failed'?(turn?.failureReason??'The saved turn failed.'):null;
+        const error=status==='uncertain'?'Delivery unconfirmed after the previous worker stopped. Inspect activity before continuing.':status==='failed'?savedFailure(turn?.failureReason):null;
         this.db.prepare('UPDATE team_message SET status=?,generation=generation+1,revision=revision+1,error=? WHERE message=?').run(status,error,Number(row['message']));
         this.event(String(row['lead']),String(row['conversation']),status==='uncertain'?'delivery-unconfirmed':'message-reconciled',String(row['author']),now);
       }return rows.length;

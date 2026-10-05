@@ -1,5 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { run } from "./exec.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import {
   composeSubscriptionMatePrompt,
@@ -146,5 +149,31 @@ describe("subscription chat's isolated harness adapter", () => {
     expect(result).toMatchObject({ ok: true, answer: { text: "Ready.", tokensIn: 8, tokensOut: 2 } });
     expect(seen?.args).toEqual(expect.arrayContaining(["-p", "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", '{"mcpServers":{}}']));
     expect(existsSync(seen?.cwd ?? "missing")).toBe(false);
+  });
+
+  test.skipIf(process.platform === "win32")("the turn's abort ends the harness and everything it started, and the run reads timed out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-sub-abort-"));
+    try {
+      const pids = join(dir, "pids");
+      const controller = new AbortController();
+      let spawned!: () => void;
+      const started = new Promise<void>(resolve => { spawned = resolve; });
+      // A stand-in harness: it starts a grandchild, records both pids, then never answers.
+      const pending = performSubscriptionMateRequest({ ...request("claude-subscription"), timeoutMs: 600_000, signal: controller.signal }, (_file, _args, options) => {
+        expect(options?.signal).toBe(controller.signal);
+        return run("/bin/sh", ["-c", `sleep 600 & echo "$$ $!" > "${pids}"; echo ready; wait`], { ...options, onStdout: () => spawned() });
+      });
+      await started;
+      const [shell, grandchild] = readFileSync(pids, "utf8").trim().split(" ").map(Number);
+      controller.abort();
+      expect(await pending).toEqual({ ok: false, problem: "timeout" });
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      expect(alive(shell!)).toBe(false);
+      // The grandchild was in the killed group; its exit is reaped by init, so give the OS a bounded moment to show it.
+      for (let tries = 0; tries < 100 && alive(grandchild!); tries++) await new Promise(resolve => setTimeout(resolve, 20));
+      expect(alive(grandchild!)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
