@@ -215,7 +215,7 @@ export function planFor(changed, { full: all = false, real = false, versionBumps
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
 // An outer check's gate is not this one's: a part only gets the gate this check hands it (env).
-const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000 }).then(one => {
+const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000, tempRoot: !label.startsWith("unit") }).then(one => {
   const log = join(dir, `${label}.log`);
   writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} ran past ${Math.round(PART_MS / 60_000)} min and was stopped\n`)]) : one.output);
   return { label, code: one.code, log, ms: one.ms };

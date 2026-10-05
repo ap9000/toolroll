@@ -157,14 +157,16 @@ function installHandlers() {
  * left in its group have ended and its root is gone: { code, signal, timedOut, ms, root, output } (output: what it
  * printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes.
  */
-export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, beforeRemove = null }) {
-  const root = makeTempRoot(prefix, { keep });
+export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, beforeRemove = null, tempRoot = true }) {
+  // `tempRoot: false`: a suite that keeps its own short temp root (the unit tests: test/temp-root.ts) runs without one
+  // more folder level, which would push the socket paths its tests make past the OS limit (103 bytes on macOS).
+  const root = tempRoot ? makeTempRoot(prefix, { keep }) : null;
   const at = Date.now();
   return new Promise(done => {
     const child = spawn(command, args, {
       cwd, detached: process.platform !== "win32",
       stdio: stdio === "inherit" ? ["inherit", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env, TMPDIR: root, TMP: root, TEMP: root },
+      env: { ...process.env, ...env, ...(root === null ? {} : { TMPDIR: root, TMP: root, TEMP: root }) },
     });
     const chunks = [];
     for (const stream of [child.stdout, child.stderr]) stream?.on("data", chunk => { chunks.push(chunk); onData?.(chunk); });
@@ -180,7 +182,7 @@ export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, 
       if (child.pid !== undefined) { await stopGroup(child.pid, { graceMs }); groups.delete(child.pid); }
       // `beforeRemove`: the runner's own last word (stopping groups the suite listed as its own) while the root is there.
       try { await beforeRemove?.(); } catch { /* the root goes regardless */ }
-      try { removeRoot(root); } catch { /* the plane's sweep takes it */ }
+      if (root !== null) { try { removeRoot(root); } catch { /* the plane's sweep takes it */ } }
       done({ code: timedOut ? 124 : code ?? (signal === null ? 1 : 128 + (SIGNAL_NUMBERS[signal] ?? 0)), signal, timedOut, ms: Date.now() - at, root, output: Buffer.concat(chunks) });
     };
     child.on("error", () => void end(127, null));

@@ -122,3 +122,14 @@ test("a Vitest run interrupted mid-test removes its temp root and stops what its
   expect(done.code === 130 || done.signal === "SIGINT", done.output).toBe(true);
   await nothingLeft(report());
 }, 120_000);
+
+test("tempRoot: false runs a suite in its own process group without one more temp folder level (socket paths stay short)", async () => {
+  const { runSuite } = await import("../scripts/suite-lifecycle.mjs");
+  const seen = await runSuite({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.TMPDIR ?? '')"], env: { TMPDIR: tmpdir() }, tempRoot: false });
+  expect(seen.code).toBe(0);
+  expect(seen.root).toBeNull();
+  expect(seen.output.toString()).toBe(tmpdir());
+  const own = await runSuite({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.TMPDIR ?? '')"], prefix: "so-suite-" });
+  expect(own.output.toString()).toBe(own.root);
+  expect(existsSync(own.root)).toBe(false);
+});
