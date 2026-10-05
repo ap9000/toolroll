@@ -60,12 +60,91 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   seen?.set(key, out);
   return out;
 };
+/** Facts about the shared Git database that survive a restart. The volume's device number does not. */
+export type IdentityFacts = { dev: number | bigint; ino: number | bigint; birthtimeMs: number };
+const sameValue = (n: number | bigint) => typeof n === 'bigint' ? n.toString() : n;
 /** Path plus the physical shared Git database: replacing a repository does not inherit its lessons. */
-export function learningIdentity(repo: string, seen?: Map<string, string>): string {
+export const identityOf = (repo: string, common: string, st: Pick<IdentityFacts, 'ino' | 'birthtimeMs'>): string =>
+  learningSha(JSON.stringify([repo, common, sameValue(st.ino), st.birthtimeMs]));
+/** The formula before 0.9.33, which also hashed st.dev; macOS may renumber a volume at restart. */
+export const legacyIdentityOf = (repo: string, common: string, st: IdentityFacts): string =>
+  learningSha(JSON.stringify([repo, common, sameValue(st.dev), sameValue(st.ino), st.birthtimeMs]));
+function identityFacts(repo: string, seen?: Map<string, string>): { common: string; st: IdentityFacts } {
   if (canonicalProject(repo) !== repo) throw new Error('Project identity changed.');
   const common = realpathSync(resolve(repo, git(repo, ['rev-parse', '--git-common-dir'], seen)));
-  const st = statSync(common);
-  return learningSha(JSON.stringify([repo, common, st.dev, st.ino, st.birthtimeMs]));
+  return { common, st: statSync(common) };
+}
+export function learningIdentity(repo: string, seen?: Map<string, string>): string {
+  const { common, st } = identityFacts(repo, seen);
+  return identityOf(repo, common, st);
+}
+/** Projects whose rows have already been checked for a same-repository carry, per store. */
+const reconciled = new WeakMap<Store, Set<string>>();
+// Every table that saves a project identity. Rows are never rewritten: a carry aliases them.
+const STORED_IDENTITY = `SELECT 1 FROM project_knowledge WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM knowledge_change WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM knowledge_snapshot WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM project_skill_change WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM skill_test JOIN task_ref ON task_ref.id=skill_test.task_ref WHERE task_ref.repo=?1 AND skill_test.identity=?2
+ UNION ALL SELECT 1 FROM learning_policy WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM project_lesson WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM learning_capture WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM learning_snapshot WHERE repo=?1 AND identity=?2
+ UNION ALL SELECT 1 FROM project_decision WHERE repo=?1 AND identity=?2 LIMIT 1`;
+/**
+ * Record that saved project rows under `from` belong to the project now known as `to`.
+ * Knowledge saved under `from` also gets a new revision under `to`; older revisions stay as they are.
+ * Returns the new knowledge revision, or null when knowledge needed none.
+ */
+export function carryProject(store: Store, repo: string, args: { from: string; to: string; actor: string; how: 'automatic' | 'approver' }, now = new Date()): number | null {
+  return store.transact(() => {
+    store.handle.prepare('INSERT OR IGNORE INTO project_identity_carry(repo,from_identity,to_identity,actor,at,how) VALUES (?,?,?,?,?,?)').run(repo, args.from, args.to, args.actor, now.toISOString(), args.how);
+    const row = store.handle.prepare('SELECT * FROM project_knowledge WHERE repo=?').get(repo);
+    if (!row || row['identity'] !== args.from) return null;
+    const history = store.handle.prepare('SELECT sha FROM knowledge_change WHERE repo=? AND identity=? AND revision=?').get(repo, args.from, row['revision']!);
+    if (history?.['sha'] !== row['sha'] || learningSha(String(row['payload'])) !== row['sha']) throw new Error('Project knowledge history could not be verified.');
+    const revision = Number(row['revision']) + 1;
+    store.handle.prepare('INSERT INTO knowledge_change(repo,identity,revision,actor,at,payload,sha) VALUES (?,?,?,?,?,?,?)').run(repo, args.to, revision, args.actor, now.toISOString(), String(row['payload']), String(row['sha']));
+    store.handle.prepare('UPDATE project_knowledge SET identity=?,revision=? WHERE repo=?').run(args.to, revision, repo);
+    return revision;
+  });
+}
+export const SAME_REPOSITORY = 'toolroll (same repository)';
+/**
+ * Carry silently only what is provably the same repository: rows saved under the
+ * previous formula with this volume's current device number (no restart since).
+ */
+export function reconcileIdentity(store: Store, repo: string, seen?: Map<string, string>, now = new Date()): { current: string; legacy: string } {
+  const { common, st } = identityFacts(repo, seen);
+  const current = identityOf(repo, common, st), legacy = legacyIdentityOf(repo, common, st);
+  let done = reconciled.get(store);
+  if (!done) reconciled.set(store, done = new Set());
+  const key = `${repo}\n${legacy}`;
+  if (legacy !== current && !done.has(key)) {
+    if (!store.handle.prepare('SELECT 1 FROM project_identity_carry WHERE repo=? AND from_identity=? AND to_identity=?').get(repo, legacy, current)
+      && store.handle.prepare(STORED_IDENTITY).get(repo, legacy)) {
+      // Damaged knowledge history keeps its own error; retry on the next read.
+      try { carryProject(store, repo, { from: legacy, to: current, actor: SAME_REPOSITORY, how: 'automatic' }, now); } catch { return { current, legacy }; }
+    }
+    done.add(key);
+  }
+  return { current, legacy };
+}
+/** The current identity and every identity carried into it. Checks accept these; writes use the current one. */
+export function acceptedIdentities(store: Store, repo: string, seen?: Map<string, string>): Set<string> {
+  const { current, legacy } = reconcileIdentity(store, repo, seen);
+  const accepted = new Set([current, legacy]);
+  const carries = store.handle.prepare('SELECT from_identity,to_identity FROM project_identity_carry WHERE repo=?').all(repo).map(r => [String(r['from_identity']), String(r['to_identity'])] as const);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [from, to] of carries) if (accepted.has(to) && !accepted.has(from)) { accepted.add(from); grew = true; }
+  }
+  return accepted;
+}
+/** Without a database: the current identity, or the previous formula on this same volume. */
+export function identityMatches(repo: string, identity: string): boolean {
+  const { common, st } = identityFacts(repo);
+  return identity === identityOf(repo, common, st) || identity === legacyIdentityOf(repo, common, st);
 }
 function environmentFingerprint(store: Store, repo: string): string {
   return learningSha(JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version,
@@ -137,7 +216,7 @@ export function queueLearning(store: Store, source: number, reviewer: number, va
     const snapshot = reviewSnapshot(store, reviewer);
     // Legacy reviews without a learning snapshot need no optional failure.
     if (empty && assessment === undefined && !snapshot) return;
-    if (!snapshot || snapshot['repo'] !== repo || snapshot['identity'] !== learningIdentity(repo) || learningSha(String(snapshot['payload'])) !== snapshot['sha']) throw new Error('Learning review identity is unavailable.');
+    if (!snapshot || snapshot['repo'] !== repo || !acceptedIdentities(store, repo).has(String(snapshot['identity'])) || learningSha(String(snapshot['payload'])) !== snapshot['sha']) throw new Error('Learning review identity is unavailable.');
     const result = assessmentOf(assessment, value);
     // A contradictory decision cannot publish suggestions. Keep its sealed
     // response as evidence; the optional invalid capture never changes core review.
@@ -184,6 +263,8 @@ export function recoverLearning(store: Store, root: string, repo: string, now = 
   if (!cursor) projects.set(repo, cursor = { reviewer: 0, reviewerEnd: 0, source: 0, sourceEnd: 0 });
   // Freeze each sweep's end so a stream of new arrivals cannot postpone retry
   // of an earlier failed row indefinitely. Cursors never confer eligibility.
+  let accepted: Set<string> | undefined;
+  const carried = (identity: unknown): boolean => (accepted ??= acceptedIdentities(store, repo, seen)).has(String(identity));
   if (!cursor.reviewerEnd) cursor.reviewerEnd = Number(store.handle.prepare('SELECT max(id) AS id FROM run').get()?.['id'] ?? 0);
   // If the optional outbox write failed, recover from the already sealed accepted response.
   const missing = store.handle.prepare(`SELECT r.id FROM run r JOIN task_ref t ON t.id=r.task_ref
@@ -199,7 +280,7 @@ export function recoverLearning(store: Store, root: string, repo: string, now = 
       for (let i = 0; source?.role === 'reviewer' && i < 3; i++) source = source.parentRun === null ? null : store.getRun(source.parentRun);
       if (!source || !reviewer || source.taskRef !== reviewer.taskRef) continue;
       const snapshot = reviewSnapshot(store, reviewer.id);
-      if (!snapshot || snapshot['identity'] !== learningIdentity(repo, seen)) continue;
+      if (!snapshot || !carried(snapshot['identity'])) continue;
       const response = store.artifactsFor(reviewer.id).find(a => a.kind === 'structured-output' && a.captureStatus === 'ok');
       const read = response && readVerifiedArtifact(root, response);
       if (!read?.ok) continue;
@@ -227,7 +308,7 @@ export function recoverLearning(store: Store, root: string, repo: string, now = 
         if (!run || !reviewed || reviewed.outcome !== 'no-change' || reviewed.taskRef !== run.taskRef || reviewed.role !== 'reviewer' || reviewedSource(store, reviewer) !== source || store.refForId(run.taskRef)?.repo !== repo) throw new Error('Learning review provenance is unavailable.');
         const candidates = parseLearning(JSON.parse(String(row['payload'])));
         const identity = learningIdentity(repo, seen);
-        if (identity !== row['identity']) throw new Error('Learning project identity changed.');
+        if (!carried(row['identity'])) throw new Error('Learning project identity changed.');
         const head = run.headRevision ?? run.baseRevision ?? '';
         const diff = store.artifactsFor(source).find(a => a.kind === 'terminal-diff');
         const diffRead = diff && readVerifiedArtifact(root, diff);
@@ -261,7 +342,7 @@ function lessonOf(row: Record<string, unknown>): Lesson {
   return { id: Number(row['id']), repo: String(row['repo']), source: Number(row['source']), reviewer: Number(row['reviewer']), status: String(row['status']), version: Number(row['version']), payload, sha: String(row['sha']), identity: String(row['identity']), adoptedBy: row['adopted_by'] == null ? null : String(row['adopted_by']) };
 }
 function supported(store: Store, root: string, lesson: Lesson, seen?: Map<string, string>): void {
-  if (lesson.identity !== learningIdentity(lesson.repo, seen)) throw new Error('Project identity changed.');
+  if (!acceptedIdentities(store, lesson.repo, seen).has(lesson.identity)) throw new Error('Project identity changed.');
   const capture = store.handle.prepare('SELECT catalog FROM learning_capture WHERE source=? AND reviewer=? AND repo=?').get(lesson.source, lesson.reviewer, lesson.repo);
   if (!capture || reviewedSource(store, lesson.reviewer) !== lesson.source) throw new Error('Learning source is unavailable.');
   verifyEvidence(store, root, lesson.source, lesson.payload.evidence, JSON.parse(String(capture['catalog'])));
@@ -271,9 +352,9 @@ function supported(store: Store, root: string, lesson: Lesson, seen?: Map<string
 export function learningView(store: Store, root: string, repo: string, actor: string, before = 0) {
   admission(store, repo, actor);
   recoverLearning(store, root, repo);
-  const identity = learningIdentity(repo);
+  const identity = learningIdentity(repo), accepted = acceptedIdentities(store, repo);
   const p = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=?').get(repo);
-  const revision = Number(p?.['revision'] ?? 0), enabled = p?.['identity'] === identity && p?.['enabled'] === 1;
+  const revision = Number(p?.['revision'] ?? 0), enabled = accepted.has(String(p?.['identity'])) && p?.['enabled'] === 1;
   let damaged = false;
   const lessons = store.handle.prepare('SELECT * FROM project_lesson WHERE repo=? ORDER BY id DESC LIMIT 50').all(repo).flatMap(row => { try { return [lessonOf(row)]; } catch { damaged = true; return []; } });
   const events = store.handle.prepare('SELECT * FROM learning_event WHERE repo=? AND (?=0 OR id<?) ORDER BY id DESC LIMIT 21').all(repo, before, before).map(row => ({ snapshot: row['action'] === 'reuse' ? String(store.handle.prepare('SELECT payload FROM learning_snapshot WHERE run=?').get(Number(row['run']))?.['payload'] ?? 'Snapshot unavailable') : null, outcome: row['run'] === null ? null : store.getRun(Number(row['run']))?.outcome ?? null, id: Number(row['id']), actor: String(row['actor']), at: String(row['at']), action: String(row['action']), before: String(row['before_state']), after: String(row['after_state']), reason: String(row['reason']), lesson: row['lesson'] === null ? null : Number(row['lesson']), run: row['run'] === null ? null : Number(row['run']), evidence: JSON.parse(String(row['evidence'])) as LearningEvidence[] }));
@@ -284,14 +365,15 @@ export function changeLearning(store: Store, root: string, args: { repo: string;
   store.transact(() => {
     admission(store, args.repo, args.actor, true);
     if (learningIdentity(args.repo) !== args.identity) throw new Error('Project identity changed. Reload Learning.');
+    const accepted = acceptedIdentities(store, args.repo);
     const p = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=?').get(args.repo);
-    if (Number(p?.['revision'] ?? 0) !== args.revision || (p && p['identity'] !== args.identity && args.action !== 'reset')) throw new Error('Learning changed. Reload before trying again.');
+    if (Number(p?.['revision'] ?? 0) !== args.revision || (p && !accepted.has(String(p['identity'])) && args.action !== 'reset')) throw new Error('Learning changed. Reload before trying again.');
     let before = p?.['enabled'] === 1 ? 'enabled' : 'paused', after = before, ev: LearningEvidence[] = [], source: number | null = null;
     if (args.action === 'adopt' || args.action === 'disable') {
       const row = store.handle.prepare('SELECT * FROM project_lesson WHERE id=? AND repo=?').get(args.lesson ?? -1, args.repo);
       if (!row) throw new Error('Learning lesson is unavailable.');
       const l = lessonOf(row);
-      if (l.version !== args.version || l.sha !== args.sha || l.identity !== args.identity) throw new Error('Learning changed. Reload before trying again.');
+      if (l.version !== args.version || l.sha !== args.sha || !accepted.has(l.identity)) throw new Error('Learning changed. Reload before trying again.');
       if (l.payload.kind !== 'project' || (args.action === 'adopt' ? l.status !== 'proposed' : l.status !== 'adopted')) throw new Error('This suggestion cannot take that action.');
       if (args.action === 'adopt') supported(store, root, l);
       before = l.status; after = args.action === 'adopt' ? 'adopted' : 'disabled'; ev = l.payload.evidence; source = l.source;
@@ -321,13 +403,13 @@ export function learningContext(store: Store, root: string, runId: number, phase
       if (!store.schemaCurrent() || run.outcome !== null || !['planner','builder','repair','reviewer'].includes(run.role)) return '';
       const runner = store.getRunner(run.runner)?.runner;
       if (!runner || runner.retiredAt !== null || !runner.repos.includes(repo) || (phase === 'review') !== (run.role === 'reviewer') || (phase === 'plan') !== (run.role === 'planner')) return '';
-      const identity = learningIdentity(repo, seen);
+      const identity = learningIdentity(repo, seen), accepted = acceptedIdentities(store, repo, seen), carried = JSON.stringify([...accepted]);
       const existing = store.handle.prepare('SELECT * FROM learning_snapshot WHERE run=?').get(runId);
       if (existing) {
-        if (existing['repo'] !== repo || existing['identity'] !== identity || learningSha(String(existing['payload'])) !== existing['sha']) throw new Error('Learning snapshot no longer verifies.');
+        if (existing['repo'] !== repo || !accepted.has(String(existing['identity'])) || learningSha(String(existing['payload'])) !== existing['sha']) throw new Error('Learning snapshot no longer verifies.');
         return String(existing['payload']);
       }
-      const policy = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=? AND identity=? AND enabled=1').get(repo, identity);
+      const policy = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=? AND identity IN (SELECT value FROM json_each(?)) AND enabled=1').get(repo, carried);
       const scope = ref && store.getScope(ref.externalId);
       const source = run.role === 'reviewer' && run.parentRun !== null ? store.getRun(run.parentRun) : run;
       // Prepared coding handoffs defer recording their validated base until
@@ -339,7 +421,7 @@ export function learningContext(store: Store, root: string, runId: number, phase
       const unscopedPlan = phase === 'plan' && scope === null && !run.scopeDigest;
       const eligible: Lesson[] = [];
       if (policy && (paths.length > 0 || unscopedPlan)) {
-        for (const row of store.handle.prepare("SELECT * FROM project_lesson WHERE repo=? AND identity=? AND status='adopted' ORDER BY id DESC LIMIT 100").all(repo, identity)) {
+        for (const row of store.handle.prepare("SELECT * FROM project_lesson WHERE repo=? AND identity IN (SELECT value FROM json_each(?)) AND status='adopted' ORDER BY id DESC LIMIT 100").all(repo, carried)) {
           try {
             const l = lessonOf(row);
             if (!store.handle.prepare("SELECT 1 FROM learning_event WHERE lesson=? AND action='adopt' AND actor=?").get(l.id, l.adoptedBy ?? '') || l.source === source?.id || l.payload.kind !== 'project' || !l.adoptedBy || !store.accountCanAccess(l.adoptedBy, repo) || store.accountOf(l.adoptedBy)?.role !== 'approver' || !l.payload.phases.includes(phase) || l.payload.platform !== process.platform || (!unscopedPlan && !l.payload.paths.some(p => paths.some(t => p === t || p.startsWith(t.replace(/\/$/, '') + '/'))))) continue;

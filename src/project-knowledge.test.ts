@@ -1,13 +1,16 @@
 import { SCHEMA_VERSION } from './store.js';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, renameSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { openStore, type Store } from './store.js';
 import { addApprover, propose, approve } from './scope.js';
 import { register } from './runner.js';
-import { changeKnowledge, knowledgeContext, knowledgeView, readKnowledgeSnapshot, conversationKnowledge } from './project-knowledge.js';
+import { applySavedKnowledge, changeKnowledge, knowledgeContext, knowledgeView, readKnowledgeSnapshot, conversationKnowledge } from './project-knowledge.js';
+import { learningIdentity, learningSha, legacyIdentityOf } from './project-learning.js';
+import { runOperate } from './operate.js';
+import { withActor } from './actor.js';
 import { knowledgeContextHtml, knowledgeHtml } from './knowledge-ui.js';
 import { createDecisionServer } from './serve.js';
 import { storeEvidence } from './evidence.js';
@@ -115,7 +118,72 @@ describe('project knowledge',()=>{
     const run=start();expect(Buffer.byteLength(knowledgeContext(store,run))).toBeLessThan(26000);expect(readKnowledgeSnapshot(store,run)!.references.length).toBeLessThanOrEqual(3);
     store.handle.exec("UPDATE project_knowledge SET payload='{}'");expect(()=>knowledgeContext(store,start())).toThrow(/verified/);
     expect(knowledgeHtml({...viewFixture(),knowledge:{instructions:'<script>alert(1)</script>',references:[]}},'csrf',false)).not.toContain('<script>');
-    function viewFixture(){return {repo,identity:'id',revision:0,history:[],knowledge:{instructions:'',references:[]}};}
+    function viewFixture(){return {repo,identity:'id',revision:0,history:[],knowledge:{instructions:'',references:[]},stale:null};}
+  });
+  /** Knowledge saved under another project identity, as it was stored before a change. */
+  function seedStale(identity:string,instructions:string){
+    const payload=JSON.stringify({instructions,references:[]}),sha=learningSha(payload);
+    store.handle.prepare('INSERT INTO knowledge_change(repo,identity,revision,actor,at,payload,sha) VALUES (?,?,1,?,?,?,?)').run(repo,identity,'alex',now.toISOString(),payload,sha);
+    store.handle.prepare('INSERT INTO project_knowledge VALUES (?,?,1,?,?)').run(repo,identity,payload,sha);
+  }
+  const facts=()=>{const common=realpathSync(join(repo,'.git')),st=statSync(common);return {common,st:{dev:st.dev,ino:st.ino,birthtimeMs:st.birthtimeMs}};};
+  const cli=async(...argv:string[])=>{const lines:string[]=[];const code=await runOperate('knowledge',argv,line=>{lines.push(line);},{databaseFile:db,now});return {code,out:lines.join('\n')};};
+  test('a restart that renumbered the volume never fails a build; an approver applies the saved knowledge forward',async()=>{
+    const {common,st}=facts(),before=legacyIdentityOf(repo,common,{...st,dev:st.dev+7});
+    seedStale(before,'Keep UI copy concise.');
+    // The build runs without it and says so.
+    const run=start(),brief=knowledgeContext(store,run);
+    expect(brief).toContain('Saved knowledge is from before a change; it was not applied');expect(brief).not.toContain('Keep UI copy concise.');
+    expect(readKnowledgeSnapshot(store,run)).toMatchObject({revision:0,instructions:'',omitted:[{title:'Saved project knowledge'}]});
+    expect(view()).toMatchObject({revision:1,knowledge:{instructions:''},stale:{revision:1,knowledge:{instructions:'Keep UI copy concise.'}}});
+    expect(conversationKnowledge(store,repo,'alex')).toMatchObject({stale:true,notice:expect.stringContaining("This project's saved knowledge is from before a change; review and apply it")});
+    expect(()=>change('instructions',{instructions:'Edited too early'})).toThrow(/review and apply it first/);
+    // The lead may not apply it, by token or as its owner's actor.
+    const lead=store.mintLeadCredential('alex','alex',now).token;
+    expect((await cli('apply','--repo',repo,'--token',lead)).code).not.toBe(0);
+    expect(()=>withActor({account:'alex',lead:true},()=>applySavedKnowledge(store,repo,'alex',now))).toThrow(/not the lead/);
+    expect((await cli('apply','--repo',repo,'--as','alex','--token','wrong')).code).not.toBe(0);
+    expect(view().stale).not.toBeNull();
+    // An approver applies it from the CLI: a new revision under the current identity; history intact.
+    expect(await cli('apply','--repo',repo,'--as','alex','--token',password)).toEqual({code:0,out:'Applied saved knowledge as version 2.'});
+    expect(store.handle.prepare('SELECT identity,revision,actor FROM knowledge_change WHERE repo=? ORDER BY revision').all(repo)).toEqual([{identity:before,revision:1,actor:'alex'},{identity:learningIdentity(repo),revision:2,actor:'alex'}]);
+    expect(store.handle.prepare('SELECT from_identity,to_identity,actor,how FROM project_identity_carry WHERE repo=?').all(repo)).toEqual([{from_identity:before,to_identity:learningIdentity(repo),actor:'alex',how:'approver'}]);
+    expect(()=>store.handle.exec('DELETE FROM project_identity_carry')).toThrow(/immutable/);
+    expect(view()).toMatchObject({revision:2,stale:null,knowledge:{instructions:'Keep UI copy concise.'}});expect(view().history.map(h=>h.revision)).toEqual([2,1]);
+    expect(knowledgeContext(store,start())).toContain('Keep UI copy concise.');
+    expect(await cli('apply','--repo',repo,'--as','alex','--token',password)).toEqual({code:0,out:'Nothing to apply.'});
+  });
+  test('the previous formula on this same volume carries forward silently',()=>{
+    const {common,st}=facts(),before=legacyIdentityOf(repo,common,st);
+    seedStale(before,'Same repository, no restart.');
+    expect(view()).toMatchObject({revision:2,stale:null,knowledge:{instructions:'Same repository, no restart.'}});
+    expect(store.handle.prepare('SELECT from_identity,actor,how FROM project_identity_carry WHERE repo=?').all(repo)).toEqual([{from_identity:before,actor:'toolroll (same repository)',how:'automatic'}]);
+    expect(store.handle.prepare('SELECT COUNT(*) AS n FROM knowledge_change WHERE repo=?').get(repo)?.['n']).toBe(2);
+    expect(knowledgeContext(store,start())).toContain('Same repository, no restart.');
+  });
+  test('a different repository at the same path still asks',()=>{
+    change('instructions',{instructions:'Belongs to the old repository.'});
+    renameSync(join(repo,'.git'),join(root,'old-git'));git('init','-q');git('add','.');git('-c','user.name=Test','-c','user.email=test@localhost','commit','-qm','new');head=git('rev-parse','HEAD');
+    expect(view()).toMatchObject({knowledge:{instructions:''},stale:{knowledge:{instructions:'Belongs to the old repository.'}}});
+    expect(knowledgeContext(store,start())).toContain('it was not applied');
+    expect(store.handle.prepare('SELECT COUNT(*) AS n FROM project_identity_carry').get()?.['n']).toBe(0);
+  });
+  test('the Knowledge page shows one notice and an approver applies saved knowledge',async()=>{
+    const {common,st}=facts();seedStale(legacyIdentityOf(repo,common,{...st,dev:st.dev+7}),'Mobile copy should be concise.');
+    const server=createDecisionServer({store,evidenceRoot:join(root,'evidence'),repo});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const address=server.address();if(!address||typeof address==='string')throw Error('server');const url=`http://127.0.0.1:${address.port}`;
+    try{
+      const login=await fetch(url+'/login',{method:'POST',body:new URLSearchParams({name:'alex',token:password}),redirect:'manual'});const cookie=login.headers.get('set-cookie')!.split(';')[0]!;
+      const page=await (await fetch(url+'/settings/knowledge',{headers:{cookie}})).text();
+      expect(page.match(/<p role="status">This project&#39;s saved knowledge is from before a change; review and apply it\.<\/p>/g)).toHaveLength(1);expect(page).toContain('Apply saved knowledge');expect(page).not.toContain('Add instructions');
+      const csrf=/name="csrf" value="([^"]+)"/.exec(page)![1]!;
+      const post=(data:Record<string,string>)=>fetch(url+'/settings/knowledge/change',{method:'POST',headers:{cookie},body:new URLSearchParams(data),redirect:'manual'});
+      const data={csrf,repo,identity:view().identity,revision:'1',action:'apply'};
+      expect((await post({...data,csrf:'bad'})).status).toBe(403);expect(view().stale).not.toBeNull();
+      expect((await post(data)).status).toBe(303);
+      expect(view()).toMatchObject({revision:2,stale:null,knowledge:{instructions:'Mobile copy should be concise.'}});
+      expect(store.handle.prepare('SELECT actor,how FROM project_identity_carry').all()).toEqual([{actor:'alex',how:'approver'}]);
+      expect(await (await fetch(url+'/settings/knowledge',{headers:{cookie}})).text()).not.toContain('Apply saved knowledge');
+    }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
   });
   test('v58 upgrade adds knowledge without losing learning and refuses missing v59 history',()=>{
     store.handle.exec('DROP TABLE service_cursor; DROP TABLE project_knowledge; DROP TABLE knowledge_change; DROP TABLE knowledge_snapshot; UPDATE schema_version SET version=58');store.close();store=openStore(db);

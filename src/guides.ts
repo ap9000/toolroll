@@ -436,6 +436,9 @@ and crew agent reads from it before working:
 - Instructions and references change on the Knowledge page under Settings,
   or through the lead's knowledge cards. Every change keeps a revision you
   can restore.
+- If a project was replaced at the same path, its saved knowledge waits:
+  tasks run without it until an approver applies it on the Knowledge page
+  or with \`toolroll knowledge apply --repo PATH --as <you> --token <t>\`.
 - Agent conclusions are not instructions: a crew agent reports; a person or
   the lead's confirmed card records.
 
