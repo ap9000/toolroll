@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { GiveUp, groupAlive, processesIn, spawnOwned, stopGroups, until, waitFor } from "../scripts/e2e-kit.mjs";
@@ -89,20 +89,29 @@ describe("e2e-parallel.mjs", () => {
   let dir: string | null = null;
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
 
-  const runParallel = (env: Record<string, string> = {}, extra: string[] = []) => {
+  type Run = { group: string; out: string; ran: string[]; tmp: string; start: number; end: number; leftoverAlive?: boolean };
+  const GB = 1024 ** 3;
+  /** The stand-in and the machine's readings it runs on (TOOLROLL_CHECK_MACHINE): an idle machine unless a test says. */
+  const prepare = (machine: object = { available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 }) => {
     dir = mkdtempSync(join(tmpdir(), "so-e2e-parallel-"));
-    const script = join(dir, "stand-in-e2e.mjs");
-    writeFileSync(script, STAND_IN);
+    writeFileSync(join(dir, "stand-in-e2e.mjs"), STAND_IN);
+    writeFileSync(join(dir, "machine.json"), JSON.stringify(machine));
+    return { script: join(dir, "stand-in-e2e.mjs"), env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_MACHINE: join(dir, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } };
+  };
+  const runsIn = (at: string) => !existsSync(join(at, "runs.jsonl")) ? [] : readFileSync(join(at, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Run);
+  const runParallel = (env: Record<string, string> = {}, extra: string[] = [], machine?: object) => {
+    const { script, env: base } = prepare(machine);
     let stdout: string, code = 0;
     try {
-      stdout = execFileSync(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir, "out"), ...extra], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), ...env } });
+      stdout = execFileSync(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir!, "out"), ...extra], { encoding: "utf8", env: { ...base, ...env } });
     } catch (error) {
       const failed = error as { status: number; stdout: string };
       stdout = failed.stdout; code = failed.status;
     }
-    const runs = readFileSync(join(dir, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { group: string; out: string; ran: string[]; tmp: string; start: number; end: number; leftoverAlive?: boolean });
-    return { stdout, code, runs };
+    return { stdout, code, runs: runsIn(dir!) };
   };
+  /** Whether any two runs were going at the same time. */
+  const overlapped = (runs: Run[]) => { const spans = [...runs].sort((a, b) => a.start - b.start); return spans.some((one, at) => at > 0 && one.start < spans[at - 1]!.end); };
 
   test("retries only a failed journey, with what it needs and what it held up, and names it flaky when it then passes", () => {
     const { stdout, code, runs } = runParallel();
@@ -158,6 +167,63 @@ describe("e2e-parallel.mjs", () => {
     expect(runs.filter(one => one.group === "alpha")[1]!.ran).toEqual(["Setup (with a $ and parentheses)", "Flaky one", "After flaky", "No browser errors on any page"]);
     expect(stdout).toMatch(/^❌ alpha\s+[0-9.]+ min$/m);
     expect(stdout).toMatch(/^2 of 3 groups passed \(1 flaky journey\) in /m);
+  });
+
+  test("an idle machine: the groups start together, as before, and nothing waits", () => {
+    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "400" });
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/^Running 3 groups, at most 3 at once \(32\.0 GB available, about 400 MB each\): alpha, beta, gamma$/m);
+    expect(overlapped(runs.filter(one => !one.out.endsWith("-retry")))).toBe(true);
+    expect(stdout).not.toContain("waiting for room");
+    expect(stdout).toMatch(/^admission: ran up to 3 groups at a time: lowest 32\.0 GB free, swap up to 0% used; up to 3 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory\); nothing waited for room$/m);
+  });
+
+  test("low memory and full swap: each group and retry waits for room, one at a time, and a retry after a wait still judges flaky", () => {
+    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "100" }, [], { available: 1.5 * GB, swapUsed: 63 * GB, swapTotal: 64 * GB, providers: 1 });
+    expect(code).toBe(0);
+    // alpha and its retry, beta, and gamma's retry (its first run crashed before it could say).
+    expect(runs).toHaveLength(4);
+    expect(overlapped(runs)).toBe(false);
+    expect(stdout).toMatch(/^waiting for room to start stand-in (alpha|beta|gamma): 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB$/m);
+    expect(stdout).toContain("- alpha: Flaky one");
+    expect(stdout).toMatch(/^3 of 3 groups passed \(2 flaky journeys\) in /m);
+    expect(stdout).toMatch(/^admission: ran up to 1 group at a time: lowest 1\.5 GB free, swap up to 98% used; up to 1 provider turn of ours, 1 other session \(cap \d+, from [0-9.]+ GB memory\); [2-4] starts waited [0-9.]+ s in all for room \(longest: stand-in [a-z-]+, 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB\)$/m);
+  });
+
+  test("the provider cap: TOOLROLL_CHECK_PROVIDERS=1 runs one group at a time with memory to spare; a larger cap runs them together", () => {
+    const capped = runParallel({ STAND_IN_HOLD_MS: "150", TOOLROLL_CHECK_PROVIDERS: "1" });
+    expect(capped.code).toBe(0);
+    expect(overlapped(capped.runs)).toBe(false);
+    expect(capped.stdout).toMatch(/^waiting for room to start stand-in [a-z-]+: 1 provider turn of ours and 0 other sessions running, at the cap of 1$/m);
+    expect(capped.stdout).toMatch(/\(cap 1, from TOOLROLL_CHECK_PROVIDERS\)/);
+    rmSync(dir!, { recursive: true, force: true });
+    const roomy = runParallel({ STAND_IN_HOLD_MS: "400", TOOLROLL_CHECK_PROVIDERS: "3" });
+    expect(overlapped(roomy.runs.filter(one => !one.out.endsWith("-retry")))).toBe(true);
+    rmSync(dir!, { recursive: true, force: true });
+    const bad = runParallel({ TOOLROLL_CHECK_PROVIDERS: "many" });
+    expect(bad.code).toBe(2);
+    expect(bad.runs).toEqual([]);
+  });
+
+  test("two runners on one gate (the release check's flows and app) share one provider cap", async () => {
+    const { script, env } = prepare();
+    const gate = join(dir!, "gate");
+    const runner = (out: string) => new Promise<{ code: number | null; stdout: string }>(done => {
+      const child = spawn(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir!, out), "--only", "Beta|Independent|Gamma|No browser"], { env: { ...env, STAND_IN_HOLD_MS: "150", TOOLROLL_CHECK_GATE: gate, TOOLROLL_CHECK_PROVIDERS: "2" } });
+      let stdout = "";
+      child.stdout.on("data", chunk => { stdout += chunk; });
+      child.on("close", code => done({ code, stdout }));
+    });
+    const [flows, app] = await Promise.all([runner("flows"), runner("app")]);
+    const runs = runsIn(dir!).sort((a, b) => a.start - b.start);
+    // At no moment more than 2 groups between the two runners.
+    for (const one of runs) expect(runs.filter(other => other.start <= one.start && other.end > one.start).length).toBeLessThanOrEqual(2);
+    expect(runs.length).toBeGreaterThanOrEqual(6);
+    expect(`${flows.stdout}${app.stdout}`).toMatch(/at the cap of 2$/m);
+    // Each runner reports its own starts; the gate's leases are all let go.
+    expect(flows.stdout).toMatch(/^admission: ran up to [12] groups? at a time: /m);
+    expect(readdirSync(join(gate, "leases"))).toEqual([]);
+    expect([flows.code, app.code]).toEqual([0, 0]);
   });
 
   test("a run killed outright leaves no process behind: its listed process groups stop before the retry", () => {

@@ -13,6 +13,12 @@
  * setup journeys); a journey that passes then was a flaky model. Everything
  * stops at the time cap.
  *
+ * The build, each suite and each retry start only when the machine has room:
+ * memory, swap and a slot under the cap on real provider turns
+ * (scripts/check-memory.mjs; TOOLROLL_CHECK_PROVIDERS sets the cap). Time spent
+ * waiting for room moves that suite's cap on by as much, so a busy machine
+ * makes the run slower, never a timeout.
+ *
  * Its progress goes to stderr (the step's log). What it prints on stdout is
  * the step's result: a short summary — each journey that failed twice, its
  * error and what it saw — and a last line "goto: pass" or "goto: fail".
@@ -23,6 +29,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet } from "../e2e-kit.mjs";
+import { admissionWords, DEMAND, openGate } from "../check-memory.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
@@ -41,10 +48,22 @@ const running = new Set();
 // Stopped from outside (the zone's own time limit): take every suite's console, worker and browser along.
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { for (const pid of running) { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } } process.exit(1); });
 
-/** Run one command in its own process group, its output to the log; at the cap the whole group (console, worker, browser) stops. */
-function run(label, file, argv) {
+let gate;
+try { gate = openGate({ log }); } catch (error) { log(error.message); process.exit(2); }
+// What a suite runs isn't one of these starts: it doesn't take the gate along.
+const { TOOLROLL_CHECK_GATE: _gate, ...inherited } = process.env;
+
+/**
+ * Run one command in its own process group, its output to the log, once the gate has room for `demand`; at the cap the
+ * whole group (console, worker, browser) stops. `late` ({ ms }) is how long this suite has waited for room so far: its
+ * cap moves on by that much.
+ */
+function run(label, file, argv, demand = DEMAND.group, late = { ms: 0 }) {
+  return gate.hold(label, demand, ({ waitedMs }) => { late.ms += waitedMs; return start(label, file, argv, late); });
+}
+function start(label, file, argv, late) {
   return new Promise(done => {
-    const child = spawn(file, argv, { cwd: here, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NODE_OPTIONS: "" } });
+    const child = spawn(file, argv, { cwd: here, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, NODE_OPTIONS: "" } });
     running.add(child.pid);
     let tail = "", timedOut = false;
     for (const stream of [child.stdout, child.stderr]) {
@@ -56,7 +75,7 @@ function run(label, file, argv) {
       });
     }
     const stop = signal => { try { process.kill(-child.pid, signal); } catch { /* already gone */ } };
-    const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); setTimeout(() => stop("SIGKILL"), 5_000).unref(); }, Math.max(0, deadline - Date.now()));
+    const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); setTimeout(() => stop("SIGKILL"), 5_000).unref(); }, Math.max(0, deadline + late.ms - Date.now()));
     child.on("error", error => { clearTimeout(timer); done({ code: 127, timedOut, tail: error.message }); });
     child.on("close", code => { clearTimeout(timer); stop("SIGKILL"); running.delete(child.pid); done({ code: code ?? 1, timedOut, tail }); });
   });
@@ -65,7 +84,8 @@ const report = folder => { try { return JSON.parse(readFileSync(join(out, folder
 
 /** One suite: its run, and when a journey failed, one more with just those journeys and what they need. */
 async function suite({ name, argv }) {
-  const first = await run(name, process.execPath, [...argv, ...(only === null ? [] : ["--only", only]), "--output", join(out, name)]);
+  const late = { ms: building.ms };
+  const first = await run(name, process.execPath, [...argv, ...(only === null ? [] : ["--only", only]), "--output", join(out, name)], DEMAND.group, late);
   const before = report(name);
   const failedBefore = (before ?? []).filter(one => one.state === "failed");
   if (first.code === 0 && failedBefore.length === 0) return { name, ok: true, final: before ?? [], flaky: [] };
@@ -76,7 +96,7 @@ async function suite({ name, argv }) {
   // The retry's own --only replaces the first run's, and a suite's own (its journeys are a subset of them).
   const again = journeys === null ? only === null ? [] : ["--only", only] : ["--only", exactly([...new Set([...journeys, BROWSER_CHECK])])];
   const own = journeys === null ? argv : argv.filter((one, at) => one !== "--only" && argv[at - 1] !== "--only");
-  const second = await run(`${name}-retry`, process.execPath, [...own, ...again, "--output", join(out, `${name}-retry`)]);
+  const second = await run(`${name}-retry`, process.execPath, [...own, ...again, "--output", join(out, `${name}-retry`)], DEMAND.group, late);
   const after = report(`${name}-retry`);
   const cleared = second.code === 0 && (before === null || retryCleared(before, after));
   // What each journey came to: the second try's result for those it ran again.
@@ -102,7 +122,8 @@ mkdirSync(out, { recursive: true });
 log(`Real-model journeys: ${SUITES.map(one => one.name).join(", ")}, up to ${cap / 60_000} minutes — ${out}`);
 const summary = [];
 let ok = true;
-const built = args.includes("--no-build") ? { code: 0 } : await run("build", "npm", ["run", "build"]);
+const building = { ms: 0 };
+const built = args.includes("--no-build") ? { code: 0 } : await run("build", "npm", ["run", "build"], DEMAND.build, building);
 if (built.code !== 0) {
   ok = false;
   summary.push(`Toolroll didn't build${built.timedOut ? " in time" : ` (exit ${built.code})`}: ${clip(built.tail.trim().split("\n").slice(-3).join(" | "), 400)}`);
@@ -123,6 +144,8 @@ if (built.code !== 0) {
   if (flaky.length > 0) summary.push(`Flaky, passed on the second try: ${clip(flaky.join("; "), 400)}`);
   if (skipped.length > 0) summary.push(`Skipped: ${clip(skipped.join("; "), 400)}`);
 }
+log(admissionWords(gate.facts(process.pid), "suites"));
+gate.close();
 summary.push(`Reports: ${out}`, `goto: ${ok ? "pass" : "fail"}`);
 process.stdout.write(`${summary.join("\n")}\n`);
 process.exitCode = ok ? 0 : 1;

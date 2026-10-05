@@ -4,7 +4,11 @@
  * fail if any group fails. The script lists its groups with `--groups --json`
  * and runs one with `--group <name>`. At most as many groups run at once as
  * the memory available allows (~400 MB each, at most 6; --at-once <n> sets it),
- * and a group starts only while there is room for it (check-memory.mjs).
+ * and each group, its retry too, starts only when the machine has room for it:
+ * memory, swap and a slot under the cap on real provider turns
+ * (check-memory.mjs). Run by the release check, it shares that check's gate
+ * (TOOLROLL_CHECK_GATE) with the other suites. A wait for room comes before a
+ * group starts, so it never eats into a journey's own time.
  *
  *   npm run e2e:app:parallel      (or: node scripts/e2e-parallel.mjs scripts/app-e2e.mjs [--no-retry] [--at-once <n>] [--output <dir>] [--keep] [--only <pattern>] …)
  *
@@ -25,7 +29,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopGroups, stopLeftovers } from "./e2e-kit.mjs";
-import { availableMemory, browserSlots, limiter } from "./check-memory.mjs";
+import { admissionWords, browserSlots, DEMAND, limiter, openGate } from "./check-memory.mjs";
 
 const [script, ...given] = process.argv.slice(2);
 if (script === undefined) { console.error("Usage: node scripts/e2e-parallel.mjs <script.mjs> [--no-retry] [--at-once <n>] [--output <dir>] [options for every group]"); process.exit(2); }
@@ -42,12 +46,15 @@ const out = resolve(at === -1 ? join(here, "output/e2e", `${name}-parallel-${new
 const started = Date.now();
 const minutes = ms => Math.round(ms / 6000) / 10;
 const width = Math.max(...groups.map(one => one.name.length)) + "-retry".length;
-const available = availableMemory();
+let gate;
+try { gate = openGate({ log: line => console.log(line) }); } catch (error) { console.error(error.message); process.exit(2); }
+const available = gate.sample().available;
 const limit = Math.min(groups.length, atOnce ?? browserSlots(available));
-const slot = limiter(limit);
+// The limit is the most at once; the gate decides, at each start, whether there is room for one more.
+const slot = limiter(limit, { room: () => true });
 console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
 
-const runGroup = (group, folder, extra = []) => slot(() => new Promise(done => {
+const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${folder}`, DEMAND.group, () => new Promise(done => {
   const at = Date.now();
   // Its own temp folder: what it leaves there (a world kept after a crash, Chrome's profile) goes when it ends.
   const temp = mkdtempSync(join(tmpdir(), "so-e2e-tmp-"));
@@ -73,7 +80,7 @@ const runGroup = (group, folder, extra = []) => slot(() => new Promise(done => {
     if (!keep) rmSync(temp, { recursive: true, force: true, maxRetries: 3 });
     done({ group, folder, code: code ?? 1, signal, minutes: minutes(Date.now() - at) });
   });
-}));
+})));
 const running = new Set();
 // Interrupted, the runner takes every group's run with it (they are not in its process group); each run's own exit
 // handler stops what it owns.
@@ -120,4 +127,7 @@ const failed = finished.filter(one => one.code !== 0);
 console.log(finished.map(one => `${one.code === 0 ? "✅" : "❌"} ${one.group.padEnd(width)}  ${one.minutes} min`).join("\n"));
 if (flaky.length > 0) console.log(`\nFlaky, passed on the second try:\n${flaky.map(one => `- ${one}`).join("\n")}`);
 console.log(`\n${groups.length - failed.length} of ${groups.length} groups passed${flaky.length > 0 ? ` (${flaky.length} flaky journey${flaky.length === 1 ? "" : "s"})` : ""} in ${minutes(Date.now() - started)} min — ${out}`);
+// This runner's own starts: "admission: ran up to 3 groups at a time: lowest 3.1 GB free, swap up to 97% used; …".
+console.log(admissionWords(gate.facts(process.pid), "groups"));
+gate.close();
 process.exitCode = failed.length === 0 ? 0 : 1;
