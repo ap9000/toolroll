@@ -25,7 +25,7 @@ export const TEST_TEMP_PREFIXES: readonly string[] = [
   "flow-goal-", "flow-scratch", "flows-chat-", "invoke-attest-", "knowledge-test-", "learning-", "peek-", "phone-origin-",
   "proposal-repo-", "race-", "refresh-migration-", "refresh-refusal-", "release-check-", "shared-chat-", "skills-test-",
   "task-status-surfaces-", "template-repo-", "template-test-", "v14-migrate-", "v17-migrate-", "watch-anchor-",
-  "needs-you-", "deps-lock-", "deps-state-", "upgrade-fresh-", "upgrade-path-", "deploy-restore-", "result-review-", "one-result-page-", "deploy-before-swap-", "one-vocabulary-", "accept-finishes-", "lead-promises-", "lead-people-", "sizing-repo-",
+  "needs-you-", "deps-lock-", "deps-state-", "upgrade-fresh-", "upgrade-path-", "deploy-restore-", "result-review-", "one-result-page-", "deploy-before-swap-", "one-vocabulary-", "accept-finishes-", "lead-promises-", "lead-people-", "sizing-repo-", "batch-checks-", "deps-identity-",
   // Playwright's browser profiles and artifacts.
   "playwright_chromiumdev_profile-", "playwright_firefoxdev_profile-", "playwright-artifacts-",
 ];
