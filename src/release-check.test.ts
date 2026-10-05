@@ -1,15 +1,15 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { definesSchema, journeyShares, planFor, versionOnly } from "../scripts/release-check.mjs";
 import { atLeast, completionProblems, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
-import { DEMAND, GROUP_BYTES, admissionWords, admit, browserSlots, limiter, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
+import { DEMAND, GROUP_BYTES, admissionWords, admit, browserSlots, limiter, memoryPressure, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
 
 const MB = 1024 * 1024, GB = 1024 * MB;
 /** An idle machine's readings for a rehearsal (TOOLROLL_CHECK_MACHINE). */
-const IDLE = { available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
+const IDLE = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
 
 const pkg = (version: string, dependencies: Record<string, string> = { zod: "^3.23.0" }) => JSON.stringify({ name: "toolroll", version, type: "module", dependencies }, null, 2) + "\n";
 const lock = (version: string, zod = "3.23.8") => JSON.stringify({
@@ -90,7 +90,7 @@ describe("node scripts/release-check.mjs --plan", () => {
     expect(summary.split("\n").slice(0, 4)).toEqual(["== summary", "plan: every unit test (test/setup.ts changed); no browser journeys (nothing a page shows changed); only the version changed in package.json", "unit: exit 0", " Test Files  1 passed (1) after ok, waited true"]);
     // An idle machine: typecheck, build and the unit tests all start at once, as before; nothing waits.
     expect(out).not.toContain("waiting for room");
-    expect(summary).toMatch(/\ntook: typecheck \d+ s, build \d+ s, unit \d+ s; whole check \d+ s\nadmission: ran up to 3 at a time: lowest 32\.0 GB free, swap up to 0% used; no provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory\); nothing waited for room\npeak memory: (the check's processes [0-9.]+ GB; )?the machine [0-9.]+ GB in use of [0-9.]+ GB \(lowest available [0-9.]+ GB\)\n$/);
+    expect(summary).toMatch(/\ntook: typecheck \d+ s, build \d+ s, unit \d+ s; whole check \d+ s\nadmission: ran up to 3 at a time: lowest 32\.0 GB free, swap up to 0% used; no provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); nothing waited for room\npeak memory: (the check's processes [0-9.]+ GB; )?the machine [0-9.]+ GB in use of [0-9.]+ GB \(lowest available [0-9.]+ GB\)\n$/);
   });
 
   test("a busy machine: each part starts only when there is room, one after the other, and the summary says so", () => {
@@ -106,14 +106,14 @@ describe("node scripts/release-check.mjs --plan", () => {
     mkdirSync(join(dir, "test")); writeFileSync(join(dir, "test", "setup.ts"), "export {};\n");
     git("add", "."); git("commit", "-qm", "change");
     // 1.5 GB free and swap 97% used: room for no second start beside the first.
-    writeFileSync(join(dir, "machine.json"), JSON.stringify({ available: 1.5 * GB, swapUsed: 97 * GB, swapTotal: 100 * GB, providers: 2 }));
+    writeFileSync(join(dir, "machine.json"), JSON.stringify({ platform: "linux", pressure: null, available: 1.5 * GB, swapUsed: 97 * GB, swapTotal: 100 * GB, providers: 2 }));
     const out = execFileSync(process.execPath, [script, "--base", base], { cwd: dir, encoding: "utf8", env: { ...process.env, TOOLROLL_CHECK_MACHINE: join(dir, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } });
     // The build waited for the typecheck and the unit tests for the build; they still ran, and on the finished build.
     expect(out).toMatch(/^waiting for room to start build: 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB$/m);
     expect(out).toMatch(/^waiting for room to start unit: /m);
     const summary = out.slice(out.indexOf("== summary"));
     expect(summary).toContain("unit: exit 0\n Test Files  1 passed (1) after ok\n");
-    expect(summary).toMatch(/\nadmission: ran up to 1 at a time: lowest 1\.5 GB free, swap up to 97% used; no provider turns of ours, 2 other sessions \(cap \d+, from [0-9.]+ GB memory\); 2 starts waited [0-9.]+ (s|min) in all for room \(longest: (build|unit), 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB\)\npeak memory: /);
+    expect(summary).toMatch(/\nadmission: ran up to 1 at a time: lowest 1\.5 GB free, swap up to 97% used; no provider turns of ours, 2 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); 2 starts waited [0-9.]+ (s|min) in all for room \(longest: (build|unit), 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB\)\npeak memory: /);
   });
 
   test("a real dependency change still runs everything", () => {
@@ -247,31 +247,53 @@ describe("checks fit memory", () => {
     expect(parseMeminfoSwap("MemAvailable:  8000000 kB\n")).toBeNull();
   });
 
-  test("the machine's readings, or a rehearsal's; an unreadable rehearsal is a machine with no room", () => {
-    const real = sampleMachine({ env: {}, available: () => 5 * GB, swap: () => ({ total: 4 * GB, used: 1 * GB }), providers: () => 3 });
-    expect(real).toEqual({ available: 5 * GB, swapUsed: 1 * GB, swapTotal: 4 * GB, providers: 3 });
-    expect(sampleMachine({ env: {}, available: () => 5 * GB, swap: () => null, providers: () => null })).toEqual({ available: 5 * GB, swapUsed: null, swapTotal: null, providers: null });
+  test("macOS reads kernel pressure levels; unavailable or unknown readings stay unknown, and Linux does not call sysctl", () => {
+    const read = vi.fn();
+    for (const level of [1, 2, 4]) {
+      read.mockReturnValue(`${level}\n`);
+      expect(memoryPressure({ platform: "darwin", read })).toBe(level);
+      expect(read).toHaveBeenLastCalledWith("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], { encoding: "utf8", timeout: 5_000 });
+    }
+    for (const unknown of ["", "0", "3", "unavailable"]) {
+      read.mockReturnValue(unknown);
+      expect(memoryPressure({ platform: "darwin", read })).toBeNull();
+    }
+    read.mockImplementation(() => { throw new Error("unknown oid"); });
+    expect(memoryPressure({ platform: "darwin", read })).toBeNull();
+    read.mockClear();
+    expect(memoryPressure({ platform: "linux", read })).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  test("the machine's readings include macOS pressure; rehearsals choose their platform and pressure independently of the host", () => {
+    const real = sampleMachine({ env: {}, platform: "darwin", available: () => 5 * GB, swap: () => ({ total: 4 * GB, used: 1 * GB }), pressure: () => 2, providers: () => 3 });
+    expect(real).toEqual({ platform: "darwin", pressure: 2, available: 5 * GB, swapUsed: 1 * GB, swapTotal: 4 * GB, providers: 3 });
+    expect(sampleMachine({ env: {}, platform: "darwin", available: () => 5 * GB, swap: () => null, pressure: () => null, providers: () => null })).toEqual({ platform: "darwin", pressure: null, available: 5 * GB, swapUsed: null, swapTotal: null, providers: null });
+    expect(sampleMachine({ env: {}, platform: "linux", available: () => 5 * GB, swap: () => null, pressure: () => { throw new Error("macOS only"); }, providers: () => 0 })).toMatchObject({ platform: "linux", pressure: null });
     const at = mkdtempSync(join(tmpdir(), "so-machine-"));
     try {
-      writeFileSync(join(at, "m.json"), JSON.stringify({ available: GB, swapUsed: 9, swapTotal: 10, providers: 4 }));
-      expect(sampleMachine({ env: { TOOLROLL_CHECK_MACHINE: join(at, "m.json") } })).toEqual({ available: GB, swapUsed: 9, swapTotal: 10, providers: 4 });
+      const fake = { platform: "darwin", pressure: 4, available: GB, swapUsed: 9, swapTotal: 10, providers: 4 };
+      writeFileSync(join(at, "m.json"), JSON.stringify(fake));
+      expect(sampleMachine({ platform: "linux", env: { TOOLROLL_CHECK_MACHINE: join(at, "m.json") } })).toEqual(fake);
       expect(sampleMachine({ env: { TOOLROLL_CHECK_MACHINE: join(at, "missing.json") } })).toMatchObject({ available: 0 });
     } finally { rmSync(at, { recursive: true, force: true }); }
   });
 
-  test("one cap on real provider turns: 1 per 5 GB of memory, 2 to 12, or TOOLROLL_CHECK_PROVIDERS", () => {
-    expect([8, 16, 32, 64, 128].map(gigs => providerCap({}, gigs * GB).cap)).toEqual([2, 3, 6, 12, 12]);
-    expect(providerCap({}, 64 * GB).from).toBe("64.0 GB memory");
+  test("one cap on real provider turns: default at most 4, lower on small machines, or TOOLROLL_CHECK_PROVIDERS", () => {
+    expect([1, 4, 8, 10, 16, 20, 32, 64, 128].map(gigs => providerCap({}, gigs * GB).cap)).toEqual([1, 1, 1, 2, 3, 4, 4, 4, 4]);
+    expect(providerCap({}, 64 * GB).from).toBe("64.0 GB memory, default maximum 4");
     expect(providerCap({ TOOLROLL_CHECK_PROVIDERS: "3" }, 64 * GB)).toEqual({ cap: 3, from: "TOOLROLL_CHECK_PROVIDERS" });
+    expect(providerCap({ TOOLROLL_CHECK_PROVIDERS: "8" }, 64 * GB)).toEqual({ cap: 8, from: "TOOLROLL_CHECK_PROVIDERS" });
     for (const bad of ["0", "-1", "2.5", "lots"]) expect(() => providerCap({ TOOLROLL_CHECK_PROVIDERS: bad }), bad).toThrow("TOOLROLL_CHECK_PROVIDERS takes a whole number, 1 or more");
   });
 
-  test("admission: room for memory plus a reserve (more once swap is 90% used), less what recent starts will take; a provider slot; the first start always", () => {
+  test("Linux admission keeps its swap reserve and serial memory fallback, but every start needs a provider slot", () => {
     const now = 1_000_000, old = now - 60_000;
-    const idle = { available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
+    const idle = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
     const group = DEMAND.group;
-    // Nothing of ours running: it starts whatever the machine says, so a check never waits for nothing.
-    expect(admit(group, { available: 0, swapUsed: 99, swapTotal: 100, providers: 50 }, [], { cap: 2, now })).toEqual({ ok: true, why: null });
+    // The existing serial memory fallback remains, but cannot bypass the provider cap.
+    expect(admit(group, { ...idle, available: 0, swapUsed: 99, swapTotal: 100 }, [], { cap: 2, now })).toEqual({ ok: true, why: null });
+    expect(admit(group, { ...idle, providers: 4 }, [], { cap: 4, now })).toEqual({ ok: false, why: "0 provider turns of ours and 4 other sessions running, at the cap of 4" });
     const one = { bytes: GB, providers: 1, at: old };
     expect(admit(group, idle, [one], { cap: 12, now }).ok).toBe(true);
     // Low memory: 1 GB of group plus the 1 GB reserve doesn't fit in 1.5 GB.
@@ -289,21 +311,109 @@ describe("checks fit memory", () => {
     expect(admit(DEMAND.unit, { ...idle, providers: 40 }, [one], { cap: 2, now }).ok).toBe(true);
   });
 
+  test("the default cap stops a fifth turn even with the failed run's 11.3 GB available, counting other sessions", () => {
+    const now = 1_000_000;
+    const held = { ...DEMAND.group, at: now - 60_000 };
+    const sample = { ...IDLE, available: 11.3 * GB };
+    const cap = providerCap({}, 64 * GB).cap;
+    expect(admit(DEMAND.group, sample, [held, held, held], { cap, now }).ok).toBe(true);
+    expect(admit(DEMAND.group, sample, [held, held, held, held], { cap, now }).ok).toBe(false);
+    expect(admit(DEMAND.group, { ...sample, providers: 4 }, [held, held], { cap, now }).ok).toBe(false);
+    expect(admit(DEMAND.group, { ...sample, providers: 12 }, [], { cap, now }).ok).toBe(false);
+  });
+
+  test("macOS uses kernel pressure: sticky swap at normal does not slow starts, warn reserves 4 GB, critical always waits", () => {
+    const now = 1_000_000;
+    const one = { ...DEMAND.group, at: now - 60_000 };
+    const sample = { ...IDLE, platform: "darwin", pressure: 1, available: 3 * GB, swapUsed: 98, swapTotal: 100 };
+    expect(admit(DEMAND.group, sample, [one], { cap: 4, now }).ok).toBe(true);
+    // A missing macOS pressure reading must not turn sticky swap into a pressure signal either.
+    expect(admit(DEMAND.group, { ...sample, pressure: null }, [one], { cap: 4, now }).ok).toBe(true);
+    for (const held of [[], [one]]) {
+      expect(admit(DEMAND.group, { ...sample, pressure: 2, swapUsed: 0 }, held, { cap: 4, now })).toEqual({ ok: false, why: "3.0 GB free, macOS pressure warn; it needs 5.0 GB" });
+      expect(admit(DEMAND.group, { ...sample, pressure: 2, available: 5 * GB }, held, { cap: 4, now }).ok).toBe(true);
+      for (const demand of [DEMAND.group, DEMAND.build]) {
+        expect(admit(demand, { ...sample, pressure: 4, available: 32 * GB, swapUsed: 0 }, held, { cap: 4, now })).toEqual({ ok: false, why: "macOS memory pressure critical; waiting for it to ease" });
+      }
+    }
+  });
+
   /** A gate on fake readings that the test changes as it goes; `owner` stands for a runner process. */
-  const gateOn = (dir: string, machine: { available: number; swapUsed: number | null; swapTotal: number | null; providers: number | null }, owner: number, env: Record<string, string> = {}, lines: string[] = []) =>
-    openGate({ dir, env, sample: () => ({ ...machine }), everyMs: 5, sayEveryMs: 60_000, owner, alive: pid => pid !== 4_000_000, log: line => lines.push(line) });
+  const gateOn = (dir: string, machine: { platform: string; pressure: number | null; available: number; swapUsed: number | null; swapTotal: number | null; providers: number | null }, owner: number, env: Record<string, string> = {}, lines: string[] = []) =>
+    openGate({ dir, env, total: 64 * GB, sample: () => ({ ...machine }), everyMs: 5, sayEveryMs: 60_000, owner, alive: pid => pid !== 4_000_000, log: line => lines.push(line) });
   const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
 
-  test("an idle machine: every group starts at once, as before, and nothing waits", async () => {
+  test.each([{ count: 4, env: {}, from: "64.0 GB memory, default maximum 4" }, { count: 6, env: { TOOLROLL_CHECK_PROVIDERS: "6" }, from: "TOOLROLL_CHECK_PROVIDERS" }])("an idle machine starts $count groups together without waiting (cap from $from)", async ({ count, env, from }) => {
     const at = mkdtempSync(join(tmpdir(), "so-gate-"));
     try {
-      const gate = gateOn(at, IDLE, 101);
+      const gate = gateOn(at, IDLE, 101, env);
       let running = 0, most = 0;
-      await Promise.all([1, 2, 3, 4, 5, 6].map(n => gate.hold(`app g${n}`, DEMAND.group, async ({ waitedMs }) => { running++; most = Math.max(most, running); await pause(30); running--; return waitedMs; })));
-      expect(most).toBe(6);
-      expect(gate.facts()).toMatchObject({ starts: 6, most: 6, waits: 0, providers: 6, others: 0, lowest: 32 * GB, highestSwap: 0 });
-      expect(admissionWords(gate.facts(101), "groups")).toMatch(/^admission: ran up to 6 groups at a time: lowest 32\.0 GB free, swap up to 0% used; up to 6 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory\); nothing waited for room$/);
+      const ready = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      const runs = Array.from({ length: count }, (_, n) => gate.hold(`app g${n}`, DEMAND.group, async () => { running++; most = Math.max(most, running); if (running === count) ready.resolve(); await finish.promise; running--; }));
+      await ready.promise;
+      finish.resolve();
+      await Promise.all(runs);
+      expect(most).toBe(count);
+      expect(gate.facts()).toMatchObject({ starts: count, most: count, waits: 0, providers: count, others: 0, lowest: 32 * GB, highestSwap: 0 });
+      expect(admissionWords(gate.facts(101), "groups")).toBe(`admission: ran up to ${count} groups at a time: lowest 32.0 GB free, swap up to 0% used; up to ${count} provider turns of ours, 0 other sessions (cap ${count}, from ${from}); nothing waited for room`);
+      gate.close();
     } finally { rmSync(at, { recursive: true, force: true }); }
+  });
+
+  test("six groups across two runners share the default cap of four and start the rest when a slot opens", async () => {
+    const at = mkdtempSync(join(tmpdir(), "so-gate-"));
+    const ready = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const lines: string[] = [];
+    const log = (line: string) => { lines.push(line); if (lines.length === 2) waiting.resolve(); };
+    const options = { dir: at, env: {}, total: 64 * GB, sample: () => IDLE, everyMs: 1, alive: () => true, log };
+    const flows = openGate({ ...options, owner: 101 }), app = openGate({ ...options, owner: 102 });
+    try {
+      let running = 0, most = 0;
+      const runs = Array.from({ length: 6 }, (_, n) => (n % 2 === 0 ? flows : app).hold(`group ${n}`, DEMAND.group, async () => {
+        running++; most = Math.max(most, running);
+        if (running === 4) ready.resolve();
+        await finish.promise;
+        running--;
+      }));
+      await Promise.all([ready.promise, waiting.promise]);
+      expect(lines).toHaveLength(2);
+      expect(lines.every(line => line.endsWith("4 provider turns of ours and 0 other sessions running, at the cap of 4"))).toBe(true);
+      finish.resolve();
+      await Promise.all(runs);
+      expect(most).toBe(4);
+      expect(flows.facts()).toMatchObject({ cap: 4, starts: 6, most: 4, providers: 4, waits: 2 });
+    } finally { finish.resolve(); flows.close(); app.close(); rmSync(at, { recursive: true, force: true }); }
+  });
+
+  test("macOS critical and warn hold the first start; fresh normal pressure admits it despite 98% swap and the summary records the wait", async () => {
+    const at = mkdtempSync(join(tmpdir(), "so-gate-"));
+    let tick = 0;
+    const levels = [4, 2, 1], lines: string[] = [];
+    const sample = vi.fn(() => { tick += 1_000; return { ...IDLE, platform: "darwin", pressure: levels.shift(), available: 3 * GB, swapUsed: 98, swapTotal: 100 }; });
+    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample, now: () => tick, everyMs: 1, sayEveryMs: 0, log: (line: string) => lines.push(line) });
+    try {
+      await gate.hold("app lead", DEMAND.group, async ({ waitedMs }) => { expect(sample).toHaveBeenCalledTimes(3); expect(waitedMs).toBe(3_000); });
+      expect(lines).toEqual([
+        "waiting for room to start app lead: macOS memory pressure critical; waiting for it to ease",
+        "waiting for room to start app lead: 3.0 GB free, macOS pressure warn; it needs 5.0 GB",
+      ]);
+      const facts = gate.facts();
+      expect(facts).toMatchObject({ starts: 1, macOS: true, highestPressure: 4, highestSwap: 98, waits: 1 });
+      expect(admissionWords(facts, "groups")).toBe("admission: ran up to 1 group at a time: lowest 3.0 GB free, macOS pressure up to critical, swap up to 98% used; up to 1 provider turn of ours, 0 other sessions (cap 4, from 64.0 GB memory, default maximum 4); 1 start waited 3 s in all for room (longest: app lead, 3.0 GB free, macOS pressure warn; it needs 5.0 GB)");
+      expect(admissionWords({ ...facts, highestPressure: null })).toContain("macOS pressure unknown, swap up to 98% used");
+    } finally { gate.close(); rmSync(at, { recursive: true, force: true }); }
+  });
+
+  test("a first provider turn waits for other sessions to release a slot", async () => {
+    const at = mkdtempSync(join(tmpdir(), "so-gate-"));
+    let sessions = 4;
+    const lines: string[] = [];
+    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample: () => ({ ...IDLE, providers: sessions }), everyMs: 1, log: (line: string) => { lines.push(line); sessions--; } });
+    try {
+      await gate.hold("flows lead", DEMAND.group, async () => { expect(sessions).toBe(3); });
+      expect(lines).toEqual(["waiting for room to start flows lead: 0 provider turns of ours and 4 other sessions running, at the cap of 4"]);
+      expect(gate.facts()).toMatchObject({ starts: 1, cap: 4, waits: 1, others: 3 });
+    } finally { gate.close(); rmSync(at, { recursive: true, force: true }); }
   });
 
   test("two runners share one gate: one provider cap between them, the waits said and recorded, a dead runner's leases dropped", async () => {

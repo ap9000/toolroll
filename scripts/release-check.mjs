@@ -27,8 +27,8 @@
  * again; they ask for room once the build has it); the journeys start when
  * the build is done, flows-e2e and app-e2e each in parallel groups
  * (scripts/e2e-parallel.mjs), together at most 6 browser groups at once.
- * Every start waits for memory, swap and a provider slot (one cap on real
- * Claude/Codex turns for every suite) through one gate the runners share
+ * Every start checks memory, macOS kernel pressure (Linux swap) and a provider slot (one cap on real
+ * Claude/Codex turns for every suite, default at most 4) through one gate the runners share
  * (check-memory.mjs), so a busy machine makes the check slower, never wrong.
  * The summary says what admission did and records the peak memory.
  *

@@ -5,8 +5,8 @@
  * and runs one with `--group <name>`. At most as many groups run at once as
  * the memory available allows (~400 MB each, at most 6; --at-once <n> sets it),
  * and each group, its retry too, starts only when the machine has room for it:
- * memory, swap and a slot under the cap on real provider turns
- * (check-memory.mjs). Run by the release check, it shares that check's gate
+ * memory, macOS kernel pressure (Linux swap) and a slot under the cap on real provider turns
+ * (default at most 4; check-memory.mjs). Run by the release check, it shares that check's gate
  * (TOOLROLL_CHECK_GATE) with the other suites. A wait for room comes before a
  * group starts, so it never eats into a journey's own time.
  *

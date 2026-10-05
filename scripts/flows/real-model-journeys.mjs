@@ -14,8 +14,8 @@
  * stops at the time cap.
  *
  * The build, each suite and each retry start only when the machine has room:
- * memory, swap and a slot under the cap on real provider turns
- * (scripts/check-memory.mjs; TOOLROLL_CHECK_PROVIDERS sets the cap). Time spent
+ * memory, macOS kernel pressure (Linux swap) and a slot under the cap on real provider turns
+ * (default at most 4; scripts/check-memory.mjs; TOOLROLL_CHECK_PROVIDERS overrides it). Time spent
  * waiting for room moves that suite's cap on by as much, so a busy machine
  * makes the run slower, never a timeout.
  *

@@ -39,7 +39,7 @@ process.exitCode = failed.size > 0 ? 1 : 0;
 
 describe("real-model-journeys.mjs", () => {
   const GB = 1024 ** 3;
-  const IDLE = { available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
+  const IDLE = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
   /** The script on the stand-in suite (or `suites` of it), on the machine's readings given (an idle machine unless said). */
   const journeys = (env: Record<string, string>, extra: string[] = [], { machine = IDLE, suites = ["flows"] }: { machine?: object; suites?: string[] } = {}) => {
     const at = folder();
@@ -82,16 +82,16 @@ describe("real-model-journeys.mjs", () => {
     const [a, b] = spans.sort((x, y) => x.start - y.start);
     expect(b!.start).toBeLessThan(a!.end);
     expect(stderr).not.toContain("waiting for room");
-    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory\); nothing waited for room$/m);
+    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); nothing waited for room$/m);
   });
 
   test("a busy machine: the second suite waits for room, and its wait doesn't count against its time cap", () => {
     // A 0.05-minute (3 s) cap; each suite takes 2 s, so the second, waiting 2 s for room, ends after the first's cap.
-    const { code, stdout, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "2000" }, ["--only", "^Independent$", "--minutes", "0.05"], { suites: ["flows", "lead"], machine: { available: 1.5 * GB, swapUsed: 97, swapTotal: 100, providers: 3 } });
+    const { code, stdout, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "2000" }, ["--only", "^Independent$", "--minutes", "0.05"], { suites: ["flows", "lead"], machine: { platform: "linux", pressure: null, available: 1.5 * GB, swapUsed: 97, swapTotal: 100, providers: 3 } });
     const [a, b] = spans.sort((x, y) => x.start - y.start);
     expect(b!.start).toBeGreaterThanOrEqual(a!.end);
     expect(stderr).toMatch(/^waiting for room to start (flows|lead): 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB$/m);
-    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [0-9.]+ GB memory\); 1 start waited [0-9.]+ s in all for room/m);
+    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); 1 start waited [0-9.]+ s in all for room/m);
     expect(stdout).toContain("Every real-model journey passed (flows 1, lead 1)");
     expect(code).toBe(0);
   });
