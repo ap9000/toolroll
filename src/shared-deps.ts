@@ -14,12 +14,13 @@
  * The link is read-only to the build. A checkout whose package.json or lockfile no longer matches the copy it links
  * gets its own install (the link goes, the approved setup runs there) and the shared copy is never touched; a copy
  * whose installed tree changed anyway is retired, never linked again. `toolroll storage clean` removes a copy no
- * checkout links or matches.
+ * checkout links or matches; the plane's daily storage sweep removes one no checkout has used for a week.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { markNeverIndex } from "./never-index.js";
 
 export const DEPS_FOLDER = "deps";
 const READY = "ready.json";
@@ -29,6 +30,8 @@ const LINK_NOTE = ".toolroll-shared";
 const NODE_MODULES = "node_modules";
 /** A copy linked or made this recently is never removed by a clean-up: a lease may be about to link it. */
 export const SHARED_GRACE_MS = 60 * 60_000;
+/** The daily storage sweep removes a copy no checkout uses and none has linked for this long. */
+export const SHARED_UNUSED_MS = 7 * 24 * 60 * 60_000;
 /** A half-made copy (a crash mid-promotion) is debris after this long. */
 const PARTIAL_STALE_MS = 24 * 60 * 60_000;
 
@@ -37,7 +40,7 @@ export type SharedCopy = {
   /** The copy's folder, holding node_modules and ready.json. */
   dir: string;
   repo: string;
-  /** sha256 of the lockfile and package.json it was installed from. */
+  /** sha256 of the lockfile and package.json, excluding the project's own version (raw bytes in old copies). */
   lock: string;
   node: string;
   createdAt: string;
@@ -59,20 +62,81 @@ export function installsOnly(command: string): boolean {
 }
 
 /**
- * The checkout's dependency identity: its npm lockfile and package.json, hashed together. null when there is no
+ * The checkout's dependency identity: its npm lockfile and package.json, hashed together without the root
+ * package's own version, as in release-check.mjs versionOnly(). null when either JSON file is invalid, there is no
  * lockfile, or the lockfile links local folders (workspaces, `file:`), whose links would point into the shared
  * folder instead of the checkout.
  */
 export function lockDigest(checkout: string): string | null {
-  let lock: Buffer | null = null;
+  return dependencyInputs(checkout)?.digest ?? null;
+}
+
+type DependencyInputs = { lock: string; manifest: string; digest: string };
+const digestPair = (lock: string, manifest: string): string => createHash("sha256").update(lock).update("\u0000").update(manifest).digest("hex");
+
+function dependencyInputs(checkout: string): DependencyInputs | null {
+  let lock: string | null = null;
   for (const name of ["npm-shrinkwrap.json", "package-lock.json"]) {
-    try { lock = readFileSync(join(checkout, name)); break; } catch { lock = null; }
+    try { lock = readFileSync(join(checkout, name), "utf8"); break; } catch { lock = null; }
   }
   if (lock === null) return null;
-  let manifest: Buffer;
-  try { manifest = readFileSync(join(checkout, "package.json")); } catch { return null; }
-  if (/"link"\s*:\s*true/.test(lock.toString("utf8"))) return null;
-  return createHash("sha256").update(lock).update("\u0000").update(manifest).digest("hex");
+  try {
+    const manifest = readFileSync(join(checkout, "package.json"), "utf8");
+    const normalized = (text: string, isLock: boolean): string => {
+      const json = JSON.parse(text);
+      if (json === null || typeof json !== "object" || Array.isArray(json)) throw Error("not an object");
+      delete json.version;
+      if (isLock && json.packages?.[""] !== undefined) delete json.packages[""].version;
+      return JSON.stringify(json);
+    };
+    if (/"link"\s*:\s*true/.test(lock)) return null;
+    return { lock, manifest, digest: digestPair(normalized(lock, true), normalized(manifest, false)) };
+  } catch { return null; }
+}
+
+/** Replace only root version values, preserving every other byte for comparison with a pre-normalization hash.
+ * The caller already parsed the JSON. Token offsets let compact and indented files keep their original layout. */
+function withRootVersion(text: string, version: string, isLock: boolean): string {
+  const tokens = [...text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\]:,]|[^\s{}[\]:,]+/g)];
+  let cursor = 0;
+  const edits: { start: number; end: number }[] = [];
+  const value = (path: string[]): void => {
+    const start = tokens[cursor++]!;
+    if (start[0] === "{") {
+      while (tokens[cursor]![0] !== "}") {
+        const key = JSON.parse(tokens[cursor++]![0]) as string;
+        cursor++; // colon
+        value([...path, key]);
+        if (tokens[cursor]![0] === ",") cursor++;
+      }
+      cursor++;
+    } else if (start[0] === "[") {
+      let index = 0;
+      while (tokens[cursor]![0] !== "]") {
+        value([...path, String(index++)]);
+        if (tokens[cursor]![0] === ",") cursor++;
+      }
+      cursor++;
+    }
+    if ((path.length === 1 && path[0] === "version") ||
+        (isLock && path.length === 3 && path[0] === "packages" && path[1] === "" && path[2] === "version")) {
+      const end = tokens[cursor - 1]!;
+      edits.push({ start: start.index!, end: end.index! + end[0].length });
+    }
+  };
+  value([]);
+  for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + JSON.stringify(version) + text.slice(edit.end);
+  return text;
+}
+
+/** Old copies did not save the manifests. npm's hidden lock records their root version; reconstruct only those
+ * version fields and require the exact old raw digest. Never infer equality from the installed packages alone. */
+function matchesInputs(dir: string, ready: Ready, inputs: DependencyInputs): boolean {
+  if (ready.lock === inputs.digest || ready.lock === digestPair(inputs.lock, inputs.manifest)) return true;
+  try {
+    const version: unknown = JSON.parse(readFileSync(join(dir, NODE_MODULES, ".package-lock.json"), "utf8")).version;
+    return typeof version === "string" && ready.lock === digestPair(withRootVersion(inputs.lock, version, true), withRootVersion(inputs.manifest, version, false));
+  } catch { return false; }
 }
 
 const nodeSeen = new Map<string, string | null>();
@@ -92,13 +156,27 @@ export function depsKey(repo: string, setupDigest: string, lock: string, node: s
 }
 
 /** What a checkout would share: its key and the facts behind it, or null when it can't share. */
-export function sharingFor(args: { repo: string; worktree: string; setup: { command: string; digest: string } }): { key: string; lock: string; node: string } | null {
+export function sharingFor(args: { repo: string; worktree: string; setup: { command: string; digest: string }; root?: string }): { key: string; lock: string; node: string } | null {
   if (!installsOnly(args.setup.command)) return null;
-  const lock = lockDigest(args.worktree);
-  if (lock === null) return null;
+  const inputs = dependencyInputs(args.worktree);
+  if (inputs === null) return null;
+  const lock = inputs.digest;
   const node = nodeIdentity();
   if (node === null) return null;
-  return { key: depsKey(args.repo, args.setup.digest, lock, node), lock, node };
+  const key = depsKey(args.repo, args.setup.digest, lock, node);
+  if (args.root !== undefined) {
+    let names: string[] = [];
+    try { names = readdirSync(args.root).filter(name => /^[0-9a-f]{24}$/.test(name)); } catch { /* no copies yet */ }
+    // Keep a currently linked copy first. Reusing its old directory preserves every existing checkout's links.
+    for (const name of new Set([linkedKey(args.worktree, args.root), key, ...names])) {
+      if (name === null) continue;
+      const dir = join(args.root, name);
+      const ready = readReady(dir);
+      if (ready?.repo === args.repo && ready.setup === args.setup.digest && ready.node === node &&
+          readyCopy(args.root, name) !== null && matchesInputs(dir, ready, inputs)) return { key: name, lock, node };
+    }
+  }
+  return { key, lock, node };
 }
 
 function readReady(dir: string): Ready | null {
@@ -170,6 +248,7 @@ export function linkInto(worktree: string, shared: string): "link" | "clone" | n
       symlinkSync(join(shared, entry.name), join(at, entry.name), entry.isDirectory() ? (process.platform === "win32" ? "junction" : "dir") : "file");
     }
     writeFileSync(join(at, LINK_NOTE), `${shared}\n`, "utf8");
+    markNeverIndex(at);
     touch(dirname(shared));
     return "link";
   } catch {
@@ -204,6 +283,8 @@ export function promoteInstall(args: { root: string; repo: string; worktree: str
   const partial = join(args.root, `${args.key}.partial-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
     mkdirSync(partial, { recursive: true });
+    // Spotlight leaves shared installs alone (never-index.ts).
+    markNeverIndex(args.root);
     renameSync(own, join(partial, NODE_MODULES));
   } catch {
     rmSync(partial, { recursive: true, force: true });
@@ -266,9 +347,12 @@ export function sharedUse(root: string, checkouts: readonly { path: string; repo
     const linked = linkedKey(checkout.path, root);
     if (linked !== null) { users.get(linked)?.add(checkout.path); continue; }
     if (!existsSync(checkout.path)) continue;
-    const lock = lockDigest(checkout.path);
-    if (lock === null) continue;
-    for (const copy of copies) if (!copy.retired && copy.repo === checkout.repo && copy.lock === lock) users.get(copy.key)!.add(checkout.path);
+    const inputs = dependencyInputs(checkout.path);
+    if (inputs === null) continue;
+    for (const copy of copies) {
+      const ready = readReady(copy.dir);
+      if (!copy.retired && copy.repo === checkout.repo && ready !== null && matchesInputs(copy.dir, ready, inputs)) users.get(copy.key)!.add(checkout.path);
+    }
   }
   return copies.map(one => ({ ...one, checkouts: [...users.get(one.key)!].sort() }));
 }
@@ -293,4 +377,22 @@ export function unusedShared(root: string, checkouts: readonly { path: string; r
 export function removeShared(path: string): boolean {
   if (basename(dirname(path)) !== DEPS_FOLDER) return false;
   try { removeTree(path); return !existsSync(path); } catch { return false; }
+}
+
+/**
+ * The daily sweep: remove each copy no checkout uses and none has linked for `unusedMs` (a week), and old debris.
+ * Right before a copy goes, who uses it and when it was last linked are read again; a copy a checkout picked up in
+ * between stays.
+ */
+export function pruneUnusedShared(root: string, checkouts: () => readonly { path: string; repo: string }[], now: Date, unusedMs = SHARED_UNUSED_MS): { removed: SharedUse[]; failed: string[] } {
+  const stale = (one: SharedUse) => one.checkouts.length === 0 && now.getTime() - Date.parse(one.usedAt) > unusedMs;
+  const removed: SharedUse[] = [];
+  const failed: string[] = [];
+  for (const one of sharedUse(root, checkouts()).filter(stale)) {
+    const fresh = sharedUse(root, checkouts()).find(other => other.key === one.key);
+    if (fresh === undefined || !stale(fresh)) continue;
+    if (removeShared(fresh.dir)) removed.push(fresh); else failed.push(fresh.dir);
+  }
+  for (const debris of sharedDebris(root, now)) if (!removeShared(debris)) failed.push(debris);
+  return { removed, failed };
 }

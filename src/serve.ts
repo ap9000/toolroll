@@ -3,6 +3,7 @@ import { aboutYouOf, checkAboutYou, saveAboutYou, ABOUT_YOU_LINE_MAX, ABOUT_YOU_
 import { withActor } from "./actor.js";
 import { repositoryContext, repositoryContextRead } from './repository-context.js';
 import { ADD_TESTS_ACTION, followUpChecksOf, requestFollowUpChecks, fileAddTestsTask, resultCheckLevel, type FollowUpCheck } from './result-follow-ups.js';
+import { projectBatchChecks, setProjectBatchChecks } from './batch-policy.js';
 import { CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, suggestQuickCommand, type CheckLevel } from './check-levels.js';
 import { repositoryContextHtml } from './repository-context-ui.js';
 import { browserAssetsAvailable, browserWorkspaceDocument, serveBrowserAsset } from './browser-shell.js';
@@ -312,6 +313,7 @@ import { prometheusMetrics } from "./metrics.js";
 import { SPEND_CSS, spendCsv, spendHtml } from "./spend-ui.js";
 import { RETENTION_CSS, retentionHtml } from "./retention-ui.js";
 import { STORAGE_CSS, storageHtml } from "./storage-ui.js";
+import { lastSweep, saveSweep, storageSweepOff } from "./storage-sweep.js";
 import { bytesWords, parseCleanup } from "./storage.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, previewDigest } from "./checkout-cleanup.js";
 import { UPDATES_CSS, newerThan, updateStepsHtml, updatesHtml, updatesScript } from "./toolroll-update-ui.js";
@@ -4248,7 +4250,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const databaseFile = store.databaseFile();
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
       const plan = await checkoutPlan(store, storagePool(databaseFile), now, { manual: true });
-      return sendScreen(response, 200, screen("Storage", `<p><a href="/settings">Settings</a></p><h1>Storage</h1>${storageHtml({ plan, csrf: who.session.csrf }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
+      const sweep = { last: lastSweep(store), off: storageSweepOff() };
+      return sendScreen(response, 200, screen("Storage", `<p><a href="/settings">Settings</a></p><h1>Storage</h1>${storageHtml({ plan, csrf: who.session.csrf, sweep }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
         { chrome: chromeFor(project, "settings") }));
     }
     // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -4272,7 +4275,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const quick = liveQuickCommand(store, repo);
       const html = checkSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange: who.role === "approver" && !store.isDemo(),
         level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
-        review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())),
+        review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on },
         said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
       return sendScreen(response, 200, screen("Checks", `<p><a href="/projects">Projects</a></p><h1>Checks</h1>${html}`, { chrome: chromeFor(project, "projects") }));
     }
@@ -7519,6 +7522,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (plan.go.length === 0) return back("said", "Nothing to clean up.");
         if (body.get("preview") !== previewDigest(plan)) return back("problem", "What a clean-up would remove changed since you looked. Check the list again.");
         const done = await cleanCheckouts(store, pool, clock, { manual: true, actor: who.name, only: new Set(plan.go.map(one => one.path)) });
+        saveSweep(store, { at: clock().toISOString(), source: "manual", actor: who.name, parts: [{ kind: "checkouts", count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: done.removed.slice(0, 20).map(one => one.path) }] });
         return back("said", done.removed.length === 0 ? "Nothing was removed: those checkouts are no longer ready to go." : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}. Their branches stay.`);
       }
       const done = await discardCheckout(store, pool, body.get("path") ?? "", now, who.name);
@@ -7569,6 +7573,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const on = body.get("on") === "1";
         store.setReviewSwitch(repo, on, who.name, now);
         return back("said", on ? "Automatic review is on." : "Automatic review is off.");
+      }
+      // Batch checks: off by default; the ledger keeps before → after.
+      if (act === "batch") {
+        const on = body.get("on") === "1";
+        const changed = setProjectBatchChecks(store, repo, on, who.name, now);
+        return back("said", !changed.changed ? "Saved." : on ? "Batch checks are on." : "Batch checks are off.");
       }
       if (act === "level") {
         const level = body.get("level");
@@ -9479,7 +9489,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const onProgress = beginLiveTurn(opened.thread.id);
         void runMateTurn({ store, who: principal, session: mateSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot })
           .then(outcome => {
-            if (!outcome.ok) noteMate(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
+            // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
+            if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteMate(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
             endLiveTurn(opened.thread.id, outcome.ok);
           })
           .catch(() => { noteMate(who.session.csrf, null, "the turn failed unexpectedly"); endLiveTurn(opened.thread.id, false); });
@@ -18799,7 +18810,8 @@ function mateBrowserMessages(rows: Pick<MateThreadRows, "messages" | "proposals"
     html: message.role === 'operator' ? `<p>${escape(message.text)}</p>` : renderChatText(message.text, askedBy.get(message.id)) + asked(message.turn),
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
-      const parts = message.turn === null ? [] : rows.proposals.filter(one => one.turn === message.turn)
+      // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
+      const parts = message.turn === null || message.role === 'operator' ? [] : rows.proposals.filter(one => one.turn === message.turn)
         .map(one => mateProposalCardParts(one, csrf, rows.pending !== null, rows.decisions.get(typeof one.payload['decision'] === 'number' ? one.payload['decision'] : -1) ?? null, back));
       return { cardsHtml: parts.map(one => one.html).join(''), cards: parts.map(one => one.card) };
     })(),
@@ -24708,9 +24720,16 @@ function followUpsFor(store: Store, evidenceRoot: string, run: Run, now: Date): 
 const FOLLOW_UP_WORDS: Record<FollowUpCheck["state"], string> = { waiting: "waiting for a worker", running: "running", passed: "passed", failed: "failed", "not-run": "didn't run" };
 /** Run checks and Add tests, under the result's Checks: what ran since, then the two acts. */
 function followUpsHtml(followUps: NonNullable<ResultDetail["followUps"]>, runId: number, o: ResultPanelOptions): string {
-  const rows = followUps.checks.map(one => `<li data-follow-up-check="${one.state}">${escape(CHECK_LEVEL_WORDS[one.level])} checks ${escape(FOLLOW_UP_WORDS[one.state])}` +
-    `${one.exitCode === null || one.state === "passed" ? "" : ` (exit ${one.exitCode})`} on <span class="mono">${escape(one.head.slice(0, 7))}</span>` +
-    `<span class="meta"> · ${one.why === "pull-request" ? "for the pull request" : escape(one.actor)}${one.note === null ? "" : ` · ${escape(one.note)}`}</span>` +
+  // A batch check names every result it ran with and the exact commit it tested (batch-checks.ts).
+  const batchHow = (one: FollowUpCheck): string => {
+    const peers = one.batch?.members.filter(member => member.run !== runId).map(member => member.task) ?? [];
+    return one.batch?.mode === "together" && peers.length > 0 ? ` together with ${peers.map(escape).join(", ")}`
+      : one.batch?.mode === "split" ? " on its own after its batch failed" : one.batch?.mode === "conflict" ? " on its own (it conflicted with another result)" : "";
+  };
+  const rows = followUps.checks.map(one => `<li data-follow-up-check="${one.state}"${one.why === "batch" ? ` data-batch="${escape(one.batch?.mode ?? "waiting")}"` : ""}>${escape(CHECK_LEVEL_WORDS[one.level])} checks ` +
+    `${escape(one.why === "batch" && one.state === "waiting" ? "waiting to check with other results" : FOLLOW_UP_WORDS[one.state])}${batchHow(one)}` +
+    `${one.exitCode === null || one.state === "passed" ? "" : ` (exit ${one.exitCode})`} on <span class="mono">${escape((one.tested ?? one.head).slice(0, 7))}</span>` +
+    `<span class="meta"> · ${one.why === "pull-request" ? "for the pull request" : one.why === "batch" ? "batch check" : escape(one.actor)}${one.note === null ? "" : ` · ${escape(one.note)}`}</span>` +
     `${one.logArtifactId === null ? "" : ` <a href="/r/${runId}/evidence/${one.logArtifactId}">Log</a>`}</li>`).join("");
   const hidden = `<input type="hidden" name="csrf" value="${escape(o.csrf)}"><input type="hidden" name="return" value="${escape(o.returnTo)}">`;
   const canCheck = followUps.quick || followUps.full;

@@ -15,7 +15,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
  * silent re-read.
  */
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
-import { verifiedAuthor, type CoordinatorProposal, type MateProposal, type Store } from "./store.js";
+import { mateTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type MateProposal, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
 import { isVerifiedApprover, reproveApprover } from "./principal.js";
 import { TeamLeads } from './team-leads.js';
@@ -145,7 +145,7 @@ export function confirmMateProposal(store: Store, who: VerifiedApprover, proposa
       return { ok: false, kind: proposal.kind, reason: "ceiling-changed", said: "the admitted projects changed since this was proposed — it cannot be confirmed" } as const;
     }
     const turn = store.getMateTurn(proposal.turn);
-    if (turn === null || turn.state !== "answered") {
+    if (!mateTurnKeepsProposals(turn) || proposal.state === "drafting") {
       return { ok: false, kind: proposal.kind, reason: "turn-not-answered", said: "this proposal's turn did not finish — it cannot be confirmed" } as const;
     }
     if (proposal.kind === "cancel") {

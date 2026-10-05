@@ -1,5 +1,7 @@
 import { OBSERVATION_MAILBOX, observationBrief, parseObservationCases, collectObservations } from "./observations.js";
 import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./check-levels.js";
+import { queueBatchCheck } from "./batch-checks.js";
+import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
@@ -984,7 +986,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       // copy links it instead of installing its own; a setup that is about to
       // run never reaches through an old link into a shared copy.
       const depsRoot = sharedDepsRootOf(store);
-      const sharing = depsRoot === null ? null : sharingFor({ repo: leased.repo, worktree, setup: setupWanted });
+      const sharing = depsRoot === null ? null : sharingFor({ repo: leased.repo, worktree, setup: setupWanted, root: depsRoot });
       if (depsRoot !== null) detachShared(worktree, depsRoot);
       if (depsRoot !== null && sharing !== null) {
         const ready = readyCopy(depsRoot, sharing.key);
@@ -2588,6 +2590,11 @@ async function settleProof(
   const chosenCheck = repo === null ? null : checkCommandFor(store, repo, checkChoice.level);
   const configured = chosenCheck?.command ?? null;
   if (repo !== null && chosenCheck !== null) recordRunCheckLevel(store, { id: runId, taskId: request.taskId, repo }, chosenCheck.level, checkChoice.from, now());
+  // Batch checks (batch-checks.ts): with the project's batching on, a Full check waits to run once with
+  // other results on a temporary batch commit. The build seals no check of its own; the batch's sealed
+  // receipt is this result's check, and Merge waits for it.
+  const batched = repo !== null && chosenCheck !== null && batchesFullCheck(store, repo, chosenCheck.level, configured);
+  const gateCommand = batched ? null : configured;
   let verifyCommand: VerifyCommandFacts;
   const checkLog: string[] = [];
   const checkOutcomes: string[] = [];
@@ -2618,6 +2625,9 @@ async function settleProof(
     verifyCommand = reused;
   } else if (configured === null) {
     verifyCommand = { configured: false };
+  } else if (batched && repo !== null) {
+    verifyCommand = { configured: false };
+    queueBatchCheck(store, { runId, taskId: request.taskId, repo, head: sealedHead, base: captured.baseRevision, command: configured }, now());
   } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
     verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
     recordCheckNote("Verification did not start: this worker no longer owned the build.");
@@ -2665,7 +2675,7 @@ async function settleProof(
       const linked = linkedKey(worktree, depsRoot);
       const live = linked === null ? null : store.liveWorktreeSetup(repo);
       if (linked === null || live === null) return null;
-      if (sharingFor({ repo, worktree, setup: live })?.key === linked && readyCopy(depsRoot, linked) !== null) return null;
+      if (sharingFor({ repo, worktree, setup: live, root: depsRoot })?.key === linked && readyCopy(depsRoot, linked) !== null) return null;
       if (!store.proveRunnerCustodyForSpawn(runId, now())) return "custody-lost";
       detachShared(worktree, depsRoot);
       const label = "Own install · approved project setup (package.json or lockfile changed)";
@@ -2892,7 +2902,7 @@ async function settleProof(
 
   const { verdict, reasons, matrix, machineVerdict } = adjudicate({
     directAssessment: true,
-    ...(configured === null ? {} : { verificationCommand: configured.command }),
+    ...(gateCommand === null ? {} : { verificationCommand: gateCommand.command }),
     proofArtifactPresent,
     proofParse,
     handoffPresent: handoffArtifact !== null,

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.32 — 2026-10-04
+
+- **Lighter on your computer.** A version bump no longer reinstalls every
+  dependency (about 22,000 files each time); it reuses the install. Tests and
+  checks remove their temp folders and stop what they started however they
+  end, and Toolroll sweeps what's left once a day by itself: old test folders,
+  processes a finished run left behind, finished release checkouts, extra
+  staged versions and unused installs. Spotlight skips Toolroll's folders.
+- **The release check fits the machine.** Each part waits for memory and a
+  free model slot (4 real turns at once by default) instead of starting
+  everything at once, so a busy computer makes it slower, not failed. Most
+  browser journeys now run against a scripted model; real models run when
+  model-facing code changes and nightly. A UI-only check went from 9.3 to 5.8
+  minutes and from 95 real model turns to none.
+- **The lead never goes silent.** A reply that runs past its time ends, says
+  it took too long, keeps any proposal it made, and frees the chat for your
+  next message.
+- **Batch checks.** Projects that check every build can check results that
+  finish together once, on a temporary combined commit, and split the batch if
+  it fails. Off unless you turn it on for a project.
+
 ## 0.9.31 — 2026-10-04
 
 - **Flow templates for your integrations.** Nine new templates put connected

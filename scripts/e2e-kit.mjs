@@ -2,7 +2,8 @@
  * The shared world for end-to-end runs: a throwaway Toolroll — the
  * real CLI, the real console (`serve`) and the real worker loop (`watch`) —
  * against a real git repository, driven through a real browser. Nothing is
- * stubbed; the database is read only as the oracle.
+ * stubbed but, in a scripted run, the model; the database is read only as the
+ * oracle.
  *
  * A run makes a world, runs named checks (each may need earlier ones), and
  * writes a report: `output/e2e/<name>-<time>/report.md`, with a screenshot of
@@ -10,15 +11,29 @@
  * whatever the outcome, unless --keep.
  *
  * Options every run takes: --only <pattern> (just the checks whose names
- * match), --keep, --playwright <index.mjs>, --output <dir>.
+ * match), --keep, --playwright <index.mjs>, --output <dir>, and:
+ *
+ *   --journeys scripted   the journeys that test Toolroll's own behaviour, with the
+ *                         model scripted (scripts/fixtures/scripted-provider.mjs)
+ *   --journeys real       the journeys that test the model integration, and what
+ *                         they need, with real models
+ *   --journeys all        every journey, with real models (the default; nightly)
+ *   --list --json         the journeys, each with its mode, needs and groups; no world
+ *
+ * Every model call a run makes is in <output>/model-calls.jsonl, and the report
+ * counts them: scripted, and real turns.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, createWriteStream } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, createWriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir, homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
+import { makeTempRoot } from "./suite-lifecycle.mjs";
+// A journey's worker never sweeps the machine it runs on (src/storage-sweep.ts); set it to sweep on purpose.
+process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
 
 export const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -138,19 +153,113 @@ export async function waitFor(locator, what, { timeoutMs = 30_000, state = "visi
 export const SKIPPED_FADE = /Transition was aborted because of invalid state/;
 /** The check every run ends with. */
 export const BROWSER_CHECK = "No browser errors on any page";
+/** The check a scripted run also ends with: every model call it made had a scripted answer. */
+export const PROVIDER_CHECK = "Every model call was scripted";
 
-export async function world(name, { seed, env = {} } = {}) {
+/**
+ * Every journey says what it tests. SCRIPTED: Toolroll's own behaviour (approvals, results, flows moving cards, chat
+ * buttons, storage), with the model scripted (scripts/fixtures/scripted-provider.mjs). REAL_MODEL: the model
+ * integration itself (the lead's real turns, the planner and builder protocols, the classifier), with real models.
+ */
+export const SCRIPTED = "scripted", REAL_MODEL = "real-model";
+export const MODES = [SCRIPTED, REAL_MODEL];
+/**
+ * Which journeys a run takes (--journeys): "scripted" runs the scripted ones against the scripted provider; "real"
+ * runs the real-model ones, and the journeys they need, with real models; "all" (the default) runs every journey
+ * with real models, as the nightly journeys do.
+ */
+export const JOURNEYS = ["scripted", "real", "all"];
+
+/** A group's line in `--groups --json`: how many journeys it has, how many of them are real-model, and how many scripted
+ * ones are its own (not shared with another group, as a first-run setup is): a scripted run of a group with none of
+ * its own would only repeat what other groups run. */
+export const groupList = groups => Object.entries(groups).map(([name, one]) => ({ name, journeys: one.journeys, scripted: one.journeys - (one.real ?? 0), ownScripted: one.journeys - (one.real ?? 0) - (one.shared ?? 0), real: one.real ?? 0, about: one.about }));
+
+/**
+ * What is wrong with a script's journeys, as declared in order (each { name, needs, mode, groups }) against its
+ * GROUPS: an untagged journey, a need that isn't declared before it or isn't in each of its groups, a scripted journey
+ * that needs a real-model one (a scripted run couldn't run it), a group no journey is in, or counts GROUPS gets wrong.
+ */
+export function catalogueProblems(catalogue, groups) {
+  const problems = [], seen = new Map();
+  for (const one of catalogue) {
+    if (!MODES.includes(one.mode)) problems.push(`"${one.name}" doesn't say whether it is ${MODES.join(" or ")}`);
+    if (seen.has(one.name)) problems.push(`"${one.name}" is declared twice`);
+    for (const group of one.groups) if (!(group in groups)) problems.push(`"${one.name}" is in group ${group}, which GROUPS doesn't list`);
+    for (const need of one.needs) {
+      const earlier = seen.get(need);
+      if (earlier === undefined) problems.push(`"${one.name}" needs "${need}", which isn't a journey declared before it`);
+      else if (!one.groups.every(group => earlier.groups.includes(group))) problems.push(`"${one.name}" needs "${need}" from another group`);
+      else if (one.mode === SCRIPTED && earlier.mode === REAL_MODEL) problems.push(`"${one.name}" is scripted but needs the real-model "${need}"`);
+    }
+    seen.set(one.name, one);
+  }
+  for (const [name, group] of Object.entries(groups)) {
+    const mine = catalogue.filter(one => one.groups.includes(name));
+    if (mine.length === 0) problems.push(`group ${name} has no journeys`);
+    else if (mine.length !== group.journeys || mine.filter(one => one.mode === REAL_MODEL).length !== (group.real ?? 0)) problems.push(`group ${name} has ${mine.length} journeys (${mine.filter(one => one.mode === REAL_MODEL).length} real-model), not the ${group.journeys} (${group.real ?? 0} real-model) GROUPS lists`);
+    else if (mine.filter(one => one.mode === SCRIPTED && one.groups.length > 1).length !== (group.shared ?? 0)) problems.push(`group ${name} shares ${mine.filter(one => one.mode === SCRIPTED && one.groups.length > 1).length} scripted journeys with other groups, not the ${group.shared ?? 0} GROUPS lists`);
+  }
+  return problems;
+}
+
+/**
+ * The journeys a run takes from `catalogue` (in a group's order): every one matching --only for "all"; the scripted
+ * ones matching it for "scripted"; for "real", the real-model ones matching it and everything they need.
+ */
+export function selectJourneys(catalogue, { journeys = "all", only = null } = {}) {
+  const matched = one => only === null || only.test(one.name);
+  if (journeys === "all") return new Set(catalogue.filter(matched).map(one => one.name));
+  if (journeys === "scripted") return new Set(catalogue.filter(one => one.mode === SCRIPTED && matched(one)).map(one => one.name));
+  const chosen = new Set(catalogue.filter(one => one.mode === REAL_MODEL && matched(one)).map(one => one.name));
+  for (const one of [...catalogue].reverse()) if (chosen.has(one.name)) for (const need of one.needs) chosen.add(need);
+  return chosen;
+}
+
+/** The journeys a script declares, without a world (--list --json): each one's name, needs, mode and groups. Ends
+ * the run with the list on stdout, or the catalogue's problems on stderr and exit 1. */
+function listOnly(groups) {
+  const catalogue = [];
+  const declare = (title, needs, body, { mode, groups: in_ = [] } = {}) => { catalogue.push({ name: title, needs, mode, groups: in_ }); return true; };
+  const finish = () => {
+    const problems = catalogueProblems(catalogue, groups);
+    if (problems.length > 0) { console.error(problems.join("\n")); process.exitCode = 1; return; }
+    const wanted = option("--group", null);
+    console.log(JSON.stringify(wanted === null ? catalogue : catalogue.filter(one => one.groups.includes(wanted))));
+  };
+  const nothing = () => { throw new Error("a journey's body ran while listing"); };
+  return { listing: true, check: declare, finish, script: () => [], say: () => undefined, page: null, cli: nothing, rows: nothing, sql: nothing };
+}
+
+/** The journeys a real-model run takes: from this script's own list (--list), the real-model ones and what they need. */
+function realSelection(only) {
+  const argv = [process.argv[1], "--list", "--json", ...(option("--group", null) === null ? [] : ["--group", option("--group", null)])];
+  const catalogue = JSON.parse(execFileSync(process.execPath, argv, { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "inherit"] }));
+  return selectJourneys(catalogue, { journeys: "real", only });
+}
+
+export async function world(name, { seed, env = {}, groups = null } = {}) {
+  const journeys = option("--journeys", "all");
+  if (!JOURNEYS.includes(journeys)) throw new Error(`--journeys is ${JOURNEYS.join(", ")}, not ${journeys}`);
+  if (flag("--list")) return listOnly(groups ?? {});
   const BIN = join(here, "dist/bin.js");
   if (!existsSync(BIN)) throw new Error("Build first: npm run build");
   const { chromium } = await loadPlaywright();
   const only = option("--only", null) === null ? null : new RegExp(option("--only", ""), "i");
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `so-${name}-e2e-`)));
+  const group = option("--group", null);
+  const realChosen = journeys === "real" ? realSelection(only) : null;
+  // Marked, and removed at exit however the run ends (--keep keeps it): scripts/suite-lifecycle.mjs.
+  const root = realpathSync(makeTempRoot(`so-${name}-e2e-`, { keep: flag("--keep") }));
   const out = resolve(option("--output", join(here, "output/e2e", `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`)));
   mkdirSync(out, { recursive: true });
   const repo = join(root, "shop"), state = join(root, "state"), db = join(state, "orders.db");
   mkdirSync(repo); mkdirSync(state);
   const started = Date.now();
   const say = line => { const stamp = `${Math.round((Date.now() - started) / 1000)}s`.padStart(6); console.log(`[${name}] ${stamp}  ${line}`); };
+  // The models: a scripted run answers from the journeys' scripts; any other run uses the real CLIs, each call counted.
+  // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
+  const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
+  process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
 
   const cli = (argv, { ok = [0], json = true, env = {} } = {}) => {
     try {
@@ -167,28 +276,46 @@ export async function world(name, { seed, env = {} } = {}) {
   const results = [];
   const failed = new Set();
   const openPages = [];
+  const catalogue = [];
+  let current = null;
+  /** The model calls made while `body` ran: model turns, and how many of them were real. */
+  const calls = async body => {
+    const before = provider.journal().length;
+    try { return await body(); } finally { calls.last = turnsOf(provider.journal().slice(before)); }
+  };
   // Every result names what it needs, so a runner can retry just the failed journeys and what they need (e2e-parallel.mjs).
-  async function check(title, needs, body, { always = false } = {}) {
+  // A journey says its mode and groups (scripts with groups): it runs when this run takes its group and its mode.
+  async function check(title, needs, body, { always = false, mode = null, groups: in_ = null } = {}) {
     const at = Date.now();
-    if (!always && only !== null && !only.test(title)) { results.push({ name: title, needs, state: "not selected" }); return null; }
+    if (!always) catalogue.push({ name: title, needs, mode, groups: in_ ?? [] });
+    if (!always && in_ !== null && group !== null && !in_.includes(group)) return null;
+    if (!always && !MODES.includes(mode)) throw new Error(`"${title}" doesn't say whether it is ${MODES.join(" or ")}`);
+    const chosen = always || (journeys === "all" ? only === null || only.test(title) : journeys === "scripted" ? mode === SCRIPTED && (only === null || only.test(title)) : realChosen.has(title));
+    const tag = always ? {} : { mode };
+    if (!chosen) { results.push({ name: title, needs, ...tag, state: "not selected" }); return null; }
     const missing = needs.filter(one => failed.has(one));
-    if (missing.length > 0) { results.push({ name: title, needs, state: "skipped", because: missing }); say(`SKIP  ${title} (needs ${missing.join(", ")})`); failed.add(title); return null; }
-    say(`...   ${title}`);
+    if (missing.length > 0) { results.push({ name: title, needs, ...tag, state: "skipped", because: missing }); say(`SKIP  ${title} (needs ${missing.join(", ")})`); failed.add(title); return null; }
+    say(`...   ${title}${always ? "" : ` [${mode}]`}`);
+    current = title;
     try {
-      const detail = await body();
-      results.push({ name: title, needs, state: "passed", seconds: Math.round((Date.now() - at) / 100) / 10, ...(detail === undefined ? {} : { detail }) });
+      const detail = await calls(body);
+      results.push({ name: title, needs, ...tag, state: "passed", seconds: Math.round((Date.now() - at) / 100) / 10, modelCalls: calls.last, ...(detail === undefined ? {} : { detail }) });
       say(`PASS  ${title} (${Math.round((Date.now() - at) / 1000)} s)`);
       return detail ?? true;
     } catch (error) {
       failed.add(title);
-      if (error instanceof Skip) { results.push({ name: title, needs, state: "skipped", because: [error.message] }); say(`SKIP  ${title} (${error.message})`); return null; }
+      if (error instanceof Skip) { results.push({ name: title, needs, ...tag, state: "skipped", because: [error.message] }); say(`SKIP  ${title} (${error.message})`); return null; }
       const file = join(out, `${results.length + 1}-failed.png`);
       for (const one of openPages) await one.screenshot({ path: file.replace(".png", `-${openPages.indexOf(one)}.png`) }).catch(() => undefined);
-      results.push({ name: title, needs, state: "failed", seconds: Math.round((Date.now() - at) / 100) / 10, error: error instanceof Error ? error.message : String(error) });
+      results.push({ name: title, needs, ...tag, state: "failed", seconds: Math.round((Date.now() - at) / 100) / 10, modelCalls: calls.last, error: error instanceof Error ? error.message : String(error) });
       say(`FAIL  ${title}: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
       return null;
+    } finally {
+      current = null;
     }
   }
+  /** Script the model's answers for the journey that's running (a scripted run only; a real run asks real models). */
+  const script = (...rules) => provider.add(current ?? "world", ...rules);
 
   say(`workspace ${root}`);
   const git = (...rest) => execFileSync("git", ["-C", repo, ...rest], { encoding: "utf8" }).trim();
@@ -295,21 +422,34 @@ export async function world(name, { seed, env = {} } = {}) {
     await browser.close();
     // The console, the worker and anything a journey started and still owns: every group gone before the report.
     const unstopped = await stopOwned().then(() => null, error => error.message);
+    // A scripted run proves no model call went unanswered, the ones made in the background included.
+    if (provider.mode === "scripted") await check(PROVIDER_CHECK, [], async () => {
+      const wrong = provider.journal().filter(one => one.turn && !one.ok && !one.intended);
+      if (wrong.length > 0) throw new Error(wrong.slice(0, 3).map(one => `${one.provider} ${one.role}: ${one.error}`).join(" | "));
+    }, { always: true });
+    const journal = provider.journal();
+    writeFileSync(join(out, "model-calls.jsonl"), journal.map(one => JSON.stringify(one)).join("\n") + (journal.length > 0 ? "\n" : ""));
     results.splice(0, results.length, ...results.filter(one => one.state !== "not selected"));
     const passed = results.filter(one => one.state === "passed").length, bad = results.filter(one => one.state === "failed").length, skipped = results.filter(one => one.state === "skipped").length;
-    const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }) };
+    const modelCalls = turnsOf(journal);
+    const catalogued = groups === null ? [] : catalogueProblems(catalogue, groups);
+    const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, journeys, models: provider.mode, modelCalls, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }), ...(catalogued.length === 0 ? {} : { catalogue: catalogued }) };
     writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
     writeFileSync(join(out, "report.md"), [`# ${title} — ${passed} passed, ${bad} failed, ${skipped} skipped (${report.minutes} min)`, "",
-      ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}${one.state === "skipped" ? `\n  - skipped: ${one.because.join(", ")}` : ""}`),
+      `Models: ${provider.mode === "scripted" ? `scripted (${modelCalls.scripted} scripted model calls)` : "real"}; real model turns: ${modelCalls.real}`, "",
+      ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.mode === undefined ? "" : ` [${one.mode}]`}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}${one.state === "skipped" ? `\n  - skipped: ${one.because.join(", ")}` : ""}`),
+      ...catalogued.map(one => `- ❌ ${one}`),
       "", `Workspace: ${root}${flag("--keep") ? "" : " (removed; --keep keeps it)"}`, `Logs and screenshots: ${out}`, ""].join("\n"));
-    say(`${passed} passed, ${bad} failed, ${skipped} skipped — ${join(out, "report.md")}`);
+    say(`${passed} passed, ${bad} failed, ${skipped} skipped; model calls: ${modelCalls.scripted} scripted, ${modelCalls.real} real — ${join(out, "report.md")}`);
+    for (const one of catalogued) say(`journeys: ${one}`);
     if (unstopped !== null) say(`left running: ${unstopped}`);
     // The world goes whatever the outcome (the report, logs and screenshots stay in the output folder); --keep keeps it.
     if (!flag("--keep")) rmSync(root, { recursive: true, force: true, maxRetries: 3 });
-    process.exitCode = bad === 0 && unstopped === null ? 0 : 1;
+    process.exitCode = bad === 0 && unstopped === null && catalogued.length === 0 ? 0 : 1;
   }
 
-  return { root, repo, state, db, out, base, port, passwords, auth, cli, sql, rows, until, check, say, git, browser, signIn, page, json, shot, askLead, leadCalls, pendingCard, confirmCard, problems, openPages, start, finish, bin: BIN };
+  return { root, repo, state, db, out, base, port, passwords, auth, cli, sql, rows, until, check, say, git, browser, signIn, page, json, shot, askLead, leadCalls, pendingCard, confirmCard, problems, openPages, start, finish, bin: BIN,
+    journeys, scripted: provider.mode === "scripted", provider, script, listing: false };
 }
 
 /** The journeys to run again from a failed group's report: the failed ones, the ones skipped because of them, and everything

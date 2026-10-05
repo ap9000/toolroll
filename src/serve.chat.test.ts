@@ -9,11 +9,11 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { openStore, type Store } from "./store.js";
+import { mateTimeoutNotice, openStore, type Store } from "./store.js";
 import { release } from "./claim.js";
 import { addApprover, approvalOf, approve, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
-import type { MateProviderAnswer } from "./converse.js";
+import { TURN_WALL_CLOCK_MS, type MateProviderAnswer } from "./converse.js";
 import { Window } from "happy-dom";
 import { presented, T0, stylesOf, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
 
@@ -659,6 +659,35 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(store.recentMateTurns('alex', 10)).toHaveLength(1);
     expect((await fetch(url('/chat?format=workspace'), { headers: { authorization: `Bearer alex:${approverToken}` } })).status).toBe(403);
     expect((await fetch(url('/chat?format=workspace'), { redirect: 'manual' })).status).toBe(303);
+  });
+
+  test("a reply that runs past its deadline after proposing: the thread says so once, keeps the proposal's card, and the next message answers", async () => {
+    const cookie = await login(); const csrf = await mint(cookie);
+    const read = async () => (await (await fetch(url('/chat?format=workspace'), { headers: { cookie } })).json()) as import('./browser-workspace.js').BrowserWorkspace;
+    // The proposing step comes back as the turn's two minutes run out (release check 2438); its final reply never starts.
+    script.push(() => {
+      clockNow = new Date(T0.getTime() + TURN_WALL_CLOCK_MS + 1_000);
+      return answer([{ type: 'tool_use', id: 'h1', name: 'propose_hold', input: { task: 'a', reason: 'not this week' } }]);
+    });
+    expect((await sendJson(cookie, { csrf, message: 'Hold task a for now' })).status).toBe(202);
+    await settle();
+    // Said once: in the thread, not again as a one-off warning above it, and still there after a refresh.
+    for (let view = 0; view < 2; view++) {
+      const html = await page(cookie);
+      expect(html.match(/data-message-role="assistant"[^>]*><div class="chat-copy"><p>The reply took too long/g)).toHaveLength(1);
+      expect(html).not.toContain('<div class="problem"');
+    }
+    const proposal = store.listMateProposals(store.liveMateThreadFor('alex')!.id)[0]!;
+    expect(proposal).toMatchObject({ kind: 'hold', state: 'pending' });
+    const stopped = (await read()).conversation!.messages;
+    expect(stopped.map(one => one.role)).toEqual(['operator', 'assistant']);
+    expect(stopped[1]!.text).toBe(mateTimeoutNotice(true));
+    expect(stopped.map(one => one.cards.length)).toEqual([0, 1]);
+    expect(stopped[1]!.cardsHtml).toContain(`/chat/proposal/${proposal.id}/confirm`);
+    script.push(() => answer([{ type: 'text', text: 'Nothing else needs you.' }]));
+    expect((await sendJson(cookie, { csrf, message: 'Anything else?' })).status).toBe(202);
+    await settle();
+    expect((await read()).conversation!.messages.at(-1)).toMatchObject({ role: 'assistant', text: 'Nothing else needs you.' });
   });
 
   test("the lead's question shows its options as buttons that send themselves, plus Something else, until the owner answers (ask_owner)", async () => {

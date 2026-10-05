@@ -497,7 +497,9 @@ function sentenceOf(text: string): string {
  * the saved log. Null when the log printed nothing. */
 export function lastErrorLineOf(log: string): { line: number; text: string } | null {
   const lines = log.split("\n");
-  const printed = (text: string): boolean => text.trim() !== "" && !/^\$ /.test(text) && !/^\(exit -?[0-9]+\)$/.test(text.trim()) && !/^--- (stdout|stderr) ---$/.test(text.trim());
+  const printed = (text: string): boolean => text.trim() !== "" && !/^\$ /.test(text) && !/^\(exit -?[0-9]+\)$/.test(text.trim()) && !/^--- (stdout|stderr) ---$/.test(text.trim())
+    // A section's own header ("=== Project check · attempt 1 ===") is the log's, never the check's output.
+    && !/^=== .* ===$/.test(text.trim());
   const stderr = lines.findIndex(text => text.trim() === "--- stderr ---");
   const pick = (from: number, to: number): { line: number; text: string } | null => {
     let last: number | null = null;

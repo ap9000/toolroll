@@ -51,6 +51,26 @@ export type ChecksFact = {
   level?: "quick" | "full" | "off" | null;
   /** A follow-up check (Run checks) waiting or running on this commit. */
   running?: "quick" | "full" | null;
+  /** A batch check (batch-checks.ts): waiting for its batch, or how it was checked. */
+  batch?: ChecksBatch | null;
+};
+/** `waiting`: the result waits to be checked with others. Otherwise how its check ran: `together` on the
+ * temporary batch commit `tested` with `peers`; `split` (its batch failed), `conflict` or `alone` on its own commit. */
+export type ChecksBatch = { state: "waiting" | "together" | "split" | "conflict" | "alone"; tested: string | null; peers: string[] };
+
+/** "T2", "T2 and T3", "T2, T3 and 2 more": short enough for one line. The full list is on the result. */
+export function peerWords(peers: readonly string[], shown = 2): string {
+  if (peers.length <= shown) return peers.length <= 1 ? peers.join("") : `${peers.slice(0, -1).join(", ")} and ${peers.at(-1)}`;
+  return `${peers.slice(0, shown).join(", ")} and ${peers.length - shown} more`;
+}
+/** "Checked together with T2 on 1a2b3c4": every surface says a shared check the same way, naming the commit it tested. */
+export function checkedTogetherWords(batch: ChecksBatch): string | null {
+  const sha = short(batch.tested);
+  return batch.state === "together" && batch.peers.length > 0 && sha !== null ? `Checked together with ${peerWords(batch.peers)} on ${sha}` : null;
+}
+const BATCH_WHY: Partial<Record<ChecksBatch["state"], string>> = {
+  split: "Its batch check failed, so it was checked on its own.",
+  conflict: "It conflicted with another result when merged for a batch check, so it was checked on its own.",
 };
 export type PullRequestFact = {
   state: "none" | "opening" | "open" | "merged" | "closed" | "failed";
@@ -125,7 +145,13 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
     case "Ready for review":
       if (facts.report) return "The report is ready to read. Read it, then mark it complete.";
       if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checks are off for this project. Review the change, then mark it complete.";
-      if (facts.checks?.status === "passed") return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then mark it complete.`;
+      if (facts.checks?.status === "passed") {
+        // The Checks row names the others and the batch commit; the sentence doesn't repeat them.
+        const peers = facts.checks.batch?.state === "together" ? facts.checks.batch.peers.length : 0;
+        if (peers > 0) return `Checks passed together with ${peers === 1 ? "1 other result" : `${peers} other results`}. Review the change, then mark it complete.`;
+        return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then mark it complete.`;
+      }
+      if (facts.checks?.batch?.state === "waiting") return "Its full check runs with other results within 10 minutes. Review the change, then mark it complete.";
       // Never claim a check that isn't known to have passed.
       if (facts.checks == null) return "Review the change, then mark it complete.";
       return "Built without a passing project check. Review the change, then mark it complete.";
@@ -154,7 +180,15 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
     const checksHref = facts.links?.checks ?? facts.links?.result ?? null;
     const runChecks = facts.links?.runChecks === undefined ? null : { label: "Run checks", href: facts.links.runChecks };
     const quick = checks.level === "quick";
-    if (checks.running != null) row("checks", CHECKS_LABEL, `${checks.running === "quick" ? "Quick" : "Full"} checks running`, "running", { href: checksHref });
+    const batch = checks.batch ?? null;
+    const together = batch === null ? null : checkedTogetherWords(batch);
+    const batchWhy = batch === null ? null : BATCH_WHY[batch.state] ?? null;
+    if (batch?.state === "waiting") row("checks", CHECKS_LABEL, "Waiting to check with other results", "running", { href: checksHref });
+    else if (checks.running != null) row("checks", CHECKS_LABEL, `${checks.running === "quick" ? "Quick" : "Full"} checks running`, "running", { href: checksHref });
+    else if (checks.status === "passed" && together !== null) row("checks", CHECKS_LABEL, together, "ok", { href: checksHref });
+    else if (checks.status === "passed" && batchWhy !== null) row("checks", CHECKS_LABEL, `Passed on its own${sha === null ? "" : ` on ${sha}`}`, "ok", { href: checksHref, why: batchWhy });
+    else if (checks.status === "failed" && batchWhy !== null) row("checks", CHECKS_LABEL, `Failed on its own${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}`, problem(headline),
+      headline === "Failed" ? { href: checksHref, why: batchWhy } : { action: { label: "See what failed", href: checksHref }, why: batchWhy });
     else if (checks.status === "passed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks passed" : "Passed"}${sha === null ? "" : ` on ${sha}`}`, "ok",
       quick && runChecks !== null && headline !== "Complete" ? { href: checksHref, action: { label: "Run full checks", href: runChecks.href } } : { href: checksHref });
     else if (checks.status === "failed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks failed" : "Failed"}${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}`, problem(headline),
@@ -365,7 +399,8 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
   const report = receipt?.completionKind === "research-report";
   const checks: ChecksFact | null = receipt === null || !withResult ? null
     : { status: receipt.checks.status, exitCode: receipt.checks.exitCode, head: receipt.head,
-      ...(receipt.checks.level == null ? {} : { level: receipt.checks.level }), ...(receipt.checks.running == null ? {} : { running: receipt.checks.running }) };
+      ...(receipt.checks.level == null ? {} : { level: receipt.checks.level }), ...(receipt.checks.running == null ? {} : { running: receipt.checks.running }),
+      ...(receipt.checks.batch == null ? {} : { batch: receipt.checks.batch }) };
   const publication = assignment.publication;
   const pullRequest = options.pullRequest !== undefined ? options.pullRequest
     : publication === null ? (withResult && !report ? { state: "none" as const, number: null, url: null, ci: null, error: null } : null)

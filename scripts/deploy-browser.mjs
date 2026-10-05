@@ -160,6 +160,8 @@ function stage() {
   requireTrue(!execFileSync("git", ["-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim(), "The candidate checkout has tracked changes.");
   requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
+  // Spotlight leaves staged runtimes alone (src/never-index.ts).
+  try { writeFileSync(join(dirname(stageDir), ".metadata_never_index"), "", { flag: "a" }); } catch { /* only Spotlight minds */ }
   // The runtime is the packed package plus every production dependency of a
   // clean, lockfile-verified install of the candidate commit — nothing from
   // the worktree's mutable node_modules.
@@ -568,49 +570,17 @@ async function finish() {
     verifyCodingBackup(coding, r);
     save(r, "healthy"); oldRt.gate.removeUpdateGate(db, r.id); r.deployedAt = new Date().toISOString(); save(r, "deployed");
   } finally { db.close(); }
-  const stagedRemoved = pruneStaged([nextDist, priorDist, r.priorRuntime]);
+  const stagedRemoved = await pruneStaged([nextDist, priorDist, r.priorRuntime]);
   say({ deployed: candidateHead, runtime: nextDist, at: r.deployedAt, projects: r.leases.length, remote, stagedRemoved: stagedRemoved.length });
 }
 
-/** Keep storage in check: once a deploy is healthy, older staged releases go (with the database backups they
- * hold). Kept: the one it installed, the one it replaced (the deployment record's, the way back), the three
- * newest, and any a launchd service or a `toolroll` (or older `standing-orders`) command (on PATH or under any nvm version) runs from.
- * A stage whose deploy didn't finish (no record, or one that isn't "deployed") goes once it's a week old. Only
- * this script's own `browser-*` stages are touched. */
-function pruneStaged(keep) {
-  const real = path => { try { return realpathSync(path); } catch { return path; } };
-  const root = join(stateDir, "staged-upgrades"), realRoot = real(root);
-  const stageOf = path => {
-    for (const base of new Set([root, realRoot])) {
-      let at = resolve(path ?? "/");
-      while (dirname(at) !== base && dirname(at) !== at) at = dirname(at);
-      if (dirname(at) === base) return join(realRoot, basename(at));
-    }
-    return null;
-  };
-  const inUse = [...keep];
-  const agents = join(homedir(), "Library", "LaunchAgents");
-  try {
-    for (const name of readdirSync(agents).filter(one => one.startsWith("com.toolroll.") || one.startsWith("com.standing-orders."))) {
-      for (const match of readFileSync(join(agents, name), "utf8").matchAll(/<string>([^<]*staged-upgrades[^<]*)<\/string>/g)) inUse.push(match[1], real(match[1]));
-    }
-  } catch { /* no launch agents here */ }
-  const commands = (process.env.PATH ?? "").split(":").filter(Boolean).flatMap(dir => ["toolroll", "standing-orders"].map(bin => join(dir, bin)));
-  try { for (const version of readdirSync(join(homedir(), ".nvm", "versions", "node"))) for (const bin of ["toolroll", "standing-orders"]) commands.push(join(homedir(), ".nvm", "versions", "node", version, "bin", bin)); } catch { /* no nvm */ }
-  for (const command of commands) if (existsSync(command)) inUse.push(real(command));
-  const kept = new Set(inUse.flatMap(path => [stageOf(path), stageOf(real(path ?? "/"))]).filter(Boolean));
-  let stages = [];
-  try { stages = readdirSync(realRoot).filter(name => name.startsWith("browser-")).map(name => ({ path: join(realRoot, name), at: lstatSync(join(realRoot, name)).mtimeMs })); } catch { return []; }
-  stages.sort((a, b) => b.at - a.at).slice(0, 3).forEach(one => kept.add(one.path));
-  const removed = [];
-  for (const one of stages) {
-    if (kept.has(one.path)) continue;
-    let phase = null;
-    try { phase = JSON.parse(readFileSync(join(one.path, "deployment.json"), "utf8")).phase ?? null; } catch { phase = null; }
-    if (phase !== "deployed" && Date.now() - one.at < 7 * 86_400_000) continue;
-    try { rmSync(one.path, { recursive: true, force: true }); removed.push(one.path); } catch { /* the next deploy tries again */ }
-  }
-  return removed;
+/** Keep storage in check: once a deploy is healthy, older staged runtimes go (with the database backups they hold).
+ * Kept (src/staged-runtimes.ts, the same rule the plane's daily storage sweep uses): the one it installed and any a
+ * launchd service or a `toolroll` (or older `standing-orders`) command runs from, the one before it (the way back),
+ * the newest, one whose deploy or update is still under way for a week, and one holding a kept-aside database. */
+async function pruneStaged(keep) {
+  const { pruneStagedRuntimes, runtimesInUse } = await load(join(source, "dist"), "staged-runtimes.js");
+  return pruneStagedRuntimes(stateDir, new Date(), { inUse: () => runtimesInUse(keep.filter(Boolean)) }).removed;
 }
 
 // Every entry point — the whole run or one resumed phase — proves the

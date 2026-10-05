@@ -3,6 +3,8 @@ import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
 import { fileAddTestsTask, followUpChecksOf, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
+import { runBatchChecks } from "./batch-checks.js";
+import { BATCH_HINT, BATCH_WINDOW_MS, projectBatchChecks, setProjectBatchChecks } from "./batch-policy.js";
 import { buildReviewPass } from "./build-review.js";
 import { buildReviewLines, buildReviewOf } from "./review-switch.js";
 import { parseProtectedPaths } from "./approval-policy.js";
@@ -11,6 +13,7 @@ import { evidencePack, exportDay, ledgerExportChunks, standaloneEvidenceHtml, ty
 import { matchesOutsideCheckpoint } from "./ledger-chain.js";
 import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, parseCleanup, storageReport } from "./storage.js";
 import { removeStaleTestTemp, tempRoots, testTempFolders } from "./test-temp.js";
+import { dailyStorageSweep, lastSweep, nextSweepAt, saveSweep, storageSweepOff as storageSweepOffNow, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
@@ -1271,6 +1274,7 @@ async function dispatch(
       if (positional[0] === "rules") return projectRulesCommand(positional, flags, context);
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
+      if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
     case "assignment":
@@ -5047,8 +5051,17 @@ async function reconcileCommand(
   try { retention = dailyRetention(store, context.evidenceRoot, clock()); } catch { retention = null; /* the next pass tries again */ }
   const retained = retention === null ? [] : retention.counts.filter(one => one.count > 0);
 
+  // The daily storage sweep (storage-sweep.ts): stale test temp folders, orphans Toolroll left running, finished
+  // checkouts, extra staged runtimes and dependency installs unused for a week; saved for Settings → Storage.
+  let storageSwept: SweepRecord | null = null;
+  try {
+    storageSwept = await dailyStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots() }, clock);
+  } catch { storageSwept = null; /* the next pass tries again */ }
+  const swept = storageSwept === null ? [] : storageSwept.parts.filter(one => one.count > 0);
+
   const nothing =
     retained.length === 0 &&
+    swept.length === 0 &&
     recovered.length === 0 &&
     reaped.length === 0 &&
     adoption.adopted.length === 0 &&
@@ -5074,6 +5087,7 @@ async function reconcileCommand(
       checkoutsSlimmed: slimmed.slimmed.map(one => one.path),
       liveViewsSwept: liveSwept.removed.length,
       retention: retention === null ? null : { counts: retention.counts, freedBytes: retention.freed },
+      storageSweep: storageSwept,
     },
     () =>
       nothing
@@ -5092,6 +5106,7 @@ async function reconcileCommand(
             ...(slimmed.slimmed.length === 0 ? [] : [`Dropped dependencies and build output from ${slimmed.slimmed.length} kept checkout(s), about ${bytesWords(slimmed.slimmed.reduce((sum, one) => sum + one.bytes, 0))}.`]),
             ...(liveSwept.removed.length === 0 ? [] : [`Cleared ${liveSwept.removed.length} finished live view(s).`]),
             ...(retention === null || retained.length === 0 ? [] : [`Retention removed ${sweepWords(retention.counts, retention.freed)}.`]),
+            ...(storageSwept === null || swept.length === 0 ? [] : [`Storage sweep: ${storageSweepWords(storageSwept.parts)}`]),
           ],
   );
 }
@@ -8596,10 +8611,13 @@ async function runWatchLoop(args: {
     onError: error => progress(`watch: a follow-up check failed to run — ${describe(error)}; it is recorded on the result`),
     run: async () => {
       if (store.isDemo()) return;
+      // Batch checks first: a cohort that is ready runs one check for all its results.
+      const batched = await runBatchChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
+      if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
-      if (ran > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
+      if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
   });
 
@@ -13500,6 +13518,43 @@ async function projectConcurrencyCommand(positional: readonly string[], flags: M
   ]);
 }
 
+/** `project checks [--batch on|off] --repo <p>`: whether the project's results share one full check when they
+ * finish close together (batch-checks.ts). Off by default; changing it is an approver's act, in the ledger. */
+async function projectChecksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project checks";
+  const allowed = new Set(["repo", "batch", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project checks option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = flags.get("batch");
+  if (positional.length > 1 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) {
+    return fail(context.write, context.json, command, "usage", "Use project checks [--batch on|off] --repo <project path>.", EXIT.usage);
+  }
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...context.store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
+  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const level = projectCheckLevel(context.store, repo).level;
+  const words = (on: boolean): string[] => [
+    `${repo}: batch checks are ${on ? "on" : "off"}. ${on ? BATCH_HINT : "Each result runs its own full check."}`,
+    ...(on && level !== "full" ? [`Checks are ${CHECK_LEVEL_WORDS[level]} for this project, so nothing is batched until they are Full.`] : []),
+  ];
+  if (wanted === undefined) {
+    const current = projectBatchChecks(context.store, repo);
+    return succeed(context.write, context.json, command, { repo, batch: current.on, windowMinutes: current.windowMs / 60_000, level, setBy: current.setBy }, () => words(current.on));
+  }
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project changes batch checks: pass --as and --token (or use the remembered login).", EXIT.refused);
+  }
+  const on = wanted === "on";
+  const changed = setProjectBatchChecks(context.store, repo, on, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, batch: on, before: changed.before, changed: changed.changed, windowMinutes: BATCH_WINDOW_MS / 60_000, level }, () => [
+    ...words(on),
+    ...(changed.changed && !on ? ["Results already waiting are checked now."] : []),
+  ]);
+}
+
 /** `project demo [<url>|off] --repo <p>` (review 827): the project's own demo or dev server, which its scouts may
  * screenshot. Changing it is an approver's act. */
 async function projectDemoCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
@@ -13846,17 +13901,34 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   const sharedLine = (one: ReturnType<typeof sharedFacts>[number]) =>
     `  ${bytesWords(one.bytes).padStart(8)}  ${projectName(one.repo)} ${one.key.slice(0, 8)}: ${one.checkouts === 1 ? "1 checkout uses it" : `${one.checkouts} checkouts use it`}${one.retired ? " (changed after install; never linked again)" : ""}`;
 
+  // What the latest sweep (automatic, or a clean-up by hand) did and when (storage-sweep.ts).
+  const sweepFacts = () => {
+    const last = lastSweep(store);
+    const automatic = last?.source === "automatic" ? last : lastSweep(store, "automatic");
+    return { last, lastAutomatic: automatic, next: nextSweepAt(store) };
+  };
+  const sweepLines = (facts: ReturnType<typeof sweepFacts>): string[] => {
+    const when = (at: string) => new Date(at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const one = facts.last;
+    const head = one === null ? (facts.next === null && storageSweepOffNow() ? "Automatic sweep: off." : "Automatic sweep: not run yet; it runs once a day.")
+      : `Last swept ${when(one.at)}${one.source === "manual" ? ` by ${one.actor}` : " automatically"}: ${storageSweepWords(one.parts)}`;
+    const auto = one !== null && one.source === "manual" && facts.lastAutomatic !== null ? [`Last automatic sweep ${when(facts.lastAutomatic.at)}: ${storageSweepWords(facts.lastAutomatic.parts)}`] : [];
+    return [head, ...auto, ...(one === null ? [] : sweepDetails(one.parts).slice(0, 8).map(line => `  ${line}`))];
+  };
+
   if (action === undefined) {
     const plan = await checkoutPlan(store, pool, context.clock(), { manual: true });
     const report = storageReport(store, context.databaseFile, plan.go.length === 0 ? "nothing to clean up" : `about ${bytesWords(plan.freeBytes)} to clean up`);
     const { staleBytes: _, ...temp } = leftovers(false);
     const shared = sharedFacts(sharedUse(depsRoot, checkoutRows()));
-    return succeed(context.write, context.json, "storage", { ...report, checkouts: checkoutSummary(plan), testTemp: temp, shared }, () => [
+    const sweep = sweepFacts();
+    return succeed(context.write, context.json, "storage", { ...report, checkouts: checkoutSummary(plan), testTemp: temp, shared, sweep }, () => [
       `${report.folder}: ${bytesWords(report.total)}`,
       ...report.lines.map(one => `  ${one.what.padEnd(19)} ${bytesWords(one.bytes).padStart(8)}${one.count === undefined ? "" : `  (${one.count})`}${one.note === undefined ? "" : `  ${one.note}`}`),
       ...(shared.length === 0 ? [] : ["Shared dependencies:", ...shared.map(sharedLine)]),
       ...summary(plan),
       leftoverLine({ ...temp, staleBytes: 0 }),
+      ...sweepLines(sweep),
     ]);
   }
   if (action === "cleanup") {
@@ -13908,6 +13980,13 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     }
     for (const debris of unused.debris) removeShared(debris);
     const sharedFreed = sharedRemoved.reduce((sum, one) => sum + one.bytes, 0);
+    // Saved like an automatic sweep, so Storage shows what this clean-up did and when.
+    const parts: SweepPart[] = [
+      { kind: "checkouts", count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: done.removed.slice(0, 20).map(one => one.path) },
+      { kind: "test temp", count: swept.removed.length, bytes: temp.staleBytes, failed: swept.failed.length, items: swept.removed.slice(0, 20) },
+      { kind: "dependencies", count: sharedRemoved.length, bytes: sharedFreed, failed: unused.copies.length - sharedRemoved.length, items: sharedRemoved.slice(0, 20).map(one => one.path) },
+    ];
+    saveSweep(store, { at: context.clock().toISOString(), source: "manual", actor, parts });
     return succeed(context.write, context.json, command, { removed: done.removed, kept: done.kept, freedBytes: done.freed, testTempRemoved: swept.removed.length, testTempFailed: swept.failed, sharedRemoved, sharedFreedBytes: sharedFreed }, () => [
       done.removed.length === 0 ? (swept.removed.length === 0 && sharedRemoved.length === 0 ? "Nothing to clean up." : "No checkouts to clean up.") : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}; their branches stay.`,
       ...done.removed.map(itemLine),

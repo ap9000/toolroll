@@ -7,9 +7,10 @@
  *
  * Always kept: a checkout in use, one whose task isn't finished (on hold, failed, a revision under way), a result
  * still waiting for review, a checkout with changes (files Toolroll wrote itself aside), and one with commits on no
- * branch. A release candidate's checkout (a deploy installs from it) is kept only while it is the newest gate for its
- * release (for a week after it was done) or the one deployed; a superseded or cancelled gate goes at once, whatever
- * its task's state (staged releases keep the rollback copy). A checkout no task names (adopted after a crash) goes only
+ * branch. A release check's checkout (a deploy installs from it) goes once its task is complete, with its dependency
+ * install and journey output, except the one deployed now and the project's newest complete one still waiting for its
+ * deploy (no deploy since it was complete; at most a week). A superseded or cancelled gate goes at once, whatever its
+ * task's state (staged releases keep the rollback copy). A checkout no task names (adopted after a crash) goes only
  * in a clean-up by hand. Every removal is in the ledger.
  *
  * A kept checkout waiting for review or with changes drops its dependencies and build output once its run ends
@@ -25,7 +26,7 @@ import type { Store, WorktreeRow } from "./store.js";
 import { worktreePath, type WorktreePool } from "./worktree.js";
 
 const DAY_MS = 86_400_000;
-/** A release candidate's checkout holds the build a deploy installs: kept a week after its task was done. */
+/** A release candidate's checkout holds the build a deploy installs: the newest complete one waits at most a week for it. */
 export const CANDIDATE_KEEP_MS = 7 * DAY_MS;
 /** The worker's pass removes at most this many; a clean-up by hand has no cap. */
 export const AUTO_MAX = 20;
@@ -56,7 +57,7 @@ type Status = { keep: KeepWhy | null; taskId: string; finishedAt: string | null;
 
 /** The release a deploy installed last (staged-upgrades/<stage>/deployment.json at phase "deployed"): its commit and
  * builder run. A deploy runs from the gate's checkout, so that checkout stays while it is what runs. */
-export type Deployed = { head: string | null; run: number | null };
+export type Deployed = { head: string | null; run: number | null; at?: string | null };
 
 export function deployedRelease(stateDir: string | null): Deployed | null {
   if (stateDir === null) return null;
@@ -72,7 +73,7 @@ export function deployedRelease(stateDir: string | null): Deployed | null {
     if (newest !== null && newest.at >= at) continue;
     newest = { at, head: typeof journal["candidate"] === "string" ? journal["candidate"] : null, run: Number.isSafeInteger(journal["builder"]) ? Number(journal["builder"]) : null };
   }
-  return newest === null ? null : { head: newest.head, run: newest.run };
+  return newest === null ? null : { head: newest.head, run: newest.run, at: newest.at === "" ? null : newest.at };
 }
 
 /** The folder beside the database (where staged releases live), or null for a database in memory. */
@@ -128,6 +129,17 @@ export function taskStatuses(store: Store, now: Date, deployed?: Deployed | null
     const ref = row["run_id"] === null ? undefined : refOfRun.get(Number(row["run_id"]));
     if (ref !== undefined && (completedRef.get(ref) ?? "") < at) completedRef.set(ref, at);
   }
+  const completedAtOf = (row: Record<string, unknown>) => [completed.get(String(row["id"])), completedRef.get(Number(row["ref"]))].filter((one): one is string => one !== undefined).sort().at(-1) ?? null;
+  // Per project, the newest complete gate (by when it was complete): the one a deploy may still be about to install.
+  // Once the project deployed after it was complete, it waits for nothing.
+  const deployedRepo = deployedRef === undefined ? (live?.head == null ? undefined : gates.find(row => String(row["candidate"]) === live.head)?.["repo"]) : refs.find(row => Number(row["ref"]) === deployedRef)?.["repo"];
+  const newestDone = new Map<string, { ref: number; at: string }>();
+  for (const row of gates) {
+    if (row["state"] !== "done") continue;
+    const at = completedAtOf(row) ?? (row["updated_at"] === null ? "" : String(row["updated_at"]));
+    const seen = newestDone.get(String(row["repo"]));
+    if (seen === undefined || at > seen.at || (at === seen.at && Number(row["ref"]) > seen.ref)) newestDone.set(String(row["repo"]), { ref: Number(row["ref"]), at });
+  }
   const byRef = new Map<number, Status>();
   const byId = new Map<string, Status>();
   const parentOf = new Map<string, string>();
@@ -145,11 +157,13 @@ export function taskStatuses(store: Store, now: Date, deployed?: Deployed | null
     else if (state === null || Number(row["held"]) === 1 || (state !== "done" && state !== "cancelled")) status = { keep: "task not finished", taskId: id, finishedAt: null };
     else if (state === "cancelled") status = { keep: null, taskId: id, finishedAt: updated };
     else {
-      const completedAt = [completed.get(id), completedRef.get(ref)].filter((one): one is string => one !== undefined).sort().at(-1) ?? null;
+      const completedAt = completedAtOf(row);
       if (gate) {
         const since = completedAt ?? updated ?? now.toISOString();
         const until = new Date(Date.parse(since) + CANDIDATE_KEEP_MS).toISOString();
-        status = until > now.toISOString() ? { keep: "release candidate", taskId: id, finishedAt: since, dueAt: until } : { keep: null, taskId: id, finishedAt: since };
+        const deployedSince = live?.at != null && deployedRepo !== undefined && String(row["repo"]) === String(deployedRepo) && live.at >= since;
+        const waiting = newestDone.get(String(row["repo"]))?.ref === ref && !deployedSince && until > now.toISOString();
+        status = waiting ? { keep: "release candidate", taskId: id, finishedAt: since, dueAt: until } : { keep: null, taskId: id, finishedAt: since, atOnce: true };
       } else status = completedAt === null ? { keep: "waiting for review", taskId: id, finishedAt: null } : { keep: null, taskId: id, finishedAt: completedAt };
     }
     byRef.set(ref, status);
@@ -340,7 +354,7 @@ export function whyWords(item: Pick<CheckoutItem, "why" | "dueAt">): string {
     case "in use": return "in use";
     case "task not finished": return "its task isn't finished";
     case "waiting for review": return "its result is waiting for review";
-    case "release candidate": return item.dueAt === undefined ? "the deployed release candidate" : `newest release candidate, kept until ${item.dueAt.slice(0, 10)}`;
+    case "release candidate": return item.dueAt === undefined ? "the deployed release candidate" : `newest release candidate, kept for its deploy until ${item.dueAt.slice(0, 10)}`;
     case "has changes": return "has changes";
     case "has commits": return "has commits on no branch";
     case "unreadable": return "git couldn't read it";

@@ -19,41 +19,44 @@
  * for the Python script. Spends a few Claude turns and real builds.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, mailSink, option, own, REAL_TURN_MS, Skip, SKIPPED_FADE, sleep, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, sleep, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
 
-/** The groups, in the order they're listed, with how many journeys each has (checked at the end of every run). */
+/** The groups, in the order they're listed, with how many journeys each has, how many of those are real-model, and how
+ * many of its scripted ones another group runs too (checked at the end of every run). Every journey that isn't
+ * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 14, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects, knowledge, skills, tools, models, routines" },
   pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
-  builds: { journeys: 1, about: "A build that asks a question" },
+  builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
-  lead: { journeys: 4, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 3, about: "AI teammates (Maya), which the lead then changes" },
-  rosa: { journeys: 4, about: "A teammate that acts with a real tool: its rules, routine, week and undo" },
-  memory: { journeys: 2, about: "A teammate that acts with a real tool: its memory, and the looser rule it suggests" },
+  lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
+  maya: { journeys: 3, real: 1, shared: 1, about: "AI teammates (Maya), which the lead then changes" },
+  rosa: { journeys: 4, real: 1, shared: 1, about: "A teammate that acts with a real tool: its rules, routine, week and undo" },
+  memory: { journeys: 2, shared: 1, about: "A teammate that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
   flows: { journeys: 5, about: "Code steps and schedules in flows, the live canvas, starter kits and one-click connections" },
   onboarding: { journeys: 4, about: "From an empty home folder: toolroll up opens Chat signed in with the lead on, a first task filed and followed to Ready, no agent shows the command and turns on by itself, the wrong-host page" },
 };
 const group = option("--group", null);
 if (flag("--groups")) {
-  const list = Object.entries(GROUPS).map(([name, one]) => ({ name, journeys: one.journeys, about: one.about }));
-  console.log(flag("--json") ? JSON.stringify(list) : list.map(one => `${one.name.padEnd(10)} ${String(one.journeys).padStart(2)} journeys  ${one.about}`).join("\n"));
+  const list = groupList(GROUPS);
+  console.log(flag("--json") ? JSON.stringify(list) : list.map(one => `${one.name.padEnd(10)} ${String(one.journeys).padStart(2)} journeys (${one.real} real-model)  ${one.about}`).join("\n"));
   process.exit(0);
 }
 if (group !== null && !(group in GROUPS)) { console.error(`No group "${group}". The groups: ${Object.keys(GROUPS).join(", ")}`); process.exit(2); }
 
 // The real mail server for the email inbox: GreenMail in Docker, over TLS on 127.0.0.1:993 with a
 // certificate made for this run (the console and worker trust it, and only it, beside the usual ones).
-const docker = (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000 }); return true; } catch { return false; } })();
+const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000 }); return true; } catch { return false; } })();
 let mailCert = null;
 const certDir = join(process.env.TMPDIR ?? "/tmp", `so-e2e-mail-${randomBytes(4).toString("hex")}`);
 if (docker) {
@@ -147,6 +150,7 @@ const idpServer = createHttpServer(async (request, response) => {
 await new Promise(done => idpServer.listen(idp.port, "127.0.0.1", done));
 
 const w = await world(group === null ? "app" : `app-${group}`, {
+  groups: GROUPS,
   env: { TOOLROLL_TEST_CONNECT: `stripe|Stripe|${standBase}/mcp`, ...(mailCert === null ? {} : { NODE_EXTRA_CA_CERTS: mailCert }) },
   seed: repo => {
     mkdirSync(join(repo, "scripts"), { recursive: true });
@@ -154,15 +158,11 @@ const w = await world(group === null ? "app" : `app-${group}`, {
     writeFileSync(join(repo, "README.md"), "# Shop\n\nA tiny shop library. `add` lives in src/math.js.\n");
   },
 });
-const { base, page, cli, rows, until, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo } = w;
-const placed = new Map();
-/** A journey in its group (or groups): it runs when one of them (or every group) runs, and what it needs is in each of them. */
-function journey(name, title, needs, body) {
-  const names = [name].flat();
-  const elsewhere = needs.filter(one => !names.every(each => placed.get(one)?.includes(each)));
-  if (!names.every(each => each in GROUPS) || placed.has(title) || elsewhere.length > 0) throw new Error(`"${title}" in group ${names.join(", ")}: ${elsewhere.length > 0 ? `needs ${elsewhere.join(", ")} from another group` : "an unknown group, or a second journey of that name"}`);
-  placed.set(title, names);
-  return group === null || names.includes(group) ? check(title, needs, body) : null;
+const { base, page, cli, rows, until, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
+/** A journey in its group (or groups), scripted or real-model: it runs when one of them (or every group) runs and the run
+ * takes its mode, and what it needs is in each of them (e2e-kit.mjs checks the catalogue against GROUPS). */
+function journey(name, mode, title, needs, body) {
+  return check(title, needs, body, { mode, groups: [name].flat() });
 }
 const flowView = id => json(`/flows/${id}?format=json`);
 const csrfOf = async on => on.locator('input[name="csrf"]').first().inputValue();
@@ -197,7 +197,7 @@ async function addCard(title, details) {
 
 // ------------------------------------------------------------------ the console itself
 
-await journey("console", "A wrong password is refused, and a signed-out visitor is sent to sign in", [], async () => {
+await journey("console", SCRIPTED, "A wrong password is refused, and a signed-out visitor is sent to sign in", [], async () => {
   const wrong = await w.browser.newContext();
   const stranger = await wrong.newPage();
   await stranger.goto(`${base}/login`);
@@ -212,7 +212,7 @@ await journey("console", "A wrong password is refused, and a signed-out visitor 
   await wrong.close();
 });
 
-await journey("pages", "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
+await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
   const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/routines", "/recipes",
     "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/teammates", "/fleet", "/people"];
   const broken = [];
@@ -242,7 +242,7 @@ await journey("pages", "Every main page opens without an error, in the one works
   return { pages: paths.length * 2 + 1 };
 });
 
-await journey("console", "Sign-in hardening and the audit trail: five wrong passwords lock a name, and its sign-ins and a policy change (with what changed) are in the action ledger and its CSV; /healthz answers", [], async () => {
+await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five wrong passwords lock a name, and its sign-ins and a policy change (with what changed) are in the action ledger and its CSV; /healthz answers", [], async () => {
   // A throwaway account, so the lock touches no one else's checks.
   const casey = `casey-${randomBytes(3).toString("hex")}`, secret = `casey-${randomBytes(8).toString("hex")}`;
   cli(["approver", "add", casey, "--password", secret, ...auth]);
@@ -278,7 +278,7 @@ await journey("console", "Sign-in hardening and the audit trail: five wrong pass
   return { locked: casey };
 });
 
-await journey("console", "Sessions and API tokens: a read token made in Settings is shown once on a page with no script, a script reads with it but can't file work, and once revoked it names no one; this browser is in the sessions list", [], async () => {
+await journey("console", SCRIPTED, "Sessions and API tokens: a read token made in Settings is shown once on a page with no script, a script reads with it but can't file work, and once revoked it names no one; this browser is in the sessions list", [], async () => {
   await page.goto(`${base}/settings/sessions`);
   await page.waitForSelector("[data-session]");
   if (!/This browser/.test(await page.locator(".credentials").innerText())) throw new Error("the sessions list doesn't mark this browser");
@@ -306,7 +306,7 @@ await journey("console", "Sessions and API tokens: a read token made in Settings
 });
 
 const APPROVAL_RULES = "Approval rules: with 'someone other than the requester' on, the task alex filed can't be approved by alex; sam approves it, and the task says who filed it";
-await journey("console", APPROVAL_RULES, [], async () => {
+await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
   await page.goto(`${base}/settings/approval?repo=${encodeURIComponent(repo)}`);
   await page.locator('.approval-rules input[name="not_requester"]').check();
   await page.locator('.approval-rules input[name="password"]').fill(w.passwords.alex);
@@ -340,7 +340,7 @@ await journey("console", APPROVAL_RULES, [], async () => {
 });
 
 // The evidence pack it reads is of the task the approval rules journey filed.
-await journey("console", "Audit: the ledger chain verifies, a checkpoint made on the ledger page verifies from the command line, and the task's evidence pack names who filed and who approved it", [APPROVAL_RULES], async () => {
+await journey("console", SCRIPTED, "Audit: the ledger chain verifies, a checkpoint made on the ledger page verifies from the command line, and the task's evidence pack names who filed and who approved it", [APPROVAL_RULES], async () => {
   await page.goto(`${base}/ledger`);
   if (await page.locator('[data-ledger-chain="ok"]').count() !== 1) throw new Error(`the chain: ${(await page.locator(".ledger-chain-panel").innerText()).slice(0, 200)}`);
   await Promise.all([page.waitForNavigation(), page.locator('.ledger-checkpoint-form button').click()]);
@@ -371,7 +371,7 @@ await journey("console", "Audit: the ledger chain verifies, a checkpoint made on
   return { checkpoint: checkpoint.split(":")[0], entries: json.ledger.entries.length };
 });
 
-await journey("console", "Monitoring: a webhook set in Settings gets the audit stream, signed with the secret shown once; /metrics answers an operator", [], async () => {
+await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets the audit stream, signed with the secret shown once; /metrics answers an operator", [], async () => {
   const got = [];
   const receiver = createHttpServer((request, response) => {
     let body = "";
@@ -417,7 +417,7 @@ await journey("console", "Monitoring: a webhook set in Settings gets the audit s
   }
 });
 
-await journey("console", "Spend: the month's cost shows by project and person; a budget set on the Spend page is listed, and the month downloads as CSV", [], async () => {
+await journey("console", SCRIPTED, "Spend: the month's cost shows by project and person; a budget set on the Spend page is listed, and the month downloads as CSV", [], async () => {
   await page.goto(`${base}/spend`);
   await page.locator(".spend-total").waitFor({ timeout: 15_000 });
   const add = page.locator("details", { hasText: "Add a budget" });
@@ -448,7 +448,7 @@ await journey("console", "Spend: the month's cost shows by project and person; a
   return { budget: "$500 a month" };
 });
 
-await journey("console", "The command line answers: the task list, the approvers, the project's check, and help", [], async () => {
+await journey("console", SCRIPTED, "The command line answers: the task list, the approvers, the project's check, and help", [], async () => {
   const list = cli(["task", "list"]);
   const people = cli(["approver", "list"]);
   const verify = cli(["verify", "show", "--repo", repo], { json: false });
@@ -501,8 +501,21 @@ async function builtAndChecked(id, timeoutMs = 600_000) {
   return run;
 }
 
+/** What a scripted build of the math tasks writes: subtract, then its negative case, then multiply. */
+function mathFiles({ negative = false, multiply = false } = {}) {
+  return {
+    "src/math.js": ["export const add = (a, b) => a + b;", "export const subtract = (a, b) => a - b;", ...(multiply ? ["export const multiply = (a, b) => a * b;"] : []), ""].join("\n"),
+    "test/math.test.js": ["import test from 'node:test';", "import assert from 'node:assert/strict';", `import { add, subtract${multiply ? ", multiply" : ""} } from '../src/math.js';`, "",
+      "test('adds', () => assert.equal(add(2, 3), 5));", "test('subtracts', () => {", "  assert.equal(subtract(5, 2), 3);", ...(negative ? ["  assert.equal(subtract(2, 5), -3);"] : []), "});",
+      ...(multiply ? ["test('multiplies', () => assert.equal(multiply(3, 4), 12));"] : []), ""].join("\n"),
+  };
+}
+
 let firstTask = null;
-await journey("task", "File a task in the console; the planner (Claude) drafts its scope; approve it with your password", [], async () => {
+await journey("task", SCRIPTED, "File a task in the console; the planner (Claude) drafts its scope; approve it with your password", [], async () => {
+  // The planner's scope comes from the title (the scripted provider's default plan); the build adds subtract. Briefs
+  // carry random names (worktrees, digests), so each answer matches the exact words of its note.
+  script({ role: "builder", when: [/subtract/], unless: [/subtract\(2, 5\) is -3/, /multiply\(a, b\)/], answer: { files: mathFiles(), conclusion: "Added subtract(a, b) to src/math.js, with a test." } });
   await page.goto(`${base}/chat`);
   await page.click("a.so-new-task");
   await page.waitForSelector('form[action="/tasks/add"]');
@@ -519,7 +532,7 @@ await journey("task", "File a task in the console; the planner (Claude) drafts i
   return { task: firstTask, plan: planned.plan, goal: scope.goal.slice(0, 160) };
 });
 
-await journey("task", "Claude builds it, the project's checks pass, and the result shows what changed; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, and the result shows what changed; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
   const run = await builtAndChecked(firstTask);
   const diff = execFileSync("git", ["-C", repo, "diff", "main", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${run.id}`)[0].branch}`, "--", "src/math.js"], { encoding: "utf8" });
   if (!/subtract/.test(diff)) throw new Error(`the build's branch doesn't add subtract: ${diff.slice(0, 300)}`);
@@ -569,7 +582,11 @@ async function sendBack(id, note) {
 }
 const branchFile = (runId, file) => execFileSync("git", ["-C", repo, "show", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${runId}`)[0].branch}:${file}`], { encoding: "utf8" });
 
-await journey("task", "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed; mark it complete"], async () => {
+await journey("task", SCRIPTED, "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed; mark it complete"], async () => {
+  script(
+    { role: "planner", when: [/subtract\(2, 5\) is -3/], unless: [/Also add multiply/], answer: { plan: { goal: "Add a subtract function to src/math.js, with a test that also checks a negative result: subtract(2, 5) is -3.", amendment: "The note asks the test to check a negative result." } } },
+    { role: "builder", when: [/subtract\(2, 5\) is -3/], unless: [/multiply\(a, b\)/], answer: { files: mathFiles({ negative: true }), conclusion: "The subtract test also checks subtract(2, 5) is -3." } },
+  );
   const revision = await sendBack(firstTask, "The subtract test should also check a negative result: subtract(2, 5) is -3.");
   await approveOnPage(revision);
   const built = await builtAndChecked(revision);
@@ -578,7 +595,14 @@ await journey("task", "Send it back with a note: the revision is approved again 
   return { revision, run: built.id };
 });
 
-await journey("task", "Send it back asking for more than the plan allows: the planner adds it, you approve the change, and it's built", ["Send it back with a note: the revision is approved again and rebuilt with the fix"], async () => {
+await journey("task", SCRIPTED, "Send it back asking for more than the plan allows: the planner adds it, you approve the change, and it's built", ["Send it back with a note: the revision is approved again and rebuilt with the fix"], async () => {
+  script(
+    { role: "planner", when: [/Also add multiply/], answer: { plan: {
+      goal: "Add subtract to src/math.js, with a test that also checks subtract(2, 5) is -3, and add multiply(a, b) with its own test.",
+      acceptance: [{ id: "c1", statement: "subtract(a, b) works, and its test checks subtract(2, 5) is -3", evidence: ["check"], how: null }, { id: "c2", statement: "multiply(a, b) returns a times b, with its own test", evidence: ["check"], how: null }],
+      amendment: "The note asks for multiply(a, b) as well, which the earlier contract left out: added it with a criterion of its own." } } },
+    { role: "builder", when: [/multiply\(a, b\)/], answer: { files: mathFiles({ negative: true, multiply: true }), conclusion: "Added multiply(a, b) with its own test; subtract stays." } },
+  );
   const done = rows(`SELECT t.external_id AS id FROM task_ref t WHERE t.revision_of = '${firstTask}' ORDER BY t.id DESC LIMIT 1`)[0]?.id;
   const child = await sendBack(done, "Also add multiply(a, b), with its own test.");
   const scope = rows(`SELECT goal, acceptance_json FROM task_scope WHERE task_id = '${child}'`)[0];
@@ -608,7 +632,7 @@ await journey("task", "Send it back asking for more than the plan allows: the pl
   return { revision: child, change: reason.replace(/\s+/g, " ").slice(0, 240), run: built.id };
 });
 
-await journey("builds", "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
+await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);
@@ -633,8 +657,16 @@ await journey("builds", "A build stops to ask a question the plan leaves open; y
   return { question: asked.question.slice(0, 160), answer: labels[pick].trim(), run: built.id };
 });
 
-await journey("stop", "Stop a build while it runs, then resume it with your password; it finishes", [], async () => {
+await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with your password; it finishes", [], async () => {
   const id = "divide";
+  // The first build runs until it is stopped; the resumed one finishes.
+  script(
+    { role: "builder", when: [/divide/], times: 1, answer: { delayMs: 15 * 60_000 } },
+    { role: "builder", when: [/divide/], answer: { files: {
+      "src/math.js": "export const add = (a, b) => a + b;\nexport const divide = (a, b) => { if (b === 0) throw new Error('division by zero'); return a / b; };\n",
+      "test/math.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add, divide } from '../src/math.js';\n\ntest('adds', () => assert.equal(add(2, 3), 5));\ntest('divides', () => assert.equal(divide(6, 3), 2));\ntest('refuses zero', () => assert.throws(() => divide(1, 0)));\n",
+    }, conclusion: "Added divide(a, b), which throws on zero, with tests for both." } },
+  );
   cli(["task", "add", "Add a divide function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
   const digest = cli(["task", "show", id]).scope.digest;
@@ -675,9 +707,9 @@ async function turnLeadChatOn() {
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
   leadChatOn = true;
 }
-await journey(["lead", "maya"], "Turn the lead chat on (first-run setup, with your password)", [], turnLeadChatOn);
+await journey(["lead", "maya"], SCRIPTED, "Turn the lead chat on (first-run setup, with your password)", [], turnLeadChatOn);
 
-await journey("lead", "The lead answers a question about the project from its files (real Claude turn)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
+await journey("lead", REAL_MODEL, "The lead answers a question about the project from its files (real Claude turn)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
   // The project's code index, refreshed the way Settings → Knowledge does, so the lead's project search reads a current one.
   await page.goto(`${base}/settings/knowledge?repo=${encodeURIComponent(repo)}`);
   const refreshed = await post("/settings/knowledge/refresh", { repo });
@@ -693,7 +725,7 @@ await journey("lead", "The lead answers a question about the project from its fi
   return { searched: found.args, answer: text.slice(0, 200) };
 });
 
-await journey("lead", "The lead files a task from plain words, as a card you confirm (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
+await journey("lead", REAL_MODEL, "The lead files a task from plain words, as a card you confirm (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
   const { reply } = await askLead("File a task in this project to add a short usage section about add() to README.md. Just file it, no need to ask.");
   const card = reply.locator('[data-view="chat-card"][data-card-kind="task"][data-card-state="pending"]').first();
   await waitFor(card, "a task card to confirm in the lead's reply", { timeoutMs: 20_000, seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
@@ -706,7 +738,7 @@ await journey("lead", "The lead files a task from plain words, as a card you con
 
 // ------------------------------------------------------------------ projects, knowledge, skills, tools, models
 
-await journey("lead", "The lead draws a follow-up flow from plain words: it emails, waits for a reply, and nudges when none comes (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
+await journey("lead", REAL_MODEL, "The lead draws a follow-up flow from plain words: it emails, waits for a reply, and nudges when none comes (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
   const before = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow")[0].id;
   const { reply } = await askLead("Make a flow called Quote follow-up in this project: email the customer our quote, wait 3 days for them to reply, and if they don't, send them a short reminder. Replies go to a holding step called Replied. Just draft it, no need to ask.");
   const card = await pendingCard(reply, "the flow card to confirm in the lead's reply");
@@ -721,7 +753,7 @@ await journey("lead", "The lead draws a follow-up flow from plain words: it emai
   return { steps: stages.map(one => `${one.title} (${one.kind})`).join(" → ") };
 });
 
-await journey("console", "Projects: the project is listed and opens", [], async () => {
+await journey("console", SCRIPTED, "Projects: the project is listed and opens", [], async () => {
   await page.goto(`${base}/projects`);
   const row = page.locator(`li[data-project="${repo}"]`);
   await row.waitFor({ timeout: 10_000 });
@@ -731,7 +763,7 @@ await journey("console", "Projects: the project is listed and opens", [], async 
   if (!/Open now/.test(await page.locator(`li[data-project="${repo}"]`).innerText())) throw new Error("the project isn't the open one");
 });
 
-await journey("console", "Knowledge: instructions saved for a project are kept for future tasks", [], async () => {
+await journey("console", SCRIPTED, "Knowledge: instructions saved for a project are kept for future tasks", [], async () => {
   await page.goto(`${base}/settings/knowledge?repo=${encodeURIComponent(repo)}`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
   await page.fill('textarea[name="instructions"]', "Use plain ES modules. Every function gets a test.");
@@ -741,7 +773,7 @@ await journey("console", "Knowledge: instructions saved for a project are kept f
   if (!/Every function gets a test/.test(await page.locator("body").innerText())) throw new Error("the instructions aren't shown back");
 });
 
-await journey("console", "Skills: a pasted skill joins the library and can be turned on", [], async () => {
+await journey("console", SCRIPTED, "Skills: a pasted skill joins the library and can be turned on", [], async () => {
   await page.goto(`${base}/settings/skills?repo=${encodeURIComponent(repo)}`);
   await page.getByText("Add skill", { exact: true }).first().click();
   const form = page.locator("form[data-skill-import]");
@@ -757,7 +789,7 @@ await journey("console", "Skills: a pasted skill joins the library and can be tu
   if (!/Enabled/.test(await page.locator("article[id^='skill-']").first().innerText())) throw new Error("the skill didn't turn on");
 });
 
-await journey("console", "Tools: a project's own MCP tool is added (with your password) and tested", [], async () => {
+await journey("console", SCRIPTED, "Tools: a project's own MCP tool is added (with your password) and tested", [], async () => {
   const echo = join(w.root, "echo-mcp.mjs");
   writeFileSync(echo, `import { createInterface } from "node:readline";
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
@@ -782,7 +814,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   if (!/echo works: 1 tool/.test(tested)) throw new Error(`testing said: ${tested}`);
 });
 
-await journey("console", "Models: Check now reads the live model lists", [], async () => {
+await journey("console", SCRIPTED, "Models: Check now reads the live model lists", [], async () => {
   await page.goto(`${base}/settings/models`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/models/check"] button')]);
   const said = await page.locator('p[role="status"]').first().innerText().catch(() => "");
@@ -792,7 +824,7 @@ await journey("console", "Models: Check now reads the live model lists", [], asy
 
 // ------------------------------------------------------------------ routines, settings, search, signing out
 
-await journey("console", "Routines: a standing order is filed, approved with your password, and run now files its task", [], async () => {
+await journey("console", SCRIPTED, "Routines: a standing order is filed, approved with your password, and run now files its task", [], async () => {
   await page.goto(`${base}/routines`);
   const form = page.locator('form[action="/routines/add"]');
   await form.waitFor({ timeout: 10_000 });
@@ -814,7 +846,7 @@ await journey("console", "Routines: a standing order is filed, approved with you
   return { routine: routine.id, task: fired.id };
 });
 
-await journey("pages", "Settings: the theme switches to dark and the accent to Emerald, and both stay", [], async () => {
+await journey("pages", SCRIPTED, "Settings: the theme switches to dark and the accent to Emerald, and both stay", [], async () => {
   await page.goto(`${base}/settings`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/appearance"] button[value="dark"]')]);
   await page.click('[data-accent-picker] button[data-preset="emerald"]');
@@ -828,7 +860,7 @@ await journey("pages", "Settings: the theme switches to dark and the accent to E
   await page.locator("[data-accent-status]", { hasText: "Saved" }).waitFor({ timeout: 10_000 });
 });
 
-await journey("pages", "Search finds the project and a task", [], async () => {
+await journey("pages", SCRIPTED, "Search finds the project and a task", [], async () => {
   // Search is left off pages that show a password field; Flows has none.
   await page.goto(`${base}/flows`);
   await page.click("button.so-command-trigger");
@@ -842,7 +874,7 @@ await journey("pages", "Search finds the project and a task", [], async () => {
 // ------------------------------------------------------------------ code in flows
 
 let codeFlow = null;
-await journey("flows", "Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret", [], async () => {
+await journey("flows", SCRIPTED, "Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret", [], async () => {
   codeFlow = await newFlow("Leads", [
     { ...none, id: "size", title: "Size it up", kind: "check", script: "size", runIn: "folder", routes: [{ answer: "Big", to: "call" }, { answer: "Small", to: "note" }], zone: zone(0), next: null, onFail: "inbox" },
     { ...none, id: "call", title: "Call them", kind: "inbox", zone: zone(360), next: null, onFail: null },
@@ -897,7 +929,7 @@ await journey("flows", "Code steps: a Python file and a Node script get the card
   return { waited: waiting.waiting, small: said("note"), big: big.stage };
 });
 
-await journey("flows", "A schedule runs a script and makes a card of each item it prints, once (Run now)", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
+await journey("flows", SCRIPTED, "A schedule runs a script and makes a card of each item it prints, once (Run now)", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
   await page.click("[data-open-scripts]");
   if (!(await page.locator("[data-script-form]").isVisible())) await page.click('[data-flow-scripts] button:has-text("New script")');
   const form = page.locator("[data-script-form]");
@@ -958,9 +990,10 @@ async function mailServer() {
   return { smtp, inbox, stop };
 }
 
-await journey("mail", "Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread", [], async () => {
+await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread", [], async () => {
   const mail = await mailServer();
   const smtp = mail.smtp;
+  script({ role: "draft", when: [/Refund for order 42\?/], answer: { text: "Hi Priya,\n\nSorry about the double charge on order 42. We've refunded the second charge to your card; it can take up to 5 days to show.\n\nBest,\nSupport" } });
   try {
     // Settings → Email: the mail server, and where to read mail; "Check the inbox" signs in.
     await page.goto(`${base}/settings#email`);
@@ -1016,7 +1049,7 @@ await journey("mail", "Email inbox: a real email becomes a card, Claude drafts a
   }
 });
 
-await journey("mail", "Follow-ups: a card emails someone and waits; their reply moves it on (a stranger's doesn't), one nobody answers gets a nudge in the same thread, and a stalled decision reminds its owner and moves on", ["Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread"], async () => {
+await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; their reply moves it on (a stranger's doesn't), one nobody answers gets a nudge in the same thread, and a stalled decision reminds its owner and moves on", ["Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread"], async () => {
   const mail = await mailServer();
   try {
     const WAIT = 3;
@@ -1088,7 +1121,15 @@ await journey("mail", "Follow-ups: a card emails someone and waits; their reply 
 
 // ------------------------------------------------------------------ two people on one flow
 
-await journey("maya", "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)", [], async () => {
+await journey("maya", SCRIPTED, "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)", [], async () => {
+  // What Maya decides, card by card: questions answered, the $30 refund approved, the $400 one handed to you.
+  const reads = /WHERE YOU ARE: the zone “Maya reads it”/, decides = /WHERE YOU ARE: the zone “Refund\?”/;
+  script(
+    { role: "teammate", when: [reads, /Title: Where is/], answer: { action: "route", answer: "Just a question", text: "Hi! Your order shipped and is on its way; it should reach you within 2 days. — Maya", reason: "A question about delivery, not a refund." } },
+    { role: "teammate", when: [reads, /Title: (Charged twice|Broken TV)/], answer: { action: "route", answer: "Refund request", text: "Sorry about that! I've passed your refund request on, and you'll hear back today. — Maya", reason: "The customer asks for their money back." } },
+    { role: "teammate", when: [decides, /Title: Charged twice/], answer: { action: "approve", reason: "A $30 duplicate charge is within my $50 limit." } },
+    { role: "teammate", when: [decides, /Title: Broken TV/], answer: { action: "hand_off", note: "A $400 refund is over my $50 limit. I'd approve it: the screen arrived cracked.", reason: "Over my limit." } },
+  );
   // A teammate from the Support rep template, on the Teammates page; its soul file saves as a new version.
   await page.goto(`${base}/teammates`);
   await page.selectOption('form[data-new-teammate] select[name="template"]', "support");
@@ -1164,7 +1205,7 @@ await journey("maya", "AI teammates: Maya (a support rep) answers a question car
   return { reply: reply.slice(0, 120), summary: (await page.locator(".teammate-summary").innerText()).slice(0, 200) };
 });
 
-await journey("maya", "The lead adds a teammate and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
+await journey("maya", REAL_MODEL, "The lead adds a teammate and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
   // The lead's own proposal is what's checked: the card it drafted (a reply without one fails quoting the reply and the
   // tools the lead called), then what confirming it saved.
   const confirm = async (asked, what) => {
@@ -1180,8 +1221,20 @@ await journey("maya", "The lead adds a teammate and changes one's rules from pla
   return { maya: soul.split("## Decide on your own")[1]?.split("##")[0]?.trim().slice(0, 200) };
 });
 
+/** Rosa's turns on one refund card, scripted: look the order up, refund it, then route it as refunded. */
+function rosaRefunds(title, order, amount, zone = "Rosa handles it") {
+  const on = [new RegExp(`WHERE YOU ARE: the zone “${zone}”`), new RegExp(`Title: ${title}`)];
+  return [
+    { role: "teammate", when: on, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order }, reason: "To see what the customer paid." } },
+    { role: "teammate", when: [...on, /\d\. store\.lookup_order/], unless: [/\d\. store\.refund_order/], answer: { action: "use_tool", tool: "store.refund_order", input: { order, amount }, reason: `The customer is owed $${amount}.` } },
+    { role: "teammate", when: [...on, /\d\. store\.refund_order/], answer: { action: "route", answer: "Refunded", text: `Hi! I've refunded $${amount} on order ${order} to your original payment method; it takes up to 5 days to show. — Rosa`, reason: "The refund is made." } },
+  ];
+}
+
 const TOOL_CHECK = "Teammates that act: Rosa uses a real store tool under her rules — looks orders up and refunds $30 on her own, asks you before $400, and your Approve makes exactly that call (real Claude turns)";
-await journey(["rosa", "memory"], TOOL_CHECK, [], async () => {
+await journey(["rosa", "memory"], SCRIPTED, TOOL_CHECK, [], async () => {
+  // What Rosa does with each card: looks the order up, refunds it with the store (the $400 one waits for you), says where it goes.
+  script(rosaRefunds("Charged twice for order 2201", "2201", 30), rosaRefunds("Broken TV, order 2202", "2202", 400));
   // A real MCP server over stdio (named store: the lead never sees this project's folder name, shop): it looks orders up and refunds them, and writes down every call it gets.
   const shop = join(w.root, "shop-mcp.mjs"), log = join(w.root, "shop-calls.log");
   writeFileSync(shop, `import { createInterface } from "node:readline";
@@ -1294,7 +1347,7 @@ createInterface({ input: process.stdin }).on("line", line => {
 });
 
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
-await journey("rosa", "The lead changes a teammate's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
+await journey("rosa", REAL_MODEL, "The lead changes a teammate's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
   const { reply } = await askLead("Rosa can refund orders up to $100 in the store without asking me now. Just draft it.");
   const pending = reply.locator('[data-view="chat-card"][data-card-state="pending"]:has([data-card-confirm])');
@@ -1312,12 +1365,15 @@ await journey("rosa", "The lead changes a teammate's tool rule from plain words,
   return { rule: rules.refund_order };
 });
 
-await journey("memory", "Teammates remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap (real Claude turns)", [TOOL_CHECK], async () => {
+await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap (real Claude turns)", [TOOL_CHECK], async () => {
   const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   const flowId = rows("SELECT id FROM flow WHERE name = 'Refund desk'")[0]?.id;
   if (!mate || !flowId) throw new Error("Rosa or her flow is missing");
   const cardOf = async title => (await flowView(flowId)).cards.find(one => one.title.startsWith(title));
   await page.goto(`${base}/flows/${flowId}`); await page.waitForSelector("[data-zone]");
+  script({ role: "teammate", when: [/Title: Question from Priya Shah/], answer: { action: "route", answer: "Nothing to refund", text: "Hi Priya, order 2201 is all sorted: the duplicate $30 was refunded. I'll email you rather than call. — Rosa",
+    reason: "A question; the refund was already made.", remember: "Priya Shah prefers store credit over refunds, and email over phone calls." } });
+  for (const [at, amount] of [120, 125, 130, 135, 140].entries()) script(rosaRefunds(`Broken chair, order ${2204 + at}`, String(2204 + at), amount));
   // A customer says something worth keeping for later cards.
   await addCard("Question from Priya Shah", "Hi, it's Priya Shah. For anything in future: I always prefer store credit over a refund, and please email me rather than call. Is order 2201 all sorted now? — Priya");
   const kept = await until("Rosa to keep Priya's preference", async () => rows(`SELECT id, text FROM teammate_memory WHERE teammate = ${mate} AND source = 'teammate' AND state = 'active'`).find(one => /priya/i.test(one.text)) ?? null, { timeoutMs: 300_000, everyMs: 3000 });
@@ -1373,12 +1429,17 @@ await journey("memory", "Teammates remember and learn: Rosa keeps a customer's p
   return { memory: kept.text, suggestion: suggestion.said, rule };
 });
 
-await journey("rosa", "A teammate's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager (real Claude turn)", [TOOL_CHECK], async () => {
+await journey("rosa", SCRIPTED, "A teammate's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager (real Claude turn)", [TOOL_CHECK], async () => {
   const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   if (!mate) throw new Error("Rosa is missing");
   await page.goto(`${base}/teammates/${mate}#desk`);
   const form = page.locator("form.routine-add");
   await form.locator('input[name="schedule"]').fill("weekdays 09:00");
+  const request = [/WHERE YOU ARE: the zone “Requests”/, /Title: Look up order 2201/];
+  script(
+    { role: "teammate", when: request, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order: "2201" }, reason: "The routine asks for its status." } },
+    { role: "teammate", when: [...request, /\d\. store\.lookup_order/], answer: { action: "route", answer: "Done", text: "Order 2201, a $30 desk lamp, was charged twice: one $30 payment is a duplicate, and it has been refunded.", reason: "Answered from the store." } },
+  );
   await form.locator('input[name="text"]').fill("Look up order 2201 in the store and tell me its status in one sentence.");
   await Promise.all([page.waitForNavigation(), form.locator("button").click()]);
   const routine = page.locator("[data-routine]").first();
@@ -1402,7 +1463,7 @@ await journey("rosa", "A teammate's routine: added on its page for weekdays, run
   return { answer: answer.body.slice(0, 160) };
 });
 
-await journey("rosa", "A teammate's week and undo: its page shows the week with what its turns cost and what you overrode; name an undo for refunds, undo Rosa's $30 refund from its card, and send the week's report", [TOOL_CHECK], async () => {
+await journey("rosa", SCRIPTED, "A teammate's week and undo: its page shows the week with what its turns cost and what you overrode; name an undo for refunds, undo Rosa's $30 refund from its card, and send the week's report", [TOOL_CHECK], async () => {
   const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   const flowId = rows("SELECT id FROM flow WHERE name = 'Refund desk'")[0]?.id;
   if (!mate || !flowId) throw new Error("Rosa or her flow is missing");
@@ -1440,7 +1501,8 @@ await journey("rosa", "A teammate's week and undo: its page shows the week with 
   return { report: report.body.slice(0, 300) };
 });
 
-await journey("flows", "Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)", [], async () => {
+await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)", [], async () => {
+  script({ role: "teammate", when: [/WHERE YOU ARE: the zone “Maya answers”/, /Title: Where's my order/], answer: { action: "route", answer: "Reply", text: "Hi Priya, good news: order #1042 shipped on the 15th with UPS and is out for delivery tomorrow. Thanks for your patience! — Maya", reason: "The order's status is in the message." } });
   await page.goto(`${base}/kits`);
   await page.waitForSelector('[data-kit="support-desk"]');
   if ((await page.locator("[data-kit]").count()) !== 4) throw new Error("the gallery doesn't show the four kits");
@@ -1482,7 +1544,7 @@ await journey("flows", "Starter kits: the Support desk kit sets up Maya and its 
   return { stage: worked.stage, draft: draft.slice(0, 160) };
 });
 
-await journey("flows", "One-click connections: Connect Stripe on the kit's checklist, allow it on Stripe's page, and Maya can use it; the sign-in stays out of the database and the worker renews it", ["Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)"], async () => {
+await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the kit's checklist, allow it on Stripe's page, and Maya can use it; the sign-in stays out of the database and the worker renews it", ["Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)"], async () => {
   const { namedPath } = await import(new URL("../dist/names.js", import.meta.url).href);
   const secrets = join(namedPath(homedir(), ["tool-secrets"], { dot: true }), createHash("sha256").update(repo).digest("hex").slice(0, 16), "stripe.json");
   try {
@@ -1533,7 +1595,7 @@ await journey("flows", "One-click connections: Connect Stripe on the kit's check
   }
 });
 
-await journey("pages", "Sign-in with an identity provider: turned on in Settings, a person signs in there and gets an account from their groups, their approvals are that sign-in (no password), and a group that may not enter is refused", [], async () => {
+await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on in Settings, a person signs in there and gets an account from their groups, their approvals are that sign-in (no password), and a group that may not enter is refused", [], async () => {
   await page.goto(`${base}/settings/sign-in`);
   if (!(await page.locator(".redirect code").innerText()).endsWith("/login/sso/callback")) throw new Error("the page doesn't say which address to register");
   await page.fill('input[name="issuer"]', idpBase); await page.fill('input[name="client-id"]', "so-e2e"); await page.fill('input[name="client-secret"]', `idp-${randomBytes(6).toString("hex")}`);
@@ -1583,7 +1645,7 @@ await journey("pages", "Sign-in with an identity provider: turned on in Settings
   return { account: "priya" };
 });
 
-await journey("flows", "Live canvas: a teammate sees who's here and a card move without reloading", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
+await journey("flows", SCRIPTED, "Live canvas: a teammate sees who's here and a card move without reloading", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
   const sam = await signIn("sam");
   try {
     await sam.goto(`${base}/flows/${codeFlow}`); await sam.waitForSelector("[data-zone]");
@@ -1603,7 +1665,7 @@ await journey("flows", "Live canvas: a teammate sees who's here and a card move 
 
 // ------------------------------------------------------------------ the demo
 
-await journey("pages", "The demo starts with flows already moving, and opens in a browser", [], async () => {
+await journey("pages", SCRIPTED, "The demo starts with flows already moving, and opens in a browser", [], async () => {
   const demo = spawnOwned("demo", process.execPath, [w.bin, "demo", "--json"], { env: { ...process.env, NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const started = await new Promise((done, fail) => {
@@ -1624,7 +1686,7 @@ await journey("pages", "The demo starts with flows already moving, and opens in 
   } finally { await stopGroups([demo.pid]); }
 });
 
-await journey("pages", "The demo lead: type a request, approve, see it build to Ready, complete, at desktop and phone", [], async () => {
+await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it build to Ready, complete, at desktop and phone", [], async () => {
   const demo = spawnOwned("demo", process.execPath, [w.bin, "demo", "--json"], { env: { ...process.env, NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const started = await new Promise((done, fail) => {
@@ -1694,7 +1756,7 @@ await journey("pages", "The demo lead: type a request, approve, see it build to 
   } finally { await stopGroups([demo.pid]); }
 });
 
-await journey("pages", "Signing out ends the session: pages ask to sign in again", [], async () => {
+await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {
   const sam = await signIn("sam");
   await sam.goto(`${base}/chat`);
   await Promise.all([sam.waitForNavigation(), sam.locator('.so-account form[action="/logout"] button').click()]);
@@ -1718,7 +1780,7 @@ const fresh = {};
 /** Every fresh install started, so each one is stopped whichever journeys pass, fail or time out. */
 const installs = [];
 async function freshInstall(name, { claude, crewModels = false }) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `toolroll-onboarding-${name}-`)));
+  const root = realpathSync(makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
   const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.txt"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
   // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.
@@ -1837,7 +1899,7 @@ async function terminalShot(text, name) {
 }
 const freshRows = (db, query) => JSON.parse(execFileSync("sqlite3", ["-json", db, query], { encoding: "utf8" }).trim() || "[]");
 
-await journey("onboarding", "A fresh install with Claude Code signed in reaches a filed first task without a password or a form", [], async () => {
+await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed in reaches a filed first task without a password or a form", [], async () => {
   if (realClaude === null) throw new Skip("needs Claude Code installed and signed in on this computer");
   const install = fresh.claude = await freshInstall("claude", { claude: true, crewModels: true });
   // 1. Three lines: where it is, that it opens signed in, and what to do if it doesn't. No password, no link.
@@ -1871,6 +1933,16 @@ await journey("onboarding", "A fresh install with Claude Code signed in reaches 
   if (await firstTasks.count() !== 3) throw new Error(`${await firstTasks.count()} first tasks`);
   if (await on.locator('input[type="password"], form[action="/chat/config"]').count() > 0) throw new Error("Chat asks for a password or shows the setup form");
   await bothSizes(on, "2-chat-signed-in");
+  // The lead's answer to the first request: the task, as a card to confirm; then the plan and the build it leads to.
+  script(
+    { role: "lead", when: [/File it as a task\./], answer: { steps: [
+      { text: "Checking what can run here.", calls: [{ name: "get_capabilities" }, { name: "list_repos" }] },
+      { text: "I'll draft that as a task.", calls: [{ name: "propose_task", arguments: { repo: "r1", title: "Add subtract(a, b) next to add", goal: "Add subtract(a, b) to src/math.js next to add, as the TODO says, with a test.",
+        acceptance: [{ id: "c1", statement: "subtract(a, b) returns a minus b, with a test", evidence: ["check"] }], planning: "auto" } }] },
+      { text: "Here's the task: confirm it and the planner writes a short plan for you to approve.", calls: [] },
+    ] } },
+    { role: "builder", when: [/subtract/], answer: { files: mathFiles(), conclusion: "Added subtract(a, b) next to add, with a test." } },
+  );
   // The first request: the note in the project, drafted by a tap and sent.
   const note = firstTasks.filter({ hasText: "subtract" });
   await (await note.count() > 0 ? note.first() : firstTasks.first()).click();
@@ -1893,7 +1965,7 @@ await journey("onboarding", "A fresh install with Claude Code signed in reaches 
   return { task: task.id, title: task.title };
 });
 
-await journey("onboarding", "The first task's timeline fills in as it moves, and after its first result the phone is offered", ["A fresh install with Claude Code signed in reaches a filed first task without a password or a form"], async () => {
+await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it moves, and after its first result the phone is offered", ["A fresh install with Claude Code signed in reaches a filed first task without a password or a form"], async () => {
   const install = fresh.claude, on = install.page;
   // The step it's on; "ready" once every step is done (none is current then).
   const stepNow = async () => on.evaluate(() => {
@@ -1942,7 +2014,7 @@ await journey("onboarding", "The first task's timeline fills in as it moves, and
   return { result: ended };
 });
 
-await journey("onboarding", "With no agent signed in, Chat shows the exact install and sign-in command and turns the lead on by itself", [], async () => {
+await journey("onboarding", SCRIPTED, "With no agent signed in, Chat shows the exact install and sign-in command and turns the lead on by itself", [], async () => {
   if (realClaude === null) throw new Skip("needs Claude Code installed and signed in on this computer (to sign in partway through)");
   const install = fresh.none = await freshInstall("none", { claude: false });
   const context = await w.browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
@@ -1967,7 +2039,7 @@ await journey("onboarding", "With no agent signed in, Chat shows the exact insta
   } finally { await context.close(); w.openPages.splice(w.openPages.indexOf(on), 1); }
 });
 
-await journey("onboarding", "Another address shows what it is, where Toolroll answers, and the exact command", [], async () => {
+await journey("onboarding", SCRIPTED, "Another address shows what it is, where Toolroll answers, and the exact command", [], async () => {
   const install = fresh.claude ?? fresh.none ?? await freshInstall("host", { claude: false });
   const other = await w.browser.browserType().launch({ args: [`--host-resolver-rules=MAP studio.lan 127.0.0.1`] });
   try {
@@ -2000,7 +2072,4 @@ standIn.close(); standIn.closeAllConnections(); idpServer.close(); idpServer.clo
 // An install a selection of journeys left running (--only without the last one); finish stops anything else still owned.
 for (const one of installs) await one.stop().catch(error => w.say(`couldn't stop a fresh install: ${error.message}`));
 await w.finish(group === null ? "Toolroll end to end" : `Toolroll end to end: ${group}`);
-for (const [name, one] of Object.entries(GROUPS)) {
-  const counted = [...placed.values()].filter(each => each.includes(name)).length;
-  if (counted !== one.journeys) { console.error(`Group ${name} has ${counted} journeys, not the ${one.journeys} GROUPS lists`); process.exitCode = 1; }
-}
+

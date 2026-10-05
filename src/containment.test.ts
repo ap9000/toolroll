@@ -286,7 +286,9 @@ describe("the shared transports under a required policy", () => {
       expect(streamed.code).toBe(CONTAINMENT_REFUSED_CODE);
       expect(streamed.containment).toEqual({ refused: expect.stringContaining("required but unavailable") });
     }
-    const held = await startClaudeHeldSession(process.execPath, [script], { ...common, socketPath: join(dir, "s.sock"), cookie: "c", readyTimeoutMs: 2_000 });
+    // A short socket path, like the held tests: under a suite's nested temp folder join(dir, …) passes macOS's 103-byte
+    // limit and the session refuses for the path before it reaches the containment policy this test is about.
+    const held = await startClaudeHeldSession(process.execPath, [script], { ...common, socketPath: `/tmp/so-ct-${process.pid}.sock`, cookie: "c", readyTimeoutMs: 2_000 });
     expect(held).toMatchObject({ ok: false, reason: "spawn-failed", message: expect.stringContaining("required but unavailable") });
 
     expect(existsSync(mark)).toBe(false);

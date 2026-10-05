@@ -5,7 +5,7 @@ import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
 import { createHash, randomBytes } from "node:crypto";
-import { verifiedAuthor, type Store } from "./store.js";
+import { mateTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
 import {
   isVerifiedApprover,
   reproveApprover,
@@ -1056,7 +1056,7 @@ function savedActionContext(
     session.ceilingDigest !== who.ceilingDigest ||
     proposal.ceilingDigest !== who.ceilingDigest ||
     (!shared && turn?.session !== session.id) ||
-    turn?.state !== "answered"
+    !mateTurnKeepsProposals(turn)
   )
     throw Error(
       "This conversation ended or its project access changed. Ask for a fresh proposal.",

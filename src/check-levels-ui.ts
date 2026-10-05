@@ -4,6 +4,7 @@
  * command restates exactly what will run, unattended, before the yes. */
 import { CHECK_LEVELS, CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, type CheckLevel } from "./check-levels.js";
 import type { VerifyCommand } from "./store.js";
+import { BATCH_HINT } from "./batch-policy.js";
 
 const escape = (text: string): string =>
   text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -20,6 +21,8 @@ export type CheckSettingsView = {
   suggestion: string | null;
   /** The project's automatic review switch (review-switch.ts), beside its checks. */
   review?: { on: boolean; source: "project" | "hands-off" | "default" };
+  /** Batch checks (batch-checks.ts): off by default. */
+  batch?: { on: boolean };
   said: string | null;
   problem: string | null;
 };
@@ -39,7 +42,7 @@ export function checkSettingsHtml(view: CheckSettingsView): string {
     (fallsBack ? `<p class="meta">No quick command yet, so builds run the full check.</p>` : "") +
     (view.level !== "full" && view.full !== null ? `<p class="meta">The full check still runs when a pull request opens, and Merge waits for it.</p>` : "");
   if (!view.canChange) {
-    return head + `<section class="card check-settings">${current}</section>` + reviewHtml(view, "") +
+    return head + `<section class="card check-settings">${current}</section>` + batchHtml(view, "") + reviewHtml(view, "") +
       `<section class="card check-settings"><h2>Quick check</h2>${view.quick === null ? `<p class="meta">None yet.</p>` : command(view.quick)}</section>` +
       `<section class="card check-settings"><h2>Full check</h2>${view.full === null ? `<p class="meta">None yet.</p>` : command(view.full)}</section>`;
   }
@@ -66,7 +69,25 @@ export function checkSettingsHtml(view: CheckSettingsView): string {
       `<p class="meta">Quick builds run the full check instead.</p>${password}<button type="submit" class="danger">Remove</button></form></details></section>`;
   const full = `<details class="settings-more"><summary>Full check</summary><section class="card check-settings">` +
     (view.full === null ? `<p class="meta">None yet. Approve one with <span class="mono">toolroll verify set --repo … --command "…"</span>.</p>` : command(view.full)) + `</section></details>`;
-  return head + levelForm + reviewHtml(view, password) + quick + full;
+  return head + levelForm + batchHtml(view, password) + reviewHtml(view, password) + quick + full;
+}
+
+/** Batch checks: one state and one sentence; turning it on restates exactly what happens, behind a disclosure with the password. */
+function batchHtml(view: CheckSettingsView, password: string): string {
+  const batch = view.batch;
+  if (batch === undefined) return "";
+  const act = batch.on ? "Turn off" : "Turn on";
+  const terms = batch.on ? `<p class="meta">Each result runs its own full check again. Results already waiting are checked now.</p>`
+    : `<ul class="check-terms"><li>When results finish within 10 minutes of each other, they're merged in a temporary checkout and the full check runs once.</li>` +
+      `<li>If it fails, the batch is split until the result that breaks it is found. Results that conflict are checked on their own.</li>` +
+      `<li>Nothing is merged into a real branch. Each result still lands on its own.</li></ul>`;
+  const change = password === "" ? ""
+    : `<details class="settings-more"><summary>${act}</summary><form method="post" action="/settings/checks" class="check-settings">` +
+      `<input type="hidden" name="csrf" value="${escape(view.csrf)}"><input type="hidden" name="repo" value="${escape(view.repo)}"><input type="hidden" name="act" value="batch">` +
+      `<input type="hidden" name="on" value="${batch.on ? "0" : "1"}">${terms}${password}<button type="submit">${act}</button></form></details>`;
+  return `<section class="card check-settings" data-batch-checks="${batch.on ? "on" : "off"}"><h2>Batch checks</h2>` +
+    `<p><strong>${batch.on ? "On" : "Off"}</strong> · ${escape(BATCH_HINT)}</p>` +
+    (batch.on && view.level !== "full" ? `<p class="meta">Only Full checks are batched.</p>` : "") + `${change}</section>`;
 }
 
 /** Automatic review: one state, one sentence, and its one change behind a disclosure (the password). */

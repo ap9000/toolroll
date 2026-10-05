@@ -5,6 +5,7 @@
  * takes the owner there. Everything here reads what is already recorded — runner readiness reports, sign-in pauses,
  * plan-limit readings, tool tests, skill tests, integration checks — and never probes anything that spends.
  */
+import { projectBatchChecks } from "./batch-policy.js";
 import type { Store } from "./store.js";
 import type { ChatControl } from "./chat-controls.js";
 import { resolveRouteCandidates } from "./agentconfig.js";
@@ -145,7 +146,9 @@ function checksOf(store: Store, repo: string): ProjectCapabilities["checks"] {
   const base = { name: "Checks", level: CHECK_LEVEL_WORDS[level], quickCheck, releaseCheck, lets: "say whether a result's checks passed before you call it done" };
   if (level === "off") return { ...base, state: "Off", ok: false, next: "Builds are not checked. Turn checks on for the project if results need them.", link: "projects" };
   if (!releaseCheck) return { ...base, state: `${CHECK_LEVEL_WORDS[level]} · no release check`, ok: false, next: "No release check is set up, so no result can show a passing check. Set one for the project.", link: "projects" };
-  return { ...base, state: level === "quick" && !quickCheck ? "Quick · runs the release check" : `${CHECK_LEVEL_WORDS[level]} · release check set`, ok: true, next: null, link: null };
+  // Batch checks are changed in Settings → Projects → Checks (or `project checks --batch on|off`), never from chat.
+  const batched = level === "full" && projectBatchChecks(store, repo).on ? " · batched with results that finish together" : "";
+  return { ...base, state: level === "quick" && !quickCheck ? "Quick · runs the release check" : `${CHECK_LEVEL_WORDS[level]} · release check set${batched}`, ok: true, next: null, link: null };
 }
 
 function workersOf(store: Store, repos: readonly string[], now: Date): Capabilities["workers"] {
