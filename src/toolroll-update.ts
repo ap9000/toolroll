@@ -37,6 +37,7 @@ import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, re
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
 import { isNewer, REGISTRY } from "./releases.js";
+import { markNeverIndex } from "./never-index.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -649,6 +650,7 @@ function nextAt(hhmm: string, now: Date): Date {
 function newJournal(kind: "update" | "rollback", o: { stateDir: string; databaseFile: string; from: RuntimeRef; to: RuntimeRef; when: When; at: string | null; actor: string }, now: Date): RuntimeUpdateJournal {
   const id = randomUUID(), stageDir = join(resolve(o.stateDir), "staged-upgrades", `${kind === "update" ? "release" : "rollback"}-${o.to.version}-${id.slice(0, 8)}`);
   mkdirSync(stageDir, { recursive: true, mode: 0o700 }); chmodSync(stageDir, 0o700);
+  markNeverIndex(dirname(stageDir));
   return { version: 1, id, kind, stateDir: resolve(o.stateDir), databaseFile: o.databaseFile, stageDir, from: o.from, to: o.to, when: o.when, at: o.at, actor: o.actor, phase: "scheduled", detail: "", steps: [], startedAt: now.toISOString(), updatedAt: now.toISOString() };
 }
 

@@ -9,7 +9,7 @@ import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
 import { addApprover, approve, propose } from "./scope.js";
-import { depsKey, installsOnly, linkedKey, lockDigest, nodeIdentity, readyCopy, sharingFor, sharedCopies, sharedUse, unusedShared, removeShared, SHARED_GRACE_MS, linkInto, promoteInstall } from "./shared-deps.js";
+import { depsKey, installsOnly, linkedKey, lockDigest, nodeIdentity, readyCopy, sharingFor, sharedCopies, sharedUse, unusedShared, removeShared, SHARED_GRACE_MS, linkInto, promoteInstall, SHARED_UNUSED_MS, pruneUnusedShared } from "./shared-deps.js";
 import { versionOnly } from "../scripts/release-check.mjs";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
@@ -343,6 +343,34 @@ describe("shared dependencies through the builder", () => {
     const gone = unusedShared(deps, [{ path: first, repo: REPO }], later).copies;
     expect(gone.map(one => one.key)).toEqual([key]);
     expect(removeShared(gone[0]!.dir)).toBe(true);
+    expect(sharedCopies(deps)).toEqual([]);
+  });
+
+  test("the daily sweep removes a copy only once no checkout has used it for a week, and marks installs for Spotlight", () => {
+    const deps = join(state, "deps");
+    const first = checkout(state, "first");
+    fakeInstall(first);
+    const key = "d".repeat(24);
+    expect(promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 })).toBe("link");
+    expect(existsSync(join(deps, ".metadata_never_index"))).toBe(true);
+    expect(existsSync(join(first, "node_modules", ".metadata_never_index"))).toBe(true);
+    const rows = [{ path: first, repo: REPO }];
+    const weekLater = new Date(Date.now() + SHARED_UNUSED_MS + 60_000);
+    // Still linked by a checkout: stays however old.
+    expect(pruneUnusedShared(deps, () => rows, weekLater)).toEqual({ removed: [], failed: [] });
+    rmSync(first, { recursive: true, force: true });
+    // Nobody uses it, but it was linked within the week: stays.
+    expect(pruneUnusedShared(deps, () => rows, new Date(Date.now() + SHARED_UNUSED_MS - 60_000))).toEqual({ removed: [], failed: [] });
+    // A checkout picks it up between the look and the removal: stays.
+    let looks = 0;
+    const second = checkout(state, "second");
+    expect(linkInto(second, join(deps, key, "node_modules"))).toBe("link");
+    expect(pruneUnusedShared(deps, () => (++looks === 1 ? [] : [{ path: second, repo: REPO }]), weekLater).removed).toEqual([]);
+    expect(sharedCopies(deps).map(one => one.key)).toEqual([key]);
+    // A week after its last use with nobody on it: goes.
+    rmSync(second, { recursive: true, force: true });
+    const done = pruneUnusedShared(deps, () => [], new Date(Date.now() + SHARED_UNUSED_MS + 60_000));
+    expect(done.removed.map(one => one.key)).toEqual([key]);
     expect(sharedCopies(deps)).toEqual([]);
   });
 

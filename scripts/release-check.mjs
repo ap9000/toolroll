@@ -33,13 +33,17 @@
  * No difference from main (or no main) means everything runs. `--full` (or TOOLROLL_FULL_CHECK=1) runs
  * everything, as the check did before. Ends with the same `== summary` block, and how long each part took.
  *
+ * Nothing stays behind (scripts/suite-lifecycle.mjs): each part runs in a process group and temp folder of its own,
+ * stopped and removed when it ends, when it runs past TOOLROLL_CHECK_PART_MINUTES (default 120) or when the check is
+ * interrupted; the check's own folder of logs goes once the summary is printed.
+ *
  *   node scripts/release-check.mjs [--full] [--base <ref>] [--plan]
  */
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { availableMemory, browserSlots, memoryWords, watchMemory } from "./check-memory.mjs";
+import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
 
 const args = process.argv.slice(2);
 const full = args.includes("--full") || process.env.TOOLROLL_FULL_CHECK === "1";
@@ -119,13 +123,12 @@ export function planFor(changed, { full: all = false, versionBumps = [], schemaF
   };
 }
 
-const run = (label, command, argv, dir, env = {}) => new Promise(done => {
+/** A part runs past this, and it is stopped (with everything it started) and fails. */
+const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
+const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000 }).then(one => {
   const log = join(dir, `${label}.log`);
-  const at = Date.now();
-  const child = spawn(command, argv, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
-  const chunks = [];
-  for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => chunks.push(chunk));
-  child.on("close", code => { writeFileSync(log, Buffer.concat(chunks)); done({ label, code: code ?? 1, log, ms: Date.now() - at }); });
+  writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} ran past ${Math.round(PART_MS / 60_000)} min and was stopped\n`)]) : one.output);
+  return { label, code: one.code, log, ms: one.ms };
 });
 /**
  * The browser groups the two journey runs may hold at once, shared out: each gets at least one, and with room for
@@ -153,7 +156,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (planOnly) process.exit(0);
 
   const memory = watchMemory();
-  const dir = mkdtempSync(join(tmpdir(), "release-check-"));
+  // The logs and the build's outcome; removed when the check ends, however it ends.
+  const dir = makeTempRoot("release-check-");
   // The unit tests' setup (test/ensure-build.ts) waits for this file: the build's outcome.
   const built = join(dir, "build-outcome");
   const typecheck = run("typecheck", "npm", ["run", "typecheck"], dir);

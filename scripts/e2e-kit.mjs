@@ -13,12 +13,15 @@
  * match), --keep, --playwright <index.mjs>, --output <dir>.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, createWriteStream } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, createWriteStream } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir, homedir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { makeTempRoot } from "./suite-lifecycle.mjs";
+// A journey's worker never sweeps the machine it runs on (src/storage-sweep.ts); set it to sweep on purpose.
+process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
 
 export const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -144,7 +147,8 @@ export async function world(name, { seed, env = {} } = {}) {
   if (!existsSync(BIN)) throw new Error("Build first: npm run build");
   const { chromium } = await loadPlaywright();
   const only = option("--only", null) === null ? null : new RegExp(option("--only", ""), "i");
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `so-${name}-e2e-`)));
+  // Marked, and removed at exit however the run ends (--keep keeps it): scripts/suite-lifecycle.mjs.
+  const root = realpathSync(makeTempRoot(`so-${name}-e2e-`, { keep: flag("--keep") }));
   const out = resolve(option("--output", join(here, "output/e2e", `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`)));
   mkdirSync(out, { recursive: true });
   const repo = join(root, "shop"), state = join(root, "state"), db = join(state, "orders.db");
