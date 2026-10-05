@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { Window } from "happy-dom";
-import { deadlineWords, localizeTimes, shortWhen, whenHtml, whenUtc } from "./when-html.js";
+import { deadlineWords, localizeTimes, shortAge, shortWhen, whenHtml, whenUtc } from "./when-html.js";
 import { ledgerBody } from "./ledger-view.js";
 
 describe("times on a phone", () => {
@@ -21,6 +21,17 @@ describe("times on a phone", () => {
     expect(whenHtml(null, "never", now)).toBe("");
     expect(whenHtml("2026-09-30T16:39:00Z", '<b>"', now)).toContain('title="&lt;b&gt;&quot;"');
   });
+});
+
+test("a Crew row's age is one short mark", () => {
+  const now = new Date("2026-09-30T17:10:00Z");
+  expect(shortAge("2026-09-30T17:09:31Z", now)).toBe("now");
+  expect(shortAge("2026-09-30T18:00:00Z", now)).toBe("now");
+  expect(shortAge("2026-09-30T17:06:00Z", now)).toBe("4m");
+  expect(shortAge("2026-09-30T15:05:00Z", now)).toBe("2h");
+  expect(shortAge("2026-09-29T17:11:00Z", now)).toBe("23h");
+  expect(shortAge("2026-09-27T09:00:00Z", now)).toBe("3d");
+  expect(shortAge("not a time", now)).toBe("");
 });
 
 describe("the one formatter in the viewer's zone", () => {

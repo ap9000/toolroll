@@ -44,6 +44,7 @@ export function browserCrewFromIndex(page: WorkIndexPage, conversationId?: strin
       id: summary.rootId, title: summary.title, project: summary.repo,
       state: summary.assignmentState, label: status.label, tone: status.tone, href: link(href), resultHref: resultHref === null ? null : link(resultHref),
       action: action === null || actionHref === null ? null : { label: action.label, href: link(actionHref) },
+      updatedAt: summary.updatedAt,
       ...(summary.lead === undefined ? {} : { lead: summary.lead }),
     };
     return { item, rank: status.rank };
