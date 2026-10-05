@@ -50,7 +50,7 @@ import { loadSlackCredentials } from "./slack-api.js";
 import { followSlack } from "./slack.js";
 import { validateScopeText } from "./task-text.js";
 import { runMemoryCommand } from "./memory-cli.js";
-import { runKnowledgeCommand } from "./knowledge-cli.js";
+import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
@@ -1281,8 +1281,16 @@ async function dispatch(
       // The person's own lead (its lead token) claims as the lead; coordinator credentials keep their own path.
       if (positional[0] === "claim" && currentActor()?.lead === true && !flags.has("token-env") && !flags.has("token-file")) return leadClaimCommand(positional, flags, context);
       return runAssignmentCommand(positional, flags, context);
-    case "knowledge":
-      return runKnowledgeCommand(positional, flags, { ...context, now: context.clock() });
+    case "knowledge": {
+      if (positional[0] !== "apply") return runKnowledgeCommand(positional, flags, { ...context, now: context.clock() });
+      if (positional.length !== 1) return fail(context.write, context.json, "knowledge apply", "usage", "knowledge apply takes no query.", EXIT.usage);
+      // A person's password, never the lead's token: the lead may not carry knowledge forward.
+      const acting = currentActor()?.lead === true ? null : await askCredentials(flags, context);
+      const repo = text(flags, "repo");
+      const lead = acting !== null && parseLeadToken(acting.token) !== null;
+      const verified = acting === null || lead ? null : authenticateApprover(context.store, acting.name, acting.token, repo === undefined ? null : resolve(repo));
+      return runKnowledgeApply(flags, { ...context, now: context.clock(), actor: verified !== null && verified.ok ? acting!.name : null });
+    }
     case "models": {
       const acting = await askCredentials(flags, context);
       const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);

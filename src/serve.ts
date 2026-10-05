@@ -56,7 +56,7 @@ import { chooseFlowCard } from "./flow-send.js";
 import { FLOW_TEMPLATES, validateFlowDefinition } from "./flows.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
-import { changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
+import { applySavedKnowledge, changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
 import { knowledgeHtml, knowledgeContextHtml, KNOWLEDGE_CSS, decisionsHtml, memorySearchHtml, MEMORY_INTRO, proposalsHtml } from "./knowledge-ui.js";
 import { listDecisions, recordDecision, retireDecision, searchMemory } from "./project-memory.js";
 import { decideProposal, listProposals, memoryStatus } from "./memory-pass.js";
@@ -4330,7 +4330,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             const revision=Number(url.searchParams.get('version'));
             const previous=knowledgeVersion(store,chosen,who.name,revision);
             const restore=csrf&&who.role==='approver'&&revision!==view.revision?`<form class="knowledge" method="post" action="/settings/knowledge/change">${hiddenFields({csrf,repo:chosen,identity:view.identity,revision:String(view.revision),action:'restore',restore:String(revision)})}<p>Replaces knowledge for future tasks. Existing runs keep their saved context.</p><button>Restore version ${revision}</button></form>`:'';
-            return sendScreen(response,200,screen('Knowledge history',`<p><a href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p><h1>Version ${revision}</h1>${knowledgeHtml({...view,knowledge:previous,history:[]},'',false)}${restore}`,{chrome:chromeFor(chosen,'settings')}));
+            return sendScreen(response,200,screen('Knowledge history',`<p><a href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p><h1>Version ${revision}</h1>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`,{chrome:chromeFor(chosen,'settings')}));
           }
           const query = (url.searchParams.get('q') ?? '').slice(0, 1000);
           const result = query.trim() ? repositoryContextRead({ repo: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
@@ -7923,10 +7923,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response,who,403,'Sign in as an approver to change project knowledge.','/settings/knowledge');
       const repo = body.get('repo') ?? '', action = body.get('action') ?? '';
       if (!visible(repo) || ![...(admissionList() ?? []),...managedRepos(),...store.knownRepos()].includes(repo)) return refuse(response,who,403,'That project is outside your access.','/settings/knowledge');
-      if (['repo','action','identity','revision','instructions','title','content','path','id','restore'].some(k=>body.getAll(k).length>1) || !['instructions','save','remove','restore'].includes(action) || !/^[0-9]+$/.test(body.get('revision')??'')) return refuse(response,who,400,'Invalid knowledge form.','/settings/knowledge');
+      if (['repo','action','identity','revision','instructions','title','content','path','id','restore'].some(k=>body.getAll(k).length>1) || !['instructions','save','remove','restore','apply'].includes(action) || !/^[0-9]+$/.test(body.get('revision')??'')) return refuse(response,who,400,'Invalid knowledge form.','/settings/knowledge');
       const draft:KnowledgeDraft = Object.fromEntries(['instructions','title','content','path','id'].filter(k=>body.has(k)).map(k=>[k,body.get(k)!]));
       try {
-        changeKnowledge(store,{repo,actor:who.name,identity:body.get('identity')??'',revision:Number(body.get('revision')),action:action as 'instructions'|'save'|'remove'|'restore',draft,restore:Number(body.get('restore'))},clock());
+        if (action === 'apply') applySavedKnowledge(store,repo,who.name,clock());
+        else changeKnowledge(store,{repo,actor:who.name,identity:body.get('identity')??'',revision:Number(body.get('revision')),action:action as 'instructions'|'save'|'remove'|'restore',draft,restore:Number(body.get('restore'))},clock());
       } catch (error) {
         let content = `<p role="alert">Project knowledge is unavailable. Your unsaved draft is below.</p><pre class="knowledge">${escape(JSON.stringify(draft,null,2))}</pre>`;
         try { content=knowledgeHtml(knowledgeView(store,repo,who.name),who.session.csrf,true,draft,error instanceof Error?error.message:'Save failed. Your draft is below.'); } catch { /* never render unverified saved context */ }

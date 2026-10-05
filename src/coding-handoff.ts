@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { sqliteRuntime } from './sqlite-runtime.js';
 import { codingCatalogPath } from './coding-update.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
-import { learningIdentity, learningSha } from './project-learning.js';
+import { acceptedIdentities, learningIdentity, learningSha } from './project-learning.js';
 import { fileTaskProposal } from './proposal.js';
 import { parseAcceptanceCriteria, proposeGuarded, type AcceptanceCriterion } from './scope.js';
 import { validateTaskText } from './task-text.js';
@@ -144,7 +144,7 @@ export function readCodingHandoff(store: Store, taskId: string): Handoff | null 
     const row = db.prepare('SELECT * FROM coding_handoff WHERE id=?').get(provenance.slice(PREFIX.length));
     if (!row) throw Error('The coding handoff receipt is missing. Restore it before review.');
     const receipt = parseReceipt(row), scope = store.getScope(taskId), ref = store.lookupRef(taskId);
-    if (receipt.taskId !== taskId || ref?.repo !== receipt.repo || receipt.identity !== learningIdentity(receipt.repo) || !scope || scope.termsProblem != null || scope.candidate !== receipt.candidate) throw Error('The coding review no longer matches its saved project, candidate or scope.');
+    if (receipt.taskId !== taskId || ref?.repo !== receipt.repo || !acceptedIdentities(store, receipt.repo).has(receipt.identity) || !scope || scope.termsProblem != null || scope.candidate !== receipt.candidate) throw Error('The coding review no longer matches its saved project, candidate or scope.');
     verifySeal(db, receipt, scope.digest);
     return { taskId, scopeDigest: scope.digest, receipt };
   } finally { db.close(); }

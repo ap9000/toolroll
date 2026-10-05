@@ -85,7 +85,8 @@ test('rejects unknown/revoked accounts, non-commit bases, project identity drift
   const context = prepare();
   renameSync(join(repo, '.git'), join(root, 'original-git')); git('init', '-q');
   expect(() => verifyCodingContext(context, repo, base)).toThrow(/could not be verified/);
-  expect(() => knowledgeView(store, repo, 'alex')).toThrow(/project changed/);
+  // A replaced repository's knowledge waits for an approver: shown for review, never applied.
+  expect(knowledgeView(store, repo, 'alex')).toMatchObject({ knowledge: { instructions: '' }, stale: { knowledge: { instructions: 'Mobile preferences.' } } });
   rmSync(join(repo, '.git'), { recursive: true }); renameSync(join(root, 'original-git'), join(repo, '.git'));
   store.handle.exec("UPDATE project_knowledge SET payload='{}'"); expect(() => prepare()).toThrow(/verified/);
   store.handle.exec("UPDATE approver SET revoked_at='2026-09-19T00:00:00Z' WHERE name='alex'"); expect(() => prepare()).toThrow(/access/);

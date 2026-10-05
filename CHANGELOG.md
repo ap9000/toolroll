@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.33 — 2026-10-05
+
+- **A restart never breaks a project's builds.** A project's identity no
+  longer includes the disk's device number, which macOS can change at restart.
+  Saved project knowledge from before such a change no longer stops a build:
+  the build runs without it, and one notice offers to apply it again (Knowledge
+  page, or `toolroll knowledge apply`). When it is provably the same repository,
+  it carries over by itself.
+
 ## 0.9.32 — 2026-10-04
 
 - **Lighter on your computer.** A version bump no longer reinstalls every

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { KNOWLEDGE_GUIDANCE, selectProjectKnowledge } from './project-knowledge.js';
 import { materializeProjectSkills, PROJECT_SKILLS_GUIDANCE, selectProjectSkills } from './project-skills.js';
-import { learningIdentity, learningSha } from './project-learning.js';
+import { identityMatches, learningIdentity, learningSha } from './project-learning.js';
 import type { Store } from './store.js';
 
 export type CodingContextMetadata = {
@@ -96,7 +96,7 @@ export function prepareCodingContext(store: Store, args: {
 
 /** Integrity check for a persisted capture. The caller must separately recheck current account access. */
 export function verifyCodingContext(context: CodingContext, repo: string, baseRevision: string): void {
-  if (context.metadata.version !== 1 || context.metadata.repo !== repo || context.metadata.baseRevision !== baseRevision || context.metadata.identity !== learningIdentity(repo) || context.sha256 !== digest(context.text, context.metadata)) throw Error('The coding session context could not be verified.');
+  if (context.metadata.version !== 1 || context.metadata.repo !== repo || context.metadata.baseRevision !== baseRevision || !identityMatches(repo, context.metadata.identity) || context.sha256 !== digest(context.text, context.metadata)) throw Error('The coding session context could not be verified.');
   if (context.metadata.files.length && context.metadata.directory === null) throw Error('The coding session skill files are unavailable.');
   try {
     for (const file of context.metadata.files) {

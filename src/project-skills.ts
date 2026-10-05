@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseDocument } from "yaml";
-import { learningIdentity, learningSha } from "./project-learning.js";
+import { acceptedIdentities, learningIdentity, learningSha } from "./project-learning.js";
 import { scanForSecrets } from "./evidence.js";
 import { fileTaskProposal } from "./proposal.js";
 import type { Store } from "./store.js";
@@ -176,8 +176,11 @@ function admit(store: Store, repo: string, actor: string, write = false) {
     (write && store.accountOf(actor)?.role !== "approver")
   )
     throw Error("Skills are outside your project access.");
-  return learningIdentity(repo);
+  return { identity: learningIdentity(repo), accepted: acceptedIdentities(store, repo) };
 }
+/** Revisions under any identity this project accepts, as a bound JSON list. */
+const IN_ACCEPTED = "identity IN (SELECT value FROM json_each(?))";
+const listOf = (accepted: ReadonlySet<string>) => JSON.stringify([...accepted]);
 function unpack<T>(payload: unknown, sha: unknown): T {
   if (typeof payload !== "string" || learningSha(payload) !== sha)
     throw Error("Saved skills could not be verified.");
@@ -190,14 +193,14 @@ function packageOf(store: Store, sha: string): SavedSkill {
   if (!row) throw Error("That skill version is unavailable.");
   return { ...unpack<SkillPackage>(row["payload"], sha), sha };
 }
-function current(store: Store, repo: string, identity: string) {
+function current(store: Store, repo: string, accepted: ReadonlySet<string>) {
   const row = store.handle
     .prepare(
       "SELECT * FROM project_skill_change WHERE repo=? ORDER BY revision DESC LIMIT 1",
     )
     .get(repo);
   if (!row) return { revision: 0, selection: {} as Selection };
-  if (row["identity"] !== identity)
+  if (!accepted.has(String(row["identity"])))
     throw Error(
       "The project changed. Its previous skills have not been applied.",
     );
@@ -207,8 +210,8 @@ function current(store: Store, repo: string, identity: string) {
   };
 }
 export function skillsView(store: Store, repo: string, actor: string) {
-  const identity = admit(store, repo, actor),
-    value = current(store, repo, identity);
+  const { identity, accepted } = admit(store, repo, actor),
+    value = current(store, repo, accepted);
   const visible = new Set<string>(
     store.handle
       .prepare("SELECT sha FROM skill_owner WHERE actor=? ORDER BY at,sha")
@@ -225,7 +228,7 @@ export function skillsView(store: Store, repo: string, actor: string) {
       .get(project);
     if (row) {
       try {
-        if (row["identity"] !== learningIdentity(project)) continue;
+        if (!acceptedIdentities(store, project).has(String(row["identity"]))) continue;
       } catch {
         continue;
       }
@@ -248,9 +251,9 @@ export function skillsView(store: Store, repo: string, actor: string) {
     .sort((a, b) => a.name.localeCompare(b.name));
   const history = store.handle
     .prepare(
-      "SELECT revision,actor,at,payload,sha FROM project_skill_change WHERE repo=? AND identity=? ORDER BY revision DESC LIMIT 20",
+      `SELECT revision,actor,at,payload,sha FROM project_skill_change WHERE repo=? AND ${IN_ACCEPTED} ORDER BY revision DESC LIMIT 20`,
     )
-    .all(repo, identity)
+    .all(repo, listOf(accepted))
     .map((r) => ({
       revision: Number(r["revision"]),
       actor: String(r["actor"]),
@@ -264,17 +267,17 @@ export function skillsView(store: Store, repo: string, actor: string) {
 export type SkillsView = ReturnType<typeof skillsView>;
 /** Current enabled versions, admitted and hash-verified, without any worker-run writes. */
 export function selectProjectSkills(store: Store, repo: string, actor: string): SkillsSnapshot {
-  const identity = admit(store, repo, actor);
-  const value = current(store, repo, identity);
+  const { identity, accepted } = admit(store, repo, actor);
+  const value = current(store, repo, accepted);
   const packages = Object.values(value.selection).filter(choice => choice.enabled).map(choice => packageOf(store, choice.sha));
   if (packages.length > SKILL_LIMITS.enabled || Buffer.byteLength(JSON.stringify(packages)) > SKILL_LIMITS.selectionBytes) throw Error('Enable up to 8 skills, totaling at most 2 MB.');
   return { version: 1, revision: value.revision, identity, inheritedFrom: null, test: false, packages };
 }
 /** The same verified selection used by Restore, including disabled versions. */
 export function skillsVersion(store: Store, repo: string, actor: string, revision: number): Selection {
-  const identity = admit(store, repo, actor);
+  const { accepted } = admit(store, repo, actor);
   if (!Number.isSafeInteger(revision) || revision < 1) throw Error("Choose a saved skills version.");
-  const row = store.handle.prepare("SELECT payload,sha FROM project_skill_change WHERE repo=? AND identity=? AND revision=?").get(repo, identity, revision);
+  const row = store.handle.prepare(`SELECT payload,sha FROM project_skill_change WHERE repo=? AND ${IN_ACCEPTED} AND revision=?`).get(repo, listOf(accepted), revision);
   if (!row) throw Error("That skills version is unavailable.");
   const selection = unpack<Selection>(row["payload"], row["sha"]);
   for (const choice of Object.values(selection)) packageOf(store, choice.sha);
@@ -329,7 +332,7 @@ export function changeSkills(
   },
   now = new Date(),
 ) {
-  const identity = admit(store, args.repo, args.actor, true);
+  const { identity, accepted } = admit(store, args.repo, args.actor, true);
   if (identity !== args.identity || !Number.isSafeInteger(args.revision))
     throw Error("The project changed. Reload Skills.");
   store.transact(() => {
@@ -342,9 +345,9 @@ export function changeSkills(
     if (args.action === "restore") {
       const row = store.handle
         .prepare(
-          "SELECT * FROM project_skill_change WHERE repo=? AND identity=? AND revision=?",
+          `SELECT * FROM project_skill_change WHERE repo=? AND ${IN_ACCEPTED} AND revision=?`,
         )
-        .get(args.repo, identity, args.restore ?? -1);
+        .get(args.repo, listOf(accepted), args.restore ?? -1);
       if (!row) throw Error("That version is unavailable.");
       selection = unpack<Selection>(row["payload"], row["sha"]);
     } else {
@@ -432,7 +435,7 @@ export function readSkillsSnapshot(
   const { packageShas, ...facts } = saved;
   if (
     packageShas.length &&
-    facts.identity !== learningIdentity(String(row["repo"]))
+    !acceptedIdentities(store, String(row["repo"])).has(facts.identity)
   )
     throw Error("The project identity saved for this run changed.");
   return {
@@ -492,7 +495,11 @@ export function freezeSkills(store: Store, runId: number): SkillsSnapshot {
       .get(run.taskRef);
     if (inherited) snapshot = { ...inherited, inheritedFrom: parent!.id };
     else if (!parent || (run.role !== "reviewer" && test)) {
-      if (test && test["identity"] !== learningIdentity(ref.repo))
+      const saved = store.handle
+        .prepare("SELECT identity FROM project_skill_change WHERE repo=? ORDER BY revision DESC LIMIT 1")
+        .get(ref.repo);
+      const accepted = test || saved ? acceptedIdentities(store, ref.repo) : new Set<string>();
+      if (test && !accepted.has(String(test["identity"])))
         throw Error("The project for this test changed. Create a new test.");
       if (test)
         snapshot = {
@@ -502,12 +509,9 @@ export function freezeSkills(store: Store, runId: number): SkillsSnapshot {
           inheritedFrom: null,
           packages: [packageOf(store, String(test["package"]))],
         };
-      else if (
-        store.handle
-          .prepare("SELECT 1 FROM project_skill_change WHERE repo=?")
-          .get(ref.repo)
-      ) {
-        const value = current(store, ref.repo, learningIdentity(ref.repo));
+      // Skills saved under another identity wait for an approver; the run proceeds without them.
+      else if (saved && accepted.has(String(saved["identity"]))) {
+        const value = current(store, ref.repo, accepted);
         snapshot = {
           ...snapshot,
           revision: value.revision,

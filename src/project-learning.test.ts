@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, renameSync, cpSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, renameSync, cpSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -9,7 +9,7 @@ import { register } from './runner.js';
 import { storeEvidence } from './evidence.js';
 import { storeStructuredAttempt } from './structured-output.js';
 import { parseReview } from './reviewer.js';
-import { changeLearning, learningContext, learningView, recoverLearning, parseLearning, queueLearning, type LearningCandidate } from './project-learning.js';
+import { changeLearning, identityOf, learningContext, learningIdentity, learningView, legacyIdentityOf, recoverLearning, parseLearning, queueLearning, type LearningCandidate } from './project-learning.js';
 import { learningHtml } from './workspace-ui.js';
 import { createDecisionServer } from './serve.js';
 
@@ -64,6 +64,20 @@ describe('quiet learning', () => {
     const v=view(); changeLearning(store,evidence,{repo,actor:'alex',identity:v.identity,revision:v.revision,action,...(lesson?{lesson:lesson.id,version:lesson.version,sha:lesson.sha}:{})},now);
   }
   const snapshot=(run:number,phase:'plan'|'build'|'review'='build')=>JSON.parse(learningContext(store,evidence,run,phase,now).trim().split('\n').at(-1)!);
+  test('project identity survives a renumbered volume; a replaced repository does not', () => {
+    const common = realpathSync(join(repo, '.git')), st = statSync(common);
+    const facts = { dev: st.dev, ino: st.ino, birthtimeMs: st.birthtimeMs };
+    expect(learningIdentity(repo)).toBe(identityOf(repo, common, facts));
+    // macOS may give the volume a new device number at restart: nothing about the repository changed.
+    expect(identityOf(repo, common, { ...facts, dev: st.dev + 1 })).toBe(identityOf(repo, common, facts));
+    expect(identityOf(repo, common, { ...facts, ino: st.ino + 1 })).not.toBe(identityOf(repo, common, facts));
+    expect(legacyIdentityOf(repo, common, { ...facts, dev: st.dev + 1 })).not.toBe(legacyIdentityOf(repo, common, facts));
+    // Learning saved under the previous formula on this same volume carries forward silently.
+    store.handle.prepare('INSERT INTO learning_policy(repo,identity,enabled,revision) VALUES (?,?,1,1)').run(repo, legacyIdentityOf(repo, common, facts));
+    expect(learningView(store, evidence, repo, 'alex').enabled).toBe(true);
+    expect(store.handle.prepare('SELECT from_identity,to_identity,actor,how FROM project_identity_carry WHERE repo=?').all(repo)).toEqual([
+      { from_identity: legacyIdentityOf(repo, common, facts), to_identity: learningIdentity(repo), actor: 'toolroll (same repository)', how: 'automatic' }]);
+  });
   test('an explicit assessment distinguishes no lesson, a proposal and missing or invalid decisions',()=>{
     const none=capture(0,[],{decision:'none',reason:'The shared helper and regression already enforce this behavior.'});
     const proposed=capture(1,undefined,{decision:'propose',reason:'This boundary also applies to other callers.'});
