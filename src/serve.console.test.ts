@@ -1466,6 +1466,43 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
     expect(store.listProjects()[0]?.name).toBe(repoA.split("/").pop());
   });
 
+  test("Add a project and Remove from Toolroll go through the shared admission: ledger, idempotency, restricted accounts", async () => {
+    const { execSync } = await import("node:child_process");
+    execSync("git init -q", { cwd: repoA });
+    const cookie = await login();
+    const csrf = await csrfFrom(cookie);
+    const added = () => store.actionLedger({ repos: [repoA] }).filter(one => one.action === "project added");
+
+    // An account limited to other projects cannot widen its own list by opening one.
+    const robin = addApprover(store, "robin", T0, { name: "alex", token: approverToken });
+    if (!robin.ok) throw new Error("robin");
+    expect(store.setAccountProjects("robin", ["/repo/elsewhere"], "alex", T0)).toEqual({ ok: true });
+    const robinIn = await fetch(url("/login"), { method: "POST", body: new URLSearchParams({ name: "robin", token: robin.token }), redirect: "manual" });
+    const robinCookie = (robinIn.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    expect((await post("/projects/open", robinCookie, { csrf: await csrfFrom(robinCookie), path: repoA })).status).toBe(403);
+    expect(store.listProjects()).toHaveLength(0);
+
+    expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
+    expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
+    expect(added()).toEqual([expect.objectContaining({ actor: "alex", detail: "from console", source: "access", outcome: "added" })]);
+    expect((await fetch(url(`/settings/tools?repo=${encodeURIComponent(repoA)}`), { headers: { cookie } })).status).toBe(200);
+    expect(await (await fetch(url(`/settings/project?repo=${encodeURIComponent(repoA)}`), { headers: { cookie } })).text()).toContain("Remove from Toolroll");
+
+    // Remove: off the lists, its saved work kept, and back with Add a project.
+    seedTaskIn("t-kept", repoA);
+    const removed = await post("/projects/remove", cookie, { csrf, repo: repoA });
+    expect(removed.status).toBe(303);
+    expect(removed.headers.get("location")).toContain("said=");
+    expect(store.listProjects()).toHaveLength(0);
+    expect(store.lookupRef("t-kept")?.repo).toBe(repoA);
+    expect(store.actionLedger({ repos: [repoA] }).some(one => one.action === "project removed" && one.actor === "alex" && one.detail === "from console")).toBe(true);
+    expect((await fetch(url(`/settings/tools?repo=${encodeURIComponent(repoA)}`), { headers: { cookie } })).status).toBe(403);
+    expect((await post("/projects/remove", robinCookie, { csrf: await csrfFrom(robinCookie), repo: repoA })).status).toBe(403);
+    expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
+    expect(added()).toHaveLength(2);
+    expect((await fetch(url(`/settings/tools?repo=${encodeURIComponent(repoA)}`), { headers: { cookie } })).status).toBe(200);
+  });
+
   test("a stale tab's create lands in nobody's project: the revision refuses it", async () => {
     const { execSync } = await import("node:child_process");
     execSync("git init -q", { cwd: repoA });

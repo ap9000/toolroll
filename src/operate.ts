@@ -115,6 +115,7 @@ import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync, mkdirSync } from "node:fs";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
 import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
+import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
@@ -259,6 +260,7 @@ import {
   acquireWatchLeaseAuthed,
   heartbeatWatchLeaseAuthed,
   addRunnerReposAuthed,
+  removeRunnerRepoAuthed,
   registerRunnerIfIdle,
   retireRunnerIfCurrent,
   normalizeRunnerName,
@@ -5510,6 +5512,7 @@ async function startConsole(options: {
   repos?: string[];
   projectRoots?: string[];
   currentRepos?: () => readonly string[];
+  admittedRepos?: () => readonly string[];
   publicUrl?: string;
   registryPath?: string;
   upConsole?: boolean;
@@ -5536,6 +5539,7 @@ async function startConsole(options: {
     ...(options.repos === undefined ? {} : { repos: options.repos }),
     ...(options.projectRoots === undefined ? {} : { projectRoots: options.projectRoots }),
     ...(options.currentRepos === undefined ? {} : { currentRepos: options.currentRepos }),
+    ...(options.admittedRepos === undefined ? {} : { admittedRepos: options.admittedRepos }),
     ...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
     ...(options.registryPath === undefined ? {} : { registryPath: options.registryPath }),
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
@@ -9308,11 +9312,13 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
       return !("error" in registry) && registry.repos.includes(repo);
     },
     enroll: async repo => {
+      // The same admission as `repos add` and the console's Add a project.
+      const actor = commandLineActor(store, { databaseFile: context.databaseFile });
+      if ("ok" in actor) return { ok: false, message: actor.message };
       const before = await loadProjectRegistry(registryPath);
-      const enrolled = await updateRepos(registryPath, repos => addRepos(repos, [repo]));
-      if (!enrolled.ok) return { ok: false, message: enrolled.message };
-      store.upsertProject(repo, projectName(repo), clock());
-      return { ok: true, added: "error" in before || !before.repos.includes(repo) };
+      const admitted = await admitProject(store, { registryFile: registryPath, path: repo, actor, now: clock() });
+      if (!admitted.ok) return { ok: false, message: admitted.message };
+      return { ok: true, added: "error" in before || !before.repos.includes(admitted.repo) };
     },
     checkConnection: seams.checkConnection ?? (agent => checker(agent)),
     pullRequests: seams.pullRequests ?? (async repo => {
@@ -9439,6 +9445,9 @@ async function upCommand(
     }
   }
   const explicitRepos = context.repoList ?? [];
+  // Repositories this start was told to serve stay served while it runs: removing one from the saved list takes
+  // effect at the next start, never under the process that was pinned to it.
+  const pinnedRepos = new Set<string>();
   if (explicitRepos.length > 0) {
     for (const input of explicitRepos) {
       const root = await proveRepo(input);
@@ -9453,10 +9462,12 @@ async function upCommand(
         );
       }
       if (!repos.includes(root)) repos.push(root);
+      pinnedRepos.add(root);
     }
   } else if (context.inferProjectFromCwd !== false) {
     const cwdRepo = await proveRepo(process.cwd());
     if (cwdRepo !== null && !repos.includes(cwdRepo)) repos.push(cwdRepo);
+    if (cwdRepo !== null) pinnedRepos.add(cwdRepo);
   }
   if (repos.length === 0 && projectRoots.length === 0) {
     return fail(
@@ -9634,6 +9645,7 @@ async function upCommand(
       poolRoot: pool,
       repos,
       currentRepos: () => [...activeRepos],
+      admittedRepos: () => [...activeRepos],
       upConsole: true,
       attended: {
         runner: runnerName,
@@ -9723,6 +9735,8 @@ async function upCommand(
   // One record of project passes for the whole service: fair scheduling
   // across its projects (project-concurrency.ts).
   const projectPasses = new ProjectPasses();
+  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
+  const releasedRepos = new Set<string>();
 
   const launchRepo = async (repo: string, bind: boolean): Promise<void> => {
     if (loopResults.has(repo) || stopping) return;
@@ -9747,7 +9761,7 @@ async function upCommand(
       token: runnerToken,
       repo,
       progress: line => progress(`${prefix(repo)}${line}`),
-      isStopping: () => stopping,
+      isStopping: () => stopping || releasedRepos.has(repo),
       onFollowController: controller => followControllers.push(controller),
       containmentLines,
       passes: projectPasses,
@@ -9762,6 +9776,19 @@ async function upCommand(
     );
     loopResults.set(repo, loop);
     void loop.then(({ repo: endedRepo, result }) => {
+      if (releasedRepos.has(endedRepo) && !stopping) {
+        // A removed project's watch has stopped: only now does the builder let go of it.
+        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
+        if (!unbound.ok) {
+          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+          stop();
+        }
+        loopResults.delete(endedRepo);
+        releasedRepos.delete(endedRepo);
+        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
+        markReady();
+        return;
+      }
       // A loop that dies while its siblings live must not leave a partial
       // cockpit standing silently (finding 5).
       if (!result.ok && !stopping) {
@@ -9814,17 +9841,30 @@ async function upCommand(
         stop();
         break;
       }
+      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
+      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
+      for (const repo of [...activeRepos]) {
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
+        activeRepos.delete(repo);
+        releasedRepos.add(repo);
+        if (!loopResults.has(repo)) releasedRepos.delete(repo);
+      }
       for (const candidate of loaded.repos) {
         if (stopping) break;
         const canonical = canonicalProject(candidate);
-        if (canonical !== null && activeRepos.has(canonical)) continue;
+        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
+        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
         const approvedAdditions = context.additionalProjectRepos?.() ?? [];
         const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
-        const allowed = canonical !== null && (await authorizedProject(admittedCeiling, canonical)) && (await proveRepo(canonical)) === canonical;
+        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
+        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
+        const allowed = canonical !== null &&
+          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
+          (await proveRepo(canonical)) === canonical;
         if (!allowed) {
           if (!rejected.has(candidate)) {
             rejected.add(candidate);
-            progress(`project not connected — ${candidate} is not a Git repository inside a saved projects folder`);
+            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
           }
           continue;
         }

@@ -15,7 +15,9 @@ import { existsSync, lstatSync, realpathSync, unlinkSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { configPath, loadRepos, addRepos, removeRepos, updateRepos } from "./repos.js";
+import { configPath, loadRepos } from "./repos.js";
+import { addedWords, admitProject, commandLineActor, consoleRunning, proveProjectRoot, registryBeside, releaseProject, type AdmissionActor } from "./project-admission.js";
+import { envValue } from "./names.js";
 import { CAPABILITIES, ENVELOPE_VERSION, capturedEnvelope, envelopeJson, onEnvelopeCaptured, resetCapturedEnvelope } from "./envelope.js";
 import {
   applyClaudeCodeInstall,
@@ -89,8 +91,9 @@ Usage
   toolroll pulls            report what is waiting on a person
   toolroll graph            report which work graph is already here
   toolroll repos            list connected repositories, and how to adjust
-  toolroll repos add <path> connect one (no path: the repo you are in)
+  toolroll repos add <path> add a project; it is in the console at once (no path: the repo you are in)
   toolroll repos remove <path>
+                                   take it out of the console; its tasks and results stay
   toolroll repos add-from-github <owner/name> --root <dir>
                                    preview, then clone and connect (--yes)
   toolroll link             put \`toolroll\` on your PATH
@@ -639,15 +642,26 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   // `repos` honors the machine contract like everything else (audit TG-3):
   // --json answers with one envelope, whatever the outcome.
   const json = argv.includes("--json");
-  const bare = argv.filter(argument => argument !== "--json");
+  // The lead adds with its token (--token or TOOLROLL_LEAD_TOKEN); the owner needs none.
+  const tokenAt = argv.indexOf("--token");
+  const tokenFlag = tokenAt === -1 ? undefined : argv[tokenAt + 1];
+  const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && index !== tokenAt + 1)));
   const [action, ...paths] = bare;
-  const file = configFile();
+  const databaseFile = databasePath(process.env, homedir());
+  const file = registryBeside(databaseFile);
+  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag.startsWith("-"))) {
+    const message = "--token needs the lead token";
+    write(json ? envelopeJson({ ok: false, command: `repos ${action ?? ""}`.trim(), reason: "usage", message }) : message);
+    return USAGE_EXIT;
+  }
+  const envLead = envValue(process.env, "LEAD_TOKEN");
+  const leadToken = tokenFlag ?? (envLead === undefined || envLead === "" ? undefined : envLead);
   // Dispatched BEFORE the registry load (verification finding 3): a
   // malformed registry must not mask this command's own parsing, its
   // read-only preview, or its taxonomy — enrollment reads the registry
   // through the locked primitive at the moment it writes.
   if (action === "add-from-github") {
-    return addFromGithubCommand(bare.slice(1), json, file, write, onboard);
+    return addFromGithubCommand(bare.slice(1), json, write, { databaseFile, registryFile: file, ...(leadToken === undefined ? {} : { leadToken }) }, onboard);
   }
   const loaded = await loadRepos(file);
   if ("error" in loaded) {
@@ -670,13 +684,12 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
 
   // `repos add` with no path means the repository you are standing in.
   const targets = (paths.length > 0 ? paths : [process.cwd()]).map(path => resolve(path));
+  const lines: string[] = [];
+  const said: { reason?: string; projects?: unknown[] } = {};
+  const say = json ? (line: string) => lines.push(line) : write;
+  const code = await withAdmission({ databaseFile, registryFile: file, ...(leadToken === undefined ? {} : { leadToken }) }, say, said, admission =>
+    action === "add" ? addToRepos(admission, targets, say, said) : removeFromRepos(admission, targets, say, said));
   if (json) {
-    const lines: string[] = [];
-    const said: { reason?: string } = {};
-    const code =
-      action === "add"
-        ? await addToRepos(loaded.repos, targets, file, line => lines.push(line), said)
-        : await removeFromRepos(loaded.repos, targets, file, line => lines.push(line), said);
     write(
       envelopeJson({
         ok: code === 0,
@@ -684,13 +697,41 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
         ...(code === 0 ? {} : { reason: said.reason ?? "usage" }),
         message: lines.join(" "),
         targets,
+        ...(said.projects === undefined ? {} : { projects: said.projects }),
       }),
     );
-    return code;
   }
-  return action === "add"
-    ? addToRepos(loaded.repos, targets, file, write)
-    : removeFromRepos(loaded.repos, targets, file, write);
+  return code;
+}
+
+type Admission = { store: Store; registryFile: string; actor: AdmissionActor };
+
+/** Open this installation's database as the owner (or its lead) for one addition or removal. */
+async function withAdmission(
+  where: { databaseFile: string; registryFile: string; leadToken?: string },
+  write: Write,
+  said: { reason?: string },
+  body: (admission: Admission) => Promise<number>,
+): Promise<number> {
+  let store: Store;
+  try {
+    store = openStore(where.databaseFile);
+  } catch (error) {
+    said.reason = "database";
+    write(`Toolroll's database couldn't be opened (${String((error as Error).message ?? error)}). Nothing changed.`);
+    return 1;
+  }
+  try {
+    const actor = commandLineActor(store, { databaseFile: where.databaseFile, ...(where.leadToken === undefined ? {} : { leadToken: where.leadToken }) });
+    if ("ok" in actor) {
+      said.reason = "refused";
+      write(actor.message);
+      return 3;
+    }
+    return await body({ store, registryFile: where.registryFile, actor });
+  } finally {
+    store.close();
+  }
 }
 
 function listRepos(repos: readonly string[], file: string, write: Write): number {
@@ -706,70 +747,69 @@ function listRepos(repos: readonly string[], file: string, write: Write): number
   write(`${repos.length === 1 ? "1 repository" : `${repos.length} repositories`} connected:`);
   for (const repo of repos) write(`  ${repo}${existsSync(repo) ? "" : "   (missing)"}`);
   write("");
-  write("  toolroll repos add <path>      connect another");
-  write("  toolroll repos remove <path>   disconnect one");
+  write("  toolroll repos add <path>      add another; it is in the console at once");
+  write("  toolroll repos remove <path>   take one out of the console; its tasks stay");
   write("  toolroll repos add-from-github <owner/name> --root <dir>   clone from GitHub and connect");
   write("  toolroll --all                 report everything, ignoring this list");
   write(`  ${file}`);
   return 0;
 }
 
-async function addToRepos(
-  existing: readonly string[],
-  targets: readonly string[],
-  file: string,
-  write: Write,
-  said?: { reason?: string },
-): Promise<number> {
-  // Enrolling something that is not a repository would fail later and further
-  // away, so it fails here instead.
-  const rejected = targets.filter(path => !existsSync(join(path, ".git")));
-  if (rejected.length > 0) {
-    for (const path of rejected) write(`${path} is not a git repository.`);
-    if (said !== undefined) said.reason = "usage";
-    return USAGE_EXIT;
-  }
+/** The exit code an admission failure answers with: a folder problem is the caller's to fix (usage). */
+function admissionExit(reason: string): number {
+  return reason === "not-git" || reason === "unavailable" ? USAGE_EXIT : 1;
+}
 
-  const added = targets.filter(path => !existing.includes(path));
-  const wrote = await updateRepos(file, repos => addRepos(repos, targets));
-  if (!wrote.ok) {
-    // The updater's own taxonomy survives (verification finding 4): a held
-    // lock or a malformed registry is an operational fact, never "usage".
-    if (said !== undefined) said.reason = wrote.reason;
-    write(`could not update the connected list — ${wrote.message}`);
-    return 1;
+async function addToRepos(admission: Admission, targets: readonly string[], write: Write, said: { reason?: string; projects?: unknown[] }): Promise<number> {
+  // Every folder is proved before anything is written: one that is not a
+  // repository fails here, not later and further away.
+  let refused = false;
+  for (const path of targets) {
+    const proved = await proveProjectRoot(path);
+    if (!proved.ok) {
+      write(proved.message);
+      said.reason ??= proved.reason;
+      refused = true;
+    }
   }
-
-  if (added.length === 0) {
-    write(`Already connected: ${targets.join(", ")}`);
-    return 0;
+  if (refused) return USAGE_EXIT;
+  const now = new Date();
+  const running = consoleRunning(admission.store, now);
+  const projects: { repo: string; name: string; added: boolean }[] = [];
+  for (const path of targets) {
+    const admitted = await admitProject(admission.store, { registryFile: admission.registryFile, path, actor: admission.actor, now });
+    if (!admitted.ok) {
+      // The updater's own taxonomy survives (verification finding 4): a held
+      // lock or a malformed registry is an operational fact, never "usage".
+      said.reason = admitted.reason;
+      said.projects = projects;
+      write(admitted.message);
+      return admissionExit(admitted.reason);
+    }
+    projects.push({ repo: admitted.repo, name: admitted.name, added: admitted.added });
+    write(addedWords(admitted.name, admitted.added, running));
   }
-  for (const path of added) write(`Connected ${path}`);
-  write("");
-  write("`toolroll` now reports these. `toolroll --all` still shows everything.");
+  said.projects = projects;
   return 0;
 }
 
-async function removeFromRepos(
-  existing: readonly string[],
-  targets: readonly string[],
-  file: string,
-  write: Write,
-  said?: { reason?: string },
-): Promise<number> {
-  const removed = targets.filter(path => existing.includes(path));
-  if (removed.length === 0) {
-    write(`Not connected: ${targets.join(", ")}`);
-    return 0;
+async function removeFromRepos(admission: Admission, targets: readonly string[], write: Write, said: { reason?: string; projects?: unknown[] }): Promise<number> {
+  const now = new Date();
+  const projects: { repo: string; name: string; removed: boolean }[] = [];
+  for (const path of targets) {
+    const released = await releaseProject(admission.store, { registryFile: admission.registryFile, path, actor: admission.actor, now });
+    if (!released.ok) {
+      said.reason = released.reason;
+      said.projects = projects;
+      write(released.message);
+      return admissionExit(released.reason);
+    }
+    projects.push({ repo: released.repo, name: released.name, removed: released.removed });
+    write(released.removed
+      ? `Removed ${released.name}; it is no longer in the console. Its tasks and results stay saved.`
+      : `${released.name} isn't added, so nothing changed.`);
   }
-
-  const wrote = await updateRepos(file, repos => removeRepos(repos, targets));
-  if (!wrote.ok) {
-    if (said !== undefined) said.reason = wrote.reason;
-    write(`could not update the connected list — ${wrote.message}`);
-    return 1;
-  }
-  for (const path of removed) write(`Disconnected ${path}`);
+  said.projects = projects;
   return 0;
 }
 
@@ -781,7 +821,10 @@ async function removeFromRepos(
  * primitive. Preview by default; --yes clones. Windows refuses like the
  * console does — tree death cannot be proven there.
  */
-async function addFromGithubCommand(argv: readonly string[], json: boolean, file: string, write: Write, onboard?: MainOptions["onboard"]): Promise<number> {
+async function addFromGithubCommand(
+  argv: readonly string[], json: boolean, write: Write,
+  where: { databaseFile: string; registryFile: string; leadToken?: string }, onboard?: MainOptions["onboard"],
+): Promise<number> {
   const command = "repos add-from-github";
   const answer = (reason: string, message: string, code: number, extra: Record<string, unknown> = {}): number => {
     write(json ? envelopeJson({ ok: false, command, reason, message, ...extra }) : message);
@@ -860,6 +903,11 @@ async function addFromGithubCommand(argv: readonly string[], json: boolean, file
     return answer("large", `${previewed.preview.nameWithOwner} is large or of unknown size (${size}) — add --large-ok to clone it anyway; nothing was written`, 3);
   }
 
+  // Who may add is settled before anything is cloned.
+  const said: { reason?: string } = {};
+  const problems: string[] = [];
+  const allowed = await withAdmission(where, line => problems.push(line), said, async () => 0);
+  if (allowed !== 0) return answer(said.reason ?? "refused", problems.join(" "), allowed);
   const cloned = await (onboard?.clone ?? cloneGithubRepo)(previewed.preview.nameWithOwner, root, async (cwd: string) => {
     const proof = await execRun("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 15_000 });
     return { code: proof.code, stdout: proof.stdout };
@@ -868,15 +916,26 @@ async function addFromGithubCommand(argv: readonly string[], json: boolean, file
   if (cloned.target !== target) {
     return answer("malformed", "the clone answered with a different path than the preview promised — refused; nothing was connected", 1);
   }
-  const enrolled = await updateRepos(file, repos => addRepos(repos, [cloned.target]));
-  if (!enrolled.ok) {
-    return answer(enrolled.reason, `${cloned.target} is cloned but not connected — ${enrolled.message}; connect it with \`repos add ${cloned.target}\``, 1);
-  }
+  // The clone joins through the same admission as `repos add` and the console.
+  let words = "";
+  const code = await withAdmission(where, line => problems.push(line), said, async admission => {
+    const now = new Date();
+    const admitted = await admitProject(admission.store, { registryFile: admission.registryFile, path: cloned.target, actor: admission.actor, now });
+    if (!admitted.ok) {
+      said.reason = admitted.reason;
+      problems.push(`${cloned.target} is cloned but not added — ${admitted.message} Add it with \`repos add ${cloned.target}\`.`);
+      return 1;
+    }
+    words = addedWords(admitted.name, admitted.added, consoleRunning(admission.store, now));
+    return 0;
+  });
+  if (code !== 0) return answer(said.reason ?? "failed", problems.join(" "), code);
   if (json) {
     write(envelopeJson({ ok: true, command, target: cloned.target, nameWithOwner: previewed.preview.nameWithOwner }));
     return 0;
   }
-  write(`Cloned ${previewed.preview.nameWithOwner} into ${cloned.target} and connected it.`);
+  write(`Cloned ${previewed.preview.nameWithOwner} into ${cloned.target}.`);
+  write(words);
   write("Large-file objects were not downloaded — run `git lfs pull` in the repository when you need them.");
   return 0;
 }
