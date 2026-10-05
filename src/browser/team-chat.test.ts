@@ -59,3 +59,17 @@ test('an enabled chat shows why saved messages are waiting without asking for co
   expect(document.body.textContent).toContain('Saved messages will wait until tomorrow.');
   expect(button('Enable chat')).toBeUndefined();
 });
+test('a reply stopped at its deadline reads once in the thread, with the proposal it made and a send box for the next message', async () => {
+  const snapshot = fixture(), notice = 'The reply took too long and was stopped. What it proposed is below. Send your message again, or ask for less at once.';
+  snapshot.messages = [
+    { id: 1, author: 'alex', role: 'operator', text: 'Set up the weekly digest flow.', status: 'failed', revision: 2, createdAt: '', requestId: 'one', turnId: 7, error: null },
+    { id: 2, author: 'Team lead', role: 'assistant', text: notice, status: 'answered', revision: 1, createdAt: '', requestId: null, turnId: 7, error: null },
+  ];
+  snapshot.proposals = [{ id: 1, turnId: 7, title: 'Weekly digest flow', state: 'pending', href: '/chat?conversation=room&proposal=1' }];
+  vi.stubGlobal('fetch', vi.fn(async () => json(snapshot))); await mount(snapshot);
+  expect(document.body.textContent!.split('took too long').length - 1).toBe(1);
+  expect(document.querySelectorAll('[role="alert"], .so-alert')).toHaveLength(0);
+  const review = [...document.querySelectorAll<HTMLAnchorElement>('.so-team-proposals a')];
+  expect(review.map(link => [link.textContent, link.getAttribute('href')])).toEqual([['Review action', '/chat?conversation=room&proposal=1']]);
+  expect(document.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(false);
+});

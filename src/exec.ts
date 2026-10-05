@@ -63,6 +63,8 @@ export type RunOptions = ProcessTreeObserver & {
    * timeoutMs there is deliberately no absolute wall-clock ceiling.
    */
   idleTimeoutMs?: number;
+  /** Ends a process-group run early, exactly as its timeout does: the whole group is killed and the result reads timed out. */
+  signal?: AbortSignal;
   maxBuffer?: number;
   /**
    * Extra environment, merged over the process's own. A capability probe is a
@@ -639,6 +641,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
       runBufferedGroup(file, args, {
         timeoutMs,
         maxBuffer,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
         ...(cwd === undefined ? {} : { cwd }),
         ...(childEnv === undefined ? {} : { childEnv }),
@@ -699,7 +702,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
 function runBufferedGroup(
   file: string,
   args: readonly string[],
-  bag: ProcessTreeObserver & { cwd?: string; stdin?: string; timeoutMs: number; maxBuffer: number; childEnv?: Record<string, string | undefined>; onSpawn?: (pid: number) => void; onSpawnFailed?: () => void; owner?: string; beforeSpawn?: () => boolean; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void; fence?: readonly string[] },
+  bag: ProcessTreeObserver & { cwd?: string; stdin?: string; timeoutMs: number; signal?: AbortSignal; maxBuffer: number; childEnv?: Record<string, string | undefined>; onSpawn?: (pid: number) => void; onSpawnFailed?: () => void; owner?: string; beforeSpawn?: () => boolean; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void; fence?: readonly string[] },
 ): Promise<SpawnAttempt> {
   return new Promise(resolve => {
     let child!: ReturnType<typeof spawn>;
@@ -743,6 +746,13 @@ function runBufferedGroup(
       timedOut = true;
       killGroup(child);
     }, bag.timeoutMs);
+    // The caller's deadline, when it owns one: the same group kill as the timer.
+    const aborted = (): void => {
+      timedOut = true;
+      killGroup(child);
+    };
+    if (bag.signal?.aborted === true) aborted();
+    else bag.signal?.addEventListener("abort", aborted, { once: true });
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -765,6 +775,7 @@ function runBufferedGroup(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      bag.signal?.removeEventListener("abort", aborted);
       liveProviders.delete(child);
       // The OS object is settled BEFORE the answer: a root that exited is
       // not an empty container until the OS says so.

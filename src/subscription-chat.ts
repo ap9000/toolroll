@@ -42,6 +42,8 @@ export type SubscriptionMateRequest = {
   history: readonly MateHistoryMessage[];
   tools: readonly MateToolSchema[];
   timeoutMs: number;
+  /** The turn's own deadline: aborting it ends the harness's whole process group. */
+  signal?: AbortSignal;
   /** The reply as it is written, cumulative, when the harness can stream it
    * (Claude). Display only: the finished answer is still parsed whole. */
   onText?: (text: string) => void;
@@ -83,7 +85,7 @@ function outputSchema(tools: readonly MateToolSchema[]): Record<string, unknown>
 }
 
 /** The model-visible request. Tool results are already redacted by mateView. */
-export function composeSubscriptionMatePrompt(request: Omit<SubscriptionMateRequest, "provider" | "model" | "timeoutMs">): string {
+export function composeSubscriptionMatePrompt(request: Omit<SubscriptionMateRequest, "provider" | "model" | "timeoutMs" | "signal">): string {
   return [
     request.system,
     "SUBSCRIPTION HARNESS PROTOCOL:",
@@ -245,6 +247,7 @@ export async function performSubscriptionMateRequest(
       cwd: dir,
       stdin: prompt,
       timeoutMs: request.timeoutMs,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
       // Events repeat the answer (deltas, the message, the result line).
       maxBuffer: streaming ? RESPONSE_CAP_BYTES * 16 : RESPONSE_CAP_BYTES,
       omitEnv: ALL_CREDENTIAL_ENV,

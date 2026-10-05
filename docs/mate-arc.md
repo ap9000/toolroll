@@ -117,7 +117,13 @@ Codex read commit 749d328 against this spec and found 3 critical, 8 high,
    the session holds. (finding 3)
 4. **Proposal text is scanned before it is drafted**, and a failed turn's
    drafts are DELETED, not expired; `--end` and revocation delete the
-   thread's proposals with its messages. (finding 4)
+   thread's proposals with its messages. (finding 4) One exception: a
+   turn stopped at its deadline (or swept past it) keeps the proposals
+   its completed, validated tool calls drafted. They go pending in the
+   same write that saves "The reply took too long" in the thread, so a
+   slow final reply never hides a proposal already made. Revocation,
+   stop, secret refusal, supersession and unreadable provider output
+   still delete every draft.
 5. **Revocation ends a loop in flight.** `revokeAccount` fails the
    approver's live turns first (charged whole, generation moved), then
    ends sessions and threads; the engine re-reads its own row and
@@ -364,7 +370,8 @@ run `src/mate-doors.ts` under the session-layer principal; `POST
 /chat/mate/end` fails any live turn, ends the session, and deletes the
 thread's text and proposals. The turn runs detached and the page refreshes
 every 3 s while it runs, with proposal cards inert until it ends; a refusal
-or a failed turn is said once at the top of the thread. Cancel cards carry
+or a failed turn is said once at the top of the thread; a turn stopped at
+its deadline says so in the thread itself, above any proposal it kept. Cancel cards carry
 no confirm — they link to the task's own arm-then-POST control.
 
 `/chat` becomes the thread: messages in order; tool activity as quiet mono

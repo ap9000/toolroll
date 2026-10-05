@@ -9479,7 +9479,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const onProgress = beginLiveTurn(opened.thread.id);
         void runMateTurn({ store, who: principal, session: mateSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot })
           .then(outcome => {
-            if (!outcome.ok) noteMate(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
+            // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
+            if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteMate(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
             endLiveTurn(opened.thread.id, outcome.ok);
           })
           .catch(() => { noteMate(who.session.csrf, null, "the turn failed unexpectedly"); endLiveTurn(opened.thread.id, false); });
@@ -18799,7 +18800,8 @@ function mateBrowserMessages(rows: Pick<MateThreadRows, "messages" | "proposals"
     html: message.role === 'operator' ? `<p>${escape(message.text)}</p>` : renderChatText(message.text, askedBy.get(message.id)) + asked(message.turn),
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
-      const parts = message.turn === null ? [] : rows.proposals.filter(one => one.turn === message.turn)
+      // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
+      const parts = message.turn === null || message.role === 'operator' ? [] : rows.proposals.filter(one => one.turn === message.turn)
         .map(one => mateProposalCardParts(one, csrf, rows.pending !== null, rows.decisions.get(typeof one.payload['decision'] === 'number' ? one.payload['decision'] : -1) ?? null, back));
       return { cardsHtml: parts.map(one => one.html).join(''), cards: parts.map(one => one.card) };
     })(),

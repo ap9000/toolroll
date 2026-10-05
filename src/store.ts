@@ -299,6 +299,21 @@ CREATE TABLE IF NOT EXISTS project_mute (
   PRIMARY KEY (account, repo)
 );
 `;
+/** A lead reply stopped at its deadline, in the thread as plain words: what happened, what it means, one next step. The
+ * proposals it made before then are kept; the cost line only when an unknown cost paused chat. */
+export function mateTimeoutNotice(keptProposals: boolean, unknownCost = false): string {
+  return [
+    unknownCost ? "The reply took too long and was stopped, and its cost isn't known yet, so chat is paused." : "The reply took too long and was stopped.",
+    keptProposals ? "What it proposed is below." : null,
+    unknownCost ? "Confirm the cost on the Chat page to turn chat back on." : "Send your message again, or ask for less at once.",
+  ].filter(part => part !== null).join(" ");
+}
+
+/** Whether a turn's proposals stand: it answered, or it stopped at its deadline after its completed tool calls proposed them. */
+export function mateTurnKeepsProposals(turn: { state: string; failureReason: string | null } | null): boolean {
+  return turn !== null && (turn.state === "answered" || turn.state === "failed" && (turn.failureReason === "timeout" || turn.failureReason === "crashed"));
+}
+
 /** What the lead promised to follow up on (lead-commitments.ts; no version bump: additive only, so a build that
  * predates it still opens the store). `condition_json` is a task, attempt, check or time; `check_at` is when to look
  * next; `channel` is where it reports (`chat`: the conversation it was promised in); a promise lapses at `expires_at`. */
@@ -24371,8 +24386,10 @@ export class Store {
       tokensIn: number;
       tokensOut: number;
       failureReason?: string;
-      /** Answered turns: the assistant row, written in the same transaction as the promotion. */
+      /** Answered turns: the assistant row, written in the same transaction as the promotion. A timed-out turn's notice. */
       message?: { text: string; activity: string };
+      /** A timed-out turn keeps what its completed, validated tool calls proposed (its drafts go pending with its notice). */
+      keepProposals?: boolean;
     },
     now: Date,
   ): boolean {
@@ -24395,11 +24412,21 @@ export class Store {
           this.appendMateMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
         }
       } else {
-        this.discardMateProposals(id);
+        if (outcome.keepProposals === true) this.keepTimedOutMateProposals(id);
+        else this.discardMateProposals(id);
         this.discardMateTurnEvidence(id);
+        if (outcome.message !== undefined) {
+          this.appendMateMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
+        }
       }
       return true;
     });
+  }
+
+  /** A turn stopped at its deadline: the proposals its completed tool calls drafted (each validated when drafted) go pending, as an
+   * answered turn's do; anything the provider sent after them was never acted on. Every other failure still deletes its drafts. */
+  private keepTimedOutMateProposals(turn: number): number {
+    return Number(this.db.prepare("UPDATE mate_proposal SET state = 'pending' WHERE turn = ? AND state = 'drafting'").run(turn).changes);
   }
 
   /** Revocation's companion for a loop in flight (finding 5): every live
@@ -24424,12 +24451,14 @@ export class Store {
   /** The crash sweep for turns: past the deadline, failed. The session is
    * charged the settled sum of the steps that answered — unless any step
    * is unproven (dispatched and never settled, or latched), in which case
-   * the WHOLE reservation is charged (finding 1). Drafts are deleted. */
+   * the WHOLE reservation is charged (finding 1). Like a turn that stopped
+   * at its own deadline, it keeps the proposals its completed tool calls
+   * drafted and says, in the thread, that the reply took too long. */
   sweepStaleMateTurns(now: Date): number {
     return this.transact(() => {
       this.sweepStaleChatTurns(now);
       const rows = this.db
-        .prepare("SELECT id, session, reserved_microusd AS reserved FROM mate_turn WHERE state IN ('queued','running') AND deadline_at < ?")
+        .prepare("SELECT id, session, thread, reserved_microusd AS reserved FROM mate_turn WHERE state IN ('queued','running') AND deadline_at < ?")
         .all(now.toISOString());
       for (const row of rows) {
         const id = Number(row["id"]);
@@ -24444,8 +24473,11 @@ export class Store {
           .prepare("UPDATE mate_turn SET state = 'failed', failure_reason = 'crashed', generation = generation + 1, settled_microusd = ?, finished_at = ? WHERE id = ?")
           .run(spent, now.toISOString(), id);
         this.db.prepare("UPDATE mate_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(spent, Number(row["session"]));
-        this.discardMateProposals(id);
+        const kept = this.keepTimedOutMateProposals(id);
         this.discardMateTurnEvidence(id);
+        const latched = this.db.prepare("SELECT 1 AS hit FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1 AND acknowledged_at IS NULL LIMIT 1").get(id) !== undefined;
+        const open = this.db.prepare("SELECT 1 AS hit FROM mate_thread WHERE id = ? AND closed_at IS NULL").get(Number(row["thread"])) !== undefined;
+        if (open) this.appendMateMessage({ thread: Number(row["thread"]), turn: id, role: "assistant", text: mateTimeoutNotice(kept > 0, latched), activity: null }, now);
       }
       return rows.length;
     });
