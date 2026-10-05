@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { definesSchema, journeyShares, planFor, versionOnly } from "../scripts/release-check.mjs";
+import { definesSchema, journeyGroups, journeyShares, journeysFor, planFor, shareSlots, versionOnly } from "../scripts/release-check.mjs";
 import { atLeast, completionProblems, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
 import { DEMAND, GROUP_BYTES, admissionWords, admit, browserSlots, limiter, memoryPressure, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
 
@@ -122,6 +122,110 @@ describe("node scripts/release-check.mjs --plan", () => {
   });
 });
 
+describe("which browser journeys a change runs", () => {
+  const groups = journeyGroups();
+  const SCRIPTED_FLOWS = ["steps", "triggers"];
+  const SCRIPTED_APP = ["console", "pages", "task", "stop", "maya", "rosa", "memory", "mail", "flows", "onboarding"];
+  const REAL = { flows: ["build", "lead", "steps", "triggers"], app: ["builds", "lead", "maya", "rosa"] };
+  const none = { flows: [], app: [] };
+
+  test("the scripts' own groups: scripted runs skip a group whose only scripted journey another group runs too", () => {
+    expect(groups.flows.filter(one => one.ownScripted > 0).map(one => one.name)).toEqual(SCRIPTED_FLOWS);
+    expect(groups.app.filter(one => one.ownScripted > 0).map(one => one.name)).toEqual(SCRIPTED_APP);
+    expect({ flows: groups.flows.filter(one => one.real > 0).map(one => one.name), app: groups.app.filter(one => one.real > 0).map(one => one.name) }).toEqual(REAL);
+  });
+
+  test("a UI-only change runs scripted journeys only: just the owning groups where that is clear, every scripted group otherwise", () => {
+    expect(journeysFor(["src/browser/app.tsx"], groups)).toEqual({ scripted: { flows: SCRIPTED_FLOWS, app: SCRIPTED_APP }, scriptedWhy: "src/browser/app.tsx changed, and no one group's journeys own it", real: none, realWhy: null });
+    expect(journeysFor(["src/flows-ui.ts"], groups)).toMatchObject({ scripted: { flows: ["steps", "triggers"], app: ["maya", "rosa", "memory", "mail", "flows"] }, scriptedWhy: "src/flows-ui.ts changed: the flow pages", realWhy: null });
+    expect(journeysFor(["src/teammates-ui.ts", "src/browser/first-run.tsx"], groups)).toMatchObject({ scripted: { flows: [], app: ["maya", "rosa", "memory", "flows", "onboarding"] }, scriptedWhy: "src/teammates-ui.ts changed: the teammate and kit pages; src/browser/first-run.tsx changed: the first-run page" });
+    expect(journeysFor(["scripts/flows-e2e.mjs"], groups).scripted).toEqual({ flows: SCRIPTED_FLOWS, app: [] });
+    // A clear page beside an unowned one: every scripted group.
+    expect(journeysFor(["src/flows-ui.ts", "src/serve.ts"], groups).scripted).toEqual({ flows: SCRIPTED_FLOWS, app: SCRIPTED_APP });
+    // The journeys' own harness is every scripted group too.
+    expect(journeysFor(["scripts/e2e-kit.mjs"], groups).scripted).toEqual({ flows: SCRIPTED_FLOWS, app: SCRIPTED_APP });
+    expect(journeysFor(["scripts/fixtures/scripted-provider.mjs"], groups)).toMatchObject({ scripted: { flows: SCRIPTED_FLOWS, app: SCRIPTED_APP }, realWhy: null });
+  });
+
+  test("model-facing code runs the real-model journeys; a test of it, or a page, doesn't; --real and a full check do", () => {
+    for (const file of ["src/mate.ts", "src/mate-tools.ts", "src/subscription-chat.ts", "src/planner.ts", "src/builder.ts", "src/provider.ts", "src/invoke.ts", "src/teammates.ts", "src/flow-sort.ts", "src/task-sizing.ts"]) {
+      expect(journeysFor([file], groups), file).toEqual({ scripted: none, scriptedWhy: null, real: REAL, realWhy: `${file} changed: model-facing` });
+    }
+    expect(journeysFor(["src/mate.test.ts", "src/browser/app.tsx"], groups).realWhy).toBeNull();
+    expect(journeysFor(["src/browser/app.tsx"], groups, { real: true })).toMatchObject({ scripted: { flows: SCRIPTED_FLOWS, app: SCRIPTED_APP }, real: REAL, realWhy: "--real" });
+    expect(journeysFor([], groups, { all: true })).toEqual({ scripted: { flows: SCRIPTED_FLOWS, app: SCRIPTED_APP }, scriptedWhy: "a full check", real: REAL, realWhy: "a full check" });
+  });
+
+  test("the plan says which groups run and why; --real alone runs the real-model journeys; nothing a page or a model reads runs none", () => {
+    expect(planFor(["src/flows-ui.ts"], { groups }).why).toBe("unit tests related to the change; scripted browser journeys in flows steps, triggers; app maya, rosa, memory, mail, flows (src/flows-ui.ts changed: the flow pages); no real-model journeys (no model-facing code changed; --real runs them)");
+    expect(planFor(["src/mate.ts"], { groups }).why).toBe("unit tests related to the change; no scripted browser journeys (nothing a page shows changed); real-model journeys in flows build, lead, steps, triggers; app builds, lead, maya, rosa, and what they need (src/mate.ts changed: model-facing)");
+    expect(planFor(["docs/guide/flows.md"], { groups, real: true })).toMatchObject({ unit: "none", browser: true, why: "no unit tests (nothing a test reads changed); no scripted browser journeys (nothing a page shows changed); real-model journeys in flows build, lead, steps, triggers; app builds, lead, maya, rosa, and what they need (--real)" });
+    expect(planFor(["src/store.ts"], { groups })).toMatchObject({ browser: false, why: "unit tests related to the change; no browser journeys (nothing a page shows changed, and no model-facing code; --real runs the real-model ones)" });
+    expect(planFor(["docs/guide/flows.md"], { groups })).toMatchObject({ browser: false, why: "only docs, evidence or design notes changed" });
+  });
+
+  test("every journey is in a release route and the nightly one: every scripted group under a page with no owner, every real-model group under --real", () => {
+    const fallback = journeysFor(["src/serve.ts"], groups), real = journeysFor([], groups, { real: true });
+    for (const script of ["flows", "app"] as const) {
+      expect(fallback.scripted[script]).toEqual(groups[script].filter(one => one.ownScripted > 0).map(one => one.name));
+      expect(real.real[script]).toEqual(groups[script].filter(one => one.real > 0).map(one => one.name));
+    }
+    const nightly = JSON.parse(execFileSync(process.execPath, ["scripts/flows/real-model-journeys.mjs", "--suites"], { encoding: "utf8" })) as { name: string; argv: string[] }[];
+    expect(nightly.map(one => one.name)).toEqual([...groups.flows.map(one => `flows-${one.name}`), ...groups.app.map(one => `app-${one.name}`)]);
+    for (const one of nightly) expect(one.argv.slice(-2)).toEqual(["--journeys", "all"]);
+  });
+});
+
+describe("node scripts/release-check.mjs with the journey scripts", () => {
+  let dir: string | null = null;
+  afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
+  const script = resolve(import.meta.dirname, "../scripts/release-check.mjs");
+
+  /** A checkout with the real journey scripts and a stand-in runner that logs how it is asked to run, then one commit
+   * changing `files`; the release check's output, and each journey run it started. */
+  const checkOf = (files: Record<string, string>, extra: string[] = []) => {
+    dir = mkdtempSync(join(tmpdir(), "so-release-journeys-"));
+    const git = (...argv: string[]) => execFileSync("git", ["-C", dir!, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    for (const one of ["flows-e2e.mjs", "app-e2e.mjs", "e2e-kit.mjs", "fixtures", "flows"]) cpSync(resolve(import.meta.dirname, "../scripts", one), join(dir, "scripts", one), { recursive: true });
+    writeFileSync(join(dir, "scripts", "e2e-parallel.mjs"), "import { appendFileSync } from 'node:fs';\nappendFileSync('journey-runs.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');\nconsole.log('Model calls: 4 scripted, 0 real turns');\n");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build: "node -e 0", test: "node -e 0" } }, null, 2) + "\n");
+    mkdirSync(join(dir, "src", "browser"), { recursive: true });
+    writeFileSync(join(dir, "src", "browser", "app.tsx"), "export {};\n"); writeFileSync(join(dir, "src", "flows-ui.ts"), "export {};\n"); writeFileSync(join(dir, "src", "mate.ts"), "export {};\n");
+    git("add", "."); git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
+    git("add", "."); git("commit", "-qm", "change");
+    const out = execFileSync(process.execPath, [script, "--base", base, ...extra], { cwd: dir, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
+    const runs = existsSync(join(dir, "journey-runs.jsonl")) ? readFileSync(join(dir, "journey-runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]) : [];
+    return { out, runs: runs.map(argv => argv.filter((one, at) => one !== "--at-once" && argv[at - 1] !== "--at-once").join(" ")).sort() };
+  };
+
+  test("a UI-only change runs the scripted journeys of the groups it names, and no real-model journey", () => {
+    const { out, runs } = checkOf({ "src/flows-ui.ts": "export const changed = 1;\n" });
+    expect(out).toContain("scripted browser journeys in flows steps, triggers; app maya, rosa, memory, mail, flows (src/flows-ui.ts changed: the flow pages); no real-model journeys");
+    expect(runs).toEqual([
+      "scripts/app-e2e.mjs --skip-build --journeys scripted --run-groups maya,rosa,memory,mail,flows",
+      "scripts/flows-e2e.mjs --journeys scripted --run-groups steps,triggers",
+    ]);
+    expect(out).toContain("\nModel calls: 4 scripted, 0 real turns\n");
+  });
+
+  test("a model-facing change runs the real-model journeys; --real adds them to a page change", () => {
+    expect(checkOf({ "src/mate.ts": "export const changed = 1;\n" }).runs).toEqual([
+      "scripts/app-e2e.mjs --skip-build --journeys real --run-groups builds,lead,maya,rosa",
+      "scripts/flows-e2e.mjs --journeys real --run-groups build,lead,steps,triggers",
+    ]);
+    rmSync(dir!, { recursive: true, force: true });
+    expect(checkOf({ "src/browser/app.tsx": "export const changed = 1;\n" }, ["--real"]).runs).toEqual([
+      "scripts/app-e2e.mjs --skip-build --journeys real --run-groups builds,lead,maya,rosa",
+      "scripts/app-e2e.mjs --skip-build --journeys scripted --run-groups console,pages,task,stop,maya,rosa,memory,mail,flows,onboarding",
+      "scripts/flows-e2e.mjs --journeys real --run-groups build,lead,steps,triggers",
+      "scripts/flows-e2e.mjs --journeys scripted --run-groups steps,triggers",
+    ]);
+  });
+});
+
 describe("the upgrade path step", () => {
   test("runs only for what an update from an installed release can trip on", () => {
     for (const file of ["src/store.ts", "src/assignment.ts", "src/assignment-status.ts", "src/dispatch.ts", "src/work-summary.ts", "src/review-switch.ts",
@@ -214,6 +318,10 @@ describe("checks fit memory", () => {
     expect(journeyShares(2)).toEqual({ flows: 1, app: 1, together: true });
     expect(journeyShares(6)).toEqual({ flows: 3, app: 3, together: true });
     expect(journeyShares(5)).toEqual({ flows: 2, app: 3, together: true });
+    // Four journey runs (scripted and real-model, each script): a share each, or one after the other with fewer slots.
+    expect(shareSlots(6, 4)).toEqual([1, 1, 2, 2]);
+    expect(shareSlots(3, 4)).toEqual([3, 3, 3, 3]);
+    expect(shareSlots(4, 0)).toEqual([]);
   });
 
   test("a group starts only below the limit, and beyond the first only while there is room for it", async () => {

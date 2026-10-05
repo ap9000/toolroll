@@ -33,7 +33,7 @@ for (const [name, needs] of JOURNEYS) {
   results.push({ name, needs, state: ok ? "passed" : "failed", ...(ok ? {} : { error: 'a failed script goes to review, not the build: [["Build","task","check",null],["Unit tests","check","review","review"]]' }) });
 }
 appendFileSync(join(dir, "runs.jsonl"), JSON.stringify(results.filter(one => one.state !== "not selected").map(one => one.name)) + "\n");
-writeFileSync(join(out, "report.json"), JSON.stringify({ results: results.filter(one => one.state !== "not selected") }));
+writeFileSync(join(out, "report.json"), JSON.stringify({ results: results.filter(one => one.state !== "not selected"), modelCalls: { turns: 3, scripted: 0, real: Number(process.env.STAND_IN_REAL_TURNS ?? 0), unscripted: 0 } }));
 process.exitCode = failed.size > 0 ? 1 : 0;
 `;
 
@@ -60,6 +60,19 @@ describe("real-model-journeys.mjs", () => {
     expect(stdout).toContain("Every real-model journey passed (flows 4)");
     expect(stdout).toContain("Flaky, passed on the second try: flows: The lead draws a flow");
     expect(stdout.trim().split("\n").at(-1)).toBe("goto: pass");
+  });
+
+  test("by default every group of both journey scripts is a suite with every journey and real models; the summary counts the real turns, retries included", () => {
+    const listed = spawnSync(process.execPath, [resolve("scripts/flows/real-model-journeys.mjs"), "--suites"], { encoding: "utf8" });
+    const suites = JSON.parse(listed.stdout) as { name: string; argv: string[] }[];
+    const groupsOf = (script: string) => (JSON.parse(spawnSync(process.execPath, [resolve(script), "--groups", "--json"], { encoding: "utf8" }).stdout) as { name: string }[]).map(one => one.name);
+    expect(suites).toEqual([
+      ...groupsOf("scripts/flows-e2e.mjs").map(name => ({ name: `flows-${name}`, argv: ["scripts/flows-e2e.mjs", "--group", name, "--journeys", "all"] })),
+      ...groupsOf("scripts/app-e2e.mjs").map(name => ({ name: `app-${name}`, argv: ["scripts/app-e2e.mjs", "--group", name, "--journeys", "all"] })),
+    ]);
+    const { code, stdout } = journeys({ STAND_IN_REAL_TURNS: "3" }, ["--only", "^(?!Independent)"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("\nReal model turns: 6\n");
   });
 
   test("a journey that fails twice exits non-zero with the journey, its error and the zones it saw", () => {

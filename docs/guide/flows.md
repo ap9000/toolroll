@@ -176,15 +176,18 @@ schedule. Save each as a project script that runs its file, then draw:
 4. A **Build** zone that fixes it, then a **Pull request** zone.
 
 - **Real-model journeys** (`scripts/flows/real-model-journeys.mjs`) builds
-  Toolroll and runs the journeys that use real models, which unit tests and
-  CI never run: `scripts/flows-e2e.mjs` and the lead journeys of
-  `scripts/app-e2e.mjs`. A failed journey runs once more, with the journeys
-  it needs, to rule out a flaky model. It prints each journey that failed
-  twice, its error and what it saw, and ends with `goto: pass` or
-  `goto: fail`. It stops itself at 25 minutes; give the script 30. On a busy
+  Toolroll and runs every journey of `scripts/flows-e2e.mjs` and
+  `scripts/app-e2e.mjs` with real models, group by group. The release check
+  scripts the model for most journeys and runs the real-model ones only when
+  model-facing code changed; this is where every journey meets the real
+  models. A failed journey runs once more, with the journeys it needs, to rule
+  out a flaky model. It prints each journey that failed twice, its error and
+  what it saw, the real model turns it took, and ends with `goto: pass` or
+  `goto: fail`. It stops itself at 120 minutes; give the script 130. On a busy
   computer a suite waits for memory or a free Claude slot before it starts
-  (`TOOLROLL_CHECK_PROVIDERS` caps real model turns at once), and the wait
-  moves its 25 minutes on by as much (allow for that in the script's limit).
+  (`TOOLROLL_CHECK_PROVIDERS` caps real model turns at once, 4 by default),
+  and the wait moves its 120 minutes on by as much (allow for that in the
+  script's limit).
 - **Weekly upkeep** (`scripts/flows/weekly-upkeep.mjs`) runs `npm outdated`
   and `npm audit`, and compares the installed claude, codex and gemini with
   the versions it recorded last time (in

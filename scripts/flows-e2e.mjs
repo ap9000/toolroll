@@ -1,13 +1,18 @@
 #!/usr/bin/env node
-import { BROWSER_CHECK, processesIn, SKIPPED_FADE, spawnOwned, stopOwned } from "./e2e-kit.mjs";
 /**
  * Flows, end to end. A throwaway Toolroll instance — the real CLI,
  * the real console (`serve`) and the real worker loop (`watch`) — against a
- * real git repository, driven through a real browser, with real Claude turns
- * for the lead and a real Claude build. Nothing is stubbed: every check waits
- * for what a person would see, and reads the database only as the oracle.
+ * real git repository, driven through a real browser (scripts/e2e-kit.mjs).
+ * Every check waits for what a person would see, and reads the database only
+ * as the oracle.
  *
- *   npm run e2e:flows      (or: node scripts/flows-e2e.mjs [--group <name>] [--skip-build] [--keep] [--only <pattern>] [--playwright <index.mjs>] [--output <dir>])
+ * Each journey is scripted or real-model. A scripted one tests Toolroll's own
+ * behaviour (cards moving through zones, scripts, triggers, decisions) with the
+ * model scripted (scripts/fixtures/scripted-provider.mjs); a real-model one
+ * tests the model integration: the lead drawing flows and scripts from plain
+ * words, Jev sorting, a card through a real plan and build.
+ *
+ *   npm run e2e:flows      (or: node scripts/flows-e2e.mjs [--group <name>] [--journeys scripted|real|all] [--skip-build] [--keep] [--only <pattern>] [--playwright <index.mjs>] [--output <dir>])
  *   node scripts/e2e-parallel.mjs scripts/flows-e2e.mjs      (every group at once, each in its own world)
  *   node scripts/flows-e2e.mjs --groups      (the groups and what each covers)
  *
@@ -16,215 +21,60 @@ import { BROWSER_CHECK, processesIn, SKIPPED_FADE, spawnOwned, stopOwned } from 
  * with the browser-error check, and a check that needs an earlier one is in its
  * group. With no --group, every check runs in one world, one after another.
  *
- * Needs: a built dist/, `claude` logged in (subscription), `gh` logged in,
- * git, npm. Spends a few subscription turns and one real build. Everything it
- * writes lives in a temporary folder (database, login, worktrees, evidence);
- * the installed Toolroll is never touched.
+ * Needs: a built dist/, git, npm, `gh` logged in; for real-model journeys
+ * `claude` logged in (subscription), which spends a few subscription turns and
+ * one real build. Everything it writes lives in a temporary folder (database,
+ * login, worktrees, evidence); the installed Toolroll is never touched.
  */
-import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, createWriteStream } from "node:fs";
-import { createServer } from "node:net";
+import { accessSync, constants, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { makeTempRoot } from "./suite-lifecycle.mjs";
-// A journey's worker never sweeps the machine it runs on (src/storage-sweep.ts); set it to sweep on purpose.
-process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
+import { flag, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
-const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const args = process.argv.slice(2);
-const flag = name => args.includes(name);
-const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
-/** Playwright is not a dependency: --playwright <index.mjs>, else a copy `npx playwright` left in the npm cache whose browser is downloaded, else an installed one. */
-async function loadPlaywright() {
-  const given = option("--playwright", null);
-  const cache = join(homedir(), ".npm/_npx");
-  const cached = existsSync(cache) ? readdirSync(cache).map(one => join(cache, one, "node_modules/playwright/index.mjs")).filter(one => existsSync(one)) : [];
-  for (const candidate of given === null ? [...cached, "playwright"] : [given]) {
-    const loaded = await import(candidate).catch(() => null);
-    if (loaded?.chromium !== undefined && existsSync(loaded.chromium.executablePath())) return loaded;
-  }
-  throw new Error("Needs Playwright and its browser: npx playwright install chromium, or pass --playwright <path to playwright/index.mjs>");
-}
-/** The groups, in the order they're listed. */
+/** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
+ * those are real-model, and how many scripted ones every group shares (checked at the end of every run). */
 const GROUPS = {
-  build: { about: "The lead saves a script and draws a flow from plain words, and a card goes all the way through a real build" },
-  lead: { about: "The lead draws a sorting flow and a reply-and-approve flow from plain words" },
-  steps: { about: "Jev sorts through OpenRouter, a Draft step writes with Claude, and web request, email and tool steps reach outside" },
-  triggers: { about: "A failing script and Insights, then a public form, a webhook, GitHub, a schedule, mentions, and the lead on where flows break" },
+  build: { journeys: 4, real: 3, shared: 1, about: "The lead saves a script and draws a flow from plain words, and a card goes all the way through a real build" },
+  lead: { journeys: 3, real: 2, shared: 1, about: "The lead draws a sorting flow and a reply-and-approve flow from plain words" },
+  steps: { journeys: 4, real: 1, shared: 1, about: "Jev sorts through OpenRouter, a Draft step writes with Claude, and web request, email and tool steps reach outside" },
+  triggers: { journeys: 9, real: 1, shared: 1, about: "A failing script and Insights, then a public form, a webhook, GitHub, a schedule, mentions, and the lead on where flows break" },
 };
-/** Not a group: the checks every group has (the first-run setup and the browser-error check). */
+/** Not a group: the checks every group has (the first-run setup; the kit adds the browser-error check). */
 const EVERY = "every";
 const group = option("--group", null);
 if (flag("--groups")) {
-  const list = Object.entries(GROUPS).map(([name, one]) => ({ name, about: one.about }));
-  console.log(flag("--json") ? JSON.stringify(list) : list.map(one => `${one.name.padEnd(9)} ${one.about}`).join("\n"));
+  const list = groupList(GROUPS);
+  console.log(flag("--json") ? JSON.stringify(list) : list.map(one => `${one.name.padEnd(9)} ${String(one.journeys).padStart(2)} journeys (${one.real} real-model)  ${one.about}`).join("\n"));
   process.exit(0);
 }
 if (group !== null && !(group in GROUPS)) { console.error(`No group "${group}". The groups: ${Object.keys(GROUPS).join(", ")}`); process.exit(2); }
 const skipBuild = flag("--skip-build");
-/** --only <pattern>: run just the checks whose names match (the ones they need count as met). */
-const only = option("--only", null) === null ? null : new RegExp(option("--only", ""), "i");
-const BIN = join(here, "dist/bin.js");
-if (!existsSync(BIN)) throw new Error("Build first: npm run build");
-const { chromium } = await loadPlaywright();
 
-// Marked, and removed at exit however the run ends (--keep keeps it): scripts/suite-lifecycle.mjs.
-const root = realpathSync(makeTempRoot("so-flows-e2e-", { keep: flag("--keep") }));
-const out = resolve(option("--output", join(here, "output/e2e", `flows-${new Date().toISOString().replace(/[:.]/g, "-")}`)));
-mkdirSync(out, { recursive: true });
-const repo = join(root, "shop"), state = join(root, "state"), db = join(state, "orders.db");
-mkdirSync(repo); mkdirSync(state);
-const started = Date.now();
-const say = line => { const stamp = `${Math.round((Date.now() - started) / 1000)}s`.padStart(6); console.log(`[flows] ${stamp}  ${line}`); };
-
-// ------------------------------------------------------------------ helpers
-
-function cli(args, { ok = [0] } = {}) {
-  try {
-    const stdout = execFileSync(process.execPath, [BIN, ...args, "--db", db, "--json"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
-    return JSON.parse(stdout);
-  } catch (error) {
-    if (ok.includes(error.status)) return JSON.parse(error.stdout);
-    throw new Error(`standing-orders ${args.join(" ")}: ${(error.stdout ?? "") + (error.stderr ?? "")}`.slice(0, 2000));
-  }
-}
-const sql = query => execFileSync("sqlite3", ["-json", db, query], { encoding: "utf8" }).trim() || "[]";
-const rows = query => JSON.parse(sql(query));
-const sleep = ms => new Promise(done => setTimeout(done, ms));
-async function until(what, test, { timeoutMs = 120_000, everyMs = 1500 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  while (Date.now() < deadline) {
-    try { last = await test(); if (last) return last; } catch (error) { last = error; }
-    await sleep(everyMs);
-  }
-  throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)} s waiting for ${what}${last instanceof Error ? ` (last error: ${last.message})` : ""}`);
-}
-const freePort = () => new Promise(done => { const server = createServer(); server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => done(port)); }); });
-
-const results = [];
-const failedPrerequisites = new Set();
-/** A check that can't run here (a missing key, say): skipped with the reason, never passed. */
-class Skip extends Error {}
-// Every result names what it needs, so a rerun can pick just the failed checks and what they need (flows/real-model-journeys.mjs).
-async function check(name, needs, body) {
-  const at = Date.now();
-  // Whatever --only picked, the pages it opened are checked.
-  if (only !== null && !only.test(name) && name !== BROWSER_CHECK) { results.push({ name, needs, state: "not selected" }); return null; }
-  const missing = needs.filter(one => failedPrerequisites.has(one));
-  if (missing.length > 0) { results.push({ name, needs, state: "skipped", because: missing }); say(`SKIP  ${name} (needs ${missing.join(", ")})`); failedPrerequisites.add(name); return null; }
-  say(`...   ${name}`);
-  try {
-    const detail = await body();
-    results.push({ name, needs, state: "passed", seconds: Math.round((Date.now() - at) / 100) / 10, ...(detail === undefined ? {} : { detail }) });
-    say(`PASS  ${name} (${Math.round((Date.now() - at) / 1000)} s)`);
-    return detail ?? true;
-  } catch (error) {
-    failedPrerequisites.add(name);
-    if (error instanceof Skip) { results.push({ name, needs, state: "skipped", because: [error.message] }); say(`SKIP  ${name} (${error.message})`); return null; }
-    const file = join(out, `${results.length + 1}-failed.png`);
-    for (const page of openPages) await page.screenshot({ path: file.replace(".png", `-${openPages.indexOf(page)}.png`) }).catch(() => undefined);
-    results.push({ name, needs, state: "failed", seconds: Math.round((Date.now() - at) / 100) / 10, error: error instanceof Error ? error.message : String(error) });
-    say(`FAIL  ${name}: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
-    return null;
-  }
-}
-
-const placed = new Map();
-/** A check in its group (or in EVERY group): it runs when its group, or every group, runs; what it needs is in the same group. */
-function journey(name, title, needs, body) {
-  const elsewhere = needs.filter(one => placed.get(one) !== name && placed.get(one) !== EVERY);
-  if ((name !== EVERY && !(name in GROUPS)) || placed.has(title) || elsewhere.length > 0) throw new Error(`"${title}" in group ${name}: ${elsewhere.length > 0 ? `needs ${elsewhere.join(", ")} from another group` : "an unknown group, or a second check of that name"}`);
-  placed.set(title, name);
-  return group === null || name === EVERY || name === group ? check(title, needs, body) : null;
-}
-
-// ------------------------------------------------------------------ the world
-
-say(`workspace ${root}`);
-const git = (...rest) => execFileSync("git", ["-C", repo, ...rest], { encoding: "utf8" }).trim();
-execFileSync("git", ["init", "-q", "-b", "main", repo]);
-writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "shop", version: "1.0.0", type: "module", scripts: { test: "node --test" } }, null, 2) + "\n");
-mkdirSync(join(repo, "src")); mkdirSync(join(repo, "test"));
-writeFileSync(join(repo, "src/math.js"), "export const add = (a, b) => a + b;\n");
-writeFileSync(join(repo, "test/math.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/math.js';\n\ntest('adds', () => assert.equal(add(2, 3), 5));\n");
-git("add", "."); git("-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "seed");
-const baseSha = git("rev-parse", "HEAD");
-
-const alexPassword = `alex-${randomBytes(8).toString("hex")}`, samPassword = `sam-${randomBytes(8).toString("hex")}`;
-const auth = ["--as", "alex", "--token", alexPassword];
-cli(["approver", "add", "alex", "--password", alexPassword]);
-cli(["approver", "add", "sam", "--password", samPassword, ...auth]);
-const runner = cli(["runner", "register", "worker", "--repo", repo, ...auth]);
-writeFileSync(join(state, "runner-token"), runner.token, { mode: 0o600 });
-for (const phase of ["plan", "build", "repair", "review"]) cli(["config", "set", phase, "--provider", "claude", "--model", "sonnet", ...auth]);
-cli(["verify", "set", "--repo", repo, "--command", "npm test", "--timeout-seconds", "120", "--yes", ...auth]);
-
-const port = await freePort();
-const base = `http://127.0.0.1:${port}`;
-const logs = { serve: createWriteStream(join(out, "serve.log")), watch: createWriteStream(join(out, "watch.log")) };
-// However the run ends — finished, a crash, or Ctrl-C — the console and the worker stop with it, each with its whole
-// process group (e2e-kit.mjs).
-processesIn(out);
-function start(name, argv) {
-  const child = spawnOwned(name, process.execPath, [BIN, ...argv, "--db", db], { env: { ...process.env, NODE_OPTIONS: "", TOOLROLL_MATE_TRACE: "1", STANDING_ORDERS_MATE_TRACE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-  child.stdout.pipe(logs[name]); child.stderr.pipe(logs[name]);
-  return child;
-}
-start("serve", ["serve", "--repo", repo, "--port", String(port)]);
-start("watch", ["watch", "--runner", "worker", "--token-file", join(state, "runner-token"), "--repo", repo, "--pool", join(root, "worktrees"),
-  "--for", String(90 * 60_000), "--tick-every", "2000", "--reconcile-every", "5000", "--bridge-every", "3600000"]);
-await until("the console to answer", async () => (await fetch(`${base}/login`)).ok, { timeoutMs: 30_000, everyMs: 500 });
-say(`console ${base}, worker running`);
-
-const browser = await chromium.launch();
-const openPages = [];
-async function signIn(name, password, viewport = { width: 1440, height: 900 }) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
-  const page = await context.newPage();
-  const problems = [];
-  page.on("pageerror", error => { if (!SKIPPED_FADE.test(String(error))) problems.push(String(error)); });
-  page.on("console", message => { if (message.type() === "error" && !/Failed to load resource/.test(message.text()) && !SKIPPED_FADE.test(message.text())) problems.push(message.text()); });
-  await page.goto(`${base}/login`);
-  await page.fill('input[name="name"]', name);
-  await page.fill('input[name="token"]', password);
-  await Promise.all([page.waitForNavigation(), page.press('input[name="token"]', "Enter")]);
-  openPages.push(page);
-  return { page, problems };
-}
-const { page, problems } = await signIn("alex", alexPassword);
-const json = async path => { const response = await page.request.get(`${base}${path}`, { headers: { accept: "application/json" } }); if (!response.ok()) throw new Error(`${path} answered ${response.status()}`); return response.json(); };
+const w = await world(group === null ? "flows" : `flows-${group}`, { groups: GROUPS });
+const { base, page, cli, rows, until, say, git, json, shot, script, repo, auth } = w;
+const root = w.root;
+const alexPassword = w.passwords?.alex, samPassword = w.passwords?.sam;
+const baseSha = w.listing ? null : git("rev-parse", "HEAD");
 const flowView = id => json(`/flows/${id}?format=json`);
-const shot = name => page.screenshot({ path: join(out, `${name}.png`) });
-
+/** A check in its group (or in EVERY group), scripted or real-model: it runs when its group, or every group, runs and the
+ * run takes its mode; what it needs is in the same group. */
+function journey(name, mode, title, needs, body) {
+  return w.check(title, needs, body, { mode, groups: name === EVERY ? Object.keys(GROUPS) : [name] });
+}
 /** Send the lead a message and wait for its reply; returns the reply's text and cards. */
-async function askLead(message) {
-  if (!page.url().endsWith("/chat")) await page.goto(`${base}/chat`);
-  await page.waitForSelector("[data-workspace-composer] textarea");
-  const before = await page.locator("[data-workspace-chat] [data-message-id]").count();
-  await page.fill("[data-workspace-composer] textarea", message);
-  await page.click('[data-workspace-composer] button[type="submit"]');
-  await until("the lead's reply", async () => (await page.locator("[data-workspace-chat] [data-message-id]").count()) >= before + 2, { timeoutMs: 240_000, everyMs: 2000 });
-  await sleep(1000);
-  const reply = page.locator("[data-workspace-chat] [data-message-id]").last();
-  return { reply, text: (await reply.innerText()).replace(/\s+/g, " ") };
-}
+const askLead = message => w.askLead(message, page);
 async function confirmCard(reply, label) {
-  const card = reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: label }).first();
-  await card.waitFor({ timeout: 10_000 });
-  await card.locator("[data-card-confirm]").click();
-  await until(`the “${label}” card to be confirmed`, async () => (await reply.locator('[data-view="chat-card"][data-card-state="confirmed"]').filter({ hasText: label }).count()) > 0, { timeoutMs: 30_000 });
-  const confirmed = reply.locator('[data-view="chat-card"][data-card-state="confirmed"]').filter({ hasText: label }).first();
-  const href = await confirmed.locator('a:has-text("Open the flow")').first().getAttribute("href").catch(() => null);
-  return { card: confirmed, href };
+  const card = await w.confirmCard(reply, label);
+  const href = await card.locator('a:has-text("Open the flow")').first().getAttribute("href").catch(() => null);
+  return { card, href };
 }
+const signIn = async (name, password) => ({ page: await w.signIn(name) });
 
 // ------------------------------------------------------------------ checks
 
-await journey(EVERY, "Sign in and turn the lead chat on (first-run setup)", [], async () => {
+await journey(EVERY, SCRIPTED, "Sign in and turn the lead chat on (first-run setup)", [], async () => {
   // Onboarding turned the lead on by itself and moved its form to Settings → Lead → Advanced.
   await page.goto(`${base}/settings/lead`);
   await page.locator("details[data-lead-advanced]").evaluate(el => { el.open = true; }).catch(() => undefined);
@@ -237,7 +87,7 @@ await journey(EVERY, "Sign in and turn the lead chat on (first-run setup)", [], 
 });
 
 let flowId = null;
-await journey("build", "The lead saves a script from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("build", REAL_MODEL, "The lead saves a script from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const { reply, text } = await askLead("Make a project script called unit-tests that runs npm test, for up to 5 minutes.");
   await shot("lead-script-card");
   await confirmCard(reply, "unit-tests");
@@ -246,7 +96,7 @@ await journey("build", "The lead saves a script from plain words (real Claude tu
   return { saved };
 });
 
-await journey("build", "The lead draws a flow from plain words (real Claude turn)", ["The lead saves a script from plain words (real Claude turn)"], async () => {
+await journey("build", REAL_MODEL, "The lead draws a flow from plain words (real Claude turn)", ["The lead saves a script from plain words (real Claude turn)"], async () => {
   const { reply, text } = await askLead("Make a flow called Bug fixes in this project: new requests wait in an inbox, then an agent builds the fix, then it runs the unit-tests script, then I review it and decide. If the script fails, send the card back to the build.");
   await shot("lead-flow-card");
   const { href } = await confirmCard(reply, "Bug fixes");
@@ -266,7 +116,7 @@ await journey("build", "The lead draws a flow from plain words (real Claude turn
   return { zones: view.stages.map(one => `${one.title} (${one.kind})`) };
 });
 
-await journey("lead", "The lead draws a sorting flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("lead", REAL_MODEL, "The lead draws a sorting flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const { reply, text } = await askLead("Make a flow called Ticket sorter in this project: Jev sorts each new ticket into billing, technical or account questions, each going to its own team's zone, and anything it isn't sure about waits in a zone called Sort by hand. Also note how urgent each ticket is.");
   await shot("lead-sort-card");
   const { href } = await confirmCard(reply, "Ticket sorter");
@@ -287,7 +137,7 @@ await journey("lead", "The lead draws a sorting flow from plain words (real Clau
   return { answers: sort.sort.answers.map(one => `${one.answer} → ${view.stages.find(z => z.id === one.to)?.title}`), notSure: sort.onFail, sureAt: sort.sort.sureAt };
 });
 
-await journey("steps", "Jev sorts real cards through OpenRouter (Exception routing template)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("steps", REAL_MODEL, "Jev sorts real cards through OpenRouter (Exception routing template)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const { namedPath } = await import(new URL("../dist/names.js", import.meta.url).href);
   // Inside the agents' fence (a flow's check zone) the saved key is out of reach, as it is for the worker there.
   try { accessSync(join(namedPath(homedir(), ["keys"], { dot: true }), "openrouter"), constants.R_OK); } catch (error) {
@@ -332,7 +182,8 @@ await journey("steps", "Jev sorts real cards through OpenRouter (Exception routi
   return { zones: sorted.map(one => `${one.title} → ${one.stage} (${one.sorted?.chip})`), ms: decisions.map(one => one.ms), costUsd: decisions.reduce((sum, one) => sum + (one.cost ?? 0), 0) };
 });
 
-await journey("steps", "A Draft step writes a real reply with Claude, and the owner edits and approves it", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("steps", SCRIPTED, "A Draft step writes a reply with Claude, and the owner edits and approves it", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+  script({ role: "draft", when: [/Refund for order 42\?/], answer: { text: "Hi Priya, sorry about the double charge on order 42. We've refunded the extra charge to your card; it takes up to 5 days to show. Thanks for your patience!" } });
   // Flows → New → a template's page: name it, then create what it previews.
   await page.goto(`${base}/flows/new/blank`);
   const csrf = await page.locator('input[name="csrf"]').first().inputValue();
@@ -383,7 +234,7 @@ await journey("steps", "A Draft step writes a real reply with Claude, and the ow
   return { draft: draft.slice(0, 200), seconds: Math.round(run.duration_ms / 100) / 10, result: run.result };
 });
 
-await journey("lead", "The lead drafts a reply-and-approve flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("lead", REAL_MODEL, "The lead drafts a reply-and-approve flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   let { reply, text } = await askLead("Make a flow called Customer replies in this project: Claude drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.");
   // An earlier check made a similar "Replies" flow, and the lead may fairly ask whether to reuse it: answered the way a person would.
   const drafted = await reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: "Customer replies" }).first().waitFor({ timeout: 10_000 }).then(() => true, () => false);
@@ -405,36 +256,7 @@ await journey("lead", "The lead drafts a reply-and-approve flow from plain words
   return { steps: view.stages.map(one => `${one.title} (${one.kind})`) };
 });
 
-/** A mail server on this computer that takes anything: just enough SMTP for nodemailer. */
-function mailSink() {
-  const received = [];
-  const server = createServer(socket => {
-    let buffer = "", reading = false, current = { to: [], data: "" };
-    socket.write("220 e2e ESMTP\r\n");
-    socket.on("data", chunk => {
-      buffer += chunk.toString("utf8");
-      for (;;) {
-        if (reading) {
-          const end = buffer.indexOf("\r\n.\r\n");
-          if (end < 0) return;
-          current.data = buffer.slice(0, end); buffer = buffer.slice(end + 5); reading = false;
-          received.push(current); current = { to: [], data: "" }; socket.write("250 queued\r\n"); continue;
-        }
-        const newline = buffer.indexOf("\r\n");
-        if (newline < 0) return;
-        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 2);
-        if (/^EHLO/i.test(line)) socket.write("250-e2e\r\n250 SIZE 10000000\r\n");
-        else if (/^RCPT TO:/i.test(line)) { current.to.push(line.slice(8)); socket.write("250 ok\r\n"); }
-        else if (/^DATA/i.test(line)) { reading = true; socket.write("354 go\r\n"); }
-        else if (/^QUIT/i.test(line)) { socket.write("221 bye\r\n"); socket.end(); }
-        else socket.write("250 ok\r\n");
-      }
-    });
-  });
-  return new Promise(done => server.listen(0, "127.0.0.1", () => done({ server, port: server.address().port, received })));
-}
-
-await journey("steps", "Web request, email and tool steps reach outside for real: a web server, a mail server and an MCP tool", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("steps", SCRIPTED, "Web request, email and tool steps reach outside for real: a web server, a mail server and an MCP tool", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const calls = [];
   const web = createHttpServer((request, response) => { let body = ""; request.on("data", chunk => { body += chunk; }); request.on("end", () => { calls.push({ url: request.url, auth: request.headers["authorization"], body }); response.writeHead(201, { "content-type": "application/json" }); response.end('{"ticket": "T-1042"}'); }); });
   await new Promise(done => web.listen(0, "127.0.0.1", done));
@@ -510,7 +332,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 });
 
 let buildCard = null;
-if (!skipBuild) await journey("build", "A card goes all the way through with a real build, a real script and a person's decision", ["The lead draws a flow from plain words (real Claude turn)"], async () => {
+await journey("build", REAL_MODEL, "A card goes all the way through with a real build, a real script and a person's decision", ["The lead draws a flow from plain words (real Claude turn)"], async () => {
+  if (skipBuild) throw new Skip("--skip-build");
   await page.goto(`${base}/flows/${flowId}`);
   await page.waitForSelector("[data-zone]");
   await page.click('button:has-text("New card")');
@@ -558,7 +381,7 @@ if (!skipBuild) await journey("build", "A card goes all the way through with a r
 });
 
 let checksFlow = null;
-await journey("triggers", "A failing script sends the card back, and Insights show where and why", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("triggers", SCRIPTED, "A failing script sends the card back, and Insights show where and why", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   // A script made on the Scripts panel.
   // Flows → New → a template's page: name it, then create what it previews.
   await page.goto(`${base}/flows/new/blank`);
@@ -620,7 +443,7 @@ const trigger = async (flow, fill) => {
 const pick = (form, label, value) => form.locator("label", { hasText: label }).locator("select").selectOption(value);
 const type = (form, label, value) => form.locator("label", { hasText: label }).locator("input, textarea").first().fill(value);
 
-await journey("triggers", "A button shared as a public form makes a card without signing in", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", SCRIPTED, "A button shared as a public form makes a card without signing in", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "button"); await type(form, "Button name", "Report a bug"); await type(form, "Questions it asks", "What happened?\nWhere?"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Report a bug" });
   await row.locator("button", { hasText: "Share as a form" }).click();
@@ -638,7 +461,7 @@ await journey("triggers", "A button shared as a public form makes a card without
   return { source: card.source?.label };
 });
 
-await journey("triggers", "A webhook trigger makes a card from a posted JSON body", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", SCRIPTED, "A webhook trigger makes a card from a posted JSON body", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "webhook"); await type(form, "Title field", "alert.title"); });
   const path = /\/hooks\/flow\/[A-Za-z0-9_-]+/.exec(await page.locator("[data-trigger-reveal]").innerText())?.[0];
   if (path === undefined) throw new Error("no webhook address was shown");
@@ -649,7 +472,7 @@ await journey("triggers", "A webhook trigger makes a card from a posted JSON bod
   if (!(await again.text()).includes("Nothing new")) throw new Error("the same delivery made a second card");
 });
 
-await journey("triggers", "A GitHub trigger checks a real repository with gh (Check now)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", SCRIPTED, "A GitHub trigger checks a real repository with gh (Check now)", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "github"); await type(form, "Repository", "ap9000/standing-orders"); await pick(form, "Watch", "checks"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Failed checks on main" });
   await row.locator("button", { hasText: "Check now" }).click();
@@ -661,12 +484,12 @@ const scheduleAddedAt = Date.now();
 // Daily at the next whole minute at least 45 s away (UTC): it fires in about a minute, where the
 // shortest "every" schedule (5 minutes) kept the whole run waiting for it.
 const fireAt = new Date(Math.ceil((scheduleAddedAt + 45_000) / 60_000) * 60_000);
-const scheduled = await journey("triggers", "A schedule trigger is added (checked at the end)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+const scheduled = await journey("triggers", SCRIPTED, "A schedule trigger is added (checked at the end)", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "schedule"); await type(form, "When", `daily ${fireAt.toISOString().slice(11, 16)}`); await type(form, "Card title", "Health check"); });
   if ((await page.locator("[data-trigger-row]", { hasText: "Health check" }).count()) === 0) throw new Error("the schedule trigger isn't listed");
 });
 
-await journey("triggers", "People: a mention reaches only the person mentioned, who then sees the card as theirs", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", SCRIPTED, "People: a mention reaches only the person mentioned, who then sees the card as theirs", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await page.goto(`${base}/flows/${checksFlow}`); await page.waitForSelector("[data-zone]");
   const card = (await flowView(checksFlow)).cards.find(one => one.title === "Check the math module");
   await page.locator(`[data-card="${card.id}"]`).click();
@@ -686,32 +509,16 @@ await journey("triggers", "People: a mention reaches only the person mentioned, 
   return { notifications: notes };
 });
 
-await journey("triggers", "The lead explains where the flows break (real Claude turn)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", REAL_MODEL, "The lead explains where the flows break (real Claude turn)", ["A failing script sends the card back, and Insights show where and why"], async () => {
   const { text } = await askLead("Where do my flows break? Keep it short.");
   if (!/lint/i.test(text)) throw new Error(`the answer doesn't mention the failing Lint step: ${text.slice(0, 400)}`);
   return { answer: text.slice(0, 400) };
 });
 
-if (scheduled !== null && scheduled !== undefined) await journey("triggers", "The schedule trigger makes its card on time", ["A schedule trigger is added (checked at the end)"], async () => {
+await journey("triggers", SCRIPTED, "The schedule trigger makes its card on time", ["A schedule trigger is added (checked at the end)"], async () => {
+  if (scheduled === null || scheduled === undefined) throw new Skip("this run didn't add the schedule trigger");
   const card = await until("the scheduled card", async () => (await flowView(checksFlow)).cards.find(one => one.title.startsWith("Health check")), { timeoutMs: Math.max(30_000, fireAt.getTime() + 60_000 - Date.now()), everyMs: 5000 });
   return { title: card.title, minutes: Math.round((Date.now() - scheduleAddedAt) / 6000) / 10 };
 });
 
-await journey(EVERY, BROWSER_CHECK, [], async () => { if (problems.length > 0) throw new Error(problems.slice(0, 5).join(" | ")); });
-
-// ------------------------------------------------------------------ report
-
-await browser.close();
-const unstopped = await stopOwned().then(() => null, error => error.message);
-if (unstopped !== null) say(`left running: ${unstopped}`);
-const passed = results.filter(one => one.state === "passed").length, failed = results.filter(one => one.state === "failed").length, skipped = results.filter(one => one.state === "skipped").length;
-results.splice(0, results.length, ...results.filter(one => one.state !== "not selected"));
-const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, passed, failed, skipped, results };
-writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
-writeFileSync(join(out, "report.md"), [`# Flows end to end${group === null ? "" : `: ${group}`} — ${passed} passed, ${failed} failed, ${skipped} skipped (${report.minutes} min)`, "",
-  ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}`),
-  "", `Workspace: ${root}${flag("--keep") ? "" : " (removed; --keep keeps it)"}`, `Logs and screenshots: ${out}`, ""].join("\n"));
-say(`${passed} passed, ${failed} failed, ${skipped} skipped — ${join(out, "report.md")}`);
-// The world goes whatever the outcome (the report stays in the output folder); --keep keeps it.
-if (!flag("--keep")) rmSync(root, { recursive: true, force: true, maxRetries: 3 });
-process.exitCode = failed === 0 && unstopped === null ? 0 : 1;
+await w.finish(group === null ? "Flows end to end" : `Flows end to end: ${group}`);
