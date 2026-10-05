@@ -31,6 +31,7 @@ import { claimActor, currentActor, parseLeadToken } from "./actor.js";
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { hasForbiddenControls } from "./decision.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import type { Store, Mutation } from "./store.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
@@ -517,11 +518,11 @@ export type AcceptanceCriterion = {
 
 export const ACCEPTANCE_LIMITS = {
   criteria: 12,
-  id: 40,
+  id: TEXT_LIMITS.acceptanceIdBytes,
   // A statement is one testable outcome; three hundred bytes forced people to
   // drop the qualifying clause that made it testable.
-  statement: 1000,
-  how: 500,
+  statement: TEXT_LIMITS.acceptanceStatementBytes,
+  how: TEXT_LIMITS.acceptanceHowBytes,
   evidenceKinds: EVIDENCE_KINDS.length,
 } as const;
 

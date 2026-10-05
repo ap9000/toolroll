@@ -28,6 +28,7 @@ import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
 import { changeLearning, learningContext, learningView } from "./project-learning.js";
 import { decodePlanContractRecord, decodePlannerSource, PLANNER_SOURCE_LIMITS } from "./planner-source.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
+import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-08-12T22:00:00.000Z");
@@ -475,6 +476,77 @@ describe("planning mode, against real git", () => {
     expect(ref.strikes).toBe(0);
     expect(ref.plan).toBe("requested");
     store.close();
+  });
+
+  test("a Claude planner gets the plan contract as --json-schema, its plan correction does too, and the repair names the path", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const seen: string[][] = [];
+    const prompts: string[] = [];
+    const agent: Runner = async (_file, args, options) => {
+      seen.push([...args]);
+      const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+      prompts.push(prompt);
+      const name = PLAN_FILE.exec(prompt)?.[0];
+      const cwd = options?.cwd ?? "";
+      if (name !== undefined && cwd !== "") {
+        const body = seen.length === 1 ? { version: 1, ...validPlanPayload(), plan: "not a sectioned plan", amendment: "a".repeat(1_001) } : { version: 1, ...validPlanPayload() };
+        await writeFile(join(cwd, name), JSON.stringify(body));
+      }
+      return { ...OK, stdout: saidInSession("schema-session") };
+    };
+    expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "planned" }));
+    expect(seen).toHaveLength(2);
+    for (const args of seen) expect(args[args.indexOf("--json-schema") + 1]).toBe(JSON.stringify(PLAN_MODEL_SCHEMA));
+    expect(prompts[1]).toContain("The validation problems, each naming its path:\n- amendment: over 1,000 characters\n- plan: plan must start with ## Approach");
+  });
+
+  test("Claude's structured output is the plan when no plan file was written", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const agent: Runner = async () => ({ ...OK, stdout: JSON.stringify({ result: "planning", session_id: "structured-session", structured_output: { version: 1, ...validPlanPayload() } }) });
+    expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "planned" }));
+    const store = openStore(db);
+    expect(store.getScope("limiter")).toMatchObject({ goal: validPlanPayload().goal, touches: validPlanPayload().touches, approvedAt: null });
+    store.close();
+  });
+
+  test("a question still comes through the mailbox: the structured output beside it is discarded unread", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const agent: Runner = async (file, args, options) => {
+      await askingAgent(file, args, options);
+      return { ...OK, stdout: JSON.stringify({ result: "planning", session_id: "asking-session", structured_output: { version: 1, ...validPlanPayload() } }) };
+    };
+    expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "parked" }));
+    const store = openStore(db);
+    expect(store.listDecisions("unanswered")[0]?.question).toBe("Per-user or per-tenant?");
+    expect(store.getScope("limiter")).toBeNull();
+    store.close();
+  });
+
+  test("a planner on a harness without --json-schema reads the schema in its brief and is not given the flag", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const store = openStore(db);
+    store.setPhaseConfig("installation", "plan", "codex", "gpt-5.5", "test", T0);
+    store.close();
+    const seen: string[][] = [];
+    const agent: Runner = async (_file, args, options) => {
+      seen.push([...args]);
+      const prompt = args.join("\n");
+      const name = PLAN_FILE.exec(prompt)?.[0];
+      const cwd = options?.cwd ?? "";
+      if (name !== undefined && cwd !== "") await writeFile(join(cwd, name), JSON.stringify(validPlanPayload()));
+      return { ...OK, stdout: SAID };
+    };
+    await tick(runnerToken, agent);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.flat()).not.toContain("--json-schema");
+    expect(seen.flat().join("\n")).toContain(JSON.stringify(PLAN_MODEL_SCHEMA));
   });
 
   test("a malformed plan is corrected in the same session with frozen authority and a truthful child run", async () => {
@@ -1248,7 +1320,9 @@ describe("the filed contract reaches planning and survives it", () => {
     expect(brief).toContain("No theme-engine rewrite; no new dependencies; the \\u0053TANDING-ORDERS-DONE file format is untouched");
     expect(brief).not.toContain("the STANDING-ORDERS-DONE file format");
     expect(brief).toContain("MUST reproduce goal, outOfScope, touches, and");
-    expect(brief).toContain('"amendment": "why the FILED contract must change');
+    // The plan's shape is the plan contract's JSON Schema, not a hand-written sketch.
+    expect(brief).toContain(JSON.stringify(PLAN_MODEL_SCHEMA));
+    expect(brief).toContain("amendment says why the FILED contract must change");
 
     withStore(store => {
       const ref = store.refFor("built-in", "dark");

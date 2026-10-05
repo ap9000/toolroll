@@ -1,0 +1,476 @@
+{
+ "about": "Plan payloads replayed by src/contracts/plan.test.ts. Shapes taken from the repository's own planner fakes and tests and the old parser's tolerances; the operator's saved evidence (~/.config/standing-orders/evidence) was not readable from the build that wrote this file.",
+ "valid": [
+  {
+   "name": "planner.test validPlanPayload (unversioned, no how, no amendment)",
+   "source": "src/planner.test.ts",
+   "payload": {
+    "goal": "Guard the payout endpoint with a rate limiter",
+    "outOfScope": "No schema changes",
+    "touches": [
+     "src/payouts.ts"
+    ],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nWrap the existing handler in a sliding-window limiter.\n## Milestones\n1. Add the limiter at the payout boundary.\n2. Cover allowed and rejected requests.\n## Dependencies\n- The existing payout handler remains the request boundary.\n## Risks\n- Shared state may leak across tenants; key the limiter by tenant.\n## Proof\n- c1 — run the payout endpoint checks and capture their passing output."
+   }
+  },
+  {
+   "name": "scripted provider planFor (how null, amendment stated)",
+   "source": "scripts/fixtures/scripted-provider.mjs",
+   "payload": {
+    "goal": "Add a subtract function",
+    "outOfScope": null,
+    "touches": [],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "Add a subtract function, and the project's checks pass",
+      "evidence": [
+       "check"
+      ],
+      "how": null
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — the project's checks",
+    "amendment": "Turned the filed request into a goal and criteria the project's checks answer."
+   }
+  },
+  {
+   "name": "crash-process fixture (dash milestones, colon proof, two criteria)",
+   "source": "scripts/fixtures/crash-process.mjs",
+   "payload": {
+    "goal": "Write the result and verify it.",
+    "outOfScope": "No publication.",
+    "touches": [
+     "result.txt"
+    ],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "result.txt exists.",
+      "evidence": [
+       "changed-path"
+      ]
+     },
+     {
+      "id": "c2",
+      "statement": "The approved check passes.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nWrite the result.\n## Milestones\n- Write result.txt.\n## Dependencies\n- None.\n## Risks\n- Interrupted work.\n## Proof\n- c1: Inspect result.txt.\n- c2: Run the approved check."
+   }
+  },
+  {
+   "name": "plan-limits test payload (explicit nulls everywhere)",
+   "source": "src/plan-limits.test.ts",
+   "payload": {
+    "goal": "Add the templates as data.",
+    "outOfScope": null,
+    "touches": [],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The gallery tests pass",
+      "how": null,
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — the gallery tests pass.",
+    "amendment": null
+   }
+  },
+  {
+   "name": "goal at the task's 8,000-character limit (0.9.30)",
+   "source": "0.9.30 regression",
+   "payload": {
+    "goal": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+    "outOfScope": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+    "touches": [],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks.",
+    "amendment": null
+   }
+  },
+  {
+   "name": "empty outOfScope and amendment, null touches (read as none)",
+   "source": "old parser tolerance",
+   "payload": {
+    "goal": "Tidy the docs",
+    "outOfScope": "",
+    "touches": null,
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks.",
+    "amendment": ""
+   }
+  },
+  {
+   "name": "unknown top-level and criterion keys (ignored by the old parser)",
+   "source": "old parser tolerance",
+   "payload": {
+    "goal": "Tidy the docs",
+    "notes": "a planner aside",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ],
+      "how": "",
+      "weight": 2
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "every evidence kind, a long approach and twelve milestones",
+   "source": "format limits",
+   "payload": {
+    "goal": "Ship the settings screen",
+    "touches": [
+     "src/settings.ts",
+     "src/settings.test.ts"
+    ],
+    "acceptance": [
+     {
+      "id": "ui-1",
+      "statement": "The settings screen renders on a phone.",
+      "evidence": [
+       "screenshot",
+       "check",
+       "changed-path",
+       "manual-review"
+      ],
+      "how": "Capture 390px."
+     }
+    ],
+    "plan": "## Approach\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n## Milestones\n1. Step 1.\n2. Step 2.\n3. Step 3.\n4. Step 4.\n5. Step 5.\n6. Step 6.\n7. Step 7.\n8. Step 8.\n9. Step 9.\n10. Step 10.\n11. Step 11.\n12. Step 12.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- ui-1 — the phone screenshot and the checks."
+   }
+  },
+  {
+   "name": "multibyte statement within its byte limit",
+   "source": "byte limits",
+   "payload": {
+    "goal": "Löse das Problem",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "version 1 with every field",
+   "source": "current contract",
+   "payload": {
+    "version": 1,
+    "goal": "Guard the payout endpoint",
+    "outOfScope": null,
+    "touches": [
+     "src/payouts.ts"
+    ],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ],
+      "how": null
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks.",
+    "amendment": null
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "a goal missing",
+   "source": "malformed",
+   "paths": [
+    "goal"
+   ],
+   "payload": {
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "evidence kind misspelt",
+   "source": "malformed",
+   "paths": [
+    "acceptance[0].evidence[0]"
+   ],
+   "payload": {
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "tests"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "criterion field named wrong (version 1 is strict)",
+   "source": "malformed",
+   "paths": [
+    "acceptance[0].statement",
+    "acceptance[0]"
+   ],
+   "payload": {
+    "version": 1,
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "c1",
+      "text": "x",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "a preamble before Approach (repaired by the one repair turn)",
+   "source": "malformed, repairable",
+   "paths": [
+    "plan"
+   ],
+   "payload": {
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "Here is my plan.\n## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "Proof does not name the criterion",
+   "source": "malformed, repairable",
+   "paths": [
+    "plan"
+   ],
+   "payload": {
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- the checks pass"
+   }
+  },
+  {
+   "name": "a goal over the task limit",
+   "source": "limits",
+   "paths": [
+    "goal"
+   ],
+   "payload": {
+    "goal": "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "an id over its byte limit",
+   "source": "limits",
+   "paths": [
+    "acceptance[0].id"
+   ],
+   "payload": {
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "ééééééééééééééééééééé",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "33 touches",
+   "source": "limits",
+   "paths": [
+    "touches"
+   ],
+   "payload": {
+    "goal": "g",
+    "touches": [
+     "f0",
+     "f1",
+     "f2",
+     "f3",
+     "f4",
+     "f5",
+     "f6",
+     "f7",
+     "f8",
+     "f9",
+     "f10",
+     "f11",
+     "f12",
+     "f13",
+     "f14",
+     "f15",
+     "f16",
+     "f17",
+     "f18",
+     "f19",
+     "f20",
+     "f21",
+     "f22",
+     "f23",
+     "f24",
+     "f25",
+     "f26",
+     "f27",
+     "f28",
+     "f29",
+     "f30",
+     "f31",
+     "f32"
+    ],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "a two-line touch",
+   "source": "malformed",
+   "paths": [
+    "touches[0]"
+   ],
+   "payload": {
+    "goal": "g",
+    "touches": [
+     "a\nb"
+    ],
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "made by a newer Toolroll",
+   "source": "versioning",
+   "paths": [
+    "version"
+   ],
+   "payload": {
+    "version": 2,
+    "goal": "g",
+    "acceptance": [
+     {
+      "id": "c1",
+      "statement": "The payout endpoint is rate limited.",
+      "evidence": [
+       "check"
+      ]
+     }
+    ],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  },
+  {
+   "name": "acceptance empty",
+   "source": "malformed",
+   "paths": [
+    "acceptance"
+   ],
+   "payload": {
+    "goal": "g",
+    "acceptance": [],
+    "plan": "## Approach\nMake the smallest change.\n## Milestones\n1. Make the change, with a test.\n## Dependencies\n- None found.\n## Risks\n- None found.\n## Proof\n- c1 — run the checks."
+   }
+  }
+ ]
+}

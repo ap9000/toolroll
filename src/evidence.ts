@@ -31,7 +31,7 @@ import {
 import { join, sep } from "node:path";
 import { namedPath } from "./names.js";
 import { LIMITS } from "./decision.js";
-import { PLAN_LIMITS } from "./plan.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportImage } from "./scout-report.js";
 import { parseProof, PROOF_LIMITS, type ParsedProof } from "./proof.js";
 import type { Artifact, Store } from "./store.js";
@@ -103,7 +103,7 @@ export const EVIDENCE_CAPS: Record<Artifact["kind"], number> = {
   diff: 256 * 1024,
   status: 64 * 1024,
   "park-payload": LIMITS.payload,
-  plan: PLAN_LIMITS.document,
+  plan: TEXT_LIMITS.planDocumentBytes,
   "terminal-diff": 256 * 1024,
   "diff-stat": 32 * 1024,
   // The enveloped base snapshot (live peek): 20k entries of path+sha+size.

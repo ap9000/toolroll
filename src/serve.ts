@@ -210,6 +210,7 @@ import {
 } from "./converse.js";
 import { fileTaskProposal, fileRoutineProposal } from "./proposal.js";
 import { TASK_TEXT_LIMITS, validateTaskText } from "./task-text.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import {
   type Artifact,
   type DiffComment,
@@ -250,7 +251,7 @@ import {
 } from "./scope.js";
 import { isQualityMode, qualityModeTitle, type QualityMode } from "./quality.js";
 import { LIMITS, hasForbiddenControls, validateNote } from "./decision.js";
-import { parseExecutionPlanDocument, PLAN_LIMITS, milestonesOf, type MilestoneState } from "./plan.js";
+import { parseExecutionPlanDocument, milestonesOf, type MilestoneState } from "./plan.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, type ContractChange } from "./planner-source.js";
 import { observeWorktree, parseBaseTreeSnapshot, aggregateNewNames, PEEK_LIMITS } from "./peek.js";
 import { readLiveWindow } from "./live.js";
@@ -10676,8 +10677,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         }
         if (document === current.document.trim()) return redirect(response, taskHref(taskId));
         const content = Buffer.from(`${document}\n`, "utf8");
-        if (content.length > PLAN_LIMITS.document) {
-          return taskScreen(response, who, taskId, `plan not saved: it is over ${PLAN_LIMITS.document} bytes`, 400);
+        if (content.length > TEXT_LIMITS.planDocumentBytes) {
+          return taskScreen(response, who, taskId, `plan not saved: it is over ${TEXT_LIMITS.planDocumentBytes} bytes`, 400);
         }
         try {
           const name = `plan-edit-${randomUUID().replace(/-/g, "")}.md`;

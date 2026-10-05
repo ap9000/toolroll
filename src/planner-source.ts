@@ -42,6 +42,7 @@ import type { AcceptanceCriterion, EvidenceKind, Scope } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { RiskLevel } from "./phase-routing.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact } from "./evidence.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 export const PLANNER_SOURCE_VERSION = 1;
 
@@ -51,7 +52,7 @@ export const PLANNER_SOURCE_LIMITS = {
    * truncated: what the record holds is exactly what the planner read. */
   bytes: EVIDENCE_CAPS["plan-contract"],
   /** A planner's amendment note: why the filed contract must change. */
-  amendment: 1_000,
+  amendment: TEXT_LIMITS.planAmendment,
   /** Earlier answers quoted into the brief. */
   answers: 5,
 } as const;
