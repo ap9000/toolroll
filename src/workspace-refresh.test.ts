@@ -94,11 +94,15 @@ test('saved edits invalidate the response and exact clock expiry cannot reuse it
   const changed = await read(cookie, initial.etag);
   expect(changed.status).toBe(200);
   const changedTag = changed.headers.get('etag')!; expect(changedTag).not.toBe(initial.etag);
-  expect((await changed.json() as BrowserWorkspace).crew.some(item => item.id === 'saved-work')).toBe(true);
+  const saved = (await changed.json() as BrowserWorkspace).crew.find(item => item.id === 'saved-work');
+  expect(saved?.updatedAt).toBe(NOW.toISOString());
   expect((await read(cookie, changedTag)).status).toBe(304);
   now = new Date(NOW.getTime() + 60_000);
   const expired = await read(cookie, changedTag);
   expect(expired.status).toBe(200); expect(expired.headers.get('etag')).not.toBe(changedTag);
+  // The Crew row's age follows a status change, not only the task's creation.
+  expect(store.cancelTask('saved-work', now)).toEqual({ ok: true });
+  expect((await fresh(cookie)).workspace.crew.find(item => item.id === 'saved-work')?.updatedAt).toBe(now.toISOString());
 });
 
 test('quiet heartbeat renewal cannot extend a previously issued liveness deadline', async () => {

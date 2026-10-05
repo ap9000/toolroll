@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { runOperate, parseOperateArgs } from "./operate.js";
 import { openStore } from "./store.js";
 import { register, normalizeRunnerName } from "./runner.js";
-import { authenticateApprover } from "./scope.js";
+import { addApprover, authenticateApprover } from "./scope.js";
 import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
 import { underAgent } from "./prompt.js";
 
@@ -336,6 +336,111 @@ describe("toolroll up", () => {
       }
       expect(await loadProjectRegistry(registry)).toMatchObject({ roots: [realpathSync(base)], repos: expect.arrayContaining([realpathSync(repo), second]) });
     } finally {
+      if (!finished) process.emit("SIGINT");
+      await running;
+    }
+    expect(await running).toBe(0);
+  });
+
+  test("a project added from the command line or by the lead is in every console list at once, and removing it hides it", async ({ onTestFinished }) => {
+    const made = (name: string): string => {
+      const path = join(base, name);
+      execFileSync("mkdir", ["-p", path]);
+      git(["init", "-q"], path);
+      return realpathSync(path);
+    };
+    // Taskless, outside the folders this `up` was started with.
+    const market = made("vamarketplacenew"), leadAdded = made("lead-added"), plain = join(base, "plain-folder");
+    execFileSync("mkdir", ["-p", plain]);
+
+    let ready: () => void = () => {};
+    const startup = new Promise<void>(resolve => { ready = resolve; });
+    const adopted = new Map<string, () => void>(), released = new Map<string, () => void>();
+    const when = (map: Map<string, () => void>, path: string) => new Promise<void>(resolve => map.set(path, resolve));
+    const marketAdopted = when(adopted, market), leadAdopted = when(adopted, leadAdded), marketReleased = when(released, market);
+    let finished = false;
+    const running = runOperate("up", ["--repo", repo, "--port", String(PORT + 7), "--json"], line => { lines.push(line); ready(); }, {
+      databaseFile: db,
+      openDatabase: file => {
+        const store = openStore(file);
+        // The durable events themselves: a watch starting on the project, and its lease let go.
+        const startEpisode = store.startWatchEpisode.bind(store), releaseLease = store.releaseWatchLease.bind(store);
+        store.startWatchEpisode = (episode, now) => { const result = startEpisode(episode, now); adopted.get(episode.repo)?.(); return result; };
+        store.releaseWatchLease = (...args: Parameters<typeof releaseLease>) => { const result = releaseLease(...args); released.get(args[1])?.(); return result; };
+        return store;
+      },
+    }).finally(() => { finished = true; });
+    onTestFinished(async () => { if (!finished) process.emit("SIGINT"); await running; });
+    const { main } = await import("./cli.js");
+    const saved = { db: process.env["TOOLROLL_DB"], lead: process.env["TOOLROLL_LEAD_TOKEN"] };
+    process.env["TOOLROLL_DB"] = db;
+    try {
+      const stoppedEarly = running.then(code => { throw new Error(`up stopped early (exit ${code})`); });
+      await Promise.race([startup, stoppedEarly]);
+      const url = String(envelope()["url"]), runnerName = String(envelope()["runner"]);
+      const [owner = "", password = ""] = readFileSync(String(envelope()["passwordFile"]), "utf8").trim().split(" ");
+      const signIn = async (name: string, secret: string) =>
+        ((await fetch(new URL("/login", url), { method: "POST", body: new URLSearchParams({ name, token: secret }), redirect: "manual" })).headers.get("set-cookie") ?? "").split(";")[0]!;
+      const cookie = await signIn(owner, password);
+      const read = async (path: string, who = cookie) => { const answer = await fetch(new URL(path, url), { headers: { cookie: who } }); return { status: answer.status, html: await answer.text() }; };
+      // Before: the console refuses it, as on Oct 5.
+      expect((await read(`/settings/tools?repo=${encodeURIComponent(market)}`)).status).toBe(403);
+
+      // A plain folder is refused with words, and nothing is written.
+      const said: string[] = [];
+      expect(await main(["repos", "add", plain], line => said.push(line))).toBe(2);
+      expect(said.join("\n")).toContain("isn't a Git repository");
+
+      // The owner adds from the command line; the running console has it within the adoption.
+      said.length = 0;
+      expect(await main(["repos", "add", market], line => said.push(line))).toBe(0);
+      expect(said).toEqual(["Added vamarketplacenew; it is in the console now."]);
+      await Promise.race([marketAdopted, stoppedEarly]);
+      const tools = await read(`/settings/tools?repo=${encodeURIComponent(market)}`);
+      expect(tools.status).toBe(200);
+      expect(tools.html).toContain("vamarketplacenew");
+      for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).toContain("vamarketplacenew");
+      expect((await read(`/settings/project?repo=${encodeURIComponent(market)}`)).status).toBe(200);
+
+      // The lead adds with its token alone.
+      const check = openStore(db);
+      try {
+        process.env["TOOLROLL_LEAD_TOKEN"] = check.mintLeadCredential(owner, owner, new Date()).token;
+        // Accounts limited to listed projects keep their own list.
+        const robin = addApprover(check, "robin", new Date(), { name: owner, token: password });
+        if (!robin.ok) throw new Error(`robin: ${robin.reason}`);
+        expect(check.setAccountProjects("robin", [realpathSync(repo)], owner, new Date())).toEqual({ ok: true });
+        said.length = 0;
+        expect(await main(["repos", "add", leadAdded], line => said.push(line))).toBe(0);
+        delete process.env["TOOLROLL_LEAD_TOKEN"];
+        await Promise.race([leadAdopted, stoppedEarly]);
+        expect((await read(`/settings/tools?repo=${encodeURIComponent(leadAdded)}`)).status).toBe(200);
+        expect(check.getRunner(runnerName)?.runner.repos).toEqual(expect.arrayContaining([market, leadAdded]));
+        const added = check.actionLedger({ repos: null, instance: true }).filter(one => one.action === "project added");
+        expect(added).toEqual(expect.arrayContaining([
+          expect.objectContaining({ repo: market, actor: userInfo().username, detail: "from cli", source: "access" }),
+          expect.objectContaining({ repo: leadAdded, actor: `lead for ${owner}`, detail: "from lead", source: "access" }),
+        ]));
+        const robinCookie = await signIn("robin", robin.token);
+        expect((await read(`/settings/tools?repo=${encodeURIComponent(market)}`, robinCookie)).status).toBe(403);
+        expect((await read("/projects", robinCookie)).html).not.toContain("vamarketplacenew");
+
+        // Remove: gone from the lists and the builder, without a restart; its record stays in the ledger.
+        said.length = 0;
+        expect(await main(["repos", "remove", market], line => said.push(line))).toBe(0);
+        expect(said.join("\n")).toContain("Removed vamarketplacenew");
+        await Promise.race([marketReleased, stoppedEarly]);
+        expect((await read(`/settings/tools?repo=${encodeURIComponent(market)}`)).status).toBe(403);
+        for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).not.toContain("vamarketplacenew");
+        expect(check.actionLedger({ repos: null, instance: true }).some(one => one.action === "project removed" && one.repo === market && one.detail === "from cli")).toBe(true);
+      } finally {
+        check.close();
+      }
+      expect(finished).toBe(false);
+    } finally {
+      process.env["TOOLROLL_DB"] = saved.db;
+      if (saved.lead === undefined) delete process.env["TOOLROLL_LEAD_TOKEN"];
+      else process.env["TOOLROLL_LEAD_TOKEN"] = saved.lead;
       if (!finished) process.emit("SIGINT");
       await running;
     }

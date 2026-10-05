@@ -25,7 +25,9 @@ import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parsePlan, PLAN_LIMITS, type ParsedPlan, type PlanProblem } from "./plan.js";
+import { parsePlan, type ParsedPlan, type PlanProblem } from "./plan.js";
+import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { invokeAgent } from "./invoke.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
@@ -54,7 +56,6 @@ import {
   contractChangesOf,
   describeContractChanges,
   plannerSourceBlock,
-  PLANNER_SOURCE_LIMITS,
   type PlannerSource,
 } from "./planner-source.js";
 
@@ -151,6 +152,7 @@ function plannerBrief(
   planFile: string,
   answers: readonly { question: string; choice: string; note: string | null }[],
   source: PlannerSource,
+  structured: boolean,
 ): string {
   const answeredBlock =
     answers.length === 0
@@ -185,20 +187,24 @@ function plannerBrief(
     "recommendation), then stop. The operator answers from a phone; you",
     "will be resumed with the answer.",
     "",
-    "When you can plan without further questions, write JSON to a file",
-    `named exactly \`${planFile}\`:`,
-    "{",
-    '  "goal": "what success looks like, one paragraph",',
-    '  "outOfScope": "what this task must not become (or null)",',
-    '  "touches": ["paths/you/expect/to/change"],',
-    '  "acceptance": [ { "id": "<short-id>", "statement": "<one testable',
-    '    outcome>", "evidence": ["check"|"screenshot"|"changed-path"|',
-    '    "manual-review", ...], "how": "<optional advisory guidance, or',
-    `    null>" }, ... 1 to ${ACCEPTANCE_LIMITS.criteria} ],`,
-    '  "plan": "a concise markdown execution plan in the exact format below",',
-    '  "amendment": "why the FILED contract must change (or null when your goal,',
-    `    outOfScope, touches, and acceptance reproduce it exactly); at most ${PLANNER_SOURCE_LIMITS.amendment} characters"`,
-    "}",
+    "When you can plan without further questions, write ONE JSON object to a",
+    `file named exactly \`${planFile}\`. It must match this JSON Schema, the`,
+    "same one Toolroll checks it with:",
+    JSON.stringify(PLAN_MODEL_SCHEMA),
+    "version is 1. goal is what success looks like, one paragraph. outOfScope",
+    "is what this task must not become (or null). touches lists the paths you",
+    `expect to change. acceptance is 1 to ${ACCEPTANCE_LIMITS.criteria} criteria: a short id, one testable`,
+    "statement, the evidence kinds that prove it, and optional advisory how",
+    "(or null). plan is a concise markdown execution plan in the exact format",
+    "below. amendment says why the FILED contract must change (or null when",
+    "your goal, outOfScope, touches, and acceptance reproduce it exactly).",
+    ...(structured
+      ? [
+          "Your final structured output is the same plan object. When you ask a",
+          "question instead, only the question file is read: your structured",
+          "output is then discarded unread.",
+        ]
+      : []),
     "The plan string MUST use these five headings, once each and in order:",
     "## Approach",
     "A short paragraph explaining the smallest coherent implementation.",
@@ -213,7 +219,7 @@ function plannerBrief(
     "Keep it concise: at most 12 items per list. Proof must name every",
     "acceptance id exactly. Milestones should describe outcomes, not agent",
     "roles or ceremony, and should not add work outside the proposed scope.",
-    `The plan field is capped at ${PLAN_LIMITS.document} bytes. The goal,`,
+    `The plan field is capped at ${TEXT_LIMITS.planDocumentBytes} bytes. The goal,`,
     "outOfScope, and acceptance become the CONTRACT the operator approves —",
     "write them as what will be checked, and put everything else in the",
     "plan. acceptance is REQUIRED: at least one criterion, each with a",
@@ -340,6 +346,9 @@ function planProblemsAreDocumentOnly(problems: readonly PlanProblem[]): boolean 
       problem.reason === "silent-amendment" ||
       problem.reason === "bad-amendment" ||
       problem.reason.startsWith("amendment") ||
+      // A key the plan contract does not know carries no authority: the
+      // frozen goal, outOfScope, touches, and acceptance are read by name.
+      problem.reason === "payload-unknown-key" ||
       problem.reason.startsWith("plan-"),
   );
 }
@@ -366,10 +375,25 @@ function contractProblemsOf(plan: ParsedPlan, source: PlannerSource): PlanProble
   ];
 }
 
-/** Read both nonce-bound outputs so writing both can never win by priority. */
-function plannerPayload(worktree: string, mailbox: string, planFile: string, source: PlannerSource): PlannerPayload {
+/**
+ * Claude's structured output under the plan schema (`--json-schema`), read as if it were the plan file: the same
+ * byte cap, and the bytes the model returned.
+ */
+function structuredPlanRead(structured: string): ReturnType<typeof readMailbox> {
+  const raw = Buffer.from(structured, "utf8");
+  return raw.length > TEXT_LIMITS.planPayloadBytes
+    ? { ok: false, problem: `the structured output is over ${TEXT_LIMITS.planPayloadBytes} bytes`, missing: false, bytesOriginal: raw.length }
+    : { ok: true, raw };
+}
+
+/** Read both nonce-bound outputs so writing both can never win by priority.
+ * The files stay the handoff. Claude's structured output (the plan schema)
+ * is the plan only when neither file was written; a question always comes
+ * through the mailbox, and then the structured output is not read. */
+function plannerPayload(worktree: string, mailbox: string, planFile: string, source: PlannerSource, structured: string | null = null): PlannerPayload {
   const decision = readMailbox(join(worktree, mailbox));
-  const proposed = readMailbox(join(worktree, planFile), PLAN_LIMITS.payload);
+  const fromFile = readMailbox(join(worktree, planFile), TEXT_LIMITS.planPayloadBytes);
+  const proposed = !decision.ok && decision.missing && !fromFile.ok && fromFile.missing && structured !== null ? structuredPlanRead(structured) : fromFile;
   const hasDecision = decision.ok || !decision.missing;
   const hasPlan = proposed.ok || !proposed.missing;
 
@@ -533,7 +557,9 @@ function plannerRepairBrief(
         : `Emit exactly one intended conclusion: either ${mailbox} or ${planFile}, and remove the other.`;
   return [
     "Your previous structured planner output failed validation.",
-    "The exact validation problems are JSON data:",
+    "The validation problems, each naming its path:",
+    ...problems.map(problem => `- ${(problem.message ?? problem.reason).replace(/\s+/g, " ")}`),
+    "The same problems as JSON data:",
     validationErrorsJson(problems),
     "",
     target,
@@ -756,6 +782,8 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
   // every correction inherits.
   const provider = logicalRun.provider;
   const model = logicalRun.model;
+  // Claude takes the plan schema as `--json-schema`; other harnesses read it in the brief and write the file.
+  const structured = provider === "claude";
 
   /** Every paid turn is followed by the same custody and untouched-tree proof. */
   const proveAfterInvocation = async (): Promise<Extract<PlanOutcome, { ok: false }> | null> => {
@@ -895,7 +923,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
       { provider, model },
       {
         phase: "plan",
-        brief: projectSkillContext + knowledgeContext(store, request.runId, join(root, '..', 'repository-context')) + learningContext(store, root, request.runId, "plan", clock()) + plannerBrief(request.taskTitle, mailbox, planFile, request.answers ?? [], request.source),
+        brief: projectSkillContext + knowledgeContext(store, request.runId, join(root, '..', 'repository-context')) + learningContext(store, root, request.runId, "plan", clock()) + plannerBrief(request.taskTitle, mailbox, planFile, request.answers ?? [], request.source, structured),
         maxTurns,
         // Claude's built-in `plan` permission mode diverts writes into its
         // own ~/.claude/plans file and refuses the nonce-bound handoff file.
@@ -904,6 +932,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         resumeSession: null,
         ...(auditOf(provider).sessionIdentity === "minted" ? { startSessionId: randomUUID() } : {}),
         ...(request.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: request.maxBudgetUsd }),
+        ...(structured ? { jsonSchema: PLAN_MODEL_SCHEMA } : {}),
       },
       {
         cwd: worktree,
@@ -918,7 +947,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
     const firstProof = await proveAfterInvocation();
     if (firstProof !== null) return firstProof;
-    let payload = plannerPayload(worktree, mailbox, planFile, request.source);
+    let payload = plannerPayload(worktree, mailbox, planFile, request.source, invoked.kind === "ran" ? (invoked.outcome.structuredOutput ?? null) : null);
     const initialEligible =
       invoked.kind === "ran" &&
       !invoked.outcome.timedOut &&
@@ -1061,6 +1090,8 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
             skipPermissions: false,
             resumeSession: sessionId,
             ...(request.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: request.maxBudgetUsd }),
+            // A plan's correction is held to the same schema; a question's is not.
+            ...(structured && expectedKind === "plan" ? { jsonSchema: PLAN_MODEL_SCHEMA } : {}),
           },
           {
             cwd: worktree,
@@ -1086,7 +1117,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         });
         return repairProof;
       }
-      const observed = plannerPayload(worktree, mailbox, planFile, request.source);
+      const observed = plannerPayload(worktree, mailbox, planFile, request.source, structured && expectedKind === "plan" && repaired.kind === "ran" ? (repaired.outcome.structuredOutput ?? null) : null);
       let corrected: Exclude<PlannerPayload, { state: "missing" }>;
       if (observed.state === "missing") {
         corrected = {

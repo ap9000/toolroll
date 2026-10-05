@@ -10,6 +10,8 @@ import { createHash } from "node:crypto";
 import { hasForbiddenControls } from "./decision.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
 import { TEXT_LIMITS } from "./text-limits.js";
+import type { ContractIssue } from "./contracts/contract.js";
+import { planPayloadBody, readPlanPayload } from "./contracts/plan.js";
 
 export type PlanProblem = { reason: string; message: string };
 
@@ -49,15 +51,15 @@ export type ExecutionPlanDocumentResult =
 
 const EXECUTION_PLAN_SECTIONS = ["approach", "milestones", "dependencies", "risks", "proof"] as const;
 const EXECUTION_PLAN_LIST_CAP = 12;
-const EXECUTION_PLAN_ITEM_CAP = 600;
+const EXECUTION_PLAN_ITEM_CAP = TEXT_LIMITS.planItem;
 
 /** Parse the planner's human-readable artifact without executing Markdown.
  * Older free-form plan artifacts remain renderable through the caller's
  * fallback, while every newly accepted planner handoff uses this shape. */
 export function parseExecutionPlanDocument(raw: string): ExecutionPlanDocumentResult {
   const problems: PlanProblem[] = [];
-  if (Buffer.byteLength(raw, "utf8") > PLAN_LIMITS.document) {
-    return { ok: false, problems: [{ reason: "plan-too-long", message: `plan is over ${PLAN_LIMITS.document} bytes` }] };
+  if (Buffer.byteLength(raw, "utf8") > TEXT_LIMITS.planDocumentBytes) {
+    return { ok: false, problems: [{ reason: "plan-too-long", message: `plan is over ${TEXT_LIMITS.planDocumentBytes} bytes` }] };
   }
   const normalized = raw.replace(/\r\n?/g, "\n");
   if (hasForbiddenControls(normalized)) {
@@ -100,7 +102,7 @@ export function parseExecutionPlanDocument(raw: string): ExecutionPlanDocumentRe
 
   const approach = (sections.get("approach") ?? []).join("\n").trim();
   if (approach === "") problems.push({ reason: "plan-empty-approach", message: "Approach must say how the work will be done" });
-  if (approach.length > 2_000) problems.push({ reason: "plan-approach-too-long", message: "Approach is over 2000 characters" });
+  if (approach.length > TEXT_LIMITS.planApproach) problems.push({ reason: "plan-approach-too-long", message: `Approach is over ${TEXT_LIMITS.planApproach} characters` });
 
   const list = (name: "milestones" | "dependencies" | "risks" | "proof"): string[] => {
     const items: string[] = [];
@@ -169,19 +171,6 @@ export type PlanParseResult =
   | { ok: true; plan: ParsedPlan }
   | { ok: false; problems: PlanProblem[] };
 
-/** Caps matching the scope ritual's fields, plus the document itself. The goal and out-of-scope text share the
- * task's own limit: a plan reproduces the filed contract exactly, so a lower cap here would refuse every plan for a
- * long goal. */
-export const PLAN_LIMITS = {
-  payload: 64 * 1024,
-  goal: TEXT_LIMITS.goal,
-  outOfScope: TEXT_LIMITS.goal,
-  touch: 200,
-  touches: 32,
-  document: 16 * 1024,
-  amendment: 1_000,
-} as const;
-
 function refuse(reason: string, message: string): PlanParseResult {
   return { ok: false, problems: [{ reason, message }] };
 }
@@ -193,6 +182,7 @@ function describe(value: unknown): string {
   return `a ${Array.isArray(value) ? "array" : typeof value}`;
 }
 
+/** A progress note or revision field, checked by hand (those payloads are not on the plan contract yet). */
 function prose(
   value: unknown,
   field: string,
@@ -219,9 +209,113 @@ function prose(
   return value;
 }
 
+/**
+ * A contract issue as a plan problem: the path-named line is the message, and the reason keeps the codes the rest of
+ * the code relies on — `missing-goal`, `bad-touches`, `plan-too-long`, `amendment-too-long`, `acceptance-too-many` —
+ * so repair eligibility (document-only problems) and durable outcomes read the same as before the contract.
+ */
+export function planProblemOf(issue: ContractIssue): PlanProblem {
+  const at = issue.path;
+  const reason = (() => {
+    switch (issue.kind) {
+      case "required":
+      case "empty":
+      case "too-few":
+        return `missing-${at}`;
+      case "too-long":
+        return `${at}-too-long`;
+      case "too-many":
+        return `${at}-too-many`;
+      case "unknown-key":
+        return `${at}-unknown-key`;
+      case "newer-version":
+        return "newer-version";
+      default:
+        return `bad-${at}`;
+    }
+  })();
+  return { reason, message: issue.line };
+}
+
+/** scope.ts's rubric problem as a path-named line: `acceptance[0].id: is over 40 bytes`. */
+function acceptanceLine(problem: PlanProblem): string {
+  const named = /^(acceptance(?:\[\d+\])?(?:\.[A-Za-z]+)?) (.*)$/.exec(problem.message);
+  if (named !== null) return `${named[1]}: ${named[2]}`;
+  const at = /^(acceptance\[\d+\])-/.exec(problem.reason)?.[1] ?? "acceptance";
+  return `${at}: ${problem.message}`;
+}
+
+/** True when `problems` name `field` or anything under it. */
+const touched = (problems: readonly PlanProblem[], field: string) =>
+  problems.some(problem => problem.message.startsWith(`${field}:`) || problem.message.startsWith(`${field}[`) || problem.message.startsWith(`${field}.`));
+
+/**
+ * The rules JSON Schema cannot state, in plain code with named errors: control characters, one-line touches, the
+ * document's byte cap and sections, the acceptance rubric's byte limits and duplicate ids (scope.ts's own parser),
+ * and the Proof naming every criterion. Fields the contract already refused are skipped, so every problem is
+ * reported once and all at once.
+ */
+function planRuleProblems(body: Record<string, unknown>, contract: readonly PlanProblem[]): { problems: PlanProblem[]; criteria: AcceptanceCriterion[] } {
+  const problems: PlanProblem[] = [];
+  const text = (field: string): string | null => {
+    const value = body[field];
+    return typeof value === "string" && !touched(contract, field) ? value : null;
+  };
+  for (const field of ["goal", "outOfScope", "plan", "amendment"]) {
+    const value = text(field);
+    if (value !== null && hasForbiddenControls(value)) {
+      problems.push({ reason: `${field}-controls`, message: `${field}: carries control characters that could become terminal escapes` });
+    }
+  }
+  const touches = body["touches"];
+  if (Array.isArray(touches) && !touched(contract, "touches")) {
+    for (const [index, path] of touches.entries()) {
+      if (typeof path !== "string") continue;
+      const field = `touches[${index}]`;
+      if (hasForbiddenControls(path)) problems.push({ reason: `${field}-controls`, message: `${field}: carries control characters that could become terminal escapes` });
+      else if (/[\n\t]/.test(path)) problems.push({ reason: `${field}-multiline`, message: `${field}: must be one line` });
+    }
+  }
+
+  let criteria: AcceptanceCriterion[] = [];
+  let acceptanceOk = false;
+  if (!touched(contract, "acceptance")) {
+    const acceptance = parseAcceptanceCriteria(body["acceptance"]);
+    problems.push(...acceptance.problems.map(problem => ({ reason: problem.reason, message: acceptanceLine(problem) })));
+    criteria = acceptance.criteria;
+    acceptanceOk = acceptance.problems.length === 0;
+  }
+
+  const document = text("plan");
+  if (document !== null && document !== "") {
+    if (Buffer.byteLength(document, "utf8") > TEXT_LIMITS.planDocumentBytes) {
+      problems.push({ reason: "plan-too-long", message: `plan: over ${TEXT_LIMITS.planDocumentBytes.toLocaleString("en-US")} bytes` });
+    } else if (!hasForbiddenControls(document)) {
+      const execution = parseExecutionPlanDocument(document);
+      if (!execution.ok) {
+        problems.push(...execution.problems.map(problem => ({ reason: problem.reason, message: `plan: ${problem.message}` })));
+      } else if (acceptanceOk) {
+        const proof = execution.document.proof.join("\n");
+        for (const criterion of criteria) {
+          const mentioned = new RegExp(`(^|[^A-Za-z0-9_-])${criterion.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_-]|$)`).test(proof);
+          if (!mentioned) {
+            problems.push({ reason: `plan-proof-missing-${criterion.id}`, message: `plan: Proof must name acceptance criterion ${criterion.id}` });
+          }
+        }
+      }
+    }
+  }
+  return { problems, criteria };
+}
+
+/**
+ * The planner's handoff, read against the plan contract (src/contracts/plan.ts): fail closed, every problem at once,
+ * each one naming its path (`acceptance[0].evidence[0]: must be one of ...`). A plan saved before plans carried
+ * `version` reads as it always did.
+ */
 export function parsePlan(raw: string): PlanParseResult {
-  if (Buffer.byteLength(raw, "utf8") > PLAN_LIMITS.payload) {
-    return refuse("too-large", `the payload is over ${PLAN_LIMITS.payload} bytes`);
+  if (Buffer.byteLength(raw, "utf8") > TEXT_LIMITS.planPayloadBytes) {
+    return refuse("too-large", `payload: over ${TEXT_LIMITS.planPayloadBytes.toLocaleString("en-US")} bytes`);
   }
   let parsed: unknown;
   try {
@@ -229,64 +323,27 @@ export function parsePlan(raw: string): PlanParseResult {
   } catch (error) {
     return refuse("not-json", `the payload is not JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return refuse("not-an-object", "the payload must be one JSON object");
-  }
-  const body = parsed as Record<string, unknown>;
-  const problems: PlanProblem[] = [];
+  const body = planPayloadBody(parsed);
+  if (body === null) return refuse("not-an-object", "payload: must be one JSON object");
 
-  const goal = prose(body["goal"], "goal", PLAN_LIMITS.goal, true, problems);
-  const outOfScope = prose(body["outOfScope"], "outOfScope", PLAN_LIMITS.outOfScope, false, problems);
-  const document = prose(body["plan"], "plan", PLAN_LIMITS.document, true, problems);
-  const amendment = prose(body["amendment"], "amendment", PLAN_LIMITS.amendment, false, problems);
+  const read = readPlanPayload(parsed);
+  const contract = read.ok ? [] : read.issues.map(planProblemOf);
+  if (contract.some(problem => problem.reason === "newer-version" || problem.reason === "bad-version")) return { ok: false, problems: contract };
+  const rules = planRuleProblems(body, contract);
+  const problems = [...contract, ...rules.problems];
+  if (!read.ok || problems.length > 0) return { ok: false, problems };
 
-  const touches: string[] = [];
-  if (body["touches"] !== undefined && body["touches"] !== null) {
-    if (!Array.isArray(body["touches"])) {
-      problems.push({ reason: "bad-touches", message: `touches must be an array of paths (got ${describe(body["touches"])})` });
-    } else if (body["touches"].length > PLAN_LIMITS.touches) {
-      problems.push({ reason: "touches-too-many", message: `touches lists ${body["touches"].length} paths — cap is ${PLAN_LIMITS.touches}` });
-    } else {
-      for (const [index, one] of body["touches"].entries()) {
-        const path = prose(one, `touches[${index}]`, PLAN_LIMITS.touch, true, problems);
-        if (path !== null) {
-          if (/[\n\t]/.test(path)) {
-            problems.push({ reason: `touches[${index}]-multiline`, message: `touches[${index}] must be one line` });
-          } else {
-            touches.push(path);
-          }
-        }
-      }
-    }
-  }
-
-  const acceptanceParse = parseAcceptanceCriteria(body["acceptance"]);
-  for (const problem of acceptanceParse.problems) {
-    problems.push({ reason: problem.reason, message: problem.message });
-  }
-  if (acceptanceParse.problems.length === 0 && acceptanceParse.criteria.length === 0) {
-    problems.push({ reason: "missing-acceptance", message: "acceptance is required — at least one signed criterion the build will be judged against" });
-  }
-
-  if (document !== null) {
-    const execution = parseExecutionPlanDocument(document);
-    if (!execution.ok) {
-      problems.push(...execution.problems);
-    } else if (acceptanceParse.problems.length === 0) {
-      const proof = execution.document.proof.join("\n");
-      for (const criterion of acceptanceParse.criteria) {
-        const mentioned = new RegExp(`(^|[^A-Za-z0-9_-])${criterion.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_-]|$)`).test(proof);
-        if (!mentioned) {
-          problems.push({ reason: `plan-proof-missing-${criterion.id}`, message: `Proof must name acceptance criterion ${criterion.id}` });
-        }
-      }
-    }
-  }
-
-  if (problems.length > 0) return { ok: false, problems };
+  const payload = read.value;
   return {
     ok: true,
-    plan: { goal: goal as string, outOfScope, touches, acceptance: acceptanceParse.criteria, plan: document as string, amendment },
+    plan: {
+      goal: payload.goal,
+      outOfScope: payload.outOfScope === undefined || payload.outOfScope === null || payload.outOfScope === "" ? null : payload.outOfScope,
+      touches: payload.touches ?? [],
+      acceptance: rules.criteria,
+      plan: payload.plan,
+      amendment: payload.amendment === undefined || payload.amendment === null || payload.amendment === "" ? null : payload.amendment,
+    },
   };
 }
 
@@ -470,7 +527,7 @@ export function parsePlanRevisionProposal(raw: string): PlanRevisionProposalPars
   const problems: PlanProblem[] = [];
   const reason = prose(body["reason"], "reason", REVISION_LIMITS.reason, true, problems);
   const evidenceLink = prose(body["evidenceLink"], "evidenceLink", REVISION_LIMITS.evidenceLink, true, problems);
-  const planText = prose(body["plan"], "plan", PLAN_LIMITS.document, true, problems);
+  const planText = prose(body["plan"], "plan", TEXT_LIMITS.planDocumentBytes, true, problems);
   let document: ExecutionPlanDocument | null = null;
   if (planText !== null) {
     const execution = parseExecutionPlanDocument(planText);

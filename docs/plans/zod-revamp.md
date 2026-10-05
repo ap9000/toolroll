@@ -45,8 +45,8 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today | Why first |
 |---|---|---|---|
-| 1 | **Foundation**: add `zod`, `src/contracts/` home, shared helpers (`limited()`, `versioned()`, path-named errors, `toModelSchema()`), the contract-test harness | — | everything else builds on it |
-| 2 | **Plan payload** (goal, outOfScope, touches, acceptance, plan document sections, amendment) and the planner's `--json-schema` | `plan.ts` (`parsePlan`, `PLAN_LIMITS`), `planner.ts` | 0.9.30 outage; repair turns |
+| 1 ✅ | **Foundation**: add `zod`, `src/contracts/` home, shared helpers (`limited()`, `versioned()`, path-named errors, `toModelSchema()`), the contract-test harness | — | everything else builds on it |
+| 2 ✅ | **Plan payload** (goal, outOfScope, touches, acceptance, plan document sections, amendment) and the planner's `--json-schema` | `plan.ts` (`parsePlan`, `PLAN_LIMITS`), `planner.ts` | 0.9.30 outage; repair turns |
 | 3 | **Flow definitions and step inputs** (every zone kind, routes/answers/options, triggers) for `flows create/edit`, gallery templates, the lead's `propose_flow` | `flows.ts` (13 parsers), `flow-triggers.ts`, `flow-gallery.ts` | wrong-field-name failures; flows are authored by people, the lead and templates |
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
@@ -89,4 +89,11 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
 
 ## Done
 
-- (none yet)
+- **1. Foundation** (2026-10-05). `zod` ^4.6; `src/contracts/contract.ts` holds `limited()`, `versioned()` with
+  `readVersioned()`, `contractError()` and `toModelSchema()`; `src/contracts/contract-test.ts` is the contract-test
+  harness. Plan text limits moved into `TEXT_LIMITS`.
+- **2. Plan payload** (2026-10-05). `src/contracts/plan.ts` is the one plan schema: `parsePlan` reads it, and a Claude
+  planner gets it as `--json-schema` (other harnesses read it in the brief). `PLAN_LIMITS` is gone. The plan file stays
+  the handoff; structured output counts only when no file was written. Saved unversioned plans read as before
+  (replayed from `test/fixtures/plans/`). Tightened, on purpose: a plan with a newer `version` is refused, and a
+  `version: 1` plan is strict about unknown keys.

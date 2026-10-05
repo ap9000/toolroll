@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parsePlan, PLAN_LIMITS } from "./plan.js";
+import { parsePlan } from "./plan.js";
+import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 
 const document = [
@@ -23,8 +24,9 @@ const payload = (goal: string, outOfScope: string | null = null) => JSON.stringi
 
 describe("plan limits follow the task's own text limits", () => {
   it("a plan reproducing a long filed goal parses: the contract is the task's, so its caps are the task's", () => {
-    expect(PLAN_LIMITS.goal).toBe(TEXT_LIMITS.goal);
-    expect(PLAN_LIMITS.outOfScope).toBe(TEXT_LIMITS.goal);
+    const properties = PLAN_MODEL_SCHEMA["properties"] as Record<string, Record<string, unknown>>;
+    expect(properties["goal"]?.["maxLength"]).toBe(TEXT_LIMITS.goal);
+    expect(properties["outOfScope"]).toMatchObject({ anyOf: [{ maxLength: TEXT_LIMITS.goal }, { type: "null" }] });
     const parsed = parsePlan(payload("g".repeat(3_820), "o".repeat(3_000)));
     expect(parsed.ok).toBe(true);
     const atLimit = parsePlan(payload("g".repeat(TEXT_LIMITS.goal)));

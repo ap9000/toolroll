@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.34 — 2026-10-05
+
+- **Plans have one contract.** The first step of making every handoff robust:
+  a plan is described once, and that description is both what the planner is
+  told to return and what Toolroll checks. Limits come from one place, so the
+  2,000-versus-8,000 mismatch from 0.9.30 can't happen again, and a malformed
+  plan's retry quotes the exact field that was wrong.
+- **Projects added from the command line show in the console.** `toolroll
+  repos add` (you or the lead) admits a project the same way the console's Add
+  a project does, and it appears within seconds without a restart. Removing
+  works the same way. Every addition is recorded with who made it.
+- **Crew rows show when they last changed** ("4m", "2h", "3d").
+
 ## 0.9.33 — 2026-10-05
 
 - **A restart never breaks a project's builds.** A project's identity no

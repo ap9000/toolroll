@@ -435,8 +435,10 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
   });
   const cloneInto = async (nameWithOwner: string, root: string) => {
     const { mkdirSync } = await import("node:fs");
+    const { execFileSync } = await import("node:child_process");
     const target = join(root, nameWithOwner.split("/")[1] as string);
-    mkdirSync(join(target, ".git"), { recursive: true });
+    mkdirSync(target, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: target });
     return { ok: true as const, target };
   };
 
@@ -447,7 +449,10 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
     const home = mkdtempSync(join(tmpdir(), "so-afg-home-"));
     const root = realpathSync(mkdtempSync(join(tmpdir(), "so-afg-root-")));
     const env = process.env["XDG_CONFIG_HOME"];
+    const dbEnv = process.env["TOOLROLL_DB"];
     process.env["XDG_CONFIG_HOME"] = home;
+    // The registry `up` watches sits beside the database.
+    process.env["TOOLROLL_DB"] = join(home, "toolroll", "orders.db");
     const registry = join(home, "toolroll", "repos.json");
     try {
       const onboard = { preview: preview(512), clone: cloneInto };
@@ -476,6 +481,7 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
     } finally {
       if (env === undefined) delete process.env["XDG_CONFIG_HOME"];
       else process.env["XDG_CONFIG_HOME"] = env;
+      process.env["TOOLROLL_DB"] = dbEnv;
       rmSync(home, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
     }
@@ -488,7 +494,10 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
     const home = mkdtempSync(join(tmpdir(), "so-afg-home2-"));
     const root = realpathSync(mkdtempSync(join(tmpdir(), "so-afg-root2-")));
     const env = process.env["XDG_CONFIG_HOME"];
+    const dbEnv = process.env["TOOLROLL_DB"];
     process.env["XDG_CONFIG_HOME"] = home;
+    // The registry `up` watches sits beside the database.
+    process.env["TOOLROLL_DB"] = join(home, "toolroll", "orders.db");
     const registry = join(home, "toolroll", "repos.json");
     try {
       const liar = async () => ({ ok: true as const, target: "/somewhere/else" });
@@ -499,6 +508,7 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
     } finally {
       if (env === undefined) delete process.env["XDG_CONFIG_HOME"];
       else process.env["XDG_CONFIG_HOME"] = env;
+      process.env["TOOLROLL_DB"] = dbEnv;
       rmSync(home, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
     }

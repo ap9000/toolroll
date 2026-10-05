@@ -57,6 +57,17 @@ export function deadlineWords(deadline: { at: string; label: string }, now: Date
   return /^(?:\d|Tomorrow|Yesterday)/.test(words) ? `${deadline.label} ${words}` : `${deadline.label.replace(/ at$/, "")} ${words}`;
 }
 
+/** How long ago, in one short mark: "now", "4m", "2h", "3d". A future stamp reads "now"; an unreadable one, "". */
+export function shortAge(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.max(0, Math.floor((now.getTime() - at) / 60_000));
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
 /** The exact minute in `zone` ("2026-09-30 16:39", with " UTC" when it is UTC): a time's title, one hover away. */
 export function fullWhen(iso: string, zone = "UTC"): string {
   const at = new Date(iso);

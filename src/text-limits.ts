@@ -21,7 +21,25 @@ export const TEXT_LIMITS = {
   reportSummary: 2_500,
   /** What one flow step passes on to the steps after it. */
   stageOutput: 12_000,
+  /** The planner's whole handoff file, in UTF-8 bytes. */
+  planPayloadBytes: 64 * 1024,
+  /** The plan document (markdown), in UTF-8 bytes. */
+  planDocumentBytes: 16 * 1024,
+  /** The plan document's Approach section. */
+  planApproach: 2_000,
+  /** One Milestones, Dependencies, Risks or Proof item in the plan document. */
+  planItem: 600,
+  /** One path a plan expects to touch. */
+  planTouch: 200,
+  /** A planner's amendment note: why the filed contract must change. */
+  planAmendment: 1_000,
+  /** An acceptance criterion's id, statement and advisory how, in UTF-8 bytes. */
+  acceptanceIdBytes: 40,
+  acceptanceStatementBytes: 1_000,
+  acceptanceHowBytes: 500,
 } as const;
+
+export type TextLimitKey = keyof typeof TEXT_LIMITS;
 
 /** One chat message on each platform. Longer text is split across messages, never cut. Teams: the text one Adaptive Card
  * holds, well inside its 28 KB message. */
