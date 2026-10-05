@@ -69,7 +69,9 @@ const limit = Math.min(groups.length, atOnce ?? browserSlots(available));
 const slot = limiter(limit, { room: () => true });
 console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
 
-const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${folder}`, DEMAND.group, async () => {
+// A scripted run answers from the stand-in provider: it holds memory but no real provider turn.
+const groupDemand = journeys === "scripted" ? { ...DEMAND.group, providers: 0 } : DEMAND.group;
+const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${folder}`, groupDemand, async () => {
   const tag = `[${folder.padEnd(width)}]`;
   let partial = "";
   const print = chunk => {

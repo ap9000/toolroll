@@ -401,8 +401,12 @@ describe("checks fit memory", () => {
     const group = DEMAND.group;
     // The existing serial memory fallback remains, but cannot bypass the provider cap.
     expect(admit(group, { ...idle, available: 0, swapUsed: 99, swapTotal: 100 }, [], { cap: 2, now })).toEqual({ ok: true, why: null });
-    expect(admit(group, { ...idle, providers: 4 }, [], { cap: 4, now })).toEqual({ ok: false, why: "0 provider turns of ours and 4 other sessions running, at the cap of 4" });
+    // Other sessions (a person's own Claude Code or Codex) take room from the cap but never all of it: with the cap
+    // already full of them, the check still runs one turn at a time instead of waiting forever.
+    expect(admit(group, { ...idle, providers: 4 }, [], { cap: 4, now })).toEqual({ ok: true, why: null });
+    expect(admit(group, { ...idle, providers: 6 }, [], { cap: 4, now })).toEqual({ ok: true, why: null });
     const one = { bytes: GB, providers: 1, at: old };
+    expect(admit(group, { ...idle, providers: 5 }, [one], { cap: 4, now })).toEqual({ ok: false, why: "1 provider turn of ours and 4 other sessions running, at the cap of 4" });
     expect(admit(group, idle, [one], { cap: 12, now }).ok).toBe(true);
     // Low memory: 1 GB of group plus the 1 GB reserve doesn't fit in 1.5 GB.
     expect(admit(group, { ...idle, available: 1.5 * GB }, [one], { cap: 12, now })).toEqual({ ok: false, why: "1.5 GB free, swap 0% used; it needs 2.0 GB" });
@@ -427,7 +431,9 @@ describe("checks fit memory", () => {
     expect(admit(DEMAND.group, sample, [held, held, held], { cap, now }).ok).toBe(true);
     expect(admit(DEMAND.group, sample, [held, held, held, held], { cap, now }).ok).toBe(false);
     expect(admit(DEMAND.group, { ...sample, providers: 4 }, [held, held], { cap, now }).ok).toBe(false);
-    expect(admit(DEMAND.group, { ...sample, providers: 12 }, [], { cap, now }).ok).toBe(false);
+    // Other sessions alone never block a first turn (a person's own Claude Code and Codex stay open); a second waits.
+    expect(admit(DEMAND.group, { ...sample, providers: 12 }, [], { cap, now }).ok).toBe(true);
+    expect(admit(DEMAND.group, { ...sample, providers: 13 }, [held], { cap, now }).ok).toBe(false);
   });
 
   test("macOS uses kernel pressure: sticky swap at normal does not slow starts, warn reserves 4 GB, critical always waits", () => {
@@ -512,15 +518,16 @@ describe("checks fit memory", () => {
     } finally { gate.close(); rmSync(at, { recursive: true, force: true }); }
   });
 
-  test("a first provider turn waits for other sessions to release a slot", async () => {
+  test("a first provider turn never waits on other sessions alone, so a machine with AI apps open still runs the check", async () => {
     const at = mkdtempSync(join(tmpdir(), "so-gate-"));
-    let sessions = 4;
     const lines: string[] = [];
-    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample: () => ({ ...IDLE, providers: sessions }), everyMs: 1, log: (line: string) => { lines.push(line); sessions--; } });
+    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample: () => ({ ...IDLE, providers: 4 }), everyMs: 1, log: (line: string) => { lines.push(line); } });
     try {
-      await gate.hold("flows lead", DEMAND.group, async () => { expect(sessions).toBe(3); });
-      expect(lines).toEqual(["waiting for room to start flows lead: 0 provider turns of ours and 4 other sessions running, at the cap of 4"]);
-      expect(gate.facts()).toMatchObject({ starts: 1, cap: 4, waits: 1, others: 3 });
+      let ran = false;
+      await gate.hold("flows lead", DEMAND.group, async () => { ran = true; });
+      expect(ran).toBe(true);
+      expect(lines).toEqual([]);
+      expect(gate.facts()).toMatchObject({ starts: 1, cap: 4, waits: 0, others: 4 });
     } finally { gate.close(); rmSync(at, { recursive: true, force: true }); }
   });
 

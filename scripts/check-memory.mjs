@@ -220,7 +220,10 @@ export function admit(demand, sample, held, { cap, now = Date.now() }) {
     const ours = held.reduce((sum, one) => sum + one.providers, 0);
     // Our own sessions are among those running; the rest are other sessions.
     const others = sample.providers === null ? 0 : Math.max(0, sample.providers - ours);
-    if (ours + others + demand.providers > cap) return { ok: false, why: `${ours} provider turn${ours === 1 ? "" : "s"} of ours and ${others} other session${others === 1 ? "" : "s"} running, at the cap of ${cap}` };
+    // Other sessions (a person's own Claude Code or Codex, mostly idle) take room from the cap, but never all of it:
+    // the check always gets one turn at a time, or a machine with a few AI apps open would wait forever.
+    const room = Math.max(1, cap - others);
+    if (ours + demand.providers > room) return { ok: false, why: `${ours} provider turn${ours === 1 ? "" : "s"} of ours and ${others} other session${others === 1 ? "" : "s"} running, at the cap of ${cap}` };
   }
   return { ok: true, why: null };
 }
