@@ -19,12 +19,13 @@
  * for the Python script. Spends a few Claude turns and real builds.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
 import { flag, freePort, GiveUp, groupAlive, mailSink, option, own, REAL_TURN_MS, Skip, SKIPPED_FADE, sleep, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
 
@@ -1718,7 +1719,7 @@ const fresh = {};
 /** Every fresh install started, so each one is stopped whichever journeys pass, fail or time out. */
 const installs = [];
 async function freshInstall(name, { claude, crewModels = false }) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `toolroll-onboarding-${name}-`)));
+  const root = realpathSync(makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
   const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.txt"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
   // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.

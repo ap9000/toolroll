@@ -1,12 +1,14 @@
 /**
  * Settings → Storage: how much space task checkouts use, what a clean-up would free now, a Clean up button whose
- * preview (what goes, what stays and why, with paths) sits behind the password, and when a finished task's clean
- * checkout goes by itself. An instance operator's page.
+ * preview (what goes, what stays and why, with paths) sits behind the password, what the last storage sweep removed
+ * and when (its paths in a disclosure), and when a finished task's clean checkout goes by itself. An instance
+ * operator's page.
  */
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
+import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -27,9 +29,35 @@ export const STORAGE_CSS = `.storage{max-width:720px;min-width:0;overflow-wrap:a
   `.storage form{display:grid;gap:10px;margin:0}.storage label{display:grid;gap:4px;font-size:.8125rem;font-weight:500;max-width:20rem}` +
   `.storage select,.storage input[type=password]{width:100%;box-sizing:border-box;min-height:2.125rem}.storage form button{justify-self:start;white-space:nowrap}` +
   `.storage form.setting button[type=submit],.storage .preview form.remove button[type=submit]{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);font-weight:600}` +
-  `@media (max-width:900px){.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
+  `.storage .sweep{display:grid;gap:4px}.storage .sweep p{margin:0}.storage .sweep .problem{color:var(--destructive)}` +
+  `.storage details.sweep-details>summary{cursor:pointer;min-height:2.25rem;display:inline-flex;align-items:center;font-size:.8125rem;color:var(--muted-foreground)}` +
+  `.storage details.sweep-details ul{margin:4px 0 0;padding-left:18px;font-family:var(--font-mono, ui-monospace, monospace);font-size:.6875rem;color:var(--muted-foreground);overflow-wrap:anywhere}` +
+  `@media (max-width:900px){.storage details.sweep-details>summary{min-height:44px}.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
 
-export type StorageView = { plan: CheckoutPlan; csrf: string };
+export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean } };
+
+/** Paths under the home folder as ~/…, as the checkout list shows them. */
+function homeAsTilde(line: string): string {
+  const home = homedir();
+  return home === "" || home === "/" ? line : line.split(`${home}/`).join("~/");
+}
+
+/** "Oct 4, 3:12 AM" in this computer's time. */
+function whenWords(at: string): string {
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) ? at : date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** One line: when the last sweep ran and what it did; its paths and problems behind Details. */
+function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): string {
+  const last = sweep.last;
+  if (last === null) return `<p class="meta" data-last-sweep="">${sweep.off ? "Automatic sweep is off." : "Toolroll sweeps leftovers once a day. It hasn't run yet."}</p>`;
+  const who = last.source === "manual" ? `Cleaned up by ${e(last.actor)}` : "Swept";
+  const details = sweepDetails(last.parts);
+  const problem = last.parts.some(one => one.failed > 0 || one.problem !== undefined);
+  return `<div class="sweep" data-last-sweep="${e(last.at)}"><p${problem ? ' class="problem"' : ""}>${who} <time datetime="${e(last.at)}">${e(whenWords(last.at))}</time>. ${e(sweepWords(last.parts))}</p>` +
+    (details.length === 0 ? "" : `<details class="sweep-details"><summary>Details</summary><ul>${details.map(line => `<li>${e(homeAsTilde(line))}</li>`).join("")}</ul></details>`) + `</div>`;
+}
 
 function item(one: CheckoutItem, csrf: string): string {
   const discard = one.why === "has changes"
@@ -64,7 +92,7 @@ export function storageHtml(view: StorageView, notice: { said?: string | null; p
   const options = CLEANUP_CHOICES.map(one => `<option value="${one.value}"${one.value === plan.cleanup ? " selected" : ""}>${e(one.label)}</option>`).join("");
   return `<section class="storage">${note}` +
     `<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${e(bytesWords(plan.totalBytes))}</h2><p class="meta">${e(facts)}</p>` +
-    `<p data-clean-bytes="${plan.freeBytes}">${e(frees)}</p>${preview}</div>` +
+    `<p data-clean-bytes="${plan.freeBytes}">${e(frees)}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${preview}</div>` +
     `<h2>Automatic cleanup</h2>` +
     `<form method="post" action="/settings/storage" class="setting">${hidden}` +
     `<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label>` +

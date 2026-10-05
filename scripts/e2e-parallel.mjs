@@ -20,12 +20,12 @@
  * failed run. With no report to read, or only the browser-error check failed,
  * the whole group runs again.
  */
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopGroups, stopLeftovers } from "./e2e-kit.mjs";
+import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopLeftovers } from "./e2e-kit.mjs";
 import { availableMemory, browserSlots, limiter } from "./check-memory.mjs";
+import { runSuite } from "./suite-lifecycle.mjs";
 
 const [script, ...given] = process.argv.slice(2);
 if (script === undefined) { console.error("Usage: node scripts/e2e-parallel.mjs <script.mjs> [--no-retry] [--at-once <n>] [--output <dir>] [options for every group]"); process.exit(2); }
@@ -47,37 +47,28 @@ const limit = Math.min(groups.length, atOnce ?? browserSlots(available));
 const slot = limiter(limit);
 console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
 
-const runGroup = (group, folder, extra = []) => slot(() => new Promise(done => {
-  const at = Date.now();
-  // Its own temp folder: what it leaves there (a world kept after a crash, Chrome's profile) goes when it ends.
-  const temp = mkdtempSync(join(tmpdir(), "so-e2e-tmp-"));
-  // In a process group of its own: when it ends, whatever it left in that group, or listed as still running in its
-  // processes.json (a run killed outright never reaches its own finally), is stopped before a retry starts.
-  const child = spawn(process.execPath, [script, "--group", group, "--output", join(out, folder), ...extra], { stdio: ["ignore", "pipe", "pipe"], detached: true, env: { ...process.env, TMPDIR: temp } });
-  running.add(child.pid);
+const runGroup = (group, folder, extra = []) => slot(async () => {
   const tag = `[${folder.padEnd(width)}]`;
-  for (const stream of [child.stdout, child.stderr]) {
-    let partial = "";
-    stream.on("data", chunk => {
-      const lines = (partial + chunk).split("\n");
-      partial = lines.pop();
-      for (const line of lines) console.log(`${tag} ${line}`);
-    });
-    stream.on("end", () => { if (partial !== "") console.log(`${tag} ${partial}`); });
-  }
-  child.on("close", async (code, signal) => {
-    await stopGroups([child.pid], { graceMs: 5_000 }).catch(() => undefined);
-    running.delete(child.pid);
-    const left = await stopLeftovers(join(out, folder));
-    if (left > 0) console.log(`${tag} stopped ${left} process group${left === 1 ? "" : "s"} it left running`);
-    if (!keep) rmSync(temp, { recursive: true, force: true, maxRetries: 3 });
-    done({ group, folder, code: code ?? 1, signal, minutes: minutes(Date.now() - at) });
+  let partial = "";
+  const print = chunk => {
+    const lines = (partial + chunk).split("\n");
+    partial = lines.pop();
+    for (const line of lines) console.log(`${tag} ${line}`);
+  };
+  // In a process group and temp folder of its own (TMPDIR: its world, Chrome's profile, anything else it makes there):
+  // when it ends, or the runner is interrupted, whatever it left in that group, or listed as still running in its
+  // processes.json (a run killed outright never reaches its own finally), is stopped, then the folder goes, before a
+  // retry starts (scripts/suite-lifecycle.mjs).
+  const one = await runSuite({
+    command: process.execPath, args: [script, "--group", group, "--output", join(out, folder), ...extra], prefix: "so-e2e-tmp-", keep, onData: print,
+    beforeRemove: async () => {
+      const left = await stopLeftovers(join(out, folder));
+      if (left > 0) console.log(`${tag} stopped ${left} process group${left === 1 ? "" : "s"} it left running`);
+    },
   });
-}));
-const running = new Set();
-// Interrupted, the runner takes every group's run with it (they are not in its process group); each run's own exit
-// handler stops what it owns.
-process.on("exit", () => { for (const pid of running) { try { process.kill(-pid, "SIGTERM"); } catch { /* already gone */ } } });
+  if (partial !== "") console.log(`${tag} ${partial}`);
+  return { group, folder, code: one.code, signal: one.signal, minutes: minutes(one.ms) };
+});
 
 const report = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
 // The first run's own --only is replaced by the journeys to retry (they are a subset of it).

@@ -33,6 +33,7 @@ import type { Run, Store, WorktreeRow } from "./store.js";
 import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } from "./evidence.js";
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
+import { markNeverIndex } from "./never-index.js";
 
 export type Runner = (
   file: string,
@@ -380,6 +381,11 @@ export class WorktreePool {
       const branchExists = request.base !== undefined && request.reuseBranch === true &&
         (await this.git(request.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${request.branch}`], READ_ONLY)).code === 0;
       const fromBase = request.base !== undefined && !branchExists;
+      // Spotlight leaves the checkouts alone: the marker sits in the pool and the project's folder, never inside a
+      // checkout, where a build's `git add -A` would commit it (never-index.ts).
+      try { mkdirSync(dirname(path), { recursive: true }); } catch { /* git reports it */ }
+      markNeverIndex(this.options.root);
+      markNeverIndex(dirname(path));
       const add = await this.git(request.repo, [
         "worktree",
         "add",

@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import tempRoot from "../test/temp-root.js";
-import { isTestTemp, removeStaleTestTemp, testTempFolders } from "./test-temp.js";
+import { isTestTemp, OWNER_FILE, removeStaleTestTemp, tempOwner, testTempFolders } from "./test-temp.js";
+import { execFileSync } from "node:child_process";
 
 const DAY = 86_400_000;
 const made: string[] = [];
@@ -81,6 +82,48 @@ test("leftovers: test folders nothing touched for a day, judged by the folder an
   const found = testTempFolders([root], now);
   expect(found.all.map(one => one.path).sort()).toEqual([busy, fresh, stale].sort());
   expect(found.stale.map(one => one.path)).toEqual([stale]);
-  expect(removeStaleTestTemp([root], now)).toEqual({ removed: [stale], failed: [] });
+  expect(removeStaleTestTemp([root], now)).toEqual({ removed: [stale], failed: [], more: false });
   expect([stale, busy, fresh, other].map(existsSync)).toEqual([false, true, true, true]);
+});
+
+test("a stale-looking root whose owner still runs stays; a pass removes at most its share and says more are left", () => {
+  const root = mkdtempSync(join(tmpdir(), "so-temp-owner-"));
+  made.push(root);
+  const now = new Date();
+  const old = new Date(now.getTime() - 2 * DAY);
+  const folder = (name: string, owner?: number) => {
+    mkdirSync(join(root, name));
+    if (owner !== undefined) writeFileSync(join(root, name, OWNER_FILE), JSON.stringify({ pid: owner, startedAt: old.toISOString() }));
+    for (const one of readdirSync(join(root, name))) utimesSync(join(root, name, one), old, old);
+    utimesSync(join(root, name), old, old);
+    return join(root, name);
+  };
+  const running = folder("so-e2e-tmp-running", 4242);
+  const gone = folder("so-e2e-tmp-gone", 4343);
+  const plain = [folder("so-a"), folder("so-b"), folder("so-c")];
+  expect(tempOwner(running)).toEqual({ pid: 4242, startedAt: old.getTime() });
+  expect(tempOwner(plain[0]!)).toBeNull();
+  const ownerAlive = (owner: { pid: number }) => owner.pid === 4242;
+  const first = removeStaleTestTemp([root], now, { ownerAlive, max: 2 });
+  expect(first.more).toBe(true);
+  expect(first.removed).toHaveLength(2);
+  const rest = removeStaleTestTemp([root], now, { ownerAlive });
+  expect(rest.more).toBe(false);
+  expect([...first.removed, ...rest.removed].sort()).toEqual([gone, ...plain].sort());
+  expect(existsSync(running)).toBe(true);
+});
+
+test("a stale root a test made read-only is still removed", () => {
+  const root = mkdtempSync(join(tmpdir(), "so-temp-readonly-"));
+  made.push(root);
+  const now = new Date();
+  const old = new Date(now.getTime() - 2 * DAY);
+  const locked = join(root, "so-locked");
+  mkdirSync(join(locked, "inner"), { recursive: true });
+  writeFileSync(join(locked, "inner", "file"), "x");
+  execFileSync("chmod", ["-R", "a-w", join(locked, "inner")]);
+  utimesSync(join(locked, "inner"), old, old);
+  utimesSync(locked, old, old);
+  expect(removeStaleTestTemp([root], now)).toEqual({ removed: [locked], failed: [], more: false });
+  expect(existsSync(locked)).toBe(false);
 });

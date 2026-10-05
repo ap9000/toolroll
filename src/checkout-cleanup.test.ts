@@ -314,40 +314,46 @@ test("Settings → Storage shows checkout space and what a clean-up frees; Clean
 });
 
 /** A release gate: a task whose scope names a prepared candidate commit. */
-async function gate(id: string, finish: Finish, head: string): Promise<string> {
-  const path = await task(id, finish);
+async function gate(id: string, finish: Finish, head: string, when = T0): Promise<string> {
+  const path = await task(id, finish, when);
   store.handle.prepare("INSERT INTO task_scope (task_id, goal, proposed_at, digest, candidate) VALUES (?, 'Verify the release check passes.', ?, 'd', ?)").run(id, T0.toISOString(), head);
   return path;
 }
 
-test("only the newest gate of a release and the deployed one keep a checkout; superseded and cancelled gates go at once", async () => {
+test("a complete release check's checkout goes, except the one deployed now and the newest one still waiting for its deploy", async () => {
   expect(releaseOf("release-xb", new Set(["release-x", "release-xb"]))).toBe("release-x");
   expect(releaseOf("release-lean-plane", new Set(["release-lean-plane"]))).toBe("release-lean-plane");
   store.setCheckoutCleanup("7d", "alex", T0);
   const failedFirst = await gate("release-one", "queued", "sha-1a");
-  const newest = await gate("release-oneb", "completed", "sha-1b");
+  const older = await gate("release-oneb", "completed", "sha-1b");
   const deployed = await gate("release-two", "completed", "sha-2a");
-  const next = await gate("release-twob", "completed", "sha-2b");
   const cancelled = await gate("release-three", "cancelled", "sha-3a");
-  // The deploy journal beside the database names what runs now.
+  // The deploy journal beside the database names what runs now: deployed after all of those were complete.
   mkdirSync(join(dir, "staged-upgrades", "browser-2a"), { recursive: true });
   writeFileSync(join(dir, "staged-upgrades", "browser-2a", "deployment.json"), JSON.stringify({ phase: "deployed", candidate: "sha-2a", builder: 9999, deployedAt: at(500).toISOString() }));
   mkdirSync(join(dir, "staged-upgrades", "browser-1b"), { recursive: true });
   writeFileSync(join(dir, "staged-upgrades", "browser-1b", "deployment.json"), JSON.stringify({ phase: "rehearse", candidate: "sha-1b", builder: 9998 }));
-  expect(deployedRelease(dir)).toEqual({ head: "sha-2a", run: 9999 });
+  expect(deployedRelease(dir)).toEqual({ head: "sha-2a", run: 9999, at: at(500).toISOString() });
+  // Complete after that deploy: the newest, which a deploy may be about to install.
+  const waiting = await gate("release-four", "completed", "sha-4a", at(600));
+  const waitingEarlier = await gate("release-five", "completed", "sha-5a", at(550));
 
   const plan = await checkoutPlan(store, pool, at(1000), { manual: false });
-  expect(plan.go.map(one => one.path).sort()).toEqual([cancelled, failedFirst].sort());
+  expect(plan.go.map(one => one.path).sort()).toEqual([cancelled, failedFirst, older, waitingEarlier].sort());
   const stay = Object.fromEntries(plan.stay.map(one => [one.path, whyWords(one)]));
   expect(stay[deployed]).toBe("the deployed release candidate");
-  expect(stay[newest]).toMatch(/^newest release candidate, kept until \d{4}-\d{2}-\d{2}$/);
-  expect(stay[next]).toMatch(/^newest release candidate/);
+  expect(stay[waiting]).toMatch(/^newest release candidate, kept for its deploy until \d{4}-\d{2}-\d{2}$/);
   const done = await cleanCheckouts(store, pool, () => at(1000), { manual: false, actor: "worker", repo });
-  expect(done.removed.map(one => one.path).sort()).toEqual([cancelled, failedFirst].sort());
-  // Deployed stays past the week; the newest of a release that isn't deployed goes after it.
+  expect(done.removed.map(one => one.path).sort()).toEqual([cancelled, failedFirst, older, waitingEarlier].sort());
+  // Deployed stays past the week; the one still waiting goes after it.
   const later = await checkoutPlan(store, pool, at(8 * DAY), { manual: false });
-  expect(later.go.map(one => one.path).sort()).toEqual([newest, next].sort());
+  expect(later.go.map(one => one.path)).toEqual([waiting]);
   expect(later.stay.map(one => one.path)).toEqual([deployed]);
+  // Once it is deployed, the one deployed before it goes.
+  writeFileSync(join(dir, "staged-upgrades", "browser-1b", "deployment.json"), JSON.stringify({ phase: "deployed", candidate: "sha-4a", builder: 9998, deployedAt: at(900).toISOString() }));
+  const after = await checkoutPlan(store, pool, at(1000), { manual: false });
+  expect(after.go.map(one => one.path)).toEqual([deployed]);
+  expect(after.stay.map(one => [one.path, whyWords(one)])).toEqual([[waiting, "the deployed release candidate"]]);
 });
 
 test("a kept checkout drops its dependencies and build output once its run ends; the next run's setup restores them", async () => {

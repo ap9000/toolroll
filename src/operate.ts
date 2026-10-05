@@ -11,6 +11,7 @@ import { evidencePack, exportDay, ledgerExportChunks, standaloneEvidenceHtml, ty
 import { matchesOutsideCheckpoint } from "./ledger-chain.js";
 import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, parseCleanup, storageReport } from "./storage.js";
 import { removeStaleTestTemp, tempRoots, testTempFolders } from "./test-temp.js";
+import { dailyStorageSweep, lastSweep, nextSweepAt, saveSweep, storageSweepOff as storageSweepOffNow, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
@@ -5047,8 +5048,17 @@ async function reconcileCommand(
   try { retention = dailyRetention(store, context.evidenceRoot, clock()); } catch { retention = null; /* the next pass tries again */ }
   const retained = retention === null ? [] : retention.counts.filter(one => one.count > 0);
 
+  // The daily storage sweep (storage-sweep.ts): stale test temp folders, orphans Toolroll left running, finished
+  // checkouts, extra staged runtimes and dependency installs unused for a week; saved for Settings → Storage.
+  let storageSwept: SweepRecord | null = null;
+  try {
+    storageSwept = await dailyStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots() }, clock);
+  } catch { storageSwept = null; /* the next pass tries again */ }
+  const swept = storageSwept === null ? [] : storageSwept.parts.filter(one => one.count > 0);
+
   const nothing =
     retained.length === 0 &&
+    swept.length === 0 &&
     recovered.length === 0 &&
     reaped.length === 0 &&
     adoption.adopted.length === 0 &&
@@ -5074,6 +5084,7 @@ async function reconcileCommand(
       checkoutsSlimmed: slimmed.slimmed.map(one => one.path),
       liveViewsSwept: liveSwept.removed.length,
       retention: retention === null ? null : { counts: retention.counts, freedBytes: retention.freed },
+      storageSweep: storageSwept,
     },
     () =>
       nothing
@@ -5092,6 +5103,7 @@ async function reconcileCommand(
             ...(slimmed.slimmed.length === 0 ? [] : [`Dropped dependencies and build output from ${slimmed.slimmed.length} kept checkout(s), about ${bytesWords(slimmed.slimmed.reduce((sum, one) => sum + one.bytes, 0))}.`]),
             ...(liveSwept.removed.length === 0 ? [] : [`Cleared ${liveSwept.removed.length} finished live view(s).`]),
             ...(retention === null || retained.length === 0 ? [] : [`Retention removed ${sweepWords(retention.counts, retention.freed)}.`]),
+            ...(storageSwept === null || swept.length === 0 ? [] : [`Storage sweep: ${storageSweepWords(storageSwept.parts)}`]),
           ],
   );
 }
@@ -13846,17 +13858,34 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   const sharedLine = (one: ReturnType<typeof sharedFacts>[number]) =>
     `  ${bytesWords(one.bytes).padStart(8)}  ${projectName(one.repo)} ${one.key.slice(0, 8)}: ${one.checkouts === 1 ? "1 checkout uses it" : `${one.checkouts} checkouts use it`}${one.retired ? " (changed after install; never linked again)" : ""}`;
 
+  // What the latest sweep (automatic, or a clean-up by hand) did and when (storage-sweep.ts).
+  const sweepFacts = () => {
+    const last = lastSweep(store);
+    const automatic = last?.source === "automatic" ? last : lastSweep(store, "automatic");
+    return { last, lastAutomatic: automatic, next: nextSweepAt(store) };
+  };
+  const sweepLines = (facts: ReturnType<typeof sweepFacts>): string[] => {
+    const when = (at: string) => new Date(at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const one = facts.last;
+    const head = one === null ? (facts.next === null && storageSweepOffNow() ? "Automatic sweep: off." : "Automatic sweep: not run yet; it runs once a day.")
+      : `Last swept ${when(one.at)}${one.source === "manual" ? ` by ${one.actor}` : " automatically"}: ${storageSweepWords(one.parts)}`;
+    const auto = one !== null && one.source === "manual" && facts.lastAutomatic !== null ? [`Last automatic sweep ${when(facts.lastAutomatic.at)}: ${storageSweepWords(facts.lastAutomatic.parts)}`] : [];
+    return [head, ...auto, ...(one === null ? [] : sweepDetails(one.parts).slice(0, 8).map(line => `  ${line}`))];
+  };
+
   if (action === undefined) {
     const plan = await checkoutPlan(store, pool, context.clock(), { manual: true });
     const report = storageReport(store, context.databaseFile, plan.go.length === 0 ? "nothing to clean up" : `about ${bytesWords(plan.freeBytes)} to clean up`);
     const { staleBytes: _, ...temp } = leftovers(false);
     const shared = sharedFacts(sharedUse(depsRoot, checkoutRows()));
-    return succeed(context.write, context.json, "storage", { ...report, checkouts: checkoutSummary(plan), testTemp: temp, shared }, () => [
+    const sweep = sweepFacts();
+    return succeed(context.write, context.json, "storage", { ...report, checkouts: checkoutSummary(plan), testTemp: temp, shared, sweep }, () => [
       `${report.folder}: ${bytesWords(report.total)}`,
       ...report.lines.map(one => `  ${one.what.padEnd(19)} ${bytesWords(one.bytes).padStart(8)}${one.count === undefined ? "" : `  (${one.count})`}${one.note === undefined ? "" : `  ${one.note}`}`),
       ...(shared.length === 0 ? [] : ["Shared dependencies:", ...shared.map(sharedLine)]),
       ...summary(plan),
       leftoverLine({ ...temp, staleBytes: 0 }),
+      ...sweepLines(sweep),
     ]);
   }
   if (action === "cleanup") {
@@ -13908,6 +13937,13 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     }
     for (const debris of unused.debris) removeShared(debris);
     const sharedFreed = sharedRemoved.reduce((sum, one) => sum + one.bytes, 0);
+    // Saved like an automatic sweep, so Storage shows what this clean-up did and when.
+    const parts: SweepPart[] = [
+      { kind: "checkouts", count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: done.removed.slice(0, 20).map(one => one.path) },
+      { kind: "test temp", count: swept.removed.length, bytes: temp.staleBytes, failed: swept.failed.length, items: swept.removed.slice(0, 20) },
+      { kind: "dependencies", count: sharedRemoved.length, bytes: sharedFreed, failed: unused.copies.length - sharedRemoved.length, items: sharedRemoved.slice(0, 20).map(one => one.path) },
+    ];
+    saveSweep(store, { at: context.clock().toISOString(), source: "manual", actor, parts });
     return succeed(context.write, context.json, command, { removed: done.removed, kept: done.kept, freedBytes: done.freed, testTempRemoved: swept.removed.length, testTempFailed: swept.failed, sharedRemoved, sharedFreedBytes: sharedFreed }, () => [
       done.removed.length === 0 ? (swept.removed.length === 0 && sharedRemoved.length === 0 ? "Nothing to clean up." : "No checkouts to clean up.") : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}; their branches stay.`,
       ...done.removed.map(itemLine),

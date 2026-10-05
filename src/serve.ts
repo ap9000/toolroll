@@ -312,6 +312,7 @@ import { prometheusMetrics } from "./metrics.js";
 import { SPEND_CSS, spendCsv, spendHtml } from "./spend-ui.js";
 import { RETENTION_CSS, retentionHtml } from "./retention-ui.js";
 import { STORAGE_CSS, storageHtml } from "./storage-ui.js";
+import { lastSweep, saveSweep, storageSweepOff } from "./storage-sweep.js";
 import { bytesWords, parseCleanup } from "./storage.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, previewDigest } from "./checkout-cleanup.js";
 import { UPDATES_CSS, newerThan, updateStepsHtml, updatesHtml, updatesScript } from "./toolroll-update-ui.js";
@@ -4248,7 +4249,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const databaseFile = store.databaseFile();
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
       const plan = await checkoutPlan(store, storagePool(databaseFile), now, { manual: true });
-      return sendScreen(response, 200, screen("Storage", `<p><a href="/settings">Settings</a></p><h1>Storage</h1>${storageHtml({ plan, csrf: who.session.csrf }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
+      const sweep = { last: lastSweep(store), off: storageSweepOff() };
+      return sendScreen(response, 200, screen("Storage", `<p><a href="/settings">Settings</a></p><h1>Storage</h1>${storageHtml({ plan, csrf: who.session.csrf, sweep }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
         { chrome: chromeFor(project, "settings") }));
     }
     // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -7519,6 +7521,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (plan.go.length === 0) return back("said", "Nothing to clean up.");
         if (body.get("preview") !== previewDigest(plan)) return back("problem", "What a clean-up would remove changed since you looked. Check the list again.");
         const done = await cleanCheckouts(store, pool, clock, { manual: true, actor: who.name, only: new Set(plan.go.map(one => one.path)) });
+        saveSweep(store, { at: clock().toISOString(), source: "manual", actor: who.name, parts: [{ kind: "checkouts", count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: done.removed.slice(0, 20).map(one => one.path) }] });
         return back("said", done.removed.length === 0 ? "Nothing was removed: those checkouts are no longer ready to go." : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}. Their branches stay.`);
       }
       const done = await discardCheckout(store, pool, body.get("path") ?? "", now, who.name);

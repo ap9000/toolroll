@@ -14,12 +14,13 @@
  * The link is read-only to the build. A checkout whose package.json or lockfile no longer matches the copy it links
  * gets its own install (the link goes, the approved setup runs there) and the shared copy is never touched; a copy
  * whose installed tree changed anyway is retired, never linked again. `toolroll storage clean` removes a copy no
- * checkout links or matches.
+ * checkout links or matches; the plane's daily storage sweep removes one no checkout has used for a week.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { markNeverIndex } from "./never-index.js";
 
 export const DEPS_FOLDER = "deps";
 const READY = "ready.json";
@@ -29,6 +30,8 @@ const LINK_NOTE = ".toolroll-shared";
 const NODE_MODULES = "node_modules";
 /** A copy linked or made this recently is never removed by a clean-up: a lease may be about to link it. */
 export const SHARED_GRACE_MS = 60 * 60_000;
+/** The daily storage sweep removes a copy no checkout uses and none has linked for this long. */
+export const SHARED_UNUSED_MS = 7 * 24 * 60 * 60_000;
 /** A half-made copy (a crash mid-promotion) is debris after this long. */
 const PARTIAL_STALE_MS = 24 * 60 * 60_000;
 
@@ -170,6 +173,7 @@ export function linkInto(worktree: string, shared: string): "link" | "clone" | n
       symlinkSync(join(shared, entry.name), join(at, entry.name), entry.isDirectory() ? (process.platform === "win32" ? "junction" : "dir") : "file");
     }
     writeFileSync(join(at, LINK_NOTE), `${shared}\n`, "utf8");
+    markNeverIndex(at);
     touch(dirname(shared));
     return "link";
   } catch {
@@ -204,6 +208,8 @@ export function promoteInstall(args: { root: string; repo: string; worktree: str
   const partial = join(args.root, `${args.key}.partial-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
     mkdirSync(partial, { recursive: true });
+    // Spotlight leaves shared installs alone (never-index.ts).
+    markNeverIndex(args.root);
     renameSync(own, join(partial, NODE_MODULES));
   } catch {
     rmSync(partial, { recursive: true, force: true });
@@ -293,4 +299,22 @@ export function unusedShared(root: string, checkouts: readonly { path: string; r
 export function removeShared(path: string): boolean {
   if (basename(dirname(path)) !== DEPS_FOLDER) return false;
   try { removeTree(path); return !existsSync(path); } catch { return false; }
+}
+
+/**
+ * The daily sweep: remove each copy no checkout uses and none has linked for `unusedMs` (a week), and old debris.
+ * Right before a copy goes, who uses it and when it was last linked are read again; a copy a checkout picked up in
+ * between stays.
+ */
+export function pruneUnusedShared(root: string, checkouts: () => readonly { path: string; repo: string }[], now: Date, unusedMs = SHARED_UNUSED_MS): { removed: SharedUse[]; failed: string[] } {
+  const stale = (one: SharedUse) => one.checkouts.length === 0 && now.getTime() - Date.parse(one.usedAt) > unusedMs;
+  const removed: SharedUse[] = [];
+  const failed: string[] = [];
+  for (const one of sharedUse(root, checkouts()).filter(stale)) {
+    const fresh = sharedUse(root, checkouts()).find(other => other.key === one.key);
+    if (fresh === undefined || !stale(fresh)) continue;
+    if (removeShared(fresh.dir)) removed.push(fresh); else failed.push(fresh.dir);
+  }
+  for (const debris of sharedDebris(root, now)) if (!removeShared(debris)) failed.push(debris);
+  return { removed, failed };
 }

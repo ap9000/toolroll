@@ -112,7 +112,7 @@ import { PROVIDER_AUTH_SCHEMA } from "./provider-auth.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, teammateFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
-import { CHECKOUT_CLEANUP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { CHECKOUT_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
 import { configBase, envValue, namedPath } from "./names.js";
@@ -5301,6 +5301,8 @@ function initializeStore(db: Database, file: string): Store {
   // 1-day evidence: an older file's retention_setting only allowed 7 days or more (no version bump: its rows carry over).
   widenRetentionSchema(db);
   db.exec(CHECKOUT_CLEANUP_SCHEMA);
+  // The daily storage sweep's record (no version bump: a new table, nothing carried over).
+  db.exec(STORAGE_SWEEP_SCHEMA);
   db.exec(BACKUP_SCHEMA);
   // Sprint 8: the organisation policy (one row, or none: nothing restricted).
   db.exec(POLICY_SCHEMA);

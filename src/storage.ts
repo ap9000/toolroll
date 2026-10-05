@@ -3,7 +3,9 @@
  * beside the database, by kind, and what storage retention takes care of.
  * Build checkouts and staged releases are the big ones; the worker removes a
  * finished task's clean checkout as the checkout cleanup setting says
- * (checkout-cleanup.ts), and a deploy keeps its last few releases.
+ * (checkout-cleanup.ts), and the daily storage sweep (storage-sweep.ts) takes
+ * what slips through: stale test temp folders, leftover processes, extra
+ * staged runtimes and dependency installs unused for a week.
  */
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
@@ -18,6 +20,17 @@ CREATE TABLE IF NOT EXISTS checkout_cleanup_setting (
   cleanup    TEXT NOT NULL CHECK (cleanup IN ('finished', '2d', '7d', 'never')),
   updated_by TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+`;
+
+/** What each storage sweep or clean-up by hand did (storage-sweep.ts): the latest few. */
+export const STORAGE_SWEEP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS storage_sweep (
+  id     INTEGER PRIMARY KEY,
+  at     TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('automatic', 'manual')),
+  actor  TEXT NOT NULL,
+  result TEXT NOT NULL
 );
 `;
 
@@ -101,8 +114,8 @@ export function storageReport(store: Store, databaseFile: string, checkoutNote?:
   const lines: StorageLine[] = [
     { what: "Database", bytes: take(name => name.startsWith(base)) },
     { what: "Build checkouts", bytes: take(name => name === "worktrees"), count: checkouts.length, ...(checkoutNote === undefined ? {} : { note: checkoutNote }) },
-    { what: "Shared dependencies", bytes: take(name => name === DEPS_FOLDER), count: sharedCopies(join(folder, DEPS_FOLDER)).length, note: "one install per lockfile, linked into checkouts" },
-    { what: "Staged releases", bytes: take(name => name === "staged-upgrades"), count: staged, note: "a deploy keeps the release it installed, the one before and the newest few" },
+    { what: "Shared dependencies", bytes: take(name => name === DEPS_FOLDER), count: sharedCopies(join(folder, DEPS_FOLDER)).length, note: "one install per lockfile, linked into checkouts; one unused for a week goes" },
+    { what: "Staged releases", bytes: take(name => name === "staged-upgrades"), count: staged, note: "kept: the one running, the one before it and the newest" },
     { what: "Evidence", bytes: take(name => name === "evidence"), note: "the audit record of every run; kept" },
     { what: "Backups", bytes: take(name => name === "backups") },
   ];

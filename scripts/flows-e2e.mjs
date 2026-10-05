@@ -22,13 +22,16 @@ import { BROWSER_CHECK, processesIn, SKIPPED_FADE, spawnOwned, stopOwned } from 
  * the installed Toolroll is never touched.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, createWriteStream } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, createWriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { tmpdir, homedir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { makeTempRoot } from "./suite-lifecycle.mjs";
+// A journey's worker never sweeps the machine it runs on (src/storage-sweep.ts); set it to sweep on purpose.
+process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
 
 const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -68,7 +71,8 @@ const BIN = join(here, "dist/bin.js");
 if (!existsSync(BIN)) throw new Error("Build first: npm run build");
 const { chromium } = await loadPlaywright();
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "so-flows-e2e-")));
+// Marked, and removed at exit however the run ends (--keep keeps it): scripts/suite-lifecycle.mjs.
+const root = realpathSync(makeTempRoot("so-flows-e2e-", { keep: flag("--keep") }));
 const out = resolve(option("--output", join(here, "output/e2e", `flows-${new Date().toISOString().replace(/[:.]/g, "-")}`)));
 mkdirSync(out, { recursive: true });
 const repo = join(root, "shop"), state = join(root, "state"), db = join(state, "orders.db");
