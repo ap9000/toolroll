@@ -123,7 +123,7 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
 
 // Report the recorded check outcome, never turn a model verdict into a check.
 // Follow-up checks on the same commit (Run checks) upgrade a pass and show a failure.
-function nativeChecks(store: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
+export function assignmentChecksForRun(store: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
   const own = buildChecks(store, root, runId);
   const run = store.getRun(runId);
   const followUps = followUpChecksOf(store, runId, now, root);
@@ -197,7 +197,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   const unavailable = family.versions.flatMap(version => store.runsFor(version.refId).flatMap(run =>
     store.artifactsFor(run.id).filter(artifact => root === undefined || !readVerifiedArtifact(root, artifact).ok)
       .map(artifact => `Saved ${artifact.kind} #${artifact.id} (run ${run.id}) is unavailable or changed.`)));
-  const checks = result === null ? null : nativeChecks(store, root, result.id, now);
+  const checks = result === null ? null : assignmentChecksForRun(store, root, result.id, now);
   const finishedBuild = result?.role === "builder" && (result.outcome === "built" || result.outcome === "no-change") &&
     result.finishedAt !== null && /^[a-f0-9]{40}$/.test(result.headRevision ?? "");
   // Finished work returns to its lead or user. Strict terms and previous model
