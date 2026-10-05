@@ -384,6 +384,7 @@ export const COMMAND_GUIDE: readonly CommandRow[] = [
   operator("runner retire", "retire a worker"),
   operator("runner bind", "replace which repositories a worker may build in"),
   operator("runner capacity", "set how many tasks a worker runs at once; running work carries on, the new number applies at the next claim"),
+  operator("project checks", "show or set a project's batch checks (--batch on|off, off by default): results that finish within 10 minutes share one full check on a temporary batch commit; nothing is merged into a real branch"),
   operator("project concurrency", "set how many of a project's tasks build at once (default 2, never past the worker's capacity); running work carries on"),
   operator("coordinator mint", "mint the MCP filing credential — repo-bound, rate-limited, token shown once"),
   operator("coordinator revoke", "revoke an MCP filing credential"),

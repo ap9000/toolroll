@@ -1,5 +1,7 @@
 import { OBSERVATION_MAILBOX, observationBrief, parseObservationCases, collectObservations } from "./observations.js";
 import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./check-levels.js";
+import { queueBatchCheck } from "./batch-checks.js";
+import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
@@ -2588,6 +2590,11 @@ async function settleProof(
   const chosenCheck = repo === null ? null : checkCommandFor(store, repo, checkChoice.level);
   const configured = chosenCheck?.command ?? null;
   if (repo !== null && chosenCheck !== null) recordRunCheckLevel(store, { id: runId, taskId: request.taskId, repo }, chosenCheck.level, checkChoice.from, now());
+  // Batch checks (batch-checks.ts): with the project's batching on, a Full check waits to run once with
+  // other results on a temporary batch commit. The build seals no check of its own; the batch's sealed
+  // receipt is this result's check, and Merge waits for it.
+  const batched = repo !== null && chosenCheck !== null && batchesFullCheck(store, repo, chosenCheck.level, configured);
+  const gateCommand = batched ? null : configured;
   let verifyCommand: VerifyCommandFacts;
   const checkLog: string[] = [];
   const checkOutcomes: string[] = [];
@@ -2618,6 +2625,9 @@ async function settleProof(
     verifyCommand = reused;
   } else if (configured === null) {
     verifyCommand = { configured: false };
+  } else if (batched && repo !== null) {
+    verifyCommand = { configured: false };
+    queueBatchCheck(store, { runId, taskId: request.taskId, repo, head: sealedHead, base: captured.baseRevision, command: configured }, now());
   } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
     verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
     recordCheckNote("Verification did not start: this worker no longer owned the build.");
@@ -2892,7 +2902,7 @@ async function settleProof(
 
   const { verdict, reasons, matrix, machineVerdict } = adjudicate({
     directAssessment: true,
-    ...(configured === null ? {} : { verificationCommand: configured.command }),
+    ...(gateCommand === null ? {} : { verificationCommand: gateCommand.command }),
     proofArtifactPresent,
     proofParse,
     handoffPresent: handoffArtifact !== null,

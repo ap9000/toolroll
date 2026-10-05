@@ -32,11 +32,21 @@ export const ADD_TESTS_ACTION = "tests task filed";
 const ABANDONED_GRACE_MS = 10 * 60_000;
 
 export type RunLevel = Exclude<CheckLevel, "off">;
+/** How a batch check (batch-checks.ts) reached this result's outcome. `together`: one check on a temporary
+ * merge of `members`; `split`: its batch failed, so it was checked on its own; `conflict`: it couldn't be merged
+ * with the others, so it was checked on its own; `alone`: nothing joined it within the window. */
+export type BatchFacts = { mode: "together" | "split" | "conflict" | "alone"; tested: string; base: string | null; members: { task: string; run: number; head: string }[] };
 export type FollowUpCheck = {
-  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request";
+  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request" | "batch";
   /** The approved command's digest when checks were asked for: only that exact command runs. */
   digest: string;
   state: "waiting" | "running" | "passed" | "failed" | "not-run"; exitCode: number | null; logArtifactId: number | null; note: string | null;
+  /** A batch request: the project base it is merged onto. */
+  base?: string | null;
+  /** The commit the check actually ran on: the result's own, or a temporary batch commit. Null until it ran. */
+  tested?: string | null;
+  /** From the sealed receipt of a batch check. */
+  batch?: BatchFacts | null;
 };
 type Refusal = { ok: false; reason: string; message: string };
 const refuse = (reason: string, message: string): Refusal => ({ ok: false, reason, message });
@@ -53,35 +63,41 @@ function ledgerFor(store: Store, runId: number): LedgerRow[] {
 /** Every follow-up check a result has had, oldest first, as the ledger and its sealed receipts say. */
 export function followUpChecksOf(store: Store, runId: number, now: Date = new Date(), root?: string): FollowUpCheck[] {
   const rows = ledgerFor(store, runId);
-  const receipts = new Map<number, { exitCode: number | null; ran: boolean; log: number | null }>();
+  const receipts = new Map<number, { exitCode: number | null; ran: boolean; log: number | null; head: string | null; tested: string | null; batch: BatchFacts | null }>();
   if (root !== undefined) {
     for (const artifact of store.artifactsFor(runId).filter(one => one.kind === "structured-output" && one.capture === FOLLOW_UP_RECEIPT)) {
       const read = readVerifiedArtifact(root, artifact);
       if (!read.ok) continue;
       try {
-        const body = JSON.parse(read.content.toString("utf8")) as { request?: unknown; result?: { ran?: unknown; exitCode?: unknown }; log?: { artifactId?: unknown } };
+        const body = JSON.parse(read.content.toString("utf8")) as { request?: unknown; head?: unknown; tested?: unknown; result?: { ran?: unknown; exitCode?: unknown }; log?: { artifactId?: unknown }; batch?: unknown };
         if (typeof body.request !== "number") continue;
+        const head = typeof body.head === "string" ? body.head : null;
         receipts.set(body.request, { ran: body.result?.ran === true, exitCode: typeof body.result?.exitCode === "number" ? body.result.exitCode : null,
-          log: typeof body.log?.artifactId === "number" ? body.log.artifactId : null });
+          log: typeof body.log?.artifactId === "number" ? body.log.artifactId : null, head,
+          tested: typeof body.tested === "string" ? body.tested : head, batch: batchFactsOf(body.batch, runId, head) });
       } catch { /* an unreadable receipt upgrades nothing */ }
     }
   }
   return rows.filter(row => row.action === CHECKS_REQUESTED && (row.outcome === "quick" || row.outcome === "full")).map(request => {
-    const [head = "", why = "person", digest = ""] = (request.detail ?? "").split(" · ");
+    const [head = "", why = "person", digest = "", recordedBase = ""] = (request.detail ?? "").split(" · ");
     const started = rows.find(row => row.action === CHECKS_STARTED && row.outcome === String(request.id)) ?? null;
     const finished = rows.find(row => row.action === CHECKS_FINISHED && row.outcome.startsWith(`${request.id}:`)) ?? null;
     const base = { request: request.id, runId, level: request.outcome as RunLevel, head, digest, actor: request.actor, at: request.at,
-      why: why === "pull-request" ? "pull-request" as const : "person" as const, exitCode: null, logArtifactId: null, note: null };
+      why: why === "pull-request" ? "pull-request" as const : why === "batch" ? "batch" as const : "person" as const, exitCode: null, logArtifactId: null, note: null,
+      ...(why === "batch" ? { base: /^[a-f0-9]{40}$/.test(recordedBase) ? recordedBase : null } : {}) };
     if (finished !== null) {
       const status = finished.outcome.slice(String(request.id).length + 1);
       const sealed = receipts.get(request.id) ?? null;
-      // With the evidence at hand, only a sealed receipt can say passed.
-      if (status === "passed" && root !== undefined && (sealed === null || !sealed.ran || sealed.exitCode !== 0)) {
+      // With the evidence at hand, only a sealed receipt can say passed: for this result's own commit, and,
+      // for a batch, a batch that names this result.
+      if (status === "passed" && root !== undefined && (sealed === null || !sealed.ran || sealed.exitCode !== 0 || (sealed.head !== null && sealed.head !== head)
+        || (base.why === "batch" && sealed.batch === null))) {
         return { ...base, state: "not-run" as const, note: "The saved check result could not be verified." };
       }
       const exit = /exit (\d+)/.exec(finished.detail ?? "");
       return { ...base, state: status === "passed" ? "passed" as const : status === "failed" ? "failed" as const : "not-run" as const,
-        exitCode: exit === null ? sealed?.exitCode ?? null : Number(exit[1]), logArtifactId: sealed?.log ?? null, note: status === "not-run" ? finished.detail : null };
+        exitCode: exit === null ? sealed?.exitCode ?? null : Number(exit[1]), logArtifactId: sealed?.log ?? null, note: status === "not-run" ? finished.detail : null,
+        ...(sealed === null ? {} : { tested: sealed.ran ? sealed.tested : null, batch: sealed.batch }) };
     }
     if (started !== null) {
       const limit = Number(/limit (\d+)/.exec(started.detail ?? "")?.[1] ?? 3_600_000);
@@ -90,6 +106,23 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
     }
     return { ...base, state: "waiting" as const };
   });
+}
+
+/** A receipt's batch facts, only when they are whole and name this result at its own commit. */
+function batchFactsOf(value: unknown, runId: number, head: string | null): BatchFacts | null {
+  if (value === null || typeof value !== "object") return null;
+  const raw = value as { mode?: unknown; tested?: unknown; base?: unknown; members?: unknown };
+  const modes = ["together", "split", "conflict", "alone"] as const;
+  const mode = modes.find(one => one === raw.mode);
+  if (mode === undefined || typeof raw.tested !== "string" || !/^[a-f0-9]{40}$/.test(raw.tested) || !Array.isArray(raw.members)) return null;
+  const members = raw.members.flatMap(one => {
+    const m = one as { task?: unknown; run?: unknown; head?: unknown };
+    return typeof m?.task === "string" && typeof m.run === "number" && typeof m.head === "string" ? [{ task: m.task, run: m.run, head: m.head }] : [];
+  });
+  if (members.length !== raw.members.length || !members.some(one => one.run === runId && one.head === head)) return null;
+  // Checked on its own: the commit tested is the result's own.
+  if (mode !== "together" && (members.length !== 1 || raw.tested !== head)) return null;
+  return { mode, tested: raw.tested, base: typeof raw.base === "string" ? raw.base : null, members };
 }
 
 /** Whether a result can have checks run on it, and with which command. */
@@ -120,8 +153,12 @@ export function requestFollowUpChecks(store: Store, input: { runId: number; leve
   });
 }
 
-/** Requests nobody has started yet, oldest first. */
+/** Requests nobody has started yet, oldest first. Batch requests wait for the batch pass (batch-checks.ts). */
 export function waitingCheckRequests(store: Store, now: Date): FollowUpCheck[] {
+  return waitingRequestsOfAnyKind(store, now).filter(one => one.why !== "batch");
+}
+
+export function waitingRequestsOfAnyKind(store: Store, now: Date): FollowUpCheck[] {
   const runs = store.handle.prepare(`SELECT DISTINCT r.run_id AS run FROM action_ledger r WHERE r.action = ? AND r.run_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM action_ledger s WHERE s.run_id = r.run_id AND s.action = ? AND s.outcome = CAST(r.id AS TEXT)) ORDER BY r.id`)
     .all(CHECKS_REQUESTED, CHECKS_STARTED).map(row => Number(row["run"]));
@@ -201,7 +238,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   const text = log.length === 0 ? "No command started." : log.join("\n\n");
   const logId = storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
   const logArtifact = store.getArtifact(logId)!;
-  const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, level: target.level,
+  const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, tested: target.head, level: target.level,
     command: { repo: target.command.repo, command: target.command.command, digest: target.command.digest, approvedBy: target.command.approvedBy },
     result, log: { artifactId: logArtifact.id, sha256: logArtifact.sha256, bytesStored: logArtifact.bytesStored, truncated: logArtifact.truncated } }, null, 1);
   storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.json`, Buffer.from(receipt, "utf8"), FOLLOW_UP_RECEIPT, at, { captureStatus: "ok" });
@@ -262,8 +299,12 @@ export function fullCheckGate(store: Store, runId: number, now: Date): FullCheck
   const level = runCheckLevel(store, runId);
   const repo = repoOfRun(store, runId);
   const run = store.getRun(runId);
-  if (level === null || level === "full" || repo === null || run === null || store.liveVerifyCommand(repo) === null) return { state: "clear" };
-  const last = followUpChecksOf(store, runId, now).filter(one => one.level === "full" && one.head === run.headRevision).at(-1);
+  if (level === null || repo === null || run === null) return { state: "clear" };
+  const fulls = followUpChecksOf(store, runId, now).filter(one => one.level === "full" && one.head === run.headRevision);
+  // A Full build that waited for a batch check has had no check of its own: Merge waits for the batch, like Quick does.
+  const batched = level === "full" && fulls.some(one => one.why === "batch");
+  if ((level === "full" && !batched) || (!batched && store.liveVerifyCommand(repo) === null)) return { state: "clear" };
+  const last = fulls.at(-1);
   if (last === undefined) return { state: "not-requested", message: "The full check hasn't run on this commit yet. Merge once it passes, or merge anyway." };
   if (last.state === "passed") return { state: "clear" };
   if (last.state === "failed") return { state: "failed", message: `The full check failed on this commit${last.exitCode === null ? "" : ` (exit ${last.exitCode})`}. Fix it, or merge anyway.` };

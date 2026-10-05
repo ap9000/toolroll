@@ -3,6 +3,7 @@ import { aboutYouOf, checkAboutYou, saveAboutYou, ABOUT_YOU_LINE_MAX, ABOUT_YOU_
 import { withActor } from "./actor.js";
 import { repositoryContext, repositoryContextRead } from './repository-context.js';
 import { ADD_TESTS_ACTION, followUpChecksOf, requestFollowUpChecks, fileAddTestsTask, resultCheckLevel, type FollowUpCheck } from './result-follow-ups.js';
+import { projectBatchChecks, setProjectBatchChecks } from './batch-policy.js';
 import { CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, suggestQuickCommand, type CheckLevel } from './check-levels.js';
 import { repositoryContextHtml } from './repository-context-ui.js';
 import { browserAssetsAvailable, browserWorkspaceDocument, serveBrowserAsset } from './browser-shell.js';
@@ -4272,7 +4273,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const quick = liveQuickCommand(store, repo);
       const html = checkSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange: who.role === "approver" && !store.isDemo(),
         level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
-        review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())),
+        review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on },
         said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
       return sendScreen(response, 200, screen("Checks", `<p><a href="/projects">Projects</a></p><h1>Checks</h1>${html}`, { chrome: chromeFor(project, "projects") }));
     }
@@ -7569,6 +7570,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const on = body.get("on") === "1";
         store.setReviewSwitch(repo, on, who.name, now);
         return back("said", on ? "Automatic review is on." : "Automatic review is off.");
+      }
+      // Batch checks: off by default; the ledger keeps before → after.
+      if (act === "batch") {
+        const on = body.get("on") === "1";
+        const changed = setProjectBatchChecks(store, repo, on, who.name, now);
+        return back("said", !changed.changed ? "Saved." : on ? "Batch checks are on." : "Batch checks are off.");
       }
       if (act === "level") {
         const level = body.get("level");
@@ -24710,9 +24717,16 @@ function followUpsFor(store: Store, evidenceRoot: string, run: Run, now: Date): 
 const FOLLOW_UP_WORDS: Record<FollowUpCheck["state"], string> = { waiting: "waiting for a worker", running: "running", passed: "passed", failed: "failed", "not-run": "didn't run" };
 /** Run checks and Add tests, under the result's Checks: what ran since, then the two acts. */
 function followUpsHtml(followUps: NonNullable<ResultDetail["followUps"]>, runId: number, o: ResultPanelOptions): string {
-  const rows = followUps.checks.map(one => `<li data-follow-up-check="${one.state}">${escape(CHECK_LEVEL_WORDS[one.level])} checks ${escape(FOLLOW_UP_WORDS[one.state])}` +
-    `${one.exitCode === null || one.state === "passed" ? "" : ` (exit ${one.exitCode})`} on <span class="mono">${escape(one.head.slice(0, 7))}</span>` +
-    `<span class="meta"> · ${one.why === "pull-request" ? "for the pull request" : escape(one.actor)}${one.note === null ? "" : ` · ${escape(one.note)}`}</span>` +
+  // A batch check names every result it ran with and the exact commit it tested (batch-checks.ts).
+  const batchHow = (one: FollowUpCheck): string => {
+    const peers = one.batch?.members.filter(member => member.run !== runId).map(member => member.task) ?? [];
+    return one.batch?.mode === "together" && peers.length > 0 ? ` together with ${peers.map(escape).join(", ")}`
+      : one.batch?.mode === "split" ? " on its own after its batch failed" : one.batch?.mode === "conflict" ? " on its own (it conflicted with another result)" : "";
+  };
+  const rows = followUps.checks.map(one => `<li data-follow-up-check="${one.state}"${one.why === "batch" ? ` data-batch="${escape(one.batch?.mode ?? "waiting")}"` : ""}>${escape(CHECK_LEVEL_WORDS[one.level])} checks ` +
+    `${escape(one.why === "batch" && one.state === "waiting" ? "waiting to check with other results" : FOLLOW_UP_WORDS[one.state])}${batchHow(one)}` +
+    `${one.exitCode === null || one.state === "passed" ? "" : ` (exit ${one.exitCode})`} on <span class="mono">${escape((one.tested ?? one.head).slice(0, 7))}</span>` +
+    `<span class="meta"> · ${one.why === "pull-request" ? "for the pull request" : one.why === "batch" ? "batch check" : escape(one.actor)}${one.note === null ? "" : ` · ${escape(one.note)}`}</span>` +
     `${one.logArtifactId === null ? "" : ` <a href="/r/${runId}/evidence/${one.logArtifactId}">Log</a>`}</li>`).join("");
   const hidden = `<input type="hidden" name="csrf" value="${escape(o.csrf)}"><input type="hidden" name="return" value="${escape(o.returnTo)}">`;
   const canCheck = followUps.quick || followUps.full;

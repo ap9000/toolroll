@@ -20,7 +20,7 @@ import { runCheckLevel, type CheckLevel } from "./check-levels.js";
 import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
-import { assignmentStageOf } from "./task-status.js";
+import { assignmentStageOf, type ChecksBatch } from "./task-status.js";
 import { leadClaimOf, type LeadClaim } from "./lead-voice.js";
 
 export type AssignmentAccess = WorkSummaryAccess;
@@ -32,6 +32,8 @@ export type AssignmentChecks = {
   level?: CheckLevel | null;
   /** A follow-up check waiting or running on this commit. */
   running?: "quick" | "full" | null;
+  /** A batch check (batch-checks.ts): waiting for its batch, or how it was checked. */
+  batch?: ChecksBatch | null;
 };
 export type AssignmentReceipt = {
   digest: string; rootId: string; taskId: string; runId: number;
@@ -93,7 +95,7 @@ function olderStoreSafe<T>(read: () => T, absent: T): T {
   try { return read(); } catch (error) { if (error instanceof TypeError || /no such (table|column)/.test(String(error))) return absent; throw error; }
 }
 /** A check as the receipt digest seals it: presentation-only fields (check-levels.ts) left out. */
-const sealedChecks = ({ level: _level, running: _running, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running"> => proof;
+const sealedChecks = ({ level: _level, running: _running, batch: _batch, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch"> => proof;
 const OWNER_ACTION = "assignment claimed";
 const CHECK_ACTION = COMPLETION_ACTION;
 const actorOf = (owner: AssignmentOwner) => `${owner.kind}:${owner.id}`;
@@ -130,7 +132,13 @@ function nativeChecks(store: Store, root: string | undefined, runId: number, now
   const latest = [...followUps].reverse().find(one => one.state === "passed" || one.state === "failed");
   const changed = read.status !== own.status || read.level !== (own.level ?? null) || read.exitCode !== own.exitCode;
   const words = read.level === "quick" ? "Quick checks" : "Checks";
-  return { ...own, running: read.running,
+  // A batch check: waiting for its batch, or how the latest finished one was checked and on which commit.
+  const waitingBatch = followUps.some(one => one.why === "batch" && one.state === "waiting");
+  const sealedBatch = latest?.batch ?? null;
+  const batch: ChecksBatch | null = waitingBatch ? { state: "waiting", tested: null, peers: [] }
+    : sealedBatch !== null && latest !== undefined ? { state: sealedBatch.mode, tested: latest.tested ?? sealedBatch.tested,
+      peers: sealedBatch.members.filter(one => one.run !== runId).map(one => one.task) } : null;
+  return { ...own, running: read.running, ...(batch === null ? {} : { batch }),
     ...(changed ? { status: read.status, level: read.level, exitCode: read.exitCode, logArtifactId: latest?.logArtifactId ?? own.logArtifactId,
       detail: read.status === "passed" ? `${words} passed.` : `${words} failed (exit ${read.exitCode}).` } : {}) };
 }
