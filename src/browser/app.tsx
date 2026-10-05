@@ -19,11 +19,12 @@ import { GuardedHtml, notifyWorkspaceRendered, regionIsEditing } from "./guarded
 import { ActionCards, CHAT_COMMANDS } from "./chat-cards.js";
 import { FirstRequest, FirstRun, PhoneCard, withSuggestion } from "./first-run.js";
 import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
-import { threadWhen } from "./views/task-view.js";
+import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
 import { HeadlineBadge } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
+import { shortAge } from "../when-html.js";
 import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
@@ -251,10 +252,16 @@ export function useWorkspace(initial: BrowserWorkspace) {
     edit: (text: string) => updateDraft(editDraft(state.current.draft, text)) };
 }
 
+/** "4m", "2h", "3d" since the task last changed; the exact minute is in the title. Recounted on each refresh. */
+function CrewAge({ at }: { at: string }) {
+  const words = shortAge(at);
+  return words === "" ? null : <time className="so-work-age" dateTime={at} title={whenTitle(at)}>{words}</time>;
+}
+
 function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; items: BrowserWorkspace["crew"] }) {
   return <ul className="so-work-list">{items.map(item => <li key={item.id} data-workspace-task={item.id} data-work-status={item.state}>
     <a className="so-work-row" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
-      <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} /></div>
+      <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} className="so-work-badge" /><CrewAge at={item.updatedAt} /></div>
       {item.lead && <span className="so-work-project" data-crew-lead>{item.lead}</span>}
       {item.project && <span className="so-work-project">{workspace.projects.find(project => project.path === item.project)?.name ?? item.project.split(/[\\/]/).filter(Boolean).pop()}</span>}
     </a>
