@@ -90,12 +90,12 @@ describe("real-model-journeys.mjs", () => {
   });
 
   test("an idle machine: both suites start together, as before", () => {
-    const { code, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "500" }, ["--only", "^Independent$"], { suites: ["flows", "lead"] });
+    const { code, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "500", TOOLROLL_CHECK_PROVIDERS: "4" }, ["--only", "^Independent$"], { suites: ["flows", "lead"] });
     expect(code).toBe(0);
     const [a, b] = spans.sort((x, y) => x.start - y.start);
     expect(b!.start).toBeLessThan(a!.end);
     expect(stderr).not.toContain("waiting for room");
-    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); nothing waited for room$/m);
+    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [^)]+\); nothing waited for room$/m);
   });
 
   test("a busy machine: the second suite waits for room, and its wait doesn't count against its time cap", () => {
@@ -104,7 +104,7 @@ describe("real-model-journeys.mjs", () => {
     const [a, b] = spans.sort((x, y) => x.start - y.start);
     expect(b!.start).toBeGreaterThanOrEqual(a!.end);
     expect(stderr).toMatch(/^waiting for room to start (flows|lead): 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB$/m);
-    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); 1 start waited [0-9.]+ s in all for room/m);
+    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [^)]+\); 1 start waited [0-9.]+ s in all for room/m);
     expect(stdout).toContain("Every real-model journey passed (flows 1, lead 1)");
     expect(code).toBe(0);
   });

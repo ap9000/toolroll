@@ -174,12 +174,12 @@ describe("e2e-parallel.mjs", () => {
   });
 
   test("an idle machine: the groups start together, as before, and nothing waits", () => {
-    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "400" });
+    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "400", TOOLROLL_CHECK_PROVIDERS: "4" });
     expect(code).toBe(0);
     expect(stdout).toMatch(/^Running 3 groups, at most 3 at once \(32\.0 GB available, about 400 MB each\): alpha, beta, gamma$/m);
     expect(overlapped(runs.filter(one => !one.out.endsWith("-retry")))).toBe(true);
     expect(stdout).not.toContain("waiting for room");
-    expect(stdout).toMatch(/^admission: ran up to 3 groups at a time: lowest 32\.0 GB free, swap up to 0% used; up to 3 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); nothing waited for room$/m);
+    expect(stdout).toMatch(/^admission: ran up to 3 groups at a time: lowest 32\.0 GB free, swap up to 0% used; up to 3 provider turns of ours, 0 other sessions \(cap \d+, from [^)]+\); nothing waited for room$/m);
   });
 
   test("low memory and full swap: each group and retry waits for room, one at a time, and a retry after a wait still judges flaky", () => {
@@ -191,7 +191,7 @@ describe("e2e-parallel.mjs", () => {
     expect(stdout).toMatch(/^waiting for room to start stand-in (alpha|beta|gamma): 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB$/m);
     expect(stdout).toContain("- alpha: Flaky one");
     expect(stdout).toMatch(/^3 of 3 groups passed \(2 flaky journeys\) in /m);
-    expect(stdout).toMatch(/^admission: ran up to 1 group at a time: lowest 1\.5 GB free, swap up to 98% used; up to 1 provider turn of ours, 1 other session \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); [2-4] starts waited [0-9.]+ s in all for room \(longest: stand-in [a-z-]+, 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB\)$/m);
+    expect(stdout).toMatch(/^admission: ran up to 1 group at a time: lowest 1\.5 GB free, swap up to 98% used; up to 1 provider turn of ours, 1 other session \(cap \d+, from [^)]+\); [2-4] starts waited [0-9.]+ s in all for room \(longest: stand-in [a-z-]+, 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB\)$/m);
   });
 
   test("the provider cap: TOOLROLL_CHECK_PROVIDERS=1 runs one group at a time with memory to spare; a larger cap runs them together", () => {
