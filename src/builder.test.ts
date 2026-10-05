@@ -3,6 +3,8 @@ import { disposeBuildOutcome } from "./dispose.js";
 import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
 import { isVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
 import { quickVerifyKey, runCheckLevel, setProjectCheckLevel } from "./check-levels.js";
+import { setProjectBatchChecks } from "./batch-policy.js";
+import { followUpChecksOf, fullCheckGate } from "./result-follow-ups.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { agentExitWords, build, handoffResumePrompt, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, type Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
@@ -2162,6 +2164,32 @@ describe("the pulse", () => {
     expect(store.runCheckFor(off.runId)).toMatchObject({ status: "not-run" });
     // Off recorded no check, and that is not a gap in the evidence.
     expect(verificationEvidence(store, off.evidenceRoot, off.runId)).toMatchObject({ ok: true, bytes: null });
+  });
+
+  test("batch checks: with the project's batching on, a Full build queues its exact commit for a batch check instead of checking inline", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a", "lease-b") });
+    store.setVerifyCommand({ repo: REPO, command: "full-check", timeoutMs: 5_000, approvedBy: "alex" }, T0);
+    setProjectCheckLevel(store, REPO, "full", "alex", T0);
+    setProjectBatchChecks(store, REPO, true, "alex", T0);
+    const ran: string[] = [];
+    const agent: Runner = async (_file, args, options) => { conclude(args, options); return { ...OK, stdout: AGENT_SAID }; };
+    const verify: Runner = async (_file, args) => { ran.push(args.at(-1)!); return { ...OK }; };
+    const batched = request("lease-a", { agent, verify });
+    expect(await build(store, batched)).toMatchObject({ ok: true, committed: true });
+    expect(ran).toEqual([]);
+    expect(runCheckLevel(store, batched.runId)).toBe("full");
+    expect(store.runCheckFor(batched.runId)).toMatchObject({ status: "not-run" });
+    const head = store.getRun(batched.runId)!.headRevision!;
+    expect(followUpChecksOf(store, batched.runId, new Date())).toEqual([expect.objectContaining({ why: "batch", level: "full", state: "waiting", head,
+      digest: store.liveVerifyCommand(REPO)!.digest })]);
+    expect(fullCheckGate(store, batched.runId, new Date()).state).toBe("waiting");
+
+    // Off again: the next Full build checks inline, as before.
+    setProjectBatchChecks(store, REPO, false, "alex", T0);
+    const inline = request("lease-a", { agent, verify });
+    await build(store, inline);
+    expect(ran).toEqual(["full-check"]);
+    expect(followUpChecksOf(store, inline.runId, new Date())).toEqual([]);
   });
 
   test("a build fenced while the agent runs commits nothing", async () => {

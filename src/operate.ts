@@ -3,6 +3,8 @@ import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
 import { fileAddTestsTask, followUpChecksOf, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
+import { runBatchChecks } from "./batch-checks.js";
+import { BATCH_HINT, BATCH_WINDOW_MS, projectBatchChecks, setProjectBatchChecks } from "./batch-policy.js";
 import { buildReviewPass } from "./build-review.js";
 import { buildReviewLines, buildReviewOf } from "./review-switch.js";
 import { parseProtectedPaths } from "./approval-policy.js";
@@ -1271,6 +1273,7 @@ async function dispatch(
       if (positional[0] === "rules") return projectRulesCommand(positional, flags, context);
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
+      if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
     case "assignment":
@@ -8596,10 +8599,13 @@ async function runWatchLoop(args: {
     onError: error => progress(`watch: a follow-up check failed to run — ${describe(error)}; it is recorded on the result`),
     run: async () => {
       if (store.isDemo()) return;
+      // Batch checks first: a cohort that is ready runs one check for all its results.
+      const batched = await runBatchChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
+      if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
-      if (ran > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
+      if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
   });
 
@@ -13497,6 +13503,43 @@ async function projectConcurrencyCommand(positional: readonly string[], flags: M
   return succeed(context.write, context.json, command, { repo, before: changed.before, concurrency: changed.after, workerCapacity: capacity }, () => [
     words(changed.after),
     ...(changed.before > changed.after ? ["Builds already running carry on; the new number applies to the next one."] : []),
+  ]);
+}
+
+/** `project checks [--batch on|off] --repo <p>`: whether the project's results share one full check when they
+ * finish close together (batch-checks.ts). Off by default; changing it is an approver's act, in the ledger. */
+async function projectChecksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project checks";
+  const allowed = new Set(["repo", "batch", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project checks option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = flags.get("batch");
+  if (positional.length > 1 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) {
+    return fail(context.write, context.json, command, "usage", "Use project checks [--batch on|off] --repo <project path>.", EXIT.usage);
+  }
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...context.store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
+  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const level = projectCheckLevel(context.store, repo).level;
+  const words = (on: boolean): string[] => [
+    `${repo}: batch checks are ${on ? "on" : "off"}. ${on ? BATCH_HINT : "Each result runs its own full check."}`,
+    ...(on && level !== "full" ? [`Checks are ${CHECK_LEVEL_WORDS[level]} for this project, so nothing is batched until they are Full.`] : []),
+  ];
+  if (wanted === undefined) {
+    const current = projectBatchChecks(context.store, repo);
+    return succeed(context.write, context.json, command, { repo, batch: current.on, windowMinutes: current.windowMs / 60_000, level, setBy: current.setBy }, () => words(current.on));
+  }
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project changes batch checks: pass --as and --token (or use the remembered login).", EXIT.refused);
+  }
+  const on = wanted === "on";
+  const changed = setProjectBatchChecks(context.store, repo, on, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, batch: on, before: changed.before, changed: changed.changed, windowMinutes: BATCH_WINDOW_MS / 60_000, level }, () => [
+    ...words(on),
+    ...(changed.changed && !on ? ["Results already waiting are checked now."] : []),
   ]);
 }
 

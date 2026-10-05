@@ -126,6 +126,8 @@ describe("what went wrong with a failed attempt, in one line", () => {
     // Nothing on stderr: the last line it printed that names a failure.
     expect(lastErrorLineOf("$ npm test\n(exit 1)\n\n--- stdout ---\n1 failed\ndone\n\n--- stderr ---\n")).toEqual({ line: 5, text: "1 failed" });
     expect(lastErrorLineOf("$ npm test\n(exit 1)\n\n--- stdout ---\n\n--- stderr ---\n")).toBeNull();
+    // A silent check: the log's own section header is never offered as the failing line.
+    expect(lastErrorLineOf("=== tweak-footer on its own · full check on 1a2b3c4 ===\n$ npm test\n(exit 1)\n\n--- stdout ---\n\n--- stderr ---\n")).toBeNull();
   });
 });
 
