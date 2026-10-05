@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.35 — 2026-10-05
+
+- **One-click sign-ins ask for every permission a service lists.** Toolroll
+  asked for only the first 20, so a service needing one later in its list
+  issued a token it then refused (PostHog needs `user:read`, its 140th).
+  Reconnect a service that failed its test after signing in.
+
 ## 0.9.34 — 2026-10-05
 
 - **Plans have one contract.** The first step of making every handoff robust:

@@ -374,3 +374,20 @@ test("a build gets the project's Figma desktop app with every action", () => {
     }
   }
 });
+
+test("a sign-in asks for every scope the server lists, so a server that needs one late in its list (PostHog's user:read) accepts the token", async () => {
+  const reply = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  const listed = [...Array.from({ length: 139 }, (_, at) => `area${at}:read`), "user:read", ...Array.from({ length: 15 }, (_, at) => `late${at}:write`)];
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://mcp.posthog.test/mcp" && init?.method === "POST") return reply(401, {}, { "www-authenticate": 'Bearer resource_metadata="https://mcp.posthog.test/.well-known/oauth-protected-resource/mcp"' });
+    if (url === "https://mcp.posthog.test/.well-known/oauth-protected-resource/mcp") return reply(200, { resource: "https://mcp.posthog.test/mcp", authorization_servers: ["https://oauth.posthog.test"], scopes_supported: [...listed, "bad scope", "x\"y"] });
+    if (url === "https://oauth.posthog.test/.well-known/oauth-authorization-server") return reply(200, { authorization_endpoint: "https://oauth.posthog.test/authorize", token_endpoint: "https://oauth.posthog.test/token", registration_endpoint: "https://oauth.posthog.test/register", code_challenge_methods_supported: ["S256"] });
+    return reply(404, {});
+  }) as typeof fetch;
+  const found = await discoverSignIn("https://mcp.posthog.test/mcp", fetcher);
+  expect(found?.scopes).toHaveLength(155);
+  expect(found?.scopes).toContain("user:read");
+  expect(found?.scopes).not.toContain("bad scope");
+  expect(found!.scopes.join(" ").length).toBeLessThanOrEqual(6_000);
+});

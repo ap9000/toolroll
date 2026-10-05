@@ -163,6 +163,9 @@ const renewTried = new Map<string, number>();
 
 type Fetch = typeof fetch;
 type Server = { authorize: string; token: string; register: string; scopes: string[]; resource: string | null };
+/** RFC 6749 scope tokens; and the most scope text a sign-in address carries (addresses stay well under 8 KB). */
+const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+const SCOPE_PARAM_LIMIT = 6_000;
 /** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). `kit` or `template` is the page it returns to. */
 export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number };
 
@@ -203,10 +206,15 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
   if (meta === null || !https(meta["authorization_endpoint"]) || !https(meta["token_endpoint"]) || !https(meta["registration_endpoint"])) return null;
   const methods = Array.isArray(meta["code_challenge_methods_supported"]) ? meta["code_challenge_methods_supported"] as unknown[] : ["S256"];
   if (!methods.includes("S256")) return null;
-  const scopes = Array.isArray(resource?.["scopes_supported"]) ? (resource!["scopes_supported"] as unknown[]).filter((one): one is string => typeof one === "string") : [];
+  // Ask for every scope the server lists for this resource: a token missing one the server itself requires is
+  // refused after a successful sign-in (PostHog lists 155 and needs user:read, the 140th). Only well-formed scope
+  // tokens, and at most what fits a sign-in address.
+  const listed = Array.isArray(resource?.["scopes_supported"]) ? (resource!["scopes_supported"] as unknown[]).filter((one): one is string => typeof one === "string" && SCOPE_TOKEN.test(one)) : [];
+  const scopes: string[] = [];
+  for (const one of listed) { if (scopes.join(" ").length + one.length + 1 > SCOPE_PARAM_LIMIT) break; scopes.push(one); }
   // A token is for the resource the server names (Stripe's has no trailing slash), when it names one.
   const named = resource?.["resource"];
-  return { authorize: meta["authorization_endpoint"] as string, token: meta["token_endpoint"] as string, register: meta["registration_endpoint"] as string, scopes: scopes.slice(0, 20), resource: https(named) ? named : null };
+  return { authorize: meta["authorization_endpoint"] as string, token: meta["token_endpoint"] as string, register: meta["registration_endpoint"] as string, scopes, resource: https(named) ? named : null };
 }
 
 /**
