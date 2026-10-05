@@ -1,8 +1,9 @@
 # Testing
 
 Standing Orders is tested end to end: the real CLI, the real console and the
-real worker, driven through a real browser with real Claude turns and real
-builds. Unit tests are kept only where an end-to-end run can't be the guard.
+real worker, driven through a real browser. Journeys that test the model
+integration use real Claude turns and real builds; the rest script the model.
+Unit tests are kept only where an end-to-end run can't be the guard.
 
 ## End to end (the main suite)
 
@@ -29,16 +30,52 @@ on 993).
 A journey retried alone in a fresh world can pass when it failed from state an
 earlier journey left, so a flaky retry is a follow-up to look at, not proof.
 
-Needs: `npm run build`, `claude` signed in, `gh` signed in, git, sqlite3,
-Playwright's Chromium (`npx playwright install chromium`), Docker for the
-mail server, python3. An OpenRouter key in Settings → AI providers for Jev.
-A run spends a few Claude turns and a few real builds (about 45 minutes for
-both).
+### Scripted and real-model journeys
 
-The release gate (`scripts/release-check.mjs`) runs both, every group at once,
-before a build ships. It starts typecheck, build and the unit tests together
-(the tests' setup waits for that build); the journeys start once the build is
-done. Its summary ends with how long each part took.
+Every journey says which it is, and `--groups` counts both:
+
+- **Scripted** journeys test Toolroll's own behaviour: approvals, results,
+  revisions, flows moving cards, chat buttons, teammates' rules, storage. They
+  run against `scripts/fixtures/scripted-provider.mjs`, a stand-in `claude`
+  and `codex` first on the world's PATH that speaks the same CLI protocol
+  (json and stream-json output, structured output, resumed sessions, codex
+  JSONL, the planner's and builder's nonce-bound files, MCP tool calls) and
+  answers at once from what the journey scripted (`w.script(...)`). The CLI,
+  console, worker, git and browser stay real. A model call nothing scripted
+  fails the run ("Every model call was scripted"), and a scripted run needs no
+  sign-in.
+- **Real-model** journeys test the model integration: the lead's real turns,
+  the planner and builder protocols (a real plan and build, a build that
+  parks a question), Jev's sorting. They use the computer's real CLIs.
+
+`--journeys scripted` runs the scripted ones, `--journeys real` the
+real-model ones and the journeys they need, and `--journeys all` (the default)
+every journey with real models. `--list --json` lists every journey with its
+mode, needs and groups without starting a world; a run fails when a journey
+isn't tagged, needs one that isn't before it in its group, or a scripted one
+needs a real-model one, or when the counts in GROUPS are wrong. Each report
+counts the model calls (scripted, and real turns) and keeps them in
+`model-calls.jsonl`.
+
+Needs: `npm run build`, `gh` signed in, git, sqlite3, Playwright's Chromium
+(`npx playwright install chromium`), Docker for the mail server, python3; for
+real-model journeys `claude` signed in, and an OpenRouter key in Settings → AI
+providers for Jev. A real run spends a few Claude turns and a few real builds
+(about 45 minutes for both); a scripted one spends none.
+
+The release gate (`scripts/release-check.mjs`) runs what the change can
+break, every chosen group at once: the scripted journeys when a page changed
+(just the groups that own the page when that is clear — the flow pages, the
+teammate and kit pages, first run, one journey script — and every scripted
+group otherwise), and the real-model journeys only when model-facing code
+changed (the lead, chat, mate tools, the planner, the builder, teammates, the
+provider adapters) or `--real` is given. Its plan line names the groups and
+why. It starts typecheck, build and the unit tests together (the tests' setup
+waits for that build); the journeys start once the build is done. Its summary
+ends with the model calls, how long each part took and the peak memory. The
+nightly real-model journeys flow (`scripts/flows/real-model-journeys.mjs`,
+see the flows guide) runs every journey of both scripts with real models, so
+every journey still meets the real models somewhere.
 
 ## Unit tests (`npm test`)
 

@@ -5,9 +5,18 @@
  *
  *   - unit tests related to the changed files (`vitest related <files>`);
  *     the whole suite when test setup, config or dependencies changed
- *   - the browser journeys (every flows-e2e and app-e2e group) only when the
- *     change touches something a page shows: the console, the server that
- *     renders it, the e2e scripts, or dependencies
+ *   - the scripted browser journeys (scripts/flows-e2e.mjs and app-e2e.mjs,
+ *     with the model scripted: scripts/fixtures/scripted-provider.mjs) only
+ *     when the change touches something a page shows: the console, the server
+ *     that renders it, the e2e scripts, or dependencies. A page with clear
+ *     journeys (the flow pages, the teammate and kit pages, first run, one
+ *     e2e script) runs just those groups; anything else runs every group
+ *   - the real-model journeys (the lead's real turns, the planner and builder
+ *     protocols, the classifier), and the journeys they need, only when
+ *     model-facing code changed (the lead, chat, mate tools, the planner, the
+ *     builder, teammates, the provider adapters) or --real is given. The
+ *     nightly journeys flow (scripts/flows/real-model-journeys.mjs) runs every
+ *     journey with real models
  *   - the upgrade path (scripts/upgrade-path.mjs) only when the change can break
  *     an update from an installed release: the store, a file that defines a
  *     table (*_SCHEMA), what a newly switched worker or the deploy's facts
@@ -24,16 +33,18 @@
  *
  * Everything starts at once: typecheck, build and the unit tests (whose setup
  * waits for this build rather than building again); the journeys start when
- * the build is done, flows-e2e and app-e2e each in parallel groups
- * (scripts/e2e-parallel.mjs). Together they run at most as many browser groups
+ * the build is done: flows-e2e and app-e2e, scripted and real-model, each in
+ * parallel groups (scripts/e2e-parallel.mjs). Together they run at most as many browser groups
  * at once as the memory available allows (~400 MB each, at most 6;
- * check-memory.mjs), and the summary records the peak memory.
+ * check-memory.mjs), and the summary records the peak memory and the model
+ * calls the journeys made (scripted, and real turns).
  *
  * The base is origin/main, fetched fresh; files are compared, not ancestry.
  * No difference from main (or no main) means everything runs. `--full` (or TOOLROLL_FULL_CHECK=1) runs
- * everything, as the check did before. Ends with the same `== summary` block, and how long each part took.
+ * everything: every unit test, every scripted and every real-model journey. `--real` adds the real-model journeys
+ * to whatever the change runs. Ends with the same `== summary` block, and how long each part took.
  *
- *   node scripts/release-check.mjs [--full] [--base <ref>] [--plan]
+ *   node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -44,6 +55,7 @@ import { availableMemory, browserSlots, memoryWords, watchMemory } from "./check
 const args = process.argv.slice(2);
 const full = args.includes("--full") || process.env.TOOLROLL_FULL_CHECK === "1";
 const planOnly = args.includes("--plan");
+const real = args.includes("--real");
 const baseFlag = args.includes("--base") ? args[args.indexOf("--base") + 1] : undefined;
 
 const git = (...argv) => execFileSync("git", argv, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }).trim();
@@ -67,7 +79,27 @@ const WHOLE_UNIT = [/^vitest\.config\./, /^test\//, /^tsconfig/, /^package(-lock
 const BROWSER = [
   /^src\/browser\//, /^src\/browser-[^/]+\.ts$/, /^src\/workspace[^/]*\.ts$/, /^src\/serve\.ts$/, /^src\/[^/]+-ui\.ts$/,
   /^src\/(mobile-viewport|guarded-html|ledger-view|guides|work-index|lead-status)\.ts$/, /\.css$/, /tailwind/,
-  /^scripts\/(app-e2e|flows-e2e|e2e-kit|e2e-parallel|browser-build|postbuild)\.mjs$/, /^package(-lock)?\.json$/,
+  /^scripts\/(app-e2e|flows-e2e|e2e-kit|e2e-parallel|browser-build|postbuild)\.mjs$/, /^scripts\/fixtures\/scripted-provider\.mjs$/, /^package(-lock)?\.json$/,
+];
+/**
+ * Pages whose journeys are clear: a change to one runs just these groups' scripted journeys ("all": every group of
+ * that script). A change to any other page runs every scripted group.
+ */
+export const AREAS = [
+  { what: "the flow pages", paths: [/^src\/(flows|flow-[a-z-]+)-ui\.ts$/, /^src\/browser\/views\/flow-view\.tsx$/], flows: ["steps", "triggers"], app: ["flows", "mail", "maya", "rosa", "memory"] },
+  { what: "the teammate and kit pages", paths: [/^src\/(teammates|kits)-ui\.ts$/], flows: [], app: ["maya", "rosa", "memory", "flows"] },
+  { what: "the first-run page", paths: [/^src\/browser\/first-run\.tsx$/], flows: [], app: ["onboarding"] },
+  { what: "the flows journeys", paths: [/^scripts\/flows-e2e\.mjs$/], flows: "all", app: [] },
+  { what: "the app journeys", paths: [/^scripts\/app-e2e\.mjs$/], flows: [], app: "all" },
+];
+/** Model-facing code: a change here runs the real-model journeys (the lead, chat, mate tools, the planner, the builder,
+ * teammates, task sizing and sorting, the provider adapters and how a turn is run and read). */
+const MODEL = [
+  /^src\/(mate|mate-[a-z-]+|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
+  /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence|held)\.ts$/,
+  /^src\/(teammates|teammate-work|task-sizing|flow-sort|flow-draft)\.ts$/,
+  /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
+  /^src\/supervisor\.mjs$/,
 ];
 /** Changes an installed release's update to this candidate can trip on (besides any file defining a *_SCHEMA). */
 const UPGRADE = [
@@ -98,23 +130,77 @@ export function versionOnly(file, before, after) {
   try { return rest(before) === rest(after); } catch { return false; }
 }
 
-export function planFor(changed, { full: all = false, versionBumps = [], schemaFiles = [] } = {}) {
-  if (all) return { unit: "all", browser: true, upgrade: true, upgradeWhy: "a full check", why: "a full check was asked for" };
+/** The groups of both journey scripts, as `--groups --json` lists them. */
+export function journeyGroups() {
+  const list = script => JSON.parse(execFileSync(process.execPath, [script, "--groups", "--json"], { encoding: "utf8" }));
+  return { flows: list("scripts/flows-e2e.mjs"), app: list("scripts/app-e2e.mjs") };
+}
+const groupNames = (list, has) => list.filter(has).map(one => one.name);
+const ownScripted = one => (one.ownScripted ?? one.scripted ?? 0) > 0;
+const hasReal = one => (one.real ?? 0) > 0;
+/** "flows steps, triggers; app flows, mail" */
+export const groupWords = picked => [["flows", picked.flows], ["app", picked.app]].filter(([, names]) => names.length > 0).map(([script, names]) => `${script} ${names.join(", ")}`).join("; ");
+
+/**
+ * Which browser groups run, and why. Scripted: the groups of the areas the changed pages belong to, or every scripted
+ * group when a changed page has no clear area. Real-model: every group with real-model journeys, when model-facing
+ * code changed or --real (or a full check) asks for them.
+ */
+export function journeysFor(code, groups, { all = false, real = false } = {}) {
+  const everyScripted = { flows: groupNames(groups.flows, ownScripted), app: groupNames(groups.app, ownScripted) };
+  const everyReal = { flows: groupNames(groups.flows, hasReal), app: groupNames(groups.app, hasReal) };
+  const pages = all ? [] : code.filter(file => BROWSER.some(re => re.test(file)));
+  const model = all ? undefined : code.find(file => !/\.test\.[cm]?[jt]s$/.test(file) && MODEL.some(re => re.test(file)));
+  let scripted = { flows: [], app: [] }, scriptedWhy = null;
+  const unowned = pages.find(file => !AREAS.some(area => area.paths.some(re => re.test(file))));
+  if (all || unowned !== undefined) {
+    scripted = everyScripted;
+    scriptedWhy = all ? "a full check" : `${unowned} changed, and no one group's journeys own it`;
+  } else if (pages.length > 0) {
+    const reasons = [];
+    for (const area of AREAS) {
+      const file = pages.find(one => area.paths.some(re => re.test(one)));
+      if (file === undefined) continue;
+      reasons.push(`${file} changed: ${area.what}`);
+      for (const script of ["flows", "app"]) scripted[script] = [...new Set([...scripted[script], ...(area[script] === "all" ? everyScripted[script] : area[script])])];
+    }
+    // In the scripts' own order, and only groups that have scripted journeys of their own.
+    for (const script of ["flows", "app"]) scripted[script] = everyScripted[script].filter(one => scripted[script].includes(one));
+    scriptedWhy = reasons.join("; ");
+  }
+  const realWhy = all ? "a full check" : real ? "--real" : model === undefined ? null : `${model} changed: model-facing`;
+  return { scripted, scriptedWhy, real: realWhy === null ? { flows: [], app: [] } : everyReal, realWhy };
+}
+
+export function planFor(changed, { full: all = false, real = false, versionBumps = [], schemaFiles = [], groups = null } = {}) {
+  const words = journeys => journeys.scriptedWhy === null && journeys.realWhy === null ? "no browser journeys (nothing a page shows changed, and no model-facing code; --real runs the real-model ones)" : [
+    journeys.scriptedWhy === null ? "no scripted browser journeys (nothing a page shows changed)" : `scripted browser journeys in ${groupWords(journeys.scripted)} (${journeys.scriptedWhy})`,
+    journeys.realWhy === null ? "no real-model journeys (no model-facing code changed; --real runs them)" : `real-model journeys in ${groupWords(journeys.real)}, and what they need (${journeys.realWhy})`,
+  ].join("; ");
+  const none = { scripted: { flows: [], app: [] }, scriptedWhy: null, real: { flows: [], app: [] }, realWhy: null };
+  const browserOf = journeys => journeys.scriptedWhy !== null || journeys.realWhy !== null;
+  if (all) {
+    const journeys = groups === null ? none : journeysFor([], groups, { all: true });
+    return { unit: "all", browser: true, journeys, upgrade: true, upgradeWhy: "a full check", why: `a full check was asked for${groups === null ? "" : `: every unit test; ${words(journeys)}`}` };
+  }
   const bumped = changed.filter(file => versionBumps.includes(file));
   const bump = bumped.length === 0 ? "" : `; only the version changed in ${bumped.join(" and ")}`;
   const code = changed.filter(file => !NOTHING.some(re => re.test(file)) && !bumped.includes(file));
-  if (code.length === 0) return { unit: "none", browser: false, upgrade: false, why: bumped.length === 0 ? "only docs, evidence or design notes changed" : `nothing a test reads changed${bump}` };
+  if (code.length === 0 && !real) return { unit: "none", browser: false, journeys: none, upgrade: false, why: bumped.length === 0 ? "only docs, evidence or design notes changed" : `nothing a test reads changed${bump}` };
   const wholeUnit = code.find(file => WHOLE_UNIT.some(re => re.test(file)));
   const page = code.find(file => BROWSER.some(re => re.test(file)));
   const upgrade = code.find(file => !/\.test\.[cm]?[jt]s$/.test(file) && (UPGRADE.some(re => re.test(file)) || schemaFiles.includes(file)));
+  const journeys = groups === null ? none : journeysFor(code, groups, { real });
+  const browser = groups === null ? page !== undefined : browserOf(journeys);
   return {
-    unit: wholeUnit !== undefined ? "all" : "related",
-    browser: page !== undefined,
+    unit: code.length === 0 ? "none" : wholeUnit !== undefined ? "all" : "related",
+    browser,
+    journeys,
     upgrade: upgrade !== undefined,
     ...(upgrade !== undefined ? { upgradeWhy: `${upgrade} changed` } : {}),
     why: [
-      wholeUnit !== undefined ? `every unit test (${wholeUnit} changed)` : "unit tests related to the change",
-      page !== undefined ? `browser journeys (${page} changed)` : "no browser journeys (nothing a page shows changed)",
+      code.length === 0 ? "no unit tests (nothing a test reads changed)" : wholeUnit !== undefined ? `every unit test (${wholeUnit} changed)` : "unit tests related to the change",
+      groups !== null ? words(journeys) : page !== undefined ? `browser journeys (${page} changed)` : "no browser journeys (nothing a page shows changed)",
     ].join("; ") + bump,
   };
 }
@@ -132,9 +218,15 @@ const run = (label, command, argv, dir, env = {}) => new Promise(done => {
  * only one in all they run one after the other.
  */
 export function journeyShares(slots) {
-  if (slots <= 1) return { flows: 1, app: 1, together: false };
-  const flows = Math.floor(slots / 2);
-  return { flows, app: slots - flows, together: true };
+  const [flows, app] = shareSlots(slots, 2);
+  return { flows: flows ?? 1, app: app ?? 1, together: slots > 1 };
+}
+/** The same for any number of journey runs: each run's share, at least one each; with fewer slots than runs, each run
+ * gets them all and they run one after the other (together is false). */
+export function shareSlots(slots, runs) {
+  if (runs === 0) return [];
+  if (slots < runs) return Array.from({ length: runs }, () => Math.max(1, slots));
+  return Array.from({ length: runs }, (_, at) => Math.floor(slots / runs) + (at >= runs - (slots % runs) ? 1 : 0));
 }
 
 const took = ms => ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 6000) / 10} min`;
@@ -146,7 +238,9 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const versionBumps = base === null ? [] : VERSIONED.filter(file => changed.includes(file) && versionOnly(file, tryGit("show", `${base}:${file}`), tryGit("show", `HEAD:${file}`)));
   // No main to compare with, or nothing differs from it (a release of main itself): check everything.
   const schemaFiles = changed.filter(file => /\.[cm]?[jt]s$/.test(file) && existsSync(file) && definesSchema(readFileSync(file, "utf8")));
-  const plan = planFor(changed, { full: full || changed.length === 0, versionBumps, schemaFiles });
+  // The journey groups, from the scripts themselves (another project's release check has none).
+  const groups = existsSync(join("scripts", "flows-e2e.mjs")) && existsSync(join("scripts", "app-e2e.mjs")) ? journeyGroups() : null;
+  const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, schemaFiles, groups });
   // Toolroll's own checkout carries the upgrade path; another project's release check has none.
   const upgrade = plan.upgrade && existsSync(join("scripts", "upgrade-path.mjs"));
   console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? `; the upgrade path from the last 3 releases and 0.9.11 (${plan.upgradeWhy})` : ""}.`);
@@ -173,13 +267,22 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
+  // Each journey run: a script, scripted or real-model, in just the groups the plan picked.
+  const journeyRuns = groups === null ? (plan.browser ? [
+    { label: "flows", argv: ["scripts/flows-e2e.mjs"] }, { label: "app", argv: ["scripts/app-e2e.mjs", "--skip-build"] },
+  ] : []) : [
+    ["flows", "scripted", plan.journeys.scripted.flows, ["scripts/flows-e2e.mjs"]], ["app", "scripted", plan.journeys.scripted.app, ["scripts/app-e2e.mjs", "--skip-build"]],
+    ["flows-real", "real", plan.journeys.real.flows, ["scripts/flows-e2e.mjs"]], ["app-real", "real", plan.journeys.real.app, ["scripts/app-e2e.mjs", "--skip-build"]],
+  ].filter(([, , picked]) => picked.length > 0).map(([label, kind, picked, argv]) => ({ label, argv: [...argv, "--journeys", kind, "--run-groups", picked.join(",")] }));
   const journeys = build.then(one => {
-    held = plan.browser && (one.code !== 0 || (typed !== null && typed.code !== 0));
-    if (!plan.browser || held) return [];
-    const shares = journeyShares(browserSlots(availableMemory()));
-    const flows = () => run("flows", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/flows-e2e.mjs", "--at-once", String(shares.flows)], dir);
-    const app = () => run("app", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/app-e2e.mjs", "--skip-build", "--at-once", String(shares.app)], dir);
-    return shares.together ? Promise.all([flows(), app()]) : flows().then(async one => [one, await app()]);
+    held = journeyRuns.length > 0 && (one.code !== 0 || (typed !== null && typed.code !== 0));
+    if (journeyRuns.length === 0 || held) return [];
+    const slots = browserSlots(availableMemory());
+    const shares = shareSlots(slots, journeyRuns.length);
+    const start = (each, at) => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--at-once", String(shares[at])], dir);
+    // Room for a group each: all at once. Less: one after the other, each with all the room.
+    if (journeyRuns.length <= slots) return Promise.all(journeyRuns.map(start));
+    return journeyRuns.reduce((done, each, at) => done.then(async list => [...list, await start(each, at)]), Promise.resolve([]));
   });
   // The upgrade path packs the built candidate: it starts once the build passed.
   let upgradeHeld = false;
@@ -195,7 +298,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   for (const one of first.filter(each => each.code !== 0)) console.log(`${one.label}: exit ${one.code}`);
   for (const one of results) {
     console.log(`${one.label}: exit ${one.code}`);
-    const lines = readFileSync(one.log, "utf8").split("\n").filter(line => /FAIL|Test Files|passed, |^[✓✗] |^upgrade path:/.test(line));
+    const lines = readFileSync(one.log, "utf8").split("\n").filter(line => /FAIL|Test Files|passed, |^[✓✗] |^upgrade path:|^Model calls:|^No .*journeys to run/.test(line));
     for (const line of lines.slice(-5)) console.log(line);
   }
   if (held) console.log("browser journeys not run: the typecheck or build failed");

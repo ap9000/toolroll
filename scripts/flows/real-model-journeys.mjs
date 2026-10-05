@@ -1,37 +1,49 @@
 #!/usr/bin/env node
 /**
- * The journeys that use real models, for a flow to run every night: a Run a
+ * Every journey with real models, for a flow to run every night: a Run a
  * script zone runs this file in a copy of main after the project's setup
- * (runIn copy). Unit tests and CI never run these; they are what would have
- * caught 0.9.1's lead no longer sending a failing check back to the build.
+ * (runIn copy). The release check runs the scripted journeys against a
+ * scripted provider, and the real-model ones only when model-facing code
+ * changed; this is where every journey, scripted ones included, meets the real
+ * models. It is what would have caught 0.9.1's lead no longer sending a failing
+ * check back to the build.
  *
- *   node scripts/flows/real-model-journeys.mjs [--no-build] [--minutes 25] [--output <dir>] [--only <pattern>] [--suite "<name>=<script.mjs> [args]" …]
+ *   node scripts/flows/real-model-journeys.mjs [--no-build] [--minutes 120] [--output <dir>] [--only <pattern>] [--suite "<name>=<script.mjs> [args]" …] [--suites]
  *
- * It builds, then runs scripts/flows-e2e.mjs and the lead group of
- * scripts/app-e2e.mjs at once. A suite with a failed journey runs once more,
- * in a fresh world, with just the failed journeys and what they need (their
- * setup journeys); a journey that passes then was a flaky model. Everything
- * stops at the time cap.
+ * It builds, then runs every group of scripts/flows-e2e.mjs and of
+ * scripts/app-e2e.mjs with --journeys all (real models), each group a suite in
+ * a world of its own, as many at once as the memory available allows
+ * (check-memory.mjs). --suites prints the suites and exits. A suite with a
+ * failed journey runs once more, in a fresh world, with just the failed
+ * journeys and what they need (their setup journeys); a journey that passes
+ * then was a flaky model. Everything stops at the time cap.
  *
  * Its progress goes to stderr (the step's log). What it prints on stdout is
  * the step's result: a short summary — each journey that failed twice, its
- * error and what it saw — and a last line "goto: pass" or "goto: fail".
+ * error and what it saw, the real model turns the journeys took — and a last
+ * line "goto: pass" or "goto: fail".
  * Exit 0 when every journey passed, even on the second try; 1 otherwise.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet } from "../e2e-kit.mjs";
+import { browserSlots, limiter } from "../check-memory.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
-/** Each suite: a name, and its script with its own arguments ("lead=scripts/app-e2e.mjs --group lead"). */
-const SUITES = (args.includes("--suite") ? args.filter((one, at) => args[at - 1] === "--suite") : ["flows=scripts/flows-e2e.mjs", "lead=scripts/app-e2e.mjs --group lead"])
+/** Every group of both journey scripts, each with every journey and real models: "app-lead=scripts/app-e2e.mjs --group lead --journeys all". */
+function everySuite(list = script => JSON.parse(execFileSync(process.execPath, [join(here, script), "--groups", "--json"], { encoding: "utf8" }))) {
+  return ["scripts/flows-e2e.mjs", "scripts/app-e2e.mjs"].flatMap(script => list(script).map(group => `${/flows/.test(script) ? "flows" : "app"}-${group.name}=${script} --group ${group.name} --journeys all`));
+}
+/** Each suite: a name, and its script with its own arguments. */
+const SUITES = (args.includes("--suite") ? args.filter((one, at) => args[at - 1] === "--suite") : everySuite())
   .map(one => ({ name: one.slice(0, one.indexOf("=")), argv: one.slice(one.indexOf("=") + 1).split(/\s+/) }));
+if (args.includes("--suites")) { console.log(JSON.stringify(SUITES)); process.exit(0); }
 /** --only <pattern>, passed to every suite: like theirs, it must match each chosen journey's setup journeys too. */
 const only = option("--only", null);
-const cap = Number(option("--minutes", "25")) * 60_000;
+const cap = Number(option("--minutes", "120")) * 60_000;
 // Outside the copy, which goes when the step ends: the reports, screenshots and a failed run's workspace stay.
 const out = resolve(option("--output", join(tmpdir(), "toolroll-real-model-journeys", new Date().toISOString().replace(/[:.]/g, "-"))));
 const started = Date.now(), deadline = started + cap;
@@ -61,7 +73,10 @@ function run(label, file, argv) {
     child.on("close", code => { clearTimeout(timer); stop("SIGKILL"); running.delete(child.pid); done({ code: code ?? 1, timedOut, tail }); });
   });
 }
-const report = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")).results; } catch { return null; } };
+const reportOf = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
+const report = folder => reportOf(folder)?.results ?? null;
+// As many suites at once as the memory allows: each holds a console, a worker and a browser, its retry too.
+const slot = limiter(browserSlots());
 
 /** One suite: its run, and when a journey failed, one more with just those journeys and what they need. */
 async function suite({ name, argv }) {
@@ -107,7 +122,8 @@ if (built.code !== 0) {
   ok = false;
   summary.push(`Toolroll didn't build${built.timedOut ? " in time" : ` (exit ${built.code})`}: ${clip(built.tail.trim().split("\n").slice(-3).join(" | "), 400)}`);
 } else {
-  const results = await Promise.all(SUITES.map(suite));
+  const results = await Promise.all(SUITES.map(one => slot(() => suite(one))));
+  const turns = SUITES.flatMap(one => [one.name, `${one.name}-retry`]).reduce((sum, folder) => sum + (reportOf(folder)?.modelCalls?.real ?? 0), 0);
   ok = results.every(one => one.ok);
   const failed = results.filter(one => !one.ok).flatMap(one => one.failures.map(each => ({ suite: one.name, ...each })));
   const flaky = results.flatMap(one => one.ok ? one.flaky.map(each => `${one.name}: ${each}`) : []);
@@ -122,6 +138,7 @@ if (built.code !== 0) {
   if (failed.length > 5) summary.push(`- and ${failed.length - 5} more (see the log)`);
   if (flaky.length > 0) summary.push(`Flaky, passed on the second try: ${clip(flaky.join("; "), 400)}`);
   if (skipped.length > 0) summary.push(`Skipped: ${clip(skipped.join("; "), 400)}`);
+  summary.push(`Real model turns: ${turns}`);
 }
 summary.push(`Reports: ${out}`, `goto: ${ok ? "pass" : "fail"}`);
 process.stdout.write(`${summary.join("\n")}\n`);
