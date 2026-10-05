@@ -984,7 +984,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       // copy links it instead of installing its own; a setup that is about to
       // run never reaches through an old link into a shared copy.
       const depsRoot = sharedDepsRootOf(store);
-      const sharing = depsRoot === null ? null : sharingFor({ repo: leased.repo, worktree, setup: setupWanted });
+      const sharing = depsRoot === null ? null : sharingFor({ repo: leased.repo, worktree, setup: setupWanted, root: depsRoot });
       if (depsRoot !== null) detachShared(worktree, depsRoot);
       if (depsRoot !== null && sharing !== null) {
         const ready = readyCopy(depsRoot, sharing.key);
@@ -2665,7 +2665,7 @@ async function settleProof(
       const linked = linkedKey(worktree, depsRoot);
       const live = linked === null ? null : store.liveWorktreeSetup(repo);
       if (linked === null || live === null) return null;
-      if (sharingFor({ repo, worktree, setup: live })?.key === linked && readyCopy(depsRoot, linked) !== null) return null;
+      if (sharingFor({ repo, worktree, setup: live, root: depsRoot })?.key === linked && readyCopy(depsRoot, linked) !== null) return null;
       if (!store.proveRunnerCustodyForSpawn(runId, now())) return "custody-lost";
       detachShared(worktree, depsRoot);
       const label = "Own install · approved project setup (package.json or lockfile changed)";
