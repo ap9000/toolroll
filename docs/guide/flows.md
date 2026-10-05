@@ -181,7 +181,10 @@ schedule. Save each as a project script that runs its file, then draw:
   `scripts/app-e2e.mjs`. A failed journey runs once more, with the journeys
   it needs, to rule out a flaky model. It prints each journey that failed
   twice, its error and what it saw, and ends with `goto: pass` or
-  `goto: fail`. It stops itself at 25 minutes; give the script 30.
+  `goto: fail`. It stops itself at 25 minutes; give the script 30. On a busy
+  computer a suite waits for memory or a free Claude slot before it starts
+  (`TOOLROLL_CHECK_PROVIDERS` caps real model turns at once), and the wait
+  moves its 25 minutes on by as much (allow for that in the script's limit).
 - **Weekly upkeep** (`scripts/flows/weekly-upkeep.mjs`) runs `npm outdated`
   and `npm audit`, and compares the installed claude, codex and gemini with
   the versions it recorded last time (in

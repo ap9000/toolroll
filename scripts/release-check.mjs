@@ -22,12 +22,15 @@
  * "version" (a release's bump) is not a dependency change; any other change
  * to them is.
  *
- * Everything starts at once: typecheck, build and the unit tests (whose setup
- * waits for this build rather than building again); the journeys start when
+ * Everything starts at once when the machine has room: typecheck, build and
+ * the unit tests (whose setup waits for this build rather than building
+ * again; they ask for room once the build has it); the journeys start when
  * the build is done, flows-e2e and app-e2e each in parallel groups
- * (scripts/e2e-parallel.mjs). Together they run at most as many browser groups
- * at once as the memory available allows (~400 MB each, at most 6;
- * check-memory.mjs), and the summary records the peak memory.
+ * (scripts/e2e-parallel.mjs), together at most 6 browser groups at once.
+ * Every start checks memory, macOS kernel pressure (Linux swap) and a provider slot (one cap on real
+ * Claude/Codex turns for every suite, default at most 4) through one gate the runners share
+ * (check-memory.mjs), so a busy machine makes the check slower, never wrong.
+ * The summary says what admission did and records the peak memory.
  *
  * The base is origin/main, fetched fresh; files are compared, not ancestry.
  * No difference from main (or no main) means everything runs. `--full` (or TOOLROLL_FULL_CHECK=1) runs
@@ -40,9 +43,9 @@
  *   node scripts/release-check.mjs [--full] [--base <ref>] [--plan]
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { availableMemory, browserSlots, memoryWords, watchMemory } from "./check-memory.mjs";
+import { admissionWords, DEMAND, MAX_GROUPS, memoryWords, openGate, watchMemory } from "./check-memory.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
 
 const args = process.argv.slice(2);
@@ -125,11 +128,18 @@ export function planFor(changed, { full: all = false, versionBumps = [], schemaF
 
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
-const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000 }).then(one => {
+// An outer check's gate is not this one's: a part only gets the gate this check hands it (env).
+const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000 }).then(one => {
   const log = join(dir, `${label}.log`);
   writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} ran past ${Math.round(PART_MS / 60_000)} min and was stopped\n`)]) : one.output);
   return { label, code: one.code, log, ms: one.ms };
 });
+/**
+ * run(), once the gate has room for `demand`; `admitted` (when given) hears when it has. Its time counts from its start.
+ * The gate isn't passed on: what these run (the unit tests' own runners among them) is not part of this check's starts.
+ */
+const gated = (gate, demand, label, command, argv, dir, env = {}, admitted = () => {}) =>
+  gate.hold(label, demand, () => { admitted(); return run(label, command, argv, dir, env); });
 /**
  * The browser groups the two journey runs may hold at once, shared out: each gets at least one, and with room for
  * only one in all they run one after the other.
@@ -158,10 +168,16 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const memory = watchMemory();
   // The logs and the build's outcome; removed when the check ends, however it ends.
   const dir = makeTempRoot("release-check-");
+  // One gate for every start of this check, the journey runners' groups included (they find it in TOOLROLL_CHECK_GATE).
+  mkdirSync(join(dir, "gate"));
+  const gate = openGate({ dir: join(dir, "gate"), log: line => console.log(line) });
   // The unit tests' setup (test/ensure-build.ts) waits for this file: the build's outcome.
   const built = join(dir, "build-outcome");
-  const typecheck = run("typecheck", "npm", ["run", "typecheck"], dir);
-  const build = run("build", "npm", ["run", "build"], dir).then(one => {
+  const typecheck = gated(gate, DEMAND.typecheck, "typecheck", "npm", ["run", "typecheck"], dir);
+  // The unit tests wait for the build, so they ask for room only once the build holds its own: never ahead of it.
+  let buildAdmitted;
+  const buildStarted = new Promise(done => { buildAdmitted = done; });
+  const build = gated(gate, DEMAND.build, "build", "npm", ["run", "build"], dir, {}, () => buildAdmitted()).then(one => {
     // Whole or not at all: written aside, then renamed into place.
     writeFileSync(`${built}.part`, one.code === 0 ? "ok" : `failed (exit ${one.code})`);
     renameSync(`${built}.part`, built);
@@ -169,27 +185,30 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   });
   const unitEnv = { TOOLROLL_RELEASE_BUILD: built };
   const units = [];
-  if (plan.unit === "all") units.push(run("unit", "npm", ["test", "--", "--run", "--reporter=dot"], dir, unitEnv));
+  const unit = (...argv) => buildStarted.then(() => gated(gate, DEMAND.unit, "unit", ...argv, dir, unitEnv));
+  if (plan.unit === "all") units.push(unit("npm", ["test", "--", "--run", "--reporter=dot"]));
   // The changed files themselves, not `--changed <ref>`: vitest reads that as
   // ancestry (ref...HEAD), which the gate's own commit makes meaningless.
   const sources = changed.filter(file => /\.(?:[cm]?[jt]sx?)$/.test(file) && existsSync(file));
-  if (plan.unit === "related" && sources.length > 0) units.push(run("unit", "npx", ["vitest", "related", "--run", "--reporter=dot", "--passWithNoTests", ...sources], dir, unitEnv));
+  if (plan.unit === "related" && sources.length > 0) units.push(unit("npx", ["vitest", "related", "--run", "--reporter=dot", "--passWithNoTests", ...sources]));
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
   const journeys = build.then(one => {
     held = plan.browser && (one.code !== 0 || (typed !== null && typed.code !== 0));
     if (!plan.browser || held) return [];
-    const shares = journeyShares(browserSlots(availableMemory()));
-    const flows = () => run("flows", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/flows-e2e.mjs", "--at-once", String(shares.flows)], dir);
-    const app = () => run("app", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/app-e2e.mjs", "--skip-build", "--at-once", String(shares.app)], dir);
+    // The most browser groups at once, shared out; each group still starts only when the gate has room for it.
+    const shares = journeyShares(MAX_GROUPS);
+    const env = { TOOLROLL_CHECK_GATE: gate.dir };
+    const flows = () => run("flows", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/flows-e2e.mjs", "--at-once", String(shares.flows)], dir, env);
+    const app = () => run("app", process.execPath, ["scripts/e2e-parallel.mjs", "scripts/app-e2e.mjs", "--skip-build", "--at-once", String(shares.app)], dir, env);
     return shares.together ? Promise.all([flows(), app()]) : flows().then(async one => [one, await app()]);
   });
   // The upgrade path packs the built candidate: it starts once the build passed.
   let upgradeHeld = false;
   const upgraded = build.then(one => {
     upgradeHeld = upgrade && one.code !== 0;
-    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs"], dir)] : [];
+    return upgrade && !upgradeHeld ? [gated(gate, DEMAND.upgrade, "upgrade", process.execPath, ["scripts/upgrade-path.mjs"], dir)] : [];
   }).then(list => Promise.all(list));
   const first = await Promise.all([typecheck, build]);
   const results = [...await Promise.all(units), ...await journeys, ...await upgraded];
@@ -206,6 +225,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (upgradeHeld) console.log("upgrade path not run: the build failed");
   if (results.length === 0 && first.every(one => one.code === 0)) console.log("typecheck and build passed; nothing else to run");
   console.log(`took: ${[...first, ...results].map(one => `${one.label} ${took(one.ms)}`).join(", ")}; whole check ${took(Date.now() - started)}`);
+  console.log(admissionWords(gate.facts()));
+  gate.close();
   console.log(memoryWords(memory.stop()));
   process.exitCode = [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
 }

@@ -35,10 +35,27 @@ mail server, python3. An OpenRouter key in Settings → AI providers for Jev.
 A run spends a few Claude turns and a few real builds (about 45 minutes for
 both).
 
-The release gate (`scripts/release-check.mjs`) runs both, every group at once,
-before a build ships. It starts typecheck, build and the unit tests together
-(the tests' setup waits for that build); the journeys start once the build is
-done. Its summary ends with how long each part took.
+The release gate (`scripts/release-check.mjs`) runs both before a build ships.
+It starts typecheck, build and the unit tests together (the tests' setup waits
+for that build); the journeys start once the build is done, up to 6 groups at
+once. Its summary ends with how long each part took.
+
+Every part and group, a retry too, starts only when the machine has room
+(`scripts/check-memory.mjs`): enough memory available beyond a reserve (a
+larger one once swap is 90% used), and a slot under one cap on real Claude and
+Codex turns shared by every suite, counting the sessions already running. A
+busy machine makes the check slower, not wrong; an idle one starts everything
+as before. The cap is 1 per 5 GB of memory (2 to 12); `TOOLROLL_CHECK_PROVIDERS=<n>`
+sets it. The summary says what admission did, above the peak-memory line:
+
+```
+admission: ran up to 4 at a time: lowest 3.1 GB free, swap up to 97% used; up to 3 provider turns of ours, 4 other sessions (cap 12, from 64.0 GB memory); 2 starts waited 1.5 min in all for room (longest: app lead, 2.0 GB free, swap 97% used; it needs 6.0 GB)
+```
+
+`scripts/e2e-parallel.mjs` run alone does the same for its own groups.
+`TOOLROLL_CHECK_MACHINE=<file.json>` (`{ "available", "swapUsed", "swapTotal",
+"providers" }`, in bytes) replaces the machine's readings, to rehearse a busy
+machine.
 
 ## Unit tests (`npm test`)
 

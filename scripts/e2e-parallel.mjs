@@ -4,7 +4,11 @@
  * fail if any group fails. The script lists its groups with `--groups --json`
  * and runs one with `--group <name>`. At most as many groups run at once as
  * the memory available allows (~400 MB each, at most 6; --at-once <n> sets it),
- * and a group starts only while there is room for it (check-memory.mjs).
+ * and each group, its retry too, starts only when the machine has room for it:
+ * memory, macOS kernel pressure (Linux swap) and a slot under the cap on real provider turns
+ * (default at most 4; check-memory.mjs). Run by the release check, it shares that check's gate
+ * (TOOLROLL_CHECK_GATE) with the other suites. A wait for room comes before a
+ * group starts, so it never eats into a journey's own time.
  *
  *   npm run e2e:app:parallel      (or: node scripts/e2e-parallel.mjs scripts/app-e2e.mjs [--no-retry] [--at-once <n>] [--output <dir>] [--keep] [--only <pattern>] …)
  *
@@ -24,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopLeftovers } from "./e2e-kit.mjs";
-import { availableMemory, browserSlots, limiter } from "./check-memory.mjs";
+import { admissionWords, browserSlots, DEMAND, limiter, openGate } from "./check-memory.mjs";
 import { runSuite } from "./suite-lifecycle.mjs";
 
 const [script, ...given] = process.argv.slice(2);
@@ -42,12 +46,15 @@ const out = resolve(at === -1 ? join(here, "output/e2e", `${name}-parallel-${new
 const started = Date.now();
 const minutes = ms => Math.round(ms / 6000) / 10;
 const width = Math.max(...groups.map(one => one.name.length)) + "-retry".length;
-const available = availableMemory();
+let gate;
+try { gate = openGate({ log: line => console.log(line) }); } catch (error) { console.error(error.message); process.exit(2); }
+const available = gate.sample().available;
 const limit = Math.min(groups.length, atOnce ?? browserSlots(available));
-const slot = limiter(limit);
+// The limit is the most at once; the gate decides, at each start, whether there is room for one more.
+const slot = limiter(limit, { room: () => true });
 console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
 
-const runGroup = (group, folder, extra = []) => slot(async () => {
+const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${folder}`, DEMAND.group, async () => {
   const tag = `[${folder.padEnd(width)}]`;
   let partial = "";
   const print = chunk => {
@@ -58,7 +65,7 @@ const runGroup = (group, folder, extra = []) => slot(async () => {
   // In a process group and temp folder of its own (TMPDIR: its world, Chrome's profile, anything else it makes there):
   // when it ends, or the runner is interrupted, whatever it left in that group, or listed as still running in its
   // processes.json (a run killed outright never reaches its own finally), is stopped, then the folder goes, before a
-  // retry starts (scripts/suite-lifecycle.mjs).
+  // retry starts (scripts/suite-lifecycle.mjs). It starts only once the gate has room for it (check-memory.mjs).
   const one = await runSuite({
     command: process.execPath, args: [script, "--group", group, "--output", join(out, folder), ...extra], prefix: "so-e2e-tmp-", keep, onData: print,
     beforeRemove: async () => {
@@ -68,7 +75,7 @@ const runGroup = (group, folder, extra = []) => slot(async () => {
   });
   if (partial !== "") console.log(`${tag} ${partial}`);
   return { group, folder, code: one.code, signal: one.signal, minutes: minutes(one.ms) };
-});
+}));
 
 const report = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
 // The first run's own --only is replaced by the journeys to retry (they are a subset of it).
@@ -111,4 +118,7 @@ const failed = finished.filter(one => one.code !== 0);
 console.log(finished.map(one => `${one.code === 0 ? "✅" : "❌"} ${one.group.padEnd(width)}  ${one.minutes} min`).join("\n"));
 if (flaky.length > 0) console.log(`\nFlaky, passed on the second try:\n${flaky.map(one => `- ${one}`).join("\n")}`);
 console.log(`\n${groups.length - failed.length} of ${groups.length} groups passed${flaky.length > 0 ? ` (${flaky.length} flaky journey${flaky.length === 1 ? "" : "s"})` : ""} in ${minutes(Date.now() - started)} min — ${out}`);
+// This runner's own starts: "admission: ran up to 3 groups at a time: lowest 3.1 GB free, swap up to 97% used; …".
+console.log(admissionWords(gate.facts(process.pid), "groups"));
+gate.close();
 process.exitCode = failed.length === 0 ? 0 : 1;

@@ -18,6 +18,9 @@ const args = process.argv.slice(2), option = name => { const at = args.indexOf(n
 const out = option("--output"), only = option("--only") === null ? null : new RegExp(option("--only"), "i");
 const dir = process.env.STAND_IN_DIR, tried = join(dir, "flaky-tried");
 if (process.env.STAND_IN_HANGS === "1") await new Promise(done => setTimeout(done, 60_000));
+const start = Date.now();
+await new Promise(done => setTimeout(done, Number(process.env.STAND_IN_HOLD_MS ?? 0)));
+appendFileSync(join(dir, "spans.jsonl"), JSON.stringify({ start, end: Date.now() }) + "\n");
 mkdirSync(out, { recursive: true });
 const JOURNEYS = [["Sign in (setup)", []], ["The lead draws a flow", ["Sign in (setup)"]], ["Independent", []], ["After the flow", ["The lead draws a flow"]], ["No browser errors on any page", []]];
 const results = [], failed = new Set();
@@ -35,13 +38,17 @@ process.exitCode = failed.size > 0 ? 1 : 0;
 `;
 
 describe("real-model-journeys.mjs", () => {
-  const journeys = (env: Record<string, string>, extra: string[] = []) => {
+  const GB = 1024 ** 3;
+  const IDLE = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
+  /** The script on the stand-in suite (or `suites` of it), on the machine's readings given (an idle machine unless said). */
+  const journeys = (env: Record<string, string>, extra: string[] = [], { machine = IDLE, suites = ["flows"] }: { machine?: object; suites?: string[] } = {}) => {
     const at = folder();
     writeFileSync(join(at, "stand-in-e2e.mjs"), STAND_IN);
-    const ran = spawnSync(process.execPath, [resolve("scripts/flows/real-model-journeys.mjs"), "--no-build", "--suite", `flows=${join(at, "stand-in-e2e.mjs")}`, "--output", join(at, "out"), ...extra],
-      { encoding: "utf8", env: { ...process.env, STAND_IN_DIR: at, ...env }, timeout: 60_000 });
-    const runs = existsSync(join(at, "runs.jsonl")) ? readFileSync(join(at, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]) : [];
-    return { code: ran.status, stdout: ran.stdout, runs };
+    writeFileSync(join(at, "machine.json"), JSON.stringify(machine));
+    const ran = spawnSync(process.execPath, [resolve("scripts/flows/real-model-journeys.mjs"), "--no-build", ...suites.flatMap(name => ["--suite", `${name}=${join(at, "stand-in-e2e.mjs")}`]), "--output", join(at, "out"), ...extra],
+      { encoding: "utf8", env: { ...process.env, STAND_IN_DIR: at, TOOLROLL_CHECK_MACHINE: join(at, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "", ...env }, timeout: 60_000 });
+    const lines = (file: string) => existsSync(join(at, file)) ? readFileSync(join(at, file), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+    return { code: ran.status, stdout: ran.stdout, stderr: ran.stderr, runs: lines("runs.jsonl") as string[][], spans: lines("spans.jsonl") as { start: number; end: number }[] };
   };
 
   test("a journey that fails once runs again with its setup journey, and the run passes", () => {
@@ -67,6 +74,26 @@ describe("real-model-journeys.mjs", () => {
       '  saw: [["Build","task","check",null],["Unit tests","check","review","review"]]',
     ]);
     expect(lines.at(-1)).toBe("goto: fail");
+  });
+
+  test("an idle machine: both suites start together, as before", () => {
+    const { code, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "500" }, ["--only", "^Independent$"], { suites: ["flows", "lead"] });
+    expect(code).toBe(0);
+    const [a, b] = spans.sort((x, y) => x.start - y.start);
+    expect(b!.start).toBeLessThan(a!.end);
+    expect(stderr).not.toContain("waiting for room");
+    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); nothing waited for room$/m);
+  });
+
+  test("a busy machine: the second suite waits for room, and its wait doesn't count against its time cap", () => {
+    // A 0.05-minute (3 s) cap; each suite takes 2 s, so the second, waiting 2 s for room, ends after the first's cap.
+    const { code, stdout, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "2000" }, ["--only", "^Independent$", "--minutes", "0.05"], { suites: ["flows", "lead"], machine: { platform: "linux", pressure: null, available: 1.5 * GB, swapUsed: 97, swapTotal: 100, providers: 3 } });
+    const [a, b] = spans.sort((x, y) => x.start - y.start);
+    expect(b!.start).toBeGreaterThanOrEqual(a!.end);
+    expect(stderr).toMatch(/^waiting for room to start (flows|lead): 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB$/m);
+    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [0-9.]+ GB memory, default maximum 4\); 1 start waited [0-9.]+ s in all for room/m);
+    expect(stdout).toContain("Every real-model journey passed (flows 1, lead 1)");
+    expect(code).toBe(0);
   });
 
   test("the time cap stops a suite and fails the run", () => {
