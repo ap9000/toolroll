@@ -187,7 +187,7 @@ describe("node scripts/release-check.mjs with the journey scripts", () => {
     dir = mkdtempSync(join(tmpdir(), "so-release-journeys-"));
     const git = (...argv: string[]) => execFileSync("git", ["-C", dir!, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
     git("init", "-q", "-b", "main");
-    for (const one of ["flows-e2e.mjs", "app-e2e.mjs", "e2e-kit.mjs", "fixtures", "flows"]) cpSync(resolve(import.meta.dirname, "../scripts", one), join(dir, "scripts", one), { recursive: true });
+    for (const one of ["flows-e2e.mjs", "app-e2e.mjs", "e2e-kit.mjs", "suite-lifecycle.mjs", "fixtures", "flows"]) cpSync(resolve(import.meta.dirname, "../scripts", one), join(dir, "scripts", one), { recursive: true });
     writeFileSync(join(dir, "scripts", "e2e-parallel.mjs"), "import { appendFileSync } from 'node:fs';\nappendFileSync('journey-runs.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');\nconsole.log('Model calls: 4 scripted, 0 real turns');\n");
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build: "node -e 0", test: "node -e 0" } }, null, 2) + "\n");
     mkdirSync(join(dir, "src", "browser"), { recursive: true });
