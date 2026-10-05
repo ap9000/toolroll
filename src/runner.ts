@@ -205,6 +205,25 @@ export function addRunnerReposAuthed(
 }
 
 /**
+ * Narrow a live runner's binding when a project is removed, under the same
+ * credential and transaction as addRunnerReposAuthed. `up` calls it only
+ * after that project's watch has stopped admitting work.
+ */
+export function removeRunnerRepoAuthed(
+  store: Store,
+  args: { name: string; token: string; repo: string },
+  now: Date,
+): AuthResult {
+  return store.transact(() => {
+    const auth = authenticate(store, args.name, args.token);
+    if (!auth.ok) return auth;
+    const bound = store.bindRunnerRepos(args.name, auth.runner.repos.filter(one => one !== args.repo), now);
+    if (!bound.ok) return { ok: false as const, reason: bound.reason };
+    return { ok: true as const, runner: { ...auth.runner, repos: bound.repos } };
+  });
+}
+
+/**
  * The one runner-name rule (arc 2 finding 13): nonempty, control-free, at
  * most 60 characters — the console form's rule, now shared by every door.
  */

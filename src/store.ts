@@ -24598,6 +24598,11 @@ export class Store {
     });
   }
 
+  /** A project removed from the lists (project-admission.ts): only its row goes; its tasks, results and settings stay. */
+  forgetProject(path: string): void {
+    this.db.prepare("DELETE FROM project WHERE path = ?").run(path);
+  }
+
   /** Most recently opened first — the opener page's order. */
   listProjects(): { path: string; name: string; addedAt: string; lastOpenedAt: string }[] {
     return this.db

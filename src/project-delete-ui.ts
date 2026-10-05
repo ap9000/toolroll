@@ -16,7 +16,7 @@ export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:7
   `.project-settings button,.project-delete button{justify-self:start;min-height:36px;white-space:nowrap}.project-delete .actions a{min-height:36px;display:inline-flex;align-items:center}` +
   `.project-settings .builds-at-once{margin-top:20px}.project-settings .builds-at-once h2{font-size:1rem;margin:0 0 4px}.project-settings .builds-at-once form{margin-top:4px;gap:4px}` +
   `.project-settings .builds-at-once .builds-row{display:flex;gap:8px;align-items:stretch}.project-settings .builds-at-once input{width:5.5rem;min-height:44px;margin:0;box-sizing:border-box}.project-settings .builds-at-once button{min-height:44px;margin:0}` +
-  `.project-settings .builds-at-once .meta{margin:0}`;
+  `.project-settings .builds-at-once .meta{margin:0}.project-settings form.remove-project{margin-top:20px;gap:4px}.project-settings form.remove-project button{min-height:44px}.project-settings form.remove-project .meta{margin:0}`;
 
 export type ProjectSettingsView = {
   repo: string; name: string; holdings: ProjectHoldings; running: string[]; canDelete: boolean;
@@ -51,7 +51,10 @@ export function projectSettingsHtml(view: ProjectSettingsView, csrf: string, not
       `<form method="post" action="/settings/project/delete"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}">` +
       `<label><span>Type <strong>${e(view.name)}</strong> to continue</span><input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>` +
       `<button type="submit">Continue</button></form>`;
-  return `${head}<details class="danger-zone"${notice.problem ? " open" : ""}><summary>Delete project</summary>${body}</details></section>`;
+  // Removing is the reversible step: off the lists and the builder, everything kept.
+  const remove = `<form class="remove-project" method="post" action="/projects/remove"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}">` +
+    `<button type="submit">Remove from Toolroll</button><p class="meta">Its tasks and results stay saved. Add it again to bring it back.</p></form>`;
+  return `${head}${remove}<details class="danger-zone"${notice.problem ? " open" : ""}><summary>Delete project</summary>${body}</details></section>`;
 }
 
 /** The second step: exactly what goes, and the password. */

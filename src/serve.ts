@@ -263,7 +263,8 @@ import { verifiedAuthor, LEAD_THREAD, isDigestTime, RESULT_SCREENSHOTS, type Res
 import { RESULT_SHOT_CHOICES } from "./result-shots.js";
 import { digestTimes } from "./digest-times.js";
 import type { MateProgress } from "./mate-progress.js";
-import { updateRepos, addRepos, removeRepos } from "./repos.js";
+import { updateRepos, removeRepos } from "./repos.js";
+import { admitProject, releaseProject } from "./project-admission.js";
 import { run as execRun } from "./exec.js";
 import { findFirstTasks, firstResultWords, firstRunSteps, firstTaskJourney, firstTaskSuggestions, HOW_IT_WORKS, SANDBOX_COMMAND, signInCommandFor, START_COMMAND, type FirstRunStep, type FirstTaskSuggestion } from "./first-run.js";
 
@@ -473,6 +474,10 @@ export type ServeOptions = {
   desktopIdentity?: string;
   /** Trusted native admission callback; enrollment rows alone never supply this authority. */
   additionalProjectRepos?: () => readonly string[];
+  /** The co-located `up`'s exact admitted repositories, read on every request: its startup projects plus those
+   * added since (`repos add`, the lead, the console) and minus those removed. When given it replaces `repos` as
+   * the exact part of the ceiling, so an addition or removal shows without a restart. */
+  admittedRepos?: () => readonly string[];
   connectionProbe?: typeof execRun;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
@@ -516,6 +521,8 @@ export type ServeOptions = {
 };
 
 const SESSION_COOKIE = "standing-orders_session";
+/** Stands in for "no project" in a ceiling: no folder resolves to it, so it admits nothing. */
+const NO_PROJECT = "/\0no-project";
 /** Where `up`'s one-time sign-in link points, and how long it works. */
 export const SIGN_IN_LINK_PATH = "/login/once/";
 export const SIGN_IN_LINK_MS = 10 * 60_000;
@@ -924,7 +931,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
   const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0;
   /** Per-row visibility under the ceiling — the authorization question for reads. */
-  const liveCeiling = () => ({ repos: [...ceiling.repos, ...(options.additionalProjectRepos?.() ?? [])], roots: ceiling.roots });
+  /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
+  const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
+  const liveCeiling = () => {
+    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
+    // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
+    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots };
+  };
   // Native tools share the installation's login and can read beyond a project.
   // Account project membership cannot provide an OS read boundary.
   function codingActorAllowed(actor: { name: string; generation: number }): boolean {
@@ -944,12 +957,19 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * ceiling; this server still filters every row through its own ceiling. */
   /** Projects deleted while this console runs: gone from its lists though a builder started with them still watches. */
   const deletedRepos = new Set<string>();
+  /** Those still gone: a project added again (from here, `repos add`, or the lead) has its row back and shows again. */
+  const goneRepos = (): ReadonlySet<string> => {
+    if (deletedRepos.size === 0) return deletedRepos;
+    for (const one of store.listProjects()) deletedRepos.delete(one.path);
+    return deletedRepos;
+  };
   const managedRepos = (): string[] => {
     const seen = new Set<string>();
     const repos: string[] = [];
-    for (const path of [...ceiling.repos, ...(options.currentRepos?.() ?? [])]) {
+    const gone = goneRepos();
+    for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
       const canonical = canonicalProject(path) ?? path;
-      if (seen.has(canonical) || !visible(canonical) || deletedRepos.has(canonical)) continue;
+      if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
     }
@@ -1048,6 +1068,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     restricted() ? [...(store.accountOf(requestContext.getStore()!.actor!)?.projects ?? [])].filter(visible) : unscopedMode
       ? null
       : [...new Set([...managedRepos(), ...(ceiling.roots.length === 0 ? [] : store.knownRepos().filter(visible))])];
+  /** Every project this person may pick in the console — the switcher, Projects, Settings, Tools and Flows read this
+   * one list: the live admitted set (taskless projects included) and every project with saved work, each through
+   * the ceiling and this account's project grants. A project removed or deleted here is gone from it. */
+  const consoleProjects = (): string[] => {
+    const gone = goneRepos();
+    return [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(one => visible(one) && !gone.has(one));
+  };
   /** The task behind a resource, for the ceiling check; null = no ref (visible). */
   const taskRepoOf = (taskRef: number): string | null => store.refForId(taskRef)?.repo ?? null;
 
@@ -2717,7 +2744,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return void response.end(spendCsv(items, teammateNames));
       }
       const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-      const projects = [...new Set([...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
       const view = {
         month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1),
@@ -2734,7 +2761,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     if (url.pathname === "/ledger") {
       const admitted = admissionList();
-      const projects = admitted ?? [...new Set([...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = admitted ?? consoleProjects();
       const chosen = url.searchParams.get("project") ?? "";
       if (chosen !== "" && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/ledger");
       const before = url.searchParams.get("before");
@@ -2902,7 +2929,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return seen;
       };
       const csrf = who.via === "cookie" ? who.session.csrf : "";
-      const projectChoices = [...new Set([...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projectChoices = consoleProjects();
       const accessFields = (selected: readonly string[] | null) =>
         `<label>Project access<select name="access"><option value="selected"${selected !== null ? " selected" : ""}>Selected projects</option><option value="all"${selected === null ? " selected" : ""}>All projects</option></select></label>` +
         `<p class="meta">Operators with all-project access also manage the instance.</p><fieldset><legend>Projects</legend>${projectChoices.length === 0 ? `<p class="meta">Add a project before granting selected access.</p>` : projectChoices.map(repo => `<label class="row"><input type="checkbox" name="projects" value="${escape(repo)}"${selected?.includes(repo) ? " checked" : ""}>${escape(projectName(repo))}</label>`).join("")}</fieldset>`;
@@ -3481,7 +3508,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     // Flows → New: the gallery, and each template's page.
     if (url.pathname === "/flows/new") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const canUse = who.via === "cookie" && who.role === "approver" && projects.length > 0;
       // The chosen project, else the one being looked at: its tools are what each card says is connected.
       const asked = url.searchParams.get("repo");
@@ -3491,7 +3518,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const galleryRead = /^\/flows\/new\/([a-z-]{1,40})$/.exec(url.pathname);
     if (galleryRead !== null) {
       const template = galleryTemplateOf(galleryRead[1]!);
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       if (template === null) return refuse(response, who, 404, "There's no template by that name.", "/flows/new");
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to create flows.", "/flows/new");
       if (projects.length === 0) return refuse(response, who, 409, "Add a project first.", "/projects");
@@ -3502,13 +3529,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendGalleryUse(response, who, template, projects, repo, null, template.name, problem === null ? null : problem.slice(0, 400), said === null ? null : said.slice(0, 400));
     }
     if (url.pathname === "/flows") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const flows = store.listFlows(projects);
       return sendScreen(response, 200, screen("Flows", `<h1>Flows</h1>${flowsListHtml(store, flows, projects, who.via === "cookie" ? who.session.csrf : "", who.via === "cookie" && who.role === "approver", url.searchParams.get("problem"))}`, { chrome: chromeFor(project, "flows"), functional: { script: FLOW_IMPORT_SCRIPT } }));
     }
     // starter kits — the gallery, and each kit's checklist in a project.
     if (url.pathname === "/kits" || /^\/kits\/[a-z-]{1,40}$/.test(url.pathname)) {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const csrf = who.via === "cookie" ? who.session.csrf : "", canSetUp = who.via === "cookie" && who.role === "approver";
       if (url.pathname === "/kits") {
         return sendScreen(response, 200, screen("Starter kits", `<h1>Starter kits</h1>${kitsGalleryHtml(store, projects, projectName, csrf, canSetUp, { problem: url.searchParams.get("problem") })}`, { chrome: chromeFor(project, "flows") }));
@@ -3520,7 +3547,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v92: AI teammates — the team, and one page per teammate.
     if (url.pathname === "/teammates") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       return sendScreen(response, 200, screen("Teammates", `<h1>Teammates</h1>${teammatesListHtml(store, store.teammates(projects), projects, projectName, who.via === "cookie" ? who.session.csrf : "", who.via === "cookie" && who.role === "approver",
         { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`, { chrome: chromeFor(project, "flows") }));
     }
@@ -3582,7 +3609,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (flow === null || flow.state !== "active" || !visible(flow.repo)) return refuse(response, who, 404, "No such flow in your projects.", "/flows");
       const selected = Number(url.searchParams.get("card")), start = Number(url.searchParams.get("start"));
       const view = flowView(store, flow, { name: who.name, approver: who.via === "cookie" && who.role === "approver" }, Number.isSafeInteger(selected) && selected > 0 ? selected : null,
-        { dir: options.configDir ?? null, repos: [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible), startTrigger: Number.isSafeInteger(start) && start > 0 ? start : null,
+        { dir: options.configDir ?? null, repos: consoleProjects(), startTrigger: Number.isSafeInteger(start) && start > 0 ? start : null,
           sortReady: keyStatus("openrouter", providerHome).set, toolHome });
       if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(view));
       return sendScreen(response, 200, screen(flow.name, `<p><a href="/flows">Flows</a></p><h1>${escape(flow.name)}</h1>${flowFallbackHtml(view)}`, { chrome: chromeFor(flow.repo, "flows"), workspace: { view } }));
@@ -4124,7 +4151,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response, 200, screen("Models", `<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
     }
     if (url.pathname === "/settings/skills") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && !projects.includes(chosen)) return refuse(response,who,403,"That project is outside your access.","/projects");
       const selector = projects.length > 1 ? `<form class="skills" method="get"><label>Project<select name="repo">${projects.map(p=>`<option value="${escape(p)}"${p===chosen?' selected':''}>${escape(p.split('/').at(-1)??p)}</option>`).join('')}</select></label><button>Show project</button></form>` : '';
@@ -4136,7 +4163,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response,200,screen('Skills',`<p><a href="/settings">Settings</a></p><h1>Skills</h1>${url.searchParams.get('saved')==='1'?'<p role="status">Saved.</p>':''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
     }
     if (url.pathname === "/settings/tools") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
       const kit = kitOf(url.searchParams.get("kit") ?? "")?.id ?? null, wanted = (oneClickOf(url.searchParams.get("connect") ?? "") ?? localConnectOf(url.searchParams.get("connect") ?? ""))?.id ?? null;
@@ -4156,7 +4183,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Project: what Toolroll holds for a project; an instance operator deletes it here.
     if (url.pathname === "/settings/project") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible).filter(one => !deletedRepos.has(one));
+      const projects = consoleProjects();
       const asked = url.searchParams.get("repo");
       const chosen = asked ?? (project != null && projects.includes(project) ? project : projects[0] ?? "");
       if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
@@ -4167,7 +4194,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v102: Settings → Approval rules, a project's separation of duties. Anyone who sees the project reads them; an instance operator sets them.
     if (url.pathname === "/settings/approval") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
       const selector = projects.length > 1 ? `<form class="approval-project" method="get" action="/settings/approval"><label>Project<select name="repo">${projects.map(p => `<option value="${escape(p)}"${p === chosen ? " selected" : ""}>${escape(projectName(p))}</option>`).join("")}</select></label><button>Show</button></form>` : "";
@@ -4178,7 +4205,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Sprint 8: Settings → Policy, the organisation policy and its history. Anyone signed in reads it; an instance operator changes it.
     if (url.pathname === "/settings/policy") {
-      const repos = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const repos = consoleProjects();
       const toolNames = [...new Set(repos.flatMap(repo => store.projectTools(repo).map(one => one.name)))].sort();
       const view = { policy: store.orgPolicy(), history: store.policyHistory(50), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), toolNames };
       return sendScreen(response, 200, screen("Policy", `<p><a href="/settings">Settings</a></p><h1>Policy</h1>${policyHtml(view, who.via === "cookie" ? who.session.csrf : "", { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
@@ -4197,7 +4224,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Settings → Flows: the starter flows, each switched on with one yes. ?starter= marks the one a task's
     // "Do this every time…" asked about.
     if (url.pathname === "/settings/flows") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings");
       const content = chosen === "" ? "<p>Add a project to switch on starter flows.</p>" : startersHtml({
@@ -4311,14 +4338,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/sign-in") {
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || !options.configDir) return refuse(response, who, 403, "An instance operator sets up sign-in.", "/settings");
       const origin = consoleOrigin(request.headers.host);
-      const projects = [...new Set([...managedRepos(), ...store.knownRepos()])].filter(visible).map(path => ({ path, name: projectName(path) }));
+      const projects = consoleProjects().map(path => ({ path, name: projectName(path) }));
       const settings = ssoSettings();
       const html = ssoSettingsHtml({ settings, redirect: origin === null ? null : `${origin}${SSO_CALLBACK}`, projects, linked: settings !== null && store.ssoIdentitiesOf(who.name).some(one => one.issuer.replace(/\/+$/, "") === settings.issuer) },
         who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
       return sendScreen(response, 200, screen("Sign-in", `<p><a href="/settings">Settings</a></p><h1>Sign-in</h1>${html}`, { chrome: chromeFor(project, "settings") }));
     }
     if (url.pathname === "/settings/knowledge") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/knowledge");
       const selector = projects.length > 1 ? `<form class="knowledge" method="get" action="/settings/knowledge"><label>Project<select name="repo">${projects.map(p=>`<option value="${escape(p)}"${p===chosen?' selected':''}>${escape(p.split('/').at(-1)??p)}</option>`).join('')}</select></label><button>Show project</button></form>` : '';
@@ -4347,7 +4374,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response,200,screen('Knowledge',`<p><a href="/settings">Settings</a></p><h1>Knowledge</h1>${url.searchParams.get('saved')==='1'?'<p role="status">Saved for future tasks.</p>':''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings')}));
     }
     if (url.pathname === "/settings/learning") {
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
       if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
       const selector = `<form method="get" action="/settings/learning"><label>Project<select name="repo">${projects.map(p => `<option value="${escape(p)}"${p === chosen ? " selected" : ""}>${escape(p.split("/").at(-1) ?? p)}</option>`).join("")}</select></label><button>Show project</button></form>`;
@@ -5405,7 +5432,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
           ...managedRepos().map(path => ({ path, name: projectName(path) })),
         ]) {
-          if (seen.has(one.path) || !visible(one.path)) continue;
+          if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
           seen.add(one.path);
           rows.push(one);
         }
@@ -5663,7 +5690,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const recent = store.listProjects().filter(one => visible(one.path));
     const recentPaths = new Set(recent.map(one => one.path));
     const candidates = new Set<string>();
-    for (const path of [...managedRepos(), ...store.knownRepos()]) {
+    for (const path of consoleProjects()) {
       const canonical = canonicalProject(path) ?? path;
       if (!recentPaths.has(canonical) && visible(canonical)) candidates.add(canonical);
     }
@@ -6938,7 +6965,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/skills/import" || url.pathname === "/settings/skills/change") {
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response,who,403,'Sign in as an approver to manage skills.','/settings/skills');
       const repo=body.get('repo')??'',back=`/settings/skills?repo=${encodeURIComponent(repo)}`;
-      if (!visible(repo)||![...(admissionList()??[]),...managedRepos(),...store.knownRepos()].includes(repo)) return refuse(response,who,403,'That project is outside your access.','/projects');
+      if (!visible(repo)||!consoleProjects().includes(repo)) return refuse(response,who,403,'That project is outside your access.','/projects');
       if ([...new Set(body.keys())].some(k=>body.getAll(k).length!==1)) return refuse(response,who,400,'Invalid skills form.',back);
       try {
         const view=skillsView(store,repo,who.name);
@@ -6969,7 +6996,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const now = clock();
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to set kits up.", "/kits");
       const kit = kitOf(kitPost[1]!);
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       const repo = body.get("repo") ?? "";
       if (kit === null || !projects.includes(repo) || !store.accountCanAccess(who.name, repo)) return redirect(response, `/kits?problem=${encodeURIComponent("Choose one of your projects.")}`);
       const page = (key: "said" | "problem", words: string) => redirect(response, `/kits/${kit.id}?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
@@ -7006,7 +7033,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       if (who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to look after teammates.", "/teammates");
       if (teammatePost![2] === "new") {
-        const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+        const projects = consoleProjects();
         const repo = body.get("repo") ?? "";
         if (!projects.includes(repo)) return redirect(response, `/teammates?problem=${encodeURIComponent("Choose one of your projects.")}`);
         const template = body.get("template") ?? "";
@@ -7069,7 +7096,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const galleryPost = /^\/flows\/new\/([a-z-]{1,40})$/.exec(url.pathname);
     if (galleryPost !== null) {
       const template = galleryTemplateOf(galleryPost[1]!);
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       if (template === null) return refuse(response, who, 404, "There's no template by that name.", "/flows/new");
       if (who.via !== "cookie" || who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "Sign in as an approver to create flows.", "/flows/new");
       const repo = body.get("repo") ?? "";
@@ -7090,7 +7117,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/flows/new" || url.pathname === "/flows/example" || url.pathname === "/flows/import" || flowPost !== null || triggerPost !== null) {
       const now = clock();
       const answer = (status: number, payload: Record<string, unknown>) => respond(response, status, "application/json; charset=utf-8", JSON.stringify(payload));
-      const projects = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const projects = consoleProjects();
       if (who.via !== "cookie" || who.role !== "approver") return url.pathname === "/flows/new" || url.pathname === "/flows/example" || url.pathname === "/flows/import" ? refuse(response, who, 403, "Sign in as an approver to create flows.", "/flows") : answer(403, { ok: false, said: "Sign in as an approver to change flows." });
       if (url.pathname === "/flows/example") {
         // A first look (v88): the Email replies template with one sample question, which Claude drafts a reply to straight away.
@@ -7291,7 +7318,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (target === null) return back("problem", "Choose what the budget is for.");
       const scope = target[1] as "installation" | "project" | "person" | "teammate", key = target[2]!;
       const known = scope === "installation" ? key === "*"
-        : scope === "project" ? [...new Set([...managedRepos(), ...store.knownRepos()])].filter(visible).includes(key)
+        : scope === "project" ? consoleProjects().includes(key)
         : scope === "person" ? store.accountFacts().some(one => one.name === key && one.revokedAt === null)
         : store.teammates([...new Set([...managedRepos(), ...store.knownRepos()])]).some(one => String(one.id) === key);
       if (!known) return back("problem", "That isn't a project, person or teammate here.");
@@ -7310,7 +7337,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Settings → Project → Builds at once: an approver for the project sets it; the ledger keeps before → after.
     if (url.pathname === "/settings/project/concurrency") {
       const repo = body.get("repo") ?? "";
-      const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const known = consoleProjects();
       if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
       if (who.via !== "cookie" || who.role !== "approver" || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project sets how many tasks build at once.", "/settings/project");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
@@ -7326,7 +7353,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/project/delete") {
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator deletes projects.", "/settings/project");
       const repo = body.get("repo") ?? "";
-      const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const known = consoleProjects();
       if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
       const back = (key: "said" | "problem", words: string, to = repo) => redirect(response, `/settings/project?${to === "" ? "" : `repo=${encodeURIComponent(to)}&`}${key}=${encodeURIComponent(words)}`);
       const view = projectViewOf(repo, who);
@@ -7366,7 +7393,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/approval") {
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets approval rules.", "/settings/approval");
       const repo = body.get("repo") ?? "";
-      const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(visible);
+      const known = consoleProjects();
       if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/approval?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
@@ -7694,7 +7721,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/tools/connect") {
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to connect tools.", "/settings/tools");
       const repo = body.get("repo") ?? "";
-      const reachable = (one: string) => visible(one) && [...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(one);
+      const reachable = (one: string) => visible(one) && consoleProjects().includes(one);
       if (!reachable(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
       // "Also connect to …": a service connected on the shown project, signed in again for another project.
       const also = body.get("also");
@@ -7750,12 +7777,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/tools/change") {
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to manage tools.", "/settings/tools");
       const repo = body.get("repo") ?? "";
-      if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+      if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
       const back = (key: "said" | "problem", words: string, anchor = "") => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}${anchor}`);
       // As for Connect: a post from a page that showed another project is refused, never applied here.
       const shown = body.get("shown") ?? "";
       if (shown !== repo) {
-        const page = visible(shown) && [...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(shown) ? shown : repo;
+        const page = visible(shown) && consoleProjects().includes(shown) ? shown : repo;
         return redirect(response, `/settings/tools?repo=${encodeURIComponent(page)}&problem=${encodeURIComponent("The project changed; try again.")}`);
       }
       const action = body.get("action") ?? "";
@@ -7891,14 +7918,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/knowledge/refresh") {
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to refresh project context.', '/settings/knowledge');
       const repo = body.get('repo') ?? '';
-      if (!visible(repo) || !store.accountCanAccess(who.name, repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+      if (!visible(repo) || !store.accountCanAccess(who.name, repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
       const refreshed = await repositoryContext({ repo, query: '', refresh: true, cacheRoot: join(dirname(evidenceRoot), 'repository-context') });
       return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', `<h1>Project context</h1><p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`, { chrome: chromeFor(repo, 'settings') }));
     }
     if (url.pathname === "/settings/knowledge/proposal") {
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to decide memory proposals.', '/settings/knowledge');
       const repo = body.get('repo') ?? '', decision = body.get('decision') ?? '';
-      if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+      if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
       if (!['accept', 'reject'].includes(decision) || !/^[0-9]{1,12}$/.test(body.get('proposal') ?? '')) return refuse(response, who, 400, 'Choose accept or reject for one proposal.', '/settings/knowledge');
       try { decideProposal(store, { repo, actor: who.name, id: Number(body.get('proposal')), decision: decision as 'accept' | 'reject' }, now); }
       catch (error) { return sendScreen(response, 409, screen('Knowledge', `<h1>Knowledge</h1><p role="alert">${escape(error instanceof Error ? error.message : 'That proposal could not be decided.')}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`, { chrome: chromeFor(repo, 'settings') })); }
@@ -7907,7 +7934,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/knowledge/decision") {
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to change project decisions.', '/settings/knowledge');
       const repo = body.get('repo') ?? '', action = body.get('action') ?? '';
-      if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+      if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
       if (['repo', 'action', 'claim', 'why', 'decision', 'reason'].some(k => body.getAll(k).length > 1) || !['record', 'retire'].includes(action)) return refuse(response, who, 400, 'Choose record or retire.', '/settings/knowledge');
       try {
         if (action === 'record') recordDecision(store, { repo, actor: who.name, draft: { claim: body.get('claim') ?? '', why: body.get('why') ?? '', sourceKind: 'manual' } }, now);
@@ -7939,7 +7966,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.pathname === "/settings/learning/change") {
       if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to change learning.", "/settings/learning");
       const repo = body.get("repo") ?? "", action = body.get("action") ?? "";
-      if (!visible(repo) || ![...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()].includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
+      if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
       if (["repo", "action", "identity", "revision", "lesson", "version", "sha"].some(k => body.getAll(k).length > 1) || !["adopt", "disable", "reset", "enable", "pause"].includes(action) || !/^[0-9]+$/.test(body.get("revision") ?? "")) return refuse(response, who, 400, "Invalid learning form.", "/settings/learning");
       try {
         changeLearning(store, evidenceRoot, { repo, actor: who.name, identity: body.get("identity") ?? "", revision: Number(body.get("revision")), action: action as "adopt" | "disable" | "reset" | "enable" | "pause", lesson: Number(body.get("lesson")), version: Number(body.get("version")), sha: body.get("sha") ?? "" }, clock());
@@ -8326,6 +8353,19 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, safeReturn(body.get("return")));
     }
 
+    if (url.pathname === "/projects/remove") {
+      // The reversible remove: off every list and the builder; tasks, results and settings stay. Deleting is
+      // Settings → Project → Delete project. The same admission code as `repos remove` (project-admission.ts).
+      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator removes projects.", "/settings/project");
+      const repo = body.get("repo") ?? "";
+      if (!consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+      const released = await releaseProject(store, { registryFile: options.registryPath ?? null, path: repo, actor: { label: who.name, origin: "console" }, now });
+      if (!released.ok) return redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&problem=${encodeURIComponent(`${projectName(repo)} wasn't removed: ${released.message}`)}`);
+      deletedRepos.add(repo);
+      if (who.session.project === repo) { who.session.project = null; who.session.projectRevision += 1; sessions.persist(who.session); }
+      return redirect(response, `/settings/project?said=${encodeURIComponent(`Removed ${projectName(repo)}. Its tasks and results stay saved.`)}`);
+    }
+
     if (url.pathname === "/projects/open") {
       // Sessions only: a bearer caller names its project per request and has
       // no session to mutate — refusing here keeps that boundary legible.
@@ -8347,17 +8387,19 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (!(await isGitRepo(canonical))) {
         return void projectsScreen(response, who, "that path is not a git repository", 400, safeReturn(body.get("return")));
       }
-      // Opening an allowed repository enrolls it in this machine's durable
-      // project list. A co-located `up` notices that list and connects its
-      // builder; there is no separate restart or runner-binding step.
-      if (options.registryPath !== undefined) {
-        const enrolled = await updateRepos(options.registryPath, repos => addRepos(repos, [canonical])); deletedRepos.delete(canonical);
-        if (!enrolled.ok) {
-          return void projectsScreen(response, who, `that project is valid, but it could not be added — ${enrolled.message}`, 400, safeReturn(body.get("return")));
-        }
+      // An account limited to listed projects never widens its own list.
+      if (!visible(canonical)) {
+        return void projectsScreen(response, who, "That project is outside your access.", 403, safeReturn(body.get("return")));
       }
-      store.upsertProject(canonical, projectName(canonical), now);
-      who.session.project = canonical;
+      // Opening an allowed repository admits it the same way `repos add` does
+      // (project-admission.ts). A co-located `up` notices the durable list and
+      // connects its builder; there is no separate restart or binding step.
+      const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now });
+      if (!admitted.ok) {
+        return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, 400, safeReturn(body.get("return")));
+      }
+      deletedRepos.delete(admitted.repo);
+      who.session.project = admitted.repo;
       who.session.projectRevision++;
       // The switcher (board pass) opens a project from any screen and
       // returns there — a same-site path only, never an off-site road.
@@ -9102,13 +9144,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (admitted === null) {
         return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400);
       }
-      if (options.registryPath !== undefined) {
-        const enrolled = await updateRepos(options.registryPath, (repos: string[]) => addRepos(repos, [admitted])); deletedRepos.delete(admitted);
-        if (!enrolled.ok) {
-          return projectsScreen(response, who, `${cloned.target} is cloned but not enrolled — ${enrolled.message}`, 400);
-        }
+      const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now });
+      if (!joined.ok) {
+        return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, 400);
       }
-      store.upsertProject(admitted, projectName(admitted), now);
+      deletedRepos.delete(admitted);
       who.session.project = admitted;
       who.session.projectRevision += 1;
       return projectsScreen(
