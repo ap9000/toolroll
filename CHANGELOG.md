@@ -1,7 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.9.37 — 2026-10-06
 
+- **Zod revamp, waves 1 and 2 finished.** Every handoff between a model and
+  Toolroll, and the context passed between steps, is now one schema each in
+  `src/contracts/`: the lead's 51 tools and the 25 MCP gateway tools, the
+  scout report, task sizing, reviewer findings, decisions, teammate turns and
+  sort answers, the lead's context bundle, project knowledge, memory and
+  skills, chat actions and channel callbacks, and the desktop coding handoff,
+  context and session record. A model gets the schema as `--json-schema`
+  where its harness takes one; a refusal names the field
+  (`steps[0].routes[0].goesTo: required`). Everything that was accepted before
+  is still accepted: tool calls with extra or loose arguments, model answers
+  with nulls or overlong text (clipped as before), saved reports, rows,
+  sessions, chat buttons and proposals. Replayed against real saved data
+  (scout reports, findings, decisions, 410 scopes and 796 routes, 279 chat
+  buttons, every saved flow and card), all of it reads the same.
+- **Research can read PostHog.** A research run gets a connected service's
+  query tool (PostHog's `exec`) only when the access the service actually
+  granted is read-only. Otherwise it skips it and says why on the run and the
+  integration, with a **Reconnect read-only** action. Connecting PostHog as
+  usual is unchanged, and builds keep every tool. Connections made before this
+  release didn't record what was granted, so research skips them until you
+  reconnect read-only.
+- **A question's recommendation can carry its reason.** `connect: because…`
+  now counts as recommending `connect`, instead of failing the question.
+- **A Telegram update Toolroll can't read** is logged and answered OK, so
+  Telegram doesn't keep resending it. A Slack, Discord or Teams message part
+  that can't be read is dropped with its reason instead of retried forever.
+- **Rolling back:** flow cards written by 0.9.37 read as empty in 0.9.36, so a
+  rollback loses the step outputs of cards still in progress.
 - **Scopes, acceptance criteria and sealed routes have one contract.** A task's
   scope (goal, exclusions, touch paths, rubric) and an acceptance criterion are
   described once from the plan contract's own fields (`src/contracts/scope.ts`);
