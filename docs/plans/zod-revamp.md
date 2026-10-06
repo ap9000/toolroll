@@ -69,7 +69,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today |
 |---|---|---|
-| 13 | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
+| 13 ✅ | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
 | 14 | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
 | 15 | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
 | 16 | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
@@ -282,3 +282,16 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+- **13. Console form bodies and JSON API** (2026-10-06). `src/contracts/console-api.ts` holds one schema for every
+  URL-encoded body the console reads (`CONSOLE_FORMS`: sign-up, sign-in, invite, the shared guard, every `handlePost`
+  route and each task, attend and routine verb; families with one dispatch, such as `/code/*`, `/flows/*` and the
+  teammate pages, share one) and lists the POSTs that read no field (`BODILESS_POSTS`). Each handler reads its body
+  through `readForm`, whose view is typed by the schema's field list, so reading an undeclared field fails the
+  typecheck. Kept: a body reads exactly as `URLSearchParams` did — first value, every value in order, presence,
+  unknown and computed names (`question:<id>`, `param.<id>`) — with every default, trimming, clipping, conversion and
+  refusal still in the handler; the CSRF, nonce, digest, password and duplicate-field checks are unchanged and in the
+  same order. A body that disagrees is logged and still read. The three `?format=json` responses (ledger page, evidence
+  pack, flow view) are checked as sent by loose, unversioned schemas; their bytes are unchanged (no version key, so
+  sealed ledger entries and pack digests still match), and a mismatch is logged, never refused. Telegram's pushed
+  updates (item 11) and flow webhooks and public forms (item 15) stay with their items. No tightening. Replay of
+  real rows remains an evidence gap: the installed database was denied to this build, and form bodies are never stored.

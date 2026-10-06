@@ -56,6 +56,7 @@ import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decid
 import { chooseFlowCard } from "./flow-send.js";
 import { FlowContractError, FLOW_TEMPLATES, validateFlowDefinition, withZoneNames } from "./flows.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
+import { CONSOLE_FORMS, checkResponse, readForm, type FormFieldOf, type FormView } from "./contracts/console-api.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
 import { applySavedKnowledge, changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
@@ -1181,7 +1182,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function authorizeMutation(
     request: IncomingMessage,
     who: Who,
-    body: URLSearchParams,
+    body: FormView<FormFieldOf<"mutationGuard">>,
   ): { status: number; message: string } | null {
     const current = store.accountOf(who.name);
     if (current === null || current.revokedAt !== null || current.role !== who.role || (who.via === "cookie" && current.generation !== who.session.generation)) {
@@ -1191,7 +1192,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (!type.startsWith("application/x-www-form-urlencoded")) {
       return { status: 415, message: "forms only" };
     }
-    for (const field of ["csrf", "token", "digest", "nonce", "confirm"]) {
+    for (const field of ["csrf", "token", "digest", "nonce", "confirm"] as const) {
       if (body.getAll(field).length > 1) {
         return { status: 400, message: `duplicated ${field} field` };
       }
@@ -1616,7 +1617,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (setupAttemptsLeft <= 0) {
         return page(response, 403, signupPage("too many wrong codes — restart the server to get a fresh code", 0));
       }
-      const body = await form(request);
+      const body = readForm(await form(request), CONSOLE_FORMS.signup);
       const code = (body.get("code") ?? "").trim();
       const name = (body.get("name") ?? "").trim();
       const password = body.get("password") ?? "";
@@ -1653,7 +1654,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, "/");
     }
     if (url.pathname === "/login" && method === "POST") {
-      const body = await form(request);
+      const body = readForm(await form(request), CONSOLE_FORMS.login);
       const name = body.get("name");
       const token = body.get("token");
       // The destination a deep link asked for rides the form as a same-site
@@ -1733,13 +1734,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (media !== "application/x-www-form-urlencoded") {
         return respond(response, 415, "text/plain; charset=utf-8", "forms only");
       }
-      let body: URLSearchParams;
+      let body: FormView<FormFieldOf<"join">>;
       try {
-        body = await form(request);
+        body = readForm(await form(request), CONSOLE_FORMS.join);
       } catch {
         return respond(response, 413, "text/plain; charset=utf-8", "body too large");
       }
-      for (const field of ["name", "password"]) {
+      for (const field of ["name", "password"] as const) {
         if (body.getAll(field).length > 1) {
           return respond(response, 400, "text/plain; charset=utf-8", `duplicated ${field} field`);
         }
@@ -1817,7 +1818,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => requestContext.run(requestFacts, async () => {
       const taskTextForm = url.pathname === "/tasks/add" || /^\/t\/[^/]+\/scope$/.test(url.pathname);
       const body = method === "POST" ? await form(request, url.pathname === "/settings/skills/import" ? 2 * 1024 * 1024 : url.pathname === "/flows/import" ? 1024 * 1024 : taskTextForm ? TASK_FORM_BODY_CAP : BODY_CAP) : null;
-      const target = actionTarget(url, who, request, body);
+      const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
       const execute = async () => {
         if (!projectRequestAllowed(url, who, request, response)) return;
         if (method === "GET") {
@@ -1863,7 +1864,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return respond(response, 405, "text/plain; charset=utf-8", "no such method here");
   }
 
-  function readAccessForm(body: URLSearchParams): { ok: true; projects: string[] | null } | { ok: false; message: string } {
+  function readAccessForm(body: FormView<"access" | "projects">): { ok: true; projects: string[] | null } | { ok: false; message: string } {
     if (body.getAll("access").length > 1) return { ok: false, message: "Choose one access setting." };
     const mode = body.get("access");
     // Older clients omitted this field and explicitly used instance roles.
@@ -1875,7 +1876,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return { ok: true, projects };
   }
 
-  function actionTarget(url: URL, who: Who, request: IncomingMessage, body: URLSearchParams | null = null): { repo: string | null; taskId: string | null; runId: number | null; action: string } {
+  function actionTarget(url: URL, who: Who, request: IncomingMessage, body: FormView<FormFieldOf<"ledgerTarget">> | null = null): { repo: string | null; taskId: string | null; runId: number | null; action: string } {
     if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
       let repo = body?.get('repo') ?? null;
       const match = /^\/code\/([a-f0-9]{32})/.exec(url.pathname);
@@ -2825,7 +2826,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const chainView = { ok: report.ok, entries: report.entries, through: report.through, head: report.head, unsealed: report.unsealed, problem: report.problem, checkedAt: report.checkedAt,
         latest: operator && latest !== null ? latest : null, csrf: operator ? who.session.csrf : null, today: now.toISOString().slice(0, 10) };
       const rows = store.actionLedger({ ...query, ...(before === null ? {} : { before: Number(before) }), limit: 51 });
-      if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ chain: { ok: report.ok, entries: report.entries, through: report.through, head: report.head, problem: report.problem }, entries: rows.slice(0, 50), nextBefore: rows.length > 50 ? rows[49]!.id : null }));
+      if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(checkResponse("ledgerPage", { chain: { ok: report.ok, entries: report.entries, through: report.through, head: report.head, problem: report.problem }, entries: rows.slice(0, 50), nextBefore: rows.length > 50 ? rows[49]!.id : null })));
       return sendScreen(response, 200, screen("Action ledger", ledgerBody(rows, projects, url.searchParams, chainView), { chrome: chromeFor(chosen === "" ? null : chosen, "ledger", undefined, chosen === "" ? "all" : "project") }));
     }
 
@@ -3264,7 +3265,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (url.searchParams.get("format") === "json") {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="evidence-${family.root.id.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
           "cache-control": "no-store", "x-content-type-options": "nosniff" });
-        return void response.end(JSON.stringify(pack, null, 2));
+        return void response.end(JSON.stringify(checkResponse("evidencePack", pack), null, 2));
       }
       return sendScreen(response, 200, screen(`Evidence pack · ${family.root.id}`, evidencePackHtml(pack), { chrome: chromeFor(family.root.repo, "tasks") }));
     }
@@ -3633,7 +3634,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const view = flowView(store, flow, { name: who.name, approver: who.via === "cookie" && who.role === "approver" }, Number.isSafeInteger(selected) && selected > 0 ? selected : null,
         { dir: options.configDir ?? null, repos: consoleProjects(), startTrigger: Number.isSafeInteger(start) && start > 0 ? start : null,
           sortReady: keyStatus("openrouter", providerHome).set, toolHome });
-      if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(view));
+      if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(checkResponse("flowView", view)));
       return sendScreen(response, 200, screen(flow.name, `<p><a href="/flows">Flows</a></p><h1>${escape(flow.name)}</h1>${flowFallbackHtml(view)}`, { chrome: chromeFor(flow.repo, "flows"), workspace: { view } }));
     }
     if (url.pathname === "/recipes" || url.pathname.startsWith("/recipes/")) {
@@ -6699,7 +6700,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     who: Who,
     routineId: number,
     verb: string,
-    body: URLSearchParams,
+    body: FormView<FormFieldOf<"routine">>,
     now: Date,
   ): void {
     const routine = store.getRoutine(routineId);
@@ -6834,7 +6835,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     who: Who,
     request: IncomingMessage,
     response: ServerResponse,
-    body: URLSearchParams,
+    posted: URLSearchParams,
   ): Promise<void> {
     // The attended beat answers BEFORE the shared mutation guard (v28): it
     // carries no parameters, so there is no csrf token to check — its OWN
@@ -6848,11 +6849,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return attendedBeats(who, request, response, clock());
     }
 
-    const denied = authorizeMutation(request, who, body);
+    const denied = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
     if (denied !== null) return refuse(response, who, denied.status, denied.message);
     // The scripted demo lead's acts: ask, approve, change a plan, complete or send back a result.
     const demoAct = /^\/chat\/demo\/(?:ask|([0-9]{1,9})\/(approve|change|revise|complete))$/.exec(url.pathname);
     if (demoAct !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.demo);
       const lead = demoLeadHere();
       if (lead === null || who.via !== "cookie") return refuse(response, who, 404, "There's no page at this address.", "/chat");
       if (who.role !== "approver") return redirect(response, `/chat?said=${encodeURIComponent("Your login can watch. Approving and completing is an approver's act.")}`);
@@ -6893,6 +6895,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // The update notice is dismissed per browser and per version: a newer release shows it again.
     if (url.pathname === "/settings/updates/dismiss") {
+      const body = readForm(posted, CONSOLE_FORMS.updatesDismiss);
       const version = body.get("version") ?? "";
       if (!/^[0-9A-Za-z.-]{1,60}$/.test(version)) return refuse(response, who, 400, "Choose a version to dismiss.", "/settings#updates");
       response.setHeader("Set-Cookie", `so-update-seen=${version}; SameSite=Lax; Path=/; Max-Age=31536000`);
@@ -6901,6 +6904,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // The daily check's switch: an installation setting, so an operator's. (Its own address: POST /settings/updates starts an update.)
     if (url.pathname === "/settings/updates/checks") {
+      const body = readForm(posted, CONSOLE_FORMS.updatesChecks);
       if (options.configDir === undefined) return refuse(response, who, 404, "Updates are not set up on this console.", "/settings");
       if (!store.isInstanceOperator(who.name)) return refuse(response, who, 403, "Only an operator can change update checks.", "/settings#updates");
       const on = body.get("check") === "on";
@@ -6908,13 +6912,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, `/settings?said=${encodeURIComponent(on ? "Toolroll looks for a newer version once a day." : "Update checks are off.")}#updates`);
     }
     if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
+      const body = readForm(posted, CONSOLE_FORMS.code);
       const wantsJson = request.headers.accept?.includes('application/json') === true;
       const fail = (status: number, message: string, delivery: 'rejected' | 'pending' | 'unknown' = 'rejected', sessionId?: string): void => wantsJson
         ? respond(response, status, 'application/json', JSON.stringify({ ok: false, error: message, delivery, ...(sessionId ? { sessionId } : {}) }))
         : refuse(response, who, status, message, '/code');
       if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation }) || store.isDemo()) return fail(403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.');
       if (!coding) return fail(409, codingProblem || 'Open Toolroll on the machine with your installed coding agent.');
-      if ([...new Set(body.keys())].some(key => body.getAll(key).length !== 1)) return fail(400, 'Submit one value for each field.');
+      if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return fail(400, 'Submit one value for each field.');
       const actor = { name: who.name, generation: who.session.generation };
       const permitted = (repo: string): boolean => visible(repo) && codingProjectAllowed(repo);
       // Sprint 8: a coding session is Codex taking turns: the organisation policy decides whether it may (provider,
@@ -6966,14 +6971,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const message = error instanceof Error ? error.message : 'The coding action could not finish. Your draft is preserved.';
         const ship = /^\/code\/([a-f0-9]{32})\/ship$/.exec(url.pathname);
         if (ship && !wantsJson) {
-          try { const preview = codingHandoffPreview(store, { sessionId: ship[1]!, actor: who.name }); return sendScreen(response, 409, screen('Review for shipping', codingShippingHtml(preview, who.session.csrf, body, message), { chrome: chromeFor(preview.repo, 'code') })); } catch {}
+          try { const preview = codingHandoffPreview(store, { sessionId: ship[1]!, actor: who.name }); return sendScreen(response, 409, screen('Review for shipping', codingShippingHtml(preview, who.session.csrf, body.sent, message), { chrome: chromeFor(preview.repo, 'code') })); } catch {}
         }
         return fail(409, message, error instanceof CodingActionError ? error.delivery : 'rejected', error instanceof CodingActionError ? error.sessionId : undefined);
       }
     }
     if (!projectRequestAllowed(url, who, request, response)) return;
     if (restricted()) {
-      const repos = body.getAll("repo");
+      const repos = readForm(posted, CONSOLE_FORMS.projectCeiling).getAll("repo");
       if (repos.length > 1 || repos.some(repo => repo.trim() !== "" && !visible(repo.trim()))) return refuse(response, who, 403, "That project is outside your access.", "/projects");
     }
 
@@ -6994,19 +6999,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     bustBadge();
 
     if (url.pathname === "/settings/skills/revise") {
+      const body = readForm(posted, CONSOLE_FORMS.skillsRevise);
       if(who.via!=='cookie'||who.role!=='approver')return refuse(response,who,403,'Sign in to revise a test.','/settings/skills');
       try {
         const run=Number(body.get('run')),source=skillTestResult(store,run,who.name);
-        if(!source||!visible(source.repo)||body.get('repo')!==source.repo||['run','repo','nonce','feedback'].some(k=>body.getAll(k).length!==1))return refuse(response,who,403,'That skill test is outside your access.','/settings/skills');
+        if(!source||!visible(source.repo)||body.get('repo')!==source.repo||(['run','repo','nonce','feedback'] as const).some(k=>body.getAll(k).length!==1))return refuse(response,who,403,'That skill test is outside your access.','/settings/skills');
         try{const revision=reviseSkillTest(store,{run,actor:who.name,feedback:body.get('feedback')??'',nonce:body.get('nonce')??''},clock());return redirect(response,`/t/${encodeURIComponent(revision.id)}`);}
         catch(error){return sendScreen(response,409,screen('Revise skill test',skillTestFeedbackHtml(source,who.session.csrf,true,error instanceof Error?error.message:'The test could not be created.',body.get('feedback')??''),{chrome:chromeFor(source.repo,'settings')}));}
       } catch {return refuse(response,who,409,'The source test could not be verified. Open its result and try again.','/settings/skills');}
     }
     if (url.pathname === "/settings/skills/import" || url.pathname === "/settings/skills/change") {
+      const body = readForm(posted, CONSOLE_FORMS.skillsChange);
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response,who,403,'Sign in as an approver to manage skills.','/settings/skills');
       const repo=body.get('repo')??'',back=`/settings/skills?repo=${encodeURIComponent(repo)}`;
       if (!visible(repo)||!consoleProjects().includes(repo)) return refuse(response,who,403,'That project is outside your access.','/projects');
-      if ([...new Set(body.keys())].some(k=>body.getAll(k).length!==1)) return refuse(response,who,400,'Invalid skills form.',back);
+      if ([...new Set(body.keys())].some(k=>body.sent.getAll(k).length!==1)) return refuse(response,who,400,'Invalid skills form.',back);
       try {
         const view=skillsView(store,repo,who.name);
         if(body.get('identity')!==view.identity||body.get('revision')!==String(view.revision)) throw Error('Skills changed in another window. Review the current selection and try again.');
@@ -7026,13 +7033,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       } catch(error) {
         const message=error instanceof Error?error.message:'Skills could not be saved. Try again.';
         let content=`<p role="alert">${escape(message)}</p><a href="${escape(back)}">Reload Skills</a>`;
-        try {content=skillsHtml(skillsView(store,repo,who.name),who.session.csrf,true,{error:message,draft:Object.fromEntries(['method','content','url','sample','sha'].map(k=>[k,body.get(k)??'']))});}catch{/* Do not display unverified packages. */}
+        try {content=skillsHtml(skillsView(store,repo,who.name),who.session.csrf,true,{error:message,draft:Object.fromEntries((['method','content','url','sample','sha'] as const).map(k=>[k,body.get(k)??'']))});}catch{/* Do not display unverified packages. */}
         return sendScreen(response,409,screen('Skills',`<h1>Skills</h1>${content}`,{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
       }
     }
     // setting a starter kit up, trying its sample card, and bringing GitHub issues in.
     const kitPost = /^\/kits\/([a-z-]{1,40})\/(setup|sample|github)$/.exec(url.pathname);
     if (kitPost !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.kit);
       const now = clock();
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to set kits up.", "/kits");
       const kit = kitOf(kitPost[1]!);
@@ -7058,6 +7066,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const teammatePost = url.pathname === "/teammates/new" ? ["", "0", "new"] as const : /^\/teammates\/([1-9][0-9]{0,9})\/(soul|state|note|settings|summary|tools|memory|routines|week)$/.exec(url.pathname);
     const questionPost = /^\/teammates\/questions\/([1-9][0-9]{0,9})\/answer$/.exec(url.pathname);
     if (teammatePost !== null || questionPost !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.teammates);
       const now = clock();
       const wantsJson = (request.headers.accept ?? "").includes("application/json");
       if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/teammates");
@@ -7122,7 +7131,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const grant = store.teammateGrant(mate.id, tool);
         const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome })
           : op === "revoke" ? revokeTool(store, mate, tool, who.name, now)
-          : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : setToolRules(store, mate, tool, rulesFromForm(grant, key => body.get(key)), who.name, now);
+          : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : setToolRules(store, mate, tool, rulesFromForm(grant, key => body.sent.get(key)), who.name, now);
         return redirect(response, `${back}?${changed.ok ? "said" : "problem"}=${encodeURIComponent(changed.said)}#tools`);
       }
       const done = action === "state" ? setTeammateState(store, mate, body.get("state") === "removed" ? "removed" : body.get("state") === "paused" ? "paused" : "active", who.name, now)
@@ -7135,6 +7144,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Flows → New → a template: preview these answers, or create exactly what was previewed.
     const galleryPost = /^\/flows\/new\/([a-z-]{1,40})$/.exec(url.pathname);
     if (galleryPost !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.galleryUse);
       const template = galleryTemplateOf(galleryPost[1]!);
       const projects = consoleProjects();
       if (template === null) return refuse(response, who, 404, "There's no template by that name.", "/flows/new");
@@ -7155,6 +7165,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const flowPost = /^\/flows\/([1-9][0-9]{0,9})\/(save|cards|archive|triggers|linear-key|hooks-address|scripts|secrets)$/.exec(url.pathname) ?? /^\/flows\/([1-9][0-9]{0,9})\/cards\/([1-9][0-9]{0,9})\/(move|decide|choose|cancel|comment|assign|watch)$/.exec(url.pathname);
     const triggerPost = /^\/flows\/([1-9][0-9]{0,9})\/triggers\/([1-9][0-9]{0,9})\/(pause|resume|remove|check|press|renew|secret|share|unshare)$/.exec(url.pathname);
     if (url.pathname === "/flows/new" || url.pathname === "/flows/example" || url.pathname === "/flows/import" || flowPost !== null || triggerPost !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.flows);
       const now = clock();
       const answer = (status: number, payload: Record<string, unknown>) => respond(response, status, "application/json; charset=utf-8", JSON.stringify(payload));
       const projects = consoleProjects();
@@ -7356,6 +7367,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // v103: an instance operator records a checkpoint of the ledger chain (its head, to copy off the machine).
     // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after.
     if (url.pathname === "/spend/budget") {
+      const body = readForm(posted, CONSOLE_FORMS.spendBudget);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets budgets.", "/spend");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/spend?${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
@@ -7381,6 +7393,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
     // Settings → Project → Builds at once: an approver for the project sets it; the ledger keeps before → after.
     if (url.pathname === "/settings/project/concurrency") {
+      const body = readForm(posted, CONSOLE_FORMS.projectConcurrency);
       const repo = body.get("repo") ?? "";
       const known = consoleProjects();
       if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
@@ -7396,6 +7409,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return back("said", changed.before === changed.after ? "Nothing changed." : `Saved. Up to ${n} at once.`);
     }
     if (url.pathname === "/settings/project/delete") {
+      const body = readForm(posted, CONSOLE_FORMS.projectDelete);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator deletes projects.", "/settings/project");
       const repo = body.get("repo") ?? "";
       const known = consoleProjects();
@@ -7423,6 +7437,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Sprint 8: an instance operator saves the organisation policy, with a step-up; the ledger keeps each rule's before → after.
     if (url.pathname === "/settings/policy") {
+      const body = readForm(posted, CONSOLE_FORMS.policy);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets the policy.", "/settings/policy");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/policy?${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
@@ -7436,6 +7451,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v102: an instance operator changes a project's approval rules, with a step-up; the ledger keeps before → after.
     if (url.pathname === "/settings/approval") {
+      const body = readForm(posted, CONSOLE_FORMS.approval);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets approval rules.", "/settings/approval");
       const repo = body.get("repo") ?? "";
       const known = consoleProjects();
@@ -7451,6 +7467,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return back("said", `Saved. ${rulesSummary(next)}`);
     }
     if (url.pathname === "/settings/sessions") {
+      const body = readForm(posted, CONSOLE_FORMS.sessions);
       if (who.via !== "cookie") return refuse(response, who, 403, "Sign in in a browser to manage sessions and tokens.", "/settings");
       const operator = store.isInstanceOperator(who.name);
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${body.get("everyone") === "1" && operator ? "everyone=1&" : ""}${key}=${encodeURIComponent(words)}`);
@@ -7498,6 +7515,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return back("problem", "Choose an action.");
     }
     if (url.pathname === "/settings/sign-in") {
+      const body = readForm(posted, CONSOLE_FORMS.signIn);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || !options.configDir) return refuse(response, who, 403, "An instance operator sets up sign-in.", "/settings");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sign-in?${key}=${encodeURIComponent(words)}`);
       const action = body.get("action") ?? "";
@@ -7529,6 +7547,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Updates: start the `toolroll update` job. A step-up; the job writes the ledger entries.
     if (url.pathname === "/settings/updates" || url.pathname === "/settings/updates/seen" || url.pathname === "/settings/updates/cancel") {
+      const body = readForm(posted, CONSOLE_FORMS.updates);
       const databaseFile = store.databaseFile();
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || databaseFile === null) return refuse(response, who, 403, "An instance operator updates Toolroll.", "/settings");
       const stateDir = dirname(databaseFile);
@@ -7561,6 +7580,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v105: change how long each kind of data is kept. A step-up; the ledger keeps before → after for each kind.
     if (url.pathname === "/settings/retention") {
+      const body = readForm(posted, CONSOLE_FORMS.retention);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets retention.", "/settings");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/retention?${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change retention.");
@@ -7576,6 +7596,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Settings → Storage: when a finished task's clean checkout goes, cleaning up what the preview showed, and throwing
     // away a checkout kept for its changes. Each takes the password; the ledger keeps every change and removal.
     if (url.pathname === "/settings/storage" || url.pathname === "/settings/storage/clean" || url.pathname === "/settings/storage/discard") {
+      const body = readForm(posted, CONSOLE_FORMS.storage);
       const databaseFile = store.databaseFile();
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/storage?${key}=${encodeURIComponent(words)}`);
@@ -7604,6 +7625,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Pull requests for one project: turn on (the checks run again and must match what the page showed), merge
     // settings, or turn off. Each takes the password and lands in the ledger.
     if (url.pathname === "/settings/pull-requests") {
+      const body = readForm(posted, CONSOLE_FORMS.pullRequests);
       const repo = body.get("repo") ?? "";
       const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
       if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
@@ -7634,6 +7656,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Checks for one project: the level, or the quick command (approved like `verify set --quick`). Each takes
     // the password and lands in the ledger.
     if (url.pathname === "/settings/checks") {
+      const body = readForm(posted, CONSOLE_FORMS.checks);
       const repo = body.get("repo") ?? "";
       const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
       if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
@@ -7687,6 +7710,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Sprint 8: change the backup schedule. A step-up; the ledger keeps before → after.
     if (url.pathname === "/settings/backups") {
+      const body = readForm(posted, CONSOLE_FORMS.backups);
       const databaseFile = store.databaseFile();
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/backups?${key}=${encodeURIComponent(words)}`);
@@ -7708,6 +7732,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v105: download everything as a .zip. An instance operator, with a step-up; the ledger records it.
     if (url.pathname === "/settings/data") {
+      const body = readForm(posted, CONSOLE_FORMS.data);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator exports data.", "/settings");
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) {
         return redirect(response, `/settings/data?problem=${encodeURIComponent("Enter your Toolroll password to download the export.")}`);
@@ -7721,6 +7746,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Flows → Switch on: a starter flow's zones and trigger, made together.
     if (url.pathname === "/settings/flows/on") {
+      const body = readForm(posted, CONSOLE_FORMS.flowsOn);
       const repo = body.get("repo") ?? "";
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/flows?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
       const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
@@ -7733,6 +7759,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
     if (url.pathname === "/settings/integrations/test") {
+      const body = readForm(posted, CONSOLE_FORMS.integrationsTest);
       if (who.via !== "cookie" || who.role !== "approver" || restricted() || !options.configDir) return refuse(response, who, 403, "An installation approver tests integrations.", "/settings");
       const key = body.get("key") ?? "";
       const back = (name: "said" | "problem", words: string) => redirect(response, `/settings/integrations?${name}=${encodeURIComponent(words)}`);
@@ -7743,6 +7770,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // v104: change where monitoring goes. A step-up; the ledger keeps before → after (addresses, never secrets).
     if (url.pathname === "/settings/monitoring") {
+      const body = readForm(posted, CONSOLE_FORMS.monitoring);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name) || !options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/monitoring?${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
@@ -7764,6 +7792,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return back("said", "Saved. Deliveries start within a few seconds.");
     }
     if (url.pathname === "/settings/tools/connect") {
+      const body = readForm(posted, CONSOLE_FORMS.toolsConnect);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to connect tools.", "/settings/tools");
       const repo = body.get("repo") ?? "";
       const reachable = (one: string) => visible(one) && consoleProjects().includes(one);
@@ -7822,6 +7851,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return goOutside(response, started.go, `Going to ${service.label} to sign in…`, { state: started.state, path: CONNECT_CALLBACK, secure: origin.startsWith("https:") });
     }
     if (url.pathname === "/settings/tools/change") {
+      const body = readForm(posted, CONSOLE_FORMS.toolsChange);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to manage tools.", "/settings/tools");
       const repo = body.get("repo") ?? "";
       if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
@@ -7895,6 +7925,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     }
     if (url.pathname === "/settings/appearance") {
+      const body = readForm(posted, CONSOLE_FORMS.appearance);
       // A per-browser preference, not a shared setting: it lives in this
       // person's own cookie and never in the database.
       const accentField = body.get("accent");
@@ -7917,6 +7948,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, back);
     }
     if (url.pathname.startsWith("/settings/models/")) {
+      const body = readForm(posted, CONSOLE_FORMS.models);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Sign in as an approver to change models.", "/settings/models");
       const back = (said: string, bad = false) => redirect(response, `/settings/models?${bad ? "problem" : "said"}=${encodeURIComponent(said)}`);
       if (url.pathname === "/settings/models/check") {
@@ -7963,6 +7995,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return refuse(response, who, 404, "No such models action.", "/settings/models");
     }
     if (url.pathname === "/settings/knowledge/refresh") {
+      const body = readForm(posted, CONSOLE_FORMS.knowledgeRefresh);
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to refresh project context.', '/settings/knowledge');
       const repo = body.get('repo') ?? '';
       if (!visible(repo) || !store.accountCanAccess(who.name, repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
@@ -7970,6 +8003,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', `<h1>Project context</h1><p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`, { chrome: chromeFor(repo, 'settings') }));
     }
     if (url.pathname === "/settings/knowledge/proposal") {
+      const body = readForm(posted, CONSOLE_FORMS.knowledgeProposal);
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to decide memory proposals.', '/settings/knowledge');
       const repo = body.get('repo') ?? '', decision = body.get('decision') ?? '';
       if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
@@ -7979,10 +8013,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
     }
     if (url.pathname === "/settings/knowledge/decision") {
+      const body = readForm(posted, CONSOLE_FORMS.knowledgeDecision);
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response, who, 403, 'Sign in as an approver to change project decisions.', '/settings/knowledge');
       const repo = body.get('repo') ?? '', action = body.get('action') ?? '';
       if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
-      if (['repo', 'action', 'claim', 'why', 'decision', 'reason'].some(k => body.getAll(k).length > 1) || !['record', 'retire'].includes(action)) return refuse(response, who, 400, 'Choose record or retire.', '/settings/knowledge');
+      if ((['repo', 'action', 'claim', 'why', 'decision', 'reason'] as const).some(k => body.getAll(k).length > 1) || !['record', 'retire'].includes(action)) return refuse(response, who, 400, 'Choose record or retire.', '/settings/knowledge');
       try {
         if (action === 'record') recordDecision(store, { repo, actor: who.name, draft: { claim: body.get('claim') ?? '', why: body.get('why') ?? '', sourceKind: 'manual' } }, now);
         else retireDecision(store, { repo, actor: who.name, id: Number(body.get('decision')), reason: body.get('reason') ?? '' }, now);
@@ -7995,11 +8030,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
     }
     if (url.pathname === "/settings/knowledge/change") {
+      const body = readForm(posted, CONSOLE_FORMS.knowledgeChange);
       if (who.via !== 'cookie' || who.role !== 'approver') return refuse(response,who,403,'Sign in as an approver to change project knowledge.','/settings/knowledge');
       const repo = body.get('repo') ?? '', action = body.get('action') ?? '';
       if (!visible(repo) || ![...(admissionList() ?? []),...managedRepos(),...store.knownRepos()].includes(repo)) return refuse(response,who,403,'That project is outside your access.','/settings/knowledge');
-      if (['repo','action','identity','revision','instructions','title','content','path','id','restore'].some(k=>body.getAll(k).length>1) || !['instructions','save','remove','restore','apply'].includes(action) || !/^[0-9]+$/.test(body.get('revision')??'')) return refuse(response,who,400,'Invalid knowledge form.','/settings/knowledge');
-      const draft:KnowledgeDraft = Object.fromEntries(['instructions','title','content','path','id'].filter(k=>body.has(k)).map(k=>[k,body.get(k)!]));
+      if ((['repo','action','identity','revision','instructions','title','content','path','id','restore'] as const).some(k=>body.getAll(k).length>1) || !['instructions','save','remove','restore','apply'].includes(action) || !/^[0-9]+$/.test(body.get('revision')??'')) return refuse(response,who,400,'Invalid knowledge form.','/settings/knowledge');
+      const draft:KnowledgeDraft = Object.fromEntries((['instructions','title','content','path','id'] as const).filter(k=>body.has(k)).map(k=>[k,body.get(k)!]));
       try {
         if (action === 'apply') applySavedKnowledge(store,repo,who.name,clock());
         else changeKnowledge(store,{repo,actor:who.name,identity:body.get('identity')??'',revision:Number(body.get('revision')),action:action as 'instructions'|'save'|'remove'|'restore',draft,restore:Number(body.get('restore'))},clock());
@@ -8011,10 +8047,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response,`/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
     }
     if (url.pathname === "/settings/learning/change") {
+      const body = readForm(posted, CONSOLE_FORMS.learningChange);
       if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to change learning.", "/settings/learning");
       const repo = body.get("repo") ?? "", action = body.get("action") ?? "";
       if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
-      if (["repo", "action", "identity", "revision", "lesson", "version", "sha"].some(k => body.getAll(k).length > 1) || !["adopt", "disable", "reset", "enable", "pause"].includes(action) || !/^[0-9]+$/.test(body.get("revision") ?? "")) return refuse(response, who, 400, "Invalid learning form.", "/settings/learning");
+      if ((["repo", "action", "identity", "revision", "lesson", "version", "sha"] as const).some(k => body.getAll(k).length > 1) || !["adopt", "disable", "reset", "enable", "pause"].includes(action) || !/^[0-9]+$/.test(body.get("revision") ?? "")) return refuse(response, who, 400, "Invalid learning form.", "/settings/learning");
       try {
         changeLearning(store, evidenceRoot, { repo, actor: who.name, identity: body.get("identity") ?? "", revision: Number(body.get("revision")), action: action as "adopt" | "disable" | "reset" | "enable" | "pause", lesson: Number(body.get("lesson")), version: Number(body.get("version")), sha: body.get("sha") ?? "" }, clock());
       } catch (error) {
@@ -8024,6 +8061,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (["/control/setup-preview", "/control/setup-approve", "/control/instructions-preview", "/control/instructions-approve"].includes(url.pathname)) {
+      const body = readForm(posted, CONSOLE_FORMS.projectSetup);
       const project = projectOf(who, request);
       if (project == null || body.get("repo") !== project || !visible(project)) return refuse(response, who, 409, "The selected project changed. Open project setup again.", "/control");
       const csrf = who.via === "cookie" ? who.session.csrf : "";
@@ -8056,10 +8094,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (["connect","pair","unpair","disconnect","alerts"].some(action=>url.pathname===`/settings/slack/${action}`)) {
+      const body = readForm(posted, CONSOLE_FORMS.slack);
       if (who.via !== "cookie" || who.role !== "approver" || restricted() || !options.configDir) return refuse(response,who,403,"An installation approver can connect Slack.","/settings");
       const dir=options.configDir, state=new SlackState(store), action=url.pathname.split("/").at(-1);
       const show=(problem:string,status=400)=>sendScreen(response,status,screen("Slack",slackSettingsHtml(store,dir,who.session.csrf,{problem,who:who.name}),{chrome:chromeFor(projectOf(who,request)??null,"settings")}));
-      if (["password","app-token","bot-token"].some(key=>body.getAll(key).length>1)) return show("Submit one value for each field.");
+      if ((["password","app-token","bot-token"] as const).some(key=>body.getAll(key).length>1)) return show("Submit one value for each field.");
       const credentials=loadSlackCredentials(dir);
       if(action==="alerts") {
         if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Slack account first.",409);
@@ -8099,6 +8138,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, "/settings/telegram");
     }
     if (url.pathname === "/settings/telegram/pair" || url.pathname === "/settings/telegram/unpair") {
+      const body = readForm(posted, CONSOLE_FORMS.telegramPair);
       // The person's own pairing, under their password: a code minted for
       // them alone, or their own chats revoked. Teammates' pairings are
       // never touched from here.
@@ -8120,10 +8160,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (["connect","pair","unpair","disconnect","alerts"].some(action => url.pathname === `/settings/teams/${action}`)) {
+      const body = readForm(posted, CONSOLE_FORMS.teams);
       if (who.via !== "cookie" || who.role !== "approver" || restricted() || !options.configDir) return refuse(response, who, 403, "An installation approver can connect Teams.", "/settings");
       const dir = options.configDir, state = new ChatState(store, "teams"), action = url.pathname.split("/").at(-1);
       const show = (problem: string, status = 400) => sendScreen(response, status, screen("Teams", teamsSettingsHtml(store, dir, who.session.csrf, { problem, who: who.name, publicUrl: options.publicUrl ?? null }), { chrome: chromeFor(projectOf(who, request) ?? null, "settings") }));
-      if (["password", "app-id", "tenant", "secret"].some(key => body.getAll(key).length > 1)) return show("Submit one value for each field.");
+      if ((["password", "app-id", "tenant", "secret"] as const).some(key => body.getAll(key).length > 1)) return show("Submit one value for each field.");
       const credentials = loadTeamsCredentials(dir);
       if (action === "alerts") {
         if (!credentials || !state.bindings(credentials.installation).some(one => state.live(one))) return show("Pair your Teams account first.", 409);
@@ -8157,10 +8198,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (["connect","pair","unpair","disconnect","alerts"].some(action=>url.pathname===`/settings/discord/${action}`)) {
+      const body = readForm(posted, CONSOLE_FORMS.discord);
       if (who.via !== "cookie" || who.role !== "approver" || restricted() || !options.configDir) return refuse(response,who,403,"An installation approver can connect Discord.","/settings");
       const dir=options.configDir, state=new ChatState(store,"discord"), action=url.pathname.split("/").at(-1);
       const show=(problem:string,status=400)=>sendScreen(response,status,screen("Discord",discordSettingsHtml(store,dir,who.session.csrf,{problem,who:who.name}),{chrome:chromeFor(projectOf(who,request)??null,"settings")}));
-      if (["password","bot-token"].some(key=>body.getAll(key).length>1)) return show("Submit one value for each field.");
+      if ((["password","bot-token"] as const).some(key=>body.getAll(key).length>1)) return show("Submit one value for each field.");
       const credentials=loadDiscordCredentials(dir);
       if(action==="alerts") {
         if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Discord account first.",409);
@@ -8194,6 +8236,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/messaging" && options.configDir !== undefined && options.telegramTokenFile !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.messaging);
       const wanted = (body.get("primary") ?? "").trim();
       const facts = effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null);
       // Only a CONFIGURED service may page — choosing silence is not a
@@ -8206,6 +8249,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/permission-default" && options.telegramTokenFile !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.permissionDefault);
       const wanted = body.get("permission-mode");
       if (wanted !== "auto" && wanted !== "bypassPermissions") {
         return refuse(response, who, 400, "permissions must be Auto or Full access", "/settings");
@@ -8222,6 +8266,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/quality-default" && options.telegramTokenFile !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.qualityDefault);
       const wanted = body.get("quality-mode");
       if (!isQualityMode(wanted)) {
         return refuse(response, who, 400, "quality must be Default or Strict / release", "/settings");
@@ -8238,6 +8283,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/notifications") {
+      const body = readForm(posted, CONSOLE_FORMS.notifications);
       // Each person's own choice: a closed list of modes and a 24-hour HH:MM, or off.
       const mode = body.get("mode"), time = (body.get("digest") ?? "").trim(), shots = body.get("screenshots");
       if (mode !== null && mode !== "quiet" && mode !== "all") return refuse(response, who, 400, "choose Only when I'm needed or Every step", "/settings");
@@ -8255,6 +8301,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/notifications/mute") {
+      const body = readForm(posted, CONSOLE_FORMS.notificationsMute);
       // Each person's own pings: a muted project stays in Tasks and the evening digest.
       const repo = body.get("repo") ?? "";
       const project = notificationProjects(store, who.name).find(one => one.repo === repo);
@@ -8265,6 +8312,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/telegram-digest" && options.telegramTokenFile !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.telegramDigest);
       // The cadence is a closed list of minutes — never a free number from
       // a form; "off" clears it. Any approver session may set it.
       const wanted = (body.get("every") ?? "").trim();
@@ -8276,6 +8324,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/provider-key" || url.pathname === "/settings/provider-key-clear") {
+      const body = readForm(posted, CONSOLE_FORMS.providerKey);
       // The central gate already required an ACTIVE approver; the value is
       // write-only from here — status pages say set/not-set, never bytes.
       const provider = body.get("provider") ?? "";
@@ -8329,6 +8378,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/settings/telegram-token" && options.telegramTokenFile !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.telegramToken);
       const value = body.get("token") ?? "";
       const saved = saveBotToken(options.telegramTokenFile, value);
       if (!saved.ok) {
@@ -8345,6 +8395,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     // v87: the mail server Send email steps use, and a test email to its own address.
     if ((url.pathname === "/settings/email" || url.pathname === "/settings/email-test" || url.pathname === "/settings/email-read-test") && who.role === "approver" && options.configDir !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.email);
       const said = (words: string) => redirect(response, `/settings?said=${encodeURIComponent(words)}#email`);
       if (url.pathname === "/settings/email") {
         const saved = saveEmailSettings(options.configDir, { host: body.get("host"), port: body.get("port"), secure: body.get("secure"), user: body.get("user"), from: body.get("from"), password: body.get("password"), imapHost: body.get("imapHost"), imapPort: body.get("imapPort") });
@@ -8366,6 +8417,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     // v89: a Google account for email: save the OAuth client and go to Google's consent screen, or disconnect.
     if ((url.pathname === "/settings/google" || url.pathname === "/settings/google/disconnect") && who.role === "approver" && options.configDir !== undefined) {
+      const body = readForm(posted, CONSOLE_FORMS.google);
       const said = (words: string) => redirect(response, `/settings?said=${encodeURIComponent(words)}#email`);
       if (url.pathname === "/settings/google/disconnect") {
         await disconnectGoogle(options.configDir, options.googleFetch ?? fetch);
@@ -8382,6 +8434,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/projects/select") {
+      const body = readForm(posted, CONSOLE_FORMS.projectsSelect);
       // Session-only project switching (E2): reads the registry, writes
       // ONLY session.project — the durable upsert lives in /projects/open,
       // which stays an approver's act. This is the one project verb a
@@ -8401,6 +8454,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/projects/remove") {
+      const body = readForm(posted, CONSOLE_FORMS.projectsRemove);
       // The reversible remove: off every list and the builder; tasks, results and settings stay. Deleting is
       // Settings → Project → Delete project. The same admission code as `repos remove` (project-admission.ts).
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator removes projects.", "/settings/project");
@@ -8414,6 +8468,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/projects/open") {
+      const body = readForm(posted, CONSOLE_FORMS.projectsOpen);
       // Sessions only: a bearer caller names its project per request and has
       // no session to mutate — refusing here keeps that boundary legible.
       if (who.via !== "cookie") {
@@ -8454,6 +8509,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/tasks/add") {
+      const body = readForm(posted, CONSOLE_FORMS.tasksAdd);
       const project = projectOf(who, request);
       if (project === undefined) {
         return refuse(response, who, 403, "that project is outside what this server was configured to show");
@@ -8564,7 +8620,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return sendScreen(
           response,
           made.reason === "backlog-full" ? 429 : 400,
-          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, csrf, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
+          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, csrf, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
         );
       }
       const actionContext = requestContext.getStore();
@@ -8577,6 +8633,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/queue/move" || url.pathname === "/queue/note") {
+      const body = readForm(posted, CONSOLE_FORMS.queue);
       const project = projectOf(who, request);
       if (project === undefined) {
         return refuse(response, who, 403, "that project is outside what this server was configured to show");
@@ -8692,6 +8749,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // hash — the page that shows it renders no self-refreshing script, so
     // the token is never re-rendered.
     if (url.pathname === "/fleet/runner/register") {
+      const body = readForm(posted, CONSOLE_FORMS.runnerRegister);
       if (who.via !== "cookie") return refuse(response, who, 403, "runner registration is a browser surface");
       const token = body.get("token") ?? "";
       if (!authenticateApprover(store, who.name, token).ok) {
@@ -8724,6 +8782,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/mode/confirm" || url.pathname === "/mode/sign") {
+      const body = readForm(posted, CONSOLE_FORMS.mode);
       if (who.via !== "cookie") return refuse(response, who, 403, "signing a mode is a browser ceremony");
       const project = projectOf(who, request);
       if (project === null || project === undefined) {
@@ -8751,7 +8810,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         chatApprove: body.get("chat-approve") === "1",
         publication: body.get("publication") === "automerge" ? "automerge" : "notify",
       };
-      if (["review-auto", "review-retry-auto", "repair-auto"].some(field => body.get(field) === "1")) {
+      if ((["review-auto", "review-retry-auto", "repair-auto"] as const).some(field => body.get(field) === "1")) {
         return refuse(response, who, 400, "Review scheduling and automatic revisions are no longer available. Reload the mode form.", "/mode");
       }
       if (terms.planAuto && !terms.autoApproveFiling) {
@@ -8772,7 +8831,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           `<input type="hidden" name="csrf" value="${escape(who.session.csrf)}">` +
           `<input type="hidden" name="nonce" value="${escape(nonce)}">` +
           `<input type="hidden" name="digest" value="${escape(digest)}">` +
-          ["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "allow-paid-fallback"]
+          (["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "allow-paid-fallback"] as const)
             .map(field => `<input type="hidden" name="${field}" value="${escape(body.get(field) ?? "")}">`)
             .join("") +
           `<input type="hidden" name="expiry" value="${escape(expiry)}">` +
@@ -8829,6 +8888,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/people/projects") {
+      const body = readForm(posted, CONSOLE_FORMS.peopleProjects);
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator manages project access.", "/people");
       if (!authenticateApprover(store, who.name, body.get("token") ?? "", null).ok) return refuse(response, who, 403, "Saving access requires your password.", "/people");
       const access = readAccessForm(body);
@@ -8840,6 +8900,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/people/invite") {
+      const body = readForm(posted, CONSOLE_FORMS.peopleInvite);
       if (who.via !== "cookie") return refuse(response, who, 403, "inviting is a browser surface");
       const token = body.get("token") ?? "";
       // RAISING authority is a password ceremony (the doctrine): adding a
@@ -8871,6 +8932,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/people/invite-revoke") {
+      const body = readForm(posted, CONSOLE_FORMS.peopleInviteRevoke);
       if (who.via !== "cookie") return refuse(response, who, 403, "inviting is a browser surface");
       const token = body.get("token") ?? "";
       if (!authenticateApprover(store, who.name, token).ok) {
@@ -8882,6 +8944,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/people/revoke") {
+      const body = readForm(posted, CONSOLE_FORMS.peopleRevoke);
       if (who.via !== "cookie") return refuse(response, who, 403, "removing a person is a browser surface");
       const token = body.get("token") ?? "";
       if (!authenticateApprover(store, who.name, token).ok) {
@@ -8905,6 +8968,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/fleet/runner/retire") {
+      const body = readForm(posted, CONSOLE_FORMS.runnerRetire);
       if (who.via !== "cookie") return refuse(response, who, 403, "runner retirement is a browser surface");
       const token = body.get("token") ?? "";
       if (!authenticateApprover(store, who.name, token).ok) {
@@ -8918,6 +8982,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const answer = /^\/d\/([0-9]{1,15})\/answer$/.exec(url.pathname);
     if (answer !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.decisionAnswer);
       const id = Number(answer[1]);
       const requestedReturn = body.get("return");
       const decisionBack = requestedReturn === "next"
@@ -8960,6 +9025,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const contestAct = /^\/contest\/([0-9]{1,15})\/(arm|pick|abandon)$/.exec(url.pathname);
     if (contestAct !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.contest);
       const contestId = Number(contestAct[1]);
       const verb = contestAct[2] as "arm" | "pick" | "abandon";
       const data = contestData(contestId);
@@ -9038,11 +9104,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const attendAct = matchTaskPath(url.pathname, "/(attend-preview|attend|attend-revoke)$");
     if (attendAct !== null) {
-      return attendMutation(response, who, attendAct.taskId, attendAct.verb, body, now);
+      return attendMutation(response, who, attendAct.taskId, attendAct.verb, readForm(posted, CONSOLE_FORMS.attend), now);
     }
 
     const act = matchTaskPath(url.pathname, "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|block|unblock|repair-dependency|next|reopen|steer|follow-up|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
     if (act !== null && act.verb === "confirm-stopped") {
+      const body = readForm(posted, CONSOLE_FORMS.confirmStopped);
       // Confirming a finished build stopped is an approver's act behind the password, typed again — the same
       // record as `toolroll run settle`, refused while anything of the run may still be running.
       const back = taskHref(act.taskId);
@@ -9072,6 +9139,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, body.get("return") ? to : back);
     }
     if (act !== null && act.verb === "merge") {
+      const body = readForm(posted, CONSOLE_FORMS.merge);
       // Merging is a person's act behind their password, typed again: a browser session, an approver, the exact
       // result's pull request. The flow re-reads GitHub before merging and records who merged in the ledger.
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only an approver can merge.");
@@ -9089,10 +9157,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, `${taskHref(act.taskId)}#merge`);
     }
     if (act !== null) {
-      return taskMutation(response, who, act.taskId, act.verb, body, now);
+      return taskMutation(response, who, act.taskId, act.verb, posted, now);
     }
 
     if (url.pathname === "/projects/onboard-preview" || url.pathname === "/projects/onboard-confirm") {
+      const body = readForm(posted, CONSOLE_FORMS.onboard);
       // Repo onboarding (findings 1-39): bearer and demo refuse BEFORE any
       // gh call; the console flow exists only on root-configured serves.
       if (who.via !== "cookie") return refuse(response, who, 403, "adding repositories is a browser session's act");
@@ -9209,6 +9278,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/push/subscribe") {
+      const body = readForm(posted, CONSOLE_FORMS.pushSubscribe);
       // Enrolling a durable notification sink is a CEREMONY (arc 3 finding
       // 6): browser session + CSRF + the password typed again; bearer
       // identities are machines and are refused outright.
@@ -9249,6 +9319,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/push/remove") {
+      const body = readForm(posted, CONSOLE_FORMS.pushRemove);
       if (who.via !== "cookie") return refuse(response, who, 403, "push removal is a browser session's act");
       const id = Number(body.get("id") ?? "");
       const mine = store.listPushSubscriptions(who.name).find(one => one.id === id && one.retiredAt === null);
@@ -9258,6 +9329,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/onboarding/phone/dismiss") {
+      const body = readForm(posted, CONSOLE_FORMS.phoneDismiss);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver puts this away.", "/chat");
       store.recordInstallationFact(PHONE_CARD_FACT, who.name, now);
       return body.get("quiet") === "1" ? respond(response, 204, "text/plain; charset=utf-8", "") : redirect(response, "/chat");
@@ -9266,6 +9338,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // conversation it needs no second password; the full form (Advanced) still asks for one.
     // Settings → Lead: the name and persona this person's lead speaks with.
     if (url.pathname === "/settings/lead/identity") {
+      const body = readForm(posted, CONSOLE_FORMS.leadIdentity);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver names their lead.", "/settings/lead");
       const checked = checkLeadIdentity(body.get("name") ?? "", body.get("persona") ?? "");
       if (!checked.ok) return redirect(response, chatReturnWithSaid("/settings/lead", checked.message));
@@ -9274,6 +9347,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Lead: what this person's lead knows about them, one line each.
     if (url.pathname === "/settings/lead/about") {
+      const body = readForm(posted, CONSOLE_FORMS.leadAbout);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver edits what their lead knows about them.", "/settings/lead");
       const checked = checkAboutYou(body.get("about") ?? "");
       if (!checked.ok) return redirect(response, chatReturnWithSaid("/settings/lead", checked.message));
@@ -9282,6 +9356,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // Settings → Lead: stop the lead following up on one of your promises.
     if (url.pathname === "/settings/lead/promise/cancel") {
+      const body = readForm(posted, CONSOLE_FORMS.leadPromiseCancel);
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver manages the lead's promises.", "/settings/lead");
       const id = Number(body.get("promise"));
       const done = Number.isSafeInteger(id) && cancelCommitment(store, who.name, id, who.name, "Cancelled in Settings.", now);
@@ -9297,6 +9372,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, "/chat");
     }
     if (url.pathname === "/chat/config") {
+      const body = readForm(posted, CONSOLE_FORMS.chatConfig);
       // The console's own door into `config set chat` (operator request:
       // chat lives mainly in the web UI). Same ceremony weight as the CLI
       // verb: the password typed again authenticates the approver, the
@@ -9376,6 +9452,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     // ---- the mate (mate arc §5) ------------------------------------------
     if (url.pathname === "/chat/mate/mint") {
+      const body = readForm(posted, CONSOLE_FORMS.mateMint);
       if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
       const back = safeChatReturn(body.get("return"));
       const enabled = chatEnablement();
@@ -9397,12 +9474,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, back);
     }
     if (url.pathname === "/chat/mate/follow") {
+      const body = readForm(posted, CONSOLE_FORMS.mateFollow);
       if (who.via !== "cookie") return refuse(response, who, 403, "Open the conversation to change automatic updates.");
       const principal = matePrincipal(who), session = store.activeMateSession(who.name), thread = store.liveMateThreadFor(who.name);
       if (!principal || !session || !thread || !configureLeadFollow(store, principal, session, thread, body.get("enabled") === "yes", now)) return refuse(response, who, 409, "Conversation access changed. Start chat again.", "/chat");
       return redirect(response, safeChatReturn(body.get("return")));
     }
     if (url.pathname === "/chat/mate/end") {
+      const body = readForm(posted, CONSOLE_FORMS.mateEnd);
       if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
       const back = safeChatReturn(body.get("return"));
       // Ending spend and forgetting the thread takes no password: any
@@ -9414,6 +9493,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return redirect(response, back);
     }
     if (url.pathname === "/chat/mate/stop") {
+      const body = readForm(posted, CONSOLE_FORMS.mateStop);
       if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
       const back = safeChatReturn(body.get("return"));
       const wanted = Number(body.get("turn") ?? "");
@@ -9431,6 +9511,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const mateProposal = /^\/chat\/proposal\/([0-9]{1,15})\/(confirm|dismiss)$/.exec(url.pathname);
     if (mateProposal !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.mateProposal);
       if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
       const back = safeChatReturn(body.get("return"));
       const id = Number(mateProposal[1]);
@@ -9502,6 +9583,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // ceiling admits the repo; the card lives on /chat and on the task.
     const coordinatorProposal = /^\/proposals\/([0-9]{1,15})\/(confirm|dismiss)$/.exec(url.pathname);
     if (coordinatorProposal !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.coordinatorProposal);
       if (who.via !== "cookie") return refuse(response, who, 403, "proposals are confirmed from the browser or the CLI");
       const principal = matePrincipal(who);
       if (principal === null) return refuse(response, who, 403, "your approver standing changed — sign in again", "/chat");
@@ -9520,6 +9602,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/chat") {
+      const body = readForm(posted, CONSOLE_FORMS.chat);
       if (who.via !== "cookie") return refuse(response, who, 403, "chat is a browser surface");
       const requestedTask = body.get("task");
       const focusTask = taskChatFocus(requestedTask, now, who);
@@ -9664,6 +9747,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const chatFile = /^\/chat\/file\/([0-9a-f]{32})$/.exec(url.pathname);
     if (chatFile !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.chatFile);
       if (who.via !== "cookie") return refuse(response, who, 403, "chat is a browser surface");
       const key = chatFile[1] as string;
       const chat = who.session.chat;
@@ -9744,6 +9828,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const chatAckPost = /^\/chat\/ack\/([0-9]{1,15})$/.exec(url.pathname);
     if (chatAckPost !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.chatAck);
       if (who.via !== "cookie") return refuse(response, who, 403, "acknowledgement is a browser ceremony");
       const turn = store.getChatTurn(Number(chatAckPost[1]));
       if (turn === null) return refuse(response, who, 404, "no such turn", "/chat");
@@ -9762,14 +9847,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/launch", "/recipes/save"].includes(url.pathname)) {
+      const body = readForm(posted, CONSOLE_FORMS.recipes);
       const project = projectOf(who, request);
       try {
         if (project === null || project === undefined || !visible(project)) throw new RecipeError("Open a project first.", 403);
-        for (const field of ["repo", "projectRevision", "preview", "source", "sourceRevision", "document", "recipe", "recipeRevision", "purpose", "next"]) if (body.getAll(field).length > 1) throw new RecipeError(`Duplicated ${field} field.`);
+        for (const field of ["repo", "projectRevision", "preview", "source", "sourceRevision", "document", "recipe", "recipeRevision", "purpose", "next"] as const) if (body.getAll(field).length > 1) throw new RecipeError(`Duplicated ${field} field.`);
         if (body.get("repo") !== project || (who.via === "cookie" && body.get("projectRevision") !== String(who.session.projectRevision))) throw new RecipeError("The open project changed. Reopen this recipe in the intended project.", 409);
         const rootMode = !unscopedMode && ceiling.roots.length > 0;
         if (rootMode && !(await authorizedProject(liveCeiling(), project))) throw new RecipeError("The project is outside this server's access.", 403);
-        const rechecked = authorizeMutation(request, who, body);
+        const rechecked = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
         if (rechecked !== null) throw new RecipeError(rechecked.message, rechecked.status);
         if (projectOf(who, request) !== project) throw new RecipeError("The open project changed. Preview the intended project again.", 409);
         const csrf = who.via === "cookie" ? who.session.csrf : "";
@@ -9780,11 +9866,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           const recipe = findRecipe(store, who.name, project, id, Number(version));
           if (recipe === null || recipe.repo === null) throw new RecipeError("This recipe is not available in this project.", 404);
           try {
-            const preview = prepareRecipeRun(store, who.name, project, id, Number(version), recipeAnswersFromForm(body), now);
+            const preview = prepareRecipeRun(store, who.name, project, id, Number(version), recipeAnswersFromForm(body.sent), now);
             return redirect(response, `/recipes/preview?preview=${preview.token}`);
           } catch (error) {
             if (!(error instanceof RecipeError)) throw error;
-            return sendScreen(response, error.status, screen("Use recipe", recipeRunHtml(recipe, project, csrf, revision, error.message, body), { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
+            return sendScreen(response, error.status, screen("Use recipe", recipeRunHtml(recipe, project, csrf, revision, error.message, body.sent), { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
           }
         }
         if (url.pathname === "/recipes/import") {
@@ -9800,11 +9886,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           const original = ["custom", "imported", "task-copy", "routine-copy"].includes(source) ? null : findRecipe(store, who.name, project, source, Number(sourceVersion));
           if (original === null && !["custom", "imported", "task-copy", "routine-copy"].includes(source)) throw new RecipeError("That recipe version is not available in this project.", 404);
           let document;
-          try { document = recipeFromForm(body); }
+          try { document = recipeFromForm(body.sent); }
           catch (error) {
             if (!(error instanceof RecipeError)) throw error;
             const fallback = original ?? { ...starterRecipes().find(one => one.id === "small-feature")!, id: source };
-            return sendScreen(response, error.status, screen("Customize recipe", recipeEditorHtml(fallback, project, csrf, revision, error.message, body, purpose === "recipe"), { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
+            return sendScreen(response, error.status, screen("Customize recipe", recipeEditorHtml(fallback, project, csrf, revision, error.message, body.sent, purpose === "recipe"), { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
           }
           const preview = createWorkflowPreview(store, who.name, project, document, source, now);
           return redirect(response, `/recipes/preview?preview=${preview.token}${purpose === "recipe" || document.version === 2 ? "&purpose=recipe" : ""}`);
@@ -9828,6 +9914,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/routines/add") {
+      const body = readForm(posted, CONSOLE_FORMS.routinesAdd);
       // A standing order files into the OPEN project — never a typed path,
       // so the ceiling question never even arises — and lands on its own
       // screen where the approval step-up already lives: filing is cheap,
@@ -9863,11 +9950,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // 7): the service validates, canonicalizes, digests, and stamps
       // provenance; the admission list makes the ceiling explicit even
       // though `project` was already proved inside it.
-      const scheduled = body.has("repeat") ? composerSchedule(body) : { ok: true as const, schedule: (body.get("schedule") ?? "").trim() };
+      const scheduled = body.has("repeat") ? composerSchedule(body.sent) : { ok: true as const, schedule: (body.get("schedule") ?? "").trim() };
       if (!scheduled.ok || scheduled.schedule === null) {
         return sendScreen(response, 400, routinesPage(chromeFor(project, "routines"), store.routineTracks(project, now).filter(track => visible(track.routine.repo)), {
           csrf: who.via === "cookie" ? who.session.csrf : "", revision: who.via === "cookie" ? who.session.projectRevision : 0,
-          problem: scheduled.ok ? "Choose a recurring schedule." : scheduled.message, values: body,
+          problem: scheduled.ok ? "Choose a recurring schedule." : scheduled.message, values: body.sent,
         }));
       }
       const created = fileRoutineProposal(
@@ -9893,7 +9980,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return sendScreen(response, created.reason === "duplicate" ? 409 : 400, routinesPage(chromeFor(project, "routines"), tracks, {
           csrf: who.via === "cookie" ? who.session.csrf : "",
           revision: who.via === "cookie" ? who.session.projectRevision : 0,
-          problem: created.message, values: body,
+          problem: created.message, values: body.sent,
         }));
       }
       return redirect(response, `/routines/${created.id}`);
@@ -9901,11 +9988,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const routineAct = /^\/routines\/([0-9]{1,15})\/(approve|refresh|pause|resume|run-now)$/.exec(url.pathname);
     if (routineAct !== null) {
-      return routineMutation(response, who, Number(routineAct[1]), routineAct[2] as string, body, now);
+      return routineMutation(response, who, Number(routineAct[1]), routineAct[2] as string, readForm(posted, CONSOLE_FORMS.routine), now);
     }
 
     const runNote = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
     if (runNote !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.runNote);
       // An operator's verdict beside the machine's record (M6): immutable,
       // bounded by the same validator as decision notes, ceiling-checked
       // like every run resource. Ordinary authenticated mutation — no
@@ -9923,6 +10011,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const diffComment = /^\/r\/([0-9]{1,15})\/comment$/.exec(url.pathname);
     if (diffComment !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.diffComment);
       // A review comment on the IMMUTABLE terminal diff (M6.8): bound to
       // the exact artifact and its hash. Ordinary authenticated mutation —
       // the nonce belongs to the approval screen that later restates the
@@ -10012,6 +10101,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/session/editor-links") {
+      const body = readForm(posted, CONSOLE_FORMS.editorLinks);
       // The session half of the editor-link activation (arc 6, finding 1):
       // only the person at the browser can say "this device holds the
       // worktrees". Per-session, dies with the session, grants nothing —
@@ -10025,6 +10115,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const turnAct = /^\/r\/([0-9]{1,15})\/turn$/.exec(url.pathname);
     if (turnAct !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.turn);
       // The operator's turn (Phase 2E, v2 S1g): cookie-only — a watching
       // person, never a bearer machine — and every hard gate (custody,
       // lease, cap, budget, open decision, single flight) re-proves
@@ -10060,6 +10151,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const revise = /^\/r\/([0-9]{1,15})\/revise$/.exec(url.pathname);
     if (revise !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.revise);
       // Seal the live comment batch into ONE unapproved revision task with
       // an immutable brief (M6.8). Deterministic — no model reads anything
       // here — and every revision takes its own approval: comments can
@@ -10082,6 +10174,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // approved command once and seals the log), or file a task to add tests.
     const followUp = /^\/r\/([0-9]{1,15})\/(checks|add-tests)$/.exec(url.pathname);
     if (followUp !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.followUp);
       const id = Number(followUp[1]);
       const found = store.getRun(id);
       if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
@@ -10185,6 +10278,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     const resolve = /^\/i\/([0-9]{1,15})\/resolve$/.exec(url.pathname);
     if (resolve !== null) {
+      const body = readForm(posted, CONSOLE_FORMS.resolveIncident);
       const id = Number(resolve[1]);
       // The ceiling applies to incident mutation exactly as to every other
       // resource (v3 review, finding 3): resolve incident → run → task, and
@@ -10382,7 +10476,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     who: Who,
     taskId: string,
     verb: string,
-    body: URLSearchParams,
+    body: FormView<FormFieldOf<"attend">>,
     now: Date,
   ): Promise<void> {
     const ref = store.lookupRef(taskId);
@@ -10494,7 +10588,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     who: Who,
     taskId: string,
     verb: string,
-    body: URLSearchParams,
+    posted: URLSearchParams,
     now: Date,
   ): void {
     const ref = store.lookupRef(taskId);
@@ -10507,6 +10601,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
     switch (verb) {
       case "steer": {
+        const body = readForm(posted, CONSOLE_FORMS.taskSteer);
         // Steering is a browser session's act, explicitly (arc 1 v2 §3):
         // identify() accepts bearer credentials generically, and those are
         // for machines — a person watching steers, cookie + CSRF only.
@@ -10529,6 +10624,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "hold": {
+        const body = readForm(posted, CONSOLE_FORMS.taskHold);
         const reason = (body.get("reason") ?? "").trim() || "held from the console";
         if (reason.length > 200 || hasForbiddenControls(reason)) {
           return taskScreen(response, who, taskId, "that reason will not render, so it will not store", 400);
@@ -10540,6 +10636,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "block": {
+        const body = readForm(posted, CONSOLE_FORMS.taskBlock);
         // Chains are scheduling, not authority (chains-and-next review,
         // finding 2): the edge decides WHEN the ready set admits the task;
         // approval still decides WHAT may build. Both ends are re-proved
@@ -10561,6 +10658,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "unblock": {
+        const body = readForm(posted, CONSOLE_FORMS.taskBlock);
         const on = (body.get("on") ?? "").trim();
         if (store.openContestFor(ref.id) !== null) {
           return taskScreen(response, who, taskId, "a tournament is running on this task — let it finish, then pick or abandon it", 409);
@@ -10572,6 +10670,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "repair-dependency": {
+        const body = readForm(posted, CONSOLE_FORMS.taskRepairDependency);
         const blocker = (body.get("blocker") ?? "").trim();
         const operation = (body.get("operation") ?? "").trim();
         const blockerTask = blocker === "" || !store.blockers(taskId).includes(blocker) ? null : store.getTask(blocker);
@@ -10614,6 +10713,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return taskScreen(response, who, taskId, "choose whether to try that task again, wait for a different task, or continue without it", 400);
       }
       case "next": {
+        const body = readForm(posted, CONSOLE_FORMS.taskNext);
         if (body.get("undo") !== null) {
           const cleared = store.clearTaskPriority(taskId);
           if (!cleared.ok) return taskScreen(response, who, taskId, "this task could not be put back in filing order", 409);
@@ -10634,6 +10734,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "reopen": {
+        const body = readForm(posted, CONSOLE_FORMS.taskReopen);
         // Authenticated like every approving act: the session alone may
         // read; resuming external work takes the password, typed again.
         const token = (body.get("token") ?? "").trim();
@@ -10663,6 +10764,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "requeue": {
+        const body = readForm(posted, CONSOLE_FORMS.taskRequeue);
         // Retry may carry a note for the next attempt: the same steering note, checked before anything changes.
         const note = (body.get("note") ?? "").trim();
         if (note !== "" && who.via !== "cookie") return refuse(response, who, 403, "steering is a browser session's act");
@@ -10679,6 +10781,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, body.get("return") === "inbox" ? "/inbox" : body.get("return") === "next" ? "/next" : taskHref(taskId));
       }
       case "follow-up": {
+        const body = readForm(posted, CONSOLE_FORMS.taskFollowUp);
         // A scout's proposed follow-up, filed by the operator's tap (mate
         // arc §10): the ONE filing door, this task's repository, the scope
         // text stamped as the scout's — mode coverage never seals it.
@@ -10732,6 +10835,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "plan-edit": {
+        const body = readForm(posted, CONSOLE_FORMS.taskPlanEdit);
         if (who.via !== "cookie") {
           return refuse(response, who, 403, "editing a plan is a browser session's act");
         }
@@ -10787,6 +10891,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       case "accept-revision":
       case "reject-revision": {
+        const body = readForm(posted, CONSOLE_FORMS.taskRevision);
         // Adaptive execution plans (v44): resolving a revision the builder
         // filed while its authority snapshot no longer matched the run it
         // started under — the ONLY road a 'blocked' plan_revision reaches,
@@ -10817,6 +10922,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "cancel": {
+        const body = readForm(posted, CONSOLE_FORMS.taskCancel);
         const reason = body.get("reason") ?? undefined;
         const cancelled = withActor({ account: who.name, lead: false }, () => store.cancelTask(taskId, now, reason));
         if (!cancelled.ok) {
@@ -10832,6 +10938,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, taskHref(taskId));
       }
       case "route": {
+        const body = readForm(posted, CONSOLE_FORMS.taskRoute);
         // THE AGENTS EDIT (v47): an approver's session declares the risk,
         // overrides one role to an exact agent, or clears an override — ONE
         // authenticated transaction in the store that CAS-checks the scope
@@ -10911,6 +11018,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, toChat ? target : `${target}#agents`);
       }
       case "scope": {
+        const body = readForm(posted, CONSOLE_FORMS.taskScope);
         const sawDigest = body.get("sawDigest");
         const permissionGiven = body.get("permission-mode");
         if (permissionGiven !== null && permissionGiven !== "" && permissionGiven !== "auto" && permissionGiven !== "bypassPermissions") {
@@ -11111,13 +11219,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (!saved.ok) {
           // Refused because the plan moved on: the draft comes back with the version now on file, so saving it
           // again (having read the reason) can succeed instead of being refused the same way.
-          const draft = new URLSearchParams(body);
+          const draft = new URLSearchParams(body.sent);
           if (saved.status === 409) draft.set("sawDigest", store.getScope(taskId)?.digest ?? "");
           return taskScreen(response, who, taskId, saved.message, saved.status, draft);
         }
         return redirect(response, taskHref(taskId));
       }
       case "approve": {
+        const body = readForm(posted, CONSOLE_FORMS.taskApprove);
         const requestedReturn = body.get("return");
         const approvalBack = requestedReturn === "next"
           ? "/next"
@@ -11201,6 +11310,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, approvalBack);
       }
       case "accept-proof": {
+        const body = readForm(posted, CONSOLE_FORMS.taskAcceptProof);
         // Accepting is a person's act, like approving a scope (Priority
         // 2): a cookie session only, never a bearer credential.
         if (who.via !== "cookie") {
@@ -11236,6 +11346,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, body.get("return") === null ? taskHref(taskId) : safeReturn(body.get("return")));
       }
       case "complete": {
+        const body = readForm(posted, CONSOLE_FORMS.taskComplete);
         if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only an approver can mark a result complete.");
         const principal = matePrincipal(who);
         if (principal === null) return refuse(response, who, 403, "Your access changed. Sign in again.");
@@ -11276,6 +11387,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return taskScreen(response, who, taskId, "Separate agent reviews have retired. Open the saved result to mark it complete or request a revision.", 410);
       }
       case "stop": {
+        const body = readForm(posted, CONSOLE_FORMS.taskStop);
         // The exact-run stop (v52): a browser session's act, an approver's
         // act, naming ONE run. The store's transaction proves the run is
         // this task's current live attempt and records who asked before
@@ -11303,9 +11415,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
       case "resume-arm": {
+        const body = readForm(posted, CONSOLE_FORMS.taskResume);
         return armTaskResume(response, who, taskId, (body.get("run") ?? "").trim(), body.get("return") === "chat" ? "chat" : "task", now);
       }
       case "resume": {
+        const body = readForm(posted, CONSOLE_FORMS.taskResume);
         // The resume itself (v52): password typed again + the durable nonce
         // consumed INSIDE the store's resume transaction against the digest
         // re-derived from live state. A replay finds the nonce spent; a
@@ -12788,7 +12902,7 @@ function permissionModeOfProfile(profile: Scope["profile"] | null | undefined): 
  * id by position, and its evidence and guidance while its words stand; a
  * rewritten one is yours to check, like an added one; an emptied one is
  * dropped. */
-function requirementsFromEditor(body: URLSearchParams, current: readonly AcceptanceCriterion[]): unknown[] {
+function requirementsFromEditor(body: FormView<"requirement" | "requirement-new">, current: readonly AcceptanceCriterion[]): unknown[] {
   const used = new Set(current.map(one => one.id));
   let next = 1;
   while (used.has(`c${next}`)) next++;
