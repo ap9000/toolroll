@@ -36,6 +36,33 @@
     "risky": true,
     "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
    }
+  },
+  {
+   "name": "no reason",
+   "source": "src/task-sizing.test.ts (the old reader defaulted it)",
+   "payload": {
+    "size": "small",
+    "risky": false
+   }
+  },
+  {
+   "name": "reason over its limit",
+   "source": "TEXT_LIMITS.sizingReason",
+   "payload": {
+    "size": "small",
+    "risky": false,
+    "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   }
+  },
+  {
+   "name": "an unknown key",
+   "source": "hand-written",
+   "payload": {
+    "size": "small",
+    "risky": false,
+    "reason": "x",
+    "confidence": 0.9
+   }
   }
  ],
  "invalid": [
@@ -61,42 +88,6 @@
    },
    "paths": [
     "risky"
-   ]
-  },
-  {
-   "name": "no reason",
-   "source": "src/task-sizing.test.ts (the old reader defaulted it)",
-   "payload": {
-    "size": "small",
-    "risky": false
-   },
-   "paths": [
-    "reason"
-   ]
-  },
-  {
-   "name": "reason over its limit",
-   "source": "TEXT_LIMITS.sizingReason",
-   "payload": {
-    "size": "small",
-    "risky": false,
-    "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
-   },
-   "paths": [
-    "reason"
-   ]
-  },
-  {
-   "name": "an unknown key",
-   "source": "hand-written",
-   "payload": {
-    "size": "small",
-    "risky": false,
-    "reason": "x",
-    "confidence": 0.9
-   },
-   "paths": [
-    "payload"
    ]
   }
  ]

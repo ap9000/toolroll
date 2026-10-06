@@ -61,13 +61,10 @@ export function heuristicSizing(input: SizingInput, why: string | null = null): 
 const clip = (text: string, cap: number): string => (text.length <= cap ? text : `${text.slice(0, cap - 1)}…`);
 /** Key-shaped lines never leave the machine. */
 const blank = (text: string): string => redactSecretLines(text, scanForSecrets(text));
-/** A reason as the task shows it: one plain line. */
-const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
-
 /** An answer read through the contract (src/contracts/task-sizing.ts), its reason on one line; null when it isn't one. */
 function answerOf(value: unknown): SizeAnswer | null {
   const read = readSizeAnswer(value);
-  return read.ok ? { ...read.value, reason: oneLine(read.value.reason) } : null;
+  return read.ok ? read.value : null;
 }
 
 const SIZE_MEANS: Record<TaskSize, string> = {

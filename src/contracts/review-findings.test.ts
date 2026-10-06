@@ -39,6 +39,21 @@ describe("the build review findings contract", () => {
       type: "array", maxItems: FINDINGS_MAX,
       items: { additionalProperties: false, required: ["severity", "file", "line", "scenario"], properties: { file: { maxLength: TEXT_LIMITS.reviewPath }, scenario: { maxLength: TEXT_LIMITS.reviewNote }, line: { minimum: 1 } } },
     });
+    expect(JSON.stringify(FINDINGS_MODEL_SCHEMA)).not.toContain("you will be asked to shorten it");
+  });
+
+  it("ignores extra keys and applies text limits after controls and whitespace collapse", () => {
+    const finding = { severity: "HIGH", file: "src/a.ts", line: 2, scenario: "Fails on retry" };
+    const padded = { ...finding, file: ` ${finding.file}${" \n".repeat(TEXT_LIMITS.reviewPath)} `,
+      scenario: `Fails${"\t\u001b ".repeat(TEXT_LIMITS.reviewNote)}on retry`, explanation: "ignored" };
+    const payload = { version: 1, findings: [padded], comments: [] };
+    expect(readBuildFindings(payload)).toEqual({ ok: true, value: { version: 1, findings: [finding] } });
+    expect(parseBuildFindings(JSON.stringify(payload))).toEqual({ ok: true, findings: [finding] });
+    for (const [field, limit] of [["file", TEXT_LIMITS.reviewPath], ["scenario", TEXT_LIMITS.reviewNote]] as const) {
+      expect(parseBuildFindings(JSON.stringify({ version: 1, findings: [{ ...finding, [field]: "x".repeat(limit) }] })).ok).toBe(true);
+      expect(parseBuildFindings(JSON.stringify({ version: 1, findings: [{ ...finding, [field]: "x".repeat(limit + 1) }] })))
+        .toEqual({ ok: false, problem: `findings[0].${field}: over ${limit} characters` });
+    }
   });
 
   it("keeps text to one line and refuses a reply by its paths", () => {
@@ -47,5 +62,15 @@ describe("the build review findings contract", () => {
     expect(parseBuildFindings('{"version":1,"findings":[{"severity":"HIGH","file":"a.ts","line":0,"scenario":"x"},{"severity":"high","file":"b.ts","line":1,"scenario":"y"}]}'))
       .toEqual({ ok: false, problem: 'findings[0].line: at least 1; findings[1].severity: must be one of "HIGH", "MEDIUM", "LOW"' });
     expect(readBuildFindings({ version: 3, findings: [] })).toMatchObject({ ok: false, issues: [{ kind: "newer-version" }] });
+  });
+
+  it("keeps the original positive-whole-number check without adding a safe-integer cap", () => {
+    const finding = { severity: "LOW", file: "src/a.ts", line: Number.MAX_SAFE_INTEGER + 1, scenario: "A repeated line." };
+    expect(parseBuildFindings(JSON.stringify({ version: 1, findings: [finding] }))).toEqual({ ok: true, findings: [finding] });
+    for (const line of [0, -1, 1.5, "1", null]) {
+      const parsed = parseBuildFindings(JSON.stringify({ version: 1, findings: [{ ...finding, line }] }));
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.problem).toMatch(/^findings\[0\].line:/);
+    }
   });
 });

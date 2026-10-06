@@ -52,10 +52,12 @@ test("a turn must be one of the zone's own choices, and a refusal names its path
   expect(lines({ ...base, action: "approve" }, handle)).toHaveLength(1);
   expect(lines({ ...base, action: "ask" }, handle)).toEqual(["question: required for ask"]);
   expect(lines("approve it", handle)).toEqual(["payload: must be an object (got a string)"]);
-  // The turn's contract: every field, of its type, and no others.
-  expect(lines({ ...base, action: "route", answer: "Reply", remember: undefined }, handle)).toEqual(["remember: required"]);
-  expect(lines({ ...base, action: "route", answer: "Reply", options: "Yes" }, handle)).toEqual(["options: must be an array (got a string)"]);
-  expect(lines({ ...base, action: "route", answer: "Reply", mood: "calm" }, handle)).toEqual(["payload: unknown key 'mood'"]);
+  // Plain-text and older replies keep the original defaults and ignore unknown keys.
+  expect(readTurn({ action: "approve" }, decide)).toEqual({ ok: true, value: { ...base, action: "approve" } });
+  expect(readTurn({ action: "route", answer: " Reply ", remember: undefined, options: "Yes", mood: "calm" }, handle))
+    .toEqual({ ok: true, value: { ...base, action: "route", answer: "Reply" } });
+  expect(readTurn({ action: "ask", question: " Which? ", options: [null, "", 7, " Yes ", "No", "Later", "Never", "Another"] }, handle))
+    .toEqual({ ok: true, value: { ...base, action: "ask", question: "Which?", options: ["Yes", "No", "Later", "Never"] } });
 });
 
 test("only the person asked answers a teammate's question, once", () => {

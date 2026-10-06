@@ -29,5 +29,17 @@ describe("the task sizing answer contract", () => {
       type: "object", additionalProperties: false, required: ["size", "risky", "reason"],
       properties: { size: { enum: ["small", "medium", "large"] }, risky: { type: "boolean" }, reason: { type: "string", maxLength: TEXT_LIMITS.sizingReason } },
     });
+    expect(JSON.stringify(SIZING_MODEL_SCHEMA)).not.toContain("you will be asked to shorten it");
+  });
+
+  it("defaults absent or non-text reasons and clips only after collapsing whitespace", () => {
+    for (const reason of [undefined, null, 4, false, {}, []]) {
+      expect(readSizeAnswer({ size: "small", risky: false, reason, extra: true }))
+        .toEqual({ ok: true, value: { size: "small", risky: false, reason: "" } });
+    }
+    expect(readSizeAnswer({ size: "medium", risky: true, reason: `  One${" \n".repeat(200)}change  ` }))
+      .toEqual({ ok: true, value: { size: "medium", risky: true, reason: "One change" } });
+    expect(readSizeAnswer({ size: "large", risky: false, reason: "x".repeat(TEXT_LIMITS.sizingReason + 1) }))
+      .toEqual({ ok: true, value: { size: "large", risky: false, reason: `${"x".repeat(TEXT_LIMITS.sizingReason - 1)}…` } });
   });
 });

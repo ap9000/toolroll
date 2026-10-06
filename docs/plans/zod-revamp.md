@@ -124,28 +124,20 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
-- **7. Small structured answers** (2026-10-05). One schema each in `src/contracts/`: `task-sizing.ts` (the sizing
-  answer), `review-findings.ts` (the build review's findings and `build_review.findings_json`), `decision.ts` (a parked
-  decision and its options), `teammate-turn.ts` (a teammate's turn) and `sort-answer.ts` (Jev's reply to a Sort zone, and
-  the decision a sort step keeps). `SizeAnswer`, `BuildFinding`, `ParsedDecision`/`DecisionOption`, `TurnAnswer` and
-  `SortDecision` are derived from them; `SIZING_SCHEMA`, `TURN_SCHEMA`, the scout's hand-written decision shape, the
-  findings fragment of the Claude review schema, `FINDING_LIMITS` and the hand-written parsers are gone. The JSON Schema
-  a model gets is generated where the transport takes one: the Claude sizer's and teammate's `--json-schema`, the
-  `findings` of the review channel the build review shares with evidence reviews (provider.ts; no separate build-review
-  schema), and the scout's question branch (the exported decision schema). A park file has no JSON Schema transport (its
-  shape stays in the brief and repair prompt) and Jev's Decisions API takes questions, not a schema: its request keys
-  (`SORT_ROUTE_KEY`, `sortNoteKeyOf`, `sortKeyOf`) come from the flow contract and its reply is read through the schema
-  before anything routes. A teammate's text limits stay out of its schema on purpose (the CLI refuses an answer a few
-  characters over whole; TURN_LIMITS are checked after parsing and asked once to shorten). The answer limits moved into
-  `TEXT_LIMITS`. What JSON Schema can't say runs after parsing with a path-named error: blank or control-carrying
-  decision text, duplicate option ids, the recommendation, deadlines, the zone's allowed actions and answers, one-line
-  findings. Every refusal, and the decision repair turn, names its path, under the decision reason codes incidents
-  already recorded (`missing-reversible`, `too-few-options`). Kept: a decision without `version` (what agents still
-  write, and every saved one) reads as before; saved findings rows are version 1 already; saved sort decisions and
-  teammate turns are read exactly as before (`parseSortDecision`, the engine's hand-off note, spend). Samples are in
-  `test/fixtures/answers/`, taken from the writers and tests: the installed database was not readable from the build
-  that wrote them. Tightened, on purpose: a version 1 decision is strict about unknown keys and a newer one is refused;
-  a finding with a key it doesn't take, a sizing answer without a reason or with an unknown key, a teammate turn
-  missing a field (the CLI already enforced this; only the plain-text fallback could), and a Jev reply whose
-  confidence, chance, score or yes/no is present but not a number are refused by path; a finding's file or scenario,
-  and a sizing reason are held to their limit as written, before whitespace is collapsed.
+- **7. Small structured answers** (2026-10-05; compatibility revision 2026-10-06). One schema each in
+  `src/contracts/`: `task-sizing.ts`, `review-findings.ts`, `decision.ts`, `teammate-turn.ts` and `sort-answer.ts`.
+  Types and model-facing JSON Schemas derive from them; callers use their readers and errors name the field path.
+  Claude sizing, teammate turns and the review channel's findings use the generated schemas. Jev's Decisions API
+  takes questions rather than JSON Schema. `DECISION_MODEL_SCHEMA` is exported for the separate scout migration;
+  `scout-report.ts` and `scout.test.ts` remain unchanged from before item 7.
+  Compatibility follows review comment 843: unknown keys are ignored, decisions keep their unversioned format
+  (including ignoring a supplied `version`), and partial teammate turns default absent or non-text fields to ""
+  and filter non-string options. Sizing reasons default to "" and are clipped after whitespace collapses; findings
+  are limited after controls and whitespace collapse. Jev keeps its old defaults for non-numeric confidence/chance,
+  skips non-numeric notes, defaults non-string model and non-numeric cost, and ignores unrelated answer values.
+  Required choices, decision approval terms and zone action checks remain enforced. Teammate limits still use their
+  one shorten turn; sizing and findings schemas do not promise one. These are compatibility exceptions to the strict
+  object and new envelope ground rules, as requested in comment 843, not new acceptance restrictions.
+  The contract harness replays `test/fixtures/answers/`, including older partial turns. These are synthetic samples
+  from the writers and tests, not database exports: the installed database was denied to both builds. Read-only
+  replay of actual saved findings and decisions remains an evidence gap.

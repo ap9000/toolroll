@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseSortDecision, readJevAnswers, sortRequest } from "../flow-sort.js";
 import type { FlowStage } from "../flows.js";
+import { toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { SORT_ROUTE_KEY, sortKeyOf, sortNoteKeyOf } from "./flow.js";
 import { jevReplySchema, readJevReply, readSortDecision, sortDecisionSchema } from "./sort-answer.js";
@@ -30,6 +31,7 @@ describe("Jev's sort answer contract", () => {
 
   it("holds for the kept decision: saved decision_json rows parse as the schema says", () => {
     assertContract({ schema: sortDecisionSchema, read: input => verdict(readSortDecision(input)), ...samples(fixture("sort-decision")) });
+    expect(JSON.stringify(toModelSchema(sortDecisionSchema))).not.toContain("you will be asked to shorten it");
   });
 
   it("asks with the flow contract's keys, and reads the reply back against the zone's own answers", () => {
@@ -51,7 +53,28 @@ describe("Jev's sort answer contract", () => {
 
   it("holds a card in the zone when Jev isn't sure, and never routes on a reply it can't read", () => {
     expect(readJevAnswers(stage, { answers: { route: { choice: "order-change", confidence: 0.5 } } }, 1)).toMatchObject({ answer: "Order change", confident: false, to: "by-hand", model: "~typesafe/jev-latest", cost: null, notes: [] });
-    expect(readJevAnswers(stage, { answers: { route: { choice: "wire-money", confidence: 0.99 } } }, 1)).toEqual({ problem: "Jev picked an answer this zone doesn't have." });
+    expect(readJevAnswers(stage, { answers: { route: { choice: "wire-money", confidence: 0.99 } } }, 1)).toEqual({ problem: "answers.route.choice: Jev picked an answer this zone doesn't have." });
     expect(readJevAnswers(stage, { answers: {} }, 1)).toEqual({ problem: "Jev's answer didn't say which way to go (answers.route: required)." });
+  });
+
+  it("defaults bad optional metadata and ignores extra answers as the original reader did", () => {
+    for (const bad of [undefined, null, "unknown", false, [], {}]) {
+      const reply = { model: bad, usage: { cost: bad }, answers: {
+        route: { choice: "invoice-problem", confidence: bad, probabilities: { "invoice-problem": bad, "order-change": 0.4 } },
+        note_urgency: { score: bad, confidence: bad }, note_refund: { noul: bad },
+        unrelated: bad,
+      } };
+      expect(readJevAnswers(stage, reply, 2)).toEqual({
+        model: typeof bad === "string" ? bad : "~typesafe/jev-latest", answer: "Invoice problem", sure: 0, sureAt: 0.8,
+        confident: false, to: "by-hand", chances: { "Invoice problem": 0, "Order change": 0.4 }, notes: [], cost: null, ms: 2,
+      });
+    }
+    expect(readJevAnswers(stage, { model: 123, usage: null, answers: {
+      route: { choice: "invoice-problem", confidence: 0.95, probabilities: null },
+      note_urgency: { score: 1, confidence: null }, note_refund: { noul: 0.8, confidence: "bad" }, extra: 4,
+    } }, 3)).toMatchObject({ model: "~typesafe/jev-latest", confident: true, to: "billing", cost: null,
+      chances: { "Invoice problem": 0, "Order change": 0 },
+      notes: [{ id: "urgency", sure: 0 }, { id: "refund", answer: "yes", sure: 0.8 }],
+    });
   });
 });

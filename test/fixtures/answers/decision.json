@@ -1,5 +1,5 @@
 {
- "about": "Parked decisions replayed by src/contracts/decision.test.ts through parseDecision: park files as agents write them (unversioned, what they are asked for), a scout's structured question (version 1), and a saved decision row's fields re-read as a payload. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "about": "Parked decisions replayed by src/contracts/decision.test.ts through parseDecision: park files as agents write them (unversioned, what they are asked for), a decision with an ignored version field from the initial item 7 migration, and a saved decision row's fields re-read as a payload. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
  "valid": [
   {
    "name": "builder park file (unversioned)",
@@ -200,8 +200,8 @@
    }
   },
   {
-   "name": "scout structured question (version 1)",
-   "source": "src/scout-report.ts DECISION_MODEL_SCHEMA",
+   "name": "decision with version 1 from the initial item 7 migration",
+   "source": "build #2537 decision model schema (synthetic sample; version now ignored)",
    "payload": {
     "version": 1,
     "urgency": "blocking",
@@ -248,6 +248,57 @@
     "recommendation": "e2e",
     "assignee": null,
     "deadline": null
+   }
+  },
+  {
+   "name": "version 1 with a key it doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed",
+    "context": "extra"
+   }
+  },
+  {
+   "name": "a newer version",
+   "source": "hand-written",
+   "payload": {
+    "version": 2,
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
    }
   }
  ],
@@ -591,63 +642,6 @@
    },
    "paths": [
     "deadline"
-   ]
-  },
-  {
-   "name": "version 1 with a key it doesn't take",
-   "source": "hand-written",
-   "payload": {
-    "version": 1,
-    "urgency": "blocking",
-    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
-    "question": "Fail open or fail closed on timeout?",
-    "options": [
-     {
-      "id": "open",
-      "label": "Fail open",
-      "consequence": "Payouts continue; bad ones slip through.",
-      "reversible": true
-     },
-     {
-      "id": "closed",
-      "label": "Fail closed",
-      "consequence": "Payouts pause; support tickets.",
-      "reversible": true
-     }
-    ],
-    "recommendation": "closed",
-    "context": "extra"
-   },
-   "paths": [
-    "payload"
-   ]
-  },
-  {
-   "name": "a newer version",
-   "source": "hand-written",
-   "payload": {
-    "version": 2,
-    "urgency": "blocking",
-    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
-    "question": "Fail open or fail closed on timeout?",
-    "options": [
-     {
-      "id": "open",
-      "label": "Fail open",
-      "consequence": "Payouts continue; bad ones slip through.",
-      "reversible": true
-     },
-     {
-      "id": "closed",
-      "label": "Fail closed",
-      "consequence": "Payouts pause; support tickets.",
-      "reversible": true
-     }
-    ],
-    "recommendation": "closed"
-   },
-   "paths": [
-    "version"
    ]
   }
  ]

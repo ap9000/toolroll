@@ -35,4 +35,12 @@ describe("the teammate turn contract", () => {
   it("takes its limits from TEXT_LIMITS", () => {
     expect(TURN_LIMITS).toEqual({ answer: TEXT_LIMITS.teammateAnswer, text: TEXT_LIMITS.stageOutput, note: TEXT_LIMITS.note, question: TEXT_LIMITS.teammateQuestion, reason: TEXT_LIMITS.teammateReason, remember: TEXT_LIMITS.teammateRemember });
   });
+
+  it("reads older partial turns, defaults bad text and filters non-string options", () => {
+    const empty = { answer: "", text: "", note: "", question: "", options: [], reason: "", tool: "", input: "", remember: "" };
+    expect(readTurnAnswer({ action: "approve", extra: "ignored" })).toEqual({ ok: true, value: { action: "approve", ...empty } });
+    expect(readTurnAnswer({ action: "ask", answer: null, text: 7, note: false, question: "Which?", options: [1, "Yes", null, "No", {}], reason: [], tool: {}, input: null, remember: false }))
+      .toEqual({ ok: true, value: { action: "ask", ...empty, question: "Which?", options: ["Yes", "No"] } });
+    expect(readTurnAnswer({ action: "approve", options: "Yes" })).toEqual({ ok: true, value: { action: "approve", ...empty } });
+  });
 });

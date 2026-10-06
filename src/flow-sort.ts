@@ -100,29 +100,30 @@ export function readJevAnswers(stage: FlowStage, body: Record<string, unknown>, 
   const reply = read.value;
   const route = reply.answers[SORT_ROUTE_KEY];
   const picked = sort.answers.find(one => sortKeyOf(one.answer) === route.choice);
-  if (picked === undefined) return { problem: "Jev picked an answer this zone doesn't have." };
-  const number = (value: number | undefined) => value !== undefined && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+  if (picked === undefined) return { problem: "answers.route.choice: Jev picked an answer this zone doesn't have." };
+  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
   const sure = number(route.confidence);
-  const probabilities = route.probabilities ?? {};
+  const probabilities = (route.probabilities ?? {}) as Record<string, unknown>;
   const chances = Object.fromEntries(sort.answers.map(one => [one.answer, Math.round(number(probabilities[sortKeyOf(one.answer)]) * 100) / 100]));
   const notes: SortNoteAnswer[] = [];
   for (const note of sort.notes) {
     const said = reply.answers[sortNoteKeyOf(note.id)];
     if (said === undefined) continue;
-    if (note.kind === "score" && note.levels !== null && said.score !== undefined) {
+    if (note.kind === "score" && note.levels !== null && typeof said.score === "number") {
       const level = note.levels[Math.min(note.levels.length - 1, Math.max(0, Math.round(said.score)))]!;
       notes.push({ id: note.id, question: note.question, kind: "score", answer: level, sure: Math.round(number(said.confidence) * 100) / 100 });
-    } else if (said.noul !== undefined) {
+    } else if (typeof said.noul === "number") {
       const yes = number(said.noul);
       notes.push({ id: note.id, question: note.question, kind: "yes-no", answer: yes >= 0.5 ? "yes" : "no", sure: Math.round(Math.max(yes, 1 - yes) * 100) / 100 });
     }
   }
   const confident = sure >= sort.sureAt;
+  const usage = reply.usage as { cost?: unknown } | null | undefined;
   return {
-    model: reply.model ?? JEV_MODEL,
+    model: typeof reply.model === "string" ? reply.model : JEV_MODEL,
     answer: picked.answer, sure: Math.round(sure * 100) / 100, sureAt: sort.sureAt,
     confident, to: confident ? picked.to : stage.onFail, chances, notes,
-    cost: reply.usage?.cost ?? null, ms,
+    cost: typeof usage?.cost === "number" ? usage.cost : null, ms,
   };
 }
 

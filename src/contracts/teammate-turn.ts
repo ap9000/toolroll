@@ -19,7 +19,7 @@ import { parseContract, toModelSchema, type ContractResult } from "./contract.js
 export const TURN_ACTIONS = ["approve", "send_back", "hand_off", "route", "ask", "cant", "use_tool"] as const;
 export type TurnAction = (typeof TURN_ACTIONS)[number];
 
-export const teammateTurnSchema = z.strictObject({
+export const teammateTurnSchema = z.object({
   action: z.enum(TURN_ACTIONS),
   /** route: one of the zone's answers, exactly as written. */
   answer: z.string(),
@@ -44,7 +44,15 @@ export type TurnAnswer = z.infer<typeof teammateTurnSchema>;
 /** What Claude's `--json-schema` is for a turn: the turn schema, exactly. */
 export const TURN_MODEL_SCHEMA: Readonly<Record<string, unknown>> = toModelSchema(teammateTurnSchema);
 
-/** Read a turn's answer as given: every field, the right types, no others; or path-named lines saying what is wrong. */
+/** Older and plain-text turns default absent or non-text fields to "", and keep only string options. */
 export function readTurnAnswer(value: unknown): ContractResult<TurnAnswer> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const body = { ...value } as Record<string, unknown>;
+    for (const key of Object.keys(teammateTurnSchema.shape)) {
+      if (key !== "action" && key !== "options" && typeof body[key] !== "string") body[key] = "";
+    }
+    body["options"] = Array.isArray(body["options"]) ? body["options"].filter(one => typeof one === "string") : [];
+    value = body;
+  }
   return parseContract(teammateTurnSchema, value);
 }

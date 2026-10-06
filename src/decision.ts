@@ -23,7 +23,7 @@ import { TEXT_LIMITS } from "./text-limits.js";
 export type ParsedOption = DecisionOption;
 
 /** A decision as read: the payload's fields, its text trimmed, and the optional ones present or null. */
-export type ParsedDecision = Omit<DecisionPayload, "version" | "assignee" | "deadline"> & {
+export type ParsedDecision = Omit<DecisionPayload, "assignee" | "deadline"> & {
   assignee: string | null;
   /** Normalized to toISOString(), like every timestamp in the store. */
   deadline: string | null;
@@ -120,7 +120,6 @@ export function parseDecision(raw: string): ParseResult {
 
   const read = readDecisionPayload(parsed);
   const contract = read.ok ? [] : read.issues.map(decisionProblemOf);
-  if (contract.some(problem => problem.reason === "newer-version" || problem.reason === "bad-version")) return { ok: false, problems: contract };
   const body = parsed as Record<string, unknown>;
   const problems = [...contract, ...decisionRuleProblems(body, contract)];
   if (!read.ok || problems.length > 0) return { ok: false, problems };
@@ -144,9 +143,6 @@ export function parseDecision(raw: string): ParseResult {
 /** The reason code a contract issue has always had: `missing-recap`, `too-few-options`, `bad-option-id`. */
 function decisionReasonOf(issue: ContractIssue): string {
   const at = issue.path;
-  if (issue.kind === "newer-version") return "newer-version";
-  if (at === "version") return "bad-version";
-  if (issue.kind === "unknown-key") return `${at}-unknown-key`;
   const text = (field: string) => (issue.kind === "too-long" ? `${field}-too-long` : `missing-${field}`);
   switch (at) {
     case "urgency": return "bad-urgency";

@@ -254,16 +254,13 @@ export function parseReview(
 
 export type { BuildFinding, FindingSeverity } from "./contracts/review-findings.js";
 
-/** One line, as a revision note and a terminal show it: controls and runs of whitespace become one space. */
-const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
-
 /**
- * The automatic build review's reply, read through its contract (src/contracts/review-findings.ts), strict and
- * wholesale like parseReview: `{"version":1,"findings":[{"severity","file","line","scenario"}]}`. Any invalid
+ * The automatic build review's reply, read through its contract (src/contracts/review-findings.ts), with all findings
+ * checked together: `{"version":1,"findings":[{"severity","file","line","scenario"}]}`. Any invalid
  * finding refuses the whole reply — a review that did not answer what it was asked is "not reviewed", never a partial
  * pass — and the refusal names each path (`findings[0].line: at least 1`). The reply shares Claude's review channel
  * (provider.ts), so only its version and findings are read, as always. Text is kept to one line so it can travel in a
- * revision note and a terminal; a file or scenario that is blank once it is one line is refused by path.
+ * revision note and a terminal; its limits are checked after whitespace collapses, as before.
  */
 export function parseBuildFindings(raw: string): { ok: true; findings: BuildFinding[] } | { ok: false; problem: string } {
   let parsed: unknown;
@@ -273,15 +270,7 @@ export function parseBuildFindings(raw: string): { ok: true; findings: BuildFind
     return { ok: false, problem: "the reply is not JSON" };
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, problem: "the reply is not an object" };
-  const reply = parsed as Record<string, unknown>;
-  const read = readBuildFindings({ ...(Object.prototype.hasOwnProperty.call(reply, "version") ? { version: reply["version"] } : {}), findings: reply["findings"] });
+  const read = readBuildFindings(parsed);
   if (!read.ok) return { ok: false, problem: read.issues.map(issue => issue.line).join("; ") };
-  const findings: BuildFinding[] = [];
-  for (const [index, finding] of read.value.findings.entries()) {
-    const file = oneLine(finding.file), scenario = oneLine(finding.scenario);
-    if (file === "") return { ok: false, problem: `findings[${index}].file: must not be blank` };
-    if (scenario === "") return { ok: false, problem: `findings[${index}].scenario: must not be blank` };
-    findings.push({ ...finding, file, scenario });
-  }
-  return { ok: true, findings };
+  return { ok: true, findings: read.value.findings };
 }

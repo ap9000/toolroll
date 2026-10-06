@@ -9,12 +9,13 @@
 
 import { z } from "zod";
 import { TASK_SIZES, type TaskSize } from "../phase-routing.js";
+import { TEXT_LIMITS } from "../text-limits.js";
 import { limited, parseContract, toModelSchema, type ContractResult } from "./contract.js";
 
-export const sizeAnswerSchema = z.strictObject({
+export const sizeAnswerSchema = z.object({
   size: z.enum(TASK_SIZES as readonly TaskSize[] as [TaskSize, ...TaskSize[]]),
   risky: z.boolean(),
-  reason: limited("reason", "sizingReason"),
+  reason: limited("reason", "sizingReason").describe(`reason: at most ${TEXT_LIMITS.sizingReason} characters.`),
 });
 
 export type SizeAnswer = z.infer<typeof sizeAnswerSchema>;
@@ -22,7 +23,12 @@ export type SizeAnswer = z.infer<typeof sizeAnswerSchema>;
 /** What a Claude sizer's `--json-schema` is: the answer schema, exactly. */
 export const SIZING_MODEL_SCHEMA: Readonly<Record<string, unknown>> = toModelSchema(sizeAnswerSchema);
 
-/** Read an answer: one of the three sizes, a yes/no and a short reason, or path-named lines saying what is wrong. */
+/** Keep the old reason defaults and clipping before checking the normalized answer's contract. */
 export function readSizeAnswer(value: unknown): ContractResult<SizeAnswer> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const body = value as Record<string, unknown>;
+    const reason = typeof body["reason"] === "string" ? body["reason"].replace(/\s+/g, " ").trim() : "";
+    value = { ...body, reason: reason.length <= TEXT_LIMITS.sizingReason ? reason : `${reason.slice(0, TEXT_LIMITS.sizingReason - 1)}…` };
+  }
   return parseContract(sizeAnswerSchema, value);
 }

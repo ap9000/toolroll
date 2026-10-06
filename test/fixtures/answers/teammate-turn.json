@@ -99,6 +99,68 @@
     "input": "",
     "remember": "Priya prefers email."
    }
+  },
+  {
+   "name": "options as one string",
+   "source": "hand-written",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "Refund?",
+    "options": "Yes, No",
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "ask"
+   }
+  },
+  {
+   "name": "a key the turn doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "approve",
+    "mood": "calm"
+   }
+  },
+  {
+   "name": "a number for text",
+   "source": "hand-written",
+   "payload": {
+    "answer": "Replied",
+    "text": 42,
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "route"
+   }
+  },
+  {
+   "name": "saved decision_json from v92–v93 (before tools and memory)",
+   "source": "src/teammate-work.ts as v92 wrote it; read back only for its note",
+   "payload": {
+    "action": "hand_off",
+    "answer": "",
+    "text": "",
+    "note": "Over my limit.",
+    "question": "",
+    "options": [],
+    "reason": "Over $50."
+   }
   }
  ],
  "invalid": [
@@ -119,82 +181,6 @@
    },
    "paths": [
     "action"
-   ]
-  },
-  {
-   "name": "options as one string",
-   "source": "hand-written",
-   "payload": {
-    "answer": "",
-    "text": "",
-    "note": "",
-    "question": "Refund?",
-    "options": "Yes, No",
-    "reason": "",
-    "tool": "",
-    "input": "",
-    "remember": "",
-    "action": "ask"
-   },
-   "paths": [
-    "options"
-   ]
-  },
-  {
-   "name": "a key the turn doesn't take",
-   "source": "hand-written",
-   "payload": {
-    "answer": "",
-    "text": "",
-    "note": "",
-    "question": "",
-    "options": [],
-    "reason": "",
-    "tool": "",
-    "input": "",
-    "remember": "",
-    "action": "approve",
-    "mood": "calm"
-   },
-   "paths": [
-    "payload"
-   ]
-  },
-  {
-   "name": "a number for text",
-   "source": "hand-written",
-   "payload": {
-    "answer": "Replied",
-    "text": 42,
-    "note": "",
-    "question": "",
-    "options": [],
-    "reason": "",
-    "tool": "",
-    "input": "",
-    "remember": "",
-    "action": "route"
-   },
-   "paths": [
-    "text"
-   ]
-  },
-  {
-   "name": "saved decision_json from v92–v93 (before tools and memory)",
-   "source": "src/teammate-work.ts as v92 wrote it; read back only for its note",
-   "payload": {
-    "action": "hand_off",
-    "answer": "",
-    "text": "",
-    "note": "Over my limit.",
-    "question": "",
-    "options": [],
-    "reason": "Over $50."
-   },
-   "paths": [
-    "tool",
-    "input",
-    "remember"
    ]
   }
  ]

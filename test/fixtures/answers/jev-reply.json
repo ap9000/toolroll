@@ -41,6 +41,18 @@
      }
     }
    }
+  },
+  {
+   "name": "a confidence as text",
+   "source": "hand-written",
+   "payload": {
+    "answers": {
+     "route": {
+      "choice": "x",
+      "confidence": "high"
+     }
+    }
+   }
   }
  ],
  "invalid": [
@@ -80,21 +92,6 @@
    },
    "paths": [
     "answers.route.choice"
-   ]
-  },
-  {
-   "name": "a confidence as text",
-   "source": "hand-written",
-   "payload": {
-    "answers": {
-     "route": {
-      "choice": "x",
-      "confidence": "high"
-     }
-    }
-   },
-   "paths": [
-    "answers.route.confidence"
    ]
   }
  ]

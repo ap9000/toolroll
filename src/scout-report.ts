@@ -7,7 +7,6 @@
  * the park discipline exactly as the plan does.
  */
 
-import { DECISION_MODEL_SCHEMA } from "./contracts/decision.js";
 import { hasForbiddenControls } from "./decision.js";
 import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -96,22 +95,47 @@ const REPORT_SHAPE = {
   additionalProperties: false,
 } as const;
 
+/** The park mailbox's decision, the same fields `parseDecision` reads. */
+const DECISION_SHAPE = {
+  type: "object",
+  properties: {
+    urgency: { type: "string", enum: ["blocking"] },
+    recap: { type: "string" },
+    question: { type: "string" },
+    options: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          label: { type: "string" },
+          consequence: { type: "string" },
+          reversible: { type: "boolean" },
+        },
+        required: ["id", "label", "consequence", "reversible"],
+        additionalProperties: false,
+      },
+    },
+    recommendation: { type: "string" },
+  },
+  required: ["urgency", "recap", "question", "options", "recommendation"],
+  additionalProperties: false,
+} as const;
+
 /**
  * The scout's handback for Claude's `--json-schema` (run 2334's fix): plan
  * mode only lets a session write its own plan file, so a Claude scout
  * returns a report — or a question for the operator — as structured output
- * on the terminal result event. The report's shape only, never its
- * validator: byte caps, one-line titles and control characters stay
- * `parseReport`'s. The question is the decision contract itself, and
- * `parseDecision` reads the re-serialized body.
+ * on the terminal result event. Shape only, never the validator: byte caps,
+ * one-line titles and control characters stay `parseReport`'s and
+ * `parseDecision`'s, applied to the re-serialized body.
  */
 export const SCOUT_OUTPUT_JSON_SCHEMA = {
   type: "object",
   properties: {
     kind: { type: "string", enum: ["report", "question"] },
     report: REPORT_SHAPE,
-    // The park mailbox's decision, from its one schema (src/contracts/decision.ts).
-    decision: DECISION_MODEL_SCHEMA,
+    decision: DECISION_SHAPE,
   },
   required: ["kind"],
   additionalProperties: false,

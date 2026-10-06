@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseDecision, repairPrompt } from "../decision.js";
-import { SCOUT_OUTPUT_JSON_SCHEMA } from "../scout-report.js";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
@@ -33,9 +32,9 @@ describe("the parked decision contract", () => {
     });
   });
 
-  it("is the scout's question branch, exactly, with limits from TEXT_LIMITS", () => {
+  it("exports the decision model schema for the scout migration, with limits from TEXT_LIMITS", () => {
     expect(DECISION_MODEL_SCHEMA).toEqual(toModelSchema(decisionSchema));
-    expect(SCOUT_OUTPUT_JSON_SCHEMA.properties.decision).toBe(DECISION_MODEL_SCHEMA);
+    expect(DECISION_MODEL_SCHEMA["required"]).toEqual(["urgency", "recap", "question", "options", "recommendation"]);
     const properties = DECISION_MODEL_SCHEMA["properties"] as Record<string, Record<string, unknown>>;
     expect(properties["recap"]?.["maxLength"]).toBe(TEXT_LIMITS.decisionRecap);
     expect(properties["options"]).toMatchObject({ minItems: 2, maxItems: 6, items: { additionalProperties: false, required: ["id", "label", "consequence", "reversible"] } });
@@ -62,8 +61,13 @@ describe("the parked decision contract", () => {
     expect(reasons({ ...base, options: [{ ...option("a"), label: "two\nlines" }, option("b")] })).toEqual([["option-0-label-control-characters", "options[0].label: must be one line with no control characters"]]);
     expect(reasons({ ...base, options: [{ ...option("a"), consequence: "x".repeat(TEXT_LIMITS.decisionConsequence + 1) }, option("b")] })).toEqual([["option-0-consequence-too-long", "options[0].consequence: over 500 characters"]]);
     expect(reasons({ ...base, deadline: "soon" })).toEqual([["bad-deadline", 'deadline: must be an ISO 8601 timestamp (got "soon")']]);
-    expect(reasons({ version: 1, ...base, notes: "x" })).toEqual([["payload-unknown-key", "payload: unknown key 'notes'"]]);
-    expect(reasons({ version: 2, ...base })).toEqual([["newer-version", "version: made by a newer Toolroll (version 2; this one reads up to 1)"]]);
+  });
+
+  it("ignores extra decision and option fields, including version, as the original format did", () => {
+    const expected = parseDecision(JSON.stringify(base));
+    for (const version of [undefined, 1, 2, 0, null, "future", {}]) {
+      expect(parseDecision(JSON.stringify({ version, ...base, notes: "ignored", options: [{ ...option("a"), extra: true }, option("b")] }))).toEqual(expected);
+    }
   });
 
   it("sends the repair turn exactly the path-named lines", () => {

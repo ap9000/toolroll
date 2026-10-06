@@ -323,6 +323,22 @@
      }
     ]
    }
+  },
+  {
+   "name": "a finding with a key it doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x",
+      "title": "t"
+     }
+    ]
+   }
   }
  ],
  "invalid": [
@@ -435,25 +451,6 @@
    },
    "paths": [
     "findings[0].severity"
-   ]
-  },
-  {
-   "name": "a finding with a key it doesn't take",
-   "source": "hand-written",
-   "payload": {
-    "version": 1,
-    "findings": [
-     {
-      "severity": "LOW",
-      "file": "a.ts",
-      "line": 1,
-      "scenario": "x",
-      "title": "t"
-     }
-    ]
-   },
-   "paths": [
-    "findings[0]"
    ]
   },
   {
