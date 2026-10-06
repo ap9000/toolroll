@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import type { TeamMessage, TeamOperation, TeamResponse, TeamSnapshot } from '../team-contract.js';
+import type { TeamMessage, TeamOperation, TeamProposal, TeamResponse, TeamSnapshot } from '../team-contract.js';
 import { Alert, Badge, Button, Disclosure, Input, Label, Textarea } from './ui/index.js';
+import { ActionCards } from './chat-cards.js';
 
 type Draft = { text: string; requestId: string; uncertain: boolean };
 const fresh = (): Draft => ({ text: '', requestId: crypto.randomUUID(), uncertain: false });
@@ -26,6 +27,14 @@ function messageText(text: string, conversationId?: string): ReactNode[] {
 }
 function Projects({ projects }: { projects: string[] }) {
   return <fieldset className="so-team-projects"><legend>Projects</legend>{projects.length === 0 ? <p>Add a project before creating a lead.</p> : projects.map(project => <label key={project}><input type="checkbox" name="projects" value={project} defaultChecked={projects.length === 1} /><span title={project}>{project.split('/').pop() || project}</span></label>)}</fieldset>;
+}
+
+function TeamProposals({ proposals, csrf, onChanged, readOnly }: { proposals: TeamProposal[]; csrf: string; onChanged: () => void; readOnly: boolean }) {
+  if (!proposals.length) return null;
+  return <div className="so-team-proposals">{proposals.map(proposal => proposal.card
+    ? <ActionCards key={proposal.id} cards={[proposal.card]} csrf={csrf} onChanged={onChanged} readOnly={readOnly} />
+    // Older snapshots still have a route to their saved proposal, without inventing controls or outcomes.
+    : <article key={proposal.id}><strong>{proposal.title}</strong><Badge>{proposal.state === 'pending' ? 'Proposed' : proposal.state}</Badge><a href={proposal.href}>{proposal.state === 'pending' ? 'Review action' : 'Open outcome'}</a></article>)}</div>;
 }
 
 export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSnapshot; user: string; csrf: string; onSnapshot?: (snapshot: TeamSnapshot) => void }) {
@@ -128,6 +137,16 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
     <Button type="submit" disabled={busy || !currentLead}>Create conversation</Button>
   </form>;
   const canCreateLead = 'canCreateLead' in snapshot && snapshot.canCreateLead === true;
+  const replyByTurn = new Map(snapshot.messages.filter(message => message.role === 'assistant' && message.turnId !== null).map(message => [message.turnId, message.id]));
+  const proposalsByMessage = new Map<number | null, TeamProposal[]>();
+  for (const proposal of snapshot.proposals ?? []) {
+    if (proposal.state === 'drafting') continue;
+    const messageId = replyByTurn.get(proposal.turnId) ?? null;
+    const group = proposalsByMessage.get(messageId) ?? [];
+    group.push(proposal); proposalsByMessage.set(messageId, group);
+  }
+  const proposalsAt = (messageId: number | null) => <TeamProposals proposals={proposalsByMessage.get(messageId) ?? []} csrf={csrf} readOnly={revoked}
+    onChanged={() => { void refresh().catch(() => setDisconnected(true)); }} />;
   return <section className="so-team-chat" aria-label="Team conversation">
     <div className="so-team-toolbar">
       {snapshot.leads.length > 1 && <label className="so-team-lead-select"><span className="so-sr-only">Lead</span><select aria-label="Lead" value={selectedLead} onChange={event => window.location.assign('/chat?lead=' + encodeURIComponent(event.target.value))}>{snapshot.leads.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>}
@@ -145,8 +164,10 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
         {editing === message.id ? <form className="so-team-form" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void execute('edit', { conversationId: conversation.id, messageId: message.id, expectedRevision: message.revision, text: form.get('text') }).then(value => { if (value) setEditing(null); }); }}><Label htmlFor={'team-edit-' + message.id}>Edit queued message</Label><Textarea id={'team-edit-' + message.id} name="text" defaultValue={message.text} required maxLength={2_000} rows={3} /><div><Button type="submit" disabled={busy}>Save edit</Button><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button></div></form> : <p className="so-team-message-text">{messageText(message.text, conversation.id)}</p>}
         {message.error && <Alert tone="error">{message.error}</Alert>}
         {message.status === 'queued' && message.author === user && !revoked && <div className="so-team-message-actions"><Button variant="ghost" onClick={() => setEditing(message.id)} disabled={busy}>Edit</Button><Button variant="ghost" onClick={() => { void execute('withdraw', { conversationId: conversation.id, messageId: message.id, expectedRevision: message.revision }); }} disabled={busy}>Withdraw</Button></div>}
-      </article>)}</div>{snapshot.truncated && <p className="so-team-small">Showing the most recent messages.</p>}<div ref={end} /></>}
-      {snapshot.proposals && snapshot.proposals.length > 0 && <div className="so-team-proposals">{snapshot.proposals.filter(proposal => proposal.state !== 'drafting').map(proposal => <article key={proposal.id}><strong>{proposal.title}</strong><Badge>{proposal.state === 'pending' ? 'Proposed' : proposal.state}</Badge><a href={proposal.href}>{proposal.state === 'pending' ? 'Review action' : 'Open outcome'}</a></article>)}</div>}
+        {proposalsAt(message.id)}
+      </article>)}</div>{snapshot.truncated && <p className="so-team-small">Showing the most recent messages.</p>}</>}
+      {proposalsAt(null)}
+      <div ref={end} />
       <Disclosure summary="Conversations" className="so-team-settings">{conversation && <><nav className="so-team-room-list" aria-label="Other conversations">{snapshot.conversations.filter(room => room.id !== conversation.id).map(room => <a key={room.id} href={'/chat?conversation=' + encodeURIComponent(room.id)}>{room.title}</a>)}</nav><h3>New conversation</h3>{createConversation}</>}<a href="/chat?private=1">Previous private chat</a>{snapshot.canManage && lead && <Disclosure summary="Lead settings"><form className="so-team-form" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void execute('update-lead', { leadId: lead.id, expectedRevision: lead.revision, name: form.get('name'), instructions: form.get('instructions'), status: form.get('status') }); }}><label>Lead name<Input name="name" defaultValue={lead.name} required maxLength={100} /></label><label>Working instructions<Textarea name="instructions" defaultValue={lead.instructions} rows={4} /></label><label>Status<select name="status" defaultValue={lead.status}><option value="active">Active</option><option value="paused">Paused</option></select></label><p className="so-team-small">Projects: {lead.projects.map(project => project.split('/').pop()).join(', ')}</p><Button type="submit" disabled={busy}>Save lead</Button></form></Disclosure>}{canCreateLead && snapshot.leads.length > 0 && <Disclosure summary="Add a lead"><form className="so-team-form" onSubmit={event => { void create(event, 'create-lead'); }}><label>Lead name<Input name="name" required maxLength={100} /></label><Projects projects={snapshot.projects} /><label>Working instructions<Textarea name="instructions" rows={3} /></label><Button type="submit" disabled={busy}>Create lead</Button></form></Disclosure>}</Disclosure>
     </div>
     {conversation && <div className="so-team-composer"><TeamConsent snapshot={snapshot} execute={execute} busy={busy} />{snapshot.canSend && !revoked ? <form onSubmit={event => { void send(event); }}><Label htmlFor="team-message" className="so-sr-only">Message {lead?.name ?? 'the lead'}</Label><Textarea id="team-message" rows={3} value={draft.text} placeholder={'Message ' + (lead?.name ?? 'your lead')} onChange={event => storeDraft({ text: event.target.value, requestId: draft.uncertain ? crypto.randomUUID() : draft.requestId, uncertain: false })} disabled={busy || draft.uncertain} maxLength={2_000} /><div className="so-team-compose-actions">{snapshot.messages.some(message => message.status === 'running') && <Button variant="secondary" onClick={() => { void execute('stop', { conversationId: conversation.id, messageId: snapshot.messages.find(message => message.status === 'running')?.id }); }} disabled={busy}>Stop</Button>}{draft.uncertain ? <Button onClick={() => { void refresh().then(() => { if (state.current.draft.uncertain) { setCheckedMissing(true); setProblem('This message is not in saved history. You can send the saved message with its original request identity.'); } }).catch(() => setProblem('Saved messages could not be checked. Your draft is preserved.')); }}>Check messages</Button> : <Button type="submit" disabled={busy || !draft.text.trim() || !snapshot.chatAuthorization?.enabled}>{busy ? 'Saving…' : 'Send'}</Button>}{draft.uncertain && checkedMissing && <Button disabled={busy} onClick={() => { void execute('send', { conversationId: conversation.id, text: draft.text, requestId: draft.requestId }).then(result => { if (result) storeDraft(fresh()); }); }}>Send saved message</Button>}</div></form> : !revoked && <p className="so-team-small">You can read this conversation. Ask a manager for permission to send messages.</p>}{storageProblem && <Alert>Keep this tab open until your message is sent; draft storage is unavailable.</Alert>}</div>}

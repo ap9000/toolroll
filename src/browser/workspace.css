@@ -448,10 +448,11 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-team-lead-select select { max-width: 100%; min-height: 44px; border: 1px solid var(--so-line); border-radius: 8px; background: var(--so-paper); color: var(--so-ink); padding: 8px; }
 .so-team-consent { margin-bottom: 14px; font-size: 12px; }
 .so-team-consent p { margin: 0 0 8px; }
-.so-team-proposals { margin-bottom: 20px; }
-.so-team-proposals article { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-top: 1px solid var(--so-line); }
-.so-team-proposals article > strong { flex: 1 1 60%; overflow-wrap: anywhere; }
-.so-team-proposals article > a { min-height: 44px; display: inline-flex; align-items: center; color: var(--so-accent); font-weight: 550; }
+.so-team-proposals { margin-bottom: 20px; overflow-wrap: anywhere; }
+.so-team-message .so-team-proposals { margin-bottom: 0; }
+.so-team-proposals > article { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-top: 1px solid var(--so-line); }
+.so-team-proposals > article > strong { flex: 1 1 60%; overflow-wrap: anywhere; }
+.so-team-proposals > article > a { min-height: 44px; display: inline-flex; align-items: center; color: var(--so-accent); font-weight: 550; }
 /* Keep selectors readable beside long conversation titles. */
 .so-team-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .so-team-toolbar:has(.so-team-lead-select) { grid-template-columns: 116px minmax(0, 1fr) auto; }

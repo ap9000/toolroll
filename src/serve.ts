@@ -68,6 +68,7 @@ import { createSessionEndpoint } from './session-server.js';
 import { handleTeamHttp } from './team-http.js';
 import { teamWorkspaceHtml } from './team-ui.js';
 import { createTeamRuntime } from './team-runtime.js';
+import type { TeamResponse, TeamSnapshot } from './team-contract.js';
 import { prepareWorkspaceRevision, WorkspaceValidatorCache } from "./workspace-revision.js";
 import { workIndexPage, workCountsByProject, WorkIndexCursorError, WORK_INDEX_MAX_LIMIT, type WorkIndexPage, type WorkIndexItem, type WorkIndexGroup } from "./work-index.js";
 import { leadActivity } from "./lead-voice.js";
@@ -1036,6 +1037,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     provider: () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; },
     ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
   });
+  // Only browser sessions receive HTML cards. The CLI keeps its summary contract.
+  const teamBrowserReply = (reply: TeamResponse, csrf: string): TeamResponse => {
+    const snapshot = reply.snapshot;
+    if (!snapshot?.selected || !snapshot.proposals) return reply;
+    return { ...reply, snapshot: { ...snapshot, proposals: snapshot.proposals.map(summary => {
+      const proposal = store.getMateProposal(summary.id);
+      if (!proposal || proposal.thread !== snapshot.selected!.threadId) return summary;
+      const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
+      return { ...summary, card: teamProposalCardParts(proposal, snapshot, csrf, decision).card };
+    }) } };
+  };
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
     authenticate: request => {
       const who = identify(request, request.method === 'POST');
@@ -1060,7 +1072,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (named !== null && !allowedHost(named.replace(/^https?:\/\//, '').split('/')[0])) return false;
       return request.headers['x-csrf-token'] === who.session.csrf;
     },
-    execute: team.execute, cursor: team.cursor, streams: teamStreams,
+    execute: async (actor, input) => {
+      const reply = await team.execute(actor, input);
+      const who = identify(request, false);
+      return who?.via === 'cookie' ? teamBrowserReply(reply, who.session.csrf) : reply;
+    }, cursor: team.cursor, streams: teamStreams,
   });
   const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo) });
   /** The enumerable admission list for roll-up SQL: repos-only ceilings
@@ -3834,11 +3850,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // THIS session's memory; a bearer caller has nowhere to keep them.
       if (who.via !== "cookie") return refuse(response, who, 403, "chat is a browser surface — it keeps your drafts in the session");
       if (url.searchParams.get('private') !== '1' && !url.searchParams.has('task') && !url.searchParams.has('result') && !url.searchParams.has('project')) {
-        const reply = await team.execute({ name: who.name, generation: who.session.generation }, {
+        const reply = teamBrowserReply(await team.execute({ name: who.name, generation: who.session.generation }, {
           operation: url.searchParams.has('conversation') ? 'show' : 'list',
           args: { ...(url.searchParams.has('conversation') ? { conversationId: url.searchParams.get('conversation') } : {}),
             ...(url.searchParams.has('lead') ? { leadId: url.searchParams.get('lead') } : {}) },
-        });
+        }), who.session.csrf);
         if (!reply.ok || !reply.snapshot) return refuse(response, who, 403, reply.message, '/chat?private=1');
         if (url.searchParams.has('proposal')) {
           const id = Number(url.searchParams.get('proposal')), selected = reply.snapshot.selected;
@@ -3846,10 +3862,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (!selected || !proposal || proposal.thread !== selected.threadId) return refuse(response, who, 404, 'This proposal is unavailable.', '/chat');
           const back = '/chat?conversation=' + encodeURIComponent(selected.id);
           const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
-          const active = reply.snapshot.messages.some(message => message.status === 'running');
-          const canAct = reply.snapshot.canSend && reply.snapshot.chatAuthorization?.enabled === true;
-          let card = mateProposalCard(proposal, who.session.csrf, !canAct || active, decision, back);
-          if (!canAct) card = card.replace('Available when the current turn finishes.', reply.snapshot.canSend ? 'Enable chat in this conversation before acting on a proposal.' : 'An authorized contributor can act on this proposal.');
+          const card = teamProposalCardParts(proposal, reply.snapshot, who.session.csrf, decision).html;
           return sendScreen(response, 200, screen('Review action', `<p><a href="${escape(back)}">Back to conversation</a></p>` + card, { chrome: chromeFor(null, 'chat', undefined, 'all') }));
         }
         if (reply.snapshot.leads.length > 0 || url.searchParams.has('conversation') || url.searchParams.get('team') === '1') {
@@ -18811,6 +18824,20 @@ function mateProposalCard(proposal: MateProposal, csrf: string, inert: boolean, 
 }
 function mateProposalCardParts(proposal: MateProposal, csrf: string, inert: boolean, decision: Decision | null, returnTo: string | null = null): { html: string; card: BrowserActionCard } {
   return proposalCardParts({ id: proposal.id, kind: proposal.kind, payload: proposal.payload, state: proposal.state, outcome: proposal.outcome, by: { mate: true }, actionBase: "/chat/proposal" }, csrf, inert, decision, returnTo);
+}
+
+/** Review and inline team cards share the same server-decided controls and reasons. */
+function teamProposalCardParts(proposal: MateProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null): { html: string; card: BrowserActionCard } {
+  const canAct = snapshot.canSend && snapshot.chatAuthorization?.enabled === true;
+  const active = snapshot.messages.some(message => message.status === 'running');
+  const back = '/chat?conversation=' + encodeURIComponent(snapshot.selected!.id);
+  const parts = mateProposalCardParts(proposal, csrf, !canAct || active, decision, back);
+  if (!canAct && proposal.state === 'pending') {
+    const reason = snapshot.canSend ? 'Enable chat in this conversation before acting on a proposal.' : 'An authorized contributor can act on this proposal.';
+    parts.html = parts.html.replace('Available when the current turn finishes.', reason);
+    parts.card = { ...parts.card, note: reason };
+  }
+  return parts;
 }
 
 function coordinatorProposalCard(proposal: CoordinatorProposal, csrf: string, now: Date, decision: Decision | null, returnTo: string | null = null): string {
