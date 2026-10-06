@@ -24,6 +24,7 @@ import { MISMATCH_HEADLINE } from "./workspace-ui.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MismatchHeadline } from "./browser/views/result-view.js";
+import { workIndexPage } from "./work-index.js";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -157,6 +158,16 @@ describe("one state per task, the same words on every surface (c1)", () => {
     for (const row of rows) expect(crew[row.id], row.id).toBe(row.status.label);
     const groupWords = new Set<string>(Object.values(ASK_LABEL));
     for (const item of workspace.crew) expect(groupWords.has(item.label), item.id).toBe(false);
+  });
+
+  test("Crew reasons preserve the server's existing status detail", async () => {
+    const workspace = await tasksView();
+    const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] });
+    for (const item of workspace.crew) {
+      if (['Needs you', 'Failed', 'Waiting'].includes(item.label)) {
+        expect(item.detail, item.id).toBe(index.items.find(row => row.rootId === item.id)!.status.detail);
+      } else expect(item.detail, item.id).toBeUndefined();
+    }
   });
 
   test("a report that doesn't match its changes is Mismatch; a plan changed after building is Plan changed", async () => {

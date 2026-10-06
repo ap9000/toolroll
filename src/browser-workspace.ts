@@ -27,6 +27,8 @@ export type BrowserCrewItem = {
   href: string; resultHref: string | null; action: { label: string; href: string } | null;
   /** When the task family last changed (the index's own sort time), shown as the row's age. */
   updatedAt: string;
+  /** The server's status detail, when Waiting, Failed or Needs you adds to its badge. */
+  detail?: string;
   /** "<name> is on it.": the person's own lead took it on, by the name they gave it. */
   lead?: string;
 };

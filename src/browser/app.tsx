@@ -258,13 +258,18 @@ function CrewAge({ at }: { at: string }) {
   return words === "" ? null : <time className="so-work-age" dateTime={at} title={whenTitle(at)}>{words}</time>;
 }
 
-function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; items: BrowserWorkspace["crew"] }) {
+export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; items: BrowserWorkspace["crew"] }) {
   return <ul className="so-work-list">{items.map(item => <li key={item.id} data-workspace-task={item.id} data-work-status={item.state}>
-    <a className="so-work-row" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
+    <div className="so-work-row">
+      <a className="so-work-link" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
       <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} className="so-work-badge" /><CrewAge at={item.updatedAt} /></div>
-      {item.lead && <span className="so-work-project" data-crew-lead>{item.lead}</span>}
+      </a>
+      {item.detail && <details className="so-work-reason" key={item.detail}>
+        <summary title={item.detail}><span>{item.detail}</span><svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg></summary>
+      </details>}
+      {item.lead && !item.detail?.includes(item.lead) && <span className="so-work-project" data-crew-lead>{item.lead}</span>}
       {item.project && <span className="so-work-project">{workspace.projects.find(project => project.path === item.project)?.name ?? item.project.split(/[\\/]/).filter(Boolean).pop()}</span>}
-    </a>
+    </div>
     {item.action && item.action.href !== (item.resultHref ?? item.href) && <a className="so-work-action" href={item.action.href}>{item.action.label}</a>}
   </li>)}</ul>;
 }

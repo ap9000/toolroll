@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import { CommandMenu, GuardedHtml, useWorkspace, workspaceCommands } from "./app.js";
+import { CommandMenu, CrewRows, GuardedHtml, useWorkspace, workspaceCommands } from "./app.js";
 import {
   carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -22,6 +22,33 @@ const fixture = (): BrowserWorkspace => ({
 });
 const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 let root: Root | null = null;
+
+test("Crew reasons disclose plain text separately from navigation, without repeating the lead", async () => {
+  const workspace = fixture();
+  const detail = 'Checks failed on payout rounding. Maya is on it. <script>not markup</script>';
+  const item = { id: 'payouts', title: 'Fix payout rounding', state: 'failed' as const, label: 'Failed', tone: 'problem' as const,
+    updatedAt: '2026-10-05T10:00:00Z', project: '/projects/payments', href: '/chat?task=payouts',
+    resultHref: '/chat?task=payouts&result=9', action: null, detail, lead: 'Maya is on it.' };
+  const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  const render = async (items: BrowserWorkspace['crew']) => act(async () => root!.render(createElement(CrewRows, { workspace, items })));
+  await render([item]);
+  const disclosure = host.querySelector('details')!;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.querySelector('summary')?.title).toBe(detail);
+  expect(disclosure.textContent).toBe(detail);
+  expect(disclosure.closest('a')).toBeNull();
+  expect(host.querySelector('script')).toBeNull();
+  expect(host.querySelector('[data-crew-lead]')).toBeNull();
+  expect(host.querySelector('a')?.getAttribute('href')).toBe(item.resultHref);
+  // A server update must not retain an expanded disclosure or stale reason.
+  disclosure.open = true;
+  await render([{ ...item, detail: 'Waiting for a worker.' }]);
+  expect(host.querySelector('details')?.open).toBe(false);
+  expect(host.querySelector('[data-crew-lead]')?.textContent).toBe(item.lead);
+  const { detail: _detail, ...withoutReason } = item;
+  await render([withoutReason]);
+  expect(host.querySelector('details')).toBeNull();
+});
 
 beforeEach(() => {
   sessionStorage.clear();
