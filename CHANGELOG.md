@@ -2,7 +2,7 @@
 
 ## 0.9.38 — 2026-10-06
 
-- **The release check is faster.** Its app journeys run in about 7.6 minutes
+- **The release check is faster.** Its app journeys run in about 8 minutes
   instead of about 12, with no journey or coverage dropped.
 - **Lead chat tool steps tell the truth.** A step shows done only when it
   succeeded. A failed step says why in plain words.
