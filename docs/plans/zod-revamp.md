@@ -61,7 +61,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 9 | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
 | 10 | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
 | 11 | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
-| 12 | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
+| 12 ✅ | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
 
 ### Wave 3 — inputs from outside (P2)
 
@@ -124,3 +124,15 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **12. Coding handoff and context** (2026-10-05). `src/contracts/coding-handoff.ts`, `src/contracts/coding-context.ts`
+  and `src/contracts/coding-workspace.ts` are the one schema each for the coding handoff receipt, the managed context
+  capture and the workspace record (`coding_session.document`); `CodingHandoffReceipt`, `CodingHandoffPreview`,
+  `CodingContext`, `CodingContextMetadata`, `CodingSession` and `CodingStatus` are derived from them, and the receipt
+  reuses the plan's acceptance criterion schema. The receipt's saved hash is checked before parsing; its identity,
+  branch and scope seal, the context's digest, project identity and skill files, and session ownership run after, as
+  before. Receipt and context metadata keys keep their written order, so parsed values hash, seal and digest to the
+  saved bytes. Saved unversioned sessions and captures read as before (known fields only) and are written as version 1
+  only when a save already happens; startup does not rewrite them. Replayed from `test/fixtures/coding/` through
+  restart, context verification and the receipt and seal checks. Tightened, on purpose: a newer version of any of the
+  three is refused plainly, version 1 records and captures are strict about unknown keys, and a saved session that does
+  not match its schema is refused with its path instead of being read as a cast.

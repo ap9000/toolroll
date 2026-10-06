@@ -58,7 +58,7 @@ export function codingFixture(f: ReturnType<typeof fixture>, status = 'ready') {
   const file = `${f.config.databaseFile}.coding.sqlite`;
   const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'coding-worktrees') });
   const db = new DatabaseSync(file);
-  const session = { id: 'coding-one', owner: 'fixture', generation: 1, repo: f.root, title: 'Retained coding work', nativeThreadId: 'native-one', status, turnId: status === 'working' ? 'turn-one' : null };
+  const session = { id: 'coding-one', owner: 'fixture', generation: 1, repo: f.root, title: 'Retained coding work', provider: 'codex', model: null, branch: 'toolroll/code-coding-one', base: 'a'.repeat(40), worktree: join(f.root, 'coding-worktrees', 'coding-one'), nativeThreadId: 'native-one', turnId: status === 'working' ? 'turn-one' : null, status, error: null, createdAt: '2026-10-04T18:00:00.000Z', updatedAt: '2026-10-04T18:00:00.000Z' };
   db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(session.id, session.owner, session.generation, session.repo, JSON.stringify(session));
   db.prepare('INSERT INTO coding_item(session,id,payload) VALUES(?,?,?)').run(session.id, 'item-one', JSON.stringify({ text: 'A committed WAL transcript item' }));
   db.prepare('INSERT INTO coding_custody(singleton,payload) VALUES(1,?)').run(JSON.stringify({ pid: null, group: false, descendants: [], observationUnknown: false }));

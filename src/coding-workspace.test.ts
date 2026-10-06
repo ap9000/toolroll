@@ -9,6 +9,7 @@ import { CodingActionError, CodingWorkspace } from './coding-workspace.js';
 import { SessionService } from './session-service.js';
 import { CodingProviderDisconnectedError, CodingProviderRequestError, type CodingProvider, type CodingProviderEvent } from './coding-provider.js';
 import { fakePid } from '../test/fake-pid.js';
+import { savedSessionRows } from '../test/coding-fixtures.js';
 
 class FakeProvider implements CodingProvider {
   listeners = new Set<(event: CodingProviderEvent) => void>();
@@ -751,6 +752,47 @@ describe('native coding workspace', () => {
     authorized = true;
     expect((await start()).initialRequest?.requestId).toBe(key);
     expect(provider.calls).toHaveLength(before);
+  });
+
+  test('sessions saved before the record carried a version read the same through restarts and are rewritten only by a save', async () => {
+    await workspace.close();
+    const fill = new DatabaseSync(db);
+    const insert = fill.prepare('INSERT INTO coding_session(id,owner,generation,repo,document,revision) VALUES(?,?,?,?,?,?)');
+    for (const row of savedSessionRows) insert.run(row.id, row.owner, row.generation, row.repo, row.document, row.revision);
+    fill.close();
+    const saved = { name: 'operator', generation: 1 };
+    const rows = () => (workspace as unknown as { db: DatabaseSync }).db.prepare('SELECT id,document,revision FROM coding_session ORDER BY rowid').all().map(row => ({ ...row }));
+    const before = savedSessionRows.map(({ id, document, revision }) => ({ id, document, revision }));
+    const [open0, closed0] = savedSessionRows.map(row => JSON.parse(row.document) as Record<string, unknown>) as [Record<string, unknown>, Record<string, unknown>];
+    const asRead = { ...open0, context: { version: 1, ...(open0['context'] as object) } };
+
+    workspace = open();
+    // A clean restart with nothing busy reads the old documents in memory and leaves their bytes and revisions alone.
+    expect(rows()).toEqual(before);
+    expect(workspace.list(saved).map(session => session.id)).toEqual(before.map(row => row.id).reverse());
+    expect(workspace.get(before[0]!.id, saved)).toEqual(asRead);
+    expect(workspace.get(before[1]!.id, saved)).toEqual(closed0);
+    expect(workspace.snapshot(before[1]!.id, saved)).toMatchObject({ session: closed0, revision: before[1]!.revision });
+    await workspace.close();
+
+    // An unverified previous exit marks open work uncertain. That save writes the current version; the closed session is untouched.
+    const fence = new DatabaseSync(db); fence.prepare("UPDATE coding_owner SET token='',clean=0").run(); fence.close();
+    workspace = open();
+    const after = rows();
+    expect(after[1]).toEqual(before[1]);
+    expect(after[0]!['revision']).toBe(before[0]!.revision + 1);
+    expect(JSON.parse(String(after[0]!['document']))).toMatchObject({ version: 1, status: 'uncertain', turnId: null, context: { version: 1 } });
+    expect(workspace.get(before[0]!.id, saved)).toEqual({ ...asRead, status: 'uncertain', error: expect.stringContaining('without a verified process exit'), updatedAt: expect.any(String) });
+  });
+
+  test('a newer session record is refused plainly instead of being read as something else', async () => {
+    const session = await start();
+    const handle = (workspace as unknown as { db: DatabaseSync }).db;
+    expect(JSON.parse(String(handle.prepare('SELECT document FROM coding_session WHERE id=?').get(session.id)?.['document']))).toMatchObject({ version: 1, id: session.id });
+    expect(workspace.get(session.id, actor)).toEqual(session);
+    handle.prepare("UPDATE coding_session SET document=json_set(document,'$.version',2) WHERE id=?").run(session.id);
+    expect(() => workspace.get(session.id, actor)).toThrow('A saved coding session could not be read: version: made by a newer Toolroll (version 2; this one reads up to 1)');
+    handle.prepare("UPDATE coding_session SET document=json_set(document,'$.version',1) WHERE id=?").run(session.id);
   });
 
 });

@@ -10,6 +10,7 @@ import { run } from './exec.js';
 import { processMayBeAlive } from './process-liveness.js';
 import { createCodexCodingProvider, type CodingProvider, type CodingProviderEvent, type CodingCustody } from './coding-provider.js';
 import { verifyCodingContext, type CodingContext } from './coding-context.js';
+import { codingSessionDocument, parseCodingSessionDocument } from './contracts/coding-workspace.js';
 import type { CodingChanges, CodingItem, CodingQuestion, CodingRequest, CodingSession, CodingSnapshot } from './coding-types.js';
 
 export type CodingActor = { name: string; generation: number };
@@ -79,7 +80,7 @@ export class CodingWorkspace {
       this.recoveryRequired = !clean;
       this.db.prepare('INSERT OR REPLACE INTO coding_owner VALUES(1,?,?,?,?)').run(this.owner, process.pid, prior?.['native_pid'] as number ?? null, clean ? 1 : 0);
       for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-        const session = JSON.parse(String(row['document'])) as CodingSession;
+        const session = parseCodingSessionDocument(String(row['document']));
         if (session.status !== 'closed' && (!clean || busy.has(session.status))) this.save({ ...session, status: clean ? 'interrupted' : 'uncertain', turnId: null, error: clean ? null : 'The previous server stopped without a verified process exit. Work is preserved; session recovery needs a process check before resuming.' });
       }
       this.db.prepare("UPDATE coding_request SET status='withdrawn' WHERE status='pending'").run();
@@ -94,7 +95,7 @@ export class CodingWorkspace {
   private read(id: string): CodingSession {
     const row = this.db.prepare('SELECT document FROM coding_session WHERE id=?').get(id);
     if (!row) throw Error('Coding session unavailable.');
-    return JSON.parse(String(row['document'])) as CodingSession;
+    return parseCodingSessionDocument(String(row['document']));
   }
 
   private admit(): void {
@@ -108,7 +109,7 @@ export class CodingWorkspace {
   }
 
   list(actor: CodingActor): CodingSession[] {
-    return this.db.prepare('SELECT document FROM coding_session WHERE owner=? AND generation=? ORDER BY rowid DESC').all(actor.name, actor.generation).map(row => JSON.parse(String(row['document'])) as CodingSession);
+    return this.db.prepare('SELECT document FROM coding_session WHERE owner=? AND generation=? ORDER BY rowid DESC').all(actor.name, actor.generation).map(row => parseCodingSessionDocument(String(row['document'])));
   }
 
   /** Inspect a fixed metadata window before loading admitted documents.
@@ -126,7 +127,7 @@ export class CodingWorkspace {
   get(id: string, actor: CodingActor): CodingSession {
     const row = this.db.prepare('SELECT document FROM coding_session WHERE id=? AND owner=? AND generation=?').get(id, actor.name, actor.generation);
     if (!row) throw Error('This coding session is not available to your account.');
-    const session = JSON.parse(String(row['document'])) as CodingSession;
+    const session = parseCodingSessionDocument(String(row['document']));
     this.authorize(actor, session.repo);
     return session;
   }
@@ -193,13 +194,13 @@ export class CodingWorkspace {
 
   private save(session: CodingSession): void {
     session.updatedAt = now();
-    this.db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document,revision=revision+1').run(session.id, session.owner, session.generation, session.repo, JSON.stringify(session));
+    this.db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document,revision=revision+1').run(session.id, session.owner, session.generation, session.repo, codingSessionDocument(session));
   }
 
   private byThread(thread: unknown): CodingSession | null {
     if (typeof thread !== 'string') return null;
     const row = this.db.prepare("SELECT document FROM coding_session WHERE json_extract(document,'$.nativeThreadId')=?").get(thread);
-    return row ? JSON.parse(String(row['document'])) as CodingSession : null;
+    return row ? parseCodingSessionDocument(String(row['document'])) : null;
   }
 
   private putItem(session: string, item: CodingItem): void {
@@ -263,7 +264,7 @@ export class CodingWorkspace {
     if (event.kind === 'exit') {
       this.flush(); this.loaded.clear();
       for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-        const session = JSON.parse(String(row['document'])) as CodingSession;
+        const session = parseCodingSessionDocument(String(row['document']));
         if (busy.has(session.status)) this.save({ ...session, status: 'uncertain', error: 'The agent connection closed. Work is preserved; delivery and process exit need to be checked before continuing.' });
       }
       this.db.prepare("UPDATE coding_request SET status='withdrawn' WHERE status='pending'").run();
@@ -437,7 +438,7 @@ export class CodingWorkspace {
     this.recovering = true; this.operations.add(id);
     try {
       if (this.provider) {
-        const active = this.db.prepare('SELECT document FROM coding_session').all().some(row => busy.has((JSON.parse(String(row['document'])) as CodingSession).status));
+        const active = this.db.prepare('SELECT document FROM coding_session').all().some(row => busy.has(parseCodingSessionDocument(String(row['document'])).status));
         if (active) throw new CodingActionError('Another coding turn is still active. Wait for it to finish or stop it before reconnecting the agent.', 'rejected', id);
         await this.provider.close(); this.unsubscribe?.(); this.unsubscribe = null; this.provider = null; this.loaded.clear();
       } else if (this.recoveryRequired && !this.priorProcessesGone()) throw Error('The previous agent may still be running. Its process exit could not be verified; work remains preserved.');
@@ -615,7 +616,7 @@ export class CodingWorkspace {
       this.closed = true; this.db.close(); return;
     }
     for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-      const session = JSON.parse(String(row['document'])) as CodingSession;
+      const session = parseCodingSessionDocument(String(row['document']));
       const uncertain = this.db.prepare("SELECT 1 FROM coding_submission WHERE session=? AND status IN ('preparing','pending','uncertain')").get(session.id);
       if (!uncertain && (busy.has(session.status) || session.status === 'uncertain')) this.save({ ...session, status: 'interrupted', turnId: null, error: null });
     }
