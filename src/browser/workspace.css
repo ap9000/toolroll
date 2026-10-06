@@ -194,8 +194,10 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-work-list { list-style: none; padding: 0; margin: 0; }
 .so-work-list > li { border-bottom: 1px solid var(--so-line); }
 .so-work-list > li:first-child { border-top: 1px solid var(--so-line); }
-.so-work-row { display: block; padding: 12px 0; text-decoration: none; }
+.so-work-row { position: relative; display: block; padding: 12px 0; text-decoration: none; }
 .so-work-link { display: block; text-decoration: none; }
+/* The whole row, lead and project lines included, taps through to the task; only the reason's disclosure sits above it. */
+.so-work-link::after { content: ""; position: absolute; inset: 0; }
 @media (hover: hover) and (pointer: fine) { .so-work-link:hover .so-work-title { color: var(--so-accent); text-decoration: underline; text-underline-offset: 3px; } }
 .so-work-row:has([aria-current="page"]) { background: var(--so-soft); padding-left: 8px; padding-right: 8px; }
 .so-work-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: baseline; justify-items: start; }
@@ -203,7 +205,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-work-badge { grid-row: 2; grid-column: 1 / -1; }
 .so-work-age { grid-row: 1; grid-column: -2; justify-self: end; min-width: 3ch; text-align: right; color: var(--so-muted); font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .so-work-project { color: var(--so-muted); font-size: 12px; display: block; margin-top: 5px; overflow-wrap: anywhere; }
-.so-work-reason { color: var(--so-muted); font-size: 12px; margin-top: 4px; }
+.so-work-reason { position: relative; z-index: 1; color: var(--so-muted); font-size: 12px; margin-top: 4px; }
 .so-work-reason > summary { display: flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; list-style: none; }
 .so-work-reason > summary::-webkit-details-marker { display: none; }
 .so-work-reason > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
