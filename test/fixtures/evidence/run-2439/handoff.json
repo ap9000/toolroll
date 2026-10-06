@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "taskId": "release-0931",
+  "runId": 2439,
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "route": {
+    "digest": "1f637edabc47e425b833605c218ee15f",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+  },
+  "sessionId": null,
+  "branch": "toolroll/release-0931",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0931-8f3ee8b5",
+  "base": "87693d7d01f88bdcaf4b9da335696d03a435eed8",
+  "head": "87693d7d01f88bdcaf4b9da335696d03a435eed8",
+  "outcome": "no-change",
+  "committed": false,
+  "decisionsIncorporated": [],
+  "conclusion": "Prepared candidate 87693d7d01f88bdcaf4b9da335696d03a435eed8 was checked out by the machine; no agent ran. The branch already matched it.",
+  "changes": [
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/flow-gallery-proof.mjs",
+    "src/flow-gallery-ui.ts",
+    "src/flow-gallery.test.ts",
+    "src/flow-gallery.ts",
+    "src/flow-send.test.ts"
+  ],
+  "verification": [],
+  "followUps": [],
+  "freshness": {
+    "stampedAt": "2026-10-04T23:35:49.203Z",
+    "currentAsOf": "87693d7d01f88bdcaf4b9da335696d03a435eed8"
+  }
+}

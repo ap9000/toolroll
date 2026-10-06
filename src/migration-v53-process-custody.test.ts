@@ -18,6 +18,7 @@ import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { injectBootIdentity } from "./boot-identity.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const V52_RUN_PROCESS = `CREATE TABLE run_process (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +61,7 @@ const T0 = new Date("2026-09-12T08:00:00.000Z");
     const claimed = acquire(store, ref, "r", { token: "tok", now: T0, ttlMs: 3_600_000, newLeaseId: () => "lease" });
     if (!claimed.ok) throw new Error(claimed.reason);
     const run = store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", branch: "b", worktree: "/w", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" } });
-    const raw = store.raw();
+    const raw = store.raw(), openPid = fakePid(1), exitedPid = fakePid(2);
     raw.exec("PRAGMA foreign_keys = OFF");
     raw.exec(`CREATE TABLE run_process_copy AS SELECT id, run, pid, host, process_group, observed_at, exited_at FROM run_process;
       DROP TABLE run_process;
@@ -68,8 +69,8 @@ const T0 = new Date("2026-09-12T08:00:00.000Z");
       INSERT INTO run_process SELECT * FROM run_process_copy;
       DROP TABLE run_process_copy;
       CREATE INDEX IF NOT EXISTS run_process_by_run ON run_process(run, exited_at);`);
-    raw.prepare("INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, 4242, ?, 1, ?, NULL)").run(run, hostname(), T0.toISOString());
-    raw.prepare("INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, 4243, ?, 0, ?, ?)").run(run, hostname(), T0.toISOString(), T0.toISOString());
+    raw.prepare(`INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, ${openPid}, ?, 1, ?, NULL)`).run(run, hostname(), T0.toISOString());
+    raw.prepare(`INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, ${exitedPid}, ?, 0, ?, ?)`).run(run, hostname(), T0.toISOString(), T0.toISOString());
     const before = raw.prepare("SELECT id, run, pid, host, process_group, observed_at, exited_at FROM run_process ORDER BY id").all();
     expect(() => raw.prepare("SELECT boot_id FROM run_process").all()).toThrow();
     raw.exec("DROP TABLE service_cursor");
@@ -92,15 +93,15 @@ const T0 = new Date("2026-09-12T08:00:00.000Z");
     }
 
     // The legacy witness (NULL boot) keeps its conservative reading even
-    // under a different current boot: pid 4242 is probed, not assumed dead.
+    // under a different current boot: its pid is probed, not assumed dead.
     injectBootIdentity({ ok: true, id: "9b1d0e2f-3a4b-4c5d-8e6f-a1b2c3d4e5f6", source: "injected" });
     const asked = store.requestRunStop({ runId: run, taskRef: ref, by: "alex", via: "cli" }, T0);
     expect(asked.ok).toBe(true);
     store.finishRun(run, { outcome: "failed", reason: "interrupted", now: T0 });
     const problem = store.stopQuiescenceProblem(run);
-    // pid 4242 is almost surely gone on this machine (ESRCH); if it happens
-    // to exist the witness says "may still be running" — either way the
-    // legacy row was decided by the probe, never by the boot id.
+    // That pid is gone (ESRCH); were it alive the witness would say "may
+    // still be running" — either way the legacy row was decided by the
+    // probe, never by the boot id.
     expect(problem === null || problem.includes("may still be running")).toBe(true);
 
     // New witnesses on the upgraded file carry the boot id.

@@ -5,6 +5,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startClaudeHeldSession, heldSocketPathProblem, HELD_SOCKET_PATH_LIMIT } from "./exec.js";
+import { fakePid } from "../test/fake-pid.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -30,6 +31,9 @@ const TOOL_FIXTURE = [
   "setInterval(()=>{if(!fs.existsSync(at)||Date.now()-born>60000)process.exit(0)},100)",
 ].join("");
 
+/** The process group the fake agent forges in a control frame of its own. */
+const FORGED_PGID = fakePid(1);
+
 const FAKE_AGENT = `
 const TOOL_FIXTURE = ${JSON.stringify(TOOL_FIXTURE)};
 process.stdin.setEncoding("utf8");
@@ -49,7 +53,7 @@ process.stdin.on("data", c => {
     if (mode === "silent") continue;
     n += 1;
     if (mode === "frame-noise" && n === 1) {
-      console.log(JSON.stringify({ so_supervisor: "ready", agentPgid: 424242 }));
+      console.log(JSON.stringify({ so_supervisor: "ready", agentPgid: ${FORGED_PGID} }));
       console.log(JSON.stringify({ so_supervisor: "observation-failed", failure: { phase: "final-exit", operation: "snapshot", code: "EMFILE", rootPid: process.pid, at: new Date().toISOString(), identityUnknown: false } }));
     }
     console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "  sess-fake  " }));
@@ -187,8 +191,8 @@ describe("the held-session transport under the real supervisor", () => {
     });
     expect(start.ok).toBe(true);
     if (!start.ok) return;
-    // the REAL frame carried a real pgid, not the agent's forged 424242
-    expect(start.handle.agentPgid).not.toBe(424242);
+    // the REAL frame carried a real pgid, not the agent's forged one
+    expect(start.handle.agentPgid).not.toBe(FORGED_PGID);
     start.handle.writeTurn(turn("one"));
     await new Promise(pass => setTimeout(pass, 300));
     expect(seen).not.toContain("undefined");

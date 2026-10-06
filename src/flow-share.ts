@@ -21,31 +21,19 @@ import { flowDefinitionOf } from "./flow-engine.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { scriptDigest, validateScript, type ScriptDraft } from "./flow-scripts.js";
 import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerConfigOf, validateTriggerConfig, type TriggerConfig } from "./flow-triggers.js";
-import { durationMinutes, durationWords, flowTerms, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
+import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
+import { readVersioned } from "./contracts/contract.js";
+import { FLOW_ALIASES, FLOW_FILE_FORMAT, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./routine.js";
 import type { FlowRow, Store } from "./store.js";
 
-export const FLOW_FILE_FORMAT = "toolroll-flow";
-export const FLOW_FILE_VERSION = 1;
+export { FLOW_FILE_FORMAT, FLOW_FILE_VERSION };
+export type { FlowFile, FlowFileParameter, FlowFileScript };
 /** The largest flow file Toolroll reads or fetches. */
 export const FLOW_FILE_MAX_BYTES = 256 * 1024;
 export const FLOW_FILE_SUFFIX = ".toolroll-flow.json";
 
-/** Something the import asks for: `{{param.<id>}}` in a zone or trigger is replaced by its value. */
-export type FlowFileParameter = { id: string; about: string; default?: string; optional?: boolean };
-export type FlowFileScript = { name: string; about: string; language: ScriptDraft["language"]; timeoutMinutes: number; body?: string; file?: string };
-export type FlowFile = {
-  format: typeof FLOW_FILE_FORMAT; version: typeof FLOW_FILE_VERSION; name: string; about: string;
-  needs: string[]; parameters: FlowFileParameter[];
-  /** The zones in the lead's step vocabulary, the start first. */
-  zones: Record<string, unknown>[];
-  /** Each trigger's settings, as `toolroll flows trigger add` takes them. */
-  triggers: Record<string, unknown>[];
-  scripts: FlowFileScript[];
-};
-
 const PARAM = /\{\{\s*param\.([a-z0-9][a-z0-9-]{0,39})\s*\}\}/g;
-const PARAM_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REMOVED = "[removed]";
 
 // ------------------------------------------------------------------ export
@@ -54,11 +42,12 @@ const REMOVED = "[removed]";
 function stepOf(stage: FlowStage, ask: (parameter: FlowFileParameter) => string): Record<string, unknown> {
   const step: Record<string, unknown> = { id: stage.id, title: stage.title, kind: stage.kind };
   const words = (minutes: number) => durationMinutes(durationWords(minutes)) === minutes ? durationWords(minutes) : minutes;
-  if (stage.instructions !== null) step["instructions"] = stage.instructions;
+  // Only what the step's kind says: words a zone kept from a kind it was before stay behind.
+  if (stage.instructions !== null && (stage.kind === "task" || stage.kind === "report" || stage.kind === "draft" || stage.kind === "teammate")) step["instructions"] = stage.instructions;
   if (stage.kind === "task") step["planning"] = stage.planning;
   if (stage.kind === "approval") step["decider"] = stage.toOwner === true ? "owner" : stage.approver === null ? "anyone"
     : ask({ id: `decider-${stage.id}`.slice(0, 40), about: `Who decides at ${stage.title}: a person's sign-in name, owner (the flow's owner) or anyone`, default: "owner" });
-  if (stage.message !== null) step["message"] = stage.message;
+  if (stage.message !== null && (stage.kind === "notify" || stage.kind === "update")) step["message"] = stage.message;
   if (stage.kind === "update") step["close"] = stage.close;
   if (stage.kind === "check") {
     step["script"] = stage.script;
@@ -215,7 +204,8 @@ export function exportFlow(store: Store, flow: FlowRow, dir: string | null): Flo
     format: FLOW_FILE_FORMAT, version: FLOW_FILE_VERSION, name: flow.name,
     about: ordered.map(one => one.title).join(" → "),
     needs: needsOf(definition, triggers, scripts.map(one => one.name)),
-    parameters, zones, triggers, scripts,
+    // Zones and triggers in the file's words (stepOf, triggerOf): what flowFileSchema reads back (flow-share.test.ts).
+    parameters, zones: zones as FlowFile["zones"], triggers: triggers as FlowFile["triggers"], scripts,
   };
   const file = scrubDeep(raw, scrubber(values, names), null, false) as FlowFile;
   const slug = flow.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "flow";
@@ -224,132 +214,120 @@ export function exportFlow(store: Store, flow: FlowRow, dir: string | null): Flo
 
 // ------------------------------------------------------------------ reading
 
+/** A flow file refused: why, in plain words, each problem naming its path in the file (`zones[0].routes[0]: ...`). */
 export class FlowFileError extends Error {}
 const refuse = (message: string): never => { throw new FlowFileError(message); };
 
 /** A zone from the file as the canvas stores it: references by id (or by title), the rest checked by validateFlowDefinition. */
-function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: unknown, from: string) => string | null): Record<string, unknown> {
-  const title = typeof step["title"] === "string" ? step["title"] : `zone ${index + 1}`;
+function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: unknown, path: string) => string | null): Record<string, unknown> {
+  const at = `zones[${index}]`;
   const kind = step["kind"];
   const object = (key: string): Record<string, unknown> | undefined => {
     const value = step[key];
     if (value === undefined || value === null) return undefined;
-    if (typeof value !== "object" || Array.isArray(value)) refuse(`Zone ${title}: ${key} must be an object.`);
+    if (typeof value !== "object" || Array.isArray(value)) refuse(`${at}.${key}: must be an object`);
     return value as Record<string, unknown>;
   };
   const list = (key: string): Record<string, unknown>[] | undefined => {
     const value = step[key];
     if (value === undefined || value === null) return undefined;
-    if (!Array.isArray(value) || value.some(one => one === null || typeof one !== "object" || Array.isArray(one))) refuse(`Zone ${title}: ${key} must be a list.`);
+    if (!Array.isArray(value) || value.some(one => one === null || typeof one !== "object" || Array.isArray(one))) refuse(`${at}.${key}: must be a list of objects`);
     return value as Record<string, unknown>[];
   };
   const decider = step["decider"];
-  if (decider !== undefined && decider !== null && typeof decider !== "string") refuse(`Zone ${title}: decider must be plain text.`);
+  if (decider !== undefined && decider !== null && typeof decider !== "string") refuse(`${at}.decider: must be a string`);
   const toOwner = kind === "approval" && typeof decider === "string" && decider.trim().toLowerCase() === "owner";
   const anyone = decider === undefined || decider === null || (typeof decider === "string" && /^(anyone|any approver|)$/i.test(decider.trim()));
-  const at = object("at") ?? {};
-  const failKey = step["ifNotSure"] ?? step["ifNoReply"] ?? step["ifReplied"] ?? step["ifFails"];
-  const minutes = (value: unknown) => value === undefined ? undefined : durationMinutes(value) ?? refuse(`Zone ${title}: say a time like "3 days" (up to 30 days).`);
+  const place = object("at") ?? {};
+  const [failKey, fail] = (["ifNotSure", "ifNoReply", "ifReplied", "ifFails"] as const).map(key => [key, step[key]] as const).find(([, value]) => value !== undefined && value !== null) ?? ["ifFails", undefined];
+  const minutes = (value: unknown, key: string) => value === undefined ? undefined : durationMinutes(value) ?? refuse(`${at}.${key}: say a time like "3 days" (up to 30 days)`);
   const sureAt = step["sureAt"];
   return {
     id: step["id"], title: step["title"], kind,
-    zone: { x: at["x"], y: at["y"] ?? 0, w: at["w"], h: at["h"], color: at["color"] },
+    zone: { x: place["x"], y: place["y"] ?? 0, w: place["w"], h: place["h"], color: place["color"] },
     instructions: step["instructions"], planning: step["planning"],
     ...(toOwner ? { toOwner: true } : { approver: anyone ? null : decider }),
     message: step["message"], close: step["close"], script: step["script"], runIn: step["runIn"],
-    routes: list("routes")?.map(one => ({ answer: one["answer"], to: find(one["goesTo"], title) })),
+    routes: list("routes")?.map((one, n) => ({ answer: one["answer"], to: find(one["goesTo"], `${at}.routes[${n}].goesTo`) })),
     secrets: step["secrets"],
-    ...(kind === "sort" ? { sort: { question: step["question"], answers: (list("answers") ?? []).map(one => ({ answer: one["answer"], means: one["means"], to: find(one["goesTo"], title) })),
+    ...(kind === "sort" ? { sort: { question: step["question"], answers: (list("answers") ?? []).map((one, n) => ({ answer: one["answer"], means: one["means"], to: find(one["goesTo"], `${at}.answers[${n}].goesTo`) })),
       sureAt: typeof sureAt === "number" && sureAt > 1 ? sureAt / 100 : sureAt, notes: list("alsoNote") ?? [] } } : {}),
     ...(kind === "request" ? { request: { method: step["method"], url: step["url"], headers: object("headers") ?? {}, body: step["body"] } } : {}),
     ...(kind === "email" ? { email: { to: step["to"], subject: step["subject"], body: step["body"] } } : {}),
     ...(kind === "tool" ? { tool: { server: step["server"], name: step["tool"], args: typeof step["args"] === "object" && step["args"] !== null ? JSON.stringify(step["args"]) : step["args"] } } : {}),
-    ...(kind === "wait" ? { wait: step["waitFor"] === "hours" ? { for: "hours", from: step["from"], to: step["until"], timeZone: step["timeZone"] } : { for: step["waitFor"] ?? "reply", minutes: minutes(step["wait"] ?? "3 days") } } : {}),
+    ...(kind === "wait" ? { wait: step["waitFor"] === "hours" ? { for: "hours", from: step["from"], to: step["until"], timeZone: step["timeZone"] } : { for: step["waitFor"] ?? "reply", minutes: minutes(step["wait"] ?? "3 days", "wait") } } : {}),
     merge: step["merge"], teammate: step["teammate"], reply: step["reply"],
-    ...(kind === "choose" ? { options: (list("options") ?? []).map(one => ({ label: one["label"], to: one["goesTo"] === "end" ? "end" : find(one["goesTo"], title) })) } : {}),
-    ...(step["remindAfter"] === undefined ? {} : { limit: { minutes: minutes(step["remindAfter"]), to: find(step["thenMoveTo"], title) } }),
-    next: find(step["next"], title), onFail: find(failKey, title),
+    ...(kind === "choose" ? { options: (list("options") ?? []).map((one, n) => ({ label: one["label"], to: one["goesTo"] === "end" ? "end" : find(one["goesTo"], `${at}.options[${n}].goesTo`) })) } : {}),
+    ...(step["remindAfter"] === undefined ? {} : { limit: { minutes: minutes(step["remindAfter"], "remindAfter"), to: find(step["thenMoveTo"], `${at}.thenMoveTo`) } }),
+    next: find(step["next"], `${at}.next`), onFail: find(fail, `${at}.${failKey}`),
   };
 }
 
 /** The zones as a flow, checked whole. Throws in plain words. */
 function definitionOf(zones: readonly Record<string, unknown>[]): FlowDefinition {
   const ids = zones.map(one => one["id"]);
-  const find = (ref: unknown, from: string): string | null => {
+  const find = (ref: unknown, path: string): string | null => {
     if (ref === undefined || ref === null || ref === "") return null;
-    if (typeof ref !== "string") return refuse(`Zone ${from}: a path names a zone by its id.`);
+    if (typeof ref !== "string") return refuse(`${path}: names a zone by its id`);
     const hit = zones.find(one => one["id"] === ref.trim()) ?? zones.find(one => typeof one["title"] === "string" && one["title"].trim().toLowerCase() === ref.trim().toLowerCase());
-    if (hit === undefined) return refuse(`Zone ${from}: there's no zone called ${ref}.`);
-    return typeof hit["id"] === "string" ? hit["id"] : refuse(`Zone ${from}: every zone needs an id.`);
+    if (hit === undefined) return refuse(`${path}: there's no zone called ${ref}`);
+    return typeof hit["id"] === "string" ? hit["id"] : refuse(`zones[${zones.indexOf(hit)}].id: required`);
   };
-  if (ids.some(one => typeof one !== "string")) refuse("Every zone needs an id: lowercase letters, numbers and dashes.");
+  ids.forEach((one, index) => { if (typeof one !== "string") refuse(`zones[${index}].id: required`); });
   const stages = zones.map((step, index) => stageInputOf(step, index, find));
+  // Its zones are the file's, in order: a zone's problem names the file's zone.
   try { return validateFlowDefinition({ version: 1, start: stages[0]?.["id"], stages }); }
-  catch (error) { return refuse(error instanceof Error ? error.message : "Those zones aren't a flow."); }
+  catch (error) { return refuse(error instanceof FlowContractError ? error.lines.map(line => inStepWords(line, "zones", zones.map(one => typeof one["kind"] === "string" ? one["kind"] : undefined))).join("\n") : error instanceof Error ? error.message : "Those zones aren't a flow."); }
 }
 
 const plainText = (value: unknown, cap: number, what: string, required: boolean): string => {
   if (value === undefined || value === null || value === "") return required ? refuse(`The file has no ${what}.`) : "";
   if (typeof value !== "string") return refuse(`The file's ${what} must be plain text.`);
   if (value.length > cap) return refuse(`The file's ${what} is longer than ${cap} characters.`);
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f‪-‮⁦-⁩]/.test(value)) return refuse(`The file's ${what} has hidden characters in it.`);
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value)) return refuse(`The file's ${what} has hidden characters in it.`);
   return value.trim();
 };
 
-/** Read a flow file: its size, its JSON, its format and version, and every zone, trigger, script and parameter. Throws FlowFileError in plain words. */
+/**
+ * Read a flow file: its size, its JSON and format, then its one schema (flowFileSchema: every zone, trigger, script
+ * and parameter, strict about unknown keys — `zones[0].routes[0]: unknown key 'to' (did you mean goesTo?)`), and a
+ * newer version refused plainly. Then what the schema can't say: no keys in a trigger, ids and names used once, each
+ * {{param.x}} declared, every script valid and the zones a flow. Throws FlowFileError in plain words.
+ */
 export function parseFlowFile(text: string): FlowFile {
   if (Buffer.byteLength(text, "utf8") > FLOW_FILE_MAX_BYTES) refuse(`That file is too big: a flow file is at most ${FLOW_FILE_MAX_BYTES / 1024} KB.`);
   let raw: unknown;
-  try { raw = JSON.parse(text.replace(/^﻿/, "")); } catch { return refuse("That isn't a flow file: it isn't valid JSON."); }
+  try { raw = JSON.parse(text.replace(/^\uFEFF/, "")); } catch { return refuse("That isn't a flow file: it isn't valid JSON."); }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) refuse("That isn't a flow file: it should be one JSON object.");
   const input = raw as Record<string, unknown>;
   if (input["format"] !== FLOW_FILE_FORMAT) refuse("That isn't a Toolroll flow file: its format isn't \"toolroll-flow\".");
-  if (input["version"] !== FLOW_FILE_VERSION) refuse(typeof input["version"] === "number" && input["version"] > FLOW_FILE_VERSION
-    ? `This flow file is version ${input["version"]}; this Toolroll reads version ${FLOW_FILE_VERSION}. Update Toolroll, then import it.`
-    : `This flow file has no version Toolroll reads; it should say "version": ${FLOW_FILE_VERSION}.`);
-  const name = plainText(input["name"], 80, "name", true);
-  const about = plainText(input["about"], 600, "about line", false);
-  const array = (key: string, cap: number): unknown[] => {
-    const value = input[key];
-    if (value === undefined || value === null) return [];
-    if (!Array.isArray(value)) return refuse(`The file's ${key} must be a list.`);
-    if (value.length > cap) return refuse(`The file has more than ${cap} ${key}.`);
-    return value;
-  };
-  const needs = array("needs", 40).map(one => plainText(one, 80, "needs", true));
-  const parameters = array("parameters", 20).map((one): FlowFileParameter => {
-    if (one === null || typeof one !== "object" || Array.isArray(one)) return refuse("Each parameter is an object with an id and what it asks for.");
-    const row = one as Record<string, unknown>;
-    const id = typeof row["id"] === "string" && PARAM_ID.test(row["id"]) ? row["id"] : refuse("Each parameter needs a short id: lowercase letters, numbers and dashes.");
-    const fallback = row["default"] === undefined || row["default"] === null ? undefined : plainText(row["default"], 200, `default for ${id}`, false);
-    return { id, about: plainText(row["about"], 200, `question for ${id}`, true), ...(fallback === undefined ? {} : { default: fallback }), ...(row["optional"] === true ? { optional: true } : {}) };
+  // Triggers that name something on the installation they were made on stay there; say so, not that the kind is unknown.
+  (Array.isArray(input["triggers"]) ? input["triggers"] as unknown[] : []).forEach((one, index) => {
+    const kind = one !== null && typeof one === "object" ? (one as Record<string, unknown>)["kind"] : undefined;
+    if (kind === "chat") refuse(`triggers[${index}].kind: a chat channel trigger can't come from a file; connect the channel from the channel itself`);
+    if (kind === "flow") refuse(`triggers[${index}].kind: a trigger from another flow can't come from a file; it names a flow on the installation it was made on`);
   });
-  if (new Set(parameters.map(one => one.id)).size !== parameters.length) refuse("Two parameters have the same id.");
-  const rawZones = array("zones", 24);
-  if (rawZones.length === 0) refuse("The file has no zones.");
-  if (rawZones.some(one => one === null || typeof one !== "object" || Array.isArray(one))) refuse("Each zone is an object with an id, a title and a kind.");
-  const zones = rawZones as Record<string, unknown>[];
-  const triggers = array("triggers", 10).map(one => {
-    if (one === null || typeof one !== "object" || Array.isArray(one)) return refuse("Each trigger is an object with a kind.");
-    const kind = (one as Record<string, unknown>)["kind"];
-    if (kind === "chat") return refuse("A chat channel trigger can't come from a file: connect the channel from the channel itself.");
-    if (kind === "flow") return refuse("A trigger from another flow can't come from a file: it names a flow on the installation it was made on.");
-    if (!["button", "schedule", "github", "linear", "webhook", "email", "plane-review"].includes(kind as string)) return refuse(`The file has a trigger Toolroll doesn't know: ${String(kind)}.`);
-    for (const [key, value] of Object.entries(one)) if (typeof value === "string" && scanForSecrets(value).length > 0) refuse(`A ${String(kind)} trigger's ${key} looks like a key or password. Keys never go in a flow file.`);
-    return one as Record<string, unknown>;
+  const read = readVersioned(flowFileSchema, input, {}, FLOW_ALIASES);
+  if (!read.ok) return refuse(read.issues.map(one => one.line).join("\n"));
+  const file = read.value;
+  const name = file.name.trim(), about = (file.about ?? "").trim();
+  if (name === "") refuse("name: must not be empty");
+  const parameters = (file.parameters ?? []).map(one => ({ ...one, about: one.about.trim(), ...(one.default === undefined ? {} : { default: one.default.trim() }) }));
+  if (new Set(parameters.map(one => one.id)).size !== parameters.length) refuse("parameters: two have the same id");
+  const triggers = file.triggers ?? [];
+  triggers.forEach((one, index) => {
+    for (const [key, value] of Object.entries(one)) if (typeof value === "string" && scanForSecrets(value).length > 0) refuse(`triggers[${index}].${key}: looks like a key or password; keys never go in a flow file`);
   });
-  const scripts = array("scripts", 20).map((one): FlowFileScript => {
-    if (one === null || typeof one !== "object" || Array.isArray(one)) return refuse("Each script is an object with a name.");
-    const row = one as Record<string, unknown>;
+  const scripts = (file.scripts ?? []).map((row, index): FlowFileScript => {
     let draft: ScriptDraft;
-    try { draft = validateScript(row); } catch (error) { return refuse(`Script ${typeof row["name"] === "string" ? row["name"] : "(unnamed)"}: ${error instanceof Error ? error.message : "it isn't valid."}`); }
+    try { draft = validateScript(row); } catch (error) { return refuse(`scripts[${index}]: ${error instanceof Error ? error.message : "it isn't valid."}`); }
     return { name: draft.name, about: draft.about, language: draft.language, timeoutMinutes: draft.timeoutMinutes, ...(draft.file === null ? { body: draft.body } : { file: draft.file }) };
   });
-  if (new Set(scripts.map(one => one.name)).size !== scripts.length) refuse("Two scripts have the same name.");
+  if (new Set(scripts.map(one => one.name)).size !== scripts.length) refuse("scripts: two have the same name");
   // Every {{param.x}} names a parameter the file declares.
-  for (const match of JSON.stringify([zones, triggers]).matchAll(PARAM)) if (!parameters.some(one => one.id === match[1])) refuse(`The file uses {{param.${match[1]}}} but doesn't say what it asks for.`);
-  definitionOf(zones);
-  return { format: FLOW_FILE_FORMAT, version: FLOW_FILE_VERSION, name, about, needs, parameters, zones, triggers, scripts };
+  for (const match of JSON.stringify([file.zones, triggers]).matchAll(PARAM)) if (!parameters.some(one => one.id === match[1])) refuse(`The file uses {{param.${match[1]}}} but doesn't say what it asks for.`);
+  definitionOf(file.zones as unknown as Record<string, unknown>[]);
+  return { format: FLOW_FILE_FORMAT, version: FLOW_FILE_VERSION, name, about, needs: (file.needs ?? []).map(one => one.trim()), parameters, zones: file.zones, triggers, scripts };
 }
 
 /** --param k=v lines (or a form's fields) as values; refuses parameters the file doesn't ask for. */

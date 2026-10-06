@@ -13,6 +13,7 @@ import { openStore, type Store } from "./store.js";
 import { invokeAgent, invokeHeldAgent, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
 import { acquire } from "./claim.js";
+import { fakePid } from "../test/fake-pid.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -34,6 +35,7 @@ const T0 = new Date("2026-08-12T06:00:00.000Z");
 const TTL = 10 * 365 * 24 * 3600 * 1000;
 const REPO = "/repo/invoke";
 const RUNNER = "builder-1";
+const SUPERVISOR = fakePid(1), AGENT_GROUP = fakePid(2);
 
 /** The runner gate's spawn leg (MCP spec v6) re-proves custody immediately
  * before any provider process exists: the runner registered and bound to
@@ -186,7 +188,7 @@ describe("the invocation gateway", () => {
         socketPath: "/tmp/standing-orders-held-billing.sock", cookie: "cookie", keyHome: home,
         starter: async (_file, _args, options) => {
           stream = options.events?.onStreamEvent;
-          return { ok: true, handle: { supervisorPid: 1, agentPgid: 2, writeTurn: () => true, endInput: () => {}, terminate: () => {}, killHard: () => {}, exited: new Promise(() => {}) } };
+          return { ok: true, handle: { supervisorPid: SUPERVISOR, agentPgid: AGENT_GROUP, writeTurn: () => true, endInput: () => {}, terminate: () => {}, killHard: () => {}, exited: new Promise(() => {}) } };
         },
       });
       expect(started.ok).toBe(true);
@@ -219,12 +221,12 @@ describe("the invocation gateway", () => {
       env: { STANDING_ORDERS_DB: "/operator/live/orders.db" },
       starter: async (_file, _args, options) => {
         childDb = options.env?.["STANDING_ORDERS_DB"];
-        options.onObservationFailure?.({ phase: "final-exit", operation: "snapshot", code: "EMFILE", rootPid: 1, at: T0.toISOString(), identityUnknown: false });
+        options.onObservationFailure?.({ phase: "final-exit", operation: "snapshot", code: "EMFILE", rootPid: SUPERVISOR, at: T0.toISOString(), identityUnknown: false });
         return {
           ok: true,
           handle: {
-            supervisorPid: 1,
-            agentPgid: 2,
+            supervisorPid: SUPERVISOR,
+            agentPgid: AGENT_GROUP,
             writeTurn: () => true,
             endInput: () => {},
             terminate: () => {},
@@ -237,7 +239,7 @@ describe("the invocation gateway", () => {
 
     expect(started.ok).toBe(true);
     const observation = store.actionLedger({ repos: null }).find(one => one.action === "process observation failed");
-    expect(JSON.parse(observation!.outcome)).toMatchObject({ phase: "final-exit", code: "EMFILE", rootPid: 1 });
+    expect(JSON.parse(observation!.outcome)).toMatchObject({ phase: "final-exit", code: "EMFILE", rootPid: SUPERVISOR });
     expect(childDb).toBeDefined();
     expect(childDb).not.toBe("/operator/live/orders.db");
     expect(existsSync(dirname(childDb!))).toBe(true);

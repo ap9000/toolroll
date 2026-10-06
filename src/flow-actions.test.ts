@@ -37,10 +37,10 @@ describe("the drawing", () => {
   test("a request's host is written out; an email says who, what and about what; a tool's arguments are a JSON object", () => {
     const base = { version: 1, start: "a", stages: [{ id: "a", title: "Call", kind: "request", zone: {}, request: { method: "POST", url: "https://api.example.com/items", headers: {}, body: "{}" }, next: "done" }, { id: "done", title: "Done", kind: "done", zone: {} }] };
     const withRequest = (request: Record<string, unknown>) => ({ ...base, stages: [{ ...base.stages[0], request: { ...base.stages[0]!.request, ...request } }, base.stages[1]] });
-    expect(() => validateFlowDefinition(withRequest({ url: "https://{{card.title}}/x" }))).toThrow("Zone Call: write the address's host out in full; fill-ins go after it.");
-    expect(() => validateFlowDefinition(withRequest({ url: "ftp://example.com" }))).toThrow("Zone Call: the address must start with https:// or http://.");
+    expect(() => validateFlowDefinition(withRequest({ url: "https://{{card.title}}/x" }))).toThrow("stages[0].request.url: write the address's host out in full; fill-ins go after it");
+    expect(() => validateFlowDefinition(withRequest({ url: "ftp://example.com" }))).toThrow("stages[0].request.url: must start with https:// or http://");
     expect(() => validateFlowDefinition(withRequest({ url: "https://user@evil.example/x" }))).toThrow("write the address's host out in full");
-    expect(() => validateFlowDefinition(withRequest({ headers: { "Bad Header": "x" } }))).toThrow("“Bad Header” isn't a header name.");
+    expect(() => validateFlowDefinition(withRequest({ headers: { "Bad Header": "x" } }))).toThrow("stages[0].request.headers: “Bad Header” isn't a header name");
     expect(validateFlowDefinition(withRequest({ method: "GET" })).stages[0]!.request).toMatchObject({ method: "GET", body: null });
     const flow = flowFromSteps([
       { title: "Tell the CRM", kind: "request", url: "https://crm.example.com/leads?from={{card.email}}", headers: { Authorization: "Bearer {{secret.CRM_TOKEN}}" }, body: '{"name": "{{card.title}}"}' },
@@ -58,7 +58,7 @@ describe("the drawing", () => {
     expect(terms[1]).toContain("Emails [the card's email address]: “Re: [card title]”");
     expect(terms[2]).toContain("Uses slack → post_message with {\"channel\":\"#leads\",\"text\":\"[card title]\"}");
     expect(terms).toContain("Web request, email and tool steps send what they're given outside this computer, with no one checking unless a decision comes before them.");
-    expect(() => flowFromSteps([{ title: "Tool", kind: "tool", server: "x", tool: "y", args: "[1,2]" }], null)).toThrow("the arguments are a JSON object");
+    expect(() => flowFromSteps([{ title: "Tool", kind: "tool", server: "x", tool: "y", args: "[1,2]" }], null)).toThrow("steps[0].args: must be a JSON object");
     for (const one of FLOW_TEMPLATES) expect(() => validateFlowDefinition(one.definition)).not.toThrow();
   });
 });

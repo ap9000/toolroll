@@ -1,0 +1,188 @@
+{
+ "about": "Recorded from the pre-Zod validateTriggerConfig (0.9.34): trigger settings as given, and the exact config saved. {{flow}} is the other flow's id.",
+ "sourceFlow": 36,
+ "triggers": [
+  {
+   "name": "button with default questions",
+   "input": {
+    "kind": "button",
+    "label": "Report a bug"
+   },
+   "config": {
+    "kind": "button",
+    "label": "Report a bug",
+    "questions": [
+     "What needs doing?",
+     "Details"
+    ],
+    "zone": null
+   }
+  },
+  {
+   "name": "button with questions as lines",
+   "input": {
+    "kind": "button",
+    "label": "Ask",
+    "questions": "What?\n\nWhy?",
+    "zone": "Triage"
+   },
+   "config": {
+    "kind": "button",
+    "label": "Ask",
+    "questions": [
+     "What?",
+     "Why?"
+    ],
+    "zone": "triage"
+   }
+  },
+  {
+   "name": "schedule in words",
+   "input": {
+    "kind": "schedule",
+    "schedule": "daily 09:00 Europe/London",
+    "title": "Morning check",
+    "description": "Look around"
+   },
+   "config": {
+    "kind": "schedule",
+    "schedule": "daily:09:00@Europe/London",
+    "title": "Morning check",
+    "description": "Look around",
+    "zone": null
+   }
+  },
+  {
+   "name": "schedule running a script",
+   "input": {
+    "kind": "schedule",
+    "schedule": "every 2 hours",
+    "script": "triage",
+    "secrets": "API_KEY, API_KEY"
+   },
+   "config": {
+    "kind": "schedule",
+    "schedule": "every:120",
+    "title": "Items from triage",
+    "description": null,
+    "zone": null,
+    "script": "triage",
+    "secrets": [
+     "API_KEY"
+    ]
+   }
+  },
+  {
+   "name": "github issues with the project's repo",
+   "input": {
+    "kind": "github",
+    "label": "toolroll"
+   },
+   "config": {
+    "kind": "github",
+    "repo": "acme/shop",
+    "watch": "issues",
+    "label": "toolroll",
+    "branch": null,
+    "from": "team",
+    "delivery": "poll",
+    "zone": null
+   }
+  },
+  {
+   "name": "github checks",
+   "input": {
+    "kind": "github",
+    "repo": "acme/shop",
+    "watch": "checks",
+    "from": "anyone",
+    "delivery": "webhook",
+    "zone": "build"
+   },
+   "config": {
+    "kind": "github",
+    "repo": "acme/shop",
+    "watch": "checks",
+    "label": null,
+    "branch": "main",
+    "from": "anyone",
+    "delivery": "webhook",
+    "zone": "build"
+   }
+  },
+  {
+   "name": "linear",
+   "input": {
+    "kind": "linear",
+    "team": "eng",
+    "state": "Todo",
+    "label": null
+   },
+   "config": {
+    "kind": "linear",
+    "team": "ENG",
+    "state": "Todo",
+    "label": null,
+    "delivery": "poll",
+    "zone": null
+   }
+  },
+  {
+   "name": "another flow",
+   "input": {
+    "kind": "flow",
+    "flow": 36,
+    "when": "Share"
+   },
+   "config": {
+    "kind": "flow",
+    "flow": 36,
+    "when": "share",
+    "zone": null
+   }
+  },
+  {
+   "name": "webhook",
+   "input": {
+    "kind": "webhook",
+    "titleField": "data.title"
+   },
+   "config": {
+    "kind": "webhook",
+    "title": "Webhook",
+    "titleField": "data.title",
+    "bodyField": null,
+    "zone": null
+   }
+  },
+  {
+   "name": "email",
+   "input": {
+    "kind": "email",
+    "folder": "inbox",
+    "sender": "@Shop.example, priya@example.com",
+    "subject": "order"
+   },
+   "config": {
+    "kind": "email",
+    "folder": "INBOX",
+    "sender": "shop.example, priya@example.com",
+    "subject": "order",
+    "zone": null
+   }
+  },
+  {
+   "name": "plane review",
+   "input": {
+    "kind": "plane-review",
+    "at": "06:15",
+    "timeZone": "Europe/London"
+   },
+   "config": {
+    "kind": "plane-review",
+    "schedule": "daily:06:15@Europe/London",
+    "zone": null
+   }
+  }
+ ]
+}

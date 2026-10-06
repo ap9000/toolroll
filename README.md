@@ -117,9 +117,16 @@ toolroll project use /path/to/project
 toolroll project show
 toolroll brief
 toolroll assignment show <task>
+toolroll task review <task> --brief
 toolroll task complete <task>
 toolroll task revise <task> --feedback "Keep the filter selected after reload."
 ```
+
+`task review <task> --brief` combines the latest finished build or report's conclusion,
+file counts, checks, review findings, screenshot paths, plan and next actions.
+Use `--run <id>` for an earlier attempt, `--json` for the same fields, and `--all`
+to include LOW findings. Lists stay bounded, with omitted entries counted; missing
+fields say `not recorded`. The lead token works through `--token` or `TOOLROLL_LEAD_TOKEN`.
 
 Completion and revisions use the local sign-in already saved by `up`. Completion
 reports the exact run, commit and check outcome it handled. Agents use a scoped

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/storage-sweep/normal-desktop.png",
+      "caption": "Settings > Storage, desktop: last automatic sweep summary with Details open (synthetic sweep record)"
+    },
+    {
+      "path": "evidence/storage-sweep/normal-phone.png",
+      "caption": "Settings > Storage, phone 390px: same sweep summary, Details open, no horizontal overflow"
+    },
+    {
+      "path": "evidence/storage-sweep/long-desktop.png",
+      "caption": "Long details: 20 long checkout paths plus a more-left-for-next-sweep note, desktop"
+    },
+    {
+      "path": "evidence/storage-sweep/long-phone.png",
+      "caption": "Long details on phone: paths wrap inside the disclosure"
+    },
+    {
+      "path": "evidence/storage-sweep/empty-desktop.png",
+      "caption": "Empty state, desktop: the sweep has not run yet"
+    },
+    {
+      "path": "evidence/storage-sweep/empty-phone.png",
+      "caption": "Empty state, phone"
+    },
+    {
+      "path": "evidence/storage-sweep/failure-desktop.png",
+      "caption": "Partial failure, desktop: removal failures and unchecked parts shown as a problem, causes in Details"
+    },
+    {
+      "path": "evidence/storage-sweep/failure-phone.png",
+      "caption": "Partial failure, phone"
+    }
+  ]
+}

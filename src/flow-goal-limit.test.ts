@@ -84,7 +84,7 @@ test("instructions take the full 8000 characters with no room held back; the car
   expect(full.length).toBeLessThanOrEqual(8_000);
   const saved = validateFlowDefinition(drawing(full));
   expect(saved.stages[1]!.instructions).toBe(full);
-  expect(() => validateFlowDefinition(drawing("a".repeat(8_001)))).toThrow("Zone text is up to 8000 characters.");
+  expect(() => validateFlowDefinition(drawing("a".repeat(8_001)))).toThrow("stages[1].instructions: over 8,000 characters");
   const goal = flowGoal(full, { title: "t".repeat(200), description: "d".repeat(2_000), note: "n".repeat(2_000), outputs: { "nightly-journeys": output } })!;
   expect(goal.length).toBeLessThanOrEqual(FLOW_GOAL_LIMIT);
   expect(goal.startsWith(full.slice(0, 7_970))).toBe(true);

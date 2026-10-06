@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/lead-stall/desktop-timed-out-with-proposal.png",
+      "caption": "Desktop 1440x900: synthetic stub proposed a hold then hung; at 125 s the thread shows one took-too-long notice with the Hold card under it"
+    },
+    {
+      "path": "evidence/lead-stall/phone-timed-out-with-proposal.png",
+      "caption": "Phone 390x844: the same timed-out turn, notice and Hold card readable above the composer"
+    },
+    {
+      "path": "evidence/lead-stall/desktop-next-message-answered.png",
+      "caption": "Desktop: the next message after the stuck turn is answered"
+    },
+    {
+      "path": "evidence/lead-stall/phone-next-message-answered.png",
+      "caption": "Phone: the next message after the stuck turn is answered, earlier notice and card still shown"
+    }
+  ]
+}

@@ -276,12 +276,12 @@ describe("the Pull request zone", () => {
     expect(flowTerms(issuesToPrs(true), null).join("\n")).toContain("merges it (squash) and deletes its branch, only when a person approved it at Approve since it was built.");
 
     // No decision before a merging zone: refused, whether drawn or listed as steps.
-    expect(() => flowFromSteps([{ title: "Build", kind: "task" }, { title: "Pull request", kind: "pull-request", merge: true }])).toThrow("Zone Pull request merges, so a “Person decides” zone must come before it on every path.");
+    expect(() => flowFromSteps([{ title: "Build", kind: "task" }, { title: "Pull request", kind: "pull-request", merge: true }])).toThrow("steps[1].merge: a “Person decides” zone must come before it on every path");
     // A path around the decision (the build's failure path skips it) is refused too.
     expect(() => flowFromSteps([{ title: "Build", kind: "task", ifFails: "Pull request" }, { title: "Approve", kind: "approval" }, { title: "Pull request", kind: "pull-request", merge: "rebase" }])).toThrow(/must come before it on every path/);
     const ok = flowFromSteps([{ title: "Build", kind: "task" }, { title: "Approve", kind: "approval", decider: "owner" }, { title: "Pull request", kind: "pull-request", merge: true }]);
     expect(ok.stages.find(one => one.kind === "pull-request")).toMatchObject({ merge: "squash", onFail: "build" });
-    expect(() => validateFlowDefinition({ ...ok, stages: ok.stages.map(one => one.kind === "pull-request" ? { ...one, merge: "fast-forward" } : one) })).toThrow("merge by squash, merge or rebase");
+    expect(() => validateFlowDefinition({ ...ok, stages: ok.stages.map(one => one.kind === "pull-request" ? { ...one, merge: "fast-forward" } : one) })).toThrow('stages[2].merge: must be one of "squash", "merge", "rebase"');
   });
 
   test("c2: a card moved into a merging zone by hand, with no approval since its build, is never merged", async () => {

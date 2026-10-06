@@ -17,6 +17,7 @@ import { WorktreePool } from "./worktree.js";
 import { locateProcesses, orphanTargets, sweepOrphans, sweepRoots, type Located, type SweepRoot } from "./orphan-sweep.js";
 import { protectedProcesses, type ProcessRow } from "./run-closeout.js";
 import { OWNER_FILE } from "./test-temp.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const DAY = 86_400_000;
 let dir: string, store: Store, repo: string, pool: WorktreePool, temps: string;
@@ -68,27 +69,28 @@ async function checkout(id: string, at: Date, live = false): Promise<string> {
 test("which processes go: orphans born in a let-go checkout or running a temp root's program, and what they started — nothing else", () => {
   const released = Date.now() - 60_000;
   const roots: SweepRoot[] = [{ path: "/state/worktrees/site/build-1", kind: "checkout", bornBefore: released }, { path: "/tmp/so-e2e-x", kind: "test temp" }];
+  const server = fakePid(1), serverChild = fakePid(2), later = fakePid(3), elsewhere = fakePid(4), atTerminal = fakePid(5), withParent = fakePid(6), browser = fakePid(7), lookalike = fakePid(8), parent = fakePid(9);
   const census = [
-    row(10, released - 5_000),                           // a preview server the run started: goes
-    row(11, released - 4_000, { ppid: 10, pgid: 10 }),   // what it started: goes with it
-    row(12, released + 60_000),                          // started in that checkout after the run let it go: stays
-    row(13, released - 5_000),                           // an orphan elsewhere: stays
-    row(14, released - 5_000, { terminal: true }),       // at a terminal: stays
-    row(15, released - 5_000, { ppid: 400 }),            // a live parent (a person's shell, the lead's deploy): stays
-    row(16, released - 5_000),                           // a browser a killed journey left, its program in a temp root: goes
-    row(17, released - 5_000),                           // the folder's name only starts the same: stays
-    row(400, released - 9_000, { ppid: 1, terminal: true }),
+    row(server, released - 5_000),                           // a preview server the run started: goes
+    row(serverChild, released - 4_000, { ppid: server, pgid: server }),   // what it started: goes with it
+    row(later, released + 60_000),                          // started in that checkout after the run let it go: stays
+    row(elsewhere, released - 5_000),                           // an orphan elsewhere: stays
+    row(atTerminal, released - 5_000, { terminal: true }),       // at a terminal: stays
+    row(withParent, released - 5_000, { ppid: parent }),            // a live parent (a person's shell, the lead's deploy): stays
+    row(browser, released - 5_000),                           // a browser a killed journey left, its program in a temp root: goes
+    row(lookalike, released - 5_000),                           // the folder's name only starts the same: stays
+    row(parent, released - 9_000, { ppid: 1, terminal: true }),
   ];
   const located = new Map<number, Located>([
-    [10, { cwd: "/state/worktrees/site/build-1", exe: "/usr/local/bin/node" }], [11, { cwd: "/state/worktrees/site/build-1/dist" }],
-    [12, { cwd: "/state/worktrees/site/build-1" }], [13, { cwd: "/Users/someone/project" }], [14, { cwd: "/state/worktrees/site/build-1" }],
-    [15, { cwd: "/state/worktrees/site/build-1" }], [16, { cwd: "/", exe: "/tmp/so-e2e-x/chrome/Chromium" }], [17, { cwd: "/state/worktrees/site/build-10" }],
+    [server, { cwd: "/state/worktrees/site/build-1", exe: "/usr/local/bin/node" }], [serverChild, { cwd: "/state/worktrees/site/build-1/dist" }],
+    [later, { cwd: "/state/worktrees/site/build-1" }], [elsewhere, { cwd: "/Users/someone/project" }], [atTerminal, { cwd: "/state/worktrees/site/build-1" }],
+    [withParent, { cwd: "/state/worktrees/site/build-1" }], [browser, { cwd: "/", exe: "/tmp/so-e2e-x/chrome/Chromium" }], [lookalike, { cwd: "/state/worktrees/site/build-10" }],
   ]);
   const guard = { pids: new Set<number>([1]), groups: new Set<number>() };
-  expect(orphanTargets(census, located, roots, guard).map(one => [one.row.pid, one.orphan]).sort()).toEqual([[10, 10], [11, 10], [16, 16]]);
+  expect(orphanTargets(census, located, roots, guard).map(one => [one.row.pid, one.orphan]).sort()).toEqual([[server, server], [serverChild, server], [browser, browser]]);
   // The live service and its group never go, even from inside.
-  const service = protectedProcesses([...census, row(process.pid, released - 9_000, { ppid: 1, pgid: 10 })], process.pid);
-  expect(orphanTargets(census, located, roots, service).map(one => one.row.pid)).toEqual([16]);
+  const service = protectedProcesses([...census, row(process.pid, released - 9_000, { ppid: 1, pgid: server })], process.pid);
+  expect(orphanTargets(census, located, roots, service).map(one => one.row.pid)).toEqual([browser]);
 });
 
 test("the roots: let-go checkouts with no live run, and temp roots whose suite is gone or untouched for a day", async () => {
@@ -103,12 +105,13 @@ test("the roots: let-go checkouts with no live run, and temp roots whose suite i
     if (owner !== null) utimesSync(join(path, OWNER_FILE), touched, touched);
     return path;
   };
-  const running = owned("so-e2e-tmp-running", { pid: 4242, startedAt: Date.now() - 5_000 });
-  const gone = owned("so-e2e-tmp-gone", { pid: 4343, startedAt: Date.now() - 5_000 });
+  const runningOwner = fakePid(1), goneOwner = fakePid(2);
+  const running = owned("so-e2e-tmp-running", { pid: runningOwner, startedAt: Date.now() - 5_000 });
+  const gone = owned("so-e2e-tmp-gone", { pid: goneOwner, startedAt: Date.now() - 5_000 });
   const fresh = owned("so-route-cli-fresh", null);
   const stale = owned("so-route-cli-stale", null, new Date(Date.now() - 2 * DAY));
   owned("not-ours", null, new Date(Date.now() - 2 * DAY));
-  const census = [row(4242, Date.now() - 5_000)];
+  const census = [row(runningOwner, Date.now() - 5_000)];
   const roots = sweepRoots(store, pool, census, [temps], new Date());
   expect(roots.map(one => one.path).sort()).toEqual([done, gone, stale].sort());
   expect(roots.find(one => one.path === done)).toMatchObject({ kind: "checkout", bornBefore: expect.any(Number), taskId: "done" });

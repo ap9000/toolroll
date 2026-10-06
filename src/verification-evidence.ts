@@ -9,7 +9,12 @@ import type { VerifyCommandFacts } from "./proof.js";
 import { adjudicate, type AdjudicateResult } from "./proof.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { readVerifiedArtifact, storeEvidence, scanForSecrets, redactSecretLines } from "./evidence.js";
+import { readVerificationReceipt, type VerificationReceipt } from "./contracts/verification-receipt.js";
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
+
+/** What `verificationEvidence` returns as `bytes`: a sealed receipt exactly as sealed (either version), or the view of
+ * a legacy machine log header. Both carry these receipt fields. */
+type VerificationView = Pick<VerificationReceipt, "run" | "head" | "base" | "scopeDigest" | "command" | "result" | "log">;
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
 export const REVIEW_GATE_NAME = "REVIEW-VERIFICATION.json";
@@ -21,11 +26,15 @@ export function sealVerificationReceipt(store: Store, root: string, runId: numbe
   const source = store.getRun(runId)!;
   const log = store.artifactsFor(runId).find(a => a.kind === "check-log");
   if (!log) throw new Error("Verification receipt requires its retained log");
-  const raw = JSON.stringify({
+  const receipt = {
     version: reusedFrom === undefined ? 1 : 2, run: runId, head, base: source.baseRevision, scopeDigest: source.scopeDigest,
     ...(reusedFrom === undefined ? {} : { reusedFrom, executedHere: false }),
     command, result, log: binding(log),
-  }, null, 1);
+  };
+  const checked = readVerificationReceipt(receipt);
+  if (!checked.ok) throw new Error(`The verification receipt does not match its contract: ${checked.issues.map(issue => issue.line).join("; ")}`);
+  // Sealed in the writer's own key order, as every receipt before the schema: its bytes and digests stay comparable.
+  const raw = JSON.stringify(receipt, null, 1);
   const hits = scanForSecrets(raw);
   storeEvidence(store, root, runId, "structured-output", "verification-receipt.json", Buffer.from(hits.length ? redactSecretLines(raw, hits) : raw), reusedFrom === undefined ? VERIFICATION_RECEIPT_CAPTURE : "machine verification reuse v1", now, { captureStatus: "ok", redacted: hits.length > 0 });
 }
@@ -64,24 +73,29 @@ export function verificationEvidence(store: Store, root: string, runId: number):
     const sealed = readVerifiedArtifact(root, artifact);
     if (!sealed.ok) return fail("The verification receipt no longer verifies.");
     try { receipt = JSON.parse(sealed.content.toString("utf8")); } catch { return fail("The verification receipt cannot be read."); }
-    if ((receipt?.version !== 1 && receipt?.version !== 2) || receipt.run !== runId || receipt.head !== source.headRevision || receipt.base !== source.baseRevision || receipt.scopeDigest !== source.scopeDigest || JSON.stringify(receipt.command) !== JSON.stringify(command) || JSON.stringify(receipt.log) !== JSON.stringify(binding(log))) return fail("The candidate, approved command or retained log changed since verification.");
+    // The schema checks the shape; the bindings below check it against the store. The receipt itself stays exactly
+    // as sealed: its bytes are this view's bytes and part of its digest.
+    const read = readVerificationReceipt(receipt);
+    if (!read.ok) return fail(`The verification receipt is malformed: ${read.issues.map(issue => issue.line).join("; ")}`);
+    const checked = read.value;
+    if (checked.run !== runId || checked.head !== source.headRevision || checked.base !== source.baseRevision || checked.scopeDigest !== source.scopeDigest || JSON.stringify(receipt.command) !== JSON.stringify(command) || JSON.stringify(receipt.log) !== JSON.stringify(binding(log))) return fail("The candidate, approved command or retained log changed since verification.");
     if (receipt.version === 2) {
       try {
       const brief = observationBrief(store, root, source.taskRef);
-      const reused = receipt.reusedFrom;
+      const reused = checked.reusedFrom;
       if (!brief || !readObservationEvidence(store, root, runId) || !reused || reused.run !== brief.sourceRun || reused.run >= runId || reused.digest !== brief.gateDigest ||
-          source.baseRevision !== brief.head || source.headRevision !== brief.head || receipt.executedHere !== false) return fail("The reused gate is not bound to an unchanged observation follow-up.");
+          source.baseRevision !== brief.head || source.headRevision !== brief.head || checked.executedHere !== false) return fail("The reused gate is not bound to an unchanged observation follow-up.");
       const original = verificationEvidence(store, root, reused.run);
       if (!original.ok || !original.bytes || original.digest !== reused.digest) return fail("The original passing gate no longer verifies.");
-      const previous = JSON.parse(original.bytes);
+      const previous = JSON.parse(original.bytes) as VerificationView;
       const originalLog = store.getArtifact(previous.log.artifactId);
-      if (previous.head !== source.headRevision || previous.result.exitCode !== 0 || JSON.stringify(previous.command) !== JSON.stringify(command) ||
+      if (previous.head !== source.headRevision || !("exitCode" in previous.result) || previous.result.exitCode !== 0 || JSON.stringify(previous.command) !== JSON.stringify(command) ||
           JSON.stringify(previous.result) !== JSON.stringify(receipt.result) || originalLog?.sha256 !== log.sha256 ||
           originalLog.bytesOriginal !== log.bytesOriginal || originalLog.redacted !== log.redacted || originalLog.truncated !== log.truncated) return fail("The reused gate's candidate, command, result or copied log changed.");
       } catch { return fail("The reused gate or its observations no longer verify."); }
-    } else if (receipt.reusedFrom !== undefined) return fail("The gate reuse receipt has an unsupported version.");
-    const result = receipt.result;
-    if (result?.configured !== true || typeof result.ran !== "boolean" || (result.ran ? !Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255 : result.attemptFailed !== true)) return fail("The machine verification result is malformed.");
+    } else if (checked.reusedFrom !== undefined || checked.executedHere !== undefined) return fail("The gate reuse receipt has an unsupported version.");
+    const result = checked.result;
+    if (!result.configured) return fail("The machine verification result is malformed.");
     if (verified && (!result.ran || result.exitCode !== 0)) return fail("The passing machine verdict disagrees with its verification receipt.");
   } else {
     const stat = artifacts.filter(a => a.kind === "diff-stat");
@@ -110,8 +124,8 @@ function sealedCommandKey(root: string, receipts: readonly Artifact[]): string |
   const sealed = readVerifiedArtifact(root, receipts[0]!);
   if (!sealed.ok) return null;
   try {
-    const repo = (JSON.parse(sealed.content.toString("utf8")) as { command?: { repo?: unknown } }).command?.repo;
-    return typeof repo === "string" ? repo : null;
+    const read = readVerificationReceipt(JSON.parse(sealed.content.toString("utf8")));
+    return read.ok ? read.value.command.repo : null;
   } catch { return null; }
 }
 
@@ -127,7 +141,7 @@ export function failedVerificationEvidence(store: Store, root: string, runId: nu
   const verified = verificationEvidence(store, root, runId);
   if (!verified.ok) return { kind: "unavailable", problem: verified.problem };
   if (verified.bytes === null) return { kind: "none" };
-  const receipt = JSON.parse(verified.bytes) as { result: VerifyCommandFacts; log: { artifactId: number } };
+  const receipt = JSON.parse(verified.bytes) as VerificationView;
   const result = receipt.result;
   if (!result.configured || (result.ran ? result.exitCode === 0 :
     result.failure !== "timed-out" && result.failure !== "retry-timed-out")) return { kind: "none" };
@@ -168,7 +182,7 @@ export function assessmentFromSavedEvidence(store: Store, root: string, runId: n
   const gate = verificationEvidence(store, root, runId);
   if (!gate.ok || gate.bytes === null) return null;
   try {
-    const inventory = JSON.parse(stat), receipt = JSON.parse(gate.bytes);
+    const inventory = JSON.parse(stat), receipt = JSON.parse(gate.bytes) as VerificationView;
     const base = source.branch ? store.firstBuilderBase(source.taskRef, source.branch) ?? source.baseRevision : source.baseRevision;
     if (inventory.schema !== 1 || inventory.head !== source.headRevision || inventory.base !== base || inventory.filesTruncated !== false ||
       !Array.isArray(inventory.files) || inventory.fileCount !== inventory.files.length || !inventory.files.every((one: { path?: unknown }) => typeof one?.path === "string") ||
@@ -193,8 +207,8 @@ export function reuseObservationVerification(store: Store, root: string, runId: 
       !readObservationEvidence(store, root, runId)) throw Error("Only complete observations for the unchanged approved candidate can reuse its gate.");
   const original = verificationEvidence(store, root, brief.sourceRun);
   if (!original.ok || !original.bytes || original.digest !== brief.gateDigest) throw Error("The original passing gate is unavailable or changed.");
-  const receipt = JSON.parse(original.bytes), log = store.getArtifact(receipt.log.artifactId);
-  if (!log || receipt.head !== brief.head || receipt.result?.ran !== true || receipt.result.exitCode !== 0) throw Error("The source gate did not pass this candidate.");
+  const receipt = JSON.parse(original.bytes) as VerificationView, log = store.getArtifact(receipt.log.artifactId);
+  if (!log || receipt.head !== brief.head || !("ran" in receipt.result) || receipt.result.ran !== true || receipt.result.exitCode !== 0) throw Error("The source gate did not pass this candidate.");
   const read = readVerifiedArtifact(root, log);
   if (!read.ok) throw Error("The original check log no longer verifies.");
   if (store.artifactsFor(runId).some(a => a.kind === "check-log" || isVerificationReceipt(a))) throw Error("This attempt already has a gate; it cannot be replaced.");

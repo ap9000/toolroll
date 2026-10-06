@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { addFlowTriggerTo, githubRepoOf } from "./flow-triggers.js";
 import { flowFromSteps, ISSUE_LABEL, type FlowStepInput } from "./flows.js";
+import type { TriggerInput } from "./contracts/flow.js";
 import { publishingOf } from "./pull-request-flow.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -29,7 +30,7 @@ export type StarterFlow = {
   steps: FlowStepInput[];
   /** The steps in Toolroll's own repository, when they differ: there, every fix lands in Toolroll. */
   ownSteps?: FlowStepInput[];
-  trigger: (where: { branch: string }) => Record<string, unknown>;
+  trigger: (where: { branch: string }) => TriggerInput;
 };
 
 export const STARTER_FLOWS: readonly StarterFlow[] = [

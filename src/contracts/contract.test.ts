@@ -50,6 +50,35 @@ describe("contractError", () => {
   });
 });
 
+describe("unknown keys and unions", () => {
+  const step = z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("task"), title: z.string(), ifFails: z.string().optional(), routes: z.array(z.strictObject({ answer: z.string(), goesTo: z.string() })).optional() }),
+    z.strictObject({ kind: z.literal("sort"), title: z.string(), ifNotSure: z.string().optional() }),
+  ]);
+  const steps = z.strictObject({ steps: z.array(step) });
+  const aliases = { onFail: ["ifFails", "ifNotSure"], to: ["goesTo"] };
+  const read = (input: unknown, options = {}) => { const result = parseContract(steps, input, options); return result.ok ? [] : result.issues.map(issue => issue.line); };
+
+  it("suggests the key an unknown one meant: an alias allowed at that place, else a near spelling", () => {
+    expect(read({ steps: [{ kind: "task", title: "t", onFail: "x", routes: [{ answer: "a", to: "b" }] }, { kind: "sort", title: "s", onFail: "x" }] }, { aliases })).toEqual([
+      "steps[0].routes[0].goesTo: required",
+      "steps[0].routes[0]: unknown key 'to' (did you mean goesTo?)",
+      "steps[0]: unknown key 'onFail' (did you mean ifFails?)",
+      "steps[1]: unknown key 'onFail' (did you mean ifNotSure?)",
+    ]);
+    expect(read({ steps: [{ kind: "task", title: "t", iffails: "x", titl: "y" }] })).toEqual(["steps[0]: unknown key 'iffails' (did you mean ifFails?)", "steps[0]: unknown key 'titl' (did you mean title?)"]);
+    expect(read({ steps: [{ kind: "task", title: "t", colour: "red" }] })).toEqual(["steps[0]: unknown key 'colour'"]);
+  });
+
+  it("names a discriminated union's choices, and reads a null or missing discriminator or value as required", () => {
+    expect(read({ steps: [{ kind: "teleport", title: "t" }, { title: "t" }, { kind: "task", title: null }] })).toEqual([
+      "steps[0].kind: must be one of \"task\", \"sort\"",
+      "steps[1].kind: required",
+      "steps[2].title: required",
+    ]);
+  });
+});
+
 describe("toModelSchema", () => {
   it("returns the JSON Schema without its dialect line", () => {
     const json = toModelSchema(flow);

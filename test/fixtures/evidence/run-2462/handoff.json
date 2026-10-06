@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "taskId": "release-0932",
+  "runId": 2462,
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "route": {
+    "digest": "25e3840eea5995474e50d8bfc7b4049d",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+  },
+  "sessionId": null,
+  "branch": "toolroll/release-0932",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0932-19705004",
+  "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+  "head": "5cbe5fed94e5dcd5eebde3da44f50408e30dfffa",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Prepared candidate c120981fa2e84f7552eaff63453b57737b27bc3b was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+  "changes": [
+    "CHANGELOG.md",
+    "docs/TESTING.md",
+    "docs/design/task-status.md",
+    "docs/guide/flows.md",
+    "docs/mate-arc.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/app-e2e.mjs"
+  ],
+  "verification": [],
+  "followUps": [],
+  "freshness": {
+    "stampedAt": "2026-10-05T02:10:12.702Z",
+    "currentAsOf": "5cbe5fed94e5dcd5eebde3da44f50408e30dfffa"
+  }
+}

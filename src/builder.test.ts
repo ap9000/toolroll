@@ -18,6 +18,7 @@ import { HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, HEADLESS_RULE, repairPrompt } fr
 import { execFileSync } from "node:child_process";
 import { readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
 import { createHash as sha } from "node:crypto";
+import { fakePid } from "../test/fake-pid.js";
 import {
   RUN_1527_ACCEPTANCE,
   RUN_1527_GOAL,
@@ -3135,7 +3136,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const pids: number[] = [];
     const agent: Runner = async (file, args, options) => {
       calls++;
-      options?.onSpawn?.(10_000 + calls);
+      options?.onSpawn?.(fakePid(calls));
       if (calls === 1) {
         await agentWithProof(wrong)(file, args, options);
         if (behavior === "default") {
@@ -3170,7 +3171,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
     expect(commits).toBe(1);
     expect(calls).toBe(1);
-    expect(pids).toEqual(Array.from({ length: calls }, (_, i) => 10_001 + i));
+    expect(pids).toEqual(Array.from({ length: calls }, (_, i) => fakePid(i + 1)));
     expect(checks).toBe(moved ? 0 : 1);
     expect(store.proofVerdictFor(req.runId)).toMatchObject({ verdict: "refuted" });
     const attempts = store.artifactsFor(req.runId).filter(one => one.kind === "structured-output" && !isVerificationReceipt(one));

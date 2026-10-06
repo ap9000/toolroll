@@ -16,6 +16,7 @@ import { runOperate } from "./operate.js";
 import { register } from "./runner.js";
 import { acquire, release } from "./claim.js";
 import type { RunOptions } from "./exec.js";
+import { fakePid } from "../test/fake-pid.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -406,7 +407,7 @@ describe("the gateway injection", () => {
     let seen: Record<string, unknown> | undefined;
     const starter = (async (_file: string, _argv: readonly string[], options: Record<string, unknown>) => {
       seen = options;
-      return { pid: 1, socketPath: "/tmp/x", waitUntilReady: async () => ({ ready: true as const }) };
+      return { pid: fakePid(1), socketPath: "/tmp/x", waitUntilReady: async () => ({ ready: true as const }) };
     }) as unknown as Parameters<typeof invokeHeldAgent>[4]["starter"];
     release(store, "l-1", T0); // the new run's lease must be the current claim
     claimT1("l-h");

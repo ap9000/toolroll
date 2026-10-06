@@ -34,6 +34,9 @@ import { LIMITS } from "./decision.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportImage } from "./scout-report.js";
 import { parseProof, PROOF_LIMITS, type ParsedProof } from "./proof.js";
+import { HANDOFF_VERSION, readHandoffArtifact, type HandoffArtifact } from "./contracts/handoff.js";
+
+export type { HandoffArtifact } from "./contracts/handoff.js";
 import type { Artifact, Store } from "./store.js";
 import type { ExecResult } from "./exec.js";
 import { encodeBaseTreeSnapshot, parseBaseTreeSnapshot, type BaseTreeEntry } from "./peek.js";
@@ -702,40 +705,6 @@ export function parseNumstat(raw: string, base: string, head: string): DiffStat 
   };
 }
 
-/** The freshness-stamped handoff artifact's shape (M6.10). */
-export type HandoffArtifact = {
-  schema: 1;
-  taskId: string;
-  runId: number;
-  provider: string;
-  /** v47: the exact model that ran, and the sealed route leg it ran as —
-   * provenance a later reader can hold against the approval. Absent on
-   * artifacts written before routes existed. */
-  model?: string;
-  route?: { digest: string; phase: "plan" | "build" | "repair" | "review"; provider: string; model: string | null; chosen: "recommended" | "override" | "pinned" | "legacy" | "fallback" };
-  sessionId: string | null;
-  branch: string;
-  worktree: string;
-  base: string;
-  head: string;
-  outcome: "built" | "no-change";
-  committed: boolean;
-  /** Decision ids whose answers were in this run's brief — causality, not time. */
-  decisionsIncorporated: number[];
-  /** The agent's conclusion — agent-reported, and labeled so by its position here. */
-  conclusion: string;
-  /** Structured operator-facing output. Optional for artifacts written by
-   * older versions; readers treat absence as an empty list. */
-  changes?: string[];
-  verification?: string[];
-  followUps?: string[];
-  freshness: {
-    stampedAt: string;
-    /** A successor proves this against the branch before trusting anything above. */
-    currentAsOf: string;
-  };
-};
-
 /**
  * Write the handoff artifact (M6.10): the machine's own statement of where
  * a finished run left the world — workspace identity, exact base and head,
@@ -747,16 +716,18 @@ export type HandoffArtifact = {
 export function storeHandoffArtifact(
   store: Store,
   root: string,
-  payload: HandoffArtifact,
+  payload: Omit<HandoffArtifact, "version">,
   now: Date,
 ): number {
+  const read = readHandoffArtifact({ version: HANDOFF_VERSION, ...payload });
+  if (!read.ok) throw new Error(`The handoff does not match its contract: ${read.issues.map(issue => issue.line).join("; ")}`);
   return storeEvidence(
     store,
     root,
     payload.runId,
     "handoff",
     "handoff.json",
-    Buffer.from(JSON.stringify(payload, null, 2), "utf8"),
+    Buffer.from(JSON.stringify(read.value, null, 2), "utf8"),
     "machine-authored handoff (exit 0)",
     now,
   );

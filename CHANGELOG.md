@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.9.36 — 2026-10-06
+
+- **Flows have one contract.** Every kind of zone, step, route, answer,
+  option, trigger and the flow file is described once
+  (`src/contracts/flow.ts`), and that description is what the lead's
+  `propose_flow` is told, what `toolroll flows create/edit/import` and the
+  console check, and what `docs/flow-file.schema.json` publishes (now
+  generated, so it includes Send to me, Person chooses and `ifReplied`, which
+  the hand-written one had missed). A refusal names the field and suggests the
+  one meant: `steps[0].routes[0]: unknown key 'to' (did you mean goesTo?)`,
+  `zones[2]: unknown key 'onFail' (did you mean ifFails?)`, instead of
+  "there's no step called ." Every saved flow, template, starter, kit and
+  gallery flow reads exactly as before: the same saved bytes and digests, and
+  the same exported files.
+- **Tightened, on purpose.** A step, flow file zone, trigger setting or
+  `propose_flow` argument with a key its kind doesn't take is refused by name
+  rather than silently ignored: `planning` on a Holding step, `remindAfter` on
+  a Wait step, `ifFails` on a Sort step (use `ifNotSure`, which it meant) or
+  `next` on a Sort or Person chooses step. A sort's `sureAt` is 0.5–99. A flow
+  file's zones keep only the words their kind uses when exported, and a file
+  or drawing made by a newer Toolroll is refused as such. Messages for flows
+  and triggers changed from "Zone Build: …" sentences to path-named lines.
+
+- **Builder handoffs and proofs have one contract.** The handoff a builder
+  leaves, its proof and the verification receipt are versioned schemas. Fifteen
+  real past runs replay with identical verdicts, receipt bytes and digests.
+- **One compact review packet.** `toolroll task review <id> --brief` (or
+  `--json`) shows a build's conclusion, changed files, check result, review
+  findings by severity, screenshot paths and what to do next, in about 40
+  lines and without logs or diffs.
+- **PostHog connects in one short step.** Its sign-in now uses PostHog's own
+  MCP permission preset instead of listing every permission, which showed a
+  75-group permission screen. Sign-in returns are now logged.
+- **Tests can't mistake a real process for a fake one.** Fake process IDs in
+  tests sit above every platform's limit, and a guard refuses new low ones (a
+  Brave tab and a GitHub runner process had made tests fail at random).
+
+## 0.9.35 — 2026-10-05
+
+- **One-click sign-ins ask for every permission a service lists.** Toolroll
+  asked for only the first 20, so a service needing one later in its list
+  issued a token it then refused (PostHog needs `user:read`, its 140th).
+  Reconnect a service that failed its test after signing in.
+
 ## 0.9.34 — 2026-10-05
 
 - **Plans have one contract.** The first step of making every handoff robust:

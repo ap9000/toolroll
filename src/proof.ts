@@ -20,31 +20,14 @@
  */
 
 import { hasForbiddenControls } from "./decision.js";
-import { EVIDENCE_KINDS, type EvidenceKind } from "./scope.js";
+import type { EvidenceKind } from "./scope.js";
+import { contractProblemOf, type ContractProblem } from "./contracts/contract.js";
+import type { VerifyCommandFacts } from "./contracts/verification-receipt.js";
+import { PROOF_LIMITS, proofPayloadBody, readProofPayload, type CriterionEvidenceRef, type ParsedCriterion, type ParsedProof } from "./contracts/proof.js";
+
+export { PROOF_LIMITS, type CriterionEvidenceRef, type ParsedCheck, type ParsedCriterion, type ParsedProof, type ParsedScreenshot } from "./contracts/proof.js";
 
 export type ProofVerdict = "verified" | "attested" | "short" | "refuted";
-
-/** One typed reference the proof cites to answer a criterion's required
- * evidence: `ref` names an existing check's command, an existing
- * screenshot's path, a path inside `changed`, or (kind `manual-review`)
- * free-text pointing at nothing machine-checkable. Additive (v39): a
- * criterion with no `evidence` array parses the same as one that always
- * had none — legacy proofs, and every proof against a rubric-less scope,
- * are untouched. */
-export type CriterionEvidenceRef = { kind: EvidenceKind; ref: string };
-
-export type ParsedCriterion = {
-  id: string;
-  statement: string;
-  /** pending-verification asserts all agent-owned work is met; only the
-   * machine-owned final check remains. It never upgrades a legacy failure. */
-  verdict: "met" | "not-met" | "not-checked" | "pending-verification";
-  how: string;
-  /** v39: typed references answering a SIGNED criterion by exact id.
-   * `[]` for a criterion the agent added beyond the rubric, or for any
-   * proof written before this migration. */
-  evidence: CriterionEvidenceRef[];
-};
 
 /** v39: the rubric side of a criterion, as `adjudicate` reads it — the
  * SIGNED id, statement, and required evidence kinds. Never `how` (never
@@ -89,281 +72,98 @@ export function proofSubmissionProblems(proof: ParsedProof, rubric: readonly App
   return problems;
 }
 
-export type ParsedCheck = {
-  command: string;
-  exitCode: number;
-  summary: string;
-};
-
-/** A screenshot the agent claims proves UI-facing work. `path` is the
- * repository-relative path the file lived at in the worktree when the
- * agent wrote the proof — validated as a path shape here; validated as an
- * actual bounded PNG/JPEG, and read, by the caller. */
-export type ParsedScreenshot = {
-  path: string;
-  caption: string;
-};
-
-export type ParsedProof = {
-  version: 1;
-  criteria: ParsedCriterion[];
-  checks: ParsedCheck[];
-  changed: string[];
-  caveats: string[];
-  screenshots: ParsedScreenshot[];
-};
-
-export type ProofProblem = { reason: string; message: string };
+export type ProofProblem = ContractProblem;
 
 export type ProofParseResult =
   | { ok: true; proof: ParsedProof }
   | { ok: false; problems: ProofProblem[] };
 
-/** Caps are BYTES of UTF-8, matching the scout report's rule: a payload is
- * the same size whatever script it is written in. */
-export const PROOF_LIMITS = {
-  payload: 64 * 1024,
-  criteria: 12,
-  criterionId: 40,
-  criterionStatement: 300,
-  criterionHow: 500,
-  evidencePerCriterion: 4,
-  evidenceRef: 300,
-  checks: 12,
-  checkCommand: 300,
-  checkSummary: 300,
-  changed: 64,
-  changedPath: 300,
-  caveats: 8,
-  caveat: 300,
-  screenshots: 8,
-  screenshotPath: 300,
-  screenshotCaption: 300,
-} as const;
-
 function refuse(reason: string, message: string): ProofParseResult {
   return { ok: false, problems: [{ reason, message }] };
 }
 
-function describe(value: unknown): string {
-  if (value === undefined) return "nothing";
-  if (value === null) return "null";
-  if (typeof value === "string") return `a ${value.length}-char string`;
-  return `a ${Array.isArray(value) ? "array" : typeof value}`;
-}
+/** One text field the plain-code rules check, at its path: its byte limit, and whether it is a relative path. */
+type TextField = { path: string; value: string; bytes: number; relative?: true };
 
-function prose(value: unknown, field: string, cap: number, problems: ProofProblem[]): string | null {
-  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
-    problems.push({ reason: `missing-${field}`, message: `${field} is required` });
-    return null;
-  }
-  if (typeof value !== "string") {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be a string (got ${describe(value)})` });
-    return null;
-  }
-  if (Buffer.byteLength(value, "utf8") > cap) {
-    problems.push({ reason: `${field}-too-long`, message: `${field} is over ${cap} bytes` });
-    return null;
-  }
-  if (hasForbiddenControls(value)) {
-    problems.push({ reason: `${field}-controls`, message: `${field} carries control characters that could become terminal escapes` });
-    return null;
-  }
-  return value;
-}
-
-/** A repository-relative path: no leading slash, no drive letter, no `.`/`..`
- * segment, no backslash, no control character. The same shape
- * `readVerifiedArtifact` enforces on an evidence key, applied here to a
- * path an agent claims rather than one the machine already wrote. */
-function relativePath(value: unknown, field: string, cap: number, problems: ProofProblem[]): string | null {
-  const raw = prose(value, field, cap, problems);
-  if (raw === null) return null;
-  const segments = raw.split("/");
-  const wellFormed =
-    !raw.startsWith("/") &&
-    segments.every(segment => segment.length > 0 && segment !== "." && segment !== ".." && !segment.includes("\\"));
-  if (!wellFormed) {
-    problems.push({ reason: `${field}-not-relative`, message: `${field} must be a normalized repository-relative path (got ${describe(value)})` });
-    return null;
-  }
-  return raw;
-}
-
-/** `evidence` is optional on a criterion (absent → `[]`, exactly like every
- * other list here) — the mandatory PRESENCE of an answer for a SIGNED
- * criterion is `adjudicate`'s concern, not the parser's; this only proves
- * the shape of what is there. */
-function parseEvidenceRefs(value: unknown, field: string, problems: ProofProblem[]): CriterionEvidenceRef[] | null {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be an array (got ${describe(value)})` });
-    return null;
-  }
-  if (value.length > PROOF_LIMITS.evidencePerCriterion) {
-    problems.push({ reason: `${field}-too-many`, message: `${field} lists ${value.length} — cap is ${PROOF_LIMITS.evidencePerCriterion}` });
-    return null;
-  }
-  const refs: CriterionEvidenceRef[] = [];
-  let bad = false;
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `${field}[${index}]-shape`, message: `${field}[${index}] must be an object` });
-      bad = true;
-      continue;
-    }
-    const one = entry as Record<string, unknown>;
-    const kind = one["kind"];
-    if (typeof kind !== "string" || !EVIDENCE_KINDS.includes(kind as EvidenceKind)) {
-      problems.push({
-        reason: `${field}[${index}]-bad-kind`,
-        message: `${field}[${index}].kind must draw from ${EVIDENCE_KINDS.join(", ")} (got ${describe(kind)})`,
+/** Every text field of a proof body (version 2 shape) that the schema saw as a string. */
+function textFields(body: Record<string, unknown>): TextField[] {
+  const out: TextField[] = [];
+  const text = (path: string, value: unknown, bytes: number, relative?: true) => {
+    if (typeof value === "string") out.push({ path, value, bytes, ...(relative ? { relative } : {}) });
+  };
+  const records = (field: string): [number, Record<string, unknown>][] => {
+    const list = body[field];
+    return Array.isArray(list) ? list.flatMap((one, index) => (typeof one === "object" && one !== null && !Array.isArray(one) ? [[index, one as Record<string, unknown>] as [number, Record<string, unknown>]] : [])) : [];
+  };
+  for (const [index, one] of records("criteria")) {
+    text(`criteria[${index}].id`, one["id"], PROOF_LIMITS.criterionId);
+    text(`criteria[${index}].statement`, one["statement"], PROOF_LIMITS.criterionStatement);
+    text(`criteria[${index}].how`, one["how"], PROOF_LIMITS.criterionHow);
+    const evidence = one["evidence"];
+    if (Array.isArray(evidence)) {
+      evidence.forEach((ref, at) => {
+        if (typeof ref === "object" && ref !== null) text(`criteria[${index}].evidence[${at}].ref`, (ref as Record<string, unknown>)["ref"], PROOF_LIMITS.evidenceRef);
       });
-      bad = true;
-      continue;
     }
-    const ref = prose(one["ref"], `${field}[${index}].ref`, PROOF_LIMITS.evidenceRef, problems);
-    if (ref === null) {
-      bad = true;
-      continue;
-    }
-    refs.push({ kind: kind as EvidenceKind, ref });
   }
-  return bad ? null : refs;
-}
-
-function parseCriteria(value: unknown, problems: ProofProblem[]): ParsedCriterion[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: "bad-criteria", message: `criteria must be an array (got ${describe(value)})` });
-    return [];
+  for (const [index, one] of records("checks")) {
+    text(`checks[${index}].command`, one["command"], PROOF_LIMITS.checkCommand);
+    text(`checks[${index}].summary`, one["summary"], PROOF_LIMITS.checkSummary);
   }
-  if (value.length > PROOF_LIMITS.criteria) {
-    problems.push({ reason: "criteria-too-many", message: `criteria lists ${value.length} — cap is ${PROOF_LIMITS.criteria}` });
-    return [];
+  for (const field of ["changed", "caveats"] as const) {
+    const list = body[field];
+    if (Array.isArray(list)) list.forEach((one, index) => text(`${field}[${index}]`, one, field === "changed" ? PROOF_LIMITS.changedPath : PROOF_LIMITS.caveat));
   }
-  const criteria: ParsedCriterion[] = [];
-  const seen = new Set<string>();
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `criteria[${index}]-shape`, message: `criteria[${index}] must be an object` });
-      continue;
-    }
-    const one = entry as Record<string, unknown>;
-    const id = prose(one["id"], `criteria[${index}].id`, PROOF_LIMITS.criterionId, problems);
-    if (id !== null && seen.has(id)) {
-      problems.push({ reason: `criteria[${index}]-duplicate-id`, message: `criterion id "${id}" appears twice` });
-    } else if (id !== null) {
-      seen.add(id);
-    }
-    const statement = prose(one["statement"], `criteria[${index}].statement`, PROOF_LIMITS.criterionStatement, problems);
-    const how = prose(one["how"], `criteria[${index}].how`, PROOF_LIMITS.criterionHow, problems);
-    const verdict = one["verdict"];
-    if (verdict !== "met" && verdict !== "not-met" && verdict !== "not-checked" && verdict !== "pending-verification") {
-      problems.push({
-        reason: `criteria[${index}]-bad-verdict`,
-        message: `criteria[${index}].verdict must be "met", "not-met", "not-checked", or "pending-verification" (got ${describe(verdict)})`,
-      });
-      continue;
-    }
-    const evidence = parseEvidenceRefs(one["evidence"], `criteria[${index}].evidence`, problems);
-    if (id === null || statement === null || how === null || evidence === null) continue;
-    criteria.push({ id, statement, how, verdict, evidence });
-  }
-  return criteria;
-}
-
-function parseChecks(value: unknown, problems: ProofProblem[]): ParsedCheck[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: "bad-checks", message: `checks must be an array (got ${describe(value)})` });
-    return [];
-  }
-  if (value.length > PROOF_LIMITS.checks) {
-    problems.push({ reason: "checks-too-many", message: `checks lists ${value.length} — cap is ${PROOF_LIMITS.checks}` });
-    return [];
-  }
-  const checks: ParsedCheck[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `checks[${index}]-shape`, message: `checks[${index}] must be an object` });
-      continue;
-    }
-    const one = entry as Record<string, unknown>;
-    const command = prose(one["command"], `checks[${index}].command`, PROOF_LIMITS.checkCommand, problems);
-    const summary = prose(one["summary"], `checks[${index}].summary`, PROOF_LIMITS.checkSummary, problems);
-    const exitCode = one["exitCode"];
-    if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) {
-      problems.push({
-        reason: `checks[${index}]-bad-exit-code`,
-        message: `checks[${index}].exitCode must be an integer 0-255 (got ${describe(exitCode)})`,
-      });
-      continue;
-    }
-    if (command === null || summary === null) continue;
-    checks.push({ command, summary, exitCode });
-  }
-  return checks;
-}
-
-function parseStringList(
-  value: unknown,
-  field: string,
-  cap: number,
-  itemCap: number,
-  problems: ProofProblem[],
-): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be an array (got ${describe(value)})` });
-    return [];
-  }
-  if (value.length > cap) {
-    problems.push({ reason: `${field}-too-many`, message: `${field} lists ${value.length} — cap is ${cap}` });
-    return [];
-  }
-  const out: string[] = [];
-  for (const [index, entry] of value.entries()) {
-    const item = prose(entry, `${field}[${index}]`, itemCap, problems);
-    if (item !== null) out.push(item);
+  for (const [index, one] of records("screenshots")) {
+    text(`screenshots[${index}].path`, one["path"], PROOF_LIMITS.screenshotPath, true);
+    text(`screenshots[${index}].caption`, one["caption"], PROOF_LIMITS.screenshotCaption);
   }
   return out;
 }
 
-function parseScreenshots(value: unknown, problems: ProofProblem[]): ParsedScreenshot[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: "bad-screenshots", message: `screenshots must be an array (got ${describe(value)})` });
-    return [];
-  }
-  if (value.length > PROOF_LIMITS.screenshots) {
-    problems.push({ reason: "screenshots-too-many", message: `screenshots lists ${value.length} — cap is ${PROOF_LIMITS.screenshots}` });
-    return [];
-  }
-  const screenshots: ParsedScreenshot[] = [];
-  const seen = new Set<string>();
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `screenshots[${index}]-shape`, message: `screenshots[${index}] must be an object` });
-      continue;
+/**
+ * The rules JSON Schema cannot state, in plain code with path-named errors: blank text, UTF-8 byte limits, control
+ * characters, normalized repository-relative screenshot paths (no leading slash, `.`/`..` segment or backslash — the
+ * shape `readVerifiedArtifact` enforces on an evidence key), and unique criterion ids and screenshot paths. A field
+ * the schema already refused is not reported twice.
+ */
+function proofRuleProblems(body: Record<string, unknown>, contract: readonly ProofProblem[]): ProofProblem[] {
+  const named = (path: string) => contract.some(problem => problem.message.startsWith(`${path}:`));
+  const problems: ProofProblem[] = [];
+  for (const field of textFields(body)) {
+    if (named(field.path)) continue;
+    const { path, value } = field;
+    if (value.trim() === "") problems.push({ reason: `missing-${path}`, message: `${path}: must not be blank` });
+    else if (Buffer.byteLength(value, "utf8") > field.bytes) problems.push({ reason: `${path}-too-long`, message: `${path}: over ${field.bytes.toLocaleString("en-US")} bytes` });
+    else if (hasForbiddenControls(value)) problems.push({ reason: `${path}-controls`, message: `${path}: carries control characters that could become terminal escapes` });
+    else if (field.relative && (value.startsWith("/") || !value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== ".." && !segment.includes("\\")))) {
+      problems.push({ reason: `${path}-not-relative`, message: `${path}: must be a normalized repository-relative path` });
     }
-    const one = entry as Record<string, unknown>;
-    const path = relativePath(one["path"], `screenshots[${index}].path`, PROOF_LIMITS.screenshotPath, problems);
-    const caption = prose(one["caption"], `screenshots[${index}].caption`, PROOF_LIMITS.screenshotCaption, problems);
-    if (path !== null && seen.has(path)) {
-      problems.push({ reason: `screenshots[${index}]-duplicate-path`, message: `screenshot path "${path}" appears twice` });
-      continue;
-    }
-    if (path === null || caption === null) continue;
-    seen.add(path);
-    screenshots.push({ path, caption });
   }
-  return screenshots;
+  const unique = (field: "criteria" | "screenshots", key: "id" | "path", what: string) => {
+    const list = body[field];
+    if (!Array.isArray(list) || named(field)) return;
+    const seen = new Set<string>();
+    list.forEach((one, index) => {
+      const value = typeof one === "object" && one !== null ? (one as Record<string, unknown>)[key] : undefined;
+      if (typeof value !== "string") return;
+      if (seen.has(value)) problems.push({ reason: `${field}[${index}]-duplicate-${key}`, message: `${field}[${index}].${key}: ${what} ${JSON.stringify(value)} appears twice` });
+      seen.add(value);
+    });
+  };
+  unique("criteria", "id", "criterion id");
+  unique("screenshots", "path", "screenshot path");
+  return problems;
 }
 
+/**
+ * Read a proof: the payload byte cap and JSON first, then the proof schema (version 2 as itself, the version 1 a
+ * builder writes upgraded, a newer one refused plainly), then the plain-code rules. Every problem names its path and
+ * is reported at once; fail closed.
+ */
 export function parseProof(raw: string): ProofParseResult {
   if (Buffer.byteLength(raw, "utf8") > PROOF_LIMITS.payload) {
-    return refuse("too-large", `the payload is over ${PROOF_LIMITS.payload} bytes`);
+    return refuse("too-large", `payload: over ${PROOF_LIMITS.payload.toLocaleString("en-US")} bytes`);
   }
   let parsed: unknown;
   try {
@@ -371,32 +171,18 @@ export function parseProof(raw: string): ProofParseResult {
   } catch (error) {
     return refuse("not-json", `the payload is not JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return refuse("not-an-object", "the payload must be one JSON object");
-  }
-  const body = parsed as Record<string, unknown>;
-  const problems: ProofProblem[] = [];
-
-  if (body["version"] !== 1) {
-    problems.push({ reason: "bad-version", message: `version must be 1 (got ${describe(body["version"])})` });
-  }
-
-  const criteria = parseCriteria(body["criteria"], problems);
-  const checks = parseChecks(body["checks"], problems);
-  const changed = parseStringList(body["changed"], "changed", PROOF_LIMITS.changed, PROOF_LIMITS.changedPath, problems);
-  const caveats = parseStringList(body["caveats"], "caveats", PROOF_LIMITS.caveats, PROOF_LIMITS.caveat, problems);
-  const screenshots = parseScreenshots(body["screenshots"], problems);
-
-  if (problems.length > 0) return { ok: false, problems };
-  return {
-    ok: true,
-    proof: { version: 1, criteria, checks, changed, caveats, screenshots },
-  };
+  const body = proofPayloadBody(parsed);
+  if (body === null) return refuse("not-an-object", "payload: must be one JSON object");
+  const read = readProofPayload(parsed);
+  const contract = read.ok ? [] : read.issues.map(contractProblemOf);
+  if (contract.some(problem => problem.reason === "newer-version" || problem.reason === "bad-version")) return { ok: false, problems: contract };
+  const problems = [...contract, ...proofRuleProblems(body, contract)];
+  if (!read.ok || problems.length > 0) return { ok: false, problems };
+  return { ok: true, proof: read.value };
 }
 
-/** Re-serialize the validated shape, never the agent's raw bytes (the
- * scout report's rule, `scout.ts`): what is stored and later hash-verified
- * is exactly what this parser admitted, key order and all. */
+/** Serialize the validated shape, never the agent's raw bytes (the scout report's rule, `scout.ts`): what is stored
+ * and later hash-verified is exactly what the schema admitted, in its key order. */
 export function serializeProof(proof: ParsedProof): string {
   return JSON.stringify(proof, null, 2);
 }
@@ -655,34 +441,8 @@ export function sameDiffStatFacts(a: DiffStatFacts | null, b: DiffStatFacts | nu
   return restate(a) === restate(b);
 }
 
-/** The plane's own re-run of the repository's approved verification
- * command, when one is configured. `ran: false` covers both "none
- * configured" and "configured but the run could not attempt it" — the
- * latter is distinguished by `attemptFailed`, which downgrades to `short`
- * rather than `refuted`: "we could not check" is not "the claim is false". */
-export type VerifyCommandFacts =
-  | { configured: false }
-  | {
-      configured: true;
-      ran: false;
-      attemptFailed: true;
-      failure?:
-        | "spawn-failed"
-        | "timed-out"
-        | "dependency-missing"
-        | "setup-stale"
-        | "setup-failed"
-        | "own-install-failed"
-        | "tracked-files-changed"
-        | "setup-changed-files"
-        | "checkout-moved"
-        | "cleanliness-unavailable"
-        | "dependency-still-missing"
-        | "retry-spawn-failed"
-        | "retry-timed-out"
-        | "custody-lost";
-    }
-  | { configured: true; ran: true; exitCode: number; setupReplayed?: true };
+/** What the approved verification command did (the receipt's `result`); its schema lives with the receipt. */
+export type { VerifyCommandFacts } from "./contracts/verification-receipt.js";
 
 export type AdjudicateInput = {
   /** New captures may assess the signed goal directly when the builder wrote

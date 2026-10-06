@@ -34,7 +34,9 @@ import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
-import type { FlowDefinition } from "./flows.js";
+import { FlowContractError, type FlowDefinition } from "./flows.js";
+import { parseContract, type ContractResult } from "./contracts/contract.js";
+import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
 import { describeSchedule, firstFireAt, nextFireAt, parseSchedule, WEEKDAYS } from "./routine.js";
 import { takeReply } from "./flow-replies.js";
 import { mailboxAccess, mailCursorOf, mailCursorText, readThroughImap, type MailReader } from "./mailbox.js";
@@ -44,25 +46,8 @@ import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
 
-export const FLOW_TRIGGER_KINDS = ["button", "schedule", "github", "linear", "flow", "webhook", "email", "chat", "plane-review"] as const;
-export type FlowTriggerKind = (typeof FLOW_TRIGGER_KINDS)[number];
-
-export type TriggerConfig =
-  | { kind: "button"; label: string; questions: string[]; zone: string | null }
-  /** `script` (v90): run this project script on the schedule and make a card of each item it prints, instead of one card titled `title`. */
-  | { kind: "schedule"; schedule: string; title: string; description: string | null; zone: string | null; script?: string; secrets?: string[] }
-  | { kind: "github"; repo: string; watch: "issues" | "pulls" | "checks"; label: string | null; branch: string | null; from: "team" | "anyone"; delivery: "poll" | "webhook"; zone: string | null }
-  | { kind: "linear"; team: string | null; state: string | null; label: string | null; delivery: "poll" | "webhook"; zone: string | null }
-  | { kind: "flow"; flow: number; when: string; zone: string | null }
-  | { kind: "webhook"; title: string; titleField: string | null; bodyField: string | null; zone: string | null }
-  /** `sender`: addresses or domains, comma-separated; `subject`: words the subject must contain. */
-  | { kind: "email"; folder: string; sender: string | null; subject: string | null; zone: string | null }
-  /** A channel in a chat app; `binding` is the pairing of the person who connected it (whose chat answers there). */
-  | { kind: "chat"; app: ChatApp; installation: string; chat: string; binding: number; zone: string | null }
-  /** `schedule`: always daily, in the routines' form ("daily:07:30@Europe/London"). */
-  | { kind: "plane-review"; schedule: string; zone: string | null };
-
-export type ChatApp = "slack" | "discord" | "teams" | "telegram";
+export { FLOW_TRIGGER_KINDS };
+export type { ChatApp, FlowTriggerKind, TriggerConfig, TriggerInput };
 export const CHAT_APP_NAMES: Record<ChatApp, string> = { slack: "Slack", discord: "Discord", teams: "Teams", telegram: "Telegram" };
 
 /** What each kind is called on the canvas. */
@@ -81,18 +66,28 @@ const TEAM = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 // ------------------------------------------------------------ the terms
 
-function words(input: Record<string, unknown>, key: string, cap: number, required: boolean): string | null {
-  const value = input[key];
-  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
-    if (required) throw new Error(`Say the trigger's ${key}.`);
-    return null;
+const HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * A trigger's settings read by their one schema (`label: required`, `unknown key 'flows'`). A setting given as null is
+ * left out, and a button's blank question lines are dropped, as every release has read them. Then what the schema can't
+ * say, named by its path: no hidden characters and nothing that looks like a key, anywhere in the settings.
+ */
+export function readTriggerSettings(raw: unknown): ContractResult<TriggerInput> {
+  const body = isRecord(raw) ? Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null).map(([key, value]) =>
+    [key, key === "questions" && Array.isArray(value) ? value.filter(one => typeof one !== "string" || one.trim() !== "") : value])) : raw;
+  const read = parseContract(triggerInputSchema, body, FLOW_ALIASES);
+  if (!read.ok) return read;
+  for (const [key, value] of Object.entries(read.value)) {
+    for (const [n, one] of (Array.isArray(value) ? value : [value]).entries()) {
+      if (typeof one !== "string") continue;
+      const path = Array.isArray(value) ? `${key}[${n}]` : key;
+      if (HIDDEN.test(one)) return { ok: false, issues: [{ path, kind: "bad-value", line: `${path}: can't contain hidden characters` }] };
+      if (scanForSecrets(one).length > 0) return { ok: false, issues: [{ path, kind: "bad-value", line: `${path}: looks like a key or password; keys never go in a trigger's settings` }] };
+    }
   }
-  if (typeof value !== "string") throw new Error(`The trigger's ${key} must be plain text.`);
-  const trimmed = value.trim();
-  if (trimmed.length > cap) throw new Error(`The trigger's ${key} is up to ${cap} characters.`);
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/.test(trimmed)) throw new Error(`The trigger's ${key} can't contain hidden characters.`);
-  if (scanForSecrets(trimmed).length > 0) throw new Error("That looks like a key or password. Keys never go in a trigger's settings.");
-  return trimmed;
+  return read;
 }
 
 /** A schedule said in words ("every 2 hours", "daily 09:00 Europe/London", "monday 09:00") or in the routines' own form. */
@@ -137,91 +132,82 @@ export function githubRepoOf(path: string): string | null {
   } catch { return null; }
 }
 
-/** A trigger's settings, checked whole against the flow it starts cards in. Throws in plain words. */
+/** A trigger's settings, checked whole against the flow it starts cards in (readTriggerSettings, then the flow, its zones,
+ * the project's scripts and the schedule). Throws FlowContractError, each line naming its setting. */
 export function validateTriggerConfig(raw: unknown, context: { store: Store; flow: FlowRow; definition: FlowDefinition; actor: string }): TriggerConfig {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Choose what starts cards.");
-  const input = raw as Record<string, unknown>;
-  const kind = input["kind"];
-  if (!FLOW_TRIGGER_KINDS.includes(kind as FlowTriggerKind)) throw new Error("Choose what starts cards: a button, a schedule, GitHub, Linear, another flow, a webhook, an email inbox, a chat channel or a plane review.");
-  const named = words(input, "zone", 60, false);
+  // Connecting a channel proves it's one the person is in: it happens in the channel, not here.
+  if (isRecord(raw) && raw["kind"] === "chat") throw new FlowContractError([`kind: connect a chat channel from the channel itself: where Toolroll is in Slack, Discord, Teams or a Telegram group, send “flow ${context.flow.id}”`]);
+  const read = readTriggerSettings(raw);
+  if (!read.ok) throw new FlowContractError(read.issues.map(one => one.line));
+  const input = read.value;
+  const refuse = (path: string, what: string): never => { throw new FlowContractError([`${path}: ${what}`]); };
+  /** A setting's words, trimmed; blank is left out. */
+  const said = (value: string | undefined): string | null => value === undefined || value.trim() === "" ? null : value.trim();
+  const named = said(input.zone);
   const zoneStage = named === null ? null : context.definition.stages.find(one => one.id === named || one.title.toLowerCase() === named.toLowerCase());
-  if (named !== null && zoneStage === undefined) throw new Error(`This flow has no zone called ${named}.`);
+  if (named !== null && zoneStage === undefined) refuse("zone", `this flow has no zone called ${named}`);
   const zone = zoneStage?.id ?? null;
-  const choice = <T extends string>(key: string, options: readonly T[], fallback: T): T => {
-    const value = input[key];
-    if (value === undefined || value === null || value === "") return fallback;
-    if (!options.includes(value as T)) throw new Error(`Choose the trigger's ${key}: ${options.join(" or ")}.`);
-    return value as T;
-  };
-  switch (kind as FlowTriggerKind) {
+  switch (input.kind) {
     case "button": {
-      const label = words(input, "label", 40, true)!;
-      const asked = input["questions"];
-      const questions = (Array.isArray(asked) ? asked : typeof asked === "string" ? asked.split("\n") : [])
-        .map(one => typeof one === "string" ? one.trim() : "").filter(one => one !== "");
-      if (questions.length > 6) throw new Error("A button asks at most 6 questions.");
-      for (const question of questions) if (question.length > 80 || scanForSecrets(question).length > 0) throw new Error("Each question is a short line of plain text.");
+      const label = said(input.label) ?? refuse("label", "required");
+      const questions = (Array.isArray(input.questions) ? input.questions : typeof input.questions === "string" ? input.questions.split("\n") : []).map(one => one.trim()).filter(one => one !== "");
+      if (questions.length > 6) refuse("questions", "at most 6 items");
+      questions.forEach((question, n) => { if (question.length > 80) refuse(`questions[${n}]`, "at most 80 characters"); });
       return { kind: "button", label, questions: questions.length === 0 ? ["What needs doing?", "Details"] : questions, zone };
     }
     case "schedule": {
-      const said = words(input, "schedule", 80, true)!;
-      const schedule = scheduleFromWords(said);
-      if (schedule === null) throw new Error("Say the schedule like “every 2 hours”, “daily 09:00 Europe/London”, “weekdays 09:00” or “monday 09:00”.");
+      const said_ = said(input.schedule) ?? refuse("schedule", "required");
+      const schedule = scheduleFromWords(said_) ?? refuse("schedule", "say it like “every 2 hours”, “daily 09:00 Europe/London”, “weekdays 09:00” or “monday 09:00”");
       // A script on a schedule (v90): each item it prints becomes a card.
-      const script = words(input, "script", 40, false);
+      const script = said(input.script);
       if (script !== null) {
-        if (context.store.flowScript(context.flow.repo, script) === null) throw new Error(`There's no script called ${script} in this project. Make it on the flow's Scripts panel first.`);
-        const asked = input["secrets"];
-        const secrets = asked === undefined || asked === null ? [] : Array.isArray(asked) ? asked : typeof asked === "string" ? asked.split(/[\s,]+/).filter(one => one !== "") : null;
-        if (secrets === null || secrets.length > 10 || secrets.some(one => typeof one !== "string" || !/^[A-Z][A-Z0-9_]{0,39}$/.test(one))) throw new Error("Name up to 10 saved secrets in capitals, like API_TOKEN.");
-        return { kind: "schedule", schedule, title: `Items from ${script}`, description: null, zone, script, ...(secrets.length === 0 ? {} : { secrets: [...new Set(secrets as string[])] }) };
+        if (context.store.flowScript(context.flow.repo, script) === null) refuse("script", `there's no script called ${script} in this project; make it on the flow's Scripts panel first`);
+        const secrets = input.secrets === undefined ? [] : Array.isArray(input.secrets) ? input.secrets : input.secrets.split(/[\s,]+/).filter(one => one !== "");
+        if (secrets.length > SECRETS_MAX || secrets.some(one => !/^[A-Z][A-Z0-9_]{0,39}$/.test(one))) refuse("secrets", "name up to 10 saved secrets in capitals, like API_TOKEN");
+        return { kind: "schedule", schedule, title: `Items from ${script}`, description: null, zone, script, ...(secrets.length === 0 ? {} : { secrets: [...new Set(secrets)] }) };
       }
-      return { kind: "schedule", schedule, title: words(input, "title", 200, true)!, description: words(input, "description", 2000, false), zone };
+      return { kind: "schedule", schedule, title: said(input.title) ?? refuse("title", "required"), description: said(input.description), zone };
     }
     case "github": {
-      const repo = words(input, "repo", 140, false) ?? githubRepoOf(context.flow.repo);
-      if (repo === null || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("Name the GitHub repository as owner/name.");
-      const watch = choice("watch", ["issues", "pulls", "checks"] as const, "issues");
-      const label = watch === "checks" ? null : words(input, "label", 50, false);
-      const branch = watch === "checks" ? words(input, "branch", 100, false) ?? "main" : null;
-      if (branch !== null && !/^[A-Za-z0-9._/-]+$/.test(branch)) throw new Error("That branch name isn't valid.");
-      return { kind: "github", repo, watch, label, branch, from: choice("from", ["team", "anyone"] as const, "team"), delivery: choice("delivery", ["poll", "webhook"] as const, "poll"), zone };
+      const repo = said(input.repo) ?? githubRepoOf(context.flow.repo);
+      if (repo === null || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) refuse("repo", "name the GitHub repository as owner/name");
+      const watch = input.watch ?? "issues";
+      const label = watch === "checks" ? null : said(input.label);
+      const branch = watch === "checks" ? said(input.branch) ?? "main" : null;
+      if (branch !== null && !/^[A-Za-z0-9._/-]+$/.test(branch)) refuse("branch", "that branch name isn't valid");
+      return { kind: "github", repo: repo!, watch, label, branch, from: input.from ?? "team", delivery: input.delivery ?? "poll", zone };
     }
     case "linear": {
-      const team = words(input, "team", 12, false), state = words(input, "state", 40, false), label = words(input, "label", 50, false);
-      if (team !== null && !/^[A-Za-z0-9]+$/.test(team)) throw new Error("A Linear team is its short key, like ENG.");
-      if (team === null && label === null) throw new Error("Name a Linear team or a label, so the trigger doesn't take every issue in the workspace.");
-      return { kind: "linear", team: team?.toUpperCase() ?? null, state, label, delivery: choice("delivery", ["poll", "webhook"] as const, "poll"), zone };
+      const team = said(input.team), state = said(input.state), label = said(input.label);
+      if (team !== null && !/^[A-Za-z0-9]+$/.test(team)) refuse("team", "a Linear team is its short key, like ENG");
+      if (team === null && label === null) refuse("team", "name a Linear team or a label, so the trigger doesn't take every issue in the workspace");
+      return { kind: "linear", team: team?.toUpperCase() ?? null, state, label, delivery: input.delivery ?? "poll", zone };
     }
     case "flow": {
-      const source = Number(input["flow"]);
-      const flow = Number.isSafeInteger(source) ? context.store.getFlow(source) : null;
+      const flow = context.store.getFlow(input.flow);
       const sourceDefinition = flow === null ? null : flowDefinitionOf(flow);
-      if (flow === null || flow.state !== "active" || sourceDefinition === null || !context.store.accountCanAccess(context.actor, flow.repo)) throw new Error("Choose another flow in your projects.");
-      if (flow.id === context.flow.id) throw new Error("A flow can't start cards in itself; move them with a zone's next step instead.");
-      const when = words(input, "when", 60, false);
+      if (flow === null || flow.state !== "active" || sourceDefinition === null || !context.store.accountCanAccess(context.actor, flow.repo)) return refuse("flow", "choose another flow in your projects");
+      if (flow.id === context.flow.id) refuse("flow", "a flow can't start cards in itself; move them with a zone's next step instead");
+      const when = said(input.when);
       const stage = when === null ? sourceDefinition.stages.find(one => one.kind === "done") : sourceDefinition.stages.find(one => one.id === when || one.title.toLowerCase() === when.toLowerCase());
-      if (stage === undefined) throw new Error(`${flow.name} has no zone called ${when ?? "Done"}.`);
+      if (stage === undefined) return refuse("when", `${flow.name} has no zone called ${when ?? "Done"}`);
       return { kind: "flow", flow: flow.id, when: stage.id, zone };
     }
     case "webhook":
-      return { kind: "webhook", title: words(input, "title", 120, false) ?? "Webhook", titleField: words(input, "titleField", 80, false), bodyField: words(input, "bodyField", 80, false), zone };
-    case "chat":
-      // Connecting a channel proves it's one the person is in: it happens in the channel, not here.
-      throw new Error(`Connect a chat channel from the channel itself: where Toolroll is in Slack, Discord, Teams or a Telegram group, send “flow ${context.flow.id}”.`);
+      return { kind: "webhook", title: said(input.title) ?? "Webhook", titleField: said(input.titleField), bodyField: said(input.bodyField), zone };
     case "plane-review": {
-      const at = words(input, "at", 5, false) ?? "07:30";
+      const at = said(input.at) ?? "07:30";
       const clock = /^(\d{1,2}):(\d{2})$/.exec(at);
-      const zoneName = words(input, "timeZone", 60, false) ?? localTimeZone();
+      const zoneName = said(input.timeZone) ?? localTimeZone();
       const schedule = clock === null ? null : scheduleFromWords(`daily ${clock[1]}:${clock[2]} ${zoneName}`);
-      if (schedule === null) throw new Error("Say the time it reviews the day as HH:MM, like 07:30, and a time zone like Europe/London.");
+      if (schedule === null) return refuse("at", "say the time it reviews the day as HH:MM, like 07:30, and a time zone like Europe/London");
       return { kind: "plane-review", schedule, zone };
     }
     case "email": {
-      const folder = words(input, "folder", 100, false) ?? "INBOX";
-      const sender = words(input, "sender", 300, false);
-      if (sender !== null && sendersOf(sender).length === 0) throw new Error("Say whom mail comes from as addresses or domains, like priya@example.com or example.com.");
-      return { kind: "email", folder: /^inbox$/i.test(folder) ? "INBOX" : folder, sender: sender === null ? null : sendersOf(sender).join(", "), subject: words(input, "subject", 100, false), zone };
+      const folder = said(input.folder) ?? "INBOX";
+      const sender = said(input.sender);
+      if (sender !== null && sendersOf(sender).length === 0) refuse("sender", "say whom mail comes from as addresses or domains, like priya@example.com or example.com");
+      return { kind: "email", folder: /^inbox$/i.test(folder) ? "INBOX" : folder, sender: sender === null ? null : sendersOf(sender).join(", "), subject: said(input.subject), zone };
     }
   }
 }
@@ -301,7 +287,23 @@ export function triggerHeadline(config: TriggerConfig, store: Store): { name: st
 }
 
 export function triggerConfigOf(trigger: FlowTriggerRow): TriggerConfig | null {
-  try { return JSON.parse(trigger.configJson) as TriggerConfig; } catch { return null; }
+  let raw: unknown;
+  try { raw = JSON.parse(trigger.configJson); } catch { return null; }
+  const read = readTriggerConfig(raw);
+  return read.ok ? read.value : null;
+}
+
+/** What a saved trigger leaves out, it had as these (every release has saved them whole; a hand-made row may not). */
+const SAVED_DEFAULTS: Partial<Record<FlowTriggerKind, Record<string, unknown>>> = {
+  button: { questions: ["What needs doing?", "Details"] }, schedule: { description: null }, github: { label: null, branch: null, from: "team", delivery: "poll" },
+  linear: { team: null, state: null, label: null, delivery: "poll" }, webhook: { title: "Webhook", titleField: null, bodyField: null }, email: { folder: "INBOX", sender: null, subject: null },
+};
+
+/** A saved trigger's config (`configJson`, which carries no version) read by its one schema, what it leaves out filled. */
+export function readTriggerConfig(raw: unknown): ContractResult<TriggerConfig> {
+  const kind = isRecord(raw) ? raw["kind"] : undefined;
+  const body = isRecord(raw) ? { zone: null, ...SAVED_DEFAULTS[kind as FlowTriggerKind], ...raw } : raw;
+  return parseContract(triggerConfigSchema, body);
 }
 
 /** Whether this trigger takes deliveries at a secret address rather than being checked. */

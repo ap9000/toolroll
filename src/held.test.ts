@@ -13,6 +13,7 @@ import { run as runExec } from "./exec.js";
 import { requestTaskStop, resumeTaskStop } from "./task-control.js";
 import type { CapturedBuild } from "./builder.js";
 import type { HeldSessionStart, HeldSessionHandle } from "./exec.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const T0 = new Date("2026-08-25T22:00:00.000Z");
 /** Temp folders the held-session fixtures make; gone when the file's tests are done. */
@@ -184,8 +185,8 @@ describe("the coordinator: final proof, custody, settlement through the shared m
     let exitResolve: (info: { code: number | null }) => void = () => {};
     const exited = new Promise<{ code: number | null }>(pass => (exitResolve = pass));
     const handle: HeldSessionHandle = {
-      supervisorPid: 4242,
-      agentPgid: 4243,
+      supervisorPid: fakePid(1),
+      agentPgid: fakePid(2),
       writeTurn(json: string): boolean {
         script.onWrite(
           json,
@@ -769,8 +770,8 @@ function fakeStarterOf(onTurn: (seq: number) => { events: boolean; files: string
   let exitResolve: (info: { code: number | null }) => void = () => {};
   const exited = new Promise<{ code: number | null }>(pass => (exitResolve = pass));
   const handle: HeldSessionHandle = {
-    supervisorPid: 4242,
-    agentPgid: 4243,
+    supervisorPid: fakePid(1),
+    agentPgid: fakePid(2),
     writeTurn(): boolean {
       seq += 1;
       const mine = seq;
@@ -985,8 +986,8 @@ describe("parallel attended sessions (v28): two held conversations on one runner
     let exitResolve: (info: { code: number | null }) => void = () => {};
     const exited = new Promise<{ code: number | null }>(pass => (exitResolve = pass));
     const handle: HeldSessionHandle = {
-      supervisorPid: 4242,
-      agentPgid: 4243,
+      supervisorPid: fakePid(1),
+      agentPgid: fakePid(2),
       writeTurn(): boolean {
         writes += 1;
         const concluding = writes >= 2; // the brief idles; the operator turn concludes
@@ -1175,7 +1176,7 @@ describe("v28 round-1 folds: a refused launch closes its admission-bound authori
 
   const idleStarter = () => {
     const handle: HeldSessionHandle = {
-      supervisorPid: 1, agentPgid: 2,
+      supervisorPid: fakePid(1), agentPgid: fakePid(2),
       writeTurn: () => true,
       endInput: () => {}, terminate: () => {}, killHard: () => {},
       exited: new Promise(() => {}),

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/cli-projects/desktop-tools-after-cli-add.png",
+      "caption": "Desktop: Settings → Tools opens a project added by repos add, no restart"
+    },
+    {
+      "path": "evidence/cli-projects/desktop-projects-after-cli-add.png",
+      "caption": "Desktop: Projects lists the taskless CLI-added project"
+    },
+    {
+      "path": "evidence/cli-projects/desktop-settings-project-remove.png",
+      "caption": "Desktop: Settings → Project with Remove from Toolroll above Delete project"
+    },
+    {
+      "path": "evidence/cli-projects/phone-settings-project-remove.png",
+      "caption": "Phone: long project name wraps, Remove from Toolroll is a 44px target"
+    },
+    {
+      "path": "evidence/cli-projects/phone-projects-after-cli-add.png",
+      "caption": "Phone: Projects after the CLI add"
+    },
+    {
+      "path": "evidence/cli-projects/desktop-restricted-projects.png",
+      "caption": "Desktop: an account limited to listed projects does not see it"
+    },
+    {
+      "path": "evidence/cli-projects/desktop-after-remove.png",
+      "caption": "Desktop: after Remove from Toolroll, plain confirmation; project gone from the picker"
+    }
+  ]
+}

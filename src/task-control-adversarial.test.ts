@@ -15,6 +15,7 @@ import { storeEvidence } from "./evidence.js";
 import { writeStoreSeed } from "../test/store-seed.js";
 import { addApprover } from "./scope.js";
 import { runOperate } from "./operate.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const roots: string[] = [];
 const stores: Store[] = [];
@@ -116,18 +117,19 @@ describe("operator review: cancellation cannot cross custody boundaries", () => 
   test("known descendant fallback commits all IDs without changing an older unknown witness", () => {
     const f = fixture();
     const old = f.store.reserveRunProcess(f.id, new Date());
-    expect(preserveObservedProcesses(f.store, f.id, new Date(), [{ pid: 100, group: true }, { pid: 200, group: false }])).toBe(true);
+    const leader = fakePid(1), descendant = fakePid(2);
+    expect(preserveObservedProcesses(f.store, f.id, new Date(), [{ pid: leader, group: true }, { pid: descendant, group: false }])).toBe(true);
     const rows = f.store.raw().prepare("SELECT id,pid,process_group,exited_at FROM run_process WHERE run=? ORDER BY id").all(f.id);
     expect(rows).toEqual([
       { id: old, pid: null, process_group: 1, exited_at: null },
-      { id: expect.any(Number), pid: 100, process_group: 1, exited_at: null },
-      { id: expect.any(Number), pid: 200, process_group: 0, exited_at: null },
+      { id: expect.any(Number), pid: leader, process_group: 1, exited_at: null },
+      { id: expect.any(Number), pid: descendant, process_group: 0, exited_at: null },
     ]);
   });
 
   test("a failed fallback transaction leaves its fresh guard and rolls back every partial identity", () => {
     const f = fixture();
-    expect(() => preserveObservedProcesses(f.store, f.id, new Date(), [{ pid: 100, group: true }, { pid: -1, group: false }])).toThrow("valid spawned PID");
+    expect(() => preserveObservedProcesses(f.store, f.id, new Date(), [{ pid: fakePid(1), group: true }, { pid: -1, group: false }])).toThrow("valid spawned PID");
     expect(f.store.raw().prepare("SELECT pid,exited_at FROM run_process WHERE run=?").all(f.id)).toEqual([{ pid: null, exited_at: null }]);
   });
 

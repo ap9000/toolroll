@@ -37,9 +37,9 @@ describe("steps into a drawing", () => {
     expect(flow.stages.map(one => [one.zone.x, one.zone.y])).toEqual([[0, 0], [300, 0], [600, 0], [900, 0], [900, 380], [600, 380], [300, 380]]);
     // Steps may point anywhere by name; a name that isn't there is refused in words.
     expect(flowFromSteps([{ title: "Build", kind: "task", ifFails: "requests" }, { title: "Requests", kind: "inbox" }], null).stages[0]!.onFail).toBe("requests");
-    expect(() => flowFromSteps([{ title: "Build", kind: "task", next: "Deploy" }], null)).toThrow("Step Build: there's no step called Deploy.");
-    expect(() => flowFromSteps([{ title: "Build" }], null)).toThrow("Step Build: choose what it does.");
-    expect(() => flowFromSteps([], null)).toThrow("List the flow's steps in order.");
+    expect(() => flowFromSteps([{ title: "Build", kind: "task", next: "Deploy" }], null)).toThrow("steps[0].next: there's no step called Deploy");
+    expect(() => flowFromSteps([{ title: "Build" }], null)).toThrow("steps[0].kind: required");
+    expect(() => flowFromSteps([], null)).toThrow("steps: at least 1 item");
     // Found end to end: the lead names new steps with its own ids and points at them; those ids are kept.
     const named = flowFromSteps([{ id: "inbox", title: "New requests", kind: "inbox" }, { id: "build", title: "Build the fix", kind: "task" },
       { id: "tests", title: "Run unit tests", kind: "check", script: "unit-tests", ifFails: "build" }, { id: "review", title: "Review", kind: "approval", decider: "alex" }], null);
@@ -152,6 +152,16 @@ describe("the lead builds and runs a flow", () => {
     expect(confirm(approve)).toMatchObject({ ok: true, said: "Approved. Moved to Build. Its step filed a task under your usual approvals." });
     expect(confirm(late)).toMatchObject({ ok: false, said: "This action changed. Ask for a fresh proposal." });
     expect(store.getFlowCard(1)).toMatchObject({ stage: "build", state: "active" });
+  });
+
+  test("a malformed call is refused with the path-named lines the lead reads on its next turn; an edit's kept steps may leave their kind out", () => {
+    expect(lead("propose_flow", { operation: "create", repo: "r1", name: "Bugs", steps: [
+      { title: "Run", kind: "check", script: "triage", routes: [{ answer: "bug", to: "Build" }], onFail: "Build" }, { title: "Build", kind: "task" },
+    ] })).toEqual({ ok: false, message: "steps[0].routes[0].goesTo: required\nsteps[0].routes[0]: unknown key 'to' (did you mean goesTo?)\nsteps[0]: unknown key 'onFail' (did you mean ifFails?)" });
+    expect(lead("propose_flow", { operation: "add_trigger", flow: 1, settings: { kind: "webhook" } })).toMatchObject({ ok: false, message: expect.stringMatching(/^settings\.kind: must be one of "button", "schedule"/) });
+    expect(lead("propose_flow", { operation: "create", repo: "r1", stages: [] })).toEqual({ ok: false, message: "payload: unknown key 'stages' (did you mean steps?)" });
+    const flow = store.createFlow({ repo, name: "Bug fixes", definitionJson: JSON.stringify(FLOW_TEMPLATES[0]!.definition), by: "operator" }, now);
+    expect(lead("propose_flow", { operation: "edit", flow, steps: [{ id: "inbox" }, { id: "build", instructions: "Fix it" }, { id: "done" }] })).toMatchObject({ ok: true });
   });
 
   test("an edit is checked against the flow it was drafted from; names, keys and the generic action door are refused", () => {

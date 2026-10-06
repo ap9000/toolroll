@@ -343,7 +343,7 @@ export type BrowserFlowStage = {
   /** A sort zone: Jev's question, its answers and where each goes, how sure it must be to act alone, and what else it notes. */
   sort: { question: string; answers: { answer: string; means: string; to: string }[]; sureAt: number; notes: { id: string; kind: "score" | "yes-no"; question: string; levels: string[] | null }[] } | null;
   /** v91: a Wait zone waits for a reply to the card's email (onFail: no reply in time) or a set time; any other zone may have a time limit. */
-  wait?: { for: "reply" | "time" | "hours"; minutes: number; from?: string; to?: string; timeZone?: string };
+  wait?: { for: "reply" | "time" | "hours"; minutes: number; from?: string | undefined; to?: string | undefined; timeZone?: string | undefined };
   /** A Pull request zone merges once checks pass (after a person approved), this way. */
   merge?: "squash" | "merge" | "rebase" | undefined;
   limit?: { minutes: number; to: string | null } | undefined;

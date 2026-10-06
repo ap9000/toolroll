@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { openStore, contestantProfileOf, type Store } from "./store.js";
+import { fakePid } from "../test/fake-pid.js";
 import { canonicalProfileJson, profileDigestOf } from "./scope.js";
 import {
   raceDigestOf,
@@ -324,18 +325,19 @@ describe("worker-process slots and durable ceremony nonces", () => {
     const run = store.startRun({ taskRef: ref, leaseId: "l-slot", runner: "night-shift-1", branch: "b", worktree: "/pool/s", ...bareLegacy("build", "claude", null), now: T0 });
     const [slot] = store.reserveExecutionSlots("night-shift-1", 1, T0);
     if (slot === undefined) throw new Error("setup");
+    const group = fakePid(1), regrouped = fakePid(2), late = fakePid(3);
     expect(store.liveSlotCount("night-shift-1")).toBe(1);
-    expect(store.markSlotRunning(slot, { run, processGroup: 4242, incarnation: "inc-1" }, T0)).toBe(true);
+    expect(store.markSlotRunning(slot, { run, processGroup: group, incarnation: "inc-1" }, T0)).toBe(true);
     expect(store.markSlotRunning(slot, { run }, T0)).toBe(false); // once
-    expect(store.getExecutionSlot(slot)?.processGroup).toBe(4242);
-    expect(store.refreshSlotProcess(slot, { run, processGroup: 4343, incarnation: "wrong" })).toBe(false);
-    expect(store.refreshSlotProcess(slot, { run: run + 1, processGroup: 4343, incarnation: "inc-1" })).toBe(false);
-    expect(store.refreshSlotProcess(slot, { run, processGroup: 4343, incarnation: "inc-1" })).toBe(true);
-    expect(store.getExecutionSlot(slot)?.processGroup).toBe(4343);
+    expect(store.getExecutionSlot(slot)?.processGroup).toBe(group);
+    expect(store.refreshSlotProcess(slot, { run, processGroup: regrouped, incarnation: "wrong" })).toBe(false);
+    expect(store.refreshSlotProcess(slot, { run: run + 1, processGroup: regrouped, incarnation: "inc-1" })).toBe(false);
+    expect(store.refreshSlotProcess(slot, { run, processGroup: regrouped, incarnation: "inc-1" })).toBe(true);
+    expect(store.getExecutionSlot(slot)?.processGroup).toBe(regrouped);
     store.finishRun(run, { outcome: "no-change", now: T0 });
-    expect(store.refreshSlotProcess(slot, { run, processGroup: 4444, incarnation: "inc-1" })).toBe(false);
+    expect(store.refreshSlotProcess(slot, { run, processGroup: late, incarnation: "inc-1" })).toBe(false);
     expect(store.releaseExecutionSlot(slot, T0)).toBe(true);
-    expect(store.refreshSlotProcess(slot, { run, processGroup: 4444, incarnation: "inc-1" })).toBe(false);
+    expect(store.refreshSlotProcess(slot, { run, processGroup: late, incarnation: "inc-1" })).toBe(false);
     expect(store.releaseExecutionSlot(slot, T0)).toBe(false); // once
     expect(store.liveSlotCount("night-shift-1")).toBe(0);
   });

@@ -8,6 +8,7 @@ import { activeCodingUpdateWork } from './coding-update.js';
 import { CodingActionError, CodingWorkspace } from './coding-workspace.js';
 import { SessionService } from './session-service.js';
 import { CodingProviderDisconnectedError, CodingProviderRequestError, type CodingProvider, type CodingProviderEvent } from './coding-provider.js';
+import { fakePid } from '../test/fake-pid.js';
 
 class FakeProvider implements CodingProvider {
   listeners = new Set<(event: CodingProviderEvent) => void>();
@@ -402,13 +403,13 @@ describe('native coding workspace', () => {
 
   test('an unclean prior runtime fences new starts and cannot be cleared by closing an empty server', async () => {
     await start(); await workspace.close();
-    const raw = new DatabaseSync(db); raw.prepare("UPDATE coding_owner SET clean=0, native_pid=2147483647, token='',pid=0").run(); raw.close();
+    const raw = new DatabaseSync(db); raw.prepare("UPDATE coding_owner SET clean=0, native_pid=?, token='',pid=0").run(fakePid(1)); raw.close();
     provider = new FakeProvider(); workspace = open();
     await expect(workspace.start(actor, { repo, title: 'New work', model: null, prompt: 'Start another change.', requestId: 'new-start-after-crash' })).rejects.toThrow('needs recovery'); expect(provider.calls).toEqual([]);
     // Reading the already accepted initial receipt does not start new work.
     expect((await start()).status).toBe('uncertain'); expect(provider.calls).toEqual([]);
     await workspace.close();
-    const check = new DatabaseSync(db); expect(check.prepare('SELECT clean,native_pid FROM coding_owner').get()).toMatchObject({ clean: 0, native_pid: 2147483647 }); check.close();
+    const check = new DatabaseSync(db); expect(check.prepare('SELECT clean,native_pid FROM coding_owner').get()).toMatchObject({ clean: 0, native_pid: fakePid(1) }); check.close();
   });
 
   test('a second server cannot acquire a live coding catalog', () => { expect(() => open()).toThrow('Another Toolroll server'); });
@@ -470,8 +471,8 @@ describe('native coding workspace', () => {
   test('cold recovery retains descendant witnesses and never signals them', async () => {
     const session = await start(); await workspace.close();
     const raw = new DatabaseSync(db);
-    raw.prepare("UPDATE coding_owner SET clean=0,token='',pid=0,native_pid=2147483647").run();
-    const witness = { pid: 2147483647, group: false, descendants: [{ pid: process.pid, group: false }], observationUnknown: false, host: hostname(), bootId: null };
+    raw.prepare("UPDATE coding_owner SET clean=0,token='',pid=0,native_pid=?").run(fakePid(1));
+    const witness = { pid: fakePid(1), group: false, descendants: [{ pid: process.pid, group: false }], observationUnknown: false, host: hostname(), bootId: null };
     raw.prepare('INSERT OR REPLACE INTO coding_custody VALUES(1,?)').run(JSON.stringify(witness));
     provider = new FakeProvider(); workspace = open();
     await expect(workspace.recover(session.id, actor)).rejects.toThrow('may still be running');
@@ -654,8 +655,8 @@ describe('native coding workspace', () => {
     await workspace.close();
     const raw = new DatabaseSync(db), orders = new DatabaseSync(join(dir, 'orders.db'));
     try {
-      raw.prepare("UPDATE coding_owner SET clean=0,token='',pid=0,native_pid=2147483647").run();
-      const witness = { pid: 2147483647, group: false, descendants: [{ pid: process.pid, group: false }], observationUnknown: false, host: hostname(), bootId: null };
+      raw.prepare("UPDATE coding_owner SET clean=0,token='',pid=0,native_pid=?").run(fakePid(1));
+      const witness = { pid: fakePid(1), group: false, descendants: [{ pid: process.pid, group: false }], observationUnknown: false, host: hostname(), bootId: null };
       raw.prepare('INSERT OR REPLACE INTO coding_custody VALUES(1,?)').run(JSON.stringify(witness));
       provider = new FakeProvider(); workspace = open();
       await expect(workspace.start(actor, { repo, title: 'Another change', model: null, prompt: 'Start a new session.', requestId: 'after-startup-crash-01' })).rejects.toThrow('needs recovery');

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/crew-age/before/desk-light-crew.png",
+      "caption": "Before: Crew sheet at 1440x900, light; rows show state but not when they changed"
+    },
+    {
+      "path": "evidence/crew-age/after/desk-light.png",
+      "caption": "After: Chat with Crew at 1440x900, light; muted age (3h, 1d, 8h) at the right of each title line"
+    },
+    {
+      "path": "evidence/crew-age/after/desk-dark-long.png",
+      "caption": "After: 1440x900 dark; long Building title wraps beside 24m, Finished disclosure open"
+    },
+    {
+      "path": "evidence/crew-age/before/phone-dark.png",
+      "caption": "Before: Crew view at 390x844, dark"
+    },
+    {
+      "path": "evidence/crew-age/after/phone-dark.png",
+      "caption": "After: Crew view at 390x844, dark; age sits after the badge in a fixed slot, badges stay aligned"
+    },
+    {
+      "path": "evidence/crew-age/after/phone-light-long.png",
+      "caption": "After: 390x844 light; long title, Failed and Building rows, finished row, no overflow"
+    },
+    {
+      "path": "evidence/crew-age/after/compact-light.png",
+      "caption": "After: compact desk 1100x800 (286px sheet), light; keyboard focus on a row's action"
+    },
+    {
+      "path": "evidence/crew-age/after/phone-light-empty.png",
+      "caption": "After: empty Crew at 390x844, unchanged No tasks yet"
+    }
+  ]
+}

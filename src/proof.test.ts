@@ -68,9 +68,10 @@ describe("parseProof", () => {
     expect(parseProof(JSON.stringify("a string"))).toMatchObject({ ok: false });
   });
 
-  test("version must be exactly 1", () => {
-    expect(problemsOf({ ...sound, version: 2 })).toContain("bad-version");
+  test("version is 1 (what a builder writes) or 2 (what is stored); a newer one is refused plainly", () => {
+    expect(problemsOf({ ...sound, version: 3 })).toEqual(["newer-version"]);
     expect(problemsOf({ ...sound, version: undefined })).toContain("bad-version");
+    expect(problemsOf({ ...sound, version: "1" })).toContain("bad-version");
   });
 
   test("the whole payload is capped", () => {
@@ -95,7 +96,7 @@ describe("parseProof", () => {
     });
     test("verdict must be a supported state", () => {
       expect(problemsOf({ ...sound, criteria: [{ id: "c1", statement: "s", verdict: "sort-of", how: "h" }] })).toContain(
-        "criteria[0]-bad-verdict",
+        "bad-criteria[0].verdict",
       );
     });
     test("statement and how are required prose, capped and control-free", () => {
@@ -129,10 +130,10 @@ describe("parseProof", () => {
       expect(problemsOf({ ...sound, checks: many })).toContain("checks-too-many");
     });
     test("exitCode must be an integer 0-255", () => {
-      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: -1, summary: "s" }] })).toContain("checks[0]-bad-exit-code");
-      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: 256, summary: "s" }] })).toContain("checks[0]-bad-exit-code");
-      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: 1.5, summary: "s" }] })).toContain("checks[0]-bad-exit-code");
-      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: "0", summary: "s" }] })).toContain("checks[0]-bad-exit-code");
+      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: -1, summary: "s" }] })).toContain("bad-checks[0].exitCode");
+      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: 256, summary: "s" }] })).toContain("bad-checks[0].exitCode");
+      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: 1.5, summary: "s" }] })).toContain("bad-checks[0].exitCode");
+      expect(problemsOf({ ...sound, checks: [{ command: "c", exitCode: "0", summary: "s" }] })).toContain("bad-checks[0].exitCode");
     });
     test("command and summary are required, capped, control-free", () => {
       expect(problemsOf({ ...sound, checks: [{ command: "", exitCode: 0, summary: "s" }] })).toContain("missing-checks[0].command");

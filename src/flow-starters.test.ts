@@ -98,7 +98,7 @@ describe("starter flows", () => {
     expect(withinHours({ from: "22:00", to: "06:00", timeZone: "UTC" }, new Date("2026-09-30T22:00:00Z"))).toBe(true);
     expect(withinHours({ from: "22:00", to: "06:00", timeZone: "UTC" }, new Date("2026-10-01T05:59:00Z"))).toBe(true);
     expect(withinHours({ from: "09:00", to: "17:00", timeZone: "Europe/London" }, new Date("2026-09-30T08:30:00Z"))).toBe(true);
-    expect(() => validateFlowDefinition({ version: 1, start: "a", stages: [{ id: "a", title: "Tonight", kind: "wait", wait: { for: "hours", from: "25:00", to: "06:00" } }] })).toThrow("say the hours it waits for");
+    expect(() => validateFlowDefinition({ version: 1, start: "a", stages: [{ id: "a", title: "Tonight", kind: "wait", wait: { for: "hours", from: "25:00", to: "06:00" } }] })).toThrow("stages[0].wait.from: must be a time like 22:00");
 
     const made = switchOnStarter(store, starterOf("overnight")!, repo, "alex", T0, dir) as { flow: number };
     const flow = store.getFlow(made.flow)!;

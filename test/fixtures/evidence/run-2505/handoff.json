@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "taskId": "cli-projects",
+  "runId": 2505,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "24883eb1bb55bd1733ec16fb3678567d",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "dfaa7a7c-fc30-43e3-b7b1-2a63a11c9131",
+  "branch": "toolroll/cli-projects",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-cli-projects-407ed181",
+  "base": "b32124fb076cb222e52b8d4ff8cc61847459cf42",
+  "head": "58304768b8b547af2e31d0967f7f17b062e84858",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "repos add/remove, add-from-github, onboard and the console's Add a project / new Remove from Toolroll now share src/project-admission.ts: Git-root proof, locked registry + project row, one ledger row (actor, from cli/lead/console). up adopts recorded additions live and releases removed ones (pinned --repo kept); console lists read one consoleProjects() list. CLI says \"Added X; it is in the console now.\" Lead token (TOOLROLL_LEAD_TOKEN or --token) works; restricted accounts and non-Git folders are refused.",
+  "changes": [
+    "New src/project-admission.ts: admitProject/releaseProject/commandLineActor; store.forgetProject; runner removeRunnerRepoAuthed",
+    "up supervisor: adopts registry entries with a recorded admission outside its startup ceiling; stops and unbinds removed, non-pinned projects live",
+    "serve: admittedRepos live ceiling (empty never means unscoped); consoleProjects() replaces ~34 duplicated list expressions; /projects/remove",
+    "CLI repos uses the registry beside the database (what up watches); surface rows for repos add/remove now agent-invocable with the lead token"
+  ],
+  "verification": [
+    "npx tsc --noEmit: clean",
+    "vitest: cli, up, operate, store, project-admission, project-delete, onboarding, serve.*, agent-onboard, dispatch, skills, cli-busy: all pass (705 + 54 + 33 + 4)",
+    "Headless journey (evidence/cli-projects/journey.mjs, temp up + built dist): desktop 1280 and phone 390, 15/15 checks pass; transcript in journey.txt"
+  ],
+  "followUps": [
+    "Removing the project up was started with (--repo/cwd) hides it in the console until restart, but up keeps building it and re-enrolls it at the next start",
+    "Under a --project-root ceiling, a removed project that still has tasks stays listed (it is inside the root); taskless ones disappear",
+    "project use never registers (it only selects saved checkouts), so it was left unchanged",
+    "Not deployed: the running installed up still needs the normal verified update before the live vamarketplacenew case works"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T22:00:21.123Z",
+    "currentAsOf": "58304768b8b547af2e31d0967f7f17b062e84858"
+  }
+}

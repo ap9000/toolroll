@@ -17,7 +17,7 @@ const NOW = new Date("2026-09-20T10:00:04Z"), REPO = "/repos/recovery";
 const CANDIDATE = "c".repeat(40), BASE = "b".repeat(40), HEAD = "a".repeat(40);
 
 describe("prepared candidate observer-gap eligibility is read-only and not exit authority", () => {
-  let store: Store, dir: string, runId: number, unknown: number, token: string, handoff: HandoffArtifact;
+  let store: Store, dir: string, runId: number, unknown: number, token: string, handoff: Omit<HandoffArtifact, "version">;
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "so-recovery-eligibility-"));
     store = openStore(join(dir, "orders.db"));
@@ -37,7 +37,7 @@ describe("prepared candidate observer-gap eligibility is read-only and not exit 
     store.stampRun(runId, { baseRevision: BASE, scopeDigest: store.getScope("prepared")!.digest });
     const conclusion = `Prepared candidate ${CANDIDATE} was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.`;
     store.recordOutcomeFacts(runId, { headRevision: HEAD, handoff: conclusion });
-    handoff = { schema: 1, taskId: "prepared", runId, provider: store.getRun(runId)!.provider,
+    handoff = { taskId: "prepared", runId, provider: store.getRun(runId)!.provider,
       sessionId: null, branch: "so/prepared", worktree: join(dir, "worktree"), base: BASE, head: HEAD,
       outcome: "built", committed: true, decisionsIncorporated: [], conclusion,
       changes: ["welcome.txt"], verification: [], followUps: [], freshness: { stampedAt: START.toISOString(), currentAsOf: HEAD } };
@@ -191,8 +191,9 @@ describe("prepared candidate observer-gap eligibility is read-only and not exit 
     expect(assess()).toEqual({ ok: false, reason: "actual-passing-gate-unproven" });
   });
   test("inconsistent passing-result fields refuse instead of erasing a recorded execution failure", () => {
+    // The receipt schema refuses a field its result shape does not define, before eligibility reads it.
     rewriteArtifact("structured-output", value => ({ ...value, result: { ...value.result, attemptFailed: true } }));
-    expect(assess()).toEqual({ ok: false, reason: "actual-passing-gate-unproven" });
+    expect(assess()).toEqual({ ok: false, reason: "verification-evidence-unavailable" });
   });
   test("artifact byte damage refuses; honestly shortened sealed log remains explicit", () => {
     const oldLog = store.artifactsFor(runId).find(a => a.kind === "check-log")!;

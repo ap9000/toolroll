@@ -9,6 +9,7 @@ import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { saveWorkPatch, WorktreePool, worktreePath, type Runner } from "./worktree.js";
 import { run } from "./exec.js";
+import { fakePid } from "../test/fake-pid.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -678,18 +679,19 @@ describe("the pool, against real git", () => {
   });
 
   test("provider occupancy replaces the console pid and is fenced to the live lease", async () => {
+    const provider = fakePid(1);
     const pool = new WorktreePool(store, { root: join(base, "pool") });
     const leased = await pool.lease({ repo, branch: "feat/provider", base: "main", runner: "builder-1", now: T0 });
     expect(leased.ok).toBe(true);
     if (!leased.ok) return;
 
-    expect(pool.markProviderOccupancy(leased.worktree.path, "someone-else", 424242)).toBe(false);
-    expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", 424242, "old-epoch")).toBe(false);
-    expect(() => pool.recordProviderOccupancy(leased.worktree.path, "builder-1", 424242, "old-epoch")).toThrow("custody could not be recorded");
-    expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", 424242)).toBe(true);
+    expect(pool.markProviderOccupancy(leased.worktree.path, "someone-else", provider)).toBe(false);
+    expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", provider, "old-epoch")).toBe(false);
+    expect(() => pool.recordProviderOccupancy(leased.worktree.path, "builder-1", provider, "old-epoch")).toThrow("custody could not be recorded");
+    expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", provider)).toBe(true);
     const marker = await import("node:fs/promises").then(fs => fs.readFile(join(leased.worktree.path, ".standing-orders-lease"), "utf8"));
     // The note also carries this host's boot identity (v53) when it is known.
-    expect(marker).toMatch(/^424242 builder-1 group ([0-9a-f-]{36}|unknown) \S+\n$/);
+    expect(marker).toMatch(new RegExp(`^${provider} builder-1 group ([0-9a-f-]{36}|unknown) \\S+\\n$`));
     expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", 0)).toBe(false);
   });
 

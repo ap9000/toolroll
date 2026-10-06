@@ -1,3 +1,4 @@
+import { SCREENSHOT_CAPTURE, structuredHandoffView, terminalDiffView, type StructuredHandoffView, type TerminalDiffView } from "./result-evidence-readers.js";
 import { checkLeadIdentity, leadIdentityOf, leadNameOf, LEAD_NAME_MAX, LEAD_PERSONA_MAX, type LeadIdentity } from "./lead-identity.js";
 import { aboutYouOf, checkAboutYou, saveAboutYou, ABOUT_YOU_LINE_MAX, ABOUT_YOU_MAX_LINES } from "./lead-about.js";
 import { withActor } from "./actor.js";
@@ -53,7 +54,7 @@ import { FORM_PATH, flowFormPage, receiveFlowForm, shareFlowButton, stopSharingF
 import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, receiveFlowHook, removeFlowTrigger, renewFlowHook, removeLinearKey, saveHooksBase, saveLinearKey, saveLinearSigningSecret, type TriggerIo } from "./flow-triggers.js";
 import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";
-import { FLOW_TEMPLATES, validateFlowDefinition } from "./flows.js";
+import { FlowContractError, FLOW_TEMPLATES, validateFlowDefinition, withZoneNames } from "./flows.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
 import { applySavedKnowledge, changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
@@ -1380,6 +1381,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       response.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${escape(to)}"><title>Toolroll</title>${HANDOFF_STYLE}<p>${escape(words)} <a href="${escape(to)}">Back to Toolroll</a></p>`);
     };
     const state = url.searchParams.get("state") ?? "";
+    // Every arrival is logged (never the code or state): a sign-in that never came back is then visible as an absence.
+    logEvent("info", "connect.callback", { error: url.searchParams.get("error"), known: connectVisits.has(state) });
     if (!startedHere(request, state)) return done("/settings/tools", "problem", "That sign-in was started in another browser. Connect again from this one.");
     const visit = connectVisits.get(state);
     connectVisits.delete(state);
@@ -7245,9 +7248,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       if (action === "archive") { store.archiveFlow(flow.id, who.name, now); return redirect(response, "/flows"); }
       if (action === "save") {
-        let saved;
-        try { saved = validateFlowDefinition(JSON.parse(body.get("definition") ?? "null")); }
-        catch (error) { return answer(400, { ok: false, said: error instanceof SyntaxError ? "That flow couldn't be read." : error instanceof Error ? error.message : "That flow isn't valid." }); }
+        let saved, drawn: unknown;
+        try { drawn = JSON.parse(body.get("definition") ?? "null"); saved = validateFlowDefinition(drawn); }
+        catch (error) { return answer(400, { ok: false, said: error instanceof SyntaxError ? "That flow couldn't be read." : error instanceof FlowContractError ? withZoneNames(error.lines, drawn) : error instanceof Error ? error.message : "That flow isn't valid." }); }
         const name = (body.get("name") ?? flow.name).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || flow.name;
         // The owner (v86) is whom "the owner decides" zones ask: someone who can approve on this project.
         const owner = (body.get("owner") ?? "").trim();
@@ -24007,57 +24010,6 @@ function runsPage(
   return screen("builds", [`<h1>Builds <a class="badge" href="/peek">Peek at the live ones \u2192</a></h1>`, buildsViews("builds"), `<p class="hint">one build = one attempt by an agent to complete a task, on its own branch</p>`, list, older].join("\n"), { chrome });
 }
 
-/** What the run page shows of the terminal diff — verified bytes or a named problem, never silence. */
-type TerminalDiffView = {
-  patch: { text: string; truncated: boolean; artifactId: number } | { problem: string } | null;
-  stat:
-    | {
-        base: string;
-        head: string;
-        fileCount: number;
-        additions: number;
-        deletions: number;
-        binaryCount: number;
-        filesTruncated: boolean;
-        files: { path: string; additions: number | null; deletions: number | null; renamedFrom?: string }[];
-      }
-    | { problem: string }
-    | null;
-};
-
-/** A compact, typed view of the agent-authored handoff. Older v1
- * artifacts simply have no lists, while v2 can present the useful answer
- * before the raw diff and evidence below it. */
-type StructuredHandoffView = {
-  conclusion: string;
-  changes: string[];
-  verification: string[];
-  followUps: string[];
-};
-
-function structuredHandoffView(artifacts: Artifact[], root: string): StructuredHandoffView | null {
-  const artifact = [...artifacts].reverse().find(one => one.kind === "handoff");
-  if (artifact === undefined) return null;
-  const read = readVerifiedArtifact(root, artifact);
-  if (!read.ok) return null;
-  try {
-    const parsed = JSON.parse(read.content.toString("utf8")) as Record<string, unknown> | null;
-    if (parsed === null || typeof parsed !== "object" || typeof parsed["conclusion"] !== "string") return null;
-    const conclusion = oneLineOf(parsed["conclusion"], 600);
-    if (conclusion === "" || hasForbiddenControls(conclusion)) return null;
-    const list = (name: string): string[] =>
-      Array.isArray(parsed[name])
-        ? (parsed[name] as unknown[])
-            .filter((one): one is string => typeof one === "string" && one.trim() !== "" && !hasForbiddenControls(one))
-            .slice(0, 8)
-            .map(one => oneLineOf(one, 240))
-        : [];
-    return { conclusion, changes: list("changes"), verification: list("verification"), followUps: list("followUps") };
-  } catch {
-    return null;
-  }
-}
-
 /** The evidence bundle (Priority 2): the closed machine-authored verdict,
  * the agent's proof (or why it cannot be shown), the plane's own re-run
  * check, and every validated screenshot — each row labeled by source so
@@ -24228,7 +24180,6 @@ function sharedResultFactsOf(
   };
 }
 
-const SCREENSHOT_CAPTURE = /^agent-claimed screenshot at (.+) \(validated (?:png|jpeg)\)/;
 
 function proofBundleView(store: Store, run: Run, artifacts: Artifact[], root: string): ProofBundleView | null {
   const verdictRow = store.proofVerdictFor(run.id);
@@ -24347,79 +24298,6 @@ function completionReceiptView(store: Store, run: Run, artifacts: Artifact[], ro
     report,
     facts: sharedResultFactsOf(run, proof, terminal, handoff, report, publication),
   };
-}
-
-const CAPTURE_EXIT = /\(exit ([0-9]{1,4})\)\s*$/;
-
-/**
- * Assemble the terminal-diff card's facts. Every branch names its state:
- * a failed capture (nonzero exit recorded in the capture string) reads as
- * the failure it is, unverifiable bytes read as their problem, and absence
- * returns null so old runs simply show nothing rather than a broken card.
- */
-function terminalDiffView(artifacts: Artifact[], root: string): TerminalDiffView | null {
-  const patchArtifact = artifacts.find(one => one.kind === "terminal-diff");
-  const statArtifact = artifacts.find(one => one.kind === "diff-stat");
-  if (patchArtifact === undefined && statArtifact === undefined) return null;
-
-  const view: TerminalDiffView = { patch: null, stat: null };
-
-  if (patchArtifact !== undefined) {
-    const exit = CAPTURE_EXIT.exec(patchArtifact.capture);
-    if (exit !== null && exit[1] !== "0") {
-      view.patch = { problem: `capture failed — ${patchArtifact.capture}` };
-    } else {
-      const read = readVerifiedArtifact(root, patchArtifact);
-      view.patch = read.ok
-        ? { text: read.content.toString("utf8"), truncated: patchArtifact.truncated, artifactId: patchArtifact.id }
-        : { problem: `stored but unverifiable — ${read.problem}` };
-    }
-  }
-
-  if (statArtifact !== undefined) {
-    const exit = CAPTURE_EXIT.exec(statArtifact.capture);
-    if (exit !== null && exit[1] !== "0") {
-      view.stat = { problem: `capture failed — ${statArtifact.capture}` };
-    } else {
-      const read = readVerifiedArtifact(root, statArtifact);
-      if (!read.ok) {
-        view.stat = { problem: `stored but unverifiable — ${read.problem}` };
-      } else {
-        try {
-          const parsed = JSON.parse(read.content.toString("utf8")) as Record<string, unknown> | null;
-          // Every field this page renders is type-proved (arc 6, finding 7):
-          // "an object with a base key" was accepting any shape at all.
-          const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-          const wellFormed =
-            parsed !== null &&
-            typeof parsed === "object" &&
-            typeof parsed["base"] === "string" &&
-            typeof parsed["head"] === "string" &&
-            count(parsed["fileCount"]) &&
-            count(parsed["additions"]) &&
-            count(parsed["deletions"]) &&
-            count(parsed["binaryCount"]) &&
-            typeof parsed["filesTruncated"] === "boolean" &&
-            Array.isArray(parsed["files"]) &&
-            (parsed["files"] as unknown[]).every(
-              one =>
-                one !== null &&
-                typeof one === "object" &&
-                typeof (one as Record<string, unknown>)["path"] === "string" &&
-                (count((one as Record<string, unknown>)["additions"]) || (one as Record<string, unknown>)["additions"] === null) &&
-                (count((one as Record<string, unknown>)["deletions"]) || (one as Record<string, unknown>)["deletions"] === null),
-            );
-          view.stat = wellFormed
-            ? (parsed as unknown as TerminalDiffView["stat"])
-            : { problem: "stat is not the shape this page knows" };
-        } catch {
-          view.stat = { problem: "stat did not parse as JSON" };
-        }
-      }
-    }
-  }
-
-  return view;
 }
 
 type ReviewDiffLine = {
