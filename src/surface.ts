@@ -135,7 +135,7 @@ const GUIDE_ROWS: readonly CommandRow[] = [
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags,
-    ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
+    ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
   ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "the CLI to update, or on/off" }] } : {}) })),
 
   // ---- the queue (agent surface) ----
@@ -399,6 +399,9 @@ const GUIDE_ROWS: readonly CommandRow[] = [
   operatorRead("review show", "whether a project's finished builds get one automatic review"),
   operator("review on", "one automatic review of each finished build whose check passes; only HIGH findings send it back, once"),
   operator("review off", "finished builds go straight to the person, unreviewed"),
+  operatorRead("chat-approval show", "whether your own taps in your paired chat approve plans and merges: all projects and each project's own setting"),
+  operator("chat-approval on", "let your paired chat approve plans and merges in all your projects or one (--repo); lasting, with limits; previews until --yes"),
+  operator("chat-approval off", "stop approving from chat for all your projects or one (--repo); one step"),
   operator("mode revoke", "revoke a repository's mode — one click, every act it covered falls back to its own ceremony"),
   operator("config set", "set phase or spend configuration"),
   operator("config clear", "clear phase or spend configuration"),

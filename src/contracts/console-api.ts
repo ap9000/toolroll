@@ -151,6 +151,7 @@ export const CONSOLE_FORMS = {
   learningChange: formContract("POST /settings/learning/change", ["repo", "action", "identity", "revision", "lesson", "version", "sha"]),
   projectSetup: formContract("POST /control/setup-preview, /control/setup-approve, /control/instructions-preview, /control/instructions-approve", ["repo", "nonce", "fingerprint", "token", "provider", "model", "command", "seconds"]),
   slack: formContract("POST /settings/slack/<connect|pair|unpair|disconnect|alerts>", ["password", "app-token", "bot-token"]),
+  chatApproval: formContract("POST /settings/chat-approval/confirm, /settings/chat-approval/save, /settings/chat-approval/off", ["scope", "full-access", "cap-usd", "nonce", "digest", "token"]),
   telegramPair: formContract("POST /settings/telegram/pair, /settings/telegram/unpair", ["password"]),
   teams: formContract("POST /settings/teams/<connect|pair|unpair|disconnect|alerts>", ["password", "app-id", "tenant", "secret"]),
   discord: formContract("POST /settings/discord/<connect|pair|unpair|disconnect|alerts>", ["password", "bot-token"]),

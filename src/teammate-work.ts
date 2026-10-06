@@ -220,7 +220,7 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   if (answer.action === "approve" || answer.action === "send_back") {
     const draft = draftFor(definition, stage);
     const decided = decideFlowCard(store, {
-      card: card.id, decision: answer.action === "approve" ? "approve" : "send-back", note: answer.action === "approve" ? answer.reason || null : note(answer.note), actor, repos, teammate: mate.handle, entry: card.entry,
+      card: card.id, decision: answer.action === "approve" ? "approve" : "send-back", note: answer.action === "approve" ? answer.reason || null : note(answer.note), actor, repos, teammate: mate.handle, entry: card.entry, where: "a teammate",
       ...(answer.action === "approve" && draft !== null && answer.text !== "" ? { draft: wholeDraft(answer.text) } : {}),
       ...(io.evidenceRoot === undefined ? {} : { evidenceRoot: io.evidenceRoot }),
     }, now);

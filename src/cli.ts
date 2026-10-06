@@ -298,7 +298,7 @@ export const OPERATE_COMMANDS = new Set([
   "run",
   "routine",
   "flows",
-  "config", "chat", "proposals", "mode", "people", "keys",
+  "config", "chat", "proposals", "mode", "chat-approval", "people", "keys",
   "setup",
   "verify",
   "intake",

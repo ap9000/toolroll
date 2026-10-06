@@ -638,8 +638,10 @@ export type Scope = SavedScopeTerms & {
   /** The digest that was actually agreed to, which may now be stale. */
   approvedDigest: string | null;
   /** How the approval happened (v29): 'password' = the ceremony;
-   * 'mode' = sealed by the signer's live mode (modeDigest names it). */
-  approvalBasis?: "password" | "mode" | null;
+   * 'mode' = sealed by the signer's live mode (modeDigest names it);
+   * 'chat' = the owner's own two taps in their paired chat, under their chat-approval setting or a signed term
+   * (modeDigest names that authority; the yes is the person's and doesn't lapse with it). */
+  approvalBasis?: "password" | "mode" | "chat" | null;
   modeDigest?: string | null;
   /** v24 (optional so hand-built scopes in tests stay valid): the working
    * execution profile, its resolution state, and the immutable snapshot

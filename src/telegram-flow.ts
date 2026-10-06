@@ -22,14 +22,15 @@
 import { randomBytes } from "node:crypto";
 import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
-import { decideFlowCard, draftFor, flowDefinitionOf } from "./flow-engine.js";
-import { chooseFlowCard, flowChoiceAt, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
+import { decideFlowCard, draftFor, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
+import { chooseFlowCard, flowChoiceAt, flowPersonOf, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
 import { deciderOf, FLOW_END, replyTarget, type FlowStage } from "./flows.js";
 import { phoneLinkButton, type InlineButton } from "./telegram-mate.js";
 import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
 import { telegramButton, type TelegramCallbackButton } from "./contracts/telegram-callback.js";
 
-export const FLOW_DECIDE_KEY = /^flow-decide:([1-9][0-9]{0,14}):([1-9][0-9]{0,9})$/;
+/** A flow decision's notice: one per visit, and again (`:ask:<ms>`) when the owner asks the lead to approve it. */
+export const FLOW_DECIDE_KEY = /^flow-decide:([1-9][0-9]{0,14}):([1-9][0-9]{0,9})(?::ask:[0-9]{1,15})?$/;
 const DRAFT_LIMIT = 4000;
 
 type Waiting = { card: FlowCardRow; flow: FlowRow; stage: FlowStage; draft: FlowStage | null };
@@ -136,22 +137,69 @@ export function applyFlowChoiceTap(store: Store, binding: TelegramBinding, choic
 
 export type FlowTapEffect =
   | { kind: "ack"; text: string }
-  | { kind: "edit"; text: string }
+  /** The message repainted; `keyboard` (absent: none) replaces its buttons, and links are paths under the console. */
+  | { kind: "edit"; text: string; keyboard?: FlowKeyboard; place?: string[] }
   | { kind: "prompt"; text: string; placeholder: string; prompt: Omit<TelegramFlowPrompt, "messageId"> };
+/** A repainted message's buttons: a token, or a link to a console path. `place` names fresh flow buttons to stamp on the message. */
+export type FlowKeyboard = Array<Array<{ label: string; token: string } | { label: string; link: { label: string; path: string } }>>;
+
+/** A card's own fresh buttons, as a repaint carries them. */
+function freshButtons(store: Store, binding: TelegramBinding, waiting: Waiting, now: Date): { keyboard: FlowKeyboard; place: string[] } {
+  const minted = flowButtons(store, binding, waiting, now);
+  return { keyboard: minted.keyboard.map(row => row.flatMap(one => "callback_data" in one && typeof one.callback_data === "string" ? [{ label: one.text, token: one.callback_data }] : [])), place: minted.tokens };
+}
+
+const CONFIRM_TTL_MS = 10 * 60_000;
+const FLOW_QUESTION = /\n\nApprove “[^\n]*”\? [^\n]*$/;
+
+/** Where a card is now, for a message whose buttons no longer act: named and linked only when it is in one of the
+ * viewer's projects, and linked only while it still waits on someone. Never a live button. */
+export function flowWhereNow(store: Store, cardId: number, repos: readonly string[] | null): { said: string; keyboard: FlowKeyboard } {
+  const card = store.getFlowCard(cardId);
+  const flow = card === null ? null : store.getFlow(card.flow);
+  if (card === null || flow === null || repos === null || !repos.includes(flow.repo)) return { said: "This card has moved on since.", keyboard: [] };
+  if (card.state !== "active") return { said: card.state === "done" ? "This card is done." : "This card was closed.", keyboard: [] };
+  const definition = flowDefinitionOf(flow);
+  const stage = definition?.stages.find(one => one.id === card.stage);
+  const where = stage?.title ?? card.stage;
+  const open = { label: "Open it in Flows", path: flowCardHref(flow.id, card.id) };
+  if (stage?.kind === "approval" || stage?.kind === "choose") {
+    const person = stage.kind === "approval" ? deciderOf(stage, flow) ?? "an approver" : flowPersonOf(card, flow);
+    return { said: `It's waiting for ${person} in ${where} (${flow.name}).`, keyboard: [[{ label: open.label, link: open }]] };
+  }
+  if (card.waiting !== null) return { said: `It's in ${where} now (${flow.name}): ${card.waiting.replace(/\.$/, "")}.`, keyboard: [[{ label: open.label, link: open }]] };
+  return { said: `It moved on to ${where} (${flow.name}).`, keyboard: [] };
+}
 
 /** A tapped flow button, applied inside the update's transaction. */
 export function applyFlowTap(store: Store, binding: TelegramBinding, action: TelegramFlowAction, message: { chatId: string; messageId: string; text: string }, repos: readonly string[] | null, now: Date): FlowTapEffect[] {
-  if (action.consumedAt !== null || action.expiresAt <= now.toISOString()) return [{ kind: "ack", text: "That was already decided, or these buttons are too old." }];
+  if (action.consumedAt !== null || action.expiresAt <= now.toISOString()) {
+    // Spent or too old: say where the card is now, with a way to it while it still waits. The old button never acts again.
+    const now_ = flowWhereNow(store, action.card, repos);
+    return [{ kind: "ack", text: "These buttons were already used, or are too old." }, { kind: "edit", text: `${message.text.replace(FLOW_QUESTION, "")}\n\nThese buttons were already used, or are too old. ${now_.said}`.slice(0, 4000), keyboard: now_.keyboard }];
+  }
   const waiting = flowDecisionAt(store, action.card, action.entry);
-  if (waiting === null) return [{ kind: "ack", text: "That card has moved on since; nothing was changed." }];
+  if (waiting === null) {
+    const now_ = flowWhereNow(store, action.card, repos);
+    store.retireTelegramFlowVisit(action.card, action.entry, now);
+    return [{ kind: "ack", text: "That card has moved on since; nothing was changed." }, { kind: "edit", text: `${message.text}\n\nNothing was changed. ${now_.said}`.slice(0, 4000), keyboard: now_.keyboard }];
+  }
   const decider = deciderOf(waiting.stage, waiting.flow);
   if (decider !== null && decider !== binding.approver) return [{ kind: "ack", text: `Only ${decider} decides here.` }];
   if (action.action === "approve") {
+    // The first tap asks; only the Yes decides, bound to exactly this visit of this card, on this message.
     if (repos === null) return [{ kind: "ack", text: "Couldn't check your projects just now. Try again in a moment." }];
-    const decided = decideFlowCard(store, { card: waiting.card.id, decision: "approve", note: null, actor: binding.approver, repos, entry: action.entry }, now);
-    if (!decided.ok) return [{ kind: "ack", text: decided.message.slice(0, 190) }];
+    if (!repos.includes(waiting.flow.repo)) return [{ kind: "ack", text: "That card isn't in one of your projects now." }];
     store.retireTelegramFlowVisit(action.card, action.entry, now);
-    return [{ kind: "ack", text: "Approved" }, { kind: "edit", text: `${message.text}\n\n✅ ${decided.said}`.slice(0, 4000) }];
+    const mint = (phase: "yes" | "cancel") => {
+      const token = randomBytes(16).toString("hex");
+      store.handle.prepare("INSERT INTO telegram_flow_confirm (token, binding, chat_id, message_id, card, entry, phase, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)")
+        .run(token, binding.id, binding.chatId, message.messageId, action.card, action.entry, phase, now.toISOString(), new Date(now.getTime() + CONFIRM_TTL_MS).toISOString());
+      return token;
+    };
+    const where = waiting.stage.next === null ? "The card is then done." : `It moves to ${titleOf(waiting, waiting.stage.next)}.`;
+    return [{ kind: "ack", text: "Confirm below." }, { kind: "edit", text: `${message.text}\n\nApprove “${waiting.card.title}”? ${where}`.slice(0, 4000),
+      keyboard: [[{ label: "Yes", token: mint("yes") }, { label: "Cancel", token: mint("cancel") }]] }];
   }
   const prompt = { chatId: binding.chatId, binding: binding.id, card: action.card, entry: action.entry, mode: action.action };
   if (action.action === "edit") {
@@ -161,6 +209,48 @@ export function applyFlowTap(store: Store, binding: TelegramBinding, action: Tel
   const back = waiting.stage.onFail === null ? "the zone before" : titleOf(waiting, waiting.stage.onFail);
   return [{ kind: "ack", text: "What should change?" }, { kind: "prompt", prompt, placeholder: "What should change",
     text: `What should change on “${waiting.card.title}”? Reply to this message and it goes back to ${back} with your note.` }];
+}
+
+export type FlowConfirm = { token: string; binding: number; chatId: string; messageId: string; card: number; entry: number; phase: "yes" | "cancel"; expiresAt: string; consumedAt: string | null };
+
+/** A Yes or Cancel this module armed, or null when the token isn't one. */
+export function flowConfirmOf(store: Store, token: string): FlowConfirm | null {
+  if (!/^[0-9a-f]{32}$/.test(token)) return null;
+  const row = store.handle.prepare("SELECT * FROM telegram_flow_confirm WHERE token = ?").get(token);
+  if (row === undefined) return null;
+  return { token: String(row["token"]), binding: Number(row["binding"]), chatId: String(row["chat_id"]), messageId: String(row["message_id"]), card: Number(row["card"]), entry: Number(row["entry"]),
+    phase: String(row["phase"]) === "cancel" ? "cancel" : "yes", expiresAt: String(row["expires_at"]), consumedAt: row["consumed_at"] == null ? null : String(row["consumed_at"]) };
+}
+
+/** The second tap, inside the update's transaction: Yes decides the card through the console's door, once; Cancel puts
+ * the card's own buttons back. The caller has proved the binding, chat and message are the ones it was armed on. */
+export function applyFlowConfirm(store: Store, binding: TelegramBinding, confirm: FlowConfirm, message: { text: string }, repos: readonly string[] | null, now: Date): FlowTapEffect[] {
+  const body = message.text.replace(FLOW_QUESTION, "");
+  const spend = () => store.handle.prepare("UPDATE telegram_flow_confirm SET consumed_at = ? WHERE card = ? AND entry = ? AND message_id = ? AND consumed_at IS NULL").run(now.toISOString(), confirm.card, confirm.entry, confirm.messageId);
+  if (confirm.consumedAt !== null || confirm.expiresAt <= now.toISOString()) {
+    spend();
+    const now_ = flowWhereNow(store, confirm.card, repos);
+    const waiting = flowDecisionAt(store, confirm.card, confirm.entry);
+    // Too old, but the same visit still waits: fresh buttons, never the old Yes.
+    if (waiting !== null && repos !== null && repos.includes(waiting.flow.repo)) {
+      return [{ kind: "ack", text: "That Yes expired. Nothing was done." }, { kind: "edit", text: body, ...freshButtons(store, binding, waiting, now) }];
+    }
+    return [{ kind: "ack", text: "That Yes expired. Nothing was done." }, { kind: "edit", text: `${body}\n\nNothing was done. ${now_.said}`.slice(0, 4000), keyboard: now_.keyboard }];
+  }
+  spend();
+  const waiting = flowDecisionAt(store, confirm.card, confirm.entry);
+  if (waiting === null || repos === null) {
+    const now_ = flowWhereNow(store, confirm.card, repos);
+    return [{ kind: "ack", text: repos === null ? "Couldn't check your projects just now. Try again in a moment." : "That card has moved on since; nothing was changed." },
+      { kind: "edit", text: `${body}\n\nNothing was changed. ${now_.said}`.slice(0, 4000), keyboard: now_.keyboard }];
+  }
+  if (confirm.phase === "cancel") {
+    return [{ kind: "ack", text: "Cancelled." }, { kind: "edit", text: body, ...freshButtons(store, binding, waiting, now) }];
+  }
+  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "approve", note: null, actor: binding.approver, repos, entry: confirm.entry, where: "Telegram" }, now);
+  if (!decided.ok) return [{ kind: "ack", text: "Not done." }, { kind: "edit", text: `${body}\n\n✗ Not done: ${decided.message}`.slice(0, 4000), keyboard: flowWhereNow(store, confirm.card, repos).keyboard }];
+  store.retireTelegramFlowVisit(confirm.card, confirm.entry, now);
+  return [{ kind: "ack", text: "Approved" }, { kind: "edit", text: `${body}\n\n✅ ${decided.said}`.slice(0, 4000) }];
 }
 
 const titleOf = (waiting: Waiting, id: string) => flowDefinitionOf(waiting.flow)?.stages.find(one => one.id === id)?.title ?? id;
@@ -202,7 +292,7 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
   // A note over its limit is refused with the limit, never cut.
   if (said.length > LIMITS.note) return [{ kind: "say", text: `That's ${said.length.toLocaleString("en-US")} characters. Keep the note to ${LIMITS.note.toLocaleString("en-US")}, or send it back in Toolroll.` }];
   if (repos === null) return [{ kind: "say", text: "Couldn't check your projects just now. Reply again in a moment." }];
-  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said, actor: binding.approver, repos, entry: prompt.entry }, now);
+  const decided = decideFlowCard(store, { card: waiting.card.id, decision: "send-back", note: said, actor: binding.approver, repos, entry: prompt.entry, where: "Telegram" }, now);
   if (!decided.ok) return [{ kind: "say", text: decided.message }];
   store.retireTelegramFlowVisit(prompt.card, prompt.entry, now);
   return [{ kind: "say", text: `↩️ ${decided.said}` }];

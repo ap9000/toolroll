@@ -431,7 +431,9 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   /** The visit the person saw (a chat button's): a card that moved on since is refused. */
   entry?: number;
   /** v92: the AI teammate (by handle) deciding a zone it staffs; `actor` is then how it reads in history. */
-  teammate?: string }, now: Date): FlowDecision {
+  teammate?: string;
+  /** Where the decision was made, for its ledger line: "the console", "the command line", "Telegram". */
+  where?: string }, now: Date): FlowDecision {
   const card = store.getFlowCard(input.card);
   const flow = card === null ? null : store.getFlow(card.flow);
   const definition = flow === null ? null : flowDefinitionOf(flow);
@@ -443,6 +445,9 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   if (input.teammate !== undefined ? stage.teammate !== input.teammate : decider !== null && decider !== input.actor) return { ok: false, message: `Only ${decider ?? "an approver"} decides here.` };
   // v102: a protected project's decisions are a person's, never an AI teammate's.
   if (input.teammate !== undefined && store.approvalRules(flow.repo).protectProject) return { ok: false, message: "This project is protected: a person decides here." };
+  // Every decision is one ledger line, the same wherever it was made; only `via` says where.
+  const ledger = (outcome: "approved" | "sent-back") => store.recordAction({ at: now.toISOString(), actor: input.actor, repo: flow.repo, taskId: card.primaryTask, runId: null,
+    action: "flow decision", outcome, source: "request", detail: `${flow.name} · card ${card.id} · ${stage.title}${input.teammate === undefined ? "" : ` · teammate ${input.teammate}`} · via ${input.where ?? "Toolroll"}` });
   if (input.decision === "approve") {
     // An edited draft replaces the one Claude wrote, so the steps after this send what the person approved.
     const draft = draftFor(definition, stage);
@@ -456,9 +461,11 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
     }
     if (stage.next === null) {
       store.updateFlowCard(card.id, { state: "done", waiting: null }, now);
+      ledger("approved");
       return { ok: true, said: "Approved. The card is done." };
     }
-    store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry }, now);
+    if (!store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
+    ledger("approved");
     const title = definition.stages.find(one => one.id === stage.next)?.title ?? stage.next;
     if (card.owner !== null) notifyPeople(store, card, [card.owner], input.actor, { key: `approved:${card.entry}`, subject: `${input.actor} approved “${card.title}”`, body: `${stage.title}: approved. It moves to ${title}.${input.note === null || input.note.trim() === "" ? "" : `\n\n${input.note.trim()}`}` }, now);
     return { ok: true, said: `Approved. Moved to ${title}${/[.?!]$/.test(title) ? "" : "."}` };
@@ -467,7 +474,8 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   if (input.note === null || input.note.trim() === "") return { ok: false, message: "Say what should change." };
   const target = definition.stages.find(one => one.id === stage.onFail);
   const revision = revisionWithNote(store, card, target, input.note.trim(), input.actor, input.repos, input.evidenceRoot, now);
-  store.moveFlowCard(card.id, { to: stage.onFail, outcome: "sent-back", actor: input.actor, note: input.note.trim(), ...(revision === null ? {} : { task: revision }), expectEntry: card.entry }, now);
+  if (!store.moveFlowCard(card.id, { to: stage.onFail, outcome: "sent-back", actor: input.actor, note: input.note.trim(), ...(revision === null ? {} : { task: revision }), expectEntry: card.entry }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
+  ledger("sent-back");
   if (card.owner !== null) notifyPeople(store, card, [card.owner], input.actor, { key: `sent-back:${card.entry}`, subject: `${input.actor} sent “${card.title}” back`, body: `Sent back to ${target?.title ?? stage.onFail}:\n\n${input.note.trim()}`, attention: true }, now);
   return { ok: true, said: revision === null ? `Sent back to ${target?.title ?? stage.onFail} with your note.` : `Sent back to ${target?.title ?? stage.onFail}: a revision was made with your note.` };
 }

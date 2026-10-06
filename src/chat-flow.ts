@@ -188,7 +188,7 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
   if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { state.finish(event.id, true); return true; }
   const kind = String(action["action"]) as ChatFlowAction;
   if (kind === "approve") {
-    const decided = decideFlowCard(store, { card, decision: "approve", note: null, actor: binding.approver, repos, entry }, now);
+    const decided = decideFlowCard(store, { card, decision: "approve", note: null, actor: binding.approver, repos, entry, where: options.label }, now);
     if (!decided.ok) { say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);
@@ -370,7 +370,7 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
         { card, entry, actions: actionsFor(fresh) }, { label: "Open", path: flowCardHref(waiting.flow.id, card) }), now);
       return true;
     }
-    const decided = decideFlowCard(store, { card, decision: "send-back", note: said, actor: binding.approver, repos, entry }, now);
+    const decided = decideFlowCard(store, { card, decision: "send-back", note: said, actor: binding.approver, repos, entry, where: options.label }, now);
     if (!decided.ok) { close(); say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);

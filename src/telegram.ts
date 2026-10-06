@@ -35,7 +35,7 @@ import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerso
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
 import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubjectOf } from "./lead-voice.js";
 import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team.js";
-import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowChoiceHead, flowDecisionAt, flowDecisionText, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
+import { applyFlowChoiceTap, applyFlowConfirm, applyFlowReply, applyFlowTap, flowConfirmOf, type FlowKeyboard, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowChoiceHead, flowDecisionAt, flowDecisionText, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
 import { flowChoiceAt, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
 import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
 import { telegramReply, type TelegramEntity } from "./reply-shape.js";
@@ -1575,7 +1575,8 @@ async function enrolledForMessage(context: Context, update: Update): Promise<rea
 async function projectsForTap(context: Context, update: Update): Promise<readonly string[] | null> {
   const callback = update.callback_query;
   // Flow decision buttons (v86) work with or without the lead's conversation on this phone.
-  const flowTap = callback !== undefined && (context.store.getTelegramFlowAction(callback.data ?? "") !== null || context.store.getTelegramFlowChoice(callback.data ?? "") !== null);
+  const flowTap = callback !== undefined && (context.store.getTelegramFlowAction(callback.data ?? "") !== null || context.store.getTelegramFlowChoice(callback.data ?? "") !== null
+    || flowConfirmOf(context.store, callback.data ?? "") !== null);
   // So do a result's, plan's or pull request's own buttons (chat-decide.ts).
   const decideTap = callback !== undefined && isDecideToken(context.store, callback.data ?? "");
   if (callback === undefined || context.readProjects === undefined || (context.conversation === undefined && !flowTap && !decideTap)) return null;
@@ -2202,6 +2203,22 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     }
     return;
   }
+  // A flow decision's repaint: its buttons (fresh ones stamped on this message) or links under the console.
+  const flowEdit = (effect: { text: string; keyboard?: FlowKeyboard; place?: string[] }) => {
+    if (effect.place !== undefined && effect.place.length > 0) store.placeTelegramFlowActions(effect.place, String(message.message_id));
+    editText(effect.text, decideKeyboard(context.conversation?.phoneOrigin, effect.keyboard ?? []));
+  };
+  // The Yes or Cancel a flow Approve armed (telegram-flow.ts): on the message it was armed on, by the person it was armed for.
+  const flowConfirm = flowConfirmOf(store, token);
+  if (flowConfirm !== null) {
+    if (flowConfirm.binding !== binding.id || flowConfirm.chatId !== tapChat || flowConfirm.messageId !== String(message.message_id)) { report.ignored++; ack("That button isn't for this chat. Nothing was done."); return; }
+    const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
+    for (const effect of applyFlowConfirm(store, binding, flowConfirm, { text: message.text ?? "" }, repos, clock())) {
+      if (effect.kind === "ack") ack(effect.text);
+      else if (effect.kind === "edit") flowEdit(effect);
+    }
+    return;
+  }
   const flowAction = store.getTelegramFlowAction(token);
   if (flowAction !== null) {
     if (flowAction.binding !== binding.id || flowAction.chatId !== tapChat || (flowAction.messageId !== null && flowAction.messageId !== String(message.message_id))) { report.ignored++; return; }
@@ -2209,7 +2226,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     const tapped = applyFlowTap(store, binding, flowAction, { chatId: binding.chatId, messageId: String(message.message_id), text: message.text ?? "" }, repos, clock());
     for (const effect of tapped) {
       if (effect.kind === "ack") ack(effect.text);
-      else if (effect.kind === "edit") editText(effect.text);
+      else if (effect.kind === "edit") flowEdit(effect);
       else effects.push(async () => {
         // A reply box: whatever they send back as a reply to this prompt is the new draft, or the note.
         const answer = await transport("sendMessage", { chat_id: binding.chatId, text: effect.text, link_preview_options: { is_disabled: true },

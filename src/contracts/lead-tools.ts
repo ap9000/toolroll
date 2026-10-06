@@ -71,6 +71,7 @@ export const LEAD_TOOL_INPUTS = {
   propose_task_action: z.strictObject({ task: taskRef, operation: enumOf(Object.keys(CHAT_TASK_ACTIONS)), dependency: taskRef.optional(), run: id.optional() }),
   get_controls: z.strictObject({}),
   show_control: z.strictObject({ control: enumOf(Object.keys(CHAT_CONTROLS)), task: taskRef.optional(), repo: repoId.optional(), run: id.optional() }),
+  offer_approval: z.strictObject({ task: taskRef.optional(), card: id.optional() }),
   get_result: z.strictObject({ task: taskRef, run: id.optional(), feedback_offset: offset.optional() }),
   get_diff: z.strictObject({ task: taskRef, run: id.optional(), file: text("diffPath").min(1).optional(), offset: offset.optional() }),
   get_check_log: z.strictObject({ task: taskRef, run: id.optional(), search: text("logSearch").min(2).optional(), offset: offset.optional() }),
@@ -206,6 +207,7 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_task_action: z.looseObject({ proposal: int, action: str, awaiting: str }),
   get_controls: z.looseObject({ confirmedInChat: z.array(str), existingControls: rows({ id: str, label: str, needsTask: z.boolean(), needsProject: z.boolean() }), rule: str }),
   show_control: z.looseObject({ card: int, label: str, action: str }),
+  offer_approval: z.looseObject({ offered: z.boolean() }),
   get_result: z.looseObject({
     task: str, root: str, currentExecution: str, run: int, title: str, feedback: list, feedbackTotal: int, nextFeedbackOffset: nullable(int),
     changes: str, changesShortened: z.boolean(), verification: str, accepted: z.boolean(), evidenceTool: str, canRevise: z.boolean(),

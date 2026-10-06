@@ -11,6 +11,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { runOperate } from "./operate.js";
 import { main } from "./cli.js";
+import { flowFromSteps } from "./flows.js";
 
 const NOW = new Date("2026-09-30T12:00:00.000Z");
 let dir: string, file: string, repo: string, other: string, alex: string;
@@ -215,4 +216,69 @@ test("the command contract and the operating guide include flows", async () => {
   const guide: string[] = [];
   expect(await main(["skills", "get", "operating"], line => guide.push(line))).toBe(0);
   expect(guide.join("\n")).toContain("flows create --repo PATH");
+});
+
+function approvalCard(): { flow: number; card: number } {
+  return look(store => {
+    const flow = store.createFlow({ repo, name: "Publish", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
+      { title: "Inbox", kind: "inbox" },
+      { id: "draft", title: "Write it", kind: "draft", instructions: "Write {{card.title}}" },
+      { id: "ok", title: "Publish to toolroll.dev?", kind: "approval", decider: "owner", ifFails: "Write it" },
+      { id: "done", title: "Published", kind: "done" },
+    ], null)) }, NOW);
+    return { flow, card: store.addFlowCard({ flow, title: "Release notes", description: null, stage: "ok", by: "alex" }, NOW) };
+  });
+}
+const events = (card: number) => look(store => store.handle.prepare("SELECT from_stage, to_stage, outcome, actor, note FROM flow_event WHERE card=? AND outcome<>'created' ORDER BY id").all(card));
+
+test("card approve moves a waiting approval card on as the console's Approve does, and is a line in the ledger", async () => {
+  const { flow, card } = approvalCard();
+  const bare = await flows(["card", "approve", String(flow), String(card)]);
+  expect(bare).toMatchObject({ code: 3, body: { reason: "unauthenticated" } });
+  const approved = await flows(["card", "approve", String(flow), String(card), ...as()]);
+  expect(approved).toMatchObject({ code: 0, body: { ok: true, command: "flows card approve", applied: true, said: "Approved. Moved to Published." } });
+  expect(events(card)).toEqual([{ from_stage: "ok", to_stage: "done", outcome: "approved", actor: "alex", note: null }]);
+  expect(ledger()).toEqual([{ actor: "alex", repo, action: "flows card approve", outcome: "accepted", source: "request", detail: `command line · flow #${flow} card #${card} · Publish to toolroll.dev?` }]);
+  // A second approve of the same card finds it has moved on: refused, and nothing else changes.
+  const again = await flows(["card", "approve", String(flow), String(card), ...as()]);
+  expect(again).toMatchObject({ code: 3, body: { ok: false } });
+  expect(events(card)).toHaveLength(1);
+  expect(ledger().at(-1)).toMatchObject({ action: "flows card approve", outcome: "refused" });
+});
+
+test("card send-back needs a note, then returns the card with it, as the console's Send back does", async () => {
+  const { flow, card } = approvalCard();
+  expect(await flows(["card", "send-back", String(flow), String(card), ...as()])).toMatchObject({ code: 2, body: { reason: "usage" } });
+  const back = await flows(["card", "send-back", String(flow), String(card), "--note", "Mention the new pricing.", ...as()]);
+  expect(back).toMatchObject({ code: 0, body: { ok: true, command: "flows card send-back", said: "Sent back to Write it with your note." } });
+  expect(events(card)).toEqual([{ from_stage: "ok", to_stage: "draft", outcome: "sent-back", actor: "alex", note: "Mention the new pricing." }]);
+  expect(ledger()).toEqual([expect.objectContaining({ action: "flows card send-back", outcome: "accepted" })]);
+});
+
+test("a card approve by someone who isn't the decider is refused and changes nothing", async () => {
+  const { flow, card } = approvalCard();
+  const made = look(store => addApprover(store, "sam", NOW, { name: "alex", token: alex }));
+  if (!made.ok) throw new Error("sam");
+  const refused = await flows(["card", "approve", String(flow), String(card), "--as", "sam", "--token", made.token]);
+  expect(refused).toMatchObject({ code: 3, body: { ok: false, message: "Only alex decides here." } });
+  expect(events(card)).toEqual([]);
+  expect(look(store => store.getFlowCard(card))).toMatchObject({ stage: "ok", state: "active" });
+});
+
+test("at a Person chooses step, card approve takes --option, through the console's choice door", async () => {
+  const { flow, card } = look(store => {
+    const flow = store.createFlow({ repo, name: "Triage", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
+      { id: "build", title: "Build", kind: "inbox" },
+      { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
+      { id: "ship", title: "Ship", kind: "inbox" },
+    ], null)) }, NOW);
+    return { flow, card: store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "choose", by: "alex" }, NOW) };
+  });
+  const missing = await flows(["card", "approve", String(flow), String(card), ...as()]);
+  expect(missing).toMatchObject({ code: 2, body: { ok: false, reason: "choose-option" } });
+  expect(missing.body.message).toContain("1 “Ship it”");
+  expect(await flows(["card", "send-back", String(flow), String(card), "--option", "1", ...as()])).toMatchObject({ code: 2, body: { reason: "usage" } });
+  const chosen = await flows(["card", "approve", String(flow), String(card), "--option", "ship it", ...as()]);
+  expect(chosen).toMatchObject({ code: 0, body: { ok: true, said: "Ship it. Moved to Ship." } });
+  expect(look(store => store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = 'flow choice'").all())).toEqual([{ outcome: "chosen", detail: `Triage · card ${card} · What next?: “Ship it” · via the command line` }]);
 });

@@ -338,8 +338,8 @@ describe("decisions finish in the chat app", () => {
     expect(store.getScope("plan-5")!.approvedDigest).toBeNull();
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
     const scope = store.getScope("plan-5")!;
-    expect(scope).toMatchObject({ approvedBy: "bob", approvedDigest: scope.digest, approvalBasis: "mode" });
-    expect(script.current(BOB, card.messageId).text).toContain("✓ Approved under your chat approval mode.");
+    expect(scope).toMatchObject({ approvedBy: "bob", approvedDigest: scope.digest, approvalBasis: "chat" });
+    expect(script.current(BOB, card.messageId).text).toContain("✓ Approved. Work starts when a worker is free.");
     const binding = store.liveTelegramBindingFor(BOT, String(BOB))!;
     const ledger = store.handle.prepare("SELECT actor, task_id, action, outcome, detail FROM action_ledger WHERE action = 'plan approved in chat'").all();
     expect(ledger).toEqual([{ actor: "bob", task_id: "plan-5", action: "plan approved in chat", outcome: "approved",
@@ -509,7 +509,7 @@ describe("decisions finish in the chat app", () => {
     expect(fresh.messageId).not.toBe(card.messageId);
     await tapIn(BOB, fresh.token(/^Approve & start$/), fresh.messageId);
     await tapIn(BOB, script.current(BOB, fresh.messageId).token(/^Yes$/), fresh.messageId);
-    expect(store.getScope("plan-13")).toMatchObject({ approvedBy: "bob", approvalBasis: "mode" });
+    expect(store.getScope("plan-13")).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
   });
 
   test("c1: a decide button tapped from another chat is answered with why, and does nothing", async () => {
