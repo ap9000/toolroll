@@ -1,6 +1,6 @@
 import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import type { DecisionOption } from "./contracts/decision.js";
-import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn } from "./contracts/store-json.js";
+import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn, type SavedToolAction, type SavedToolRule } from "./contracts/store-json.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
 import { SKILLS_SCHEMA } from "./project-skills.js";
@@ -1068,11 +1068,9 @@ function readTeammateSuggestion(row: Record<string, unknown>): TeammateSuggestio
     decidedBy: row["decided_by"] === null ? null : String(row["decided_by"]), decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]), createdAt: String(row["created_at"]) };
 }
 /** v94: one action a project tool offers, as it described itself when listed. */
-export type ToolActionInfo = { name: string; about: string; input: Record<string, unknown> | null; readOnly: boolean };
+export type ToolActionInfo = SavedToolAction;
 /** v94: a teammate's rule for one action: do it, ask first, or never; "free" may ask first above a number in its input. */
-export type ToolRule = { use: "free" | "ask" | "never"; limit?: { field: string; over: number };
-  /** v97: another action of the same tool that undoes this one, called with the same input when a person presses Undo. */
-  undo?: string };
+export type ToolRule = SavedToolRule;
 export type TeammateGrantRow = { teammate: number; tool: string; actions: ToolActionInfo[]; rules: Record<string, ToolRule>; listedAt: string | null; updatedBy: string; updatedAt: string };
 export type TeammateCallState = "asked" | "approved" | "denied" | "refused" | "running" | "done" | "failed";
 /** v94: a tool call a teammate made, or asked to make, on one visit of a card: the receipt. */
@@ -1094,7 +1092,7 @@ function readTeammateCall(row: Record<string, unknown>): TeammateCallRow {
 
 function readTeammateGrant(row: Record<string, unknown>): TeammateGrantRow {
   const parsed = <T>(column: StoreColumn, key: string, fallback: T): T => { const read = readStoreColumn(column, row[key]); return read.ok ? read.value as T : fallback; };
-  return { teammate: Number(row["teammate"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("teammate_grant.actions_json", "actions_json", []), rules: parsed<Record<string, ToolRule>>("teammate_grant.rules_json", "rules_json", {}),
+  return { teammate: Number(row["teammate"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("teammate_tool.actions_json", "actions_json", []), rules: parsed<Record<string, ToolRule>>("teammate_tool.rules_json", "rules_json", {}),
     listedAt: row["listed_at"] === null ? null : String(row["listed_at"]), updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]) };
 }
 
@@ -8259,6 +8257,7 @@ function migrateToV24(db: Database): void {
     } else {
       let touches: string[] = [];
       const read = readStoreColumn("task_scope.touches", row.touches);
+      // Unlike the display reader, v24 passed every valid JSON value to digestOf, including non-arrays.
       if (read.ok) touches = read.value as string[];
       const recomputed = digestOf(
         { goal: row.goal, outOfScope: row.outOfScope, touches, budgetMicrousd: row.budget },
@@ -29584,8 +29583,8 @@ function readGrant(row: Record<string, unknown>): BackendGrant {
   return {
     repo: String(row["repo"]),
     backend: String(row["backend"]),
-    paths: readStoreTextList("external_mirror.paths", row["paths"]),
-    mutations: readStoreTextList("external_mirror.mutations", row["mutations"]) as MutationClass[],
+    paths: readStoreTextList("backend_grant.paths", row["paths"]),
+    mutations: readStoreTextList("backend_grant.mutations", row["mutations"]) as MutationClass[],
     selector: String(row["selector"]) === "all" ? "all" : "ours",
     credentialScope: row["credential_scope"] === null ? null : String(row["credential_scope"]),
     observedByGit: Number(row["observed_by_git"]) === 1,

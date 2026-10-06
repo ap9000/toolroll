@@ -5,7 +5,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { SCHEMA_VERSION, databasePath, isLifecycleNotification, openStore, BUILT_IN, type Capability, type Store } from "./store.js";
 import { acquire } from "./claim.js";
 import { register } from "./runner.js";
-import { canonicalProfileJson, profileDigestOf } from "./scope.js";
+import { canonicalProfileJson, profileDigestOf, digestOf } from "./scope.js";
 
 /** The profile an attended authorization pins in these fixtures, and the
  * legacy stamp an attended attempt presents for it (atomic authority
@@ -2063,6 +2063,28 @@ describe("the v24 migration (Parity II foundations, rulings 10/11)", () => {
     store.close();
     return file;
   };
+
+  test.each(['"ba"', 'not json'])("unapproved touches %s keeps the original JSON.parse digest behavior", touches => {
+    const file = legacyDb(db => {
+      db.setPhaseConfig("installation", "build", "claude", "sonnet", "old", T0);
+      db.createTask({ id: "t-touches", title: "legacy touches" }, T0);
+      db.refFor("built-in", "t-touches");
+      db.raw().prepare("INSERT INTO task_scope (task_id, goal, out_of_scope, touches, proposed_at, digest) VALUES (?, ?, NULL, ?, ?, ?)")
+        .run("t-touches", "work", touches, T0.toISOString(), "old-digest");
+    });
+    try {
+      const store = openStore(file);
+      try {
+        const scope = store.getScope("t-touches")!;
+        let old: string[] = [];
+        try { old = JSON.parse(touches) as string[]; } catch { old = []; }
+        expect(scope.digest).toBe(digestOf({ goal: "work", outOfScope: null, touches: old }, scope.profile));
+        expect(scope.touches).toEqual([]); // Display still accepts only a list.
+        expect(store.raw().prepare("SELECT touches FROM task_scope WHERE task_id = ?").get("t-touches")?.["touches"]).toBe(touches);
+        if (touches === '"ba"') expect(scope.digest).not.toBe(digestOf({ goal: "work", outOfScope: null, touches: [] }, scope.profile));
+      } finally { store.close(); }
+    } finally { rmSync(dirname(file), { recursive: true, force: true }); }
+  });
 
   test("an approved scope is PINNED and grandfathered: signed bytes untouched, snapshot resolved from the config of the day", () => {
     const file = legacyDb(db => {

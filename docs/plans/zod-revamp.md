@@ -79,7 +79,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today |
 |---|---|---|
-| 18 | **JSON columns in the store** (46 `JSON.parse` sites) — parse on read with versioned schemas | `store.ts` |
+| 18 | **JSON columns in the store** — 45 physical columns and one SQL projection; implementation revised, live replay pending | `store.ts` |
 | 19 | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
 | 20 | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
 
@@ -282,3 +282,26 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+
+- **18. JSON columns in the store — implementation revised; live replay pending** (2026-10-06).
+  `store-json.ts` replaces `asSaved<T>()` with saved-shape schemas and derives the tool-rule/action types. It imports
+  the decision, scope (and its plan fields), proof evidence, chat-action and Telegram button contracts. Existing flow,
+  route, stage-output and chat-content readers retain ownership; `chat-tables.ts` supplies DDL, while plan/handoff
+  artifacts are files, not store JSON columns. The manifest uses `teammate_tool` and `backend_grant`; the run fence is
+  listed separately as a SQL projection. Reads use `readVersioned` with an in-memory envelope only.
+  Compatibility: original JSON values, key order, unknown keys, nulls, coercion, clipping and catch boundaries stay;
+  v24 passes non-array `touches` into the digest as before, and failed string coercion still returns an empty list.
+  No tightening: schema mismatches in cast-only legacy columns are advisory (`legacyIssues`), never a new failure.
+  These raw-value exceptions are `teammate_suggestion.{rule_json,was_json,evidence_json}`, `teammate_call.input_json`,
+  `teammate_tool.{actions_json,rules_json}`, `teammate_question.options_json`, `teammate_event.detail_json`,
+  `task_scope.{touches,acceptance_json}`, `routine.acceptance_json`, `operating_mode.terms_json`,
+  `attended_authorization.terms_json`, `decision.options`, `run_tool.tools_json` and its `fence` projection,
+  `mate_ask.options_json`, `mutation.result`, `plan_revision.changed_fields`, `run_checkpoint.snapshot_json`,
+  `telegram_conversation_part.keyboard_json`, `publication_grant.capabilities`, `tournament_terms.agents`, and both
+  `payload_json`/`outcome_json` in `coordinator_proposal` and `mate_proposal`. A proof matrix still accepts any list
+  before its reader applies historical defaults. Truly open payloads are mutation results, tool input, event details,
+  proposal outcomes and operation-specific proposal payloads; action proposals also reuse `sharedActionSchema`.
+  Writes are unchanged; focused tests cover raw bytes, schema round trips, malformed/legacy values and the v24 digest.
+  Exhaustive live-row replay is **not verified**: this build's filesystem policy denies the live database and its
+  backups, including a SQLite `.backup` read. The handoff records unavailable counts per column. Item 18 stays
+  unchecked until an authorized read-only replay reports its counts and zero differences.
