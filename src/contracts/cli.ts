@@ -46,6 +46,10 @@ function answers<C extends string, S extends z.ZodRawShape>(command: C, shape: S
 export const commandFlagSchema = z.looseObject({ name: str, takesValue: z.boolean(), meaning: str }).readonly();
 export type CommandFlag = z.infer<typeof commandFlagSchema>;
 
+/** The remote policy every command row states; see `remote` below. */
+export const REMOTE_POLICIES = ["yes", "no", "step-up"] as const;
+export type RemotePolicy = typeof REMOTE_POLICIES[number];
+
 /** A session operation's executable input schema, as session-contract.ts states it. */
 const sessionInputSchema = z.custom<SessionDescriptor["inputSchema"]>(value => typeof value === "object" && value !== null && !Array.isArray(value));
 
@@ -73,6 +77,11 @@ export const commandRowSchema = z.looseObject({
   notableReasons: z.array(str).readonly().optional(),
   /** Session schemas are executable input contracts, not a grant of authority. */
   inputSchema: sessionInputSchema.optional(),
+  /** Whether a person signed in to a central server with their own API token may run it there (`runOperateAs`):
+   *  yes — runs as that person, within their token's scope and project access.
+   *  no — this machine's own infrastructure, credentials or files; never run for a remote caller.
+   *  step-up — approvals, people and policy: a person's act in the console or chat, never a token's. */
+  remote: z.enum(REMOTE_POLICIES),
 }).readonly();
 export type CommandRow = z.infer<typeof commandRowSchema>;
 

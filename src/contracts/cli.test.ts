@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../cli.js";
 import { ENVELOPE_VERSION, envelopeJson } from "../envelope.js";
 import { runOperate } from "../operate.js";
-import { COMMAND_ENTRIES, COMMAND_GUIDE } from "../surface.js";
+import { COMMAND_ENTRIES, COMMAND_GUIDE, GUIDE_INVOCATIONS, REMOTE_POLICY, REMOTE_POLICY_COUNT } from "../surface.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { checkedEnvelopeJson, COMMAND_OUTPUTS, commandOutputSchema, commandRowSchema, envelopeProblems, envelopeSchema } from "./cli.js";
 
@@ -78,6 +78,26 @@ describe("the CLI's machine contract", () => {
       expect(schema.safeParse(refusal(name)).success, name).toBe(true);
       expect(schema.safeParse(refusal(name === "status" ? "ready" : "status")).success, name).toBe(false);
     }
+  });
+
+  it("says for every command row whether it may run remotely, classified once by name", () => {
+    // Each row names its policy exactly once; a classification naming no row is stale.
+    expect(REMOTE_POLICY_COUNT, "a row is classified twice").toBe(REMOTE_POLICY.size);
+    expect(GUIDE_INVOCATIONS.filter(invocation => !REMOTE_POLICY.has(invocation)), "rows without a remote policy").toEqual([]);
+    expect([...REMOTE_POLICY.keys()].filter(invocation => !GUIDE_INVOCATIONS.includes(invocation)), "policies for no row").toEqual([]);
+    for (const { guide } of COMMAND_ENTRIES) expect(["yes", "no", "step-up"], guide.invocation).toContain(guide.remote);
+    // The schema itself demands it.
+    const { remote: _remote, ...unclassified } = COMMAND_GUIDE.find(row => row.invocation === "status")!;
+    expect(commandRowSchema.safeParse(unclassified).success).toBe(false);
+    expect(commandRowSchema.safeParse({ ...unclassified, remote: "maybe" }).success).toBe(false);
+    const policy = (invocation: string) => COMMAND_GUIDE.find(row => row.invocation === invocation)?.remote;
+    // The filed minimums: this machine's infrastructure never runs remotely; approvals, people and policy are a step-up.
+    for (const invocation of ["up", "serve", "daemon", "watch", "bridge", "tick", "mcp", "models update", "setup show", "setup clear", "onboard", "update", "link",
+      "repos add", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "providers", "publish", "publish merge", "publish grant", "runner register",
+      "runner retire", "runner bind", "runner capacity", "enroll", "reap", "demo", "", "pulls", "graph"]) expect(policy(invocation), invocation).toBe("no");
+    for (const invocation of ["task approve", "routine approve", "decide", "people list", "people invite", "people projects", "people revoke",
+      "mode show", "mode set", "mode revoke", "chat-approval on", "config set", "verify set"]) expect(policy(invocation), invocation).toBe("step-up");
+    for (const invocation of ["status", "task add", "task show", "task list"]) expect(policy(invocation), invocation).toBe("yes");
   });
 
   it("writes exactly what envelopeJson writes, logging a disagreement and never throwing", () => {

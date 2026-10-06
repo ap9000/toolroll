@@ -106,7 +106,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
-import { LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V54_COLUMNS, LEDGER_V54_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
+import { LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V54_COLUMNS, LEDGER_V54_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
@@ -636,7 +636,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v107 keeps a check's progress and result in one record (run_check absorbs check_progress).
 // v108 keeps sign-in pauses: one incident per provider whose sign-in stopped working (provider_auth_pause).
 // v109 remembers which sign-in pause parked a task (task_ref.auth_wait_pause), so reviews and other runs outside the tick wait for it too.
-export const SCHEMA_VERSION = 109;
+// v110 lets the action ledger record commands a person ran on this server with their API token (source 'api', or 'mcp' from their agent).
+export const SCHEMA_VERSION = 110;
 
 /** v102: a project's approval rules, and each person's approval of an exact scope (two are needed for protected work). */
 const APPROVAL_SCHEMA = `
@@ -6688,8 +6689,8 @@ function migrate(db: Database, origin: number | null): void {
      )`,
     ["id", "teammate", "card", "entry", "question", "options_json", "asked_of", "state", "choice", "answer", "answered_by", "answered_via", "answered_at", "created_at", "tool_call", "suggestion"],
   );
-  // v99: the action ledger admits sign-in and policy events, each with a short detail.
-  rebuildLedgerForV99(db);
+  // v99: the action ledger admits sign-in and policy events, each with a short detail; v110: and remote commands ('api', 'mcp').
+  rebuildLedger(db);
   // v101: a coordinator credential's expiry (null: made before expiry existed, until renewed).
   addColumn(db, "coordinator_credential", "expires_at", "TEXT");
   // v102: who filed a task (a person, or the person a coordinator acts for; null when no person is known) and what kind of filer.
@@ -7039,18 +7040,21 @@ function readWebSession(row: Record<string, unknown>): WebSessionRow {
 
 /**
  * v99: the ledger's source admits 'sign-in' and 'policy', and each row may
- * carry a short detail. The work triggers on other tables write into the
+ * carry a short detail. v110: it admits 'api' and 'mcp' too, from either
+ * earlier shape; rows, ids and the counter are carried whole, so the v103
+ * seals over them still hold. The work triggers on other tables write into the
  * ledger, and a rename refuses while a trigger points at a table that's gone,
  * so every trigger naming it is dropped first; openStore puts them back
  * (LEDGER_SCHEMA and installLedgerTriggers run after migration).
  */
-function rebuildLedgerForV99(db: Database): void {
+function rebuildLedger(db: Database): void {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'action_ledger'").get();
   if (row === undefined || canonicalDdl(String(row["sql"])) === canonicalDdl(LEDGER_TABLE("action_ledger"))) return;
   for (const trigger of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%action_ledger%'").all()) {
     db.exec(`DROP TRIGGER IF EXISTS "${String(trigger["name"]).replace(/"/g, '""')}"`);
   }
-  rebuildExact(db, "action_ledger", LEDGER_V54_TABLE, LEDGER_TABLE, LEDGER_V54_COLUMNS);
+  if (canonicalDdl(String(row["sql"])) === canonicalDdl(LEDGER_V54_TABLE("action_ledger"))) rebuildExact(db, "action_ledger", LEDGER_V54_TABLE, LEDGER_TABLE, LEDGER_V54_COLUMNS);
+  else rebuildExact(db, "action_ledger", LEDGER_V99_TABLE, LEDGER_TABLE, [...LEDGER_V54_COLUMNS, "detail"]);
 }
 
 /** v34: artifact.kind admits 'report'. A table already rebuilt to the v38

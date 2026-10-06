@@ -22,10 +22,13 @@ import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
 
 import { SESSION_DESCRIPTORS, type SessionDescriptor } from './session-contract.js';
 import { sessionCliFlags } from './session-cli.js';
-import { commandEntries, type CommandFlag, type CommandRow } from './contracts/cli.js';
+import { commandEntries, type CommandFlag, type CommandRow, type RemotePolicy } from './contracts/cli.js';
 
 /** A guide row and its flags are derived from their schemas in src/contracts/cli.ts. */
-export type { CommandFlag, CommandRow };
+export type { CommandFlag, CommandRow, RemotePolicy };
+
+/** A row as written below; its `remote` policy is stated once, in REMOTE_POLICY. */
+type GuideRow = { readonly [K in keyof CommandRow as K extends "remote" ? never : K]: CommandRow[K] };
 
 /** The guide's limits, stated machine-readably in every dump. */
 export const SURFACE_NOTES = {
@@ -42,14 +45,14 @@ const keyFlag: CommandFlag = { name: "key", takesValue: true, meaning: "idempote
 const dbFlag: CommandFlag = { name: "db", takesValue: true, meaning: "path to the database file (defaults to the installation's)" };
 const repoFlag: CommandFlag = { name: "repo", takesValue: true, meaning: "which repository (repeatable where a command watches several)" };
 
-const operator = (invocation: string, synopsis: string): CommandRow => ({
+const operator = (invocation: string, synopsis: string): GuideRow => ({
   invocation,
   synopsis,
   audience: "operator",
   agentMayInvoke: false,
   mutation: "unkeyed",
 });
-const operatorRead = (invocation: string, synopsis: string): CommandRow => ({
+const operatorRead = (invocation: string, synopsis: string): GuideRow => ({
   invocation,
   synopsis,
   audience: "operator",
@@ -57,7 +60,7 @@ const operatorRead = (invocation: string, synopsis: string): CommandRow => ({
   mutation: "none",
 });
 
-const GUIDE_ROWS: readonly CommandRow[] = [
+const GUIDE_ROWS: readonly GuideRow[] = [
   // ---- reports (reads) ----
   {
     invocation: "",
@@ -432,8 +435,74 @@ const GUIDE_ROWS: readonly CommandRow[] = [
   operator("daemon", "install the loop under the OS service manager"),
 ];
 
-/** Every declared command, in guide order, paired with the schema of its `--json` answer (src/contracts/cli.ts). */
-export const COMMAND_ENTRIES = commandEntries(GUIDE_ROWS);
+/**
+ * Whether each row may run on a central server for a person signed in with their own API token (`runOperateAs` in
+ * operate.ts), stated for every row by name. "no" is this machine's own infrastructure, credentials, files and the
+ * commands that only make sense beside a checkout (or that the local CLI answers itself); "step-up" is approvals,
+ * people and policy, which stay in the console and chat; "yes" runs as the person, within their token's scope and
+ * project access. A row missing here fails the contract test, and runs nowhere remotely meanwhile.
+ */
+const REMOTE_NO: readonly string[] = [
+  // Answered by the local CLI, or a client of a central server itself.
+  "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github", "contract", "skills list", "skills get", "skills install",
+  "link", "unlink", "update", "demo", "chat", "connect", "lead list", "lead create", "lead update", "lead member", "lead transfer",
+  "conversation list", "conversation create", "conversation show", "conversation member", "conversation edit", "conversation withdraw",
+  "conversation read", "conversation follow", "conversation stop",
+  "session capabilities", "session list", "session show", "session changes", "session start", "session send", "session stop", "session resume", "session recover",
+  // This machine's checkout, saved profile, credentials and catch-up.
+  "project show", "project use", "brief", "lead token", "lead say",
+  "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",
+  // Workers, the loop and the services that run here.
+  "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
+  "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
+  "serve", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
+  // Provider keys and model tools on this machine.
+  "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
+  // Publication and release.
+  "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
+  // A repository's authority grants on this machine.
+  "enroll", "revoke",
+  // Flow steps that fetch addresses or run checks and scripts here.
+  "flows import", "flows trigger check", "flows script save",
+];
+const REMOTE_STEP_UP: readonly string[] = [
+  "proposals", "decide", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
+  "flows card approve", "flows card send-back", "flows script approve",
+  "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
+  "mode show", "mode set", "mode revoke", "chat-approval on", "review on", "review off", "config set", "config clear",
+  "verify set", "verify clear", "verify level", "project checks", "project concurrency", "intake grant", "intake clear", "webhook primary",
+];
+const REMOTE_YES: readonly string[] = [
+  "status", "integrations", "ready", "gaps", "grants", "sync",
+  "task add", "task ask", "task checks", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
+  "task state", "task block", "task unblock", "task next", "task steer", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
+  "task requeue", "task regate", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
+  "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",
+  "routine list", "routine show", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
+  "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
+  "contest show", "contest exclude", "webhook status", "webhook test", "review show", "chat-approval show", "chat-approval off",
+  "knowledge search", "knowledge impact", "knowledge refresh",
+  "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory propose", "memory review", "memory status",
+  "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
+  "flows trigger remove", "flows card add", "flows archive",
+  "models status", "models list",
+];
+
+/** Every row's remote policy, by invocation. Exported for the contract test, which holds it to the guide exactly. */
+export const REMOTE_POLICY: ReadonlyMap<string, RemotePolicy> = new Map([
+  ...REMOTE_NO.map(invocation => [invocation, "no"] as const),
+  ...REMOTE_STEP_UP.map(invocation => [invocation, "step-up"] as const),
+  ...REMOTE_YES.map(invocation => [invocation, "yes"] as const),
+]);
+/** How many times each invocation was classified — the contract test refuses a row stated twice. */
+export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
+
+/** Every declared command, in guide order, paired with the schema of its `--json` answer (src/contracts/cli.ts).
+ * An unclassified row is "no": nothing runs remotely by omission. */
+export const COMMAND_ENTRIES = commandEntries(GUIDE_ROWS.map(row => ({ ...row, remote: REMOTE_POLICY.get(row.invocation) ?? "no" })));
+
+/** The invocations the guide states, for the contract test (a classification naming none of them is stale). */
+export const GUIDE_INVOCATIONS: readonly string[] = GUIDE_ROWS.map(row => row.invocation);
 
 /** The guide `contract --commands` dumps: each declared command's row, projected from COMMAND_ENTRIES. */
 export const COMMAND_GUIDE: readonly CommandRow[] = COMMAND_ENTRIES.map(entry => entry.guide);
