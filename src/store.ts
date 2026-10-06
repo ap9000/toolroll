@@ -1,6 +1,5 @@
-import {chatSchema,chatTables} from "./chat-delivery-state.js";
+import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import type { DecisionOption } from "./contracts/decision.js";
-import { SLACK_SCHEMA, SLACK_TABLES } from "./slack-state.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
 import { SKILLS_SCHEMA } from "./project-skills.js";
@@ -5261,7 +5260,7 @@ function initializeStore(db: Database, file: string): Store {
     if (typeof ddl !== "string" || canonicalDdl(ddl) !== canonicalDdl(MATE_PROPOSAL_V66_DDL("mate_proposal"))) throw new Error(`${file}: shared action history has an unknown shape; refusing to recreate it`);
   }
   if (preflight !== null && Math.abs(preflight) >= 67) {
-    for (const table of SLACK_TABLES) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
+    for (const table of chatTables("slack")) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
   }
   if (preflight !== null && Math.abs(preflight) >= 68) {
     for (const table of chatTables("discord")) if (!tableExists(db, table)) throw new Error(`${file}: Discord history is missing; refusing to recreate receipts`);
@@ -5278,7 +5277,7 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MEMORY_SCHEMA);
   db.exec(MODELS_SCHEMA);
   db.exec(SKILLS_SCHEMA);
-  db.exec(SLACK_SCHEMA);
+  db.exec(chatSchema("slack"));
   db.exec(chatSchema("discord"));
   db.exec(chatSchema("teams"));
   db.exec(TEAM_SCHEMA);
