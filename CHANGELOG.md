@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.38 — 2026-10-06
+
+- **The release check is faster.** Its app journeys run in about 7.6 minutes
+  instead of about 12, with no journey or coverage dropped.
+- **Lead chat tool steps tell the truth.** A step shows done only when it
+  succeeded. A failed step says why in plain words.
+- **Telegram decision cards lead with the action.** Decisions, plans, lead
+  proposals, flow approvals and flow choices say what to do and what it does
+  first. "Nothing changes until you confirm." stays on every proposal, and
+  buttons on cards already sent still work.
+- **Crew rows say why.** A task that is waiting, failed or needs you shows the
+  reason in one line; tap it to read the rest. The whole row still opens the
+  task.
+- **Dependency updates.** @slack/socket-mode 3.1.0, imapflow 2.2.5,
+  nodemailer 10.0.15, mailparser 3.9.36, lucide-react 1.52.0, @xyflow/react
+  12.12.0, happy-dom 20.14.5 and tsx 4.23.15. Vitest takes the 4.1.11 security
+  patch and stays on 4; version 5 waits for its own migration. `npm audit`
+  reports no vulnerabilities.
+
 ## 0.9.37 — 2026-10-06
 
 - **Zod revamp, waves 1 and 2 finished.** Every handoff between a model and
