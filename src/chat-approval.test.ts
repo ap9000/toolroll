@@ -3,7 +3,7 @@
  * project's own row first, never lapsing by date but ending with the account's generation, and every change ledgered.
  * Turned on from Settings with the nonce and password; off in one step; and from the CLI with --as/--token.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { ALL_PROJECTS, effectiveChatApproval, setChatApproval } from "./chat-approval.js";
+import { ALL_PROJECTS, chatApprovalSettings, effectiveChatApproval, setChatApproval } from "./chat-approval.js";
 import { chatApproveMode, planInChat } from "./chat-decide.js";
 import { register } from "./runner.js";
 
@@ -43,7 +43,8 @@ describe("the lasting setting", () => {
     expect(on(ALL_PROJECTS)).toMatchObject({ ok: true, said: "Approving from chat is on for all your projects: plans that ask for full access open in Toolroll · attempts up to $5.00." });
     expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: false, capMicrousd: 5_000_000 } });
     // An explicit off on one project keeps it off there, and only there.
-    setChatApproval(store, { approver: "owner", scope: beta, enabled: false, via: "test" }, NOW);
+    expect(setChatApproval(store, { approver: "owner", scope: beta, enabled: false, via: "test" }, NOW))
+      .toEqual({ ok: true, said: `Approving from chat is off for ${beta}.` });
     expect(effectiveChatApproval(store, beta, "owner").ok).toBe(false);
     expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
     // A project's own limits win over the all-projects ones.
@@ -67,6 +68,27 @@ describe("the lasting setting", () => {
     expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
     // Someone else's setting is never this person's.
     expect(effectiveChatApproval(store, alpha, "sam").ok).toBe(false);
+  });
+
+  test("all-projects off rolls back every setting and ledger entry if recording a project fails", () => {
+    on(ALL_PROJECTS);
+    on(alpha);
+    on(beta);
+    const settingsBefore = chatApprovalSettings(store, "owner");
+    const ledgerBefore = ledger();
+    const recordAction = store.recordAction.bind(store);
+    const recording = vi.spyOn(store, "recordAction").mockImplementation(entry => {
+      if (entry.repo === beta) throw new Error("Ledger unavailable");
+      return recordAction(entry);
+    });
+    try {
+      expect(() => setChatApproval(store, { approver: "owner", scope: ALL_PROJECTS, enabled: false, via: "test" }, new Date(NOW.getTime() + DAY)))
+        .toThrow("Ledger unavailable");
+    } finally {
+      recording.mockRestore();
+    }
+    expect(chatApprovalSettings(store, "owner")).toEqual(settingsBefore);
+    expect(ledger()).toEqual(ledgerBefore);
   });
 
   test("keeps today's exclusions: wider access, over the limit and protected paths still open in Toolroll", () => {
@@ -136,14 +158,40 @@ describe("turning it on and off", () => {
       ["on", "this project · plans that ask for full access open in Toolroll · attempts up to $5.00 · via the console"],
       ["off", "this project · via the console"],
     ]);
+    // The same Settings action for all projects disables saved project overrides too.
+    on(ALL_PROJECTS);
+    on(alpha);
+    on(beta, { fullAccess: true, capMicrousd: 9_000_000 });
+    const beforeOff = ledger().length;
+    expect((await fetch(base + "/settings/chat-approval/off", { method: "POST", headers: { cookie },
+      body: new URLSearchParams({ scope: "all" }), redirect: "manual" })).status).toBe(403);
+    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
+    expect(ledger()).toHaveLength(beforeOff);
+    const off = await send("/settings/chat-approval/off", { scope: "all" });
+    expect(off.status).toBe(303);
+    expect(new URL(off.headers.get("location")!, base).searchParams.get("said")).toBe("Approving from chat is off for all your projects.");
+    for (const repo of [alpha, beta]) expect(effectiveChatApproval(store, repo, "owner").ok).toBe(false);
+    expect(chatApprovalSettings(store, "owner").map(one => [one.scope, one.enabled])).toEqual([[ALL_PROJECTS, false], [alpha, false], [beta, false]]);
+    expect(ledger().slice(beforeOff)).toEqual([
+      { actor: "owner", repo: null, action: "chat approval setting", outcome: "off", detail: "all projects · via the console" },
+      { actor: "owner", repo: alpha, action: "chat approval setting", outcome: "off", detail: "this project · via the console" },
+      { actor: "owner", repo: beta, action: "chat approval setting", outcome: "off", detail: "this project · via the console" },
+    ]);
   });
 
   test("the CLI previews until --yes, takes --as/--token, and turns it off in one step", async () => {
+    expect(addApprover(store, "sam", NOW, { name: "owner", token: ownerToken }).ok).toBe(true);
+    for (const scope of [ALL_PROJECTS, alpha]) {
+      expect(setChatApproval(store, { approver: "sam", scope, enabled: true, limits: { fullAccess: true, capMicrousd: null }, via: "test" }, NOW).ok).toBe(true);
+    }
+    const otherSettings = chatApprovalSettings(store, "sam");
+    const otherLedger = ledger();
     store.close();
-    const cli = async (argv: string[]) => {
+    let now = NOW;
+    const cli = async (argv: string[], json = true) => {
       const lines: string[] = [];
-      const code = await runOperate("chat-approval", [...argv, "--json"], line => { lines.push(line); }, { databaseFile: file, now: NOW });
-      return { code, body: JSON.parse(lines.join("\n")) as Record<string, any> };
+      const code = await runOperate("chat-approval", [...argv, ...(json ? ["--json"] : [])], line => { lines.push(line); }, { databaseFile: file, now });
+      return { code, body: json ? JSON.parse(lines.join("\n")) as Record<string, any> : {}, lines };
     };
     const as = ["--as", "owner", "--token", ownerToken];
     expect(await cli(["on", "--repo", alpha])).toMatchObject({ code: 3, body: { ok: false, reason: "unauthenticated" } });
@@ -153,10 +201,30 @@ describe("turning it on and off", () => {
     store.close();
     expect(await cli(["on", "--repo", alpha, "--cap-usd", "5", "--yes", ...as])).toMatchObject({ code: 0, body: { applied: true, scope: alpha } });
     expect((await cli(["show", ...as])).body.settings).toEqual([{ scope: alpha, enabled: true, fullAccess: false, capMicrousd: 5_000_000, updatedAt: NOW.toISOString() }]);
-    expect(await cli(["off", ...as])).toMatchObject({ code: 0, body: { applied: true, scope: "all" } });
+    now = new Date(NOW.getTime() + DAY);
+    expect(await cli(["off", ...as], false)).toMatchObject({ code: 0, lines: ["Approving from chat is off for all your projects."] });
     store = openStore(file);
-    // The project's own "on" still outranks the all-projects "off".
-    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
-    expect(ledger().map(one => [one["repo"], one["outcome"]])).toEqual([[alpha, "on"], [null, "off"]]);
+    // Turning it off for all projects also disables a project's own "on".
+    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(false);
+    expect(effectiveChatApproval(store, beta, "owner").ok).toBe(false);
+    expect(chatApprovalSettings(store, "owner")).toMatchObject([
+      { scope: ALL_PROJECTS, enabled: false, updatedBy: "owner", updatedAt: now.toISOString() },
+      { scope: alpha, enabled: false, fullAccess: false, capMicrousd: 5_000_000, updatedBy: "owner", updatedAt: now.toISOString() },
+    ]);
+    expect(chatApprovalSettings(store, "sam")).toEqual(otherSettings);
+    expect(effectiveChatApproval(store, alpha, "sam").ok).toBe(true);
+    expect(effectiveChatApproval(store, beta, "sam").ok).toBe(true);
+    expect(ledger().filter(one => one["actor"] === "sam")).toEqual(otherLedger);
+    expect(ledger().slice(otherLedger.length)).toEqual([
+      { actor: "owner", repo: alpha, action: "chat approval setting", outcome: "on", detail: "this project · plans that ask for full access open in Toolroll · attempts up to $5.00 · via the command line" },
+      { actor: "owner", repo: null, action: "chat approval setting", outcome: "off", detail: "all projects · via the command line" },
+      { actor: "owner", repo: alpha, action: "chat approval setting", outcome: "off", detail: "this project · via the command line" },
+    ]);
+    // A later deliberate project enable still wins over the all-projects off row.
+    store.close();
+    expect(await cli(["on", "--repo", alpha, "--cap-usd", "3", "--yes", ...as])).toMatchObject({ code: 0, body: { applied: true, scope: alpha } });
+    store = openStore(file);
+    expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: false, capMicrousd: 3_000_000 } });
+    expect(effectiveChatApproval(store, beta, "owner").ok).toBe(false);
   });
 });

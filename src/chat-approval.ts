@@ -1,6 +1,7 @@
 /** Approving from chat as a lasting owner setting. An approver turns it on for all their projects or for one, with the
  * limits they agree to (whether a plan may ask for full access, and the most one attempt may cost); a project's own
- * row outranks the all-projects one, and an explicit "off" on a project keeps it off there. It is off until turned on.
+ * row outranks the all-projects one, and an explicit "off" on a project keeps it off there. Turning it off for all
+ * projects also disables that owner's saved project rows. It is off until turned on.
  *
  * It never lapses by date, but it ends with the account: a reset password, revoked access or a lost project ends it.
  * Turning it on or changing its limits takes the password; turning it off is one step. Every change is a ledger line.
@@ -59,7 +60,8 @@ export function effectiveChatApproval(store: Store, repo: string, approver: stri
 
 export type ChatApprovalChange = { approver: string; scope: string; enabled: boolean; limits?: ChatApprovalLimits; via: string };
 
-/** Save one row (the caller has proved who is asking, and for "on" the password), and ledger it. */
+/** Save and ledger the setting; all-projects off also disables every saved project row for this owner.
+ * The caller has proved who is asking, and for "on" the password. */
 export function setChatApproval(store: Store, change: ChatApprovalChange, now: Date): { ok: true; said: string } | { ok: false; message: string } {
   const account = store.accountOf(change.approver);
   if (account === null || account.revokedAt !== null || account.role !== "approver") return { ok: false, message: "Only an approver can approve from chat." };
@@ -68,14 +70,22 @@ export function setChatApproval(store: Store, change: ChatApprovalChange, now: D
   if (limits.capMicrousd !== null && (!Number.isSafeInteger(limits.capMicrousd) || limits.capMicrousd < 0)) return { ok: false, message: "Give the attempt limit in dollars, like 5." };
   const where = change.scope === ALL_PROJECTS ? "all your projects" : change.scope;
   store.transact(() => {
-    store.handle.prepare(`INSERT INTO chat_approval_setting (approver, scope, enabled, full_access, attempt_cap_microusd, generation, digest, updated_by, updated_at)
+    const settings = [{ scope: change.scope, limits }];
+    if (change.scope === ALL_PROJECTS && !change.enabled) {
+      for (const setting of chatApprovalSettings(store, change.approver)) {
+        if (setting.scope !== ALL_PROJECTS) settings.push({ scope: setting.scope, limits: setting });
+      }
+    }
+    const save = store.handle.prepare(`INSERT INTO chat_approval_setting (approver, scope, enabled, full_access, attempt_cap_microusd, generation, digest, updated_by, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (approver, scope) DO UPDATE SET enabled = excluded.enabled, full_access = excluded.full_access,
-      attempt_cap_microusd = excluded.attempt_cap_microusd, generation = excluded.generation, digest = excluded.digest, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-      .run(change.approver, change.scope, change.enabled ? 1 : 0, limits.fullAccess ? 1 : 0, limits.capMicrousd, account.generation,
-        digestOf(change.approver, change.scope, limits, account.generation), change.approver, now.toISOString());
-    store.recordAction({ at: now.toISOString(), actor: change.approver, repo: change.scope === ALL_PROJECTS ? null : change.scope, taskId: null, runId: null,
-      action: "chat approval setting", outcome: change.enabled ? "on" : "off", source: "request",
-      detail: `${change.scope === ALL_PROJECTS ? "all projects" : "this project"}${change.enabled ? ` · ${chatApprovalWords(limits)}` : ""} · via ${change.via}` });
+      attempt_cap_microusd = excluded.attempt_cap_microusd, generation = excluded.generation, digest = excluded.digest, updated_by = excluded.updated_by, updated_at = excluded.updated_at`);
+    for (const { scope, limits } of settings) {
+      save.run(change.approver, scope, change.enabled ? 1 : 0, limits.fullAccess ? 1 : 0, limits.capMicrousd, account.generation,
+        digestOf(change.approver, scope, limits, account.generation), change.approver, now.toISOString());
+      store.recordAction({ at: now.toISOString(), actor: change.approver, repo: scope === ALL_PROJECTS ? null : scope, taskId: null, runId: null,
+        action: "chat approval setting", outcome: change.enabled ? "on" : "off", source: "request",
+        detail: `${scope === ALL_PROJECTS ? "all projects" : "this project"}${change.enabled ? ` · ${chatApprovalWords(limits)}` : ""} · via ${change.via}` });
+    }
   });
   return { ok: true, said: change.enabled ? `Approving from chat is on for ${where}: ${chatApprovalWords(limits)}.` : `Approving from chat is off for ${where}.` };
 }
