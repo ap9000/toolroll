@@ -23,7 +23,7 @@
  * Every model call a run makes is in <output>/model-calls.jsonl, and the report
  * counts them: scripted, and real turns.
  */
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, createWriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir, homedir } from "node:os";
@@ -329,12 +329,18 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
 
   const passwords = { alex: `alex-${randomBytes(8).toString("hex")}`, sam: `sam-${randomBytes(8).toString("hex")}` };
   const auth = ["--as", "alex", "--token", passwords.alex];
+  // The first command makes the database; the rest of the setup is independent, so it runs at once (each command is a
+  // node start of about half a second; SQLite's busy wait orders their writes).
   cli(["approver", "add", "alex", "--password", passwords.alex]);
-  cli(["approver", "add", "sam", "--password", passwords.sam, ...auth]);
-  const runner = cli(["runner", "register", "worker", "--repo", repo, ...auth]);
+  const setup = argv => new Promise((done, fail) => execFile(process.execPath, [BIN, ...argv, "--db", db, "--json"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 180_000 },
+    (error, stdout, stderr) => error ? fail(new Error(`standing-orders ${argv.join(" ")}: ${(stdout ?? "") + (stderr ?? "")}`.slice(0, 2000))) : done(JSON.parse(stdout))));
+  const [runner] = await Promise.all([
+    setup(["runner", "register", "worker", "--repo", repo, ...auth]),
+    setup(["approver", "add", "sam", "--password", passwords.sam, ...auth]),
+    ...["plan", "build", "repair", "review"].map(phase => setup(["config", "set", phase, "--provider", "claude", "--model", "sonnet", ...auth])),
+    setup(["verify", "set", "--repo", repo, "--command", "npm test", "--timeout-seconds", "120", "--yes", ...auth]),
+  ]);
   writeFileSync(join(state, "runner-token"), runner.token, { mode: 0o600 });
-  for (const phase of ["plan", "build", "repair", "review"]) cli(["config", "set", phase, "--provider", "claude", "--model", "sonnet", ...auth]);
-  cli(["verify", "set", "--repo", repo, "--command", "npm test", "--timeout-seconds", "120", "--yes", ...auth]);
 
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -347,7 +353,9 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   };
   start("serve", ["serve", "--repo", repo, "--port", String(port)]);
   start("watch", ["watch", "--runner", "worker", "--token-file", join(state, "runner-token"), "--repo", repo, "--pool", join(root, "worktrees"),
-    "--for", String(120 * 60_000), "--tick-every", "2000", "--reconcile-every", "5000", "--bridge-every", "3600000"]);
+    // The worker wakes on every change; its tick is the pace of timers (a flow's wait, a teammate's next turn). A scripted
+    // model answers at once, so a scripted run ticks every half second rather than wait out a two-second beat each time.
+    "--for", String(120 * 60_000), "--tick-every", journeys === "scripted" ? "500" : "2000", "--reconcile-every", "5000", "--bridge-every", "3600000"]);
   await until("the console to answer", async () => (await fetch(`${base}/login`)).ok, { timeoutMs: 30_000, everyMs: 500 });
   say(`console ${base}, worker running`);
 
@@ -369,9 +377,11 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   }
   const page = await signIn("alex");
   const json = async path => { const response = await page.request.get(`${base}${path}`, { headers: { accept: "application/json" } }); if (!response.ok()) throw new Error(`${path} answered ${response.status()}`); return response.json(); };
-  /** A screenshot once the page has settled: any page change and other finite animations finished (never mid-fade). */
+  /** A screenshot once the page has settled: any page change and other finite animations finished (never mid-fade). The
+   * no-script fallback's delayed reveal (so-fallback-in, workspace.css) isn't one: once the workspace renders it only
+   * holds back the toasts' empty region for 1.2 s. */
   const settle = on => on.evaluate(() => Promise.race([
-    Promise.all(document.getAnimations().filter(one => one.effect?.getComputedTiming().iterations !== Infinity).map(one => one.finished.catch(() => undefined))),
+    Promise.all(document.getAnimations().filter(one => one.effect?.getComputedTiming().iterations !== Infinity && one.animationName !== "so-fallback-in").map(one => one.finished.catch(() => undefined))),
     new Promise(done => setTimeout(done, 2000)),
   ])).catch(() => undefined);
   const shot = async name => { await settle(page); return page.screenshot({ path: join(out, `${name}.png`) }); };
