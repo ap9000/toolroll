@@ -53,9 +53,41 @@ describe("the update journal contracts", () => {
         { name: "newer version", input: { ...runtimeLegacy, version: 2 }, paths: ["version"] },
         { name: "a stage's partial file", input: { version: 1, id, startedAt: runtimeLegacy.startedAt }, paths: ["stateDir", "stageDir", "steps"] },
         { name: "not an object", input: null, paths: ["payload"] },
+        ...["kind", "when", "phase"].map(field => ({ name: `${field} must still be text`, input: { ...runtimeLegacy, [field]: null }, paths: [field] })),
+        { name: "step phase must still be text", input: { ...runtimeLegacy, steps: [{ phase: null, at: runtimeLegacy.startedAt }] }, paths: ["steps[0].phase"] },
+        { name: "step time must still be text", input: { ...runtimeLegacy, steps: [{ phase: "future-step", at: null }] }, paths: ["steps[0].at"] },
+        { name: "missing source runtime", input: { ...runtimeLegacy, from: null }, paths: ["from"] },
       ],
     });
     expect(Object.keys(runtimeUpdateJournalSchema.shape)).toContain("waiting");
+  });
+
+  it("keeps unknown runtime values and unchecked informational fields byte for byte", () => {
+    // Synthetic saved journals: undefined becomes a missing key, as it does on disk.
+    for (const info of [undefined, null, 7, false, "legacy value", ["legacy", null], { laterField: true }]) {
+      const bytes = JSON.stringify({
+        ...runtimeCurrent, kind: "future-kind", when: "future-schedule", phase: "future-phase",
+        steps: [{ phase: "future-step", at: runtimeLegacy.startedAt, laterField: true }],
+        actor: info, detail: info, error: info, finishedAt: info, notes: info, seen: info, laterField: true,
+      }, null, 2);
+      const saved = JSON.parse(bytes);
+      const read = readRuntimeUpdateJournal(saved);
+      expect(read.ok && read.value, bytes).toBe(saved);
+      expect(JSON.stringify(read.ok && read.value, null, 2)).toBe(bytes);
+    }
+  });
+
+  it("keeps unchecked desktop information and bundle development values byte for byte", () => {
+    for (const info of [undefined, null, 7, false, "legacy value", ["legacy", null], { laterField: true }]) {
+      const bytes = JSON.stringify({
+        ...desktopCurrent, detail: info, error: info, checkedAt: info,
+        old: { ...desktopCurrent.old, development: info }, next: { ...desktopCurrent.next, development: info },
+      }, null, 2);
+      const saved = JSON.parse(bytes);
+      const read = readDesktopUpdateJournal(saved);
+      expect(read.ok && read.value, bytes).toBe(saved);
+      expect(JSON.stringify(read.ok && read.value, null, 2)).toBe(bytes);
+    }
   });
 
   it("returns the saved object itself, so a journal saved again keeps its bytes and key order", () => {
@@ -137,5 +169,9 @@ describe("the zod revamp plan", () => {
     const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
     expect(plan).toMatch(/^\| 19 ✅ \| \*\*Journals and recovery state\*\*/m);
     expect(plan.match(/^- \*\*19\. Journals and recovery state\*\*/gm)).toHaveLength(1);
+    const done = plan.split("- **19. Journals and recovery state**")[1]!.split(/^- \*\*/m)[0]!;
+    expect(done).toContain("Compatibility revision (comment 855)");
+    expect(done).toContain("null, missing and wrong-typed informational fields");
+    expect(done).not.toContain("wrong-typed or null field the old reader never looked at");
   });
 });

@@ -18,7 +18,8 @@ export type JournalRead<T> = { ok: true; value: T } | { ok: false; issues: Contr
 
 function journalOf<T>(schema: z.ZodType<T> & { shape: { version: z.ZodLiteral<number> } }, input: unknown): JournalRead<T> {
   const read = readVersioned(schema, input);
-  // The parsed copy proves the shape; the saved object (its key order, and keys a newer release added) is what is kept.
+  // Catch values only let legacy-unchecked information pass validation; never apply them to the saved object.
+  // Keep its original values, key order and keys a newer release added.
   return read.ok ? { ok: true, value: input as T } : read;
 }
 
@@ -33,7 +34,7 @@ export const DESKTOP_UPDATE_PHASES = ["prepared", "draining", "backing-up", "sto
 /** An app bundle as the journal records it (`readDesktopBundle`'s identity). */
 export const desktopBundleSchema = z.object({
   path: z.string(), hash: z.string(), buildId: z.string(), version: z.string(), bundleId: z.string(),
-  schemaVersion: z.number(), development: z.boolean(), providerBin: z.string(), recoveryProtocol: z.number().exactOptional(),
+  schemaVersion: z.number(), development: z.boolean().catch(false), providerBin: z.string(), recoveryProtocol: z.number().exactOptional(),
 });
 
 /** The keys in the order the old reader checked them, so the first issue picks the same refusal it gave. */
@@ -48,8 +49,8 @@ export const desktopUpdateJournalSchema = z.object({
   codingCatalogExpected: z.boolean().exactOptional(),
   stoppedPids: z.array(z.number()).exactOptional(),
   codingBackupPath: z.string().exactOptional(), codingBackupHash: z.string().exactOptional(),
-  startedAt: z.string(), updatedAt: z.string(), detail: z.string(),
-  error: z.string().exactOptional(), checkedAt: z.string().exactOptional(),
+  startedAt: z.string(), updatedAt: z.string(), detail: z.string().catch(""),
+  error: z.string().optional().catch(undefined), checkedAt: z.string().optional().catch(undefined),
   serviceInterrupted: z.boolean().exactOptional(),
   retryableRecovery: z.boolean().exactOptional(),
   /** The finished run the update is waiting on (or stopped waiting on). Absent while it waits on ordinary work. */
@@ -107,15 +108,15 @@ const savedFileSchema = z.object({ path: z.string(), saved: z.string() });
 export const runtimeUpdateJournalSchema = z.object({
   version: z.literal(1),
   id: z.string(), stateDir: z.string(), stageDir: z.string(),
-  kind: z.enum(["update", "rollback"]),
+  kind: z.string(),
   databaseFile: z.string(),
   from: runtimeRefSchema, to: runtimeRefSchema,
-  when: z.enum(["now", "when-idle", "at"]), at: z.string().nullable(), actor: z.string(),
-  phase: z.enum(RUNTIME_PHASES), detail: z.string(), error: z.string().exactOptional(),
-  steps: z.array(z.object({ phase: z.enum(RUNTIME_PHASES), at: z.string() })),
-  startedAt: z.string(), updatedAt: z.string(), finishedAt: z.string().exactOptional(),
+  when: z.string(), at: z.string().nullable(), actor: z.string().catch(""),
+  phase: z.string(), detail: z.string().catch(""), error: z.string().optional().catch(undefined),
+  steps: z.array(z.object({ phase: z.string(), at: z.string() })),
+  startedAt: z.string(), updatedAt: z.string(), finishedAt: z.string().optional().catch(undefined),
   package: z.object({ sha512: z.string(), repository: z.string(), workflow: z.string() }).exactOptional(),
-  notes: z.array(z.string()).exactOptional(),
+  notes: z.array(z.string()).optional().catch(undefined),
   /** This run's own verified copies of the live database and coding catalog: what a failure restores. */
   backupPath: z.string().exactOptional(), backupHash: z.string().exactOptional(),
   codingBackupPath: z.string().exactOptional(), codingBackupHash: z.string().exactOptional(),
@@ -145,7 +146,7 @@ export const runtimeUpdateJournalSchema = z.object({
   restoredDatabase: z.boolean().exactOptional(),
   /** A stale coding owner record this run released after proving its processes gone. */
   codingOwnerReleased: releasedCodingOwnerSchema.exactOptional(),
-  seen: z.boolean().exactOptional(),
+  seen: z.boolean().optional().catch(undefined),
   /** The finished run the update is waiting on (or stopped waiting on): what is in the way and the command that
    * clears it. Absent while it waits on ordinary running work. */
   waiting: waitingSchema.exactOptional(),

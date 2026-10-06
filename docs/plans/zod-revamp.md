@@ -296,12 +296,17 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   from stopping startup or status is unchanged. Coding rows keep their bytes and carry no version (steering note): a
   row that is not JSON fails as before, and one that does not match its schema is read as saved and logged. The
   census keeps its reason codes and rebuilds each identity in its sealed key order, so snapshot, receipt and
-  certificate digests are unchanged. Replayed old against new readers over 1,543 generated cases (saved, legacy,
-  partial, null, wrong-typed, unknown-key and newer-version variants): no value, key-order or digest differences and
-  nothing newly accepted. Real saved state could not be replayed: the database, coding catalog, `staged-upgrades/`
-  and `process-recovery/` were denied to the build (an evidence gap). Tightened, on purpose: a newer journal version
-  is refused plainly; a version 1 journal with a wrong-typed or null field the old reader never looked at (for
-  example `detail`, `steps`, `waiting`) is refused as invalid; a null `backupPath` is refused; a recovery
+  certificate digests are unchanged. Compatibility revision (comment 855): unknown runtime kinds, schedules,
+  journal phases and step phases read as strings; null, missing and wrong-typed informational fields (`error`,
+  `finishedAt`, `notes`, `seen`, `actor`, `detail`, `checkedAt` and bundle `development`) pass through unchanged.
+  Catch values only permit the read; they never replace saved values. Writers still use known phases and schedules.
+  Synthetic contract regressions check object identity and identical serialized bytes for these legacy values;
+  update tests cover status, cancel, abandon, resume and rollback. The earlier 1,543-case generated replay did not
+  cover this regression and is not proof of full legacy compatibility. Real saved state remains unreplayed (zero
+  records): this revision must stay inside its worktree, and the installed database, coding catalog,
+  `staged-upgrades/` and `process-recovery/` are denied by policy. Tightened, on purpose: a newer journal version
+  is refused plainly; a version 1 journal with a malformed structural field (for example `steps` or `waiting`)
+  is refused as invalid; a null `backupPath` is refused; a recovery
   record field of the wrong type reads as absent; a custody witness is not taken as proof unless it has its host,
   descendants and observation flag. Left as is: the reviewed provenance profile and audit files, which are
   hash-pinned before they are parsed.

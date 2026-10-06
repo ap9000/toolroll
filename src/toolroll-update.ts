@@ -113,10 +113,10 @@ export type UpdateSystem = {
   checkpoint?: (phase: RuntimePhase | "kept-aside") => void;
 };
 
-export type UpdateOutcome = { ok: boolean; phase: RuntimePhase; message: string; journal: RuntimeUpdateJournal | null };
+export type UpdateOutcome = { ok: boolean; phase: RuntimeUpdateJournal["phase"]; message: string; journal: RuntimeUpdateJournal | null };
 
 const TERMINAL: readonly RuntimePhase[] = ["complete", "restored", "refused", "cancelled"];
-export const runtimeUpdateTerminal = (phase: RuntimePhase) => TERMINAL.includes(phase);
+export const runtimeUpdateTerminal = (phase: string) => TERMINAL.some(known => known === phase);
 const journalFile = (stateDir: string) => join(stateDir, "toolroll-update.json");
 /** The last completed update, kept apart from the journal: what `--rollback` returns from. */
 const lastUpdateFile = (stateDir: string) => join(stateDir, "toolroll-update.last.json");
@@ -172,10 +172,14 @@ function keepCompletedUpdate(stateDir: string): void {
   durableJson(lastUpdateFile(stateDir), saved);
 }
 
-function save(j: RuntimeUpdateJournal, phase: RuntimePhase, detail: string, now: Date): void {
-  if (j.phase !== phase) j.steps.push({ phase, at: now.toISOString() });
-  j.phase = phase; j.detail = detail; j.updatedAt = now.toISOString();
-  if (runtimeUpdateTerminal(phase)) j.finishedAt = now.toISOString();
+/** A null phase saves progress without changing the saved phase, including one a newer release wrote. */
+function save(j: RuntimeUpdateJournal, phase: RuntimePhase | null, detail: string, now: Date): void {
+  if (phase !== null) {
+    if (j.phase !== phase) j.steps.push({ phase, at: now.toISOString() });
+    j.phase = phase;
+  }
+  j.detail = detail; j.updatedAt = now.toISOString();
+  if (runtimeUpdateTerminal(j.phase)) j.finishedAt = now.toISOString();
   durableJson(join(j.stageDir, "update.json"), j);
   durableJson(journalFile(j.stateDir), j);
 }
@@ -497,7 +501,7 @@ async function stopServices(j: RuntimeUpdateJournal, system: UpdateSystem, main:
     watching.push({ unit, pids: loaded ? await pidsOf(unit, earlier?.pids ?? []) : [], loaded });
   }
   if (watching.length > 0) j.watches = watching;
-  save(j, j.phase, j.detail, system.now());
+  save(j, null, j.detail, system.now());
   for (const unit of [main, ...loadedWatches(j, watches)]) if (unit) await system.stopService(unit);
   const pids = [...(main ? j.service!.pids : []), ...watching.flatMap(w => w.pids)];
   const deadline = system.now().getTime() + (system.exitTimeoutMs ?? 60_000);
@@ -681,7 +685,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
   const j = readRuntimeUpdate(stateDir);
   if (!j || runtimeUpdateTerminal(j.phase)) return "No update is in progress.";
   const tooLate = (at: RuntimeUpdateJournal) => `The update to ${at.to.version} is past the point it can be cancelled (${at.phase}); it will finish or restore on its own.`;
-  if (!CANCELLABLE.includes(j.phase)) return tooLate(j);
+  if (!CANCELLABLE.some(phase => phase === j.phase)) return tooLate(j);
   // No updater is running to see the request: cancel here, so the admission pause does not outlive it.
   const lock = sqliteLock(join(j.stageDir, "worker.sqlite"));
   if (!lock) {
@@ -694,7 +698,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
     const held = readRuntimeUpdate(stateDir);
     if (!held || runtimeUpdateTerminal(held.phase)) return "No update is in progress.";
     if (held.id !== j.id) return "A different update was saved while cancelling. Nothing was cancelled.";
-    if (!CANCELLABLE.includes(held.phase)) return tooLate(held);
+    if (!CANCELLABLE.some(phase => phase === held.phase)) return tooLate(held);
     durableJson(cancelFile(held), { id: held.id, action: "cancel" });
     try { ungate(held); } catch { /* no pause yet */ }
     if (held.kind === "update") rmSync(join(held.stageDir, "runtime"), { recursive: true, force: true });
@@ -718,7 +722,7 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
   }
   // The lock now says an updater is here; the starting mark has done its job.
   rmSync(startingFile(j), { force: true });
-  const at = (phase: RuntimePhase) => UPDATE_STEPS.indexOf(phase as UpdateStep);
+  const at = (phase: string) => UPDATE_STEPS.findIndex(step => step === phase);
   const step = (phase: RuntimePhase, detail: string) => { save(j, phase, detail, system.now()); system.checkpoint?.(phase); };
   const noun = j.kind === "update" ? "update" : "rollback";
   const verb = j.kind === "update" ? `${j.from.version} → ${j.to.version}` : `${j.from.version} → ${j.to.version} (back)`;
