@@ -53,7 +53,7 @@ import { FORM_PATH, flowFormPage, receiveFlowForm, shareFlowButton, stopSharingF
 import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, receiveFlowHook, removeFlowTrigger, renewFlowHook, removeLinearKey, saveHooksBase, saveLinearKey, saveLinearSigningSecret, type TriggerIo } from "./flow-triggers.js";
 import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";
-import { FLOW_TEMPLATES, validateFlowDefinition } from "./flows.js";
+import { FlowContractError, FLOW_TEMPLATES, validateFlowDefinition, withZoneNames } from "./flows.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
 import { applySavedKnowledge, changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
@@ -7245,9 +7245,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       if (action === "archive") { store.archiveFlow(flow.id, who.name, now); return redirect(response, "/flows"); }
       if (action === "save") {
-        let saved;
-        try { saved = validateFlowDefinition(JSON.parse(body.get("definition") ?? "null")); }
-        catch (error) { return answer(400, { ok: false, said: error instanceof SyntaxError ? "That flow couldn't be read." : error instanceof Error ? error.message : "That flow isn't valid." }); }
+        let saved, drawn: unknown;
+        try { drawn = JSON.parse(body.get("definition") ?? "null"); saved = validateFlowDefinition(drawn); }
+        catch (error) { return answer(400, { ok: false, said: error instanceof SyntaxError ? "That flow couldn't be read." : error instanceof FlowContractError ? withZoneNames(error.lines, drawn) : error instanceof Error ? error.message : "That flow isn't valid." }); }
         const name = (body.get("name") ?? flow.name).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || flow.name;
         // The owner (v86) is whom "the owner decides" zones ask: someone who can approve on this project.
         const owner = (body.get("owner") ?? "").trim();

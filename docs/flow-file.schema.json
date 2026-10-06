@@ -2,105 +2,2077 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ap9000/toolroll/docs/flow-file.schema.json",
   "title": "Toolroll flow file",
-  "description": "A flow exported from Toolroll (*.toolroll-flow.json): its zones in the lead's step vocabulary, its triggers' settings and the scripts it runs. Never secrets, webhook addresses or hashes, tokens, people's names, chat bindings or cards. {{param.<id>}} in a zone or trigger is replaced by the value the import asks for. Toolroll reads files up to 256 KB and checks every zone, trigger and script again on import (src/flow-share.ts).",
+  "description": "A flow exported from Toolroll (*.toolroll-flow.json): its zones in the lead's step vocabulary, one shape per kind, its triggers' settings and the scripts it runs. Never secrets, webhook addresses or hashes, tokens, people's names, chat bindings or cards. {{param.<id>}} in a zone or trigger is replaced by the value the import asks for. Unknown keys are refused by name. Toolroll reads files up to 256 KB and checks every zone, trigger and script again on import (src/flow-share.ts). Generated from src/contracts/flow.ts.",
   "type": "object",
-  "required": ["format", "version", "name", "zones"],
   "properties": {
-    "format": { "const": "toolroll-flow" },
-    "version": { "const": 1 },
-    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-    "about": { "type": "string", "maxLength": 600, "description": "One line on what the flow does. Untrusted: shown in the import preview." },
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "format": {
+      "type": "string",
+      "const": "toolroll-flow"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$",
+      "description": "name: at most 80 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+    },
+    "about": {
+      "description": "One line on what the flow does. Untrusted: shown in the import preview.",
+      "type": "string",
+      "maxLength": 600,
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$"
+    },
     "needs": {
-      "type": "array", "maxItems": 40,
       "description": "What the flow needs to run: github, linear, openrouter, email, tool:<server>, secret:<NAME>, teammate:<handle>, script:<name>.",
-      "items": { "type": "string", "maxLength": 80 }
+      "maxItems": 40,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$",
+        "description": "need: at most 80 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+      }
     },
     "parameters": {
-      "type": "array", "maxItems": 20,
+      "maxItems": 20,
+      "type": "array",
       "items": {
-        "type": "object", "required": ["id", "about"], "additionalProperties": false,
+        "type": "object",
         "properties": {
-          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
-          "about": { "type": "string", "maxLength": 200, "description": "The question the import asks." },
-          "default": { "type": "string", "maxLength": 200 },
-          "optional": { "type": "boolean", "description": "May be left empty (the field is then left out)." }
-        }
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "about": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$",
+            "description": "The question the import asks."
+          },
+          "default": {
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$",
+            "description": "default: at most 200 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+          },
+          "optional": {
+            "description": "May be left empty (the field is then left out).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "about"
+        ],
+        "additionalProperties": false
       }
     },
-    "zones": { "type": "array", "minItems": 1, "maxItems": 24, "items": { "$ref": "#/$defs/zone" }, "description": "The zones in order; the first is where cards start." },
-    "triggers": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/trigger" } },
-    "scripts": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/script" } }
-  },
-  "$defs": {
-    "ref": { "type": "string", "maxLength": 60, "description": "Another zone, by its id (or its title)." },
-    "duration": { "oneOf": [{ "type": "string", "description": "Like \"3 days\", \"4 hours\", \"90 minutes\"." }, { "type": "integer", "minimum": 1, "maximum": 43200, "description": "Minutes." }] },
-    "zone": {
-      "type": "object", "required": ["id", "title", "kind"],
-      "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
-        "title": { "type": "string", "minLength": 1, "maxLength": 60 },
-        "kind": { "enum": ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "teammate", "done"] },
-        "instructions": { "type": "string", "maxLength": 4000, "description": "task, report, draft, teammate: what the agent is asked. Fill-ins: {{card.title}}, {{card.description}}, {{card.email}}, {{note}}, {{stage.<id>}}. Untrusted on import." },
-        "planning": { "enum": ["auto", "required", "skip"] },
-        "decider": { "type": "string", "maxLength": 64, "description": "approval: owner, anyone, or a sign-in name (exported as a parameter)." },
-        "message": { "type": "string", "maxLength": 1000 },
-        "close": { "type": "boolean" },
-        "script": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
-        "runIn": { "enum": ["folder", "copy"] },
-        "secrets": { "type": "array", "maxItems": 10, "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,39}$" }, "description": "Names of saved secrets; never their values." },
-        "routes": { "type": "array", "maxItems": 12, "items": { "type": "object", "required": ["answer", "goesTo"], "properties": { "answer": { "type": "string", "maxLength": 40 }, "goesTo": { "$ref": "#/$defs/ref" } } } },
-        "question": { "type": "string", "maxLength": 300 },
-        "answers": { "type": "array", "minItems": 2, "maxItems": 12, "items": { "type": "object", "required": ["answer", "goesTo"], "properties": { "answer": { "type": "string", "maxLength": 40 }, "means": { "type": "string", "maxLength": 200 }, "goesTo": { "$ref": "#/$defs/ref" } } } },
-        "sureAt": { "type": "number", "minimum": 0.5, "maximum": 99, "description": "A percentage (80) or a fraction (0.8)." },
-        "alsoNote": { "type": "array", "maxItems": 3, "items": { "type": "object", "required": ["question"], "properties": { "id": { "type": "string" }, "question": { "type": "string" }, "kind": { "enum": ["score", "yes-no"] }, "levels": { "type": "array", "items": { "type": "string" } } } } },
-        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
-        "url": { "type": "string", "maxLength": 2000 },
-        "headers": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 500 }, "description": "Secrets ride as {{secret.NAME}}, never written out." },
-        "body": { "type": "string", "maxLength": 8000 },
-        "to": { "type": "string", "maxLength": 500 },
-        "subject": { "type": "string", "maxLength": 200 },
-        "server": { "type": "string", "maxLength": 64 },
-        "tool": { "type": "string", "maxLength": 100 },
-        "args": { "oneOf": [{ "type": "string" }, { "type": "object" }] },
-        "waitFor": { "enum": ["reply", "time", "hours"] },
-        "wait": { "$ref": "#/$defs/duration" },
-        "from": { "type": "string", "pattern": "^[0-9]{1,2}:[0-9]{2}$" },
-        "until": { "type": "string", "pattern": "^[0-9]{1,2}:[0-9]{2}$" },
-        "timeZone": { "type": "string" },
-        "merge": { "enum": ["squash", "merge", "rebase"] },
-        "teammate": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
-        "reply": { "type": "boolean" },
-        "remindAfter": { "$ref": "#/$defs/duration" },
-        "thenMoveTo": { "$ref": "#/$defs/ref" },
-        "next": { "$ref": "#/$defs/ref" },
-        "ifFails": { "$ref": "#/$defs/ref" },
-        "ifNotSure": { "$ref": "#/$defs/ref" },
-        "ifNoReply": { "$ref": "#/$defs/ref" },
-        "at": {
-          "type": "object", "description": "Where the zone sits on the canvas.",
-          "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "color": { "enum": ["slate", "blue", "violet", "amber", "green", "rose"] } }
-        }
+    "zones": {
+      "minItems": 1,
+      "maxItems": 24,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "inbox"
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "thenMoveTo": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "task"
+              },
+              "instructions": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "instructions: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "planning": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "required",
+                  "skip"
+                ]
+              },
+              "repo": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "report"
+              },
+              "instructions": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "instructions: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "approval"
+              },
+              "decider": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "teammate": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "thenMoveTo": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "check"
+              },
+              "script": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+              },
+              "runIn": {
+                "type": "string",
+                "enum": [
+                  "folder",
+                  "copy"
+                ]
+              },
+              "routes": {
+                "maxItems": 12,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "answer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "goesTo": {
+                      "type": "string",
+                      "maxLength": 60
+                    }
+                  },
+                  "required": [
+                    "answer",
+                    "goesTo"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "secrets": {
+                "maxItems": 10,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]{0,39}$"
+                }
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "pull-request"
+              },
+              "merge": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "squash",
+                      "merge",
+                      "rebase"
+                    ]
+                  }
+                ]
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "update"
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "message: at most 1,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "close": {
+                "type": "boolean"
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "notify"
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "message: at most 1,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "sort"
+              },
+              "question": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "answers": {
+                "minItems": 2,
+                "maxItems": 12,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "answer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "means": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "goesTo": {
+                      "type": "string",
+                      "maxLength": 60
+                    }
+                  },
+                  "required": [
+                    "answer",
+                    "goesTo"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "sureAt": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 99
+              },
+              "alsoNote": {
+                "maxItems": 3,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+                    },
+                    "question": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "score",
+                        "yes-no"
+                      ]
+                    },
+                    "levels": {
+                      "minItems": 2,
+                      "maxItems": 10,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 120
+                      }
+                    }
+                  },
+                  "required": [
+                    "question"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "ifNotSure": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "draft"
+              },
+              "instructions": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "instructions: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "request"
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "PATCH",
+                  "DELETE"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "headers": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "body: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "email"
+              },
+              "to": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "body: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "tool"
+              },
+              "server": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "tool": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "args": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                ]
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "wait"
+              },
+              "waitFor": {
+                "type": "string",
+                "enum": [
+                  "reply",
+                  "time",
+                  "hours"
+                ]
+              },
+              "wait": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "from": {
+                "type": "string",
+                "pattern": "^\\s*([01]?[0-9]|2[0-3]):([0-5][0-9])\\s*$"
+              },
+              "until": {
+                "type": "string",
+                "pattern": "^\\s*([01]?[0-9]|2[0-3]):([0-5][0-9])\\s*$"
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifNoReply": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "teammate"
+              },
+              "teammate": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "instructions": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "instructions: at most 8,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "routes": {
+                "maxItems": 12,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "answer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "goesTo": {
+                      "type": "string",
+                      "maxLength": 60
+                    }
+                  },
+                  "required": [
+                    "answer",
+                    "goesTo"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "reply": {
+                "type": "boolean"
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "send"
+              },
+              "next": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "ifFails": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "choose"
+              },
+              "options": {
+                "minItems": 2,
+                "maxItems": 4,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "goesTo": {
+                      "type": "string",
+                      "maxLength": 60
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "ifReplied": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "remindAfter": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 43200
+                  }
+                ]
+              },
+              "ifNoReply": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "thenMoveTo": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "kind": {
+                "type": "string",
+                "const": "done"
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "w": {
+                    "type": "number"
+                  },
+                  "h": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "slate",
+                      "blue",
+                      "violet",
+                      "amber",
+                      "green",
+                      "rose"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Where the zone sits on the canvas."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "description": "The zones in order; the first is where cards start."
+    },
+    "triggers": {
+      "maxItems": 10,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "button"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "questions": {
+                "anyOf": [
+                  {
+                    "maxItems": 6,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 80
+                    }
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "questions: at most 2,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+                  }
+                ]
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind",
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "schedule"
+              },
+              "schedule": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 2000,
+                "description": "description: at most 2,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+              },
+              "script": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+              },
+              "secrets": {
+                "anyOf": [
+                  {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]{0,39}$"
+                    }
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                ]
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind",
+              "schedule"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "github"
+              },
+              "repo": {
+                "type": "string",
+                "maxLength": 140
+              },
+              "watch": {
+                "type": "string",
+                "enum": [
+                  "issues",
+                  "pulls",
+                  "checks"
+                ]
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 50
+              },
+              "branch": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "from": {
+                "type": "string",
+                "enum": [
+                  "team",
+                  "anyone"
+                ]
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "poll",
+                  "webhook"
+                ]
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "linear"
+              },
+              "team": {
+                "type": "string",
+                "maxLength": 12
+              },
+              "state": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 50
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "poll",
+                  "webhook"
+                ]
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "webhook"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "titleField": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "bodyField": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "email"
+              },
+              "folder": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "sender": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "plane-review"
+              },
+              "at": {
+                "type": "string",
+                "pattern": "^\\d{1,2}:\\d{2}$"
+              },
+              "timeZone": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "zone": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
-    "trigger": {
-      "type": "object", "required": ["kind"],
-      "description": "A trigger's settings, as `toolroll flows trigger add` takes them. Imported switched off. Chat channel and other-flow triggers stay behind.",
-      "properties": {
-        "kind": { "enum": ["button", "schedule", "github", "linear", "webhook", "email", "plane-review"] },
-        "zone": { "$ref": "#/$defs/ref" }
-      }
-    },
-    "script": {
-      "type": "object", "required": ["name", "about"],
-      "description": "A project script a zone or schedule runs. Imported held until a person approves it.",
-      "properties": {
-        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
-        "about": { "type": "string", "maxLength": 160 },
-        "language": { "enum": ["shell", "python", "node"] },
-        "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "body": { "type": "string", "maxLength": 20000 },
-        "file": { "type": "string", "maxLength": 200, "description": "A path inside the project, run instead of a body." }
+    "scripts": {
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "about": {
+            "type": "string",
+            "maxLength": 160,
+            "description": "about: at most 160 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+          },
+          "language": {
+            "description": "Shell when left out.",
+            "type": "string",
+            "enum": [
+              "shell",
+              "python",
+              "node"
+            ]
+          },
+          "timeoutMinutes": {
+            "description": "15 when left out.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "body: at most 20,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it."
+          },
+          "file": {
+            "description": "A path inside the project, run instead of a body.",
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "name",
+          "about"
+        ],
+        "additionalProperties": false
       }
     }
-  }
+  },
+  "required": [
+    "version",
+    "format",
+    "name",
+    "zones"
+  ],
+  "additionalProperties": false
 }

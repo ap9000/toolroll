@@ -52,16 +52,97 @@ function got(input: unknown): string {
   return typeof input === "object" ? "an object" : `a ${typeof input}`;
 }
 
-function issuesOf(issue: z.core.$ZodIssue): ContractIssue[] {
+/**
+ * How a contract names a key it doesn't know: the keys a person or model often writes for one it does (`onFail` for
+ * `ifFails`, `to` for `goesTo`), tried in order against the keys allowed at that place. Without one that fits, a key
+ * spelled close to an allowed one (a case or a letter or two off) is suggested.
+ */
+export type ContractOptions = { aliases?: Readonly<Record<string, readonly string[]>> };
+
+type Node = { _zod: { def: Def } };
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The keys an object schema allows at `path` in `input`, following arrays, wrappers and (by its discriminator) a union. */
+function keysAt(schema: Node, input: unknown, path: readonly PropertyKey[]): string[] | null {
+  let node: Node | undefined = schema, value = input;
+  for (let at = 0; node !== undefined; ) {
+    const def: Def = node._zod.def;
+    if (def.type === "optional" || def.type === "nullable" || def.type === "readonly") { node = def["innerType"] as Node; continue; }
+    if (def.type === "lazy") { node = (def["getter"] as () => Node)(); continue; }
+    if (def.type === "union") {
+      const options = def["options"] as Node[];
+      const by = def["discriminator"] as string | undefined;
+      const wanted = by !== undefined && isRecord(value) ? value[by] : undefined;
+      node = options.find(option => {
+        const shape = option._zod.def["shape"] as Record<string, Node> | undefined;
+        if (shape === undefined) return false;
+        if (by === undefined) return true;
+        const literal = shape[by]?._zod.def;
+        return literal !== undefined && (literal["values"] as unknown[] | undefined)?.includes(wanted) === true;
+      });
+      continue;
+    }
+    if (at === path.length) return def.type === "object" ? Object.keys(def["shape"] as Record<string, unknown>) : null;
+    const part = path[at++];
+    if (def.type === "array" && typeof part === "number") { node = def["element"] as Node; value = Array.isArray(value) ? value[part] : undefined; continue; }
+    if (def.type === "object" && typeof part === "string") {
+      const shape = def["shape"] as Record<string, Node>;
+      node = shape[part] ?? (def["catchall"] as Node | undefined);
+      value = isRecord(value) ? value[part] : undefined;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Edit distance, for "did you mean" (short strings only). */
+function distance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    let last = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const was = row[j]!;
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, last + (a[i - 1] === b[j - 1] ? 0 : 1));
+      last = was;
+    }
+  }
+  return row[b.length]!;
+}
+
+/** The allowed key an unknown one most likely meant, or null. */
+function suggestion(key: string, known: readonly string[] | null, options: ContractOptions): string | null {
+  if (known === null || known.length === 0) return null;
+  const alias = options.aliases?.[key]?.find(one => known.includes(one));
+  if (alias !== undefined) return alias;
+  const close = known
+    .map(one => ({ one, far: one.toLowerCase() === key.toLowerCase() ? 0 : distance(one.toLowerCase(), key.toLowerCase()) }))
+    .filter(({ one, far }) => far <= (Math.min(one.length, key.length) >= 6 ? 2 : 1))
+    .sort((a, b) => a.far - b.far);
+  return close[0]?.one ?? null;
+}
+
+type Where = { schema?: z.ZodType; input?: unknown; options?: ContractOptions };
+
+function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
   const at = pathOf(issue.path);
   const one = (kind: ContractIssue["kind"], what: string): ContractIssue => ({ path: at, kind, line: `${at}: ${what}` });
   switch (issue.code) {
-    case "unrecognized_keys":
-      return issue.keys.map(key => ({ path: at, kind: "unknown-key" as const, line: `${at}: unknown key '${key}'` }));
+    case "unrecognized_keys": {
+      const known = where.schema === undefined ? null : keysAt(where.schema as unknown as Node, where.input, issue.path);
+      return issue.keys.map(key => {
+        const meant = suggestion(key, known, where.options ?? {});
+        return { path: at, kind: "unknown-key" as const, line: `${at}: unknown key '${key}'${meant === null ? "" : ` (did you mean ${meant}?)`}` };
+      });
+    }
     case "invalid_type": {
       const missing = "input" in issue ? issue.input === undefined : / received undefined$/.test(issue.message);
-      if (missing) return [one("required", "required")];
-      return [one("wrong-type", `must be ${issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : `a ${issue.expected}`}${"input" in issue ? ` (got ${got(issue.input)})` : ""}`)];
+      // A null where a value belongs is a value left out.
+      if (missing || ("input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
+      const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
+      return [one("wrong-type", `must be ${expected}${"input" in issue ? ` (got ${got(issue.input)})` : ""}`)];
     }
     case "too_big":
       if (issue.origin === "array" || issue.origin === "set") return [one("too-many", `at most ${String(issue.maximum)} items`)];
@@ -72,29 +153,44 @@ function issuesOf(issue: z.core.$ZodIssue): ContractIssue[] {
       return [one("too-few", `at least ${String(issue.minimum)}`)];
     case "invalid_value":
       return [one("bad-value", `must be ${issue.values.length === 1 ? JSON.stringify(issue.values[0]) : `one of ${issue.values.map(value => JSON.stringify(value)).join(", ")}`}`)];
-    case "invalid_union":
+    case "invalid_union": {
+      // A discriminated union names its choices (`steps[0].kind: must be one of "inbox", "task", ...`).
+      const by = (issue as { discriminator?: unknown }).discriminator, options = (issue as { options?: unknown }).options;
+      if (typeof by === "string" && Array.isArray(options)) {
+        const given = "input" in issue && isRecord(issue.input) ? issue.input[by] : undefined;
+        const path = at === "payload" || issue.path.at(-1) === by ? at : `${at}.${by}`;
+        const line = given === undefined || given === null ? "required" : `must be one of ${options.map(value => JSON.stringify(value)).join(", ")}`;
+        return [{ path, kind: given === undefined || given === null ? "required" : "bad-value", line: `${path}: ${line}` }];
+      }
       return [one("invalid", "does not match any allowed shape")];
+    }
+    case "invalid_format":
+      // A pattern's own words say what it wants (`must be a short id: lowercase letters, numbers and dashes`).
+      return [one("bad-value", issue.message.startsWith("Invalid") ? `must match ${issue.format === "regex" ? (issue as { pattern?: string }).pattern ?? "its pattern" : issue.format}` : issue.message)];
     default:
       return [one("invalid", issue.message)];
   }
 }
 
-/** A Zod error as path-named issues, in the error's own order. */
-export function contractIssues(error: z.ZodError): ContractIssue[] {
-  return error.issues.flatMap(issuesOf);
+/**
+ * A Zod error as path-named issues, in the error's own order. Given the schema and input it came from, an unknown key
+ * also says which allowed key it most likely meant (`unknown key 'onFail' (did you mean ifFails?)`).
+ */
+export function contractIssues(error: z.ZodError, where: Where = {}): ContractIssue[] {
+  return error.issues.flatMap(issue => issuesOf(issue, where));
 }
 
 /** A Zod error as path-named lines: `steps[0].routes[0].goesTo: required`, `routes[0]: unknown key 'to'`. */
-export function contractError(error: z.ZodError): string[] {
-  return contractIssues(error).map(issue => issue.line);
+export function contractError(error: z.ZodError, where: Where = {}): string[] {
+  return contractIssues(error, where).map(issue => issue.line);
 }
 
 export type ContractResult<T> = { ok: true; value: T } | { ok: false; issues: ContractIssue[] };
 
 /** Parse with the input reported, so a missing field reads `required` rather than a wrong type. */
-export function parseContract<T>(schema: z.ZodType<T>, input: unknown): ContractResult<T> {
+export function parseContract<T>(schema: z.ZodType<T>, input: unknown, options: ContractOptions = {}): ContractResult<T> {
   const parsed = schema.safeParse(input, { reportInput: true });
-  return parsed.success ? { ok: true, value: parsed.data } : { ok: false, issues: contractIssues(parsed.error) };
+  return parsed.success ? { ok: true, value: parsed.data } : { ok: false, issues: contractIssues(parsed.error, { schema, input, options }) };
 }
 
 /**
@@ -106,6 +202,7 @@ export function readVersioned<T>(
   schema: z.ZodType<T> & { shape: { version: z.ZodLiteral<number> } },
   input: unknown,
   upgrades: Readonly<Record<number, (payload: Record<string, unknown>) => unknown>> = {},
+  options: ContractOptions = {},
 ): ContractResult<T> {
   const current = schema.shape.version.value;
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -113,7 +210,7 @@ export function readVersioned<T>(
   }
   const body = input as Record<string, unknown>;
   const version = Object.prototype.hasOwnProperty.call(body, "version") ? body["version"] : 0;
-  if (version === current) return parseContract(schema, body);
+  if (version === current) return parseContract(schema, body, options);
   if (typeof version === "number" && Number.isInteger(version) && version > current) {
     return { ok: false, issues: [{ path: "version", kind: "newer-version", line: `version: made by a newer Toolroll (version ${version}; this one reads up to ${current})` }] };
   }
@@ -121,7 +218,7 @@ export function readVersioned<T>(
   if (upgrade === undefined) {
     return { ok: false, issues: [{ path: "version", kind: "bad-value", line: `version: unknown version ${JSON.stringify(version)} (this Toolroll reads ${current}${Object.keys(upgrades).length === 0 ? "" : ` and ${Object.keys(upgrades).join(", ")}`})` }] };
   }
-  return parseContract(schema, upgrade(body));
+  return parseContract(schema, upgrade(body), options);
 }
 
 /** The Zod node kinds a model-facing schema may use: each says exactly what its JSON Schema says. */

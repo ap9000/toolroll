@@ -47,7 +47,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 |---|---|---|---|
 | 1 ✅ | **Foundation**: add `zod`, `src/contracts/` home, shared helpers (`limited()`, `versioned()`, path-named errors, `toModelSchema()`), the contract-test harness | — | everything else builds on it |
 | 2 ✅ | **Plan payload** (goal, outOfScope, touches, acceptance, plan document sections, amendment) and the planner's `--json-schema` | `plan.ts` (`parsePlan`, `PLAN_LIMITS`), `planner.ts` | 0.9.30 outage; repair turns |
-| 3 | **Flow definitions and step inputs** (every zone kind, routes/answers/options, triggers) for `flows create/edit`, gallery templates, the lead's `propose_flow` | `flows.ts` (13 parsers), `flow-triggers.ts`, `flow-gallery.ts` | wrong-field-name failures; flows are authored by people, the lead and templates |
+| 3 ✅ | **Flow definitions and step inputs** (every zone kind, routes/answers/options, triggers) for `flows create/edit`, gallery templates, the lead's `propose_flow` | `flows.ts` (13 parsers), `flow-triggers.ts`, `flow-gallery.ts` | wrong-field-name failures; flows are authored by people, the lead and templates |
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
 | 6 | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
@@ -97,3 +97,21 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   the handoff; structured output counts only when no file was written. Saved unversioned plans read as before
   (replayed from `test/fixtures/plans/`). Tightened, on purpose: a plan with a newer `version` is refused, and a
   `version: 1` plan is strict about unknown keys.
+- **3. Flow definitions and step inputs** (2026-10-05). `src/contracts/flow.ts` holds one schema per zone kind (all 18,
+  a discriminated union on `kind`) in each vocabulary a flow is written in: the saved drawing, steps (the lead, `toolroll
+  flows create/edit`, starters, kits, the gallery) and the flow file's zones; plus routes, answers, options, triggers as
+  given and as saved, and the flow file. `flowFromSteps`, `validateFlowDefinition`, `validateTriggerConfig`,
+  `triggerConfigOf` and `parseFlowFile` read through them, and what JSON Schema can't say (paths to zones that exist,
+  no way back into the same zone, a merge only after a decision, hosts, tool arguments, time zones, schedules, people,
+  scripts, secrets) runs after parsing with a path-named error. `FlowStage`, `FlowDefinition`, `FlowStepInput`,
+  `TriggerConfig` and `FlowFile` are `z.infer`; the 13 hand-written parsers and the hand-written flow-file JSON Schema
+  are gone (`docs/flow-file.schema.json` is generated: `npx tsx scripts/flow-file-schema.ts`). The lead's `propose_flow`
+  schema is `toModelSchema(proposeFlowInputSchema)` (`src/contracts/flow-propose.ts`, for item 5 to import) and its call
+  is read with it, so a refusal is the lines it reads next turn. `contract.ts` now suggests the key an unknown one meant
+  (aliases such as `onFail` → `ifFails`, or a near spelling) and names a union's choices, for every contract. Kept:
+  a version 1 drawing reads as every release has (defaults, trimming, clamped places, long saved instructions), and
+  every recorded drawing, step list, export and trigger in `test/fixtures/flows/` reads byte for byte as 0.9.34 made it
+  — the same JSON, digests, stored and rollback forms, and exported files. Tightened, on purpose: a key a step, file
+  zone, trigger setting or `propose_flow` argument's kind doesn't take is refused by name (a sort's `ifFails`, a wait's
+  `remindAfter`); a drawing or file with a newer `version` is refused plainly; flow and trigger refusals are path-named
+  lines.

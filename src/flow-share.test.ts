@@ -19,11 +19,13 @@ import { setFlowSecret } from "./flow-secrets.js";
 import { addFlowTriggerTo, saveHooksBase, triggerConfigOf } from "./flow-triggers.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { FLOW_TEMPLATES, flowFromSteps, type FlowDefinition } from "./flows.js";
+import { GALLERY, galleryDiagram } from "./flow-gallery.js";
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, flowShape, importFlow, parseFlowFile, planFlowImport, rawFlowUrl, type FetchLike } from "./flow-share.js";
 import { runOperate } from "./operate.js";
+import { parseContract } from "./contracts/contract.js";
+import { flowFileSchema } from "./contracts/flow.js";
 
 const NOW = new Date("2026-10-01T09:00:00.000Z");
-const SCHEMA = JSON.parse(readFileSync(new URL("../docs/flow-file.schema.json", import.meta.url), "utf8")) as { properties: Record<string, unknown>; $defs: { zone: { properties: Record<string, unknown> } } };
 const GHP = ["ghp", "Q".repeat(36)].join("_");
 let dir: string, here: string, there: string, repo: string, theirs: string, store: Store, other: Store, alexToken: string;
 
@@ -77,6 +79,22 @@ const paths = (definition: FlowDefinition) => definition.stages.map(one => ({
   answers: one.sort?.answers.map(answer => [answer.answer, answer.to]) ?? null, routes: one.routes?.map(route => [route.answer, route.to]) ?? null, limit: one.limit ?? null,
 }));
 
+/** A recorded file imported here as the recording did: owner-less deciders are priya, written-out emails sam's. */
+function planned(json: string): { plan?: FlowDefinition; refused?: string } {
+  try {
+    const file = parseFlowFile(json);
+    const values = Object.fromEntries(file.parameters.map(one => [one.id, one.default ?? (one.id.startsWith("decider") ? "priya" : one.id.startsWith("email-to") ? "sam@shop.example" : "x")]));
+    return { plan: planFlowImport(store, repo, file, values, "alex").definition };
+  } catch (error) { return { refused: (error as Error).message }; }
+}
+/** The drawing a recorded file was exported from: its import, or (for one that can't import here) its zones as read. */
+function definitionOf(one: { name: string; json: string }): FlowDefinition {
+  const source = [...FLOW_TEMPLATES.map(template => [`template ${template.id}`, template.definition] as const), ...GALLERY.filter(template => template.steps !== undefined).map(template => [`gallery ${template.id}`, galleryDiagram(template)] as const)]
+    .find(([name]) => name === one.name)?.[1];
+  if (source !== undefined) return source;
+  return JSON.parse((JSON.parse(readFileSync(new URL("../test/fixtures/flows/steps.json", import.meta.url), "utf8")) as { valid: { name: string; canonical: string }[] }).valid.find(each => each.name === one.name)!.canonical) as FlowDefinition;
+}
+
 describe("export then import", () => {
   test("round-trips zones and paths onto another installation, with triggers off and scripts held", () => {
     const flow = richFlow();
@@ -89,7 +107,8 @@ describe("export then import", () => {
     expect(made.every(one => one.ok)).toBe(true);
 
     const exported = exportFlow(store, row, here);
-    for (const zone of exported.file.zones) for (const key of Object.keys(zone)) expect(SCHEMA.$defs.zone.properties, key).toHaveProperty(key);
+    // The file is exactly what flowFileSchema (docs/flow-file.schema.json) reads.
+    expect(parseContract(flowFileSchema, JSON.parse(exported.json))).toMatchObject({ ok: true });
     expect(exported.fileName).toBe("bug-bash.toolroll-flow.json");
     expect(exported.file).toMatchObject({ format: "toolroll-flow", version: 1, name: "Bug bash" });
     expect(exported.file.parameters.map(one => one.id)).toEqual(["decider-review", "email-to-ping", "github-repo", "github-label"]);
@@ -123,12 +142,23 @@ describe("export then import", () => {
       const values = Object.fromEntries(file.parameters.filter(one => one.id.startsWith("email-to-")).map(one => [one.id, "{{card.email}}"]));
       const imported = importFlow(other, planFlowImport(other, theirs, file, values, "sam"), "sam", NOW, there);
       const arrived = flowDefinitionOf(other.getFlow(imported.id)!)!;
-      // Every field the file uses is one docs/flow-file.schema.json describes.
-      for (const zone of exported.file.zones) for (const key of Object.keys(zone)) expect(SCHEMA.$defs.zone.properties, `${template.id}: ${key}`).toHaveProperty(key);
-      for (const key of Object.keys(exported.file)) expect(SCHEMA.properties).toHaveProperty(key);
+      // Every field the file uses is one docs/flow-file.schema.json describes: the file is exactly what flowFileSchema reads.
+      expect(parseContract(flowFileSchema, JSON.parse(exported.json)), template.id).toMatchObject({ ok: true });
       const original = flowDefinitionOf(store.getFlow(id)!)!;
       expect(flowShape(arrived), template.id).toBe(flowShape(original));
       expect(paths(arrived), template.id).toEqual(paths(original));
+    }
+  });
+
+  test("exports the same bytes 0.9.34 did, and importing them draws the same flow", () => {
+    // Recorded from the pre-Zod exportFlow and parseFlowFile (test/fixtures/flows/flow-files.json).
+    const recorded = JSON.parse(readFileSync(new URL("../test/fixtures/flows/flow-files.json", import.meta.url), "utf8")) as { files: { name: string; json: string; imported: string | null; refused: string | null }[] };
+    saveScript(store, repo, { name: "triage", about: "Says whether the report is a bug", language: "python", body: "print('goto: bug')" }, "alex", NOW);
+    for (const one of recorded.files) {
+      const definition = (JSON.parse(one.json) as { zones: unknown[] }).zones.length > 0 ? planned(one.json) : null;
+      const id = store.createFlow({ repo, name: one.name, definitionJson: JSON.stringify(definitionOf(one)), by: "alex" }, NOW);
+      expect(exportFlow(store, store.getFlow(id)!, null).json, one.name).toBe(one.json);
+      expect(definition === null ? null : definition.refused ?? JSON.stringify(definition.plan), one.name).toBe(one.refused ?? one.imported);
     }
   });
 
@@ -188,12 +218,15 @@ describe("refusals and the preview", () => {
     expect(refused("{ not json")).toBe("That isn't a flow file: it isn't valid JSON.");
     expect(refused("[]")).toBe("That isn't a flow file: it should be one JSON object.");
     expect(refused(JSON.stringify({ ...file, format: "n8n" }))).toBe("That isn't a Toolroll flow file: its format isn't \"toolroll-flow\".");
-    expect(refused(JSON.stringify({ ...file, version: 2 }))).toBe("This flow file is version 2; this Toolroll reads version 1. Update Toolroll, then import it.");
-    expect(refused(JSON.stringify({ ...file, zones: [] }))).toBe("The file has no zones.");
-    expect(refused(JSON.stringify({ ...file, zones: [{ ...file.zones[0], next: "nowhere" }, ...file.zones.slice(1)] }))).toBe(`Zone ${file.zones[0].title}: there's no zone called nowhere.`);
-    expect(refused(JSON.stringify({ ...file, triggers: [{ kind: "chat", app: "slack" }] }))).toBe("A chat channel trigger can't come from a file: connect the channel from the channel itself.");
-    expect(refused(JSON.stringify({ ...file, scripts: [{ name: "deploy", about: "Deploys", body: `curl -H "token: ${GHP}"` }] }))).toMatch(/^Script deploy: That looks like a key or password/);
-    expect(refused(JSON.stringify({ ...file, zones: [{ ...file.zones[0], decider: "{{param.who}}" }, ...file.zones.slice(1)] }))).toBe("The file uses {{param.who}} but doesn't say what it asks for.");
+    expect(refused(JSON.stringify({ ...file, version: 2 }))).toBe("version: made by a newer Toolroll (version 2; this one reads up to 1)");
+    expect(refused(JSON.stringify({ ...file, zones: [] }))).toBe("zones: at least 1 item");
+    expect(refused(JSON.stringify({ ...file, zones: [{ ...file.zones[0], next: "nowhere" }, ...file.zones.slice(1)] }))).toBe("zones[0].next: there's no zone called nowhere");
+    expect(refused(JSON.stringify({ ...file, triggers: [{ kind: "chat", app: "slack" }] }))).toBe("triggers[0].kind: a chat channel trigger can't come from a file; connect the channel from the channel itself");
+    expect(refused(JSON.stringify({ ...file, scripts: [{ name: "deploy", about: "Deploys", body: `curl -H "token: ${GHP}"` }] }))).toMatch(/^scripts\[0\]: That looks like a key or password/);
+    expect(refused(JSON.stringify({ ...file, zones: file.zones.map((one: Record<string, unknown>) => one["kind"] === "approval" ? { ...one, decider: "{{param.who}}" } : one) }))).toBe("The file uses {{param.who}} but doesn't say what it asks for.");
+    // A field another kind of zone has is refused by name, and a key from the saved drawing's words names the step's.
+    expect(refused(JSON.stringify({ ...file, zones: [{ ...file.zones[0], decider: "owner" }, ...file.zones.slice(1)] }))).toBe("zones[0]: unknown key 'decider'");
+    expect(refused(JSON.stringify({ ...file, zones: [{ ...file.zones[0], onFail: "inbox" }, ...file.zones.slice(1)] }))).toBe("zones[0]: unknown key 'onFail' (did you mean ifFails?)");
     expect(refused(JSON.stringify({ ...file, about: "x".repeat(FLOW_FILE_MAX_BYTES) }))).toBe("That file is too big: a flow file is at most 256 KB.");
   });
 

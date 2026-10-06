@@ -38,7 +38,7 @@ test("the words that connect a channel, in every app's shape", () => {
 
 test("a chat channel is never added from the canvas or chat: it says how to connect one from the channel", () => {
   const flow = store.createFlow({ repo: REPO, name: "Requests", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, T0);
-  expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "chat" }, "alex", T0, dir)).toEqual({ ok: false, message: `Connect a chat channel from the channel itself: where Toolroll is in Slack, Discord, Teams or a Telegram group, send “flow ${flow}”.` });
+  expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "chat" }, "alex", T0, dir)).toEqual({ ok: false, message: `kind: connect a chat channel from the channel itself: where Toolroll is in Slack, Discord, Teams or a Telegram group, send “flow ${flow}”` });
 });
 
 test("a Telegram group feeds a flow: /flow N from the paired approver connects it, anyone's message is a card, a reply joins it", async () => {
