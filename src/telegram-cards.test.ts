@@ -5,7 +5,7 @@
  * what a tap records is unchanged. Fixture transport, not a phone: nothing here is a live Telegram proof.
  *
  * With TELEGRAM_CARDS_OUT set to a file, every card state seen here is also written there (text and button rows,
- * tokens masked) for the handoff's before/after table and scripts/telegram-cards-proof.mjs.
+ * tokens masked) for a before/after review.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createHash } from "node:crypto";
@@ -89,7 +89,7 @@ const replyIn = async (chat: number, text: string, replyTo: number) => {
   script.updates.push([{ update_id: nextUpdate++, message: { message_id: 3000 + nextUpdate, chat: { id: chat, type: "private" }, from: { id: chat }, text, reply_to_message: { message_id: replyTo } } }]);
   return pass();
 };
-/** One card state: captured for the handoff, and inside Telegram's limits. */
+/** One card state: captured for review, and inside Telegram's limits. */
 const seen = (family: string, state: string, card: { text: string; rows: ScriptButton[][] }) => {
   capture(family, state, card.text, card.rows);
   withinTelegram(card.text, card.rows);
