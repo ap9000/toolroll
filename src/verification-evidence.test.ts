@@ -66,6 +66,6 @@ describe("verification receipts read through their schema", () => {
 
   test("the writer refuses a receipt its own schema would refuse", () => {
     expect(() => sealVerificationReceipt(store, dir, runId, HEAD, { ...command, id: 1.5 }, { configured: true, ran: true, exitCode: 0 }, T1))
-      .toThrow("The verification receipt does not match its contract: command.id: must be a int");
+      .toThrow("The verification receipt does not match its contract: command.id: must be an integer (got a number)");
   });
 });
