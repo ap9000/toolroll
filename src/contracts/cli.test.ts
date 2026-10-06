@@ -95,10 +95,10 @@ describe("the CLI's machine contract", () => {
     }
   });
 
-  it("marks item 14 done in the plan", () => {
+  it("marks item 14 partly done in the plan", () => {
     const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toMatch(/\| 14 ✅ \| \*\*CLI JSON input\/output\*\*/);
-    expect(plan).toMatch(/^- \*\*14\. CLI JSON input and output\*\* \(2026-10-06\)\./m);
+    expect(plan).toMatch(/\| 14 ◐ partly done \| \*\*CLI JSON input\/output\*\*/);
+    expect(plan).toMatch(/^- \*\*14\. CLI JSON input and output\*\* — partly done \(2026-10-06\)\./m);
   });
 });
 

@@ -69,8 +69,8 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today |
 |---|---|---|
-| 13 ✅ | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
-| 14 ✅ | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
+| 13 ◐ partly done | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
+| 14 ◐ partly done | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
 | 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
 | 16 ✅ | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
 | 17 ✅ | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
@@ -282,7 +282,7 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
-- **13. Console form bodies and JSON API** (2026-10-06). `src/contracts/console-api.ts` holds one schema for every
+- **13. Console form bodies and JSON API** — partly done (2026-10-06). `src/contracts/console-api.ts` holds one schema for every
   URL-encoded body the console reads (`CONSOLE_FORMS`: sign-up, sign-in, invite, the shared guard, every `handlePost`
   route and each task, attend and routine verb; families with one dispatch, such as `/code/*`, `/flows/*` and the
   teammate pages, share one) and lists the POSTs that read no field (`BODILESS_POSTS`). Each handler reads its body
@@ -295,7 +295,9 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   sealed ledger entries and pack digests still match), and a mismatch is logged, never refused. Telegram's pushed
   updates (item 11) and flow webhooks and public forms (item 15) stay with their items. No tightening. Replay of
   real rows remains an evidence gap: the installed database was denied to this build, and form bodies are never stored.
-- **14. CLI JSON input and output** (2026-10-06). `src/contracts/cli.ts` holds the one `--json` envelope schema
+  Remains: the other JSON endpoints (`/code` state, log tail, audit export, flow chat) and the JSON carried inside
+  form fields (`answers`, `files`, `trigger`, `definition`) have no schema yet.
+- **14. CLI JSON input and output** — partly done (2026-10-06). `src/contracts/cli.ts` holds the one `--json` envelope schema
   (`envelopeVersion` 1, `ok`, `command`, and a refusal's `reason` and `message`), one answer schema for each of the
   215 commands the guide declares, and the guide row's schema (`CommandRow` and `CommandFlag` are derived from it).
   `surface.ts` pairs every row, in order, with its answer's schema (`COMMAND_ENTRIES`), and `COMMAND_GUIDE`, which
@@ -314,6 +316,8 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   are parsed as before; no CLI input moved to a schema here (session and assignment inputs already have theirs). The
   installed database was denied to this build, so read-only replay of real saved state remains an evidence gap. No
   tightening.
+  Remains: CLI input flags are not read through a schema, and 190 of the 215 commands still have no output schema of
+  their own (only the envelope is checked for them).
 - **15. Trigger payloads** (2026-10-06). `src/contracts/trigger-payloads.ts` holds one non-strict schema each for
   GitHub's issues and pull requests, issue events, workflow runs and signed webhook events, Linear's GraphQL answer,
   issue and signed webhook event, a plain webhook's JSON (any JSON, kept as sent for its title and body paths), a
@@ -378,3 +382,10 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   candidate over the 15 real runs in `test/fixtures/evidence/` and 337 receipt, legacy-header and inventory cases:
   zero differences besides that one. The installed database and evidence folder were denied to this build, so a
   replay of every installed evidence directory remains an evidence gap.
+
+## Follow-ups
+
+- **13 (rest):** schemas for the other console JSON endpoints — `/code` state, log tail, audit export, flow chat —
+  and for the JSON inside form fields: `answers`, `files`, `trigger`, `definition`.
+- **14 (rest):** CLI input flags through a schema, and per-command output schemas for the 190 of 215 commands that
+  are held only to the envelope.
