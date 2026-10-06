@@ -391,3 +391,21 @@ test("a sign-in asks for every scope the server lists, so a server that needs on
   expect(found?.scopes).not.toContain("bad scope");
   expect(found!.scopes.join(" ").length).toBeLessThanOrEqual(6_000);
 });
+
+test("PostHog's sign-in names no scope, so PostHog applies its own MCP preset instead of a 75-group permission grid", async () => {
+  const reply = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://mcp.posthog.com/mcp" && init?.method === "POST") return reply(401, {}, { "www-authenticate": 'Bearer resource_metadata="https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp"' });
+    if (url === "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp") return reply(200, { resource: "https://mcp.posthog.com/mcp", authorization_servers: ["https://oauth.posthog.com"], scopes_supported: ["openid", "user:read", "insight:read"] });
+    if (url === "https://oauth.posthog.com/.well-known/oauth-authorization-server") return reply(200, { authorization_endpoint: "https://oauth.posthog.com/authorize", token_endpoint: "https://oauth.posthog.com/token", registration_endpoint: "https://oauth.posthog.com/register", code_challenge_methods_supported: ["S256"] });
+    if (url === "https://oauth.posthog.com/register") return reply(201, { client_id: "posthog-client" });
+    return reply(404, {});
+  }) as typeof fetch;
+  const started = await startConnect({ service: "posthog", repo, by: "alex", origin: "http://127.0.0.1:4180" }, fetcher, T0.getTime());
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const go = new URL(started.go);
+  expect(go.searchParams.has("scope")).toBe(false);
+  expect(go.searchParams.get("resource")).toBe("https://mcp.posthog.com/mcp");
+});

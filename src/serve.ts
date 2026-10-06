@@ -1380,6 +1380,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       response.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${escape(to)}"><title>Toolroll</title>${HANDOFF_STYLE}<p>${escape(words)} <a href="${escape(to)}">Back to Toolroll</a></p>`);
     };
     const state = url.searchParams.get("state") ?? "";
+    // Every arrival is logged (never the code or state): a sign-in that never came back is then visible as an absence.
+    logEvent("info", "connect.callback", { error: url.searchParams.get("error"), known: connectVisits.has(state) });
     if (!startedHere(request, state)) return done("/settings/tools", "problem", "That sign-in was started in another browser. Connect again from this one.");
     const visit = connectVisits.get(state);
     connectVisits.delete(state);

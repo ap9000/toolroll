@@ -23,7 +23,10 @@ import { envValue } from "./names.js";
  * an action is read-only only when it is named by a reading verb (READING)
  * and every other word in its name is one of these.
  */
-export type OneClick = { id: string; label: string; url: string; about: string; reads?: readonly string[] };
+export type OneClick = { id: string; label: string; url: string; about: string; reads?: readonly string[];
+  /** Send no scope: the server applies its own preset for this resource (PostHog's MCP preset). Naming scopes there
+   * shows a 75-group permission grid instead, and the person can stop on it without ever coming back. */
+  serverScopes?: true };
 
 /**
  * Services that connect this way: their servers speak streamable HTTP and
@@ -61,7 +64,7 @@ export const ONE_CLICK: readonly OneClick[] = [
   // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
   { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.",
     reads: ["screen", "flow", "app", "site", "element", "pattern", "ui", "ios", "android", "web"] },
-  { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.",
+  { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.", serverScopes: true,
     reads: ["insight", "run", "event", "definition", "property", "properties"] },
   { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.",
     reads: ["uptime", "monitor", "incident", "availability", "response", "time"] },
@@ -252,7 +255,7 @@ export async function startConnect(input: { service: string; repo: string; by: s
   go.searchParams.set("code_challenge_method", "S256");
   go.searchParams.set("state", state);
   go.searchParams.set("resource", resource);
-  if (server.scopes.length > 0) go.searchParams.set("scope", server.scopes.join(" "));
+  if (server.scopes.length > 0 && service.serverScopes !== true) go.searchParams.set("scope", server.scopes.join(" "));
   return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS } };
 }
 
