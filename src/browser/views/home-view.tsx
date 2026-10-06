@@ -47,7 +47,8 @@ function inTab(item: BrowserCatchUpItem, tab: BrowserCatchUpTab): boolean {
   return tab === "all" || item.tab === tab;
 }
 
-export function Home({ home }: { home: BrowserHome }) {
+/** `compact`: the narrow Work panel beside the chat, where the Catch up tabs take the full width. */
+export function Home({ home, compact = false }: { home: BrowserHome; compact?: boolean }) {
   const counts = useMemo(() => Object.fromEntries(TABS.map(tab => [tab.id, home.catchUp.filter(item => inTab(item, tab.id)).length])) as Record<BrowserCatchUpTab, number>, [home.catchUp]);
   const [tab, setTab] = useState<BrowserCatchUpTab>(() => counts["needs-you"] > 0 ? "needs-you" : counts.ready > 0 ? "ready" : counts.running > 0 ? "running" : "all");
   // Unread (phones): a tab holding a change this browser hasn't shown yet.
@@ -105,15 +106,17 @@ export function Home({ home }: { home: BrowserHome }) {
     <section aria-labelledby="home-catch-up" data-home-catch-up>
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 id="home-catch-up" className="text-[14px] font-semibold tracking-[-0.01em]">Catch up</h2>
-        <div role="tablist" aria-label="Catch up" className="ml-auto inline-flex h-8 items-center gap-0.5 rounded-xl bg-muted p-0.5 phone:ml-0 phone:h-11 phone:w-full">
+        <div role="tablist" aria-label="Catch up" className={cn("ml-auto inline-flex h-8 items-center gap-0.5 rounded-xl bg-muted p-0.5 phone:ml-0 phone:h-11 phone:w-full", compact && "ml-0 w-full")}>
           {TABS.map(one => {
             const unread = home.catchUp.some(item => inTab(item, one.id) && !seen.has(stamp(item)));
             return <button key={one.id} type="button" role="tab" aria-selected={tab === one.id} data-catch-up-tab={one.id} onClick={() => setTab(one.id)}
               className={cn("relative inline-flex h-full items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground phone:flex-1 phone:justify-center phone:px-1.5",
-                tab === one.id && "bg-card text-foreground shadow-[var(--so-pill-shadow)]")}>
+                compact && "flex-1 justify-center px-1.5", tab === one.id && "bg-card text-foreground shadow-[var(--so-pill-shadow)]")}>
               {one.label}
               <span className={cn("min-w-[18px] rounded-full px-1.5 text-center font-mono text-[11px] leading-[18px] tabular-nums",
-                one.id === "needs-you" && counts["needs-you"] > 0 ? "bg-attention text-on-attention" : "text-muted-foreground")}>{counts[one.id]}</span>
+                one.id === "needs-you" && counts["needs-you"] > 0 ? "bg-attention text-on-attention" : "text-muted-foreground",
+                // The narrow panel has room for a count only where there is one; the tiles above carry the rest.
+                compact && counts[one.id] === 0 && "hidden")}>{counts[one.id]}</span>
               {unread && tab !== one.id && <span data-unread aria-label="New" className="absolute right-1 top-1 size-1.5 rounded-full bg-attention desk:hidden" />}
             </button>;
           })}

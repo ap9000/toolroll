@@ -56,6 +56,8 @@ export type BrowserConversation = {
   taskId: string | null; resultRunId: number | null;
   /** A project's own thread (v77); absent or null for the lead conversation or a task. */
   project?: string | null;
+  /** The lead thread a change in reachable projects replaced (mate arc ruling 9): shown above a divider, read only. */
+  previous?: { messages: BrowserMessage[] } | null;
 };
 /** A page rebuilt as React components (shadcn/ui). The server still renders
  * its HTML as the no-JavaScript fallback; forms post to the same routes. */
@@ -94,6 +96,8 @@ export type BrowserLimits = { tiles: BrowserLimitTile[] };
 export type BrowserSettingsView = {
   kind: 'settings';
   said: string | null;
+  /** Using it from a phone, under Chat apps (approvers only). */
+  phone?: BrowserPhoneCard;
   /** The settings destinations under short headings; a chat app's tile says whether it is connected and gets alerts. */
   groups: BrowserSettingsGroup[];
   theme: 'system' | 'light' | 'dark';

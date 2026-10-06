@@ -76,11 +76,14 @@ export function treeBytes(root = process.pid) {
  * the check's own processes held. */
 export function watchMemory({ everyMs = 2_000, available = availableMemory, tree = treeBytes, total = totalmem() } = {}) {
   const seen = { total, peakUsed: 0, lowestAvailable: Infinity, peakCheck: null };
+  // A reading that fails or says nothing is skipped: the record is only ever short, never the reason a check stops.
   const sample = () => {
-    const free = available();
-    seen.peakUsed = Math.max(seen.peakUsed, total - free);
-    seen.lowestAvailable = Math.min(seen.lowestAvailable, free);
-    const mine = tree();
+    const free = reading(available);
+    if (free !== null) {
+      seen.peakUsed = Math.max(seen.peakUsed, total - free);
+      seen.lowestAvailable = Math.min(seen.lowestAvailable, free);
+    }
+    const mine = reading(tree);
     if (mine !== null) seen.peakCheck = Math.max(seen.peakCheck ?? 0, mine);
   };
   sample();
@@ -90,10 +93,13 @@ export function watchMemory({ everyMs = 2_000, available = availableMemory, tree
 }
 
 const gb = bytes => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+/** A memory reading in bytes, or null when it throws or says nothing usable. */
+const reading = read => { try { const value = read(); return Number.isFinite(value) ? value : null; } catch { return null; } };
 
 /** "peak memory: the check's processes 4.8 GB; the machine 41.2 GB in use of 64.0 GB (lowest available 22.8 GB)" */
 export function memoryWords(seen) {
-  return `peak memory: ${seen.peakCheck === null ? "" : `the check's processes ${gb(seen.peakCheck)}; `}the machine ${gb(seen.peakUsed)} in use of ${gb(seen.total)} (lowest available ${gb(seen.lowestAvailable)})`;
+  const machine = Number.isFinite(seen.lowestAvailable) ? `the machine ${gb(seen.peakUsed)} in use of ${gb(seen.total)} (lowest available ${gb(seen.lowestAvailable)})` : "the machine's unknown (couldn't read memory)";
+  return `peak memory: ${seen.peakCheck === null ? "" : `the check's processes ${gb(seen.peakCheck)}; `}${machine}`;
 }
 
 /*
@@ -175,17 +181,27 @@ export function providerSessions() {
   return count;
 }
 
-/** The machine now: available memory, swap, macOS pressure and provider sessions (null when unknown). */
+/** The machine now: available memory, swap, macOS pressure and provider sessions (null when unknown, including a
+ * reading that throws). */
 export function sampleMachine({ env = process.env, platform = process.platform, available = availableMemory, swap = swapUsage, pressure = () => memoryPressure({ platform }), providers = providerSessions } = {}) {
   if (env.TOOLROLL_CHECK_MACHINE) {
     // A rehearsal's readings; unreadable, it is a machine with no room.
     try {
       const fake = JSON.parse(readFileSync(env.TOOLROLL_CHECK_MACHINE, "utf8"));
-      return { platform: fake.platform ?? platform, available: fake.available ?? 0, swapUsed: fake.swapUsed ?? null, swapTotal: fake.swapTotal ?? null, pressure: fake.pressure ?? null, providers: fake.providers ?? null };
+      return { platform: fake.platform ?? platform, available: fake.available ?? 0, swapUsed: fake.swapUsed ?? null, swapTotal: fake.swapTotal ?? null, pressure: fake.pressure ?? null, providers: fake.providers ?? null, ...(fake.total == null ? {} : { total: fake.total }) };
     } catch { return { platform, available: 0, swapUsed: null, swapTotal: null, pressure: null, providers: null }; }
   }
-  const used = swap();
-  return { platform, available: available(), swapUsed: used?.used ?? null, swapTotal: used?.total ?? null, pressure: platform === "darwin" ? pressure() : null, providers: providers() };
+  const known = read => { try { return read() ?? null; } catch { return null; } };
+  const used = known(swap);
+  return { platform, available: reading(available), swapUsed: used?.used ?? null, swapTotal: used?.total ?? null, pressure: platform === "darwin" ? known(pressure) : null, providers: known(providers) };
+}
+
+/** A sample from `read` (gate.sample, sampleMachine), or null when it throws or returns nothing usable. */
+export function readSample(read) {
+  try {
+    const sample = read();
+    return sample && typeof sample === "object" ? sample : null;
+  } catch { return null; }
 }
 
 /** The cap on real provider turns at once: TOOLROLL_CHECK_PROVIDERS, or at most 4, reduced to 1 per 5 GB (at least 1). */
@@ -201,6 +217,33 @@ export function providerCap(env = process.env, total = totalmem()) {
 const swapPct = sample => sample.swapTotal ? Math.round((sample.swapUsed / sample.swapTotal) * 100) : null;
 const pressureName = level => ({ 1: "normal", 2: "warn", 4: "critical" })[level] ?? "unknown";
 
+/** App lanes share the existing six-browser budget. Small runners keep their old share; overrides never bypass
+ * pressure or memory. Unknown pressure cannot authorize extra work: a sample that is missing, or whose memory, macOS
+ * pressure or (elsewhere) swap couldn't be read, gets one lane. Only a bad TOOLROLL_E2E_LANES throws. The gate checks
+ * this again at every start. */
+export function appLanes(sample, { env = process.env, total = sample?.total ?? totalmem(), baseline = 1, max = MAX_GROUPS } = {}) {
+  const set = env.TOOLROLL_E2E_LANES;
+  if (set !== undefined && set !== "" && (!/^[0-9]+$/.test(set) || !Number.isSafeInteger(Number(set)) || Number(set) < 1)) {
+    throw new Error(`TOOLROLL_E2E_LANES takes a whole number, 1 or more (not "${set}").`);
+  }
+  const requested = set === undefined || set === "" ? 4 : Number(set);
+  const unread = { count: 1, why: "couldn't read memory" };
+  if (sample === null || typeof sample !== "object" || !Number.isFinite(sample.available)) return unread;
+  if (sample.platform === "darwin" && sample.pressure == null) return unread;
+  if (sample.platform === "darwin" && sample.pressure !== 1) return { count: 1, why: `memory pressure ${pressureName(sample.pressure)}` };
+  if (sample.platform !== "darwin") {
+    if (sample.swapTotal == null || sample.swapUsed == null) return unread;
+    if (sample.swapTotal > 0 && sample.swapUsed / sample.swapTotal >= SWAP_PRESSED) return { count: 1, why: "memory pressure warn (swap)" };
+  }
+  const fits = Math.max(1, Math.floor((sample.available - RESERVE_BYTES) / DEMAND.group.bytes));
+  const small = total <= 8 * GB;
+  const count = Math.min(requested, max, fits, small ? baseline : Infinity);
+  const why = small ? "small runner: keeping current lane cap" : fits < Math.min(requested, max) ? "available memory" : "memory normal";
+  return { count, why: `${why}${set === undefined || set === "" ? "" : `; TOOLROLL_E2E_LANES=${set}`}` };
+}
+
+export const laneWords = ({ count, why }) => `${count} lane${count === 1 ? "" : "s"}: ${why}`;
+
 /**
  * Whether a start with `demand` ({ bytes, providers }) may go ahead now, given the machine's `sample` and the leases
  * the check holds ({ bytes, providers, at }): { ok, why } where why says what it waits for.
@@ -212,6 +255,7 @@ export function admit(demand, sample, held, { cap, now = Date.now() }) {
   const pct = swapPct(sample);
   const pressed = macOS ? sample.pressure === 2 : pct !== null && pct >= SWAP_PRESSED * 100;
   const reserve = pressed ? PRESSED_RESERVE_BYTES : RESERVE_BYTES;
+  if (held.length > 0 && !Number.isFinite(sample.available)) return { ok: false, why: "couldn't read memory; waiting for the check's other starts to finish" };
   if ((held.length > 0 || (macOS && pressed)) && sample.available - settling < demand.bytes + reserve) {
     const pressure = macOS ? `, macOS pressure ${pressureName(sample.pressure)}` : pct === null ? "" : `, swap ${pct}% used`;
     return { ok: false, why: `${gb(sample.available)} free${pressure}; it needs ${gb(demand.bytes + reserve + settling)}` };
@@ -271,7 +315,7 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   let count = 0;
   const releaseAll = () => { for (const file of mine) rmSync(join(root, "leases", file), { force: true }); mine.clear(); };
   process.on("exit", releaseAll);
-  async function acquire(label, demand) {
+  async function acquire(label, demand, ready) {
     const asked = now();
     let said = null, lowest = Infinity, highest = null, highestPressure = null, macOS = false, why = null;
     for (;;) {
@@ -279,9 +323,12 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
       let decided, held, seen;
       try {
         held = leases();
-        seen = sample();
-        decided = admit(demand, seen, held, { cap, now: now() });
-        lowest = Math.min(lowest, seen.available);
+        // A sample that can't be read is a machine of unknown memory: no lanes beyond one, nothing alongside a start.
+        seen = readSample(sample) ?? { platform: process.platform, available: null, swapUsed: null, swapTotal: null, pressure: null, providers: null };
+        // Extra constraints run under the same lock and on the same fresh sample as memory/provider admission.
+        const extra = ready?.(seen, held);
+        decided = extra && !extra.ok ? extra : admit(demand, seen, held, { cap, now: now() });
+        if (Number.isFinite(seen.available)) lowest = Math.min(lowest, seen.available);
         const pct = swapPct(seen);
         if (pct !== null) highest = Math.max(highest ?? 0, pct);
         if (seen.platform === "darwin") {
@@ -310,8 +357,8 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   const release = file => { rmSync(join(root, "leases", file), { force: true }); mine.delete(file); };
   return {
     dir: root, cap, from, sample,
-    async hold(label, demand, body) {
-      const { file, waitedMs } = await acquire(label, demand);
+    async hold(label, demand, body, ready = null) {
+      const { file, waitedMs } = await acquire(label, demand, ready);
       try { return await body({ waitedMs }); } finally { release(file); }
     },
     /** What admission did: every start recorded (by `owner` alone when given). */
@@ -323,7 +370,7 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
       return {
         starts: events.length, cap, from,
         most: Math.max(0, ...events.map(one => only === null ? one.all : one.mine)),
-        lowest: events.length === 0 ? null : Math.min(...events.map(one => one.lowest)),
+        lowest: events.some(one => Number.isFinite(one.lowest)) ? Math.min(...events.filter(one => Number.isFinite(one.lowest)).map(one => one.lowest)) : null,
         highestSwap: events.some(one => one.highest !== null) ? Math.max(...events.map(one => one.highest ?? 0)) : null,
         macOS: events.some(one => one.macOS),
         highestPressure: events.some(one => one.highestPressure != null) ? Math.max(...events.map(one => one.highestPressure ?? 0)) : null,

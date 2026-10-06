@@ -56,7 +56,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { admissionWords, DEMAND, MAX_GROUPS, memoryWords, openGate, watchMemory } from "./check-memory.mjs";
+import { admissionWords, appLanes, DEMAND, laneWords, MAX_GROUPS, memoryWords, openGate, readSample, watchMemory } from "./check-memory.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
 
 const args = process.argv.slice(2);
@@ -215,11 +215,13 @@ export function planFor(changed, { full: all = false, real = false, versionBumps
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
 // An outer check's gate is not this one's: a part only gets the gate this check hands it (env).
-const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000, tempRoot: !label.startsWith("unit") }).then(one => {
+const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000, tempRoot: partTempRoot(label) }).then(one => {
   const log = join(dir, `${label}.log`);
   writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} ran past ${Math.round(PART_MS / 60_000)} min and was stopped\n`)]) : one.output);
   return { label, code: one.code, log, ms: one.ms };
 });
+// Units and browser lanes make their own roots. An outer root adds a redundant level to their Unix socket paths.
+export const partTempRoot = label => !/^(unit|app|flows)(-|$)/.test(label);
 /**
  * run(), once the gate has room for `demand`; `admitted` (when given) hears when it has. Its time counts from its start.
  * The gate isn't passed on: what these run (the unit tests' own runners among them) is not part of this check's starts.
@@ -240,6 +242,18 @@ export function shareSlots(slots, runs) {
   if (runs === 0) return [];
   if (slots < runs) return Array.from({ length: runs }, () => Math.max(1, slots));
   return Array.from({ length: runs }, (_, at) => Math.floor(slots / runs) + (at >= runs - (slots % runs) ? 1 : 0));
+}
+
+/** Give the longest scripted suite more of the same browser budget, leaving a slot for every other selected run.
+ * Selection/scoping and real-provider admission are unchanged. On small runners preserve the old allocation. */
+export function releaseLaneShares(labels, sample, options = {}) {
+  const shares = shareSlots(MAX_GROUPS, labels.length);
+  const at = labels.indexOf("app");
+  if (at === -1) return { shares, app: null };
+  const app = appLanes(sample, { ...options, baseline: shares[at], max: MAX_GROUPS - labels.length + 1 });
+  if (app.count <= shares[at]) { shares[at] = app.count; return { shares, app }; }
+  const rest = shareSlots(MAX_GROUPS - app.count, labels.length - 1);
+  return { shares: labels.map((_, index) => index === at ? app.count : rest.shift()), app };
 }
 
 const took = ms => ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 6000) / 10} min`;
@@ -300,9 +314,10 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (journeyRuns.length === 0 || held) return [];
     // The most browser groups at once, shared out; each group still starts only when the gate has room for it.
     const slots = MAX_GROUPS;
-    const shares = shareSlots(slots, journeyRuns.length);
+    const { shares, app } = releaseLaneShares(journeyRuns.map(each => each.label), readSample(gate.sample));
+    if (app !== null) console.log(`app: ${laneWords(app)}`);
     const env = { TOOLROLL_CHECK_GATE: gate.dir };
-    const start = (each, at) => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--at-once", String(shares[at])], dir, env);
+    const start = (each, at) => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--at-once", String(shares[at]), "--output", join("evidence", `release-${process.pid}`, each.label)], dir, env);
     // Room for a group each: all at once. Less: one after the other, each with all the room.
     if (journeyRuns.length <= slots) return Promise.all(journeyRuns.map(start));
     return journeyRuns.reduce((done, each, at) => done.then(async list => [...list, await start(each, at)]), Promise.resolve([]));

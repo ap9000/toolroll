@@ -16,6 +16,8 @@ import { createDecisionServer } from "./serve.js";
 import { TURN_WALL_CLOCK_MS, type MateProviderAnswer } from "./converse.js";
 import { Window } from "happy-dom";
 import { presented, T0, stylesOf, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
+import { TeamLeads } from './team-leads.js';
+import type { TeamOperation, TeamResponse } from './team-contract.js';
 
 describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
   let store: Store;
@@ -625,6 +627,77 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
   /** The enhanced send: the same endpoint and fields, asking for JSON. */
   const sendJson = (cookie: string, fields: Record<string, string>) =>
     fetch(url("/chat"), { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams(fields), redirect: "manual" });
+
+  test('team cards reuse the review projection, retain CLI summaries, and confirm or dismiss through the existing door', async () => {
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    const actor = { name: 'alex', generation: store.accountOf('alex')!.generation };
+    const domain = new TeamLeads(store, () => [repoDir]);
+    const team = async (operation: TeamOperation, args: Record<string, unknown>): Promise<TeamResponse> => {
+      const response = await fetch(url('/api/team'), { method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ operation, args }) });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<TeamResponse>;
+    };
+    const createdLead = await team('create-lead', { name: 'Launch lead', projects: [repoDir] });
+    const leadId = (createdLead.result as { leadId: string }).leadId;
+    const created = await team('create-conversation', { leadId, title: 'Launch', visibility: 'team', projects: [repoDir] });
+    const conversationId = created.snapshot!.selected!.id, thread = created.snapshot!.selected!.threadId;
+    await team('authorize', { conversationId, termsDigest: created.snapshot!.chatAuthorization!.termsDigest, ceilingUsd: created.snapshot!.chatAuthorization!.conversationCeilingUsd });
+    const session = store.teamMateSession('alex', thread)!;
+    const openTurn = () => {
+      const opened = store.openMateTurn({ approver: 'alex', session: session.id, thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
+      if (!opened.ok) throw Error(opened.reason);
+      const started = store.startMateTurn(opened.id, T0);
+      if (!started.ok) throw Error('start');
+      return { id: opened.id, generation: started.generation };
+    };
+    // Existing rows need no migration or new linkage: the saved turn is enough.
+    const turn = openTurn();
+    const draft = (kind: 'hold' | 'unhold', task: string) => store.draftMateProposal({ thread, turn: turn.id, kind, payload: { task, reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
+    const held = draft('hold', 'a'), dismissed = draft('hold', 'b'), unauthorized = draft('hold', 'b');
+    expect(store.finalizeMateTurn(turn.id, turn.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'Here are the proposed holds.', activity: '' } }, T0)).toBe(true);
+    const read = async () => (await team('show', { conversationId })).snapshot!;
+    let snapshot = await read();
+    expect(snapshot.proposals).toMatchObject([{ id: held, turnId: turn.id, state: 'pending', card: { kind: 'hold', state: 'pending', primary: { kind: 'confirm', label: 'Hold' }, dismissable: true } }, { id: dismissed }, { id: unauthorized }]);
+    const inline = snapshot.proposals![0]!.card!;
+    const review = async () => (await fetch(url(snapshot.proposals![0]!.href), { headers: { cookie } })).text();
+    expect(await review()).toContain(inline.body);
+    expect(await review()).toContain(`action="/chat/proposal/${held}/confirm"`);
+    const workspace = await (await fetch(url(`/chat?conversation=${conversationId}&format=workspace`), { headers: { cookie } })).json();
+    expect(workspace.team.proposals).toEqual(snapshot.proposals);
+    const cli = await (await fetch(url(`/api/team?conversation=${conversationId}`), { headers: { authorization: `Bearer alex:${approverToken}` } })).json() as TeamResponse;
+    expect(cli.snapshot!.proposals![0]).toEqual({ id: held, turnId: turn.id, title: 'Review hold', state: 'pending', href: snapshot.proposals![0]!.href });
+
+    store.handle.prepare("UPDATE team_participant SET role='viewer' WHERE conversation=? AND account='alex'").run(conversationId);
+    snapshot = await read();
+    expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'An authorized contributor can act on this proposal.' });
+    expect(await review()).toContain(snapshot.proposals![0]!.card!.note!);
+    store.handle.prepare("UPDATE team_participant SET role='manager' WHERE conversation=? AND account='alex'").run(conversationId);
+
+    domain.execute(actor, { operation: 'send', args: { conversationId, requestId: 'running-turn', text: 'Check the launch plan.' } }, T0);
+    const claim = domain.claimNext('fixture', T0)!;
+    const running = openTurn();
+    expect(domain.bindTurn(claim, running.id)).toBe(true);
+    snapshot = await read();
+    expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Available when the current reply finishes.' });
+    expect(await review()).toContain('Available when the current turn finishes.');
+    store.finalizeMateTurn(running.id, running.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'The plan is saved.', activity: '' } }, T0);
+    domain.finish(claim, { status: 'answered', turnId: running.id }, T0);
+
+    const decide = (id: number, verb: 'confirm' | 'dismiss', token = csrf) => fetch(url(`/chat/proposal/${id}/${verb}`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf: token }), redirect: 'manual' });
+    expect((await decide(held, 'confirm', 'wrong')).status).toBe(403);
+    expect((await read()).proposals![0]!.state).toBe('pending');
+    expect(await (await decide(held, 'confirm')).json()).toMatchObject({ ok: true });
+    expect(store.handle.prepare('SELECT reason FROM hold WHERE task_ref=?').get(store.lookupRef('a')!.id)).toMatchObject({ reason: 'Wait for the audit.' });
+    expect((await read()).proposals![0]!.card).toMatchObject({ state: 'confirmed', primary: null, dismissable: false });
+    expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: true });
+    expect((await read()).proposals![1]!.card).toMatchObject({ state: 'dismissed', primary: null, dismissable: false, note: 'Dismissed.' });
+    expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: false });
+
+    store.handle.prepare('UPDATE mate_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
+    snapshot = await read();
+    expect(snapshot.proposals![2]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Enable chat in this conversation before acting on a proposal.' });
+    expect(await (await fetch(url(snapshot.proposals![2]!.href), { headers: { cookie } })).text()).toContain(snapshot.proposals![2]!.card!.note!);
+  });
 
   test('React workspace reads the saved conversation and receipt without replaying work', async () => {
     const cookie = await login(); const csrf = await mint(cookie);
@@ -1580,6 +1653,51 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const settings = await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
     expect(store.activeMateSession("alex")).toBeNull();
     expect(settings).toContain('<p class="meta" id="chat-settings"><a href="/settings/lead">Lead settings</a>');
+  });
+
+  test("a change in reachable projects starts a new thread as before; the old one stays readable above a divider and never reaches the model", async () => {
+    store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
+    const cookie = await login();
+    const workspaceOf = (html: string) => JSON.parse(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]!) as import("./browser-workspace.js").BrowserWorkspace;
+    const counts = () => store.raw().prepare("SELECT (SELECT COUNT(*) FROM mate_session) AS sessions, (SELECT COUNT(*) FROM mate_thread) AS threads").get();
+    const csrf = csrfFrom(await page(cookie));
+    subscriptionAnswers.push({ text: "The old route was through the payments project.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await post(cookie, "/chat", { csrf, message: "Remember the payments route" })).status).toBe(303);
+    await settle();
+    let html = await page(cookie);
+    expect(workspaceOf(html).conversation?.previous ?? null).toBeNull();
+    expect(html).not.toContain("data-thread-divider");
+    // The projects this lead could reach changed under the live conversation.
+    const old = store.activeMateSession("alex")!;
+    store.raw().prepare("UPDATE mate_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), old.id);
+    store.raw().prepare("UPDATE mate_thread SET ceiling_digest = ? WHERE approver = 'alex' AND closed_at IS NULL").run("f".repeat(64));
+    const before = counts() as { sessions: number; threads: number };
+    html = await page(cookie);
+    // Exactly what a GET did before: one new session and one new thread, no more.
+    expect(counts()).toEqual({ sessions: before.sessions + 1, threads: before.threads + 1 });
+    const workspace = workspaceOf(html);
+    expect(workspace.conversation?.messages).toEqual([]);
+    expect(workspace.conversation?.previous?.messages.map(one => one.text)).toEqual(["Remember the payments route", "The old route was through the payments project."]);
+    expect(html).toContain('<p class="chat-previous-divider" role="separator" data-thread-divider>New conversation — the projects I can reach changed</p>');
+    // Reading again, or refreshing the workspace, writes nothing more.
+    const after = counts();
+    await page(cookie);
+    const refreshed = await (await fetch(url("/chat?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(refreshed.conversation?.previous?.messages).toHaveLength(2);
+    expect(counts()).toEqual(after);
+    // The new thread's model input carries none of the old thread's words.
+    const fresh = csrfFrom(html);
+    subscriptionAnswers.push({ text: "Starting fresh.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await post(cookie, "/chat", { csrf: fresh, message: "What can you reach now?" })).status).toBe(303);
+    await settle();
+    expect(subscriptionRequests).toHaveLength(2);
+    const input = JSON.stringify(subscriptionRequests[1]);
+    expect(input).toContain("What can you reach now?");
+    expect(input).not.toContain("payments route");
+    expect(input).not.toContain("The old route was through the payments project.");
+    // Ending the conversation forgets the current thread; the replaced one is not shown after it.
+    expect((await post(cookie, "/chat/mate/end", { csrf: fresh })).status).toBe(303);
+    expect(workspaceOf(await page(cookie)).conversation?.previous ?? null).toBeNull();
   });
 
   test("UI polish 2026-09-13: a membership never shows a dollar figure as a charge on the chat page", async () => {

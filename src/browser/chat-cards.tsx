@@ -74,8 +74,8 @@ function ActionCard({ card, csrf, onChanged }: { card: BrowserActionCard; csrf: 
   </section>;
 }
 
-export function ActionCards({ cards, csrf, onChanged }: { cards: BrowserActionCard[]; csrf: string; onChanged: () => void }) {
-  return <div className="so-action-cards">{cards.map(card => <ActionCard key={`${card.id}:${card.state}`} card={card} csrf={csrf} onChanged={onChanged} />)}</div>;
+export function ActionCards({ cards, csrf, onChanged, readOnly = false }: { cards: BrowserActionCard[]; csrf: string; onChanged: () => void; readOnly?: boolean }) {
+  return <div className="so-action-cards">{cards.map(card => <ActionCard key={`${card.id}:${card.state}`} card={readOnly ? { ...card, primary: null, dismissable: false } : card} csrf={csrf} onChanged={onChanged} />)}</div>;
 }
 
 /** Quick starts for the composer: type "/" to pick one. A trailing space

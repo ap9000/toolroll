@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.39 — 2026-10-06
+
+- **Chat is the conversation.** The Chat tab is your conversation with the
+  lead, with the box to write in ready. Home (what's running, the counts,
+  Catch up) moves to the panel beside it, and behind **Work** on a phone.
+  When the projects the lead can reach change and a new conversation starts,
+  the previous one stays readable above a line saying so; the lead doesn't
+  see it, and its old cards can't be confirmed. Pairing your phone is a
+  one-line notice in chat, with the full card in Settings → Chat apps.
+- **Team chat shows proposals where they were made.** A teammate's proposed
+  action, flow or decision sits under the message that made it, using the
+  same card as lead chat, with the same rules about who can act and when.
+  Older proposals still show.
+- **The release check runs app journeys side by side when there's room.**
+  With normal memory pressure the app journeys split into lanes; under
+  pressure, or when memory can't be read, they use one lane, and the check
+  log says how many and why. `TOOLROLL_E2E_LANES` sets the number.
+
 ## 0.9.38 — 2026-10-06
 
 - **The release check is faster.** Its app journeys run in about 8 minutes

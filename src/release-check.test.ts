@@ -3,10 +3,10 @@ import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { definesSchema, journeyGroups, journeyShares, journeysFor, planFor, shareSlots, versionOnly } from "../scripts/release-check.mjs";
+import { definesSchema, journeyGroups, journeyShares, journeysFor, partTempRoot, planFor, releaseLaneShares, shareSlots, versionOnly } from "../scripts/release-check.mjs";
 import { atLeast, completionProblems, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
 import { fakePid } from "../test/fake-pid.js";
-import { DEMAND, GROUP_BYTES, admissionWords, admit, browserSlots, limiter, memoryPressure, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
+import { DEMAND, GROUP_BYTES, admissionWords, admit, appLanes, browserSlots, laneWords, limiter, memoryPressure, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, readSample, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
 
 const MB = 1024 * 1024, GB = 1024 * MB;
 /** An idle machine's readings for a rehearsal (TOOLROLL_CHECK_MACHINE). */
@@ -199,7 +199,10 @@ describe("node scripts/release-check.mjs with the journey scripts", () => {
     git("add", "."); git("commit", "-qm", "change");
     const out = execFileSync(process.execPath, [script, "--base", base, ...extra], { cwd: dir, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
     const runs = existsSync(join(dir, "journey-runs.jsonl")) ? readFileSync(join(dir, "journey-runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]) : [];
-    return { out, runs: runs.map(argv => argv.filter((one, at) => one !== "--at-once" && argv[at - 1] !== "--at-once").join(" ")).sort() };
+    const outputs = runs.map(argv => argv[argv.indexOf("--output") + 1]);
+    expect(new Set(outputs).size).toBe(runs.length);
+    for (const output of outputs) expect(output).toMatch(/^evidence\/release-\d+\/(app|flows)(-real)?$/);
+    return { out, runs: runs.map(argv => argv.filter((one, at) => !["--at-once", "--output"].includes(one) && !["--at-once", "--output"].includes(argv[at - 1] ?? "")).join(" ")).sort() };
   };
 
   test("a UI-only change runs the scripted journeys of the groups it names, and no real-model journey", () => {
@@ -305,6 +308,83 @@ describe("the upgrade path step", () => {
 });
 
 describe("checks fit memory", () => {
+  const normal = { ...IDLE, platform: "darwin", pressure: 1 };
+  const options = { env: {}, total: 64 * GB };
+
+  test("app lanes grow only at normal pressure, with memory reserved, and log why", () => {
+    expect(laneWords(appLanes(normal, options))).toBe("4 lanes: memory normal");
+    // Sticky macOS swap is not pressure; unknown pressure cannot authorize extra lanes.
+    expect(appLanes({ ...normal, swapUsed: 99, swapTotal: 100 }, options).count).toBe(4);
+    for (const [pressure, why] of [[2, "warn"], [4, "critical"]]) {
+      expect(laneWords(appLanes({ ...normal, pressure }, options))).toBe(`1 lane: memory pressure ${why}`);
+    }
+    expect(laneWords(appLanes({ ...normal, pressure: null }, options))).toBe("1 lane: couldn't read memory");
+    expect(appLanes({ ...normal, available: 3.5 * GB }, options)).toEqual({ count: 2, why: "available memory" });
+    expect(appLanes({ ...normal, available: 0 }, options).count).toBe(1);
+    expect(appLanes({ ...IDLE, swapUsed: 90, swapTotal: 100 }, options).count).toBe(1);
+    expect(laneWords(appLanes({ ...IDLE, swapUsed: null, swapTotal: null }, options))).toBe("1 lane: couldn't read memory");
+    expect(appLanes({ ...IDLE, swapUsed: 0, swapTotal: 0 }, options).count).toBe(4);    // A 7 GB runner keeps its lane cap; a rehearsal's own total wins over the machine running it.
+    expect(laneWords(appLanes(normal, { env: {}, total: 7 * GB }))).toBe("1 lane: small runner: keeping current lane cap");
+    expect(appLanes({ ...normal, total: 64 * GB }, { env: {} }).count).toBe(4);
+    expect(appLanes({ ...normal, total: 7 * GB }, { env: {} }).count).toBe(1);
+  });
+
+  test("memory that can't be read means one lane, never a crash; only a bad TOOLROLL_E2E_LANES throws", () => {
+    const unread = "1 lane: couldn't read memory";
+    const boom = () => { throw new Error("sysctl failed"); };
+    // Nothing at all, or a reader that throws.
+    for (const sample of [null, undefined, readSample(boom), readSample(() => undefined), readSample(() => null)]) {
+      expect(laneWords(appLanes(sample, options))).toBe(unread);
+    }
+    // Pressure or per-process memory that throws or says nothing.
+    const read = (over: object) => sampleMachine({ env: {}, platform: "darwin", available: () => 32 * GB, swap: () => null, pressure: () => 1, providers: () => 0, ...over });
+    for (const over of [{ pressure: boom }, { pressure: () => undefined }, { available: boom }, { available: () => undefined }, { available: () => NaN }]) {
+      expect(laneWords(appLanes(read(over), options))).toBe(unread);
+    }
+    expect(laneWords(appLanes(read({ providers: boom, swap: boom }), options))).toBe("4 lanes: memory normal");
+    expect(laneWords(appLanes({ ...IDLE, available: undefined }, options))).toBe(unread);
+    expect(laneWords(appLanes({ ...IDLE, swapUsed: undefined, swapTotal: undefined }, options))).toBe(unread);
+    // The overrides can't raise it, but a bad one still says what's wrong.
+    expect(appLanes(null, { ...options, env: { TOOLROLL_E2E_LANES: "6" } })).toEqual({ count: 1, why: "couldn't read memory" });
+    expect(() => appLanes(null, { ...options, env: { TOOLROLL_E2E_LANES: "many" } })).toThrow("TOOLROLL_E2E_LANES takes a whole number");
+    // The release's shares and the gate carry on with one app lane.
+    expect(releaseLaneShares(["flows", "app"], readSample(boom), options)).toEqual({ shares: [3, 1], app: { count: 1, why: "couldn't read memory" } });
+    expect(memoryWords(watchMemory({ available: boom, tree: () => undefined, total: 64 * GB }).stop())).toBe("peak memory: the machine's unknown (couldn't read memory)");
+  });
+
+  test("lane overrides remain bounded by pressure, available memory and small-runner capacity", () => {
+    for (const count of [1, 2, 5, 6]) {
+      expect(appLanes(normal, { ...options, env: { TOOLROLL_E2E_LANES: String(count) } }).count).toBe(count);
+    }
+    const override = { ...options, env: { TOOLROLL_E2E_LANES: "12" } };
+    expect(appLanes(normal, override).count).toBe(6);
+    expect(appLanes({ ...normal, pressure: 2 }, override).count).toBe(1);
+    expect(appLanes({ ...normal, available: 2.5 * GB }, override).count).toBe(1);
+    for (const baseline of [1, 3]) {
+      expect(appLanes(IDLE, { ...override, total: 7 * GB, baseline }).count).toBe(baseline);
+    }
+    for (const bad of ["0", "-1", "1.5", "many", "9007199254740992"]) {
+      expect(() => appLanes(normal, { ...options, env: { TOOLROLL_E2E_LANES: bad } })).toThrow("TOOLROLL_E2E_LANES takes a whole number");
+    }
+  });
+
+  test("the release gives scripted app spare lanes within six total; pressure never enlarges another suite", () => {
+    const full = ["flows", "app", "flows-real", "app-real"];
+    expect(releaseLaneShares(full, normal, options).shares).toEqual([1, 3, 1, 1]);
+    expect(releaseLaneShares(["flows", "app"], normal, options).shares).toEqual([2, 4]);
+    expect(releaseLaneShares(["app"], normal, options).shares).toEqual([4]);
+    expect(releaseLaneShares(full, { ...normal, pressure: 2 }, options).shares).toEqual([1, 1, 2, 2]);
+    expect(releaseLaneShares(["flows", "app"], { ...normal, pressure: 2 }, options).shares).toEqual([3, 1]);
+    expect(releaseLaneShares(full, IDLE, { ...options, total: 7 * GB }).shares).toEqual([1, 1, 2, 2]);
+    expect(releaseLaneShares(["flows", "app"], IDLE, { ...options, total: 7 * GB }).shares).toEqual([3, 3]);
+    expect(releaseLaneShares(["flows", "app-real"], normal, options).shares).toEqual([3, 3]);
+    expect(releaseLaneShares([], normal, options)).toEqual({ shares: [], app: null });
+  });
+
+  test("browser lanes and units own their roots without an extra release-check socket-path level", () => {
+    for (const name of ["app", "app-real", "flows", "flows-real", "unit"]) expect(partTempRoot(name)).toBe(false);
+    for (const name of ["build", "typecheck", "upgrade"]) expect(partTempRoot(name)).toBe(true);
+  });
   test("available memory: macOS free, inactive, speculative and purgeable pages; Linux MemAvailable", () => {
     const vmStat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:      1000.\nPages active:   9000.\nPages inactive:  2000.\nPages speculative:  500.\nPages wired down:  700.\nPages purgeable:  100.\n";
     expect(parseVmStat(vmStat)).toBe((1000 + 2000 + 500 + 100) * 16384);
@@ -458,6 +538,55 @@ describe("checks fit memory", () => {
   const gateOn = (dir: string, machine: { platform: string; pressure: number | null; available: number; swapUsed: number | null; swapTotal: number | null; providers: number | null }, owner: number, env: Record<string, string> = {}, lines: string[] = []) =>
     openGate({ dir, env, total: 64 * GB, sample: () => ({ ...machine }), everyMs: 5, sayEveryMs: 60_000, owner, alive: pid => pid !== DEAD_RUNNER, log: line => lines.push(line) });
   const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
+
+  test("a gate whose sample throws still starts one lane at a time, saying it couldn't read memory", async () => {
+    const at = mkdtempSync(join(tmpdir(), "so-gate-"));
+    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample: () => { throw new Error("vm_stat failed"); }, everyMs: 1 });
+    const seen: string[] = [];
+    const ready = (sample: unknown, held: { owner: number }[]) => {
+      const choice = appLanes(sample, options);
+      seen.push(laneWords(choice));
+      return { ok: held.filter(one => one.owner === process.pid).length < choice.count, why: laneWords(choice) };
+    };
+    try {
+      expect(await gate.hold("app a", { ...DEMAND.group, providers: 0 }, async () => "ran", ready)).toBe("ran");
+      expect(seen).toEqual(["1 lane: couldn't read memory"]);
+      expect(gate.facts().lowest).toBeNull();
+    } finally { gate.close(); rmSync(at, { recursive: true, force: true }); }
+  });
+
+  test("a lane queued at normal pressure rechecks inside admission and drains to one when pressure rises", async () => {
+    const at = mkdtempSync(join(tmpdir(), "so-gate-"));
+    const machine = { ...normal };
+    const gate = openGate({ dir: at, env: {}, total: 64 * GB, sample: () => ({ ...machine }), everyMs: 1 });
+    const started = Promise.withResolvers<void>(), blockedWithOne = Promise.withResolvers<void>();
+    const finishA = Promise.withResolvers<void>(), finishB = Promise.withResolvers<void>();
+    let active = 0, third = false;
+    const ready = (sample: typeof machine, held: { owner: number }[]) => {
+      const count = held.filter(one => one.owner === process.pid).length;
+      const choice = appLanes(sample, options);
+      if (sample.pressure === 2 && count === 1) blockedWithOne.resolve();
+      return { ok: count < choice.count, why: laneWords(choice) };
+    };
+    const demand = { ...DEMAND.group, providers: 0 };
+    const hold = (name: string, end: Promise<void>) => gate.hold(name, demand, async () => {
+      if (++active === 2) started.resolve();
+      await end; active--;
+    }, ready);
+    try {
+      const first = hold("app a", finishA.promise), second = hold("app b", finishB.promise);
+      await started.promise;
+      machine.pressure = 2;
+      const queued = gate.hold("app c retry", demand, async () => { third = true; expect(active).toBe(0); }, ready);
+      finishA.resolve();
+      await blockedWithOne.promise;
+      expect(third).toBe(false);
+      finishB.resolve();
+      await Promise.all([first, second, queued]);
+      expect(third).toBe(true);
+      expect(gate.facts()).toMatchObject({ starts: 3, most: 2, highestPressure: 2 });
+    } finally { finishA.resolve(); finishB.resolve(); gate.close(); rmSync(at, { recursive: true, force: true }); }
+  });
 
   test.each([{ count: 4, env: {}, from: "64.0 GB memory, default maximum 4" }, { count: 6, env: { TOOLROLL_CHECK_PROVIDERS: "6" }, from: "TOOLROLL_CHECK_PROVIDERS" }])("an idle machine starts $count groups together without waiting (cap from $from)", async ({ count, env, from }) => {
     const at = mkdtempSync(join(tmpdir(), "so-gate-"));

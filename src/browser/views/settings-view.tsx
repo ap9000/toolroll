@@ -8,6 +8,7 @@ import type { BrowserSettingsView } from "../../browser-workspace.js";
 import { accentNote, accentTokens, normalHex } from "../../accent-colors.js";
 import { digestTimes } from "../../digest-times.js";
 import { BrandIcon } from "../brand-mark.js";
+import { PhoneCard } from "../first-run.js";
 import {
   Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, CollapsibleContent, CollapsibleTrigger,
   Input, Label, RadioCard, RadioGroup, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Switch, cn, toast,
@@ -469,6 +470,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
             <span className="grid min-w-0 gap-0.5">{tile.label}
               {tile.status && <span className="flex items-center gap-1.5 text-[13px] font-normal text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
         </div>
+        {group.title === "Chat apps" && view.phone && <PhoneCard phone={view.phone} csrf={csrf} dismissable={false} />}
       </section>)}
     </nav>
     <Section title="Appearance"><Themes view={view} csrf={csrf} /></Section>

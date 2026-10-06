@@ -68,6 +68,7 @@ import { createSessionEndpoint } from './session-server.js';
 import { handleTeamHttp } from './team-http.js';
 import { teamWorkspaceHtml } from './team-ui.js';
 import { createTeamRuntime } from './team-runtime.js';
+import type { TeamResponse, TeamSnapshot } from './team-contract.js';
 import { prepareWorkspaceRevision, WorkspaceValidatorCache } from "./workspace-revision.js";
 import { workIndexPage, workCountsByProject, WorkIndexCursorError, WORK_INDEX_MAX_LIMIT, type WorkIndexPage, type WorkIndexItem, type WorkIndexGroup } from "./work-index.js";
 import { leadActivity } from "./lead-voice.js";
@@ -1036,6 +1037,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     provider: () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; },
     ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
   });
+  // Only browser sessions receive HTML cards. The CLI keeps its summary contract.
+  const teamBrowserReply = (reply: TeamResponse, csrf: string): TeamResponse => {
+    const snapshot = reply.snapshot;
+    if (!snapshot?.selected || !snapshot.proposals) return reply;
+    return { ...reply, snapshot: { ...snapshot, proposals: snapshot.proposals.map(summary => {
+      const proposal = store.getMateProposal(summary.id);
+      if (!proposal || proposal.thread !== snapshot.selected!.threadId) return summary;
+      const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
+      return { ...summary, card: teamProposalCardParts(proposal, snapshot, csrf, decision).card };
+    }) } };
+  };
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
     authenticate: request => {
       const who = identify(request, request.method === 'POST');
@@ -1060,7 +1072,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (named !== null && !allowedHost(named.replace(/^https?:\/\//, '').split('/')[0])) return false;
       return request.headers['x-csrf-token'] === who.session.csrf;
     },
-    execute: team.execute, cursor: team.cursor, streams: teamStreams,
+    execute: async (actor, input) => {
+      const reply = await team.execute(actor, input);
+      const who = identify(request, false);
+      return who?.via === 'cookie' ? teamBrowserReply(reply, who.session.csrf) : reply;
+    }, cursor: team.cursor, streams: teamStreams,
   });
   const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo) });
   /** The enumerable admission list for roll-up SQL: repos-only ceilings
@@ -3834,11 +3850,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // THIS session's memory; a bearer caller has nowhere to keep them.
       if (who.via !== "cookie") return refuse(response, who, 403, "chat is a browser surface — it keeps your drafts in the session");
       if (url.searchParams.get('private') !== '1' && !url.searchParams.has('task') && !url.searchParams.has('result') && !url.searchParams.has('project')) {
-        const reply = await team.execute({ name: who.name, generation: who.session.generation }, {
+        const reply = teamBrowserReply(await team.execute({ name: who.name, generation: who.session.generation }, {
           operation: url.searchParams.has('conversation') ? 'show' : 'list',
           args: { ...(url.searchParams.has('conversation') ? { conversationId: url.searchParams.get('conversation') } : {}),
             ...(url.searchParams.has('lead') ? { leadId: url.searchParams.get('lead') } : {}) },
-        });
+        }), who.session.csrf);
         if (!reply.ok || !reply.snapshot) return refuse(response, who, 403, reply.message, '/chat?private=1');
         if (url.searchParams.has('proposal')) {
           const id = Number(url.searchParams.get('proposal')), selected = reply.snapshot.selected;
@@ -3846,10 +3862,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (!selected || !proposal || proposal.thread !== selected.threadId) return refuse(response, who, 404, 'This proposal is unavailable.', '/chat');
           const back = '/chat?conversation=' + encodeURIComponent(selected.id);
           const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
-          const active = reply.snapshot.messages.some(message => message.status === 'running');
-          const canAct = reply.snapshot.canSend && reply.snapshot.chatAuthorization?.enabled === true;
-          let card = mateProposalCard(proposal, who.session.csrf, !canAct || active, decision, back);
-          if (!canAct) card = card.replace('Available when the current turn finishes.', reply.snapshot.canSend ? 'Enable chat in this conversation before acting on a proposal.' : 'An authorized contributor can act on this proposal.');
+          const card = teamProposalCardParts(proposal, reply.snapshot, who.session.csrf, decision).html;
           return sendScreen(response, 200, screen('Review action', `<p><a href="${escape(back)}">Back to conversation</a></p>` + card, { chrome: chromeFor(null, 'chat', undefined, 'all') }));
         }
         if (reply.snapshot.leads.length > 0 || url.searchParams.has('conversation') || url.searchParams.get('team') === '1') {
@@ -4495,7 +4508,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         })(), (() => {
           const chosen = store.notificationPreference(who.name);
           return { mode: chosen.mode, digestAt: chosen.digestAt, screenshots: chosen.screenshots, projects: notificationProjects(store, who.name) };
-        })(), telegramTrouble(store, loadBotToken(process.env, options.telegramTokenFile))),
+        })(), telegramTrouble(store, loadBotToken(process.env, options.telegramTokenFile)), who.via === "cookie" ? phoneSetup(who) ?? null : null),
       );
     }
 
@@ -4661,10 +4674,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return first !== undefined && String(first["id"]) === rootId;
   }
   /** After the first Ready result, once (onboarding): the phone, by a chat app or the console over Tailscale. */
+  /** Chat's one-line pointer to the phone setup: after the first Ready result, until put away or Telegram is paired. */
   function phoneCard(who: Who & { via: "cookie" }, now: Date): BrowserPhoneCard | undefined {
     if (who.role !== "approver" || store.isDemo() || store.firstSuccessAt(now) === null || store.installationFact(PHONE_CARD_FACT) !== null) return undefined;
     const botId = options.telegramTokenFile === undefined ? null : loadBotToken(process.env, options.telegramTokenFile)?.botId ?? null;
     if (botId !== null && store.liveTelegramBindings(botId).length > 0) return undefined;
+    return phoneSetup(who);
+  }
+  /** The phone setup itself (Settings → Chat apps): a chat app, or this console over Tailscale. */
+  function phoneSetup(who: Who): BrowserPhoneCard | undefined {
+    if (who.role !== "approver" || store.isDemo()) return undefined;
     const port = servedPort() ?? 4180;
     const address = server.address();
     const bound = typeof address === "object" && address !== null ? address.address : "127.0.0.1";
@@ -4694,6 +4713,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * thread regardless of lens. */
   function mateConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
     messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: MateTurn | null; recent: MateTurn[]; ask: MateAsk | null; asks: Map<number, MateAsk>;
+    previous: ReplacedThread | null;
   } {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
     const coordinatorProposals = focusTask !== null ? allCoordinatorRows.filter(one => focusTask.family.versions.some(version => version.id === one.payload["task"]))
@@ -4709,7 +4729,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ask = last?.role === "assistant" && last.turn !== null && store.getMateTurn(last.turn)?.approver === who.name ? store.mateAskOpen(last.turn, now) : null;
     // Answered questions stay readable above the answer; only their buttons go.
     const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.mateAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
+    // The thread a ceiling change replaced (ruling 9): read after the open, display only.
+    const replaced = store.replacedLeadThread(opened.thread);
+    const previousProposals = replaced === null ? [] : store.listMateProposals(replaced.id);
     return {
+      previous: replaced === null ? null : { messages: store.listMateMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
       messages,
       ask,
       asks,
@@ -15339,6 +15363,8 @@ ${THEME_DARK}
     min-height: min(32rem, 48vh); padding: .25rem;
   }
   .thread .msg { max-width: 48rem; line-height: 1.65; overflow-wrap: anywhere; }
+  .chat-previous-divider { display: flex; align-items: center; gap: .6rem; margin: 1rem 0; color: var(--so-muted); font-size: .8rem; }
+  .chat-previous-divider::before, .chat-previous-divider::after { content: ""; flex: 1; border-top: 1px solid var(--so-line); }
   .thread .msg p { margin: .3rem 0; }
   .thread .msg.op {
     align-self: flex-end; max-width: min(82%, 40rem); padding: .75rem 1rem;
@@ -18800,6 +18826,20 @@ function mateProposalCardParts(proposal: MateProposal, csrf: string, inert: bool
   return proposalCardParts({ id: proposal.id, kind: proposal.kind, payload: proposal.payload, state: proposal.state, outcome: proposal.outcome, by: { mate: true }, actionBase: "/chat/proposal" }, csrf, inert, decision, returnTo);
 }
 
+/** Review and inline team cards share the same server-decided controls and reasons. */
+function teamProposalCardParts(proposal: MateProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null): { html: string; card: BrowserActionCard } {
+  const canAct = snapshot.canSend && snapshot.chatAuthorization?.enabled === true;
+  const active = snapshot.messages.some(message => message.status === 'running');
+  const back = '/chat?conversation=' + encodeURIComponent(snapshot.selected!.id);
+  const parts = mateProposalCardParts(proposal, csrf, !canAct || active, decision, back);
+  if (!canAct && proposal.state === 'pending') {
+    const reason = snapshot.canSend ? 'Enable chat in this conversation before acting on a proposal.' : 'An authorized contributor can act on this proposal.';
+    parts.html = parts.html.replace('Available when the current turn finishes.', reason);
+    parts.card = { ...parts.card, note: reason };
+  }
+  return parts;
+}
+
 function coordinatorProposalCard(proposal: CoordinatorProposal, csrf: string, now: Date, decision: Decision | null, returnTo: string | null = null): string {
   return proposalCard(
     { id: proposal.id, kind: proposal.kind, payload: proposal.payload, state: proposal.state, outcome: proposal.outcome, by: { mate: false, name: proposal.name, ago: relativeAge(proposal.createdAt, now) }, actionBase: "/proposals" },
@@ -18828,7 +18868,31 @@ function coordinatorProposalsSection(proposals: readonly CoordinatorProposal[], 
   );
 }
 
+/** The lead thread a change in reachable projects closed (mate arc ruling 9): its saved words and card outcomes, never continued. */
+type ReplacedThread = { messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision> };
+const REPLACED_THREAD_DIVIDER = "New conversation — the projects I can reach changed";
+
+/** The replaced thread as the React conversation renders it: words and card outcomes, no buttons. */
+function replacedBrowserMessages(previous: ReplacedThread, csrf: string): import("./browser-workspace.js").BrowserMessage[] {
+  return mateBrowserMessages({ ...previous, pending: null, ask: null, asks: new Map() }, csrf, null).map(message => ({
+    ...message, cardsHtml: "",
+    cards: (message.cards ?? []).map(card => ({ ...card, primary: null, dismissable: false })),
+  }));
+}
+
+/** The replaced thread for the server-rendered page: read only, then the divider. */
+function replacedThreadHtml(previous: ReplacedThread | null | undefined): string {
+  if (previous == null) return "";
+  return `<section class="thread chat-previous" aria-label="Earlier conversation" data-previous-thread>` +
+    previous.messages.map(one => one.role === "operator"
+      ? `<div class="msg op" data-previous-message="${one.id}"><p style="white-space:pre-wrap">${escape(one.text)}</p></div>`
+      : `<div class="msg mate" data-previous-message="${one.id}">${renderChatText(one.text)}</div>`).join("") +
+    `<p class="chat-previous-divider" role="separator" data-thread-divider>${escape(REPLACED_THREAD_DIVIDER)}</p></section>`;
+}
+
 type MateThreadRows = {
+  /** The lead thread a change in reachable projects replaced; shown only. */
+  previous?: ReplacedThread | null;
   messages: MateMessage[];
   proposals: MateProposal[];
   /** The decisions the answer cards name. */
@@ -18891,6 +18955,7 @@ function mateChatVersion(rows: MateThreadRows): string {
   const focus = rows.focusTask;
   const facts = [
     rows.messages.map(one => [one.id, one.role, one.turn]),
+    rows.previous == null ? null : rows.previous.messages.map(one => one.id),
     rows.proposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
     rows.coordinatorProposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
     [...rows.decisions.values()].map(one => [one.id, one.state, one.choice ?? null]),
@@ -19041,6 +19106,7 @@ function matePage(chrome: Chrome, data: MateThreadRows & {
   }
   const lastMessage = data.messages.at(-1);
   const latestReply = data.pending === null && lastMessage?.role === "assistant" ? lastMessage.id : null;
+  conversation.push(replacedThreadHtml(data.previous));
   conversation.push(mateThreadHtml({ ...data, problem: null, chatProject }));
   conversation.push(
     // The New update action (package 2): hidden until a live update lands
@@ -19077,6 +19143,7 @@ function matePage(chrome: Chrome, data: MateThreadRows & {
           messages: mateBrowserMessages(data, data.csrf, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
           pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: MATE_MESSAGE_MAX_CHARS,
           taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject,
+          ...(data.previous == null ? {} : { previous: { messages: replacedBrowserMessages(data.previous, data.csrf) } }),
         },
         focus: data.focusTask === null ? null : { id: data.focusTask.id, title: data.focusTask.title,
           html: taskChatLiveRegion(data.focusTask, data.csrf, requestContext.getStore()?.workspaceRead === true, data.pending !== null) },
@@ -25913,6 +25980,7 @@ function settingsPage(
   firstResult: string | null = null,
   chatNotices: { mode: "quiet" | "all"; digestAt: string | null; screenshots?: ResultScreenshots; projects?: { repo: string; name: string; muted: boolean }[] } | null = null,
   telegramFailing = false,
+  phone: BrowserPhoneCard | null = null,
 ): Screen {
   const permissionCard =
     permissionDefault === null
@@ -26163,10 +26231,12 @@ function settingsPage(
     workers,
     updates,
     firstResult,
+    ...(phone === null ? {} : { phone }),
   };
   return screen("Settings", [
     "<h1>Settings</h1>",
     settingsTiles(view.groups),
+    phone === null ? "" : phoneSetupHtml(phone),
     appearanceCard(csrf),
     permissionCard,
     qualityCard,
@@ -26191,6 +26261,16 @@ function settingsPage(
     `<p class="meta">Stored privately on this computer. Then pair your phone under <a href="/settings/telegram">Telegram</a>. In Telegram, send <code>/status</code>, <code>/task &lt;id&gt;</code> or <code>/help</code>; these use no AI model.</p>`,
     `</details>`,
   ].join("\n"), { chrome, workspace: { view }, functional: { script: SETTINGS_AUTOSAVE_SCRIPT + (pushScript ?? ""), ...(pushScript === null ? {} : { fetches: true }) } });
+}
+
+/** The phone setup for the server-rendered Settings page: the same choices as the React card. */
+function phoneSetupHtml(phone: BrowserPhoneCard): string {
+  const [first, ...others] = phone.chatApps;
+  return `<section class="card" id="phone" aria-labelledby="phone-card-title" data-phone-card><h2 id="phone-card-title">Use it from your phone</h2>` +
+    `<p>${first === undefined ? "" : `<a href="${escape(first.href)}">Pair ${escape(first.label)}</a>`}${others.length === 0 ? "" : ` · or ${others.map(one => `<a href="${escape(one.href)}">${escape(one.label)}</a>`).join(", ")}`}</p>` +
+    `<p class="meta" data-phone-tailnet>${phone.tailnet === null ? `Or install <a href="https://tailscale.com/download">Tailscale</a> on this computer and your phone, then reload this page for the address.`
+      : phone.tailnet.restart === null ? `Or on your phone open <code>${escape(phone.tailnet.address)}</code> and sign in.`
+      : `Or start Toolroll with <code>${escape(phone.tailnet.restart)}</code>, then on your phone open <code>${escape(phone.tailnet.address)}</code> and sign in.`}</p></section>`;
 }
 
 /** Every worker that is not retired: its capacity, and the tasks it holds now. */
