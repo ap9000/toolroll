@@ -1,0 +1,2615 @@
+{
+ "run-2436": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/flow-gallery/desktop-gallery.png",
+      "caption": "Desktop gallery: each card's step strip with You choose / You approve chips, tool marks and connected state"
+     },
+     {
+      "path": "evidence/flow-gallery/phone-gallery.png",
+      "caption": "Phone 390px gallery: step strips wrap cleanly inside cards"
+     },
+     {
+      "path": "evidence/flow-gallery/desktop-fix-drop-off-top.png",
+      "caption": "Desktop template page: Find the drop-off → You choose → Build the fix → Pull request → Sent to you"
+     },
+     {
+      "path": "evidence/flow-gallery/phone-fix-drop-off-top.png",
+      "caption": "Phone template page: the same step strip wrapped at 390px"
+     },
+     {
+      "path": "evidence/flow-gallery/desktop-ui-inspiration-connect-failed.png",
+      "caption": "Desktop: Mobbin not connected, its Connect offered first; a wrong password comes back to the template"
+     },
+     {
+      "path": "evidence/flow-gallery/phone-ui-inspiration-preview.png",
+      "caption": "Phone: preview says Find examples needs Mobbin, which isn't connected"
+     },
+     {
+      "path": "evidence/flow-gallery/phone-error-to-fix-taken.png",
+      "caption": "Phone: Error to fix with Sentry added another way"
+     },
+     {
+      "path": "evidence/flow-gallery/desktop-fix-drop-off-steps.png",
+      "caption": "Desktop: connected PostHog template with every step expanded"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "revise-revise-integration-templates-from-1-annotation-on",
+   "runId": 2436,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "435a7e21f838c22e6a1537540b1ac85a",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "0206bfc0-b0d3-48a7-89e4-f11b28830dc0",
+   "branch": "toolroll/revise-revise-integration-templates-from-1-annotation-on",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-revise-revise-integration-templates-from-1-annotation-on-54e89a33",
+   "base": "829f0299bfbe7d5b5c9030e5fbe35a1c3af8504d",
+   "head": "a120c97a5a623f3750226db97cfe90959f68f9f5",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Replaced the zone drawing on gallery cards and template pages with a step strip: the main path's short titles joined by arrows, with You choose / You approve in the attention chip and Sent to you for send steps. Done and Ignore are left out, and sorts and chooses show their first real way. zonesDiagram is removed. Proof screenshots were redone on desktop and phone, and the 390px wrap is checked. Focused tests and typecheck pass. The full vitest run has 31 failures, all in process/sandbox files outside this change.",
+   "changes": [
+    "src/flow-gallery-ui.ts: mainPath and stepStrip replace zonesDiagram; .gallery-steps CSS uses caption type and signal-soft/signal for person steps",
+    "src/flow-gallery.test.ts: new step-strip test (fix-drop-off, worker-errors, weekly-upkeep, email-replies; no Done/Ignore on any template); card assertion now checks the strip",
+    "scripts/flow-gallery-proof.mjs: checks strips don't overflow, asserts the fix-drop-off strip text, and adds top-of-page screenshots"
+   ],
+   "verification": [
+    "npx vitest run src/flow-gallery.test.ts src/flow-send.test.ts src/serve.tools.test.ts: pass; npx tsc --noEmit: clean",
+    "node scripts/flow-gallery-proof.mjs after npm run build: passes on desktop 1440 and phone 390",
+    "Full npx vitest run: 31 failed / 4351 passed in 5 files: coding-provider, exec.held, exec, mcp-cli, task-control-adversarial",
+    "On rerun, exec idle-watchdog passed (timing flake); mcp-cli setuid 4600 failed again (sandbox file mode); none of these touch the gallery"
+   ],
+   "followUps": [
+    "Strip uses the zones' own titles, e.g. 'Build the fix' rather than the owner's example 'Build'; rename template step titles if shorter words are wanted"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-04T22:54:56.150Z",
+    "currentAsOf": "a120c97a5a623f3750226db97cfe90959f68f9f5"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2438": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0931",
+   "runId": 2438,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "1f637edabc47e425b833605c218ee15f",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0931",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0931-8f3ee8b5",
+   "base": "b0c20b2deca841aca5df98e03570eda5ba75a345",
+   "head": "87693d7d01f88bdcaf4b9da335696d03a435eed8",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate c218b244d7d4c0e2a9ee0290276794176deeec19 was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/flow-gallery-proof.mjs",
+    "src/flow-gallery-ui.ts",
+    "src/flow-gallery.test.ts",
+    "src/flow-gallery.ts",
+    "src/flow-send.test.ts"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-04T23:00:42.432Z",
+    "currentAsOf": "87693d7d01f88bdcaf4b9da335696d03a435eed8"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2438,\"head\":\"87693d7d01f88bdcaf4b9da335696d03a435eed8\",\"base\":\"b0c20b2deca841aca5df98e03570eda5ba75a345\",\"scopeDigest\":\"94e4e76688c661c3ebe25c95da6c5f68\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":1},\"log\":{\"artifactId\":5769,\"sha256\":\"1bf20078c00376e242f1380794948b36ade64647e8fe075100a73eec50d2e9ce\",\"bytesStored\":25394,\"bytesOriginal\":151721,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "8f5e265842a781ed2e10166b6c8105d046e313b2cd4adae0d8db8775b4dac018"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "refuted",
+    "verdict": "refuted",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "failed",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "failed",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "the repository's approved verification command exited 1"
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2439": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0931",
+   "runId": 2439,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "1f637edabc47e425b833605c218ee15f",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0931",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0931-8f3ee8b5",
+   "base": "87693d7d01f88bdcaf4b9da335696d03a435eed8",
+   "head": "87693d7d01f88bdcaf4b9da335696d03a435eed8",
+   "outcome": "no-change",
+   "committed": false,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate 87693d7d01f88bdcaf4b9da335696d03a435eed8 was checked out by the machine; no agent ran. The branch already matched it.",
+   "changes": [
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/flow-gallery-proof.mjs",
+    "src/flow-gallery-ui.ts",
+    "src/flow-gallery.test.ts",
+    "src/flow-gallery.ts",
+    "src/flow-send.test.ts"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-04T23:35:49.203Z",
+    "currentAsOf": "87693d7d01f88bdcaf4b9da335696d03a435eed8"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2439,\"head\":\"87693d7d01f88bdcaf4b9da335696d03a435eed8\",\"base\":\"87693d7d01f88bdcaf4b9da335696d03a435eed8\",\"scopeDigest\":\"b7f8d7f7c73bf98fce9c2a0dcef09ee8\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":5777,\"sha256\":\"b9f3508b9ec8582d670199a0215886e71f6d7f469b3b60dfa50b2366b5ff44d0\",\"bytesStored\":25394,\"bytesOriginal\":138118,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "03f5aa19b9333abbf8471ee433859d335a38964a3c42d0f37fc04c0155794f27"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2447": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/storage-sweep/normal-desktop.png",
+      "caption": "Settings > Storage, desktop: last automatic sweep summary with Details open (synthetic sweep record)"
+     },
+     {
+      "path": "evidence/storage-sweep/normal-phone.png",
+      "caption": "Settings > Storage, phone 390px: same sweep summary, Details open, no horizontal overflow"
+     },
+     {
+      "path": "evidence/storage-sweep/long-desktop.png",
+      "caption": "Long details: 20 long checkout paths plus a more-left-for-next-sweep note, desktop"
+     },
+     {
+      "path": "evidence/storage-sweep/long-phone.png",
+      "caption": "Long details on phone: paths wrap inside the disclosure"
+     },
+     {
+      "path": "evidence/storage-sweep/empty-desktop.png",
+      "caption": "Empty state, desktop: the sweep has not run yet"
+     },
+     {
+      "path": "evidence/storage-sweep/empty-phone.png",
+      "caption": "Empty state, phone"
+     },
+     {
+      "path": "evidence/storage-sweep/failure-desktop.png",
+      "caption": "Partial failure, desktop: removal failures and unchecked parts shown as a problem, causes in Details"
+     },
+     {
+      "path": "evidence/storage-sweep/failure-phone.png",
+      "caption": "Partial failure, phone"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "cleanup",
+   "runId": 2447,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "51fb00a5b7f12824b71d87cbbbe1e042",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "94ced6f8-10ee-47f8-90bd-7ef324591aac",
+   "branch": "toolroll/cleanup",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-cleanup-0b6e6e93",
+   "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+   "head": "80456c7dcec03b6a9ad40c81fce47c9e8d99b366",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Toolroll now cleans up after itself. Suites run in their own process group and temp root, and both are removed on pass, fail, timeout or interrupt. The worker runs a daily storage sweep claimed in SQLite. It removes stale test temp folders and stops orphaned run processes, revalidating each before signalling. It also removes finished checkouts, staged runtimes beyond current/previous/newest, and dependency installs unused for 7 days. Spotlight markers are added. toolroll storage and Settings > Storage show the last sweep.",
+   "changes": [
+    "New: scripts/suite-lifecycle.mjs, src/storage-sweep.ts, src/orphan-sweep.ts, src/staged-runtimes.ts, src/never-index.ts; storage_sweep table added without a version bump (CREATE TABLE IF NOT EXISTS)",
+    "Release-check checkouts now go once complete unless deployed now or the project's newest complete gate with no deploy since, for at most a week; the old 7-day per-release keep is gone",
+    "deploy-browser prunes staged runtimes through the shared module: current, previous and newest only (it kept the 3 newest before); with no runtime in use it removes none",
+    "Spotlight markers go in the pool and project folders, not inside checkouts, so builds can't commit them; also deps root, linked node_modules, staged-upgrades and temp roots"
+   ],
+   "verification": [
+    "npm run typecheck passed; 14 focused test files, 160 tests passed, incl. a subprocess suite test (pass/fail/timeout/SIGINT) and a real Vitest run interrupted mid-test",
+    "Headless Storage journey on the built candidate at 1280 and 390 wide (empty/normal/long/failure): no overflow, Details opens by keyboard, 44px tap target on phone, no page errors",
+    "Full release verifier not run here (left to the machine gate)"
+   ],
+   "followUps": [
+    "Proof/canary scripts that keep their output on purpose (crash/pilot/handoff canaries, screenshot proofs) still leave temp folders; the daily sweep removes them after a day",
+    "Unit tests and e2e workers set TOOLROLL_STORAGE_SWEEP=off so a test never sweeps the host; production workers sweep by default",
+    "Orphan detection needs lsof on macOS or /proc on Linux; if it can't read them, it stops nothing and the sweep records the failure and retries in an hour"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T00:33:21.327Z",
+    "currentAsOf": "80456c7dcec03b6a9ad40c81fce47c9e8d99b366"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2449": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/lead-stall/desktop-timed-out-with-proposal.png",
+      "caption": "Desktop 1440x900: synthetic stub proposed a hold then hung; at 125 s the thread shows one took-too-long notice with the Hold card under it"
+     },
+     {
+      "path": "evidence/lead-stall/phone-timed-out-with-proposal.png",
+      "caption": "Phone 390x844: the same timed-out turn, notice and Hold card readable above the composer"
+     },
+     {
+      "path": "evidence/lead-stall/desktop-next-message-answered.png",
+      "caption": "Desktop: the next message after the stuck turn is answered"
+     },
+     {
+      "path": "evidence/lead-stall/phone-next-message-answered.png",
+      "caption": "Phone: the next message after the stuck turn is answered, earlier notice and card still shown"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "lead-stall",
+   "runId": 2449,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "52812442d5b0508e39261cbd28e8dfa8",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "69b3e015-aea9-4e6d-b809-da2272483849",
+   "branch": "toolroll/lead-stall",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-lead-stall-256166a5",
+   "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+   "head": "bfd28a7de449eda601d879ed7f2ea7eb798550d6",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "The mate turn now owns its 120 s deadline. It aborts the provider, kills the harness process group, and stops waiting 5 s later even if the provider ignores the abort. A timed-out turn saves one took-too-long notice in the thread, keeps proposals from completed tool calls (confirmable), releases the team queue so the next message is answered, and late output is fenced out. In the journey the notice appeared at ~125.5 s on desktop and phone.",
+   "changes": [
+    "mate.ts: outer deadline race (settleBy + MATE_ABORT_GRACE_MS 5 s) around provider calls and channel revalidation; abort signal passed to the subscription runner",
+    "exec.ts run(): new signal option kills the process group like the timeout; subscription-chat.ts passes it",
+    "store.ts: timed-out finalize and the stale sweep save the notice and promote validated drafts in one write; mateTimeoutNotice and mateTurnKeepsProposals",
+    "mate-doors.ts and chat-actions.ts: cards kept by a timeout or crash can be confirmed; every other failure still deletes its drafts",
+    "serve.ts: no extra one-off warning when the notice is saved. React chat JSON no longer repeats a card under the person's own message (existing bug on every turn)",
+    "team-runtime.ts and team-leads.ts: no repeated error on the team message; docs/mate-arc.md finding 4 now records the narrow exception"
+   ],
+   "verification": [
+    "npm run typecheck: pass",
+    "vitest: mate, mate-doors, subscription-chat, team-runtime (new), serve.*, browser/*, exec, chat-actions, telegram-mate, migration-v35 and others: all pass",
+    "subscription-chat test: aborting kills and reaps a real sh child and its sleep grandchild",
+    "Headless Chromium journey (evidence/lead-stall/journey.mjs, synthetic stub that proposes then hangs and ignores abort), 1440x900 and 390x844: 22 checks pass"
+   ],
+   "followUps": [
+    "Telegram, Slack and Discord still send only the failure text; they do not send cards kept by a timed-out turn",
+    "A team message that timed out keeps its existing Could not finish badge beside the lead notice",
+    "Desktop card buttons are 28 px tall (existing size, unchanged); phone buttons are 44 px",
+    "Not reproduced on a swap-starved machine or with a real claude or codex harness; the root cause in run 2438 is inferred, not observed",
+    "With direct API keys, a timeout still pauses chat until the unknown cost is confirmed (existing safety rule, unchanged)"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T01:08:27.510Z",
+    "currentAsOf": "bfd28a7de449eda601d879ed7f2ea7eb798550d6"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2452": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/batch-checks/settings-desktop.png",
+      "caption": "Settings → Projects → Checks (desktop): Batch checks card, On, with its change behind a disclosure and the password"
+     },
+     {
+      "path": "evidence/batch-checks/settings-phone.png",
+      "caption": "Settings → Projects → Checks (phone 390px): Batch checks card with Turn off expanded"
+     },
+     {
+      "path": "evidence/batch-checks/together-desktop.png",
+      "caption": "Synthetic result (desktop): Ready for review, Project checks row says Checked together with round-prices-to-cents on the batch commit"
+     },
+     {
+      "path": "evidence/batch-checks/together-phone.png",
+      "caption": "Synthetic result with a long title (phone): checked-together status fits without overflow"
+     },
+     {
+      "path": "evidence/batch-checks/failed-phone.png",
+      "caption": "Synthetic result that broke its batch (phone): Failed, Project checks Failed on its own (exit 1)"
+     },
+     {
+      "path": "evidence/batch-checks/waiting-phone.png",
+      "caption": "Synthetic lone result inside the window (phone): Waiting to check with other results"
+     },
+     {
+      "path": "evidence/batch-checks/result-checks-desktop.png",
+      "caption": "Result Checks tab (desktop): Full checks passed together with the other result on the batch commit, with its log"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "batch-checks",
+   "runId": 2452,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "2d8cd425f151cb19b45f7e1faeccc0e5",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "69b44d9c-5808-4ef3-bb5f-f9efd7030b5f",
+   "branch": "toolroll/batch-checks",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-batch-checks-c26a0d79",
+   "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+   "head": "6b91ca59e63118d58fe112e5b9a294b423fceb75",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Batch checks added, off by default per project (project checks --batch on|off, Settings → Projects → Checks). With Full checks, results that finish within 10 minutes share one check on a temporary detached merge commit. A pass gives each result a sealed receipt naming that commit (Checked together with … on <sha>). A failure splits the batch down to the breaking result. Conflicts are checked one by one. No real ref changes, and Merge waits for the batch check.",
+   "changes": [
+    "New src/batch-policy.ts (setting, ledger-audited) and src/batch-checks.ts (queue, cohorts, merge/split/conflict runner, sealed receipts) built on the follow-up check ledger",
+    "builder.ts: with batching on, a Full build queues its exact commit instead of checking inline; its proof reads like Off (attested) until the batch receipt lands",
+    "Shared status, the assignment projection, the result Checks tab, the CLI command, the surface entry, lead facts and docs/design/task-status.md all show batching",
+    "workspace-ui.ts: a log section header is no longer offered as a silent check's failing line (regression test added)"
+   ],
+   "verification": [
+    "npm run typecheck: clean",
+    "vitest: batch-checks, check-levels, task-status, task-status-surfaces, lead-capabilities, cli, builder, operate, serve.results, workspace-ui: 453 passed",
+    "Headless journey (synthetic data) at 1280 and 390 px: settings, together, failed, waiting and Checks tab, with no horizontal overflow; screenshots in evidence/batch-checks"
+   ],
+   "followUps": [
+    "A batched build's inline proof is attested, not verified, so automatic review (which needs a passing check) won't run for it. Decide whether review should wait for the batch receipt",
+    "A cohort closes when a second result arrives (per the plan), so most batches have 2 results; a size or time-based close would batch more",
+    "An abandoned batch claim shows as not finished and needs Run checks; it isn't re-queued automatically",
+    "Chat has no batch-toggle action; the lead's project facts point to the existing Settings path"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T00:42:53.900Z",
+    "currentAsOf": "6b91ca59e63118d58fe112e5b9a294b423fceb75"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2462": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0932",
+   "runId": 2462,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "25e3840eea5995474e50d8bfc7b4049d",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0932",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0932-19705004",
+   "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+   "head": "5cbe5fed94e5dcd5eebde3da44f50408e30dfffa",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate c120981fa2e84f7552eaff63453b57737b27bc3b was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "docs/TESTING.md",
+    "docs/design/task-status.md",
+    "docs/guide/flows.md",
+    "docs/mate-arc.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/app-e2e.mjs"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-05T02:10:12.702Z",
+    "currentAsOf": "5cbe5fed94e5dcd5eebde3da44f50408e30dfffa"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2462,\"head\":\"5cbe5fed94e5dcd5eebde3da44f50408e30dfffa\",\"base\":\"0a7824829e250a3aaa6ba70b90dba0cd8e80624f\",\"scopeDigest\":\"ae1ce4c472d97c4fa2e1792663e06909\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":1},\"log\":{\"artifactId\":5870,\"sha256\":\"3bd5e00b4f1cbab7daac6abfc586d0791d3e863f1bf576dd7bbe850944247917\",\"bytesStored\":25394,\"bytesOriginal\":236712,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "5e0038ab9d4cc7d76574e0f01c9ad7e9af8e598f37f17cd6dd055ad5d17db3dc"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "refuted",
+    "verdict": "refuted",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "failed",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "failed",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "the repository's approved verification command exited 1"
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2463": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0932b",
+   "runId": 2463,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "25e3840eea5995474e50d8bfc7b4049d",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0932b",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0932b-6eda3f47",
+   "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+   "head": "7472b41aba9dd8d4b7cdb189964e66a138b486a1",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate cc13595f2506029f058e2618f90b45a493a182ea was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "docs/TESTING.md",
+    "docs/design/task-status.md",
+    "docs/guide/flows.md",
+    "docs/mate-arc.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/app-e2e.mjs"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-05T02:27:12.220Z",
+    "currentAsOf": "7472b41aba9dd8d4b7cdb189964e66a138b486a1"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2463,\"head\":\"7472b41aba9dd8d4b7cdb189964e66a138b486a1\",\"base\":\"0a7824829e250a3aaa6ba70b90dba0cd8e80624f\",\"scopeDigest\":\"1a81fffe1ef8bcef4c0822487be4f5ad\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":5878,\"sha256\":\"529d450cfc494c09c50806819fc106b1d68ff5fddb0d1bd59890d79c5534946f\",\"bytesStored\":25394,\"bytesOriginal\":227729,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "ea777eeb9a3518e7e2a80c7c70aa991135330113e12009791c1d96724f2ded36"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2465": {
+  "proof": null,
+  "handoff": {
+   "schema": 1,
+   "taskId": "is-the-site-current-oct-4",
+   "runId": 2465,
+   "provider": "claude",
+   "model": "sonnet",
+   "route": {
+    "digest": "cc159c39e2bebc843cda633fd65b762b",
+    "phase": "build",
+    "provider": "claude",
+    "model": "sonnet",
+    "chosen": "recommended"
+   },
+   "sessionId": "e9848469-6607-4728-b806-4f273cef4a25",
+   "branch": "toolroll/is-the-site-current-oct-4",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/toolroll-site/toolroll-is-the-site-current-oct-4-dabab5f5",
+   "base": "953e13b64f717ee2afc1c0369ffb0834e9739e3e",
+   "head": "1e213cd8960e07cec1cade2a61ae7193d3b30fa5",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Synced site to 0.9.32 (npm latest moved past 0.9.25): release.json, llms.txt Current release line, and Integrations One-click services now lists Mobbin, PostHog, Better Stack plus a Figma desktop-app note. Build green; sync check prints goto: current.",
+   "changes": [],
+   "verification": [
+    "npm run build passed",
+    "release-sync-check exit 0"
+   ],
+   "followUps": [
+    "Desktop/320px visual check not run (text-only change); no new commands or install steps in 0.9.18-0.9.32, so Install page and home untouched"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T05:24:56.607Z",
+    "currentAsOf": "1e213cd8960e07cec1cade2a61ae7193d3b30fa5"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2465,\"head\":\"1e213cd8960e07cec1cade2a61ae7193d3b30fa5\",\"base\":\"953e13b64f717ee2afc1c0369ffb0834e9739e3e\",\"scopeDigest\":\"4a546bece79f9b175b4ac0feb58ebd47\",\"command\":{\"id\":18,\"repo\":\"/Users/owner/Developer/toolroll-site\",\"command\":\"npm ci --no-audit --no-fund && npm run build\",\"timeoutMs\":600000,\"digest\":\"db378617ac947fb4\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T21:39:30.890Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":5886,\"sha256\":\"867de4eb68695593cd7654cf9768fed2291cd520131920006aeb339972ce78e6\",\"bytesStored\":1688,\"bytesOriginal\":1688,\"truncated\":false,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "d564a014a1cb9c3abf640dde694260de73e229001ba86874c3599b724b99be3c"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2492": {
+  "proof": null,
+  "handoff": {
+   "schema": 1,
+   "taskId": "stable-identity",
+   "runId": 2492,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "5631928ade71e26b4eb2bbd60ad5db5a",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "01c9e480-135f-427a-984b-af1e65af490f",
+   "branch": "toolroll/stable-identity",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-stable-identity-6f6477f2",
+   "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+   "head": "35e0f20b93eaba7970dd97d0424c5666654ce7a9",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Project identity no longer hashes st.dev (path, real git common dir, inode, birth time); every caller goes through learningIdentity. Stale knowledge never fails a build: it runs without it, the brief says it was not applied, and an approver applies it forward from the Knowledge page or toolroll knowledge apply as a new revision, recorded in an append-only project_identity_carry table. Rows under the old formula with the current st.dev carry over silently; a repo recreated at the same path still asks.",
+   "changes": [
+    "project-learning.ts: identityOf/legacyIdentityOf, carryProject, reconcileIdentity, acceptedIdentities; learning checks accept carried identities, writes use the current one.",
+    "project-knowledge.ts: stale knowledge is shown for review only, never applied; applySavedKnowledge (refuses the lead); snapshots of stale builds are stored under the current identity.",
+    "project-skills.ts, coding-handoff.ts, coding-context.ts accept carried identities; a skills freeze proceeds without skills saved under an un-carried identity.",
+    "Console: one notice, saved knowledge in a disclosure, Apply saved knowledge button (action=apply, CSRF, approver). CLI: knowledge apply in knowledge-cli.ts, operate.ts and surface.ts (operator audience).",
+    "Chat: conversationKnowledge returns the stale notice with the Knowledge page path and the CLI command instead of throwing."
+   ],
+   "verification": [
+    "npm run typecheck passes.",
+    "npx vitest run on project-learning, project-knowledge, project-skills, coding-context, project-delete, operate and pull-request-flow test files: all pass."
+   ],
+   "followUps": [
+    "Chat gap: chat cannot apply stale knowledge itself; it points to the Knowledge page and the CLI command.",
+    "Skills saved under an un-carried identity still raise an error on the Skills page; applying knowledge records the carry, which clears it.",
+    "verifyCodingContext has no store, so it accepts only the current or same-volume legacy identity, not approver carries.",
+    "The shared node_modules was unreadable from this worktree, so I ran a private npm install here (package files unchanged).",
+    "No desktop or phone screenshots were taken of the new Knowledge notice. The HTTP test checks the markup only.",
+    "The stuck install recovers only after this build is deployed."
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T19:00:56.690Z",
+    "currentAsOf": "35e0f20b93eaba7970dd97d0424c5666654ce7a9"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2492,\"head\":\"35e0f20b93eaba7970dd97d0424c5666654ce7a9\",\"base\":\"6cfacfbb4fe1184c4f6446357a24cedfc642bd2c\",\"scopeDigest\":\"708d0b1676ffd17355699e420e60ba28\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":1},\"log\":{\"artifactId\":5923,\"sha256\":\"5684413d00a3f9cf63bb6c959ee26a239a13026fea9dd9e2959089ccf9278145\",\"bytesStored\":25394,\"bytesOriginal\":189089,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "236f199ddd91f2b656a70921b75ce2142b2d7684020849fc450843080464b314"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "refuted",
+    "verdict": "refuted",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "failed",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "failed",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "the repository's approved verification command exited 1"
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "no proof was written"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2496": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0933",
+   "runId": 2496,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "bf3f52f649b76b476e06f586c66fa65d",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0933",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0933-2a180f2a",
+   "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+   "head": "1e3e80ef5c121a669f7092497e19f9fad5f8cd50",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate b717c5eb623b6eddbf46aae6a1afade57137b2ce was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "src/coding-context.test.ts",
+    "src/coding-context.ts",
+    "src/coding-handoff.ts",
+    "src/desktop-update.test.ts",
+    "src/guides.ts"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-05T19:21:25.435Z",
+    "currentAsOf": "1e3e80ef5c121a669f7092497e19f9fad5f8cd50"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2496,\"head\":\"1e3e80ef5c121a669f7092497e19f9fad5f8cd50\",\"base\":\"6cfacfbb4fe1184c4f6446357a24cedfc642bd2c\",\"scopeDigest\":\"6b8c06c78e07e5e538b8d3647a2375f5\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":5934,\"sha256\":\"ccd96af67fb03e3bbfb3a8d41ea1ea522664aa7a6bf3e0749a943695b7a1691e\",\"bytesStored\":25394,\"bytesOriginal\":187389,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "864738f66463d94296ac77b253485cc47b1d3904a78914c0722cf22db61965b9"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2500": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/crew-age/before/desk-light-crew.png",
+      "caption": "Before: Crew sheet at 1440x900, light; rows show state but not when they changed"
+     },
+     {
+      "path": "evidence/crew-age/after/desk-light.png",
+      "caption": "After: Chat with Crew at 1440x900, light; muted age (3h, 1d, 8h) at the right of each title line"
+     },
+     {
+      "path": "evidence/crew-age/after/desk-dark-long.png",
+      "caption": "After: 1440x900 dark; long Building title wraps beside 24m, Finished disclosure open"
+     },
+     {
+      "path": "evidence/crew-age/before/phone-dark.png",
+      "caption": "Before: Crew view at 390x844, dark"
+     },
+     {
+      "path": "evidence/crew-age/after/phone-dark.png",
+      "caption": "After: Crew view at 390x844, dark; age sits after the badge in a fixed slot, badges stay aligned"
+     },
+     {
+      "path": "evidence/crew-age/after/phone-light-long.png",
+      "caption": "After: 390x844 light; long title, Failed and Building rows, finished row, no overflow"
+     },
+     {
+      "path": "evidence/crew-age/after/compact-light.png",
+      "caption": "After: compact desk 1100x800 (286px sheet), light; keyboard focus on a row's action"
+     },
+     {
+      "path": "evidence/crew-age/after/phone-light-empty.png",
+      "caption": "After: empty Crew at 390x844, unchanged No tasks yet"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "ui-inspiration-with-reasoning",
+   "runId": 2500,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "cb93bcb8a13b0d6a59848b8c99e3169d",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "eaaf7624-262c-493f-9096-56ae535e876b",
+   "branch": "toolroll/ui-inspiration-with-reasoning",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-ui-inspiration-with-reasoning-9d0bbc6f",
+   "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+   "head": "7b53c8ae6087877ca6a168d1e58e7679f8be1ad0",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Every Crew row now shows a muted relative age (now, 4m, 2h, 3d) at the right of its title line, as a <time> with the exact minute on hover, from WorkIndexItem.updatedAt. Order, badges, actions, Finished disclosure and empty state unchanged. Typecheck and focused tests pass; desk/phone light/dark evidence shows no overflow or overlap.",
+   "changes": [
+    "src/browser-workspace.ts, src/browser-crew.ts: BrowserCrewItem.updatedAt carried from the work index (initial render and live team refresh).",
+    "src/when-html.ts: shortAge() formatter; invalid stamps render nothing, future stamps read now.",
+    "src/browser/app.tsx: CrewAge <time> after the headline badge; badge gets so-work-badge class.",
+    "src/browser/workspace.css: heading becomes a grid; age is muted 12px Geist Mono in a 3ch right-aligned slot; removed dead .so-work-heading .ui-badge rule."
+   ],
+   "verification": [
+    "npm run typecheck: pass.",
+    "npx vitest run src/when-html.test.ts src/workspace-refresh.test.ts: 12 passed (new: shortAge marks; crew updatedAt present and moves on cancel).",
+    "npx vitest run overlay-motion, console-feel, serve.chat tests (reference Crew markup/CSS): 67 passed.",
+    "Headless Playwright on demo data at 1440x900, 1100x800, 390x844, light/dark, empty: no overflow, no title/age overlap, age on one line, phone rows >=51px."
+   ],
+   "followUps": [
+    "Interrupted attempt #2464 left no diff in this worktree; work was done fresh.",
+    "home-view ago() was not moved: it words ages differently (3 min ago); shortAge is a new shared helper instead.",
+    "Ages recount on each workspace refresh only; no ticking timer, as recommended.",
+    "Before shots come from the base build; long-title close-ups exist only for after. Capture script: evidence/crew-age/capture.mjs.",
+    "Not checked against the installed live runtime; evidence uses the built candidate with the synthetic demo sandbox."
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T20:17:36.477Z",
+    "currentAsOf": "7b53c8ae6087877ca6a168d1e58e7679f8be1ad0"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2505": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": [
+     {
+      "path": "evidence/cli-projects/desktop-tools-after-cli-add.png",
+      "caption": "Desktop: Settings → Tools opens a project added by repos add, no restart"
+     },
+     {
+      "path": "evidence/cli-projects/desktop-projects-after-cli-add.png",
+      "caption": "Desktop: Projects lists the taskless CLI-added project"
+     },
+     {
+      "path": "evidence/cli-projects/desktop-settings-project-remove.png",
+      "caption": "Desktop: Settings → Project with Remove from Toolroll above Delete project"
+     },
+     {
+      "path": "evidence/cli-projects/phone-settings-project-remove.png",
+      "caption": "Phone: long project name wraps, Remove from Toolroll is a 44px target"
+     },
+     {
+      "path": "evidence/cli-projects/phone-projects-after-cli-add.png",
+      "caption": "Phone: Projects after the CLI add"
+     },
+     {
+      "path": "evidence/cli-projects/desktop-restricted-projects.png",
+      "caption": "Desktop: an account limited to listed projects does not see it"
+     },
+     {
+      "path": "evidence/cli-projects/desktop-after-remove.png",
+      "caption": "Desktop: after Remove from Toolroll, plain confirmation; project gone from the picker"
+     }
+    ]
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "cli-projects",
+   "runId": 2505,
+   "provider": "claude",
+   "model": "opus",
+   "route": {
+    "digest": "24883eb1bb55bd1733ec16fb3678567d",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+   },
+   "sessionId": "dfaa7a7c-fc30-43e3-b7b1-2a63a11c9131",
+   "branch": "toolroll/cli-projects",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-cli-projects-407ed181",
+   "base": "b32124fb076cb222e52b8d4ff8cc61847459cf42",
+   "head": "58304768b8b547af2e31d0967f7f17b062e84858",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "repos add/remove, add-from-github, onboard and the console's Add a project / new Remove from Toolroll now share src/project-admission.ts: Git-root proof, locked registry + project row, one ledger row (actor, from cli/lead/console). up adopts recorded additions live and releases removed ones (pinned --repo kept); console lists read one consoleProjects() list. CLI says \"Added X; it is in the console now.\" Lead token (TOOLROLL_LEAD_TOKEN or --token) works; restricted accounts and non-Git folders are refused.",
+   "changes": [
+    "New src/project-admission.ts: admitProject/releaseProject/commandLineActor; store.forgetProject; runner removeRunnerRepoAuthed",
+    "up supervisor: adopts registry entries with a recorded admission outside its startup ceiling; stops and unbinds removed, non-pinned projects live",
+    "serve: admittedRepos live ceiling (empty never means unscoped); consoleProjects() replaces ~34 duplicated list expressions; /projects/remove",
+    "CLI repos uses the registry beside the database (what up watches); surface rows for repos add/remove now agent-invocable with the lead token"
+   ],
+   "verification": [
+    "npx tsc --noEmit: clean",
+    "vitest: cli, up, operate, store, project-admission, project-delete, onboarding, serve.*, agent-onboard, dispatch, skills, cli-busy: all pass (705 + 54 + 33 + 4)",
+    "Headless journey (evidence/cli-projects/journey.mjs, temp up + built dist): desktop 1280 and phone 390, 15/15 checks pass; transcript in journey.txt"
+   ],
+   "followUps": [
+    "Removing the project up was started with (--repo/cwd) hides it in the console until restart, but up keeps building it and re-enrolls it at the next start",
+    "Under a --project-root ceiling, a removed project that still has tasks stays listed (it is inside the root); taskless ones disappear",
+    "project use never registers (it only selects saved checkouts), so it was left unchanged",
+    "Not deployed: the running installed up still needs the normal verified update before the live vamarketplacenew case works"
+   ],
+   "freshness": {
+    "stampedAt": "2026-10-05T22:00:21.123Z",
+    "currentAsOf": "58304768b8b547af2e31d0967f7f17b062e84858"
+   }
+  },
+  "receipt": null,
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "attested",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c1\" needs a passing approved project check"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" needs a passing approved project check",
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2510": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0934",
+   "runId": 2510,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "d654a15d0e53ca2b51cfc380494c04aa",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0934",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0934-a7357200",
+   "base": "138aa9c6a66398adf81ecfbca0a837064e1c2b6c",
+   "head": "33189100290769d00f9b178ce96d3e13cb0f9a75",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate 6f99e507a4d7794a8dd1e7fb5bccfda3a4fca719 was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "docs/plans/zod-revamp.md",
+    "package-lock.json",
+    "package.json",
+    "src/browser-crew.ts",
+    "src/browser-workspace.ts",
+    "src/browser/app.tsx",
+    "src/browser/workspace.css"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-05T22:46:35.842Z",
+    "currentAsOf": "33189100290769d00f9b178ce96d3e13cb0f9a75"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2510,\"head\":\"33189100290769d00f9b178ce96d3e13cb0f9a75\",\"base\":\"138aa9c6a66398adf81ecfbca0a837064e1c2b6c\",\"scopeDigest\":\"10c1b68711fc0ebb6f292bc4f9db8851\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":5993,\"sha256\":\"3e496c548be32e44a41f4f80041a0ce7ac59b60d440100d05f59b5079daae4d0\",\"bytesStored\":25394,\"bytesOriginal\":228623,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "ee3277205a093a5d9485a3666782728e059076b1b3b90cb951c443046cf9702c"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ },
+ "run-2512": {
+  "proof": {
+   "ok": true,
+   "proof": {
+    "version": 1,
+    "criteria": [],
+    "checks": [],
+    "changed": [],
+    "caveats": [],
+    "screenshots": []
+   }
+  },
+  "handoff": {
+   "schema": 1,
+   "taskId": "release-0935",
+   "runId": 2512,
+   "provider": "codex",
+   "model": "gpt-6-astra",
+   "route": {
+    "digest": "d654a15d0e53ca2b51cfc380494c04aa",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+   },
+   "sessionId": null,
+   "branch": "toolroll/release-0935",
+   "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0935-30263de8",
+   "base": "138aa9c6a66398adf81ecfbca0a837064e1c2b6c",
+   "head": "c8af9617d17f88dc8ae377a936f3b0385d4cc3b1",
+   "outcome": "built",
+   "committed": true,
+   "decisionsIncorporated": [],
+   "conclusion": "Prepared candidate e1490742f2198657b114f2a7bc7bec94de888ae7 was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+   "changes": [
+    "CHANGELOG.md",
+    "docs/plans/zod-revamp.md",
+    "package-lock.json",
+    "package.json",
+    "src/browser-crew.ts",
+    "src/browser-workspace.ts",
+    "src/browser/app.tsx",
+    "src/browser/workspace.css"
+   ],
+   "verification": [],
+   "followUps": [],
+   "freshness": {
+    "stampedAt": "2026-10-05T23:04:14.353Z",
+    "currentAsOf": "c8af9617d17f88dc8ae377a936f3b0385d4cc3b1"
+   }
+  },
+  "receipt": {
+   "bytes": "{\"version\":1,\"run\":2512,\"head\":\"c8af9617d17f88dc8ae377a936f3b0385d4cc3b1\",\"base\":\"138aa9c6a66398adf81ecfbca0a837064e1c2b6c\",\"scopeDigest\":\"be61aa407faa7bfed2a52cd7bb53461c\",\"command\":{\"id\":17,\"repo\":\"/Users/owner/Developer/standing-orders-release-verification\",\"command\":\"if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\\\"$d/unit.log\\\" 2>&1; echo $? >\\\"$d/unit.code\\\") & (node scripts/flows-e2e.mjs >\\\"$d/flows.log\\\" 2>&1; echo $? >\\\"$d/flows.code\\\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\\\"$d/app.log\\\" 2>&1; echo $? >\\\"$d/app.code\\\") & wait; fail=0; for s in unit flows app; do echo \\\"== $s\\\"; cat \\\"$d/$s.log\\\"; done; echo \\\"== summary\\\"; for s in unit flows app; do c=$(cat \\\"$d/$s.code\\\"); echo \\\"$s: exit $c\\\"; grep -E \\\"FAIL|Test Files|passed, \\\" \\\"$d/$s.log\\\" | tail -5; [ \\\"$c\\\" = 0 ] || fail=1; done; exit $fail; fi\",\"timeoutMs\":3600000,\"digest\":\"c6b51fc0dd1053f3\",\"recoverySetupDigest\":null,\"approvedBy\":\"alex\",\"approvedAt\":\"2026-09-30T01:20:00.235Z\",\"revokedAt\":null,\"revokedBy\":null},\"result\":{\"configured\":true,\"ran\":true,\"exitCode\":0},\"log\":{\"artifactId\":6001,\"sha256\":\"dc6e1cdad7077c7ff8c947a856272770e6ef90d157f6715773de5fb9f3e11035\",\"bytesStored\":25394,\"bytesOriginal\":92275,\"truncated\":true,\"redacted\":false,\"captureStatus\":\"ok\"}}",
+   "sha256": "1fc9e6125fcf95e56f6cb00a8e63de8cbb0fe1c90627204d0d7a81e219341fc0"
+  },
+  "adjudication": {
+   "plain": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "direct": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   },
+   "rubric": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c1\""
+      ],
+      "answered": []
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "review": null,
+      "state": "missing",
+      "detail": [
+       "the proof does not answer approved criterion \"c2\""
+      ],
+      "answered": []
+     }
+    ]
+   },
+   "directRubric": {
+    "machineVerdict": "verified",
+    "verdict": "short",
+    "matrix": [
+     {
+      "id": "c1",
+      "statement": "The change works.",
+      "requiredEvidence": [
+       "check"
+      ],
+      "assessment": {
+       "evidenceState": "pass",
+       "detail": []
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c1\" awaits independent goal assessment"
+      ],
+      "answered": [
+       {
+        "kind": "check",
+        "ref": "approved project check"
+       }
+      ],
+      "review": null
+     },
+     {
+      "id": "c2",
+      "statement": "The page shows it.",
+      "requiredEvidence": [
+       "screenshot"
+      ],
+      "assessment": {
+       "evidenceState": "missing",
+       "detail": [
+        "criterion \"c2\" needs a captured screenshot of the required behavior"
+       ]
+      },
+      "state": "missing",
+      "detail": [
+       "criterion \"c2\" needs a captured screenshot of the required behavior",
+       "criterion \"c2\" awaits independent goal assessment"
+      ],
+      "answered": [],
+      "review": null
+     }
+    ],
+    "reasons": [
+     "The saved evidence is awaiting independent goal assessment."
+    ]
+   },
+   "missingShot": {
+    "verdict": "short",
+    "reasons": [
+     "the sealed diff touched path the proof never claimed as changed: src/x.ts"
+    ],
+    "matrix": []
+   }
+  }
+ }
+}

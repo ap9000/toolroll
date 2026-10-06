@@ -174,6 +174,7 @@ import { TEMPLATES, templateByName } from "./templates.js";
 import { starterRecipes, savedRecipes, findRecipe, importRecipe, exportRecipe, createWorkflowPreview, workflowPreview, launchWorkflow, saveWorkflowRecipe, RecipeError, prepareRecipeRun } from "./recipes.js";
 import { recipeFromForm, recipeLibraryHtml, recipeEditorHtml, workflowPreviewHtml, recipeScript, RECIPE_CSS, recipeDefinitionPreviewHtml, recipeRunHtml, recipeAnswersFromForm } from "./recipe-ui.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact, readVerifiedReport, readVerifiedProofForRun, reportShotsOf, storeEvidence, writeEvidenceFile, scanForSecrets, type ReportShot, type ReportView } from "./evidence.js";
+import { parseHandoffArtifact } from "./contracts/handoff.js";
 import { GOAL_ASSESSMENT_PENDING, reviewConflict, manualReviewOnly, manualReviewCriterionOf, personCheckWords, plainReasonWords, dispatchStatusToken, passFraction, semanticCoverage, coverageWords, coverageStateWords, type ProofVerdict, type CriterionMatrixRow, type CriterionEvidenceRef } from "./proof.js";
 import {
   WORK_VIEWS, REVIEW_TOKENS, RESULT_DECISION_SENTENCE, acceptWordsOf, buildProgressOf, cantAcceptYetOf, earlierAttemptsWords, evidenceProblemOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, ACCEPT_NEEDS_REASON, MISMATCH_HEADLINE, parseWorkView, resultStatusOf, resultHeadlineOf, receiptHeadingOf, receiptPublicationWords, reviewFactsOf, workStatusOf, primaryDestinationOf, needsPerson, dispatchActionLabel,
@@ -24040,22 +24041,17 @@ function structuredHandoffView(artifacts: Artifact[], root: string): StructuredH
   if (artifact === undefined) return null;
   const read = readVerifiedArtifact(root, artifact);
   if (!read.ok) return null;
-  try {
-    const parsed = JSON.parse(read.content.toString("utf8")) as Record<string, unknown> | null;
-    if (parsed === null || typeof parsed !== "object" || typeof parsed["conclusion"] !== "string") return null;
-    const conclusion = oneLineOf(parsed["conclusion"], 600);
-    if (conclusion === "" || hasForbiddenControls(conclusion)) return null;
-    const list = (name: string): string[] =>
-      Array.isArray(parsed[name])
-        ? (parsed[name] as unknown[])
-            .filter((one): one is string => typeof one === "string" && one.trim() !== "" && !hasForbiddenControls(one))
-            .slice(0, 8)
-            .map(one => oneLineOf(one, 240))
-        : [];
-    return { conclusion, changes: list("changes"), verification: list("verification"), followUps: list("followUps") };
-  } catch {
-    return null;
-  }
+  const parsed = parseHandoffArtifact(read.content.toString("utf8"));
+  if (!parsed.ok) return null;
+  const handoff = parsed.value;
+  const conclusion = oneLineOf(handoff.conclusion, 600);
+  if (conclusion === "" || hasForbiddenControls(conclusion)) return null;
+  const list = (items: readonly string[] | undefined): string[] =>
+    (items ?? [])
+      .filter(one => one.trim() !== "" && !hasForbiddenControls(one))
+      .slice(0, 8)
+      .map(one => oneLineOf(one, 240));
+  return { conclusion, changes: list(handoff.changes), verification: list(handoff.verification), followUps: list(handoff.followUps) };
 }
 
 /** The evidence bundle (Priority 2): the closed machine-authored verdict,

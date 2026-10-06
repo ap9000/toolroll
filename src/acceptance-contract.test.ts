@@ -198,7 +198,7 @@ describe("parseProof: a criterion's typed evidence refs (v39) — fail closed, b
   });
 
   test("kind must draw from the four signed kinds", () => {
-    expect(problemsOf([{ kind: "vibes", ref: "x" }])).toContain("criteria[0].evidence[0]-bad-kind");
+    expect(problemsOf([{ kind: "vibes", ref: "x" }])).toContain("bad-criteria[0].evidence[0].kind");
   });
 
   test("ref is required prose, capped at PROOF_LIMITS.evidenceRef bytes, control-free", () => {
@@ -210,7 +210,7 @@ describe("parseProof: a criterion's typed evidence refs (v39) — fail closed, b
   });
 
   test("a non-object entry is refused", () => {
-    expect(problemsOf(["not-an-object"])).toContain("criteria[0].evidence[0]-shape");
+    expect(problemsOf(["not-an-object"])).toContain("bad-criteria[0].evidence[0]");
   });
 
   test("a sound multi-kind evidence list round-trips exactly", () => {

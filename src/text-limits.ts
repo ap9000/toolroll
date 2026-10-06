@@ -37,6 +37,15 @@ export const TEXT_LIMITS = {
   acceptanceIdBytes: 40,
   acceptanceStatementBytes: 1_000,
   acceptanceHowBytes: 500,
+  /** A builder's whole proof file, in UTF-8 bytes. */
+  proofPayloadBytes: 64 * 1024,
+  /** A proof criterion's id, in UTF-8 bytes. */
+  proofCriterionIdBytes: 40,
+  /** How a proof criterion was met, in UTF-8 bytes. */
+  proofHowBytes: 500,
+  /** One proof line — a criterion statement, evidence ref, check command or summary, changed path, caveat, or
+   * screenshot path or caption — in UTF-8 bytes. */
+  proofLineBytes: 300,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

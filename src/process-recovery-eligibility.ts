@@ -8,6 +8,8 @@
 import { createHash } from "node:crypto";
 import { normalizeBootId } from "./boot-identity.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
+import { parseHandoffArtifact } from "./contracts/handoff.js";
+import { readVerificationReceipt } from "./contracts/verification-receipt.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import { scopeAuthorityOf } from "./scope.js";
@@ -95,11 +97,11 @@ export function preparedCandidateObserverGapEligibility(store: Store, input: {
       const gateArtifact = receipts[0]!, log = logs[0]!;
       const gate = verificationEvidence(store, evidenceRoot, runId);
       if (!gate.ok || gate.bytes === null) return refuse("verification-evidence-unavailable");
-      const receipt = JSON.parse(gate.bytes);
-      if (receipt.version !== 1 || receipt.source !== undefined || receipt.reusedFrom !== undefined || receipt.executedHere !== undefined ||
-          receipt.result?.configured !== true || receipt.result.ran !== true || receipt.result.exitCode !== 0 ||
-          Object.keys(receipt.result).some(key => !["configured", "ran", "exitCode", "setupReplayed"].includes(key)) ||
-          (receipt.result.setupReplayed !== undefined && receipt.result.setupReplayed !== true) ||
+      // A legacy log-header view is not a sealed receipt: the strict schema refuses its extra keys.
+      const view = JSON.parse(gate.bytes) as { version?: unknown };
+      const receipt = readVerificationReceipt(view);
+      if (!receipt.ok || view.version !== 1 || receipt.value.reusedFrom !== undefined || receipt.value.executedHere !== undefined ||
+          receipt.value.result.configured !== true || receipt.value.result.ran !== true || receipt.value.result.exitCode !== 0 ||
           !instant(gateArtifact.createdAt) || Date.parse(gateArtifact.createdAt) < Date.parse(run.startedAt) ||
           Date.parse(gateArtifact.createdAt) > Date.parse(machine.decidedAt) ||
           Date.parse(gateArtifact.createdAt) > Date.parse(run.finishedAt)) return refuse("actual-passing-gate-unproven");
@@ -109,12 +111,14 @@ export function preparedCandidateObserverGapEligibility(store: Store, input: {
       if (artifact.capture !== "machine-authored handoff (exit 0)" || artifact.truncated || artifact.redacted || artifact.captureStatus === "failed") return refuse("machine-prepared-handoff-unavailable");
       const saved = readVerifiedArtifact(evidenceRoot, artifact);
       if (!saved.ok) return refuse("machine-prepared-handoff-unavailable");
-      const handoff = JSON.parse(saved.content.toString("utf8"));
+      const read = parseHandoffArtifact(saved.content.toString("utf8"));
+      if (!read.ok) return refuse("machine-prepared-handoff-mismatch");
+      const handoff = read.value;
       const conclusion = `Prepared candidate ${scope.candidate} was checked out by the machine; no agent ran. ${run.outcome === "no-change" ? "The branch already matched it." : "The sealed diff spans this task's base to that candidate."}`;
-      if (handoff.schema !== 1 || handoff.runId !== runId || handoff.taskId !== ref.externalId || handoff.sessionId !== null ||
+      if (handoff.runId !== runId || handoff.taskId !== ref.externalId || handoff.sessionId !== null ||
           handoff.provider !== run.provider || handoff.branch !== run.branch || handoff.worktree !== run.worktree ||
           handoff.base !== run.baseRevision || handoff.head !== run.headRevision || handoff.outcome !== run.outcome ||
-          handoff.committed !== run.committed || handoff.freshness?.currentAsOf !== run.headRevision ||
+          handoff.committed !== run.committed || handoff.freshness.currentAsOf !== run.headRevision ||
           handoff.conclusion !== conclusion || run.handoff !== conclusion ||
           !instant(artifact.createdAt) || Date.parse(artifact.createdAt) < Date.parse(run.startedAt) ||
           Date.parse(artifact.createdAt) > Date.parse(gateArtifact.createdAt)) return refuse("machine-prepared-handoff-mismatch");

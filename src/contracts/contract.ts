@@ -65,10 +65,12 @@ function issuesOf(issue: z.core.$ZodIssue): ContractIssue[] {
     }
     case "too_big":
       if (issue.origin === "array" || issue.origin === "set") return [one("too-many", `at most ${String(issue.maximum)} items`)];
+      if (issue.origin === "number" || issue.origin === "int" || issue.origin === "bigint") return [one("bad-value", `at most ${String(issue.maximum)}`)];
       return [one("too-long", issue.origin === "string" && issue.message.startsWith("over ") ? issue.message : `at most ${String(issue.maximum)}${issue.origin === "string" ? " characters" : ""}`)];
     case "too_small":
       if (issue.origin === "string" && Number(issue.minimum) === 1) return [one("empty", "must not be empty")];
       if (issue.origin === "array" || issue.origin === "set") return [one("too-few", `at least ${String(issue.minimum)} item${Number(issue.minimum) === 1 ? "" : "s"}`)];
+      if (issue.origin === "number" || issue.origin === "int" || issue.origin === "bigint") return [one("bad-value", `at least ${String(issue.minimum)}`)];
       return [one("too-few", `at least ${String(issue.minimum)}`)];
     case "invalid_value":
       return [one("bad-value", `must be ${issue.values.length === 1 ? JSON.stringify(issue.values[0]) : `one of ${issue.values.map(value => JSON.stringify(value)).join(", ")}`}`)];
@@ -87,6 +89,37 @@ export function contractIssues(error: z.ZodError): ContractIssue[] {
 /** A Zod error as path-named lines: `steps[0].routes[0].goesTo: required`, `routes[0]: unknown key 'to'`. */
 export function contractError(error: z.ZodError): string[] {
   return contractIssues(error).map(issue => issue.line);
+}
+
+/** A refusal as a reader reports it: a stable reason code, and the path-named line as the message. */
+export type ContractProblem = { reason: string; message: string };
+
+/**
+ * A contract issue as a problem with a reason code built from its path — `missing-goal`, `criteria[0].how-too-long`,
+ * `checks-too-many`, `payload-unknown-key`, `bad-version`, `newer-version` — so callers that branch on a reason, and
+ * durable outcomes that recorded one, read the same as before the contract.
+ */
+export function contractProblemOf(issue: ContractIssue): ContractProblem {
+  const at = issue.path;
+  const reason = (() => {
+    switch (issue.kind) {
+      case "required":
+      case "empty":
+      case "too-few":
+        return `missing-${at}`;
+      case "too-long":
+        return `${at}-too-long`;
+      case "too-many":
+        return `${at}-too-many`;
+      case "unknown-key":
+        return `${at}-unknown-key`;
+      case "newer-version":
+        return "newer-version";
+      default:
+        return `bad-${at}`;
+    }
+  })();
+  return { reason, message: issue.line };
 }
 
 export type ContractResult<T> = { ok: true; value: T } | { ok: false; issues: ContractIssue[] };

@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { hasForbiddenControls } from "./decision.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
 import { TEXT_LIMITS } from "./text-limits.js";
-import type { ContractIssue } from "./contracts/contract.js";
+import { contractProblemOf, type ContractIssue } from "./contracts/contract.js";
 import { planPayloadBody, readPlanPayload } from "./contracts/plan.js";
 
 export type PlanProblem = { reason: string; message: string };
@@ -210,32 +210,11 @@ function prose(
 }
 
 /**
- * A contract issue as a plan problem: the path-named line is the message, and the reason keeps the codes the rest of
- * the code relies on — `missing-goal`, `bad-touches`, `plan-too-long`, `amendment-too-long`, `acceptance-too-many` —
- * so repair eligibility (document-only problems) and durable outcomes read the same as before the contract.
+ * A contract issue as a plan problem (`contractProblemOf`): the reason keeps the codes the rest of the code relies on
+ * — `missing-goal`, `bad-touches`, `plan-too-long`, `amendment-too-long`, `acceptance-too-many` — so repair eligibility
+ * (document-only problems) and durable outcomes read the same as before the contract.
  */
-export function planProblemOf(issue: ContractIssue): PlanProblem {
-  const at = issue.path;
-  const reason = (() => {
-    switch (issue.kind) {
-      case "required":
-      case "empty":
-      case "too-few":
-        return `missing-${at}`;
-      case "too-long":
-        return `${at}-too-long`;
-      case "too-many":
-        return `${at}-too-many`;
-      case "unknown-key":
-        return `${at}-unknown-key`;
-      case "newer-version":
-        return "newer-version";
-      default:
-        return `bad-${at}`;
-    }
-  })();
-  return { reason, message: issue.line };
-}
+export const planProblemOf: (issue: ContractIssue) => PlanProblem = contractProblemOf;
 
 /** scope.ts's rubric problem as a path-named line: `acceptance[0].id: is over 40 bytes`. */
 function acceptanceLine(problem: PlanProblem): string {
