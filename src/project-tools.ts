@@ -24,27 +24,9 @@ import { fileURLToPath } from "node:url";
 import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
+import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
 
-/** One secret a tool needs: an env name for a local server, or the value behind an http header. */
-export type ToolSecret = { name: string; optional: boolean };
-
-export type ToolSpec = {
-  name: string;
-  transport: "stdio" | "http";
-  /** stdio: the program and its arguments (no secrets in either). */
-  command: string | null;
-  args: string[];
-  /** http: the server's address. */
-  url: string | null;
-  /** Every secret the tool needs. stdio: each is an env variable of the server process. */
-  secrets: ToolSecret[];
-  /** http: the secret sent as `Authorization: Bearer <value>`. */
-  bearer: string | null;
-  /** http: header name → the secret sent as its raw value. */
-  headerSecrets: Record<string, string>;
-  /** What it does, in plain words. */
-  about: string;
-};
+export type { ToolSecret, ToolSpec };
 
 export type ToolTest = { at: string; ok: boolean; tools: string[]; problem: string | null };
 
@@ -63,9 +45,6 @@ export type ProjectTool = {
 /** A tool resolved for one launch: its spec and the secret values it gets. */
 export type ResolvedTool = { spec: ToolSpec; digest: string; values: Record<string, string> };
 
-const NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
-const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const HEADER_NAME = /^[A-Za-z0-9-]{1,64}$/;
 /** Env names a tool may never claim: the process's own plumbing, every
  * provider credential, and anything that changes how a program or its
  * interpreter loads (a secret's value must stay data, never code). */
@@ -140,14 +119,17 @@ const str = (value: unknown, cap: number, what: string): string => {
   return value.trim();
 };
 
-/** A tool definition from any source (catalog, console form, the lead, an import), checked whole. Throws in plain words. */
+/**
+ * A tool definition from any source (catalog, console form, the lead, an import, a saved row), checked whole and made
+ * the spec its schema (src/contracts/integration-metadata.ts) says. Throws in plain words.
+ */
 export function validateToolSpec(input: Record<string, unknown>): ToolSpec {
-  const name = str(input["name"], 40, "A short name").toLowerCase();
-  if (!NAME.test(name)) throw new Error("The name is lowercase letters, numbers, - and _ (up to 40), starting with a letter or number.");
+  const name = str(input["name"], LIMITS.name, "A short name").toLowerCase();
+  if (!NAME.test(name)) throw new Error(`The name is lowercase letters, numbers, - and _ (up to ${LIMITS.name}), starting with a letter or number.`);
   const transport = input["transport"] === "http" ? "http" : input["transport"] === "stdio" || input["transport"] === undefined ? "stdio" : null;
   if (transport === null) throw new Error("A tool runs as a local program or at a web address.");
   const secretsIn = Array.isArray(input["secrets"]) ? input["secrets"] : [];
-  if (secretsIn.length > 12) throw new Error("A tool can name up to 12 secrets.");
+  if (secretsIn.length > LIMITS.secrets) throw new Error(`A tool can name up to ${LIMITS.secrets} secrets.`);
   const secrets: ToolSecret[] = [];
   for (const one of secretsIn) {
     const entry = typeof one === "string" ? { name: one, optional: false } : one as Record<string, unknown>;
@@ -160,12 +142,12 @@ export function validateToolSpec(input: Record<string, unknown>): ToolSpec {
   let command: string | null = null, args: string[] = [], url: string | null = null, bearer: string | null = null;
   const headerSecrets: Record<string, string> = {};
   if (transport === "stdio") {
-    command = str(input["command"], 400, "The command");
+    command = str(input["command"], LIMITS.command, "The command");
     const argsIn = input["args"] === undefined ? [] : input["args"];
-    if (!Array.isArray(argsIn) || argsIn.length > 40 || argsIn.some(arg => typeof arg !== "string" || arg.length > 400 || /[\u0000-\u001f\u007f]/.test(arg))) throw new Error("Arguments are up to 40 plain words.");
+    if (!Array.isArray(argsIn) || argsIn.length > LIMITS.args || argsIn.some(arg => typeof arg !== "string" || arg.length > LIMITS.arg || /[\u0000-\u001f\u007f]/.test(arg))) throw new Error(`Arguments are up to ${LIMITS.args} plain words.`);
     args = argsIn as string[];
   } else {
-    url = str(input["url"], 500, "The address");
+    url = str(input["url"], LIMITS.url, "The address");
     let parsed: URL;
     try { parsed = new URL(url); } catch { throw new Error("The address is not a web address."); }
     const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
@@ -182,13 +164,15 @@ export function validateToolSpec(input: Record<string, unknown>): ToolSpec {
       headerSecrets[header] = secret;
     }
   }
-  const about = typeof input["about"] === "string" && input["about"].trim() !== "" ? input["about"].trim().slice(0, 240)
+  const about = typeof input["about"] === "string" && input["about"].trim() !== "" ? input["about"].trim().slice(0, LIMITS.about)
     : TOOL_CATALOG.find(one => one.name === name)?.about
       ?? (transport === "http" ? `Tools from ${new URL(url!).hostname}.` : `Tools from ${programName(command!, args)}.`);
   const spec: ToolSpec = { name, transport, command, args, url, secrets, bearer, headerSecrets, about };
   // Values belong in the secret store; a key typed into a command, argument or address is refused.
   if (scanForSecrets([command ?? "", ...args, url ?? "", about].join("\n")).length > 0) throw new Error("That looks like a key or token in the tool's settings. Name it as a secret instead; its value is set on the secure Tools screen.");
-  return spec;
+  const checked = readToolSpec(spec);
+  if (!checked.ok) throw new Error(`That tool is not valid: ${checked.issues.map(issue => issue.line).join("; ")}`);
+  return checked.value;
 }
 
 /** What a local tool is, in a word: the package a runner like npx starts, else the program's own name. */
@@ -284,7 +268,7 @@ function fromClaudeEntry(name: string, raw: unknown, source: string): FoundTool 
   try {
     if (type === "stdio") {
       for (const [key, value] of Object.entries((entry["env"] ?? {}) as Record<string, unknown>)) keep(key, value);
-      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40), transport: "stdio", command: entry["command"], args: entry["args"] ?? [], secrets });
+      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, LIMITS.name), transport: "stdio", command: entry["command"], args: entry["args"] ?? [], secrets });
       return { spec, source, values };
     }
     if (type === "http") {
@@ -297,7 +281,7 @@ function fromClaudeEntry(name: string, raw: unknown, source: string): FoundTool 
         if (bearerValue !== undefined) { if (keep(secret, bearerValue)) bearer = secret; }
         else if (keep(secret, value)) headerSecrets[header] = secret;
       }
-      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40), transport: "http", url: entry["url"], secrets, bearer, headerSecrets });
+      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, LIMITS.name), transport: "http", url: entry["url"], secrets, bearer, headerSecrets });
       return { spec, source, values };
     }
   } catch {
@@ -326,7 +310,7 @@ function fromCodexEntry(raw: unknown, environment: NodeJS.ProcessEnv): FoundTool
       let command = typeof transport["command"] === "string" ? transport["command"] : "";
       const cwd = typeof transport["cwd"] === "string" ? transport["cwd"] : null;
       if (!isAbsolute(command) && command.includes("/") && cwd !== null && isAbsolute(cwd)) command = join(cwd, command);
-      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40), transport: "stdio", command, args: transport["args"] ?? [], secrets });
+      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, LIMITS.name), transport: "stdio", command, args: transport["args"] ?? [], secrets });
       return { spec, source: "Codex on this computer", values };
     }
     if (transport["type"] === "streamable_http") {
@@ -339,7 +323,7 @@ function fromCodexEntry(raw: unknown, environment: NodeJS.ProcessEnv): FoundTool
         const secret = envName(`${name}_${header}`);
         if (keep(secret, value)) headerSecrets[header] = secret;
       }
-      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40), transport: "http", url: transport["url"], secrets, bearer, headerSecrets });
+      const spec = validateToolSpec({ name: name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, LIMITS.name), transport: "http", url: transport["url"], secrets, bearer, headerSecrets });
       return { spec, source: "Codex on this computer", values };
     }
   } catch {
