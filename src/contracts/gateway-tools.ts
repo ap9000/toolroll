@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
+import { envelopeSchema } from "./cli.js";
 import { catchUpOutput, decisionOutput, decisionsOutput, LISTED_TASK_STATES, queueColumnsOutput, recapOutput, repositoryContextOutput, scopeText, touches } from "./lead-tools.js";
 
 const text = (key: TextLimitKey) => z.string().max(TEXT_LIMITS[key]);
@@ -107,3 +108,42 @@ export const GATEWAY_TOOL_OUTPUTS = {
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 export type GatewayToolOutput<N extends GatewayToolName> = z.infer<(typeof GATEWAY_TOOL_OUTPUTS)[N]>;
+
+// ------------------------------------------------------------- a person's tools
+
+/**
+ * The tools a PERSON's API token sees over the HTTP gateway (mcp-person.ts). Each call becomes the exact `toolroll`
+ * command line the same person could type, run on the server under their own principal (operate.ts `runOperateAs`):
+ * the command's own authorization, project grants and attribution apply, and its `--json` envelope is the answer.
+ * Two reads keep the coordinator's names and arguments; the rest are new. Every value that lands in a command line
+ * may not begin with "-", so an argument can never be read as a flag.
+ */
+const notFlag = <T extends z.ZodString>(schema: T) => schema.regex(/^[^-]/, { error: "must not begin with -" });
+const taskRef = notFlag(ref);
+const runId = z.int().min(1);
+
+export const PERSON_TOOL_INPUTS = {
+  status: GATEWAY_TOOL_INPUTS.status,
+  list_tasks: GATEWAY_TOOL_INPUTS.list_tasks,
+  task_show: z.strictObject({ ref: taskRef }),
+  task_review: z.strictObject({ ref: taskRef, run: runId.optional(), all: z.boolean().optional() }),
+  review_findings: z.strictObject({ run: runId }),
+  file_task: z.strictObject({
+    repo: notFlag(gatewayRepo), title: notFlag(text("taskTitle").min(1)), idempotency_key: notFlag(text("idempotencyKey").min(8)),
+    deliverable: z.enum(["branch", "report"]).optional(),
+  }),
+} as const;
+
+export type PersonToolName = keyof typeof PERSON_TOOL_INPUTS;
+export type PersonToolInput<N extends PersonToolName> = z.infer<(typeof PERSON_TOOL_INPUTS)[N]>;
+
+/** The command's `--json` envelope (contracts/cli.ts); a refusal is `ok: false` with its stable reason. */
+const envelope = envelopeSchema;
+export const PERSON_TOOL_OUTPUTS = {
+  status: envelope,
+  list_tasks: envelope,
+  task_show: envelope,
+  task_review: envelope,
+  review_findings: envelope,
+  file_task: envelope.extend({ id: str.optional() }),
+} as const satisfies Record<PersonToolName, z.ZodType>;

@@ -341,6 +341,7 @@ import { budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendI
 import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS } from "./api-tokens.js";
+import { createMcpHttp } from "./mcp-http.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { logEvent } from "./log.js";
 import { modeTermsFromJson, modeWords, presetTerms, modeTermsJson, modeDigestOf, MODE_MAX_DAYS, type ModeName, type ModeTerms } from "./modes.js";
@@ -367,6 +368,8 @@ import { updateNoticeWords } from "./update-notice.js";
 import { whenHtml } from "./when-html.js";
 
 export type ServeOptions = {
+  /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
+  runOperateAs?: import("./mcp-person.js").RunOperateAs;
   /** `toolroll demo`: the scripted lead that answers Chat instead of a model. */
   demoLead?: import("./demo.js").DemoLead;
   /** Tests: the bin whose real path says how Toolroll was installed (Settings → Updates' command). */
@@ -1459,6 +1462,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.searchParams.has("token")) {
       return respond(response, 400, "text/plain; charset=utf-8", "credentials never travel in URLs");
     }
+    // The MCP gateway over HTTP (mcp-http.ts): coordinators and people's own API tokens, after the Host check.
+    if (url.pathname === "/mcp") return mcpHttp(request, response);
     // Back from Google's consent screen (v89). The session cookie is SameSite=Strict and stays behind on
     // a return from another site: the visit's one-time state (made by a signed-in approver) is the proof.
     if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") return googleCallback(request, response, url);
@@ -11548,6 +11553,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       approved: (() => { const scope = store.getScope(taskId); return scope !== null && approvalOf(scope).approved; })(),
     }));
   }
+
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request) !== null,
+    enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
 
   // ---- identity ------------------------------------------------------------
 

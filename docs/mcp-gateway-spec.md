@@ -53,6 +53,35 @@ human admits through the existing approval ceremony. Approve, steer,
 answer, pick, mint, mode, config, merge: no tool exists, and the
 credential cannot express them. The password never transits MCP.
 
+## Over HTTP: an engineer's own agent
+
+The console also serves the gateway at `/mcp` (src/mcp-http.ts), so an
+engineer's coding agent on their own laptop uses the one central server.
+Make your own API token (Settings → Sessions & tokens), then:
+
+```sh
+claude mcp add --transport http toolroll https://<host>/mcp --header "Authorization: Bearer so_…"
+```
+
+- Stateless streamable HTTP: one JSON-RPC message per `POST`, one JSON
+  answer (a notification gets `202`). No sessions, no event stream, no
+  other methods. Bodies are capped at 256 KiB.
+- Only an `so_` API token or a coordinator credential signs in, and
+  every request signs in again: a revoked or expired token gets `401` on
+  its next call. Passwords and cookies sign in nothing here; a request
+  carrying a browser `Origin` is refused; the console's Host check runs
+  first.
+- A coordinator credential sees exactly the stdio tools above.
+- A person sees `status`, `list_tasks`, `task_show`, `task_review` (the
+  `--brief` packet), `review_findings`, and — with an act token on an
+  account that acts — `file_task`, which files under them and waits for
+  approval as usual. Each call is the `toolroll` command they could type,
+  run on the server as them (`runOperateAs`, source `mcp`), so their
+  project grants and the token's scope apply and the ledger names the
+  person and the token. Approvals, answers, people and policy stay in
+  the console and chat. (`propose_decision` waits for a proposal-only
+  decision command.)
+
 ## Coordinator credential
 
 - Mint: `coordinator mint --name <n> --repo <path>... [--per-hour N]
@@ -362,7 +391,7 @@ mode.
 
 ## Explicitly out of scope (designed doors, not drift)
 
-Auto-admission mode term · public-read mode · HTTP transport ·
+Auto-admission mode term · public-read mode ·
 evidence bodies (`get_evidence` later, bounded + hash-verified) ·
 routine filing via MCP · any second write verb.
 
