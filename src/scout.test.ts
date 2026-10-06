@@ -22,6 +22,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { parseReport, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA } from "./scout-report.js";
 import { SCOUT_BROWSER, scoutBrowserLaunch, scrubUrl } from "./scout.js";
 import { connectedSpec } from "./mcp-connect.js";
+import * as mcpConnect from "./mcp-connect.js";
 import * as projectTools from "./project-tools.js";
 import * as browserCheck from "./scout-browser.js";
 import { createServer, request as httpRequest } from "node:http";
@@ -664,6 +665,39 @@ describe("scout tasks, against real git", () => {
     expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({ mobbin: ["search_screens"], posthog: ["query-run"] });
     expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
     expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
+  });
+
+  test("a scout gets PostHog's exec only while its saved grant reads; a write grant leaves it out of the launch, saying why", async () => {
+    const { runnerToken, approverToken } = await setup("codex");
+    const prepared = vi.spyOn(projectTools, "prepareRunTools");
+    const codexScout: Runner = async (_file, args, options) => {
+      const name = REPORT_FILE.exec(String(args.at(-1) ?? ""))?.[0];
+      if (name !== undefined) await writeFile(join(options?.cwd ?? "", name), JSON.stringify(FOUND));
+      const lines = [{ type: "thread.started", thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53" }, { type: "item.completed", item: { type: "agent_message", text: "Report written." } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }];
+      return { ...OK, stdout: lines.map(one => JSON.stringify(one)).join("\n") + "\n" };
+    };
+    expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+    const store = openStore(db);
+    expect(projectTools.addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: base })).toMatchObject({ ok: true });
+    store.recordProjectToolTest(repo, "posthog", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["exec"], problem: null }));
+    store.close();
+    vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: [{ spec: connectedSpec("posthog")!, digest: "d", values: {} }], skipped: [] }));
+    const grant = vi.spyOn(mcpConnect, "grantOf");
+    for (const [id, scope] of [["doctor-read", ["openid", "user:read", "error_tracking:read"]], ["doctor-write", ["error_tracking:read", "error_tracking:write"]]] as const) {
+      grant.mockImplementation(() => [...scope]);
+      await run(["task", "add", "why do errors spike", "--id", id, "--repo", repo, "--report", "--json"], reportingAgent);
+      await run(["task", "scope", id, "--goal", "Find why errors spiked this week", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
+      const scoped = openStore(db);
+      const digest = scoped.getScope(id)?.digest as string;
+      scoped.close();
+      await run(["task", "approve", id, "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+      expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+      expect(payload().dispatched).toContainEqual(expect.objectContaining({ id, outcome: "reported" }));
+    }
+    const [read, write] = prepared.mock.calls.slice(-2).map(call => call[3]);
+    expect(read).toMatchObject({ readOnly: { posthog: ["exec"] } });
+    expect(read).not.toHaveProperty("withheld");
+    expect(write).toMatchObject({ readOnly: {}, withheld: { posthog: "PostHog is connected with write access, so research runs can't use it; reconnect read-only" } });
   });
 
   test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {

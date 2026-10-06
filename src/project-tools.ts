@@ -677,9 +677,9 @@ export function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; includeModel: boolean; readOnly?: Readonly<Record<string, readonly string[]>> },
+  options: { home?: string; now: Date; includeModel: boolean; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>> },
 ): ToolLaunchArgs {
-  const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly);
+  const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
   const enabledTools = options.readOnly === undefined ? {} : { enabledTools: options.readOnly };
   const prepared = provider === "claude" ? claudeToolArgs(launch)
     : provider === "codex" ? codexToolArgs(launch, { includeModel: options.includeModel, ...enabledTools })
@@ -696,13 +696,13 @@ export function prepareRunTools(
   return prepared;
 }
 
-/** A research step's launch: only the servers it may read, each limited to its read-only actions; the rest left out, saying why. */
-function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonly string[]>> | undefined): ToolLaunch {
+/** A research step's launch: only the servers it may read, each limited to its read-only actions; the rest left out, saying why (`withheld`, when a service has its own reason). */
+function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> = {}): ToolLaunch {
   if (readOnly === undefined) return launch;
   const readable = (name: string) => (readOnly[name] ?? []).length > 0;
   return {
     tools: launch.tools.filter(one => readable(one.spec.name)),
-    skipped: [...launch.skipped, ...launch.tools.filter(one => !readable(one.spec.name)).map(one => ({ name: one.spec.name, reason: "research reads only connected services' read-only actions" }))],
+    skipped: [...launch.skipped, ...launch.tools.filter(one => !readable(one.spec.name)).map(one => ({ name: one.spec.name, reason: withheld[one.spec.name] ?? "research reads only connected services' read-only actions" }))],
   };
 }
 

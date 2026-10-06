@@ -26,7 +26,10 @@ import { envValue } from "./names.js";
 export type OneClick = { id: string; label: string; url: string; about: string; reads?: readonly string[];
   /** Send no scope: the server applies its own preset for this resource (PostHog's MCP preset). Naming scopes there
    * shows a 75-group permission grid instead, and the person can stop on it without ever coming back. */
-  serverScopes?: true };
+  serverScopes?: true;
+  /** Actions a research step may use by exact name, checked before the name rule: only while the connection's saved
+   * grant is read-only (readOnlyGrant). PostHog's server lists one action, `exec`, that reads or writes as the grant allows. */
+  readActions?: readonly string[] };
 
 /**
  * Services that connect this way: their servers speak streamable HTTP and
@@ -64,7 +67,7 @@ export const ONE_CLICK: readonly OneClick[] = [
   // Mobbin's sign-in is its Supabase auth server, on another origin: its protected-resource metadata names it.
   { id: "mobbin", label: "Mobbin", url: "https://api.mobbin.com/mcp", about: "Real app screens and flows to learn from.",
     reads: ["screen", "flow", "app", "site", "element", "pattern", "ui", "ios", "android", "web"] },
-  { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.", serverScopes: true,
+  { id: "posthog", label: "PostHog", url: "https://mcp.posthog.com/mcp", about: "Product analytics, funnels and events.", serverScopes: true, readActions: ["exec"],
     reads: ["insight", "run", "event", "definition", "property", "properties"] },
   { id: "betterstack", label: "Better Stack", url: "https://mcp.betterstack.com", about: "Uptime checks and incidents.",
     reads: ["uptime", "monitor", "incident", "availability", "response", "time"] },
@@ -80,7 +83,7 @@ export function oneClickServices(environment: NodeJS.ProcessEnv = process.env): 
   const [id = "", label = "", url = ""] = (envValue(environment, "TEST_CONNECT") ?? "").split("|");
   if (!/^[a-z0-9-]{1,40}$/.test(id) || label === "" || !loopback(url)) return ONE_CLICK;
   const known = ONE_CLICK.find(one => one.id === id);
-  const standIn: OneClick = { id, label, url, about: known?.about ?? "A service on this computer.", ...(known?.reads === undefined ? {} : { reads: known.reads }) };
+  const standIn: OneClick = { id, label, url, about: known?.about ?? "A service on this computer.", ...(known?.reads === undefined ? {} : { reads: known.reads }), ...(known?.readActions === undefined ? {} : { readActions: known.readActions }) };
   return ONE_CLICK.some(one => one.id === id) ? ONE_CLICK.map(one => one.id === id ? standIn : one) : [...ONE_CLICK, standIn];
 }
 export const oneClickOf = (id: string) => oneClickServices().find(one => one.id === id) ?? null;
@@ -94,12 +97,18 @@ export const localConnectOf = (id: string): { id: string; label: string; about: 
   return app === undefined || tool === null ? null : { id, label: tool.label, about: app.connect };
 };
 
-/** Where each service stands in a project: connected, open to connect, or its name taken by a tool set up another way. `local` connects with no sign-in. */
-export function connectionsOf(store: Store, repo: string): { id: string; label: string; about: string; state: "connected" | "open" | "taken"; local?: true }[] {
+/**
+ * Where each service stands in a project: connected, open to connect, or its name taken by a tool set up another way.
+ * `local` connects with no sign-in. `research` says, for a connected service research can't use because of the access
+ * it was granted, why (shown on its Tools entry beside Reconnect read-only).
+ */
+export function connectionsOf(store: Store, repo: string, home: string = homedir()): { id: string; label: string; about: string; state: "connected" | "open" | "taken"; local?: true; research?: string }[] {
   const tools = projectToolsOf(store, repo);
   const signIn = oneClickServices().map(service => {
     const had = tools.find(one => one.name === service.id);
-    return { id: service.id, label: service.label, about: service.about, state: had === undefined ? "open" as const : had.spec.url === service.url && had.spec.bearer === ACCESS ? "connected" as const : "taken" as const };
+    const state = had === undefined ? "open" as const : had.spec.url === service.url && had.spec.bearer === ACCESS ? "connected" as const : "taken" as const;
+    const withheld = state === "connected" && service.readActions !== undefined ? researchAccess(service, had!, grantOf(repo, service.id, home)).withheld : null;
+    return { id: service.id, label: service.label, about: service.about, state, ...(withheld === null ? {} : { research: withheld.said }) };
   });
   const local = LOCAL_APPS.flatMap(app => {
     const one = localConnectOf(app.tool);
@@ -129,25 +138,63 @@ export function readsOnly(action: string, subjects: readonly string[]): boolean 
 }
 
 /**
+ * Identity scopes a read-only grant may carry beside `<resource>:read` ones. An allow-list: any other scope (a
+ * write, a wildcard, `introspection`, one nobody listed) makes the grant unsafe for research.
+ */
+const IDENTITY_SCOPES = new Set(["openid", "profile", "email"]);
+const READ_SCOPE = /^[a-z][a-z0-9_]{0,63}:read$/;
+export const readScope = (scope: string) => IDENTITY_SCOPES.has(scope) || READ_SCOPE.test(scope);
+/** Whether a saved grant only reads: it names at least one scope and every one is a read or identity scope. Unknown (null) never is. */
+export const readOnlyGrant = (grant: readonly string[] | null): boolean => grant !== null && grant.length > 0 && grant.every(readScope);
+/** An OAuth `scope` value as scope tokens (RFC 6749), sorted and deduplicated; null when absent, empty or malformed. */
+export function scopeList(value: unknown): string[] | null {
+  if (typeof value !== "string") return null;
+  const tokens = value.split(" ").filter(one => one !== "");
+  if (tokens.length === 0 || tokens.length > 512 || !tokens.every(one => SCOPE_TOKEN.test(one))) return null;
+  return [...new Set(tokens)].sort();
+}
+/** The scope a connected service's sign-in was granted, as saved beside its token; null when it was never proved. */
+export function grantOf(repo: string, tool: string, home: string = homedir()): string[] | null {
+  try { return scopeList(readToolSecrets(repo, tool, home)[GRANTED]); } catch { return null; }
+}
+
+/**
+ * What research may use of one connected service: its exact `readActions` while the saved grant only reads, and
+ * otherwise (as for every service) the actions whose names only read. A service with `readActions` that gives
+ * research nothing says why, plainly, for the run and its Tools entry.
+ */
+function researchAccess(service: { label: string; reads?: readonly string[] | undefined; readActions?: readonly string[] | undefined }, tool: ProjectTool, grant: readonly string[] | null): { reads: string[]; withheld: { said: string; reason: string } | null } {
+  const listed = tool.lastTest?.ok ? tool.lastTest.tools : [];
+  const exact = service.readActions !== undefined && readOnlyGrant(grant) ? service.readActions : [];
+  const reads = listed.filter(action => exact.includes(action) || (service.reads !== undefined && readsOnly(action, service.reads)));
+  if (reads.length > 0 || service.readActions === undefined || listed.length === 0 || readOnlyGrant(grant)) return { reads, withheld: null };
+  const why = grant === null ? `${service.label} didn't say what access it granted, so research runs can't use it`
+    : `${service.label} is connected with write access, so research runs can't use it`;
+  return { reads, withheld: { said: `${why}.`, reason: `${why}; reconnect read-only` } };
+}
+
+/**
  * What a research step may use of a project's connected services: each
  * signed-in service's read-only actions, as its last test listed them —
  * by server (`reads`, for Codex's `enabled_tools`) and named the way Claude
  * allows them (`mcp__<service>__<action>`). `local` is the loopback host of
  * each app on this computer it reads (its proxy lets only those through). A service not connected, without
- * read-only actions, or left out of this run (`launched`) gives nothing.
+ * read-only actions, or left out of this run (`launched`) gives nothing. `withheld` is why a service that can name
+ * its research actions gave none (its grant, `granted`, writes or was never proved): the run says so.
  */
-export type ResearchTools = { services: { id: string; label: string }[]; allowed: string[]; reads: Record<string, string[]>; local: string[] };
-export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null): ResearchTools {
+export type ResearchTools = { services: { id: string; label: string }[]; allowed: string[]; reads: Record<string, string[]>; local: string[]; withheld?: Record<string, string> };
+export function researchToolsOf(tools: readonly ProjectTool[], launched: ReadonlySet<string> | null = null, granted: (tool: string) => readonly string[] | null = () => null): ResearchTools {
   const research: ResearchTools = { services: [], allowed: [], reads: {}, local: [] };
   // Signed-in services, then apps on this computer (each exactly as listed: its own address, no key).
   const readable = [
-    ...oneClickServices().map(service => ({ id: service.id, label: service.label, reads: service.reads, is: (spec: ToolSpec) => spec.url === service.url && spec.bearer === ACCESS })),
-    ...LOCAL_APPS.map(app => ({ id: app.tool, label: catalogTool(app.tool)?.label ?? app.tool, reads: app.reads, is: (spec: ToolSpec) => localAppOf(spec) === app })),
+    ...oneClickServices().map(service => ({ id: service.id, label: service.label, reads: service.reads, readActions: service.readActions, is: (spec: ToolSpec) => spec.url === service.url && spec.bearer === ACCESS })),
+    ...LOCAL_APPS.map(app => ({ id: app.tool, label: catalogTool(app.tool)?.label ?? app.tool, reads: app.reads, readActions: undefined, is: (spec: ToolSpec) => localAppOf(spec) === app })),
   ];
   for (const service of readable) {
     const tool = tools.find(one => one.name === service.id);
-    if (service.reads === undefined || tool === undefined || !service.is(tool.spec) || (launched !== null && !launched.has(tool.name))) continue;
-    const reads = (tool.lastTest?.ok ? tool.lastTest.tools : []).filter(action => readsOnly(action, service.reads!));
+    if ((service.reads === undefined && service.readActions === undefined) || tool === undefined || !service.is(tool.spec) || (launched !== null && !launched.has(tool.name))) continue;
+    const { reads, withheld } = researchAccess(service, tool, service.readActions === undefined ? null : granted(tool.name));
+    if (withheld !== null) research.withheld = { ...research.withheld, [service.id]: withheld.reason };
     if (reads.length === 0) continue;
     research.services.push({ id: service.id, label: service.label });
     research.allowed.push(...reads.map(action => `mcp__${service.id}__${action}`));
@@ -159,6 +206,8 @@ export function researchToolsOf(tools: readonly ProjectTool[], launched: Readonl
 
 /** The secrets a connected tool keeps: the bearer the MCP server takes, and what refreshing it needs. */
 const ACCESS = "OAUTH_ACCESS_TOKEN", REFRESH = "OAUTH_REFRESH_TOKEN", CLIENT = "OAUTH_CLIENT_ID", CLIENT_SECRET = "OAUTH_CLIENT_SECRET", TOKEN_URL = "OAUTH_TOKEN_URL", EXPIRES = "OAUTH_EXPIRES_AT", RESOURCE = "OAUTH_RESOURCE";
+/** The scope the sign-in granted, kept beside its token. Not one of the spec's secrets, so it never reaches a launch. */
+const GRANTED = "OAUTH_GRANTED_SCOPE";
 /** Where a service sends the person back after they sign in. */
 export const CONNECT_CALLBACK = "/settings/tools/connected";
 const VISIT_MS = 15 * 60_000, RENEW_RETRY_MS = 5 * 60_000;
@@ -170,7 +219,9 @@ type Server = { authorize: string; token: string; register: string; scopes: stri
 const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const SCOPE_PARAM_LIMIT = 6_000;
 /** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). `kit` or `template` is the page it returns to. */
-export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number };
+export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number;
+  /** The scope asked for, when one was: the grant when the token answer leaves `scope` out (RFC 6749 §5.1). */
+  scope?: string | null };
 
 const json = async (fetcher: Fetch, url: string): Promise<Record<string, unknown> | null> => {
   try {
@@ -225,7 +276,7 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
  * client, and hand back the address to send the person to (and the visit the
  * callback finishes). The person's password was checked before this.
  */
-export async function startConnect(input: { service: string; repo: string; by: string; origin: string; kit?: string | null; template?: string | null }, fetcher: Fetch = fetch, now = Date.now()): Promise<{ ok: true; go: string; state: string; visit: ConnectVisit } | { ok: false; said: string }> {
+export async function startConnect(input: { service: string; repo: string; by: string; origin: string; kit?: string | null; template?: string | null; readOnly?: boolean }, fetcher: Fetch = fetch, now = Date.now()): Promise<{ ok: true; go: string; state: string; visit: ConnectVisit } | { ok: false; said: string }> {
   const service = oneClickOf(input.service);
   if (service === null) return { ok: false, said: "Choose a service from the list." };
   const server = await discoverSignIn(service.url, fetcher);
@@ -255,8 +306,14 @@ export async function startConnect(input: { service: string; repo: string; by: s
   go.searchParams.set("code_challenge_method", "S256");
   go.searchParams.set("state", state);
   go.searchParams.set("resource", resource);
-  if (server.scopes.length > 0 && service.serverScopes !== true) go.searchParams.set("scope", server.scopes.join(" "));
-  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS } };
+  // Reconnect read-only (a service that names its research actions): only the read and identity scopes the server
+  // lists. Otherwise every listed scope, or none where the server applies its own preset.
+  const scopes = input.readOnly === true && service.readActions !== undefined ? server.scopes.filter(readScope)
+    : service.serverScopes === true ? [] : server.scopes;
+  if (input.readOnly === true && service.readActions !== undefined && scopes.length === 0) return { ok: false, said: `${service.label} didn't list any read-only access to ask for.` };
+  const scope = scopes.length > 0 ? scopes.join(" ") : null;
+  if (scope !== null) go.searchParams.set("scope", scope);
+  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS, scope } };
 }
 
 /** The spec a connected service joins the project with: its MCP address, signed in with the token its sign-in gave. */
@@ -299,7 +356,9 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
     const added = addToolTo(store, visit.repo, spec, `${service.label}, connected by signing in`, visit.by, now, { home });
     if (!added.ok) return { ok: false, said: added.message };
   }
-  setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource,
+  // The grant: what the answer says, or what was asked for when it says nothing; never one from an earlier sign-in.
+  const granted = "scope" in body ? scopeList(body["scope"]) : scopeList(visit.scope ?? null);
+  setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource, [GRANTED]: granted?.join(" ") ?? "",
     ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }), ...(visit.clientSecret === null ? {} : { [CLIENT_SECRET]: visit.clientSecret }) }, home);
   // The success line names the project it went to: the page and chat may be looking at another.
   const to = basename(visit.repo);
@@ -328,7 +387,9 @@ export async function refreshConnections(store: Store, repos: readonly string[],
       const body = await answer.json() as Record<string, unknown>;
       const tokens = tokensFrom(body, now.getTime());
       if (!answer.ok || tokens.access === null) { report.problems.push(`${tool.name}: its sign-in ran out; connect it again on the Tools page`); continue; }
-      setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }) }, home);
+      // A refresh carries the same grant or a narrower one, and says so when it changes; said badly, it is unknown.
+      setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
+        ...("scope" in body ? { [GRANTED]: scopeList(body["scope"])?.join(" ") ?? "" } : {}) }, home);
       renewTried.delete(key);
       report.refreshed++;
     } catch {

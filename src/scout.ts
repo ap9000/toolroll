@@ -43,7 +43,7 @@ import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
 import { catalogTool, projectToolsOf, toolLaunchFor, type ToolSpec } from "./project-tools.js";
-import { researchToolsOf, type ResearchTools } from "./mcp-connect.js";
+import { grantOf, researchToolsOf, type ResearchTools } from "./mcp-connect.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
 import { invokeAgent } from "./invoke.js";
@@ -280,7 +280,7 @@ function connectedResearch(store: Store, taskRef: number, runId: number): Resear
   try {
     const repo = store.refById(taskRef)?.repo ?? null;
     if (repo === null) return NO_RESEARCH;
-    return researchToolsOf(projectToolsOf(store, repo), new Set(toolLaunchFor(store, runId).tools.map(one => one.spec.name)));
+    return researchToolsOf(projectToolsOf(store, repo), new Set(toolLaunchFor(store, runId).tools.map(one => one.spec.name)), tool => grantOf(repo, tool));
   } catch {
     return NO_RESEARCH;
   }
@@ -432,6 +432,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         allowedTools: proxy === null ? [] : [...(browser === null ? SCOUT_RESEARCH_TOOLS : SCOUT_ALLOWED_TOOLS), ...research.allowed],
         ...(browser === null ? {} : { extraMcpServers: browser }),
         readOnlyTools: research.reads,
+        ...(research.withheld === undefined ? {} : { researchWithheld: research.withheld }),
         skipPermissions: false,
         resumeSession: null,
         ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
