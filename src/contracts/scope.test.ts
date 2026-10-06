@@ -1,17 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { exactAcceptance, parseAcceptanceCriteria } from "../scope.js";
+import { exactAcceptance } from "../scope.js";
+import { parsePlan } from "../plan.js";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { acceptanceCriterionSchema, planSchema } from "./plan.js";
-import { readScopeTerms, rubricInputSchema, rubricSchema, savedCriterionSchema, scopeTermsSchema } from "./scope.js";
-import { replayRows, scopeFixtures } from "../../test/scope-replay.js";
+import { readAcceptance, readScopeTerms, rubricInputSchema, rubricSchema, savedCriterionSchema, scopeTermsSchema } from "./scope.js";
+import { replayRoutineRow, replayRows, scopeFixtures } from "../../test/scope-replay.js";
 
 const { rows, baseline } = scopeFixtures();
 
 const rubricRead = (input: unknown): SampleVerdict => {
-  const read = parseAcceptanceCriteria(input);
+  const read = readAcceptance(input);
   return read.problems.length === 0 ? { ok: true } : { ok: false, lines: read.problems.map(one => one.message) };
 };
 const termsRead = (input: unknown): SampleVerdict => {
@@ -62,15 +63,15 @@ describe("the acceptance criterion contract", () => {
   });
 
   it("names the path and keeps a reason code; a clean criterion still reads beside a bad one", () => {
-    expect(parseAcceptanceCriteria([c1, { ...c1, statement: "Again." }, { id: "c3", statement: "", evidence: ["check"] }])).toEqual({
+    expect(readAcceptance([c1, { ...c1, statement: "Again." }, { id: "c3", statement: "", evidence: ["check"] }])).toEqual({
       criteria: [c1, { ...c1, statement: "Again." }],
       problems: [
         { reason: "acceptance[1]-duplicate-id", message: 'acceptance[1].id: "c1" appears twice' },
         { reason: "missing-acceptance[2].statement", message: "acceptance[2].statement: must not be empty" },
       ],
     });
-    expect(parseAcceptanceCriteria(Array.from({ length: 13 }, () => c1)).problems).toEqual([{ reason: "acceptance-too-many", message: "acceptance: at most 12 items" }]);
-    expect(parseAcceptanceCriteria([{ ...c1, how: "x".repeat(501) }]).problems).toEqual([{ reason: "acceptance[0].how-too-long", message: "acceptance[0].how: over 500 bytes" }]);
+    expect(readAcceptance(Array.from({ length: 13 }, () => c1)).problems).toEqual([{ reason: "acceptance-too-many", message: "acceptance: at most 12 items" }]);
+    expect(readAcceptance([{ ...c1, how: "x".repeat(501) }]).problems).toEqual([{ reason: "acceptance[0].how-too-long", message: "acceptance[0].how: over 500 bytes" }]);
   });
 
   it("reads a stored rubric strictly: a key this code never writes is refused, an absent how is not", () => {
@@ -78,6 +79,19 @@ describe("the acceptance criterion contract", () => {
     expect(exactAcceptance(JSON.stringify([{ ...c1, extra: 1 }]))).toEqual({ ok: false, problem: "rubric entry 1 carries a key this code never writes" });
     expect(exactAcceptance(JSON.stringify(["c1"]))).toEqual({ ok: false, problem: "rubric entry 1 is not an object" });
     expect(exactAcceptance(JSON.stringify([c1, { id: 7, statement: "s", how: null, evidence: ["check"] }]))).toEqual({ ok: false, problem: "the rubric does not parse: acceptance[1].id: must be a string (got a number)" });
+  });
+
+  it("keeps plan.ts's acceptanceLine mapping: each semantic refusal names its field once", () => {
+    const plan = "## Approach\nDo it.\n## Milestones\n1. Do it.\n## Dependencies\n- None.\n## Risks\n- None.\n## Proof\n- c1 — the checks.";
+    const problems = (acceptance: unknown[]) => {
+      const read = parsePlan(JSON.stringify({ goal: "g", acceptance, plan }));
+      expect(read.ok).toBe(false);
+      return read.ok ? [] : read.problems.map(one => one.message);
+    };
+    expect(problems([{ ...c1, id: "é".repeat(21) }])).toEqual(["acceptance[0].id: over 40 bytes"]);
+    expect(problems([{ ...c1, statement: "look\u001b[2J" }])).toEqual(["acceptance[0].statement: carries control characters that could become terminal escapes"]);
+    expect(problems([c1, c1])).toEqual(['acceptance[1].id: "c1" appears twice']);
+    expect(problems([{ ...c1, evidence: ["check", "check"] }])).toEqual(['acceptance[0].evidence: entry 2: "check" appears twice']);
   });
 });
 
@@ -115,6 +129,38 @@ describe("the scope terms contract", () => {
 });
 
 describe("saved scopes and standing orders, replayed read-only", () => {
+  // These copies model both historical v1 forms. Restatement can bind a profile without changing digest_version;
+  // migration can also pin a profile beside an unchanged, fields-only approval. The original saved fixture stays put.
+  const routine = rows.routine[0]!;
+  const fieldsOnlyDigest = "d846f79770879f97f4cd234910de92a6";
+
+  it("replays a restated digest_version 1 routine with its saved profile on both sides", () => {
+    const replay = replayRoutineRow({ ...routine, digest_version: 1 });
+    expect(replay).toEqual(baseline.routine[0]);
+  });
+
+  it("keeps grandfathered digest_version 1 approvals that predate their pinned profiles", () => {
+    const replay = replayRoutineRow({ ...routine, digest_version: 1, digest: fieldsOnlyDigest, approved_digest: fieldsOnlyDigest });
+    expect(replay.digest).toBe(fieldsOnlyDigest);
+    expect(replay.approvedDigest).toBe(fieldsOnlyDigest);
+    // A restated working side can coexist with an old approved side; their digest formats are independent.
+    const restated = replayRoutineRow({ ...routine, digest_version: 1, approved_digest: fieldsOnlyDigest });
+    expect(restated.digest).toBe(routine["digest"]);
+    expect(restated.approvedDigest).toBe(fieldsOnlyDigest);
+  });
+
+  it("still reports changed terms, corrupt digests and v2 digests that omit their profile", () => {
+    for (const row of [
+      { ...routine, digest_version: 1, goal: "Different terms." },
+      { ...routine, digest_version: 1, digest: "0".repeat(32), approved_digest: "0".repeat(32) },
+      { ...routine, digest: fieldsOnlyDigest, approved_digest: fieldsOnlyDigest },
+    ]) {
+      const replay = replayRoutineRow(row);
+      expect(replay.digest).not.toBe(replay.stored.digest);
+      expect(replay.approvedDigest).not.toBe(replay.stored.approvedDigest);
+    }
+  });
+
   it("re-derive every recorded digest, rubric and route byte for byte as before the contracts", () => {
     expect(rows.task_scope.length).toBe(20);
     expect(rows.routine.length).toBe(1);

@@ -518,7 +518,19 @@ export type { AcceptanceCriterion, AcceptanceProblem };
  * (`propose` says yes; every authoring road says no), never for this parser.
  */
 export function parseAcceptanceCriteria(value: unknown): { criteria: AcceptanceCriterion[]; problems: AcceptanceProblem[] } {
-  return readAcceptance(value);
+  const read = readAcceptance(value);
+  // Keep the prose shape plan.ts's existing acceptanceLine consumes. Validation stays in the contract; only this
+  // compatibility boundary formats messages. That mapping takes a field followed by a space, not a colon, and
+  // evidence-array indices belong in the detail because it recognizes only the criterion's index.
+  return {
+    ...read,
+    problems: read.problems.map(problem => ({
+      ...problem,
+      message: problem.message
+        .replace(/^(acceptance\[\d+\]\.evidence)\[(\d+)\]: /, (_, path: string, index: string) => `${path} entry ${Number(index) + 1}: `)
+        .replace(/^(acceptance(?:\[\d+\])?(?:\.[A-Za-z]+)?): /, "$1 "),
+    })),
+  };
 }
 
 /** The exact bytes a rubric's SIGNED terms reduce to for the digest: sorted

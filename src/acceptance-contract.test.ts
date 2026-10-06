@@ -95,7 +95,7 @@ describe("parseAcceptanceCriteria: fail closed, every problem at once", () => {
 
   test("an evidence kind outside the four is refused", () => {
     const result = parseAcceptanceCriteria([{ id: "c1", statement: "a", evidence: ["vibes"] }]);
-    expect(result.problems).toEqual([{ reason: "bad-acceptance[0].evidence[0]", message: 'acceptance[0].evidence[0]: must be one of "check", "screenshot", "changed-path", "manual-review"' }]);
+    expect(result.problems).toEqual([{ reason: "bad-acceptance[0].evidence[0]", message: 'acceptance[0].evidence entry 1: must be one of "check", "screenshot", "changed-path", "manual-review"' }]);
   });
 
   test("an empty evidence array is refused — every criterion needs at least one required kind", () => {

@@ -119,16 +119,24 @@ export function replayRoutineRow(row: SavedRow): RowReplay {
     costCeilingUsd: row["cost_ceiling_usd"] === null ? null : Number(row["cost_ceiling_usd"]),
     budgetPerRunMicrousd: row["budget_per_run_microusd"] === null || row["budget_per_run_microusd"] === undefined ? null : Number(row["budget_per_run_microusd"]),
   };
-  const derive = (profileJson: string | null, routeJson: string | null): string | null => {
+  const derive = (profileJson: string | null, routeJson: string | null, storedDigest: string | null): string | null => {
     const route = routeJson === null ? null : routeFromJson(routeJson);
     if (routeJson !== null && route === null) return null;
-    return routineDigestOf(terms, row["digest_version"] === 2 ? profileFromJson(profileJson) : null, route);
+    // updateRoutineTerms can restate a v1 routine with a profile without bumping digest_version. Migration also
+    // pinned profiles beside unchanged fields-only approvals. For an unrouted v1 side, accept that older encoding
+    // only when it re-derives the stored digest; otherwise include the profile, as routine.ts does. Never use this
+    // fallback for routed or v2 rows, and never return the stored digest itself: real disagreements stay visible.
+    if (row["digest_version"] === 1 && route === null) {
+      const legacy = routineDigestOf(terms);
+      if (legacy === storedDigest) return legacy;
+    }
+    return routineDigestOf(terms, profileFromJson(profileJson), route);
   };
   return {
     key: String(row["id"]),
     stored: { digest: text(row["digest"]), approvedDigest: text(row["approved_digest"]) },
-    digest: derive(text(row["profile_json"]), text(row["route_json"])),
-    approvedDigest: text(row["approved_digest"]) === null ? null : derive(text(row["approved_profile_json"]), text(row["approved_route_json"]) ?? text(row["route_json"])),
+    digest: derive(text(row["profile_json"]), text(row["route_json"]), text(row["digest"])),
+    approvedDigest: text(row["approved_digest"]) === null ? null : derive(text(row["approved_profile_json"]), text(row["approved_route_json"]) ?? text(row["route_json"]), text(row["approved_digest"])),
     acceptance: JSON.stringify(acceptance),
     canonicalAcceptance: JSON.stringify(canonicalAcceptance(acceptance)),
     termsProblem: null,

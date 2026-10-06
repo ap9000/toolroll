@@ -216,6 +216,14 @@ function prose(
  */
 export const planProblemOf: (issue: ContractIssue) => PlanProblem = contractProblemOf;
 
+/** scope.ts's rubric problem as a path-named line: `acceptance[0].id: is over 40 bytes`. */
+function acceptanceLine(problem: PlanProblem): string {
+  const named = /^(acceptance(?:\[\d+\])?(?:\.[A-Za-z]+)?) (.*)$/.exec(problem.message);
+  if (named !== null) return `${named[1]}: ${named[2]}`;
+  const at = /^(acceptance\[\d+\])-/.exec(problem.reason)?.[1] ?? "acceptance";
+  return `${at}: ${problem.message}`;
+}
+
 /** True when `problems` name `field` or anything under it. */
 const touched = (problems: readonly PlanProblem[], field: string) =>
   problems.some(problem => problem.message.startsWith(`${field}:`) || problem.message.startsWith(`${field}[`) || problem.message.startsWith(`${field}.`));
@@ -252,7 +260,7 @@ function planRuleProblems(body: Record<string, unknown>, contract: readonly Plan
   let acceptanceOk = false;
   if (!touched(contract, "acceptance")) {
     const acceptance = parseAcceptanceCriteria(body["acceptance"]);
-    problems.push(...acceptance.problems);
+    problems.push(...acceptance.problems.map(problem => ({ reason: problem.reason, message: acceptanceLine(problem) })));
     criteria = acceptance.criteria;
     acceptanceOk = acceptance.problems.length === 0;
   }

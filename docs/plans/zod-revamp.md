@@ -131,10 +131,14 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   `AcceptanceCriterion`, `PhaseRoute`, `RouteLeg`, `RouteOverride` and `TaskSizing` are derived; `parseAcceptanceCriteria`,
   `exactAcceptance`, `proposeGuarded`, `routeFromJson`, `parseOverrides` and `parseSizing` read through them, and what
   JSON Schema can't say (UTF-8 bytes, control characters, duplicate ids and evidence kinds, leg order, posture, one
-  override per phase) runs after parsing with a path-named error. The lead's rubric argument schema is generated. The
-  evidence kinds and rubric limits moved to `src/contracts/acceptance-terms.ts` (re-exported by `scope.ts`) so
+  override per phase) runs after parsing with a path-named error. Item 5 should use `toModelSchema(rubricInputSchema)`
+  for the lead's rubric arguments; `mate-tools.ts` remains unchanged. The evidence kinds and rubric limits moved to
+  `src/contracts/acceptance-terms.ts` (re-exported by `scope.ts`) so
   `plan.ts` and `scope.ts` load in either order. Kept: every recorded scope, standing order and sealed route in
   `test/fixtures/scopes/` (from the authentic v47 fixture, this release's store and earlier releases' legacy shapes)
   re-derives its digest, approved digest, rubric and route bytes exactly as before (`npx tsx scripts/scope-replay.ts
   [db]` replays a real database read-only). No tightening: criteria still ignore unknown keys and read an empty `how`
-  as none; refusals are path-named lines, and a route from a newer Toolroll says so.
+  as none; refusals name their fields (scope.ts keeps the prose plan.ts's unchanged `acceptanceLine` expects), and a
+  route from a newer Toolroll says so. The replay recognizes both historical routine `digest_version: 1` encodings:
+  fields-only approvals with migration-pinned profiles and restated digests that bind the saved profile without a
+  version bump. Working and approved digests are checked independently; genuine mismatches remain visible.

@@ -1236,7 +1236,7 @@ describe("acceptance rubric on the command line", () => {
     expect(ACCEPTANCE_LIMITS.statement).toBe(1000);
     const long = "x".repeat(900);
     expect(parseAcceptanceCriteria(acceptanceLinesToInput([`${long}|check`])).problems).toEqual([]);
-    expect(parseAcceptanceCriteria(acceptanceLinesToInput([`${"x".repeat(1001)}|check`])).problems.map(p => p.message)).toEqual(["acceptance[0].statement: over 1,000 bytes"]);
+    expect(parseAcceptanceCriteria(acceptanceLinesToInput([`${"x".repeat(1001)}|check`])).problems.map(p => p.message)).toEqual(["acceptance[0].statement over 1,000 bytes"]);
   });
 });
 
