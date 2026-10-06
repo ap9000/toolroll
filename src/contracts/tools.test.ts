@@ -150,8 +150,10 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
     const valid = calls.map((call, index) => ({ name: `recorded call ${index + 1}`, input: call }));
     // The advertised contract stays strict on both surfaces.
     assertContract({ schema: input, read: value => verdict(input, value), valid, invalid });
-    const stripsKeys = surface === "lead" && tool !== "propose_flow";
-    const runtimeInvalid = !stripsKeys ? invalid : invalid.filter(sample =>
+    // propose_action passes unknown keys to the action's own per-operation check (as 0.9.36 did); see the handler test.
+    const passesKeys = surface === "lead" && tool === "propose_action";
+    const stripsKeys = surface === "lead" && tool !== "propose_flow" && !passesKeys;
+    const runtimeInvalid = passesKeys ? invalid.filter(sample => sample.name !== "an unknown key") : !stripsKeys ? invalid : invalid.filter(sample =>
       sample.name !== "an unknown key" && !sample.paths.some(path => FALLBACK_FIELDS[tool]?.includes(path)));
     const loose = !stripsKeys ? [] : [
       ...calls.map((call, index) => ({ name: `recorded call ${index + 1} with an ignored key`, input: { ...call, zz_unknown: 1 } })),
@@ -207,6 +209,8 @@ describe("a call's refusal", () => {
     expect(MATE_TOOLS.find(one => one.name === "propose_agents")!.read({} as never, {
       task: "t-42", role: "builder", agent: { provider: "claude", model: "opus", zz_unknown: 1 },
     })).toEqual({ ok: true, value: { task: "t-42", role: "builder", agent: { provider: "claude", model: "opus" } } });
+    expect(MATE_TOOLS.find(one => one.name === "propose_action")!.read({} as never, { operation: "knowledge_instructions", repo: "r1", instructions: "x", password: "bad" }))
+      .toEqual({ ok: true, value: { operation: "knowledge_instructions", repo: "r1", instructions: "x", password: "bad" } });
     expect(LEAD_TOOL_OPTIONS.propose_flow).toBeDefined();
     expect(lead("propose_flow", { operation: "create", repo: "r1", steps: [{ kind: "inbox", title: "Inbox", onFail: "x" }] })).toEqual(["steps[0]: unknown key 'onFail' (did you mean ifFails?)"]);
   });

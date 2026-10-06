@@ -1665,8 +1665,10 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
 /** The lead's tools, in the order the model is shown them: each one's inputSchema is its contract, derived. */
 export const MATE_TOOLS: MateTool[] = (Object.keys(LEAD_TOOL_INPUTS) as LeadToolName[]).map(<N extends LeadToolName>(name: N): MateTool => {
   const input = LEAD_TOOL_INPUTS[name];
-  // Flow proposals already used their strict contract in 0.9.36; keep that validation unchanged.
-  const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : LEAD_TOOL_READ_INPUTS[name].strip();
+  // Flow proposals already used their strict contract in 0.9.36; keep that validation unchanged. A shared action's
+  // unknown keys reach prepareSharedAction, whose per-operation check refused them in 0.9.36 and still does. Every other
+  // tool ignored unknown arguments and still strips them.
+  const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : name === "propose_action" ? LEAD_TOOL_READ_INPUTS[name].loose() : LEAD_TOOL_READ_INPUTS[name].strip();
   const handler = MATE_TOOL_HANDLERS[name] as LeadToolHandler<N>;
   return {
     name,

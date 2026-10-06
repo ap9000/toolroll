@@ -148,7 +148,8 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   the 0.9.36 hand-written schemas (`schemas-0.9.36.json`) and the derived ones (`src/contracts/tools.test.ts`). The
   gateway's pinned `tools/list` bytes changed only in spelling: a nullable is `anyOf`, an empty `required` is left out,
   and integers carry the safe-integer bound. Kept: lead readers strip unknown tool arguments (and extra agent keys),
-  while flow proposals keep their existing strict contract; `list_tasks` floors and
+  while flow proposals keep their existing strict contract and `propose_action` passes unknown keys to the action's own
+  per-operation check, which refuses them as in 0.9.36; `list_tasks` floors and
   clamps numeric limits to 1–50 (otherwise 20); `get_task_conversation` clamps safe-integer limits to 1–30 (otherwise
   12); `get_flow_insights` uses 30 days for non-safe-integer input; `get_person` ignores unusable id/name selectors.
   The model still sees strict schemas, and gateway input validation is unchanged. These loose calls are replayed from
