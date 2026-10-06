@@ -17,6 +17,7 @@ import { installUpdateGate, removeUpdateGate, updateAdmissionPaused, freezeUpdat
 import { CodingWorkspace } from "./coding-workspace.js";
 import { runOperate } from "./operate.js";
 import { fixture, armFixture, codingFixture } from "../test/desktop-update-kit.js";
+import { fakePid } from "../test/fake-pid.js";
 
 vi.mock("node:child_process", { spy: true });
 
@@ -489,7 +490,7 @@ test.each([
     const ref = db.prepare("SELECT id FROM task_ref WHERE external_id='reused'").get()!.id;
     const time = "2026-09-12T16:53:59.658Z";
     const id = db.prepare("INSERT INTO run(task_ref,lease_id,runner,role,started_at,finished_at,outcome) VALUES(?,'finished','fixture','reviewer',?,?,'interrupted')").run(ref, time, time).lastInsertRowid;
-    db.prepare("INSERT INTO run_process(run,pid,host,process_group,observed_at) VALUES(?,?,?,?,?)").run(id, 87803, hostname(), state.includes("group") ? 1 : 0, time);
+    db.prepare("INSERT INTO run_process(run,pid,host,process_group,observed_at) VALUES(?,?,?,?,?)").run(id, fakePid(1), hostname(), state.includes("group") ? 1 : 0, time);
     const before = db.prepare("SELECT * FROM run_process WHERE run=?").all(id); db.close();
     Object.defineProperty(process, "platform", { value: "darwin" });
     kill = vi.spyOn(process, "kill").mockImplementation(target => {

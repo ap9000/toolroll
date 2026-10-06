@@ -25,6 +25,7 @@ import { checkSettingsHtml } from "./check-levels-ui.js";
 import { recordRunCheckLevel } from "./check-levels.js";
 import { assignmentStatusFacts, taskStatusOf } from "./task-status.js";
 import type { Runner } from "./builder.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const REPO = "/repos/review";
 const HEAD = "a".repeat(40);
@@ -40,7 +41,7 @@ function reviewer(findings: BuildFinding[] | (() => Partial<typeof OK>), calls: 
   return async (_file, args, options) => {
     calls.push({ args: [...args] });
     // A fake provider pid that is not running, as the real transport records one.
-    options?.onSpawn?.(4_000_000 + calls.length);
+    options?.onSpawn?.(fakePid(calls.length));
     if (typeof findings === "function") return { ...OK, ...findings() };
     return { ...OK, stdout: JSON.stringify({ structured_output: { version: 1, findings }, session_id: `review-${calls.length}` }) };
   };

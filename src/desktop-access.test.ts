@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { accessFailure, probeDesktopProject, interpretAccessProbe, currentDesktopAccess, type DesktopAccessReport } from "./desktop-access.js";
+import { fakePid } from "../test/fake-pid.js";
 
 test("the real access probe reads the repository and round-trips only its own Git-metadata scratch file", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "so-access-")));
@@ -31,10 +32,11 @@ test("access failures use plain-language recovery without treating every failure
 });
 
 test("setup never accepts an old worker, old selection, corrupt result or pre-recheck receipt as ready", () => {
-  const report: DesktopAccessReport = {version:1,controllerPid:123,checkedAt:"2026-09-13T02:00:01.000Z",request:"current",projects:[{repo:"/repo",state:"ready",message:"checked"}]};
-  const worker = {phase:"running",controllerPid:123,updatedAt:"2026-09-13T02:00:00.000Z"};
+  const controller = fakePid(1), otherController = fakePid(2);
+  const report: DesktopAccessReport = {version:1,controllerPid:controller,checkedAt:"2026-09-13T02:00:01.000Z",request:"current",projects:[{repo:"/repo",state:"ready",message:"checked"}]};
+  const worker = {phase:"running",controllerPid:controller,updatedAt:"2026-09-13T02:00:00.000Z"};
   expect(currentDesktopAccess(report,worker,["/repo"],"current").verified).toBe(true);
-  for (const state of [{...worker,controllerPid:456},{...worker,phase:"stopped"},{...worker,updatedAt:"2026-09-13T02:00:02.000Z"},null]) {
+  for (const state of [{...worker,controllerPid:otherController},{...worker,phase:"stopped"},{...worker,updatedAt:"2026-09-13T02:00:02.000Z"},null]) {
     expect(currentDesktopAccess(report,state,["/repo"],"current").verified).toBe(false);
   }
   expect(currentDesktopAccess(report,worker,["/new-repo"],"current").verified).toBe(false);

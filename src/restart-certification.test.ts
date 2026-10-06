@@ -19,6 +19,7 @@ import { acquire } from "./claim.js";
 import { injectBootIdentity } from "./boot-identity.js";
 import { installedServiceDefinition, planDaemon, type DaemonPlan } from "./daemon.js";
 import { assertNoSecret, recordRestartBaseline as recordBaseline, RESTART_LIMITS, restartRuntimeDigest, verifyRestartRecovery as verifyRecovery, type BaselineInputs, type VerifyInputs } from "./restart-certification.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const BOOT_A = "4cdea6bb-1ac8-4e7c-bfcf-646f89b8a8a7";
 const BOOT_B = "9b1d0e2f-3a4b-4c5d-8e6f-a1b2c3d4e5f6";
@@ -28,6 +29,7 @@ const REPO = resolve("/repo");
 // the real process birth, including observation, finish and heartbeat times.
 const T0 = new Date();
 const host = hostname();
+const servicePid = fakePid(1), restartedServicePid = fakePid(2);
 
 function scripted(answers: Record<string, { code?: number; stdout?: string }>) {
   return async (file: string, args: readonly string[]) => {
@@ -82,14 +84,14 @@ describe("restart certification", () => {
   test("c6: the baseline records boot, runtime, service, containment and live custody — and never a credential", async () => {
     const { runId, plan } = seed();
     injectBootIdentity({ ok: true, id: BOOT_A, source: "injected" });
-    const baseline = await recordRestartBaseline({ store, now: T0, packageVersion: "0.4.3", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const baseline = await recordRestartBaseline({ store, now: T0, packageVersion: "0.4.3", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
     expect(baseline).toMatchObject({
       version: 2,
       host,
       boot: { id: BOOT_A, source: "injected", problem: null },
       runtime: { nodeVersion: process.version, execPath: process.execPath, packageVersion: "0.4.3" },
       containment: { policy: "observed", mode: "observed" },
-      service: { label: plan.label, state: "running", pid: 42 },
+      service: { label: plan.label, state: "running", pid: servicePid },
       database: { schemaVersion: SCHEMA_VERSION, runningTasks: ["t"], openRuns: [{ id: runId, role: "builder", runner: "r" }], pendingStops: [{ run: runId, problem: expect.stringContaining("still open") }], witnesses: [{ run: runId, pid: process.pid, bootId: BOOT_A }] },
       limits: RESTART_LIMITS,
     });
@@ -119,7 +121,7 @@ describe("restart certification", () => {
   test("c6: after a VERIFIED boot change the old boot's custody settles by the controller's own rules, and a fresh heartbeat plus a running service pass", async () => {
     const { runId, plan } = seed();
     injectBootIdentity({ ok: true, id: BOOT_A, source: "injected" });
-    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
 
     // The run ends under the OLD boot with its witness still a live pid: the
     // stop stays pending, exactly as a crashed worker leaves it.
@@ -132,7 +134,7 @@ describe("restart certification", () => {
     store.touchRunner("r", later);
 
     const digest = /<key>STANDING_ORDERS_SERVICE_DIGEST<\/key>\s*<string>([a-f0-9]{64})/.exec(plan.unitContent)?.[1];
-    const verified = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = 43\nSTANDING_ORDERS_SERVICE_DIGEST => ${digest}\n` } }) } });
+    const verified = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${restartedServicePid}\nSTANDING_ORDERS_SERVICE_DIGEST => ${digest}\n` } }) } });
     const byName = Object.fromEntries(verified.checks.map(check => [check.name, check]));
     expect(verified.bootChanged).toBe(true);
     expect(byName["boot-identity"]).toMatchObject({ ok: true, detail: expect.stringContaining(`${BOOT_A} → ${BOOT_B}`) });
@@ -145,7 +147,7 @@ describe("restart certification", () => {
     expect(verified.ok).toBe(true);
     expect(store.stopOf(runId)?.settledAt).not.toBeNull();
     expect(store.stopOf(runId)?.settlement).toBe("recovered");
-    const oldLoaded = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 43\n" } }) } });
+    const oldLoaded = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${restartedServicePid}\n` } }) } });
     expect(oldLoaded.checks.find(check => check.name === "service")?.ok).toBe(false);
     expect(oldLoaded.ok).toBe(false);
   });
@@ -153,13 +155,13 @@ describe("restart certification", () => {
   test("c6: the same boot is reported as such — a reboot expectation fails honestly, a login expectation passes — and a live pid keeps the stop pending, unforced", async () => {
     const { runId, plan } = seed();
     injectBootIdentity({ ok: true, id: BOOT_A, source: "injected" });
-    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
     const later = new Date(T0.getTime() + 60_000);
     store.releaseClaimsOf("r", later);
     store.finishRun(runId, { outcome: "failed", reason: "interrupted", now: later });
     store.touchRunner("r", later);
 
-    const reboot = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const reboot = await verifyRestartRecovery({ store, baseline, now: later, expect: "reboot", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
     const rebootChecks = Object.fromEntries(reboot.checks.map(check => [check.name, check]));
     expect(reboot.bootChanged).toBe(false);
     expect(rebootChecks["boot-identity"]).toMatchObject({ ok: false, detail: expect.stringContaining("has NOT happened") });
@@ -170,14 +172,14 @@ describe("restart certification", () => {
     expect(reboot.ok).toBe(false);
     expect(store.stopOf(runId)?.settledAt).toBeNull();
 
-    const login = await verifyRestartRecovery({ store, baseline, now: later, expect: "login", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const login = await verifyRestartRecovery({ store, baseline, now: later, expect: "login", service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
     expect(Object.fromEntries(login.checks.map(check => [check.name, check.ok]))["boot-identity"]).toBe(true);
   });
 
   test("c6: a loaded-but-not-running service, a stale heartbeat, a missing runtime and an unknown boot are each named, never glossed", async () => {
     const { runId, plan } = seed();
     injectBootIdentity({ ok: true, id: BOOT_A, source: "injected" });
-    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: "pid = 42\n" } }) } });
+    const baseline = await recordRestartBaseline({ store, now: T0, service: { definition: plan, run: scripted({ "launchctl print gui": { code: 0, stdout: `pid = ${servicePid}\n` } }) } });
     injectBootIdentity({ ok: false, reason: "unreadable", detail: "sysctl failed" });
     const later = new Date(T0.getTime() + 60_000);
     store.finishRun(runId, { outcome: "failed", reason: "interrupted", now: later });

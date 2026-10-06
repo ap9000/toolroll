@@ -18,6 +18,7 @@ import { runUpdateCommand } from "../src/toolroll-update-cli.js";
 import { updatesHtml } from "../src/toolroll-update-ui.js";
 import { addApprover } from "../src/scope.js";
 import { createDecisionServer } from "../src/serve.js";
+import { fakePid } from "./fake-pid.js";
 export const TARBALL = new TextEncoder().encode("the toolroll 0.7.0 package bytes");
 export const sha512 = (bytes: Uint8Array) => createHash("sha512").update(bytes).digest();
 
@@ -37,6 +38,8 @@ export const utf8 = (text: string) => der(0x0c, Buffer.from(text));
 export const extension = (id: string, value: Buffer) => seq(oid(id), der(0x04, value));
 export const SIGNING = generateKeyPairSync("ec", { namedCurve: "P-256" });
 export const OTHER_KEY = generateKeyPairSync("ec", { namedCurve: "P-256" });
+/** The service's process, and the one a scripted launchctl starts in its place. */
+export const SERVICE_PID = fakePid(1), RESTARTED_SERVICE_PID = fakePid(2);
 export type Identity = { repository?: string; workflow?: string; issuer?: string };
 /** A Fulcio-shaped signing certificate: the identity is in its extensions and subjectAltName. */
 export function signingCertificate(identity: Identity = {}, key: { publicKey: KeyObject; privateKey: KeyObject } = SIGNING): Buffer {
@@ -126,7 +129,7 @@ export function fixture(options: { coding?: boolean } = {}) {
     commands: () => links,
     serviceUnit: from => readFileSync(unit, "utf8").includes(from.dist) ? unit : null,
     watchUnits: () => [],
-    servicePids: async () => serviceRunning ? [4242] : [],
+    servicePids: async () => serviceRunning ? [SERVICE_PID] : [],
     serviceLoaded: async () => true,
     restartService: async () => { calls.push("restart"); serviceRunning = true; },
     stopService: async () => { calls.push("stop"); serviceRunning = false; },
@@ -159,7 +162,7 @@ export function fixture(options: { coding?: boolean } = {}) {
 
 
 export function scriptedLaunchctl() {
-  const state = { loaded: true, pid: 4242, pendingPrints: 0, log: [] as string[] };
+  const state = { loaded: true, pid: SERVICE_PID, pendingPrints: 0, log: [] as string[] };
   const run = async (file: string, args: readonly string[]) => {
     const ok = { code: 0, stdout: "", stderr: "", timedOut: false };
     // The service's children: none in this script (pgrep exits 1 when it finds none).
@@ -170,7 +173,7 @@ export function scriptedLaunchctl() {
       return state.loaded ? { ...ok, stdout: `com.toolroll.browser = {\n\tstate = running\n\tpid = ${state.pid}\n}` } : { ...ok, code: 113 };
     }
     if (args[0] === "bootout") state.pendingPrints = 2;
-    if (args[0] === "bootstrap") { state.loaded = true; state.pid = 5151; state.pendingPrints = 0; }
+    if (args[0] === "bootstrap") { state.loaded = true; state.pid = RESTARTED_SERVICE_PID; state.pendingPrints = 0; }
     return ok;
   };
   return { state, run };

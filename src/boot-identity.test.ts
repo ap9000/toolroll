@@ -17,6 +17,7 @@ import { openStore, type Store } from "./store.js";
 import { recordWorktreeProcess, worktreeProcessOccupancy } from "./worktree.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const BOOT_A = "4cdea6bb-1ac8-4e7c-bfcf-646f89b8a8a7";
 const BOOT_B = "9b1d0e2f-3a4b-4c5d-8e6f-a1b2c3d4e5f6";
@@ -171,8 +172,9 @@ describe("custody across boots", () => {
     expect(store.raw().prepare("SELECT boot_id FROM run_process WHERE id = ?").get(reserved)?.["boot_id"]).toBe(BOOT_A);
     injectBootIdentity({ ok: false, reason: "unsupported-platform", detail: "x" });
     expect(currentBootId()).toBeNull();
-    store.recordRunProcess(runId, 4242, T0, true);
-    expect(store.raw().prepare("SELECT boot_id FROM run_process WHERE pid = 4242").get()?.["boot_id"]).toBeNull();
+    const pid = fakePid(1);
+    store.recordRunProcess(runId, pid, T0, true);
+    expect(store.raw().prepare("SELECT boot_id FROM run_process WHERE pid = ?").get(pid)?.["boot_id"]).toBeNull();
   });
 
   test("c4: the worktree occupancy note carries the boot id; a note from a verified previous boot frees the checkout, a legacy note does not", () => {

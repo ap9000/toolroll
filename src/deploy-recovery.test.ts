@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { recoverFailedDeployment, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
 import { ledgerStaleCodingRelease } from '../scripts/deploy-coding.mjs';
+import { fakePid } from '../test/fake-pid.js';
 
 /** The effects a failed browser deployment may take, recorded in order. */
 function effects(stopProved = false) {
@@ -134,7 +135,8 @@ test('a migrated database is replaced by the verified backup, and what it held i
     const live = new DatabaseSync(database);
     live.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE schema_version SET version=8; CREATE TABLE added(x)");
     const restore = backupRestore(dir, database);
-    const r = { backup: backupFile, backupSha256: createHash('sha256').update(readFileSync(backupFile)).digest('hex'), codingOwnerReleased: { pid: 4242, nativePid: null }, codingOwnerReleasedAt: '2026-10-02T09:15:00.000Z' };
+    const owner = fakePid(1);
+    const r = { backup: backupFile, backupSha256: createHash('sha256').update(readFileSync(backupFile)).digest('hex'), codingOwnerReleased: { pid: owner, nativePid: null }, codingOwnerReleasedAt: '2026-10-02T09:15:00.000Z' };
     expect(() => restore({ ...r, backupSha256: '0'.repeat(64) })).toThrow('missing or changed');
     // A changed backup puts nothing back: the migrated database, its WAL included, is as it was.
     expect(live.prepare('SELECT version FROM schema_version').get()?.version).toBe(8);
@@ -146,7 +148,7 @@ test('a migrated database is replaced by the verified backup, and what it held i
     expect(restored.prepare('SELECT version FROM schema_version').get()?.version).toBe(7);
     // The backup predates the stale-owner release, so the release is ledgered again.
     // Dated when the deployment released it, not when the backup went back.
-    expect(restored.prepare('SELECT at, detail FROM action_ledger').get()).toEqual({ at: '2026-10-02T09:15:00.000Z', detail: expect.stringMatching(/process 4242 proved gone/) });
+    expect(restored.prepare('SELECT at, detail FROM action_ledger').get()).toEqual({ at: '2026-10-02T09:15:00.000Z', detail: expect.stringContaining(`process ${owner} proved gone`) });
     restored.close();
     const aside = new DatabaseSync(kept, { readOnly: true });
     expect(aside.prepare('SELECT version FROM schema_version').get()?.version).toBe(8);
@@ -165,19 +167,20 @@ function stopProof(running: number[], launchdHasLabel: boolean) {
 
 test('a stop is proved from whichever service record the journal holds, never from none', () => {
   // Review of build #2234: a journal with only one record put undefined in the pid set and never proved the stop.
-  const old = { oldService: { supervisor: 4100, children: [4101] } };
-  const stopping = { stoppingService: { supervisor: 4200, children: [4201] } };
+  const oldSupervisor = fakePid(1), oldChild = fakePid(2), stoppingSupervisor = fakePid(3), stoppingChild = fakePid(4);
+  const old = { oldService: { supervisor: oldSupervisor, children: [oldChild] } };
+  const stopping = { stoppingService: { supervisor: stoppingSupervisor, children: [stoppingChild] } };
   for (const r of [old, stopping, { ...old, ...stopping }]) {
     expect(stopProof([], false)(r)).toBe(true);
     // A recorded process still running, or launchd still holding the label, is not a proved stop.
-    expect(stopProof([4101, 4201], false)(r)).toBe(false);
+    expect(stopProof([oldChild, stoppingChild], false)(r)).toBe(false);
     expect(stopProof([], true)(r)).toBe(false);
   }
   expect(stopProof([], false)({})).toBe(false);
   expect(stopProof([], false)({ oldService: { children: [] } })).toBe(false);
   // A recorded pid that is not a real process id still refuses.
   expect(stopProof([], false)({ oldService: { supervisor: 1, children: [] } })).toBe(false);
-  expect(stopProof([], false)({ oldService: { supervisor: '4100', children: [] } })).toBe(false);
+  expect(stopProof([], false)({ oldService: { supervisor: String(oldSupervisor), children: [] } })).toBe(false);
 });
 
 test('the coding database goes back with orders.db, and what it held is kept aside with it', () => {

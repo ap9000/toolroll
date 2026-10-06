@@ -19,7 +19,7 @@ import { updatesHtml } from "./toolroll-update-ui.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { TARBALL, sha512, der, seq, oid, utf8, extension, SIGNING, OTHER_KEY, signingCertificate, provenance, fixture, scriptedLaunchctl, scriptedNpm, failingHealth } from "../test/toolroll-update-kit.js";
+import { TARBALL, sha512, der, seq, oid, utf8, extension, SIGNING, OTHER_KEY, signingCertificate, provenance, fixture, scriptedLaunchctl, scriptedNpm, failingHealth, SERVICE_PID } from "../test/toolroll-update-kit.js";
 
 test("r1: provenance is accepted only from a certificate naming ap9000/toolroll, its publish workflow and GitHub Actions, whatever the statement claims", async () => {
   const hex = sha512(TARBALL).toString("hex");
@@ -305,7 +305,7 @@ test("r5: the stop waits as long as toolroll up takes to exit, and a stop that t
       const run = async (_file: string, args: readonly string[]) => {
         log.push(args[0]!);
         if (args[0] === "bootout") pending = printsUntilGone;
-        if (args[0] === "print") return pending === 0 ? { code: 113, stdout: "", stderr: "", timedOut: false } : (pending > 0 && pending--, { code: 0, stdout: "state = running\n\tpid = 4242\n", stderr: "", timedOut: false });
+        if (args[0] === "print") return pending === 0 ? { code: 113, stdout: "", stderr: "", timedOut: false } : (pending > 0 && pending--, { code: 0, stdout: `state = running\n\tpid = ${SERVICE_PID}\n`, stderr: "", timedOut: false });
         return { code: 0, stdout: "", stderr: "", timedOut: false };
       };
       return { log, run };

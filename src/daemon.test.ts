@@ -31,9 +31,11 @@ import {
 } from "./daemon.js";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+const servicePid = fakePid(1);
 
 function scripted(answers: Record<string, { code?: number; stdout?: string }> = {}) {
   const calls: { file: string; args: string[] }[] = [];
@@ -177,7 +179,7 @@ describe("the daemon plan", () => {
     const first = scripted({ "launchctl print": { code: 113 }, launchctl: { code: 0 } });
     await installDaemon(made, "secret-token", first.run);
 
-    const again = scripted({ "launchctl print": { code: 0, stdout: "state = running\n\tpid = 4242\n" + loadedDigest(made.unitContent) }, launchctl: { code: 0 } });
+    const again = scripted({ "launchctl print": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\n` + loadedDigest(made.unitContent) }, launchctl: { code: 0 } });
     const installed = await installDaemon(made, "secret-token", again.run);
 
     expect(installed).toMatchObject({ ok: true, changed: false, action: "started" });
@@ -268,8 +270,8 @@ describe("the daemon plan", () => {
   test("status reads launchd's answer into running / loaded / disabled / not-installed", async () => {
     const made = plan("darwin");
 
-    const running = scripted({ "launchctl print gui": { code: 0, stdout: "state = running\n\tpid = 4242\n" } });
-    expect(await daemonStatus(made, running.run)).toMatchObject({ state: "running", pid: 4242, problems: [] });
+    const running = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\n` } });
+    expect(await daemonStatus(made, running.run)).toMatchObject({ state: "running", pid: servicePid, problems: [] });
 
     const loaded = scripted({ "launchctl print gui": { code: 0, stdout: "state = waiting\n" } });
     expect(await daemonStatus(made, loaded.run)).toMatchObject({ state: "loaded", pid: null });
@@ -299,7 +301,7 @@ describe("the daemon plan", () => {
       expect.stringContaining("entry"),
     ]);
     // A previously installed unit that no longer matches this build's is stale.
-    const loaded = scripted({ "launchctl print gui": { code: 0, stdout: "state = running\n\tpid = 7\n" + loadedDigest(made.unitContent) } });
+    const loaded = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\n` + loadedDigest(made.unitContent) } });
     const fresh = await daemonStatus(made, loaded.run);
     expect(fresh).toMatchObject({ state: "running", installedDigest: null, stale: false });
     expect(fresh.problems).toHaveLength(2);
@@ -307,9 +309,9 @@ describe("the daemon plan", () => {
     const script = scripted({ "launchctl print": { code: 113 }, launchctl: { code: 0 } });
     await installDaemon(made, "t", script.run);
     expect((await daemonStatus(made, loaded.run))).toMatchObject({ installedDigest: definitionDigest(made.unitContent), stale: false });
-    const oldGeneration = scripted({ "launchctl print gui": { code: 0, stdout: "state = running\n\tpid = 7\n" } });
+    const oldGeneration = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\n` } });
     expect((await daemonStatus(made, oldGeneration.run))).toMatchObject({ state: "running", stale: true });
-    const wrongGeneration = scripted({ "launchctl print gui": { code: 0, stdout: "state = running\n\tpid = 7\nSTANDING_ORDERS_SERVICE_DIGEST => " + "0".repeat(64) } });
+    const wrongGeneration = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\nSTANDING_ORDERS_SERVICE_DIGEST => ` + "0".repeat(64) } });
     expect((await daemonStatus(made, wrongGeneration.run))).toMatchObject({ state: "running", stale: true });
     writeFileSync(made.unitPath, made.unitContent.replace("watch", "watch-old"));
     expect((await daemonStatus(made, loaded.run))).toMatchObject({ stale: true });
@@ -384,7 +386,7 @@ describe("the daemon plan", () => {
     expect(digest).toMatch(/^[a-f0-9]{64}$/);
     expect(made.unitContent).toContain(`<key>STANDING_ORDERS_SERVICE_DIGEST</key>\n    <string>${digest}</string>`);
     for (const name of ["TOOLROLL", "STANDING_ORDERS"]) {
-      const loaded = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = 7\n${name}_SERVICE_DIGEST => ${digest}\n` } });
+      const loaded = scripted({ "launchctl print gui": { code: 0, stdout: `state = running\n\tpid = ${servicePid}\n${name}_SERVICE_DIGEST => ${digest}\n` } });
       expect(await daemonStatus(made, loaded.run)).toMatchObject({ state: "running", stale: false });
     }
   });
@@ -422,7 +424,7 @@ describe("the daemon plan", () => {
     const desktop = planDesktopService({ node: process.execPath, helper: "/x/desktop-host.js", stateDir: dir, label: "com.standing-orders.desktop.preview.abc", home: dir, pathEnv: "/usr/bin" });
     const first = scripted({ "launchctl print": { code: 113 }, launchctl: { code: 0 } });
     expect(await installLaunchdService(desktop, first.run)).toMatchObject({ ok: true, action: "bootstrapped" });
-    const again = scripted({ "launchctl print": { code: 0, stdout: "pid = 9\n" + loadedDigest(desktop.unitContent) }, launchctl: { code: 0 } });
+    const again = scripted({ "launchctl print": { code: 0, stdout: `pid = ${servicePid}\n` + loadedDigest(desktop.unitContent) }, launchctl: { code: 0 } });
     expect(await installLaunchdService(desktop, again.run)).toMatchObject({ ok: true, action: "started", changed: false });
     expect(again.calls.map(call => call.args[0])).toEqual(["print", "kickstart"]);
   });
@@ -487,8 +489,8 @@ describe("the daemon on linux", () => {
     expect(await daemonStatus(made, loaded.run)).toMatchObject({ state: "loaded" });
     const missing = scripted({ "systemctl --user is-active": { code: 4, stdout: "inactive\n" }, "systemctl --user is-enabled": { code: 1, stdout: "" } });
     expect(await daemonStatus(made, missing.run)).toMatchObject({ state: "not-installed" });
-    const running = scripted({ "systemctl --user is-active": { code: 0, stdout: "active\n" }, "systemctl --user show": { code: 0, stdout: "MainPID=77\n" } });
-    expect(await daemonStatus(made, running.run)).toMatchObject({ state: "running", pid: 77 });
+    const running = scripted({ "systemctl --user is-active": { code: 0, stdout: "active\n" }, "systemctl --user show": { code: 0, stdout: `MainPID=${servicePid}\n` } });
+    expect(await daemonStatus(made, running.run)).toMatchObject({ state: "running", pid: servicePid });
   });
 });
 

@@ -11,19 +11,21 @@ vi.mock("node:crypto", () => ({ createHash: () => ({ update() { return this; }, 
 vi.mock("node:child_process", () => ({ execFileSync: (...args: unknown[]) => controls.command(...args) }));
 vi.mock("./process-recovery-native.js", async original => ({ ...await original<typeof import("./process-recovery-native.js")>(), collectDarwinCoalitionSnapshot: (...args: unknown[]) => controls.capture(...args) }));
 import { collectDarwinServiceAnchor, SERVICE_ANCHOR_RUNTIME_V1_SHA256, type DarwinServiceAnchorInput } from "./process-recovery-anchor.js";
+import { fakePid } from "../test/fake-pid.js";
 
 let directory: string, writer: DatabaseSync, reader: DatabaseSync, input: DarwinServiceAnchorInput;
 const boot = "0774c645-ad9a-4d83-9efb-eca6506656c5", owner = "e2091c58-4b9a-4e64-83a7-1184a731f88e";
+const supervisorPid = fakePid(1), workerPid = fakePid(2), collectorPid = fakePid(3), strangerPid = fakePid(4);
 const time = (ago: number) => new Date(Date.now() - ago).toISOString();
-const row = (pid: number): DarwinCoalitionProcessIdentity => ({ pid, ppid: pid === 200 ? 100 : 1, uniqueId: String(pid * 10),
-  parentUniqueId: pid === 200 ? "1000" : "1", uid: 501, birthMs: 1, traced: false,
+const row = (pid: number): DarwinCoalitionProcessIdentity => ({ pid, ppid: pid === workerPid ? supervisorPid : 1, uniqueId: String(pid * 10),
+  parentUniqueId: pid === workerPid ? String(supervisorPid * 10) : "1", uid: 501, birthMs: 1, traced: false,
   executable: "/usr/local/bin/node", originalParentVersion: 7, resourceCoalitionId: "500" });
 function snapshot(): DarwinCoalitionRecoverySnapshot {
   return { schema: 1, host: "test-host", bootId: boot, osRelease: "25.5.0", startedAt: time(100), finishedAt: time(0),
-    resourceCoalitionId: "591", complete: true, stable: true, anchorPids: [200, 100], anchors: [row(200), row(100)], anchorIdentityChanges: [],
+    resourceCoalitionId: "591", complete: true, stable: true, anchorPids: [workerPid, supervisorPid], anchors: [row(workerPid), row(supervisorPid)], anchorIdentityChanges: [],
     processes: [], counterBefore: { tasksStarted: "1", tasksExited: "0" }, counterAfter: { tasksStarted: "1", tasksExited: "0" },
     countersStable: true, kernelTableRead: true, unreadableMembershipCount: 0, identityChanges: [], errors: [],
-    collector: { pid: 999, uniqueId: "9999", exited: true }, nativeSourceSha256: SERVICE_ANCHOR_RUNTIME_V1_SHA256, nativeExecutableSha256: "b".repeat(64) };
+    collector: { pid: collectorPid, uniqueId: "9999", exited: true }, nativeSourceSha256: SERVICE_ANCHOR_RUNTIME_V1_SHA256, nativeExecutableSha256: "b".repeat(64) };
 }
 beforeEach(() => {
   vi.stubGlobal("process", new Proxy(process, { get(target, property) { return property === "platform" ? "darwin" : Reflect.get(target, property); } }));
@@ -51,14 +53,14 @@ beforeEach(() => {
   const workerArgv = ["/usr/local/bin/node", join(runtime, "cli.js"), "up", "--db", databasePath, "--repo", repo, "--runner", "worker", "--host", "127.0.0.1", "--port", "4180"];
   input = { databasePath, targetRun: 20, anchorReviewerRun: 10, runtime, runtimeSha256: SERVICE_ANCHOR_RUNTIME_V1_SHA256,
     runner: "worker", repo, host: "test-host", bootId: boot, resourceCoalitionId: "591", service: "gui/501/test.service",
-    workerPid: 200, supervisorPid: 100, port: 4180, workerArgv,
+    workerPid, supervisorPid, port: 4180, workerArgv,
     supervisorArgv: ["/usr/local/bin/node", join(runtime, "controller-service.js"), ...workerArgv],
     native: { sourcePath: "/private/source.c", executablePath: "/private/census", sourceSha256: SERVICE_ANCHOR_RUNTIME_V1_SHA256, executableSha256: "b".repeat(64) }, maxWaitMs: 0 };
   controls.fingerprint = SERVICE_ANCHOR_RUNTIME_V1_SHA256;
   controls.command.mockReset().mockImplementation((file: string, args: string[]) => {
-    if (file.endsWith("launchctl")) return "gui/501/test.service = {\n\tstate = running\n\tpid = 100\n\tenvironment = {\n\t\tSECRET = PRIVATE_ENV\n\t}\n}\n";
-    if (file.endsWith("ps")) return (args[2] === "100" ? input.supervisorArgv : input.workerArgv).join(" ") + "\n";
-    if (file.endsWith("lsof")) return "p200\nn127.0.0.1:4180\n";
+    if (file.endsWith("launchctl")) return `gui/501/test.service = {\n\tstate = running\n\tpid = ${supervisorPid}\n\tenvironment = {\n\t\tSECRET = PRIVATE_ENV\n\t}\n}\n`;
+    if (file.endsWith("ps")) return (args[2] === String(supervisorPid) ? input.supervisorArgv : input.workerArgv).join(" ") + "\n";
+    if (file.endsWith("lsof")) return `p${workerPid}\nn127.0.0.1:4180\n`;
     throw Error("unexpected probe");
   });
   controls.capture.mockReset().mockImplementation(async () => {
@@ -73,7 +75,7 @@ describe("read-only authenticated watch continuity", () => {
     const answer = await collectDarwinServiceAnchor(reader, input);
     expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
     if (!answer.ok) return;
-    expect(answer.receipt).toMatchObject({ owner, generation: 14, episode: 8, targetRun: 20, anchorReviewerRun: 10, worker: { pid: 200, uniqueId: "2000" } });
+    expect(answer.receipt).toMatchObject({ owner, generation: 14, episode: 8, targetRun: 20, anchorReviewerRun: 10, worker: { pid: workerPid, uniqueId: String(workerPid * 10) } });
     expect(Date.parse(answer.receipt.heartbeatAfter)).toBeGreaterThan(Date.parse(answer.receipt.heartbeatBefore));
     expect(JSON.stringify(answer)).not.toMatch(/PRIVATE|credential|Argv|up --/);
     expect(controls.capture).toHaveBeenCalledTimes(2);
@@ -123,7 +125,7 @@ describe("read-only authenticated watch continuity", () => {
   });
   it("requires exact managed PID, command, listener and audited runtime bytes", async () => {
     const normal = controls.command.getMockImplementation()!;
-    for (const [file, output] of [["launchctl", "\tstate = running\n\tpid = 999\n"], ["ps", "different command\n"], ["lsof", "p999\nn127.0.0.1:4180\n"]]) {
+    for (const [file, output] of [["launchctl", `\tstate = running\n\tpid = ${strangerPid}\n`], ["ps", "different command\n"], ["lsof", `p${strangerPid}\nn127.0.0.1:4180\n`]]) {
       controls.command.mockImplementation((path: string, args: string[]) => path.endsWith(file!) ? output : normal(path, args));
       expect((await collectDarwinServiceAnchor(reader, input)).ok).toBe(false);
     }

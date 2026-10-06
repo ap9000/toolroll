@@ -15,6 +15,7 @@ import { run } from "./exec.js";
 import { WorktreePool } from "./worktree.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
 import { finishedCheckouts } from "./checkout-cleanup.js";
+import { fakePid } from "../test/fake-pid.js";
 import { checkoutTargets, closeOutCheckouts, closeOutRuns, closeoutTargets, parseCensus, processesIn, protectedProcesses, type ProcessRow } from "./run-closeout.js";
 
 let dir: string, store: Store, repo: string;
@@ -39,55 +40,58 @@ const row = (pid: number, pgid: number, bornAt: number, name = "sleep"): Process
 
 test("the process listing is read with ages, groups and terminals, never arguments", () => {
   const now = Date.parse("2026-10-01T12:00:00Z");
+  const node = fakePid(1), zsh = fakePid(2), helper = fakePid(3);
   const rows = parseCensus([
-    "  412     1   412 1-02:03:04 ??       /usr/local/bin/node",
-    "  413   412   412      00:07 ttys003  /bin/zsh",
-    "  414   412   412   02:00:07 ?        Google Chrome Helper",
+    `  ${node}     1   ${node} 1-02:03:04 ??       /usr/local/bin/node`,
+    `  ${zsh}   ${node}   ${node}      00:07 ttys003  /bin/zsh`,
+    `  ${helper}   ${node}   ${node}   02:00:07 ?        Google Chrome Helper`,
     "garbage",
   ].join("\n"), now);
   expect(rows).toEqual([
-    { pid: 412, ppid: 1, pgid: 412, bornAt: now - (((1 * 24 + 2) * 60 + 3) * 60 + 4) * 1000, name: "node", terminal: false },
-    { pid: 413, ppid: 412, pgid: 412, bornAt: now - 7_000, name: "zsh", terminal: true },
-    { pid: 414, ppid: 412, pgid: 412, bornAt: now - (2 * 3600 + 7) * 1000, name: "Google Chrome Helper", terminal: false },
+    { pid: node, ppid: 1, pgid: node, bornAt: now - (((1 * 24 + 2) * 60 + 3) * 60 + 4) * 1000, name: "node", terminal: false },
+    { pid: zsh, ppid: node, pgid: node, bornAt: now - 7_000, name: "zsh", terminal: true },
+    { pid: helper, ppid: node, pgid: node, bornAt: now - (2 * 3600 + 7) * 1000, name: "Google Chrome Helper", terminal: false },
   ]);
 });
 
 test("a run's targets: its processes and groups as they were seen, not a reused pid, never the live service", () => {
   const seen = 1_000_000;
+  const provider = fakePid(1), joined = fakePid(2), reused = fakePid(3), member = fakePid(4), goneLeader = fakePid(5), serviceGroup = fakePid(6), serviceMate = fakePid(7);
   const census = [
-    row(500, 500, seen - 5_000),          // the provider, still there
-    row(501, 500, seen + 60_000),         // born later into its group: still the run's
-    row(600, 600, seen + 600_000),        // a pid the run saw, reused by a stranger since
-    row(601, 700, seen + 1_000),          // a member of a group whose leader is gone
-    row(process.pid, 900, seen - 9_000, "node"), // the live service
-    row(901, 900, seen, "node"),          // in the live service's group
+    row(provider, provider, seen - 5_000),          // the provider, still there
+    row(joined, provider, seen + 60_000),         // born later into its group: still the run's
+    row(reused, reused, seen + 600_000),        // a pid the run saw, reused by a stranger since
+    row(member, goneLeader, seen + 1_000),          // a member of a group whose leader is gone
+    row(process.pid, serviceGroup, seen - 9_000, "node"), // the live service
+    row(serviceMate, serviceGroup, seen, "node"),          // in the live service's group
   ];
   const witnesses = [
-    { pid: 500, group: true, observedAt: seen }, { pid: 600, group: true, observedAt: seen },
-    { pid: 700, group: true, observedAt: seen }, { pid: process.pid, group: false, observedAt: seen }, { pid: 901, group: false, observedAt: seen },
+    { pid: provider, group: true, observedAt: seen }, { pid: reused, group: true, observedAt: seen },
+    { pid: goneLeader, group: true, observedAt: seen }, { pid: process.pid, group: false, observedAt: seen }, { pid: serviceMate, group: false, observedAt: seen },
   ];
-  expect(closeoutTargets(census, witnesses, protectedProcesses(census)).map(one => one.pid)).toEqual([500, 501, 601]);
+  expect(closeoutTargets(census, witnesses, protectedProcesses(census)).map(one => one.pid)).toEqual([provider, joined, member]);
 });
 
 test("from a finished checkout, only what a finished run started or an orphan is a target — never a deploy or a person's agent", () => {
   const seen = 1_000_000;
+  const terminalApp = fakePid(1), shell = fakePid(2), agent = fakePid(3), toolShell = fakePid(4), deployScript = fakePid(5), finished = fakePid(6), runShell = fakePid(7), runServer = fakePid(8), leftServer = fakePid(9), leftChild = fakePid(10), editor = fakePid(11), languageServer = fakePid(12), vim = fakePid(13), serviceChild = fakePid(14);
   const at = (pid: number, ppid: number, name: string, terminal = false): ProcessRow => ({ pid, ppid, pgid: pid, bornAt: seen, name, terminal });
   const census = [
     at(process.pid, 1, "node"),            // the live service
-    at(100, 1, "Terminal"), at(101, 100, "zsh", true), at(102, 101, "claude", true),
-    at(103, 102, "bash"),                  // the lead's tool shell: no terminal of its own
-    at(104, 103, "node"),                  // deploy-browser.mjs, run by the lead from the checkout
-    at(200, 1, "node"),                    // a finished run's provider
-    at(201, 200, "sh"), at(202, 201, "node"), // a server the run started
-    at(300, 1, "node"), at(301, 300, "esbuild"), // a server left behind (its run's process gone) and its child
-    at(400, 1, "Code"), at(401, 400, "node"),  // a person's editor and its language server
-    at(500, 1, "vim", true),               // at a terminal
-    at(600, process.pid, "node"),          // started by the live service, not by a run
+    at(terminalApp, 1, "Terminal"), at(shell, terminalApp, "zsh", true), at(agent, shell, "claude", true),
+    at(toolShell, agent, "bash"),                  // the lead's tool shell: no terminal of its own
+    at(deployScript, toolShell, "node"),                  // deploy-browser.mjs, run by the lead from the checkout
+    at(finished, 1, "node"),                    // a finished run's provider
+    at(runShell, finished, "sh"), at(runServer, runShell, "node"), // a server the run started
+    at(leftServer, 1, "node"), at(leftChild, leftServer, "esbuild"), // a server left behind (its run's process gone) and its child
+    at(editor, 1, "Code"), at(languageServer, editor, "node"),  // a person's editor and its language server
+    at(vim, 1, "vim", true),               // at a terminal
+    at(serviceChild, process.pid, "node"),          // started by the live service, not by a run
   ];
-  const inside = new Set([102, 103, 104, 202, 300, 301, 401, 500, 600]);
-  expect(checkoutTargets(census, inside, new Set([200]), protectedProcesses(census)).map(one => one.pid)).toEqual([202, 300, 301]);
+  const inside = new Set([agent, toolShell, deployScript, runServer, leftServer, leftChild, languageServer, vim, serviceChild]);
+  expect(checkoutTargets(census, inside, new Set([finished]), protectedProcesses(census)).map(one => one.pid)).toEqual([runServer, leftServer, leftChild]);
   // With no finished run alive, only orphans and their children go.
-  expect(checkoutTargets(census, inside, new Set(), protectedProcesses(census)).map(one => one.pid)).toEqual([300, 301]);
+  expect(checkoutTargets(census, inside, new Set(), protectedProcesses(census)).map(one => one.pid)).toEqual([leftServer, leftChild]);
 });
 
 test("when a run ends, what is still in its process group is stopped — SIGTERM, then SIGKILL — and the ledger says what", async () => {

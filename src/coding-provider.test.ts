@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CodingProviderDisconnectedError, CodingProviderRequestError, CodingProviderShutdownError, createCodexCodingProvider, type CodingCustody, type CodingProvider, type CodingProviderEvent } from "./coding-provider.js";
 import { effectiveContainment, overrideContainerFactoryForTests, pinContainment, resetContainmentForTests } from "./containment.js";
 import * as processTree from "./process-tree.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const roots: string[] = [];
 const providers: CodingProvider[] = [];
@@ -85,15 +86,16 @@ describe("native coding transport", () => {
     test.provider.subscribe(event => { if (event.kind === "custody") snapshots.push(event.custody); });
     await test.provider.request("read", {});
     const hooks = observer!;
+    const tool = fakePid(1);
     // A tool can call setsid after it is first observed as a plain child.
-    hooks.onDescendant!(2_147_483_647, false);
-    hooks.onDescendant!(2_147_483_647, true);
-    hooks.onDescendantExit!(2_147_483_647, false);
-    expect(test.provider.custody().descendants).toEqual([{ pid: 2_147_483_647, group: true }]);
-    expect(snapshots[2]!.descendants).toEqual([{ pid: 2_147_483_647, group: false }, { pid: 2_147_483_647, group: true }]);
+    hooks.onDescendant!(tool, false);
+    hooks.onDescendant!(tool, true);
+    hooks.onDescendantExit!(tool, false);
+    expect(test.provider.custody().descendants).toEqual([{ pid: tool, group: true }]);
+    expect(snapshots[2]!.descendants).toEqual([{ pid: tool, group: false }, { pid: tool, group: true }]);
     const copy = test.provider.custody(); copy.descendants[0]!.pid = 1;
-    expect(test.provider.custody().descendants[0]!.pid).toBe(2_147_483_647);
-    hooks.onDescendantExit!(2_147_483_647, true);
+    expect(test.provider.custody().descendants[0]!.pid).toBe(tool);
+    hooks.onDescendantExit!(tool, true);
     expect(test.provider.custody().descendants).toEqual([]);
     expect(snapshots.at(-1)!.descendants).toEqual([]);
     await test.provider.close();
