@@ -10,6 +10,7 @@ import { CheckProgressTracker } from './check-progress.js';
 import { sealVerificationReceipt } from './verification-evidence.js';
 import { runOperate } from './operate.js';
 import { renderReviewBrief, type ReviewBrief } from './task-review-brief.js';
+import { handoffFixture } from '../test/handoff-fixture.js';
 
 const START = new Date('2026-10-05T18:00:00Z'), END = new Date('2026-10-05T18:05:00Z');
 const REPO = '/projects/review-brief', BASE = 'a'.repeat(40), HEAD = 'b'.repeat(40);
@@ -75,7 +76,7 @@ describe('task review --brief', () => {
   test('one planned build packet uses the lead token, saved counts, findings and screenshot paths in both formats', async () => {
     const ref = task(); plan(ref);
     const id = run(ref);
-    artifact(id, 'handoff', { conclusion: 'Edited labels now survive reload.', changes: ['not part of the compact conclusion'] });
+    artifact(id, 'handoff', handoffFixture(id, { conclusion: 'Edited labels now survive reload.', changes: ['not part of the compact conclusion'] }));
     artifact(id, 'diff-stat', budgetedStatJson(parseNumstat(Array.from({ length: 18 }, (_, i) => `${i + 1}\t1\tsrc/label-${i}.ts\0`).join(''), BASE, HEAD)));
     artifact(id, 'screenshot', Buffer.from('fixture image bytes'), 'agent-claimed screenshot at evidence/label-phone.png (validated png)', 'shot.png');
     artifact(id, 'terminal-diff', 'RAW_DIFF_MUST_NOT_APPEAR');
@@ -152,8 +153,8 @@ describe('task review --brief', () => {
 
   test('latest finished attempt ignores live and reviewer runs; explicit history refuses foreign and unfinished results', async () => {
     const ref = task(), older = run(ref), newer = run(ref);
-    artifact(older, 'handoff', { conclusion: 'First saved result.' });
-    artifact(newer, 'handoff', { conclusion: 'Second saved result.' });
+    artifact(older, 'handoff', handoffFixture(older, { conclusion: 'First saved result.' }));
+    artifact(newer, 'handoff', handoffFixture(newer, { conclusion: 'Second saved result.' }));
     run(ref, 'planner');
     const live = run(ref, 'builder', null), foreign = run(task('other'));
     expect((await packet()).header.run).toBe(newer);
@@ -200,7 +201,7 @@ describe('task review --brief', () => {
 
   test('redacts credentials and terminal controls in every untrusted field before truncation, in JSON too', async () => {
     const ref = task(), id = run(ref), key = `sk-${'z'.repeat(40)}`;
-    artifact(id, 'handoff', { conclusion: `${'a'.repeat(580)} ${key}` });
+    artifact(id, 'handoff', handoffFixture(id, { conclusion: `${'a'.repeat(580)} ${key}` }));
     artifact(id, 'diff-stat', budgetedStatJson(parseNumstat(`1\t0\t${key}\0`, BASE, HEAD)));
     store.recordRunCheck(id, { status: 'failed', exitCode: 1, suites: [{ name: 'token=private-test-value', status: 'failed', exitCode: 1 }] }, END);
     store.handle.prepare(`INSERT INTO build_review (run,task_id,repo,state,findings_json,reason,queued_at) VALUES (?,'labels',?,'reviewed',?,?,?)`)
@@ -218,7 +219,7 @@ describe('task review --brief', () => {
   test('damaged evidence reads as not recorded and a large packet stays below 60 lines even with --all', async () => {
     const ref = task(); plan(ref, Array.from({ length: 12 }, (_, i) => `Check form ${i}.`));
     const id = run(ref); findings(id, true);
-    artifact(id, 'handoff', { conclusion: 'The saved labels now survive reload. '.repeat(20) });
+    artifact(id, 'handoff', handoffFixture(id, { conclusion: 'The saved labels now survive reload. '.repeat(20) }));
     const stat = artifact(id, 'diff-stat', budgetedStatJson(parseNumstat(Array.from({ length: 40 }, (_, i) => `1\t1\tsrc/form-${i}.ts\0`).join(''), BASE, HEAD)));
     for (let i = 0; i < 10; i++) artifact(id, 'screenshot', Buffer.from('image'), `agent-claimed screenshot at evidence/form-${i}.png (validated png)`, `shot-${i}.png`);
     for (const flags of [[], ['--all']]) {
