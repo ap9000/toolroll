@@ -7,6 +7,7 @@ import { MATE_MAX_STEPS, MATE_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, MATE_TOOL
 import { runMateTurn, historyFor, MATE_ABORT_GRACE_MS, MATE_CHANNEL_COPY, MATE_FAILURE_COPY, MATE_REFUSAL_COPY } from "./mate.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { MATE_MAX_PROPOSALS_PER_TURN, MATE_TOOLS, executeMateTool, redactForMate } from "./mate-tools.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
 
@@ -417,6 +418,26 @@ describe("the mate's turn", () => {
     expect(outcome).toMatchObject({ ok: true, proposals: MATE_MAX_PROPOSALS_PER_TURN });
     expect(script.bodies[2]).toContain(`already holds ${MATE_MAX_PROPOSALS_PER_TURN} proposals`);
     expect(store.listMateProposals(thread().id, ["pending"])).toHaveLength(MATE_MAX_PROPOSALS_PER_TURN);
+  });
+
+  test("chat task and scope rubrics enforce UTF-8 byte limits before drafting", () => {
+    // The rubric is lead-tools' `acceptance` (the plan's criterion); its byte limits run after parsing, before a draft.
+    const draft = vi.fn(() => 1);
+    const ctx = { store, who, now: clock(), draft };
+    const base = { repo: "r1", task: "in-1", title: "Task", goal: "valid" };
+    const criterion = { id: "c1", statement: "Works", how: null, evidence: ["check"] };
+    for (const tool of ["propose_task", "propose_scope"]) {
+      for (const [field, limit] of [["id", TEXT_LIMITS.acceptanceIdBytes], ["statement", TEXT_LIMITS.acceptanceStatementBytes], ["how", TEXT_LIMITS.acceptanceHowBytes]] as const) {
+        draft.mockClear();
+        const atLimit = { ...criterion, [field]: "é".repeat(limit / 2) };
+        expect(executeMateTool(ctx, tool, { ...base, acceptance: [atLimit] })).toMatchObject({ ok: true });
+        expect(draft).toHaveBeenCalledExactlyOnceWith(tool === "propose_task" ? "task" : "scope", expect.objectContaining({ acceptance: [atLimit] }));
+        draft.mockClear();
+        const overLimit = { ...atLimit, [field]: atLimit[field]! + "é" };
+        expect(executeMateTool(ctx, tool, { ...base, acceptance: [overLimit] })).toMatchObject({ ok: false });
+        expect(draft).not.toHaveBeenCalled();
+      }
+    }
   });
 
   test("chat task and scope tools share new-text limits and expose no inheritance option", () => {
