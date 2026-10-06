@@ -1,7 +1,7 @@
 /**
  * The lead's tools (docs/plans/zod-revamp.md, item 5): one input schema per tool, and one output schema for what each
- * returns when it succeeds. The input schema is the JSON Schema the lead is given (`toModelSchema`) and the check its
- * call is read with before any handler runs (mate-tools.ts), so a refusal is the path-named lines it reads next step.
+ * returns when it succeeds. The input schema supplies the JSON Schema the lead is given (`toModelSchema`) and the
+ * compatible reader used before any handler runs (mate-tools.ts), so a refusal names the paths it reads next step.
  * What JSON Schema can't say — a repo the operator may reach, plain text without secrets, an ISO time, a decision read
  * in an earlier step — is still checked in plain code after parsing, with its own words.
  *
@@ -150,7 +150,22 @@ export const LEAD_TOOL_INPUTS = {
 } as const;
 
 export type LeadToolName = keyof typeof LEAD_TOOL_INPUTS;
-export type LeadToolInput<N extends LeadToolName> = z.infer<(typeof LEAD_TOOL_INPUTS)[N]>;
+
+/**
+ * Read the same calls the 0.9.36 handlers accepted. Derive readers from the advertised contracts, leaving these
+ * optional values to their existing clamp/fallback code. Unknown top-level keys are stripped by the tool registry,
+ * except for flow proposals, whose strict contract predates item 5. The gateway also keeps its strict schemas.
+ */
+export const LEAD_TOOL_READ_INPUTS = {
+  ...LEAD_TOOL_INPUTS,
+  list_tasks: LEAD_TOOL_INPUTS.list_tasks.extend({ limit: z.unknown().optional() }),
+  get_task_conversation: LEAD_TOOL_INPUTS.get_task_conversation.extend({ limit: z.unknown().optional() }),
+  get_flow_insights: LEAD_TOOL_INPUTS.get_flow_insights.extend({ days: z.unknown().optional() }),
+  get_person: LEAD_TOOL_INPUTS.get_person.extend({ id: z.unknown().optional(), name: z.unknown().optional() }),
+  propose_agents: LEAD_TOOL_INPUTS.propose_agents.extend({ agent: LEAD_TOOL_INPUTS.propose_agents.shape.agent.unwrap().strip().optional() }),
+} as const;
+
+export type LeadToolInput<N extends LeadToolName> = z.infer<(typeof LEAD_TOOL_READ_INPUTS)[N]>;
 
 /** How a tool's call names a key it doesn't know: propose_flow suggests the flow vocabulary's own words. */
 export const LEAD_TOOL_OPTIONS: Partial<Record<LeadToolName, ContractOptions>> = { propose_flow: FLOW_ALIASES };
@@ -257,13 +272,12 @@ export const LEAD_TOOL_OUTPUTS = {
 export type LeadToolOutput<N extends LeadToolName> = z.infer<(typeof LEAD_TOOL_OUTPUTS)[N]>;
 
 /**
- * Where a result that disagrees with its tool's output schema is reported: tests make it fail (the contract is checked
- * there), and a running Toolroll writes one line to stderr — the result is still returned as it is.
+ * Report a result that disagrees with its output schema without hiding the actual result, including under Vitest.
+ * Contract tests assert output shapes directly; executing a tool always writes the diagnostic and returns its result.
  */
 export function reportToolOutput(surface: "lead" | "gateway", tool: string, schema: z.ZodType, body: unknown): void {
   const read = parseContract(schema, body);
   if (read.ok) return;
   const line = `${surface} tool ${tool}: its result disagrees with its output schema — ${read.issues.map(one => one.line).join("; ")}`;
-  if (process.env["VITEST"] !== undefined) throw new Error(line);
   process.stderr.write(`${line}\n`);
 }

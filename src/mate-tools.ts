@@ -52,7 +52,7 @@ import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
 import { parseContract, toModelSchema, type ContractResult } from "./contracts/contract.js";
-import { LEAD_TOOL_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
+import { LEAD_TOOL_INPUTS, LEAD_TOOL_READ_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { flowPersonOf } from "./flow-send.js";
 import { flowInsights } from "./flow-insights.js";
@@ -257,7 +257,7 @@ function searchHits(words: readonly string[], fields: readonly string[]): number
 
 const notFound = (): MateToolResult => ({ ok: false, message: "not-found: no such task in your projects" });
 
-/** One lead tool's words and handler. Its input is LEAD_TOOL_INPUTS[name] (src/contracts/lead-tools.ts): the handler
+/** One lead tool's words and handler. Its input is LEAD_TOOL_READ_INPUTS[name] (src/contracts/lead-tools.ts): the handler
  * receives the call as that schema read it. `prepare` may complete a raw call before it is read (propose_flow's edit
  * fills a kept step's kind and name from the zone it keeps). */
 type LeadToolHandler<N extends LeadToolName> = {
@@ -1265,7 +1265,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     handle: (ctx, args) => {
       const repo = args["repo"] === undefined ? null : repoPathOf(ctx.who, args["repo"]);
       if (args["repo"] !== undefined && repo === null) return { ok: false, message: "repo must be one of the ids from list_repos" };
-      const limit = args["limit"] ?? 20;
+      const limit = typeof args["limit"] === "number" ? Math.min(50, Math.max(1, Math.floor(args["limit"]))) : 20;
       const words = searchWords(typeof args["search"] === "string" ? args["search"] : "");
       if (typeof args["search"] === "string" && words.length === 0) return { ok: false, message: "search needs a word that names the work, such as a page, feature or file" };
       // A search reads further back than the newest page, then ranks by how many of the words each task's title and goal hold.
@@ -1665,12 +1665,14 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
 /** The lead's tools, in the order the model is shown them: each one's inputSchema is its contract, derived. */
 export const MATE_TOOLS: MateTool[] = (Object.keys(LEAD_TOOL_INPUTS) as LeadToolName[]).map(<N extends LeadToolName>(name: N): MateTool => {
   const input = LEAD_TOOL_INPUTS[name];
+  // Flow proposals already used their strict contract in 0.9.36; keep that validation unchanged.
+  const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : LEAD_TOOL_READ_INPUTS[name].strip();
   const handler = MATE_TOOL_HANDLERS[name] as LeadToolHandler<N>;
   return {
     name,
     description: handler.description,
     inputSchema: toModelSchema(input),
-    read: (ctx, raw) => parseContract(input as never, handler.prepare === undefined ? raw : handler.prepare(ctx, raw), LEAD_TOOL_OPTIONS[name]),
+    read: (ctx, raw) => parseContract(reader as never, handler.prepare === undefined ? raw : handler.prepare(ctx, raw), LEAD_TOOL_OPTIONS[name]),
     handle: (ctx, args) => handler.handle(ctx, args as LeadToolInput<N>),
   };
 });
@@ -1822,7 +1824,7 @@ export function executeMateTool(ctx: MateToolContext, name: string, args: Record
   if (tool === undefined) return { ok: false, message: `no tool named ${redactForMate(name, scrub)}` };
   let result: MateToolResult;
   try {
-    // The call is read by the schema the lead was given, before any check or handler: a refusal is every path-named
+    // The call is read by the contract's compatible reader, before any check or handler: a refusal is every path-named
     // line (`acceptance[0].evidence: at least 1 item`), so the next step can correct exactly that.
     const read = tool.read(ctx, args);
     if (!read.ok) {

@@ -27,6 +27,8 @@ notes in the 0.9.33 session.
 2. **Model-facing schemas are JSON-Schema-exact.** No `.refine`, `.transform`, `.superRefine` or `.preprocess` in
    anything a model or an outside caller sees; those checks go in plain code after parsing, with a named error.
 3. **Strict objects.** `z.strictObject` for inputs: an unknown key (`to` for `goesTo`) is an error that names it.
+   Item 5's lead readers preserve the older handlers' tolerance: strip extra tool arguments while advertising strict
+   schemas, and leave the documented clamp/fallback values to the handlers. Flow proposals keep their existing strict contract.
 4. **Versioned envelopes.** Every persisted or handed-off payload carries `version`; readers accept known versions
    and refuse newer ones plainly ("made by a newer Toolroll").
 5. **Errors name the path.** Refusals read like `steps[0].routes[0].goesTo: required`, and the one repair turn
@@ -119,23 +121,27 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   schema for each of the lead's 51 tools (`propose_flow`'s input is the flow contract's own, from
   `src/contracts/flow-propose.ts`), and `src/contracts/gateway-tools.ts` one each for the gateway's 25 (the seven
   assignment tools' inputs are also what `toolroll assignment` reads its flags with). What the model and `tools/list`
-  are shown is `toModelSchema` of the input schema; every call is read with it before any precondition or handler, and
+  are shown is `toModelSchema` of the input schema; every call is read with its derived reader before any precondition or handler, and
   the handler gets the typed value. A bad lead call returns every path-named line as the tool result the lead reads next
-  step (`reason: required`, `payload: unknown key 'planing' (did you mean planning?)`); a bad gateway call is JSON-RPC
+  step (`reason: required`, `run: must be an integer (got a number)`); a bad gateway call is JSON-RPC
   `-32602` with the same lines, and semantic refusals stay `isError` results. What JSON Schema can't say (a repo the
   operator may reach, plain text without secrets, ISO times, control characters in an assignment ref) is still checked
-  after parsing. Output schemas describe each result's top level: a result that disagrees is logged (and fails a test),
+  after parsing. Output schemas describe each result's top level: a result that disagrees is logged, including in tests,
   never refused; the gateway still returns text only, without `outputSchema`. Gone: the hand-written schema builders
   (`schema()`, `TASK_ARG`, `REPO_ARG`, `ACCEPTANCE_ARG_SCHEMA`, `TASK_SCOPE_TEXT_SCHEMA`), the gateway's `invalidArgs`,
   `assignmentArgumentProblem`, and the handlers' structural re-checks; their text limits moved into `TEXT_LIMITS`. Tool
   names and descriptions are unchanged, and every call recorded in `test/fixtures/tools/calls.json` is read the same by
   the 0.9.36 hand-written schemas (`schemas-0.9.36.json`) and the derived ones (`src/contracts/tools.test.ts`). The
   gateway's pinned `tools/list` bytes changed only in spelling: a nullable is `anyOf`, an empty `required` is left out,
-  and integers carry the safe-integer bound. Tightened, on purpose: a lead call is now refused when it breaks the schema
-  the lead was always shown (an unknown key, a wrong type, a value out of range) instead of reaching the handler, an
-  acceptance criterion needs a non-empty id and statement (the plan's criterion schema), and integers above
-  2^53 − 1 are refused. Loosened, on purpose: `not: null` on `propose_task`/`propose_scope` and a null `note`, `path`
-  or `line` on `propose_review`, which the handlers always read as left out, are now in the schema. Known and kept: the
+  and integers carry the safe-integer bound. Kept: lead readers strip unknown tool arguments (and extra agent keys),
+  while flow proposals keep their existing strict contract; `list_tasks` floors and
+  clamps numeric limits to 1–50 (otherwise 20); `get_task_conversation` clamps safe-integer limits to 1–30 (otherwise
+  12); `get_flow_insights` uses 30 days for non-safe-integer input; `get_person` ignores unusable id/name selectors.
+  The model still sees strict schemas, and gateway input validation is unchanged. These loose calls are replayed from
+  `test/fixtures/tools/loose-lead-calls-0.9.36.json`. Acceptance criteria use the plan's non-empty id and statement;
+  ordinary integer fields retain the safe-integer bound, without blocking the lead's legacy clamp/fallback inputs.
+  `not: null` on `propose_task`/`propose_scope` and a null `note`, `path` or `line` on `propose_review`, which the handlers
+  always read as left out, are now in the advertised schema too. Known and kept: the
   gateway's `propose_scope` takes no `acceptance`, so the coordinator door refuses every one of its calls, as in 0.9.36.
 - **6. Builder handoff and proof** (2026-10-05). `src/contracts/handoff.ts`, `src/contracts/proof.ts` and
   `src/contracts/verification-receipt.ts` are the one schema each for `handoff.json`, the builder's proof and the
