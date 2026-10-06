@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.41 — 2026-10-06
+
+- **A read-only PostHog connection works for research.** PostHog adds
+  `introspection` to every connection it grants, asked for or not; it only
+  lets a connection be checked and reaches no data. Toolroll counted it as
+  write access, so research skipped PostHog even after **Reconnect read-only**.
+  It now counts as read-only alongside the reads it came with. Nothing is
+  requested differently, and a connection that already reconnected read-only
+  works without signing in again.
+
 ## 0.9.40 — 2026-10-06
 
 - **Confirming a proposal checks the same things the card does, everywhere.**

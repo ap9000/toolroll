@@ -434,7 +434,10 @@ test("a granted scope is read-only only by an allow-list: reads and identity, no
   expect(scopeList("user:read  openid insight:read user:read")).toEqual(["insight:read", "openid", "user:read"]);
   for (const bad of [undefined, null, "", "   ", 7, 'insight:read bad"scope']) expect(scopeList(bad)).toBeNull();
   expect(readOnlyGrant(["openid", "profile", "email", "user:read", "error_tracking:read"])).toBe(true);
-  for (const grant of [null, [], ["*"], ["insight:read", "insight:write"], ["introspection"], ["Insight:READ"], ["read"], ["insight:read:all"]]) expect(readOnlyGrant(grant), JSON.stringify(grant)).toBe(false);
+  // What PostHog grants a read-only reconnect: the reads asked for, plus `introspection`, which it adds to every token.
+  expect(readOnlyGrant(["openid", "profile", "email", "introspection", "user:read", "query:read"])).toBe(true);
+  expect(readOnlyGrant(["introspection", "query:read", "insight:write"])).toBe(false);
+  for (const grant of [null, [], ["*"], ["insight:read", "insight:write"], ["Insight:READ"], ["read"], ["insight:read:all"]]) expect(readOnlyGrant(grant), JSON.stringify(grant)).toBe(false);
 });
 
 test("PostHog's exec reaches research only with a read-only grant; a write or unknown grant is skipped with a plain reason on the run and its Tools entry", () => {
@@ -473,8 +476,12 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   skipped.cleanup();
   expect(JSON.parse(recorded)).toEqual({ provider: "claude", tools: [], skipped: [{ name: "posthog", reason: WRITE_REASON }] });
 
-  // Anything outside the allow-list (a wildcard, introspection) is no safer than a write.
-  for (const scope of ["*", "user:read introspection"]) { grant(scope); expect(research().withheld).toEqual({ posthog: WRITE_REASON }); }
+  // Anything outside the allow-list (a wildcard) is no safer than a write; introspection alone grants no reads.
+  for (const scope of ["*", "introspection"]) { grant(scope); expect(research().withheld).toEqual({ posthog: WRITE_REASON }); }
+  // PostHog adds introspection to every token, asked for or not: with reads only, research may use it.
+  grant("openid profile email introspection user:read query:read");
+  expect(research()).toMatchObject({ reads: { posthog: ["exec"] } });
+  expect(research().withheld).toBeUndefined();
   // A connection from before grants were saved, or one whose grant was never said: withheld, saying so.
   setToolSecrets(repo, "posthog", { OAUTH_GRANTED_SCOPE: "" }, dir);
   expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: UNKNOWN_REASON } });

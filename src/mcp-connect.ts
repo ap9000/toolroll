@@ -145,7 +145,11 @@ const IDENTITY_SCOPES = new Set(["openid", "profile", "email"]);
 const READ_SCOPE = /^[a-z][a-z0-9_]{0,63}:read$/;
 export const readScope = (scope: string) => IDENTITY_SCOPES.has(scope) || READ_SCOPE.test(scope);
 /** Whether a saved grant only reads: it names at least one scope and every one is a read or identity scope. Unknown (null) never is. */
-export const readOnlyGrant = (grant: readonly string[] | null): boolean => grant !== null && grant.length > 0 && grant.every(readScope);
+// A scope a server adds to every token without being asked, that grants no access to data. PostHog adds
+// `introspection` (its ALWAYS_ALLOWED_SCOPES): it lets the token be checked, and has no write form. Never requested.
+const GRANTED_ANYWAY = new Set(["introspection"]);
+export const readOnlyGrant = (grant: readonly string[] | null): boolean =>
+  grant !== null && grant.some(readScope) && grant.every(scope => readScope(scope) || GRANTED_ANYWAY.has(scope));
 /** An OAuth `scope` value as scope tokens (RFC 6749), sorted and deduplicated; null when absent, empty or malformed. */
 export function scopeList(value: unknown): string[] | null {
   if (typeof value !== "string") return null;
