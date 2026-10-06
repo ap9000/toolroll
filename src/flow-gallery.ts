@@ -23,6 +23,7 @@ import { isToolrollRepo, planeReviewSteps } from "./flow-starters.js";
 import { addFlowTriggerTo, describeTrigger, githubRepoOf, scheduleFromWords, validateTriggerConfig } from "./flow-triggers.js";
 import { choiceTargets, clockTime, flowFromSteps, flowTerms, FLOW_TEMPLATES, ISSUE_LABEL, type FlowDefinition, type FlowStage, type FlowStepInput } from "./flows.js";
 import { connectionsOf, localConnectOf, oneClickOf } from "./mcp-connect.js";
+import type { TriggerInput } from "./contracts/flow.js";
 import { publishingOf } from "./pull-request-flow.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -64,7 +65,7 @@ export type GalleryTemplate = {
   /** The steps in Toolroll's own repository, when they differ. */
   ownSteps?: FlowStepInput[];
   definition?: FlowDefinition;
-  triggers: Record<string, unknown>[];
+  triggers: TriggerInput[];
   scripts?: { name: string; about: string; body: string; timeoutMinutes?: number }[];
   /** What it will do, in order; `{{github}}` is the project's GitHub repository. */
   does: string[];
@@ -77,13 +78,13 @@ if [ -n "$key" ]; then echo "$key"; echo "goto: Found"; else echo none; echo "go
 const NEVER_MERGES = "Never merges. Each pull request waits for you.";
 const work = (text: string) => `${text}\n\nChanges asked for (if any): {{note}}`;
 const research = (text: string) => `${text}\n\nFeedback to address (if any): {{note}}`;
-const owner = (id: string, title: string): FlowStepInput => ({ id, title, kind: "approval", decider: "owner" });
+const owner = (id: string, title: string): Extract<FlowStepInput, { kind: "approval" }> => ({ id, title, kind: "approval", decider: "owner" });
 const pr: FlowStepInput = { id: "pull-request", title: "Pull request", kind: "pull-request" };
 const drawn = (id: string) => structuredClone(FLOW_TEMPLATES.find(one => one.id === id)!.definition);
 const about = (id: string) => FLOW_TEMPLATES.find(one => one.id === id)!.about;
 const SORTS = "OpenRouter (Jev sorts)";
 const WEEKLY: GalleryAsk = { key: "schedule", default: "monday 09:00", label: "When", hint: "Like “monday 09:00”." };
-const weekly = (title: string) => ({ kind: "schedule", schedule: "{{ask.schedule}}", title });
+const weekly = (title: string): TriggerInput => ({ kind: "schedule", schedule: "{{ask.schedule}}", title });
 const send = (title: string): FlowStepInput => ({ id: "send", title, kind: "send" });
 /** A person's choice: build it, or end there. A reply goes to the build as its note. */
 const choose = (title: string, yes: string, build: string): FlowStepInput => ({ id: "choose", title, kind: "choose", options: [{ label: yes, goesTo: build }, { label: "Ignore", goesTo: "end" }], ifReplied: build });
@@ -595,7 +596,7 @@ function fill<T>(value: T, answers: GalleryAnswers, scripts: Record<string, stri
 
 export type GalleryBuilt = {
   template: GalleryTemplate; repo: string; answers: GalleryAnswers;
-  definition: FlowDefinition; triggers: Record<string, unknown>[];
+  definition: FlowDefinition; triggers: TriggerInput[];
   scripts: { name: string; about: string; body: string; timeoutMinutes: number; existing: boolean }[];
   does: string[]; never: string;
 };

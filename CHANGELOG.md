@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **Flows have one contract.** Every kind of zone, step, route, answer,
+  option, trigger and the flow file is described once
+  (`src/contracts/flow.ts`), and that description is what the lead's
+  `propose_flow` is told, what `toolroll flows create/edit/import` and the
+  console check, and what `docs/flow-file.schema.json` publishes (now
+  generated, so it includes Send to me, Person chooses and `ifReplied`, which
+  the hand-written one had missed). A refusal names the field and suggests the
+  one meant: `steps[0].routes[0]: unknown key 'to' (did you mean goesTo?)`,
+  `zones[2]: unknown key 'onFail' (did you mean ifFails?)`, instead of
+  "there's no step called ." Every saved flow, template, starter, kit and
+  gallery flow reads exactly as before: the same saved bytes and digests, and
+  the same exported files.
+- **Tightened, on purpose.** A step, flow file zone, trigger setting or
+  `propose_flow` argument with a key its kind doesn't take is refused by name
+  rather than silently ignored: `planning` on a Holding step, `remindAfter` on
+  a Wait step, `ifFails` on a Sort step (use `ifNotSure`, which it meant) or
+  `next` on a Sort or Person chooses step. A sort's `sureAt` is 0.5–99. A flow
+  file's zones keep only the words their kind uses when exported, and a file
+  or drawing made by a newer Toolroll is refused as such. Messages for flows
+  and triggers changed from "Zone Build: …" sentences to path-named lines.
+
 ## 0.9.35 — 2026-10-05
 
 - **One-click sign-ins ask for every permission a service lists.** Toolroll

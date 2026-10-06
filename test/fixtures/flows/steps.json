@@ -1,0 +1,1911 @@
+{
+ "about": "Recorded from the pre-Zod flowFromSteps (0.9.34): step lists and the exact definition each made.",
+ "valid": [
+  {
+   "name": "starter ci-fix",
+   "steps": [
+    {
+     "id": "fix",
+     "title": "Fix it",
+     "kind": "task",
+     "instructions": "CI failed on the main branch: {{card.title}}\n\n{{card.description}}\n\nFind the cause and make the failing check pass without weakening it.\n\nChanges asked for (if any): {{note}}"
+    },
+    {
+     "id": "review",
+     "title": "Review the fix",
+     "kind": "approval",
+     "decider": "owner"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"fix\",\"stages\":[{\"id\":\"fix\",\"title\":\"Fix it\",\"kind\":\"task\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"CI failed on the main branch: {{card.title}}\\n\\n{{card.description}}\\n\\nFind the cause and make the failing check pass without weakening it.\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"Review the fix\",\"kind\":\"approval\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"fix\"},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "c1c87d75649a0a31dd143dd5903c6301"
+  },
+  {
+   "name": "starter issue-task",
+   "steps": [
+    {
+     "id": "build",
+     "title": "Build",
+     "kind": "task"
+    },
+    {
+     "id": "review",
+     "title": "Review",
+     "kind": "approval",
+     "decider": "owner"
+    },
+    {
+     "id": "comment",
+     "title": "Comment on the issue",
+     "kind": "update",
+     "message": "Done: {{card.title}}. The result is ready in Toolroll.",
+     "close": false
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"build\",\"stages\":[{\"id\":\"build\",\"title\":\"Build\",\"kind\":\"task\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"{{card.title}}\\n\\n{{card.description}}\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"Review\",\"kind\":\"approval\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"comment\",\"onFail\":\"build\"},{\"id\":\"comment\",\"title\":\"Comment on the issue\",\"kind\":\"update\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":\"Done: {{card.title}}. The result is ready in Toolroll.\",\"close\":false,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "b33d813c78e5e19e3369db36c7b55f52"
+  },
+  {
+   "name": "starter overnight",
+   "steps": [
+    {
+     "id": "tonight",
+     "title": "Tonight",
+     "kind": "wait",
+     "waitFor": "hours",
+     "from": "22:00",
+     "until": "06:00"
+    },
+    {
+     "id": "build",
+     "title": "Build",
+     "kind": "task"
+    },
+    {
+     "id": "morning",
+     "title": "Morning review",
+     "kind": "approval",
+     "decider": "owner"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"tonight\",\"stages\":[{\"id\":\"tonight\",\"title\":\"Tonight\",\"kind\":\"wait\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"wait\":{\"for\":\"hours\",\"minutes\":0,\"from\":\"22:00\",\"to\":\"06:00\"},\"next\":\"build\",\"onFail\":null},{\"id\":\"build\",\"title\":\"Build\",\"kind\":\"task\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"{{card.title}}\\n\\n{{card.description}}\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"morning\",\"onFail\":null},{\"id\":\"morning\",\"title\":\"Morning review\",\"kind\":\"approval\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"build\"},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "0c38df15b77b28115a5f30d3c9b0d179"
+  },
+  {
+   "name": "starter plane-review",
+   "steps": [
+    {
+     "id": "find-cause",
+     "title": "Find the cause",
+     "kind": "report",
+     "ifFails": "needs-a-look",
+     "instructions": "The morning plane review found a problem: {{card.title}}\n\n{{card.description}}\n\nThis project uses Toolroll; it isn't Toolroll's own code. Find the root cause. If it is in this project's code, cite the files and lines and say what change fixes it. If it is in Toolroll or its settings (a sign-in, a plan limit, a chat app, an integration, the worker), say exactly what to change in Toolroll's settings, and start the report with “No build needed”.\n\nFeedback to address (if any): {{note}}"
+    },
+    {
+     "id": "fix",
+     "title": "Fix it",
+     "kind": "task",
+     "ifFails": "needs-a-look",
+     "instructions": "Fix the root cause of this problem, with a regression check where one fits: {{card.title}}\n\nThe report:\n{{stage.find-cause}}\n\nIf the report says “No build needed”, the cause is outside this project: change nothing and say so.\n\nChanges asked for (if any): {{note}}"
+    },
+    {
+     "id": "pull-request",
+     "title": "Pull request",
+     "kind": "pull-request",
+     "next": "done",
+     "ifFails": "needs-a-look"
+    },
+    {
+     "id": "needs-a-look",
+     "title": "Needs a look",
+     "kind": "inbox",
+     "next": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"find-cause\",\"stages\":[{\"id\":\"find-cause\",\"title\":\"Find the cause\",\"kind\":\"report\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"The morning plane review found a problem: {{card.title}}\\n\\n{{card.description}}\\n\\nThis project uses Toolroll; it isn't Toolroll's own code. Find the root cause. If it is in this project's code, cite the files and lines and say what change fixes it. If it is in Toolroll or its settings (a sign-in, a plan limit, a chat app, an integration, the worker), say exactly what to change in Toolroll's settings, and start the report with “No build needed”.\\n\\nFeedback to address (if any): {{note}}\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"fix\",\"onFail\":\"needs-a-look\"},{\"id\":\"fix\",\"title\":\"Fix it\",\"kind\":\"task\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"Fix the root cause of this problem, with a regression check where one fits: {{card.title}}\\n\\nThe report:\\n{{stage.find-cause}}\\n\\nIf the report says “No build needed”, the cause is outside this project: change nothing and say so.\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"pull-request\",\"onFail\":\"needs-a-look\"},{\"id\":\"pull-request\",\"title\":\"Pull request\",\"kind\":\"pull-request\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"needs-a-look\"},{\"id\":\"needs-a-look\",\"title\":\"Needs a look\",\"kind\":\"inbox\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "b8eb54a60bb36d8b58b09cf4025796bc"
+  },
+  {
+   "name": "starter plane-review (own)",
+   "steps": [
+    {
+     "id": "find-cause",
+     "title": "Find the cause",
+     "kind": "report",
+     "ifFails": "needs-a-look",
+     "instructions": "The morning plane review found a problem: {{card.title}}\n\n{{card.description}}\n\nThis project is Toolroll itself, so the fix belongs here. Find the root cause in this code: cite the files and lines, say why it happened, and say what change fixes it.\n\nFeedback to address (if any): {{note}}"
+    },
+    {
+     "id": "fix",
+     "title": "Fix it",
+     "kind": "task",
+     "ifFails": "needs-a-look",
+     "instructions": "Fix the root cause of this problem, with a regression check where one fits: {{card.title}}\n\nThe report:\n{{stage.find-cause}}\n\nChanges asked for (if any): {{note}}"
+    },
+    {
+     "id": "pull-request",
+     "title": "Pull request",
+     "kind": "pull-request",
+     "next": "done",
+     "ifFails": "needs-a-look"
+    },
+    {
+     "id": "needs-a-look",
+     "title": "Needs a look",
+     "kind": "inbox",
+     "next": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"find-cause\",\"stages\":[{\"id\":\"find-cause\",\"title\":\"Find the cause\",\"kind\":\"report\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"The morning plane review found a problem: {{card.title}}\\n\\n{{card.description}}\\n\\nThis project is Toolroll itself, so the fix belongs here. Find the root cause in this code: cite the files and lines, say why it happened, and say what change fixes it.\\n\\nFeedback to address (if any): {{note}}\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"fix\",\"onFail\":\"needs-a-look\"},{\"id\":\"fix\",\"title\":\"Fix it\",\"kind\":\"task\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"Fix the root cause of this problem, with a regression check where one fits: {{card.title}}\\n\\nThe report:\\n{{stage.find-cause}}\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"pull-request\",\"onFail\":\"needs-a-look\"},{\"id\":\"pull-request\",\"title\":\"Pull request\",\"kind\":\"pull-request\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"needs-a-look\"},{\"id\":\"needs-a-look\",\"title\":\"Needs a look\",\"kind\":\"inbox\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "fb644606cf0f9c6044bd0dc6cf886cbf"
+  },
+  {
+   "name": "kit support-desk",
+   "steps": [
+    {
+     "id": "answer",
+     "title": "Maya answers",
+     "kind": "teammate",
+     "teammate": "maya",
+     "instructions": "Read the customer's message. Look things up (and refund, within your rules) with your tools when it helps. Write the reply we'd send in \"text\". Pick Reply when it's ready for the customer, or Needs a person when your rules say to ask first or you can't help.",
+     "routes": [
+      {
+       "answer": "Reply",
+       "goesTo": "You check the reply"
+      },
+      {
+       "answer": "Needs a person",
+       "goesTo": "For you"
+      }
+     ],
+     "ifFails": "For you"
+    },
+    {
+     "id": "check",
+     "title": "You check the reply",
+     "kind": "approval",
+     "decider": "owner",
+     "next": "Send it",
+     "ifFails": "Maya answers"
+    },
+    {
+     "id": "send",
+     "title": "Send it",
+     "kind": "email",
+     "to": "{{card.email}}",
+     "subject": "Re: {{card.title}}",
+     "body": "{{stage.answer}}",
+     "next": "Done",
+     "ifFails": "For you"
+    },
+    {
+     "id": "person",
+     "title": "For you",
+     "kind": "inbox"
+    },
+    {
+     "id": "done",
+     "title": "Done",
+     "kind": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"answer\",\"stages\":[{\"id\":\"answer\",\"title\":\"Maya answers\",\"kind\":\"teammate\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Read the customer's message. Look things up (and refund, within your rules) with your tools when it helps. Write the reply we'd send in \\\"text\\\". Pick Reply when it's ready for the customer, or Needs a person when your rules say to ask first or you can't help.\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"maya\",\"routes\":[{\"answer\":\"Reply\",\"to\":\"check\"},{\"answer\":\"Needs a person\",\"to\":\"person\"}],\"next\":\"check\",\"onFail\":\"person\"},{\"id\":\"check\",\"title\":\"You check the reply\",\"kind\":\"approval\",\"zone\":{\"x\":360,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"send\",\"onFail\":\"answer\"},{\"id\":\"send\",\"title\":\"Send it\",\"kind\":\"email\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":300,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"email\":{\"to\":\"{{card.email}}\",\"subject\":\"Re: {{card.title}}\",\"body\":\"{{stage.answer}}\"},\"next\":\"done\",\"onFail\":\"person\"},{\"id\":\"person\",\"title\":\"For you\",\"kind\":\"inbox\",\"zone\":{\"x\":360,\"y\":380,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":720,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "f8f3828924107635a4ea79a8c43f0502"
+  },
+  {
+   "name": "kit bug-triage",
+   "steps": [
+    {
+     "id": "sort",
+     "title": "Theo sorts it",
+     "kind": "teammate",
+     "teammate": "theo",
+     "instructions": "Read the report. In \"text\", say in one or two sentences what it is and how urgent (for a bug, add what you'd check first; for a question, write the answer). Pick Bug for something broken in this project's code, Question for someone asking how something works, or Duplicate or noise for anything else, saying why.",
+     "routes": [
+      {
+       "answer": "Bug",
+       "goesTo": "Fix it"
+      },
+      {
+       "answer": "Question",
+       "goesTo": "Answered"
+      },
+      {
+       "answer": "Duplicate or noise",
+       "goesTo": "Closed"
+      }
+     ],
+     "ifFails": "For you"
+    },
+    {
+     "id": "fix",
+     "title": "Fix it",
+     "kind": "task",
+     "planning": "auto",
+     "instructions": "Fix the bug this card reports. Theo's notes on it: {{stage.sort}}",
+     "next": "You review the fix"
+    },
+    {
+     "id": "review",
+     "title": "You review the fix",
+     "kind": "approval",
+     "decider": "owner",
+     "next": "Done",
+     "ifFails": "Fix it"
+    },
+    {
+     "id": "answered",
+     "title": "Answered",
+     "kind": "inbox"
+    },
+    {
+     "id": "person",
+     "title": "For you",
+     "kind": "inbox"
+    },
+    {
+     "id": "closed",
+     "title": "Closed",
+     "kind": "done"
+    },
+    {
+     "id": "done",
+     "title": "Done",
+     "kind": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"sort\",\"stages\":[{\"id\":\"sort\",\"title\":\"Theo sorts it\",\"kind\":\"teammate\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Read the report. In \\\"text\\\", say in one or two sentences what it is and how urgent (for a bug, add what you'd check first; for a question, write the answer). Pick Bug for something broken in this project's code, Question for someone asking how something works, or Duplicate or noise for anything else, saying why.\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"theo\",\"routes\":[{\"answer\":\"Bug\",\"to\":\"fix\"},{\"answer\":\"Question\",\"to\":\"answered\"},{\"answer\":\"Duplicate or noise\",\"to\":\"closed\"}],\"next\":\"fix\",\"onFail\":\"person\"},{\"id\":\"fix\",\"title\":\"Fix it\",\"kind\":\"task\",\"zone\":{\"x\":360,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"Fix the bug this card reports. Theo's notes on it: {{stage.sort}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"You review the fix\",\"kind\":\"approval\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"fix\"},{\"id\":\"answered\",\"title\":\"Answered\",\"kind\":\"inbox\",\"zone\":{\"x\":360,\"y\":380,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"person\",\"onFail\":null},{\"id\":\"person\",\"title\":\"For you\",\"kind\":\"inbox\",\"zone\":{\"x\":360,\"y\":760,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"closed\",\"onFail\":null},{\"id\":\"closed\",\"title\":\"Closed\",\"kind\":\"done\",\"zone\":{\"x\":360,\"y\":1140,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":1080,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "5574d1d2a3309e43a2f417c25c0d62a1"
+  },
+  {
+   "name": "kit sales-follow-up",
+   "steps": [
+    {
+     "id": "write",
+     "title": "Leo writes back",
+     "kind": "teammate",
+     "teammate": "leo",
+     "instructions": "Read the lead. In \"text\", write a short, friendly first reply that answers what they asked and suggests one clear next step. Pick Write back, or Not a fit (say why).",
+     "routes": [
+      {
+       "answer": "Write back",
+       "goesTo": "You check it"
+      },
+      {
+       "answer": "Not a fit",
+       "goesTo": "Not a fit"
+      }
+     ],
+     "ifFails": "Not a fit"
+    },
+    {
+     "id": "check",
+     "title": "You check it",
+     "kind": "approval",
+     "decider": "owner",
+     "next": "Send it",
+     "ifFails": "Leo writes back"
+    },
+    {
+     "id": "send",
+     "title": "Send it",
+     "kind": "email",
+     "to": "{{card.email}}",
+     "subject": "Re: {{card.title}}",
+     "body": "{{stage.write}}",
+     "next": "Wait for them",
+     "ifFails": "Not a fit"
+    },
+    {
+     "id": "wait",
+     "title": "Wait for them",
+     "kind": "wait",
+     "waitFor": "reply",
+     "wait": "3 days",
+     "next": "They replied",
+     "ifNoReply": "No reply yet"
+    },
+    {
+     "id": "replied",
+     "title": "They replied",
+     "kind": "inbox"
+    },
+    {
+     "id": "quiet",
+     "title": "No reply yet",
+     "kind": "inbox"
+    },
+    {
+     "id": "no-fit",
+     "title": "Not a fit",
+     "kind": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"write\",\"stages\":[{\"id\":\"write\",\"title\":\"Leo writes back\",\"kind\":\"teammate\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Read the lead. In \\\"text\\\", write a short, friendly first reply that answers what they asked and suggests one clear next step. Pick Write back, or Not a fit (say why).\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"leo\",\"routes\":[{\"answer\":\"Write back\",\"to\":\"check\"},{\"answer\":\"Not a fit\",\"to\":\"no-fit\"}],\"next\":\"check\",\"onFail\":\"no-fit\"},{\"id\":\"check\",\"title\":\"You check it\",\"kind\":\"approval\",\"zone\":{\"x\":360,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"send\",\"onFail\":\"write\"},{\"id\":\"send\",\"title\":\"Send it\",\"kind\":\"email\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":300,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"email\":{\"to\":\"{{card.email}}\",\"subject\":\"Re: {{card.title}}\",\"body\":\"{{stage.write}}\"},\"next\":\"wait\",\"onFail\":\"no-fit\"},{\"id\":\"wait\",\"title\":\"Wait for them\",\"kind\":\"wait\",\"zone\":{\"x\":1080,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"wait\":{\"for\":\"reply\",\"minutes\":4320},\"next\":\"replied\",\"onFail\":\"quiet\"},{\"id\":\"replied\",\"title\":\"They replied\",\"kind\":\"inbox\",\"zone\":{\"x\":1440,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"quiet\",\"onFail\":null},{\"id\":\"quiet\",\"title\":\"No reply yet\",\"kind\":\"inbox\",\"zone\":{\"x\":1440,\"y\":380,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"no-fit\",\"onFail\":null},{\"id\":\"no-fit\",\"title\":\"Not a fit\",\"kind\":\"done\",\"zone\":{\"x\":360,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "d79fabdf0962c6c686ea51f009932149"
+  },
+  {
+   "name": "kit ops-requests",
+   "steps": [
+    {
+     "id": "decide",
+     "title": "Ada decides",
+     "kind": "approval",
+     "teammate": "ada",
+     "decider": "owner",
+     "next": "Tell the team",
+     "ifFails": "Needs more"
+    },
+    {
+     "id": "tell",
+     "title": "Tell the team",
+     "kind": "notify",
+     "message": "Approved: {{card.title}}",
+     "next": "Done"
+    },
+    {
+     "id": "more",
+     "title": "Needs more",
+     "kind": "inbox"
+    },
+    {
+     "id": "done",
+     "title": "Done",
+     "kind": "done"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"decide\",\"stages\":[{\"id\":\"decide\",\"title\":\"Ada decides\",\"kind\":\"approval\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"ada\",\"next\":\"tell\",\"onFail\":\"more\"},{\"id\":\"tell\",\"title\":\"Tell the team\",\"kind\":\"notify\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":\"Approved: {{card.title}}\",\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"more\",\"title\":\"Needs more\",\"kind\":\"inbox\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "3f47f149d8c29600251518dbb72a54d4"
+  },
+  {
+   "name": "every kind, as the lead writes them",
+   "steps": [
+    {
+     "id": "inbox",
+     "title": "Inbox",
+     "kind": "inbox",
+     "remindAfter": "2 days",
+     "thenMoveTo": "Triage"
+    },
+    {
+     "id": "triage",
+     "title": "Triage",
+     "kind": "check",
+     "script": "triage",
+     "runIn": "folder",
+     "routes": [
+      {
+       "answer": "bug",
+       "goesTo": "Sort"
+      },
+      {
+       "answer": "other",
+       "goesTo": "Done"
+      }
+     ],
+     "secrets": [
+      "CRM_KEY"
+     ],
+     "ifFails": "Inbox"
+    },
+    {
+     "id": "sort",
+     "title": "Sort",
+     "kind": "sort",
+     "question": "How urgent is it?",
+     "answers": [
+      {
+       "answer": "Urgent",
+       "means": "Customers are blocked",
+       "goesTo": "Build"
+      },
+      {
+       "answer": "Later",
+       "goesTo": "Inbox"
+      }
+     ],
+     "sureAt": 85,
+     "ifNotSure": "Inbox",
+     "alsoNote": [
+      {
+       "question": "Does it mention money?",
+       "kind": "yes-no"
+      },
+      {
+       "question": "How big?",
+       "kind": "score",
+       "levels": [
+        "small",
+        "big"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "build",
+     "title": "Build",
+     "kind": "task",
+     "instructions": "Fix {{card.title}}. Notes: {{stage.Sort}}",
+     "planning": "required"
+    },
+    {
+     "id": "review",
+     "title": "Review",
+     "kind": "approval",
+     "decider": "priya",
+     "remindAfter": "1 day"
+    },
+    {
+     "id": "pr",
+     "title": "Open PR",
+     "kind": "pull-request",
+     "merge": "squash",
+     "ifFails": "Build"
+    },
+    {
+     "id": "ping",
+     "title": "Tell them",
+     "kind": "email",
+     "to": "priya@shop.example",
+     "subject": "Fixed: {{card.title}}",
+     "body": "It's done."
+    },
+    {
+     "id": "hold",
+     "title": "Wait for reply",
+     "kind": "wait",
+     "waitFor": "reply",
+     "wait": "3 days",
+     "ifNoReply": "Done"
+    },
+    {
+     "id": "call",
+     "title": "Call CRM",
+     "kind": "request",
+     "method": "POST",
+     "url": "https://crm.example.com/api/notes",
+     "headers": {
+      "Authorization": "Bearer {{secret.CRM_KEY}}"
+     },
+     "body": "{\"note\": \"{{card.title}}\"}"
+    },
+    {
+     "id": "use",
+     "title": "Post it",
+     "kind": "tool",
+     "server": "slack",
+     "tool": "post_message",
+     "args": {
+      "text": "{{stage.draft_reply}}"
+     }
+    },
+    {
+     "title": "Draft reply",
+     "kind": "draft"
+    },
+    {
+     "title": "Owner says",
+     "kind": "approval",
+     "decider": "owner",
+     "teammate": "Maya"
+    },
+    {
+     "title": "Pick",
+     "kind": "choose",
+     "options": [
+      {
+       "label": "Ship",
+       "goesTo": "Send"
+      },
+      {
+       "label": "Drop",
+       "goesTo": "end"
+      }
+     ],
+     "ifReplied": "Build",
+     "remindAfter": "2 days",
+     "ifNoReply": "Done"
+    },
+    {
+     "title": "Send",
+     "kind": "send"
+    },
+    {
+     "title": "Overnight",
+     "kind": "wait",
+     "waitFor": "hours",
+     "from": "22:00",
+     "until": "6:00"
+    },
+    {
+     "title": "Note it",
+     "kind": "notify"
+    },
+    {
+     "title": "Mate",
+     "kind": "teammate",
+     "teammate": "theo",
+     "routes": [
+      {
+       "answer": "Done",
+       "goesTo": "Done"
+      }
+     ],
+     "reply": true
+    },
+    {
+     "title": "Comment",
+     "kind": "update",
+     "close": false
+    },
+    {
+     "title": "Research",
+     "kind": "report"
+    },
+    {
+     "title": "Elsewhere",
+     "kind": "task",
+     "repo": "/tmp/other-project"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"inbox\",\"stages\":[{\"id\":\"inbox\",\"title\":\"Inbox\",\"kind\":\"inbox\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"limit\":{\"minutes\":2880,\"to\":\"triage\"},\"next\":\"triage\",\"onFail\":null},{\"id\":\"triage\",\"title\":\"Triage\",\"kind\":\"check\",\"zone\":{\"x\":360,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":\"triage\",\"runIn\":\"folder\",\"routes\":[{\"answer\":\"bug\",\"to\":\"sort\"},{\"answer\":\"other\",\"to\":\"done\"}],\"secrets\":[\"CRM_KEY\"],\"sort\":null,\"next\":\"sort\",\"onFail\":\"inbox\"},{\"id\":\"sort\",\"title\":\"Sort\",\"kind\":\"sort\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":{\"question\":\"How urgent is it?\",\"answers\":[{\"answer\":\"Urgent\",\"means\":\"Customers are blocked\",\"to\":\"build\"},{\"answer\":\"Later\",\"means\":\"Later\",\"to\":\"inbox\"}],\"sureAt\":0.85,\"notes\":[{\"id\":\"does-it-mention-money\",\"kind\":\"yes-no\",\"question\":\"Does it mention money?\",\"levels\":null},{\"id\":\"how-big\",\"kind\":\"score\",\"question\":\"How big?\",\"levels\":[\"small\",\"big\"]}]},\"next\":null,\"onFail\":\"inbox\"},{\"id\":\"build\",\"title\":\"Build\",\"kind\":\"task\",\"zone\":{\"x\":1080,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"Fix {{card.title}}. Notes: {{stage.sort}}\",\"planning\":\"required\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"Review\",\"kind\":\"approval\",\"zone\":{\"x\":1440,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":\"priya\",\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"limit\":{\"minutes\":1440,\"to\":null},\"next\":\"pr\",\"onFail\":\"build\"},{\"id\":\"pr\",\"title\":\"Open PR\",\"kind\":\"pull-request\",\"zone\":{\"x\":1800,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"merge\":\"squash\",\"next\":\"ping\",\"onFail\":\"build\"},{\"id\":\"ping\",\"title\":\"Tell them\",\"kind\":\"email\",\"zone\":{\"x\":2160,\"y\":0,\"w\":260,\"h\":300,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"email\":{\"to\":\"priya@shop.example\",\"subject\":\"Fixed: {{card.title}}\",\"body\":\"It's done.\"},\"next\":\"hold\",\"onFail\":null},{\"id\":\"hold\",\"title\":\"Wait for reply\",\"kind\":\"wait\",\"zone\":{\"x\":2520,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"wait\":{\"for\":\"reply\",\"minutes\":4320},\"next\":\"call\",\"onFail\":\"done\"},{\"id\":\"call\",\"title\":\"Call CRM\",\"kind\":\"request\",\"zone\":{\"x\":2880,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"request\":{\"method\":\"POST\",\"url\":\"https://crm.example.com/api/notes\",\"headers\":{\"Authorization\":\"Bearer {{secret.CRM_KEY}}\"},\"body\":\"{\\\"note\\\": \\\"{{card.title}}\\\"}\"},\"next\":\"use\",\"onFail\":null},{\"id\":\"use\",\"title\":\"Post it\",\"kind\":\"tool\",\"zone\":{\"x\":3240,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"tool\":{\"server\":\"slack\",\"name\":\"post_message\",\"args\":\"{\\\"text\\\":\\\"{{stage.draft-reply}}\\\"}\"},\"next\":\"draft-reply\",\"onFail\":null},{\"id\":\"draft-reply\",\"title\":\"Draft reply\",\"kind\":\"draft\",\"zone\":{\"x\":3600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Write a short, friendly reply to the person who sent this card, in plain words.\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"owner-says\",\"onFail\":null},{\"id\":\"owner-says\",\"title\":\"Owner says\",\"kind\":\"approval\",\"zone\":{\"x\":3960,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"toOwner\":true,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"maya\",\"next\":\"pick\",\"onFail\":\"build\"},{\"id\":\"pick\",\"title\":\"Pick\",\"kind\":\"choose\",\"zone\":{\"x\":4320,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"options\":[{\"label\":\"Ship\",\"to\":\"send\"},{\"label\":\"Drop\",\"to\":\"end\"}],\"limit\":{\"minutes\":2880,\"to\":\"done\"},\"next\":null,\"onFail\":\"build\"},{\"id\":\"send\",\"title\":\"Send\",\"kind\":\"send\",\"zone\":{\"x\":4680,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"overnight\",\"onFail\":null},{\"id\":\"overnight\",\"title\":\"Overnight\",\"kind\":\"wait\",\"zone\":{\"x\":5040,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"wait\":{\"for\":\"hours\",\"minutes\":0,\"from\":\"22:00\",\"to\":\"06:00\"},\"next\":\"note-it\",\"onFail\":null},{\"id\":\"note-it\",\"title\":\"Note it\",\"kind\":\"notify\",\"zone\":{\"x\":5400,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":\"Update on {{card.title}}\",\"close\":null,\"script\":null,\"sort\":null,\"next\":\"mate\",\"onFail\":null},{\"id\":\"mate\",\"title\":\"Mate\",\"kind\":\"teammate\",\"zone\":{\"x\":5760,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Read the card and decide what happens next.\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"teammate\":\"theo\",\"routes\":[{\"answer\":\"Done\",\"to\":\"done\"}],\"reply\":true,\"next\":\"comment\",\"onFail\":null},{\"id\":\"comment\",\"title\":\"Comment\",\"kind\":\"update\",\"zone\":{\"x\":6120,\"y\":0,\"w\":260,\"h\":300,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":\"Done: {{card.title}}\",\"close\":false,\"script\":null,\"sort\":null,\"next\":\"research\",\"onFail\":null},{\"id\":\"research\",\"title\":\"Research\",\"kind\":\"report\",\"zone\":{\"x\":6480,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Investigate this and write a short, clear report with a summary first: {{card.title}}\\n\\n{{card.description}}\\n\\nFeedback to address (if any): {{note}}\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"elsewhere\",\"onFail\":null},{\"id\":\"elsewhere\",\"title\":\"Elsewhere\",\"kind\":\"task\",\"zone\":{\"x\":6840,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"{{card.title}}\\n\\n{{card.description}}\\n\\nNotes from Research:\\n{{stage.research}}\\n\\nChanges asked for (if any): {{note}}\",\"planning\":\"auto\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"repo\":\"/tmp/other-project\",\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":720,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "05dfb18215e203e98d259600c8a6c968"
+  },
+  {
+   "name": "decider me, anyone and nobody",
+   "steps": [
+    {
+     "title": "A",
+     "kind": "approval",
+     "decider": "alex"
+    },
+    {
+     "title": "B",
+     "kind": "approval",
+     "decider": "anyone"
+    },
+    {
+     "title": "C",
+     "kind": "approval",
+     "decider": null,
+     "teammate": "nobody"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"a\",\"stages\":[{\"id\":\"a\",\"title\":\"A\",\"kind\":\"approval\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":\"alex\",\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"b\",\"onFail\":null},{\"id\":\"b\",\"title\":\"B\",\"kind\":\"approval\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"c\",\"onFail\":\"a\"},{\"id\":\"c\",\"title\":\"C\",\"kind\":\"approval\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"a\"},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "542abd0b8ff623854b2adbdabd269272"
+  },
+  {
+   "name": "ids as the lead writes them",
+   "steps": [
+    {
+     "id": "Sort_By_Hand",
+     "title": "Hand",
+     "kind": "inbox",
+     "next": "sort-by-hand"
+    },
+    {
+     "id": "x y",
+     "title": "Hand",
+     "kind": "inbox",
+     "ifFails": "Sort By Hand"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"sort-by-hand\",\"stages\":[{\"id\":\"sort-by-hand\",\"title\":\"Hand\",\"kind\":\"inbox\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"sort-by-hand\",\"onFail\":null},{\"id\":\"x-y\",\"title\":\"Hand\",\"kind\":\"inbox\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":\"sort-by-hand\"},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "f8ac5549df7a8c078eea6546cf2d39c3"
+  },
+  {
+   "name": "sort with a fraction and the fallback ifFails",
+   "steps": [
+    {
+     "title": "S",
+     "kind": "sort",
+     "question": "q",
+     "answers": [
+      {
+       "answer": "a",
+       "goesTo": "A"
+      },
+      {
+       "answer": "b",
+       "goesTo": "B"
+      }
+     ],
+     "sureAt": 0.9,
+     "ifFails": "B"
+    },
+    {
+     "title": "A",
+     "kind": "inbox"
+    },
+    {
+     "title": "B",
+     "kind": "inbox"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"s\",\"stages\":[{\"id\":\"s\",\"title\":\"S\",\"kind\":\"sort\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":{\"question\":\"q\",\"answers\":[{\"answer\":\"a\",\"means\":\"a\",\"to\":\"a\"},{\"answer\":\"b\",\"means\":\"b\",\"to\":\"b\"}],\"sureAt\":0.9,\"notes\":[]},\"next\":null,\"onFail\":\"b\"},{\"id\":\"a\",\"title\":\"A\",\"kind\":\"inbox\",\"zone\":{\"x\":360,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"b\",\"onFail\":null},{\"id\":\"b\",\"title\":\"B\",\"kind\":\"inbox\",\"zone\":{\"x\":360,\"y\":380,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "0325eb940c5e49834556c2caeb43bd3b"
+  },
+  {
+   "name": "merge true, wait as minutes, remind none",
+   "steps": [
+    {
+     "title": "Go",
+     "kind": "approval"
+    },
+    {
+     "title": "PR",
+     "kind": "pull-request",
+     "merge": true
+    },
+    {
+     "title": "W",
+     "kind": "wait",
+     "waitFor": "time",
+     "wait": 90,
+     "remindAfter": "none"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"go\",\"stages\":[{\"id\":\"go\",\"title\":\"Go\",\"kind\":\"approval\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"pr\",\"onFail\":null},{\"id\":\"pr\",\"title\":\"PR\",\"kind\":\"pull-request\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"merge\":\"squash\",\"next\":\"w\",\"onFail\":null},{\"id\":\"w\",\"title\":\"W\",\"kind\":\"wait\",\"zone\":{\"x\":600,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"wait\":{\"for\":\"time\",\"minutes\":90},\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":900,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "3dcfab87827d1da88895402a61907f85"
+  },
+  {
+   "name": "tool args as text",
+   "steps": [
+    {
+     "title": "T",
+     "kind": "tool",
+     "server": "s",
+     "tool": "t",
+     "args": "{\"a\": 1}"
+    }
+   ],
+   "previous": null,
+   "canonical": "{\"version\":1,\"start\":\"t\",\"stages\":[{\"id\":\"t\",\"title\":\"T\",\"kind\":\"tool\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"tool\":{\"server\":\"s\",\"name\":\"t\",\"args\":\"{\\\"a\\\": 1}\"},\"next\":\"done\",\"onFail\":null},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":300,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "c457c8c1e6b797ba7bf06611b087a060"
+  },
+  {
+   "name": "edit keeping steps by id, kinds and titles left out",
+   "steps": [
+    {
+     "id": "inbox",
+     "remindAfter": "none"
+    },
+    {
+     "id": "sort",
+     "sureAt": 70
+    },
+    {
+     "id": "build",
+     "instructions": "New words"
+    },
+    {
+     "id": "review",
+     "decider": "anyone",
+     "remindAfter": "none"
+    },
+    {
+     "title": "New end",
+     "kind": "done"
+    }
+   ],
+   "previous": {
+    "version": 1,
+    "start": "inbox",
+    "stages": [
+     {
+      "id": "inbox",
+      "title": "Inbox",
+      "kind": "inbox",
+      "zone": {
+       "x": 0,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "limit": {
+       "minutes": 2880,
+       "to": "triage"
+      },
+      "next": "triage",
+      "onFail": null
+     },
+     {
+      "id": "triage",
+      "title": "Triage",
+      "kind": "check",
+      "zone": {
+       "x": 360,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": "triage",
+      "runIn": "folder",
+      "routes": [
+       {
+        "answer": "bug",
+        "to": "sort"
+       },
+       {
+        "answer": "other",
+        "to": "done"
+       }
+      ],
+      "secrets": [
+       "CRM_KEY"
+      ],
+      "sort": null,
+      "next": "sort",
+      "onFail": "inbox"
+     },
+     {
+      "id": "sort",
+      "title": "Sort",
+      "kind": "sort",
+      "zone": {
+       "x": 720,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": {
+       "question": "How urgent is it?",
+       "answers": [
+        {
+         "answer": "Urgent",
+         "means": "Customers are blocked",
+         "to": "build"
+        },
+        {
+         "answer": "Later",
+         "means": "Later",
+         "to": "inbox"
+        }
+       ],
+       "sureAt": 0.85,
+       "notes": [
+        {
+         "id": "does-it-mention-money",
+         "kind": "yes-no",
+         "question": "Does it mention money?",
+         "levels": null
+        },
+        {
+         "id": "how-big",
+         "kind": "score",
+         "question": "How big?",
+         "levels": [
+          "small",
+          "big"
+         ]
+        }
+       ]
+      },
+      "next": null,
+      "onFail": "inbox"
+     },
+     {
+      "id": "build",
+      "title": "Build",
+      "kind": "task",
+      "zone": {
+       "x": 1080,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": "Fix {{card.title}}. Notes: {{stage.sort}}",
+      "planning": "required",
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "review",
+      "onFail": null
+     },
+     {
+      "id": "review",
+      "title": "Review",
+      "kind": "approval",
+      "zone": {
+       "x": 1440,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": "priya",
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "limit": {
+       "minutes": 1440,
+       "to": null
+      },
+      "next": "pr",
+      "onFail": "build"
+     },
+     {
+      "id": "pr",
+      "title": "Open PR",
+      "kind": "pull-request",
+      "zone": {
+       "x": 1800,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "merge": "squash",
+      "next": "ping",
+      "onFail": "build"
+     },
+     {
+      "id": "ping",
+      "title": "Tell them",
+      "kind": "email",
+      "zone": {
+       "x": 2160,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "email": {
+       "to": "priya@shop.example",
+       "subject": "Fixed: {{card.title}}",
+       "body": "It's done."
+      },
+      "next": "hold",
+      "onFail": null
+     },
+     {
+      "id": "hold",
+      "title": "Wait for reply",
+      "kind": "wait",
+      "zone": {
+       "x": 2520,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "wait": {
+       "for": "reply",
+       "minutes": 4320
+      },
+      "next": "call",
+      "onFail": "done"
+     },
+     {
+      "id": "call",
+      "title": "Call CRM",
+      "kind": "request",
+      "zone": {
+       "x": 2880,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "request": {
+       "method": "POST",
+       "url": "https://crm.example.com/api/notes",
+       "headers": {
+        "Authorization": "Bearer {{secret.CRM_KEY}}"
+       },
+       "body": "{\"note\": \"{{card.title}}\"}"
+      },
+      "next": "use",
+      "onFail": null
+     },
+     {
+      "id": "use",
+      "title": "Post it",
+      "kind": "tool",
+      "zone": {
+       "x": 3240,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "tool": {
+       "server": "slack",
+       "name": "post_message",
+       "args": "{\"text\":\"{{stage.draft-reply}}\"}"
+      },
+      "next": "draft-reply",
+      "onFail": null
+     },
+     {
+      "id": "draft-reply",
+      "title": "Draft reply",
+      "kind": "draft",
+      "zone": {
+       "x": 3600,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Write a short, friendly reply to the person who sent this card, in plain words.",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "owner-says",
+      "onFail": null
+     },
+     {
+      "id": "owner-says",
+      "title": "Owner says",
+      "kind": "approval",
+      "zone": {
+       "x": 3960,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "toOwner": true,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "teammate": "maya",
+      "next": "pick",
+      "onFail": "build"
+     },
+     {
+      "id": "pick",
+      "title": "Pick",
+      "kind": "choose",
+      "zone": {
+       "x": 4320,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "options": [
+       {
+        "label": "Ship",
+        "to": "send"
+       },
+       {
+        "label": "Drop",
+        "to": "end"
+       }
+      ],
+      "limit": {
+       "minutes": 2880,
+       "to": "done"
+      },
+      "next": null,
+      "onFail": "build"
+     },
+     {
+      "id": "send",
+      "title": "Send",
+      "kind": "send",
+      "zone": {
+       "x": 4680,
+       "y": 0,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "overnight",
+      "onFail": null
+     },
+     {
+      "id": "overnight",
+      "title": "Overnight",
+      "kind": "wait",
+      "zone": {
+       "x": 5040,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "wait": {
+       "for": "hours",
+       "minutes": 0,
+       "from": "22:00",
+       "to": "06:00"
+      },
+      "next": "note-it",
+      "onFail": null
+     },
+     {
+      "id": "note-it",
+      "title": "Note it",
+      "kind": "notify",
+      "zone": {
+       "x": 5400,
+       "y": 0,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": "Update on {{card.title}}",
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "mate",
+      "onFail": null
+     },
+     {
+      "id": "mate",
+      "title": "Mate",
+      "kind": "teammate",
+      "zone": {
+       "x": 5760,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Read the card and decide what happens next.",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "teammate": "theo",
+      "routes": [
+       {
+        "answer": "Done",
+        "to": "done"
+       }
+      ],
+      "reply": true,
+      "next": "comment",
+      "onFail": null
+     },
+     {
+      "id": "comment",
+      "title": "Comment",
+      "kind": "update",
+      "zone": {
+       "x": 6120,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": "Done: {{card.title}}",
+      "close": false,
+      "script": null,
+      "sort": null,
+      "next": "research",
+      "onFail": null
+     },
+     {
+      "id": "research",
+      "title": "Research",
+      "kind": "report",
+      "zone": {
+       "x": 6480,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Investigate this and write a short, clear report with a summary first: {{card.title}}\n\n{{card.description}}\n\nFeedback to address (if any): {{note}}",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "elsewhere",
+      "onFail": null
+     },
+     {
+      "id": "elsewhere",
+      "title": "Elsewhere",
+      "kind": "task",
+      "zone": {
+       "x": 6840,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": "{{card.title}}\n\n{{card.description}}\n\nNotes from Research:\n{{stage.research}}\n\nChanges asked for (if any): {{note}}",
+      "planning": "auto",
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "repo": "/tmp/other-project",
+      "next": "done",
+      "onFail": null
+     },
+     {
+      "id": "done",
+      "title": "Done",
+      "kind": "done",
+      "zone": {
+       "x": 720,
+       "y": 380,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": null,
+      "onFail": null
+     }
+    ]
+   },
+   "canonical": "{\"version\":1,\"start\":\"inbox\",\"stages\":[{\"id\":\"inbox\",\"title\":\"Inbox\",\"kind\":\"inbox\",\"zone\":{\"x\":0,\"y\":0,\"w\":260,\"h\":300,\"color\":\"slate\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"sort\",\"onFail\":null},{\"id\":\"sort\",\"title\":\"Sort\",\"kind\":\"sort\",\"zone\":{\"x\":720,\"y\":0,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":{\"question\":\"How urgent is it?\",\"answers\":[{\"answer\":\"Urgent\",\"means\":\"Customers are blocked\",\"to\":\"build\"},{\"answer\":\"Later\",\"means\":\"Later\",\"to\":\"inbox\"}],\"sureAt\":0.7,\"notes\":[{\"id\":\"does-it-mention-money\",\"kind\":\"yes-no\",\"question\":\"Does it mention money?\",\"levels\":null},{\"id\":\"how-big\",\"kind\":\"score\",\"question\":\"How big?\",\"levels\":[\"small\",\"big\"]}]},\"next\":null,\"onFail\":\"inbox\"},{\"id\":\"build\",\"title\":\"Build\",\"kind\":\"task\",\"zone\":{\"x\":1080,\"y\":0,\"w\":260,\"h\":300,\"color\":\"blue\"},\"instructions\":\"New words\",\"planning\":\"required\",\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"Review\",\"kind\":\"approval\",\"zone\":{\"x\":1440,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"new-end\",\"onFail\":\"build\"},{\"id\":\"new-end\",\"title\":\"New end\",\"kind\":\"done\",\"zone\":{\"x\":1740,\"y\":0,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "b9e67eeb225f3044bab6955dab0c09f1"
+  },
+  {
+   "name": "edit changing a kept step's kind",
+   "steps": [
+    {
+     "id": "build",
+     "kind": "report"
+    },
+    {
+     "id": "review"
+    }
+   ],
+   "previous": {
+    "version": 1,
+    "start": "inbox",
+    "stages": [
+     {
+      "id": "inbox",
+      "title": "Inbox",
+      "kind": "inbox",
+      "zone": {
+       "x": 0,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "limit": {
+       "minutes": 2880,
+       "to": "triage"
+      },
+      "next": "triage",
+      "onFail": null
+     },
+     {
+      "id": "triage",
+      "title": "Triage",
+      "kind": "check",
+      "zone": {
+       "x": 360,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": "triage",
+      "runIn": "folder",
+      "routes": [
+       {
+        "answer": "bug",
+        "to": "sort"
+       },
+       {
+        "answer": "other",
+        "to": "done"
+       }
+      ],
+      "secrets": [
+       "CRM_KEY"
+      ],
+      "sort": null,
+      "next": "sort",
+      "onFail": "inbox"
+     },
+     {
+      "id": "sort",
+      "title": "Sort",
+      "kind": "sort",
+      "zone": {
+       "x": 720,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": {
+       "question": "How urgent is it?",
+       "answers": [
+        {
+         "answer": "Urgent",
+         "means": "Customers are blocked",
+         "to": "build"
+        },
+        {
+         "answer": "Later",
+         "means": "Later",
+         "to": "inbox"
+        }
+       ],
+       "sureAt": 0.85,
+       "notes": [
+        {
+         "id": "does-it-mention-money",
+         "kind": "yes-no",
+         "question": "Does it mention money?",
+         "levels": null
+        },
+        {
+         "id": "how-big",
+         "kind": "score",
+         "question": "How big?",
+         "levels": [
+          "small",
+          "big"
+         ]
+        }
+       ]
+      },
+      "next": null,
+      "onFail": "inbox"
+     },
+     {
+      "id": "build",
+      "title": "Build",
+      "kind": "task",
+      "zone": {
+       "x": 1080,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": "Fix {{card.title}}. Notes: {{stage.sort}}",
+      "planning": "required",
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "review",
+      "onFail": null
+     },
+     {
+      "id": "review",
+      "title": "Review",
+      "kind": "approval",
+      "zone": {
+       "x": 1440,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": "priya",
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "limit": {
+       "minutes": 1440,
+       "to": null
+      },
+      "next": "pr",
+      "onFail": "build"
+     },
+     {
+      "id": "pr",
+      "title": "Open PR",
+      "kind": "pull-request",
+      "zone": {
+       "x": 1800,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "merge": "squash",
+      "next": "ping",
+      "onFail": "build"
+     },
+     {
+      "id": "ping",
+      "title": "Tell them",
+      "kind": "email",
+      "zone": {
+       "x": 2160,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "email": {
+       "to": "priya@shop.example",
+       "subject": "Fixed: {{card.title}}",
+       "body": "It's done."
+      },
+      "next": "hold",
+      "onFail": null
+     },
+     {
+      "id": "hold",
+      "title": "Wait for reply",
+      "kind": "wait",
+      "zone": {
+       "x": 2520,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "wait": {
+       "for": "reply",
+       "minutes": 4320
+      },
+      "next": "call",
+      "onFail": "done"
+     },
+     {
+      "id": "call",
+      "title": "Call CRM",
+      "kind": "request",
+      "zone": {
+       "x": 2880,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "request": {
+       "method": "POST",
+       "url": "https://crm.example.com/api/notes",
+       "headers": {
+        "Authorization": "Bearer {{secret.CRM_KEY}}"
+       },
+       "body": "{\"note\": \"{{card.title}}\"}"
+      },
+      "next": "use",
+      "onFail": null
+     },
+     {
+      "id": "use",
+      "title": "Post it",
+      "kind": "tool",
+      "zone": {
+       "x": 3240,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "tool": {
+       "server": "slack",
+       "name": "post_message",
+       "args": "{\"text\":\"{{stage.draft-reply}}\"}"
+      },
+      "next": "draft-reply",
+      "onFail": null
+     },
+     {
+      "id": "draft-reply",
+      "title": "Draft reply",
+      "kind": "draft",
+      "zone": {
+       "x": 3600,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Write a short, friendly reply to the person who sent this card, in plain words.",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "owner-says",
+      "onFail": null
+     },
+     {
+      "id": "owner-says",
+      "title": "Owner says",
+      "kind": "approval",
+      "zone": {
+       "x": 3960,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "toOwner": true,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "teammate": "maya",
+      "next": "pick",
+      "onFail": "build"
+     },
+     {
+      "id": "pick",
+      "title": "Pick",
+      "kind": "choose",
+      "zone": {
+       "x": 4320,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "amber"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "options": [
+       {
+        "label": "Ship",
+        "to": "send"
+       },
+       {
+        "label": "Drop",
+        "to": "end"
+       }
+      ],
+      "limit": {
+       "minutes": 2880,
+       "to": "done"
+      },
+      "next": null,
+      "onFail": "build"
+     },
+     {
+      "id": "send",
+      "title": "Send",
+      "kind": "send",
+      "zone": {
+       "x": 4680,
+       "y": 0,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "overnight",
+      "onFail": null
+     },
+     {
+      "id": "overnight",
+      "title": "Overnight",
+      "kind": "wait",
+      "zone": {
+       "x": 5040,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "slate"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "wait": {
+       "for": "hours",
+       "minutes": 0,
+       "from": "22:00",
+       "to": "06:00"
+      },
+      "next": "note-it",
+      "onFail": null
+     },
+     {
+      "id": "note-it",
+      "title": "Note it",
+      "kind": "notify",
+      "zone": {
+       "x": 5400,
+       "y": 0,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": "Update on {{card.title}}",
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "mate",
+      "onFail": null
+     },
+     {
+      "id": "mate",
+      "title": "Mate",
+      "kind": "teammate",
+      "zone": {
+       "x": 5760,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Read the card and decide what happens next.",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "teammate": "theo",
+      "routes": [
+       {
+        "answer": "Done",
+        "to": "done"
+       }
+      ],
+      "reply": true,
+      "next": "comment",
+      "onFail": null
+     },
+     {
+      "id": "comment",
+      "title": "Comment",
+      "kind": "update",
+      "zone": {
+       "x": 6120,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": "Done: {{card.title}}",
+      "close": false,
+      "script": null,
+      "sort": null,
+      "next": "research",
+      "onFail": null
+     },
+     {
+      "id": "research",
+      "title": "Research",
+      "kind": "report",
+      "zone": {
+       "x": 6480,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "violet"
+      },
+      "instructions": "Investigate this and write a short, clear report with a summary first: {{card.title}}\n\n{{card.description}}\n\nFeedback to address (if any): {{note}}",
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": "elsewhere",
+      "onFail": null
+     },
+     {
+      "id": "elsewhere",
+      "title": "Elsewhere",
+      "kind": "task",
+      "zone": {
+       "x": 6840,
+       "y": 0,
+       "w": 260,
+       "h": 300,
+       "color": "blue"
+      },
+      "instructions": "{{card.title}}\n\n{{card.description}}\n\nNotes from Research:\n{{stage.research}}\n\nChanges asked for (if any): {{note}}",
+      "planning": "auto",
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "repo": "/tmp/other-project",
+      "next": "done",
+      "onFail": null
+     },
+     {
+      "id": "done",
+      "title": "Done",
+      "kind": "done",
+      "zone": {
+       "x": 720,
+       "y": 380,
+       "w": 260,
+       "h": 220,
+       "color": "green"
+      },
+      "instructions": null,
+      "planning": null,
+      "approver": null,
+      "message": null,
+      "close": null,
+      "script": null,
+      "sort": null,
+      "next": null,
+      "onFail": null
+     }
+    ]
+   },
+   "canonical": "{\"version\":1,\"start\":\"build\",\"stages\":[{\"id\":\"build\",\"title\":\"Build\",\"kind\":\"report\",\"zone\":{\"x\":0,\"y\":680,\"w\":260,\"h\":300,\"color\":\"violet\"},\"instructions\":\"Investigate this and write a short, clear report with a summary first: {{card.title}}\\n\\n{{card.description}}\\n\\nFeedback to address (if any): {{note}}\",\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":\"review\",\"onFail\":null},{\"id\":\"review\",\"title\":\"Review\",\"kind\":\"approval\",\"zone\":{\"x\":1440,\"y\":0,\"w\":260,\"h\":300,\"color\":\"amber\"},\"instructions\":null,\"planning\":null,\"approver\":\"priya\",\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"limit\":{\"minutes\":1440,\"to\":null},\"next\":\"done\",\"onFail\":\"build\"},{\"id\":\"done\",\"title\":\"Done\",\"kind\":\"done\",\"zone\":{\"x\":720,\"y\":380,\"w\":260,\"h\":220,\"color\":\"green\"},\"instructions\":null,\"planning\":null,\"approver\":null,\"message\":null,\"close\":null,\"script\":null,\"sort\":null,\"next\":null,\"onFail\":null}]}",
+   "digest": "a754249fce99f24a4c4030c30d9b3ef1"
+  }
+ ],
+ "invalid": [
+  {
+   "name": "no steps",
+   "steps": []
+  },
+  {
+   "name": "a step that isn't one",
+   "steps": [
+    "x"
+   ]
+  },
+  {
+   "name": "a step with no name",
+   "steps": [
+    {
+     "kind": "inbox"
+    }
+   ]
+  },
+  {
+   "name": "a step with an unknown kind",
+   "steps": [
+    {
+     "title": "x",
+     "kind": "teleport"
+    }
+   ]
+  },
+  {
+   "name": "a path to a step that isn't there",
+   "steps": [
+    {
+     "title": "x",
+     "kind": "inbox",
+     "next": "nowhere"
+    }
+   ]
+  },
+  {
+   "name": "a choose step with no options",
+   "steps": [
+    {
+     "title": "x",
+     "kind": "choose"
+    }
+   ]
+  },
+  {
+   "name": "a choice with no reminder",
+   "steps": [
+    {
+     "title": "x",
+     "kind": "choose",
+     "options": [
+      {
+       "label": "a",
+       "goesTo": "end"
+      },
+      {
+       "label": "b",
+       "goesTo": "end"
+      }
+     ],
+     "thenMoveTo": "Done"
+    }
+   ]
+  },
+  {
+   "name": "a wait that's too long",
+   "steps": [
+    {
+     "title": "x",
+     "kind": "wait",
+     "wait": "90 days"
+    }
+   ]
+  }
+ ]
+}

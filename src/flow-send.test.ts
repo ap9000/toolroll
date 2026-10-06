@@ -92,14 +92,14 @@ describe("drawing send and choose", () => {
 
     const bad = (options: unknown, extra: Record<string, unknown> = {}) => () => validateFlowDefinition({ version: 1, start: "c", stages: [
       { id: "c", title: "Choose", kind: "choose", options, ...extra }, { id: "x", title: "X", kind: "inbox" }] });
-    expect(bad([{ label: "Only", to: "x" }])).toThrow("Zone Choose: give it 2 to 4 options.");
-    expect(bad([1, 2, 3, 4, 5].map(n => ({ label: `O${n}`, to: "x" })))).toThrow("Zone Choose: give it 2 to 4 options.");
-    expect(bad([{ label: "Go", to: "x" }, { label: "go", to: "end" }])).toThrow("Zone Choose: two options are called go.");
-    expect(bad([{ label: "Go", to: "nowhere" }, { label: "Stop", to: "end" }])).toThrow("Zone Choose points at a zone that no longer exists.");
-    expect(bad([{ label: "Again", to: "c" }, { label: "Stop", to: "end" }])).toThrow("Zone Choose: an option can't send cards back into the same zone.");
-    expect(bad([{ label: "Go", to: "x" }, { label: "", to: "end" }])).toThrow("Zone Choose: each option needs a few words and where it leads.");
-    expect(() => flowFromSteps([{ title: "Pick", kind: "choose" }], null)).toThrow('Step Pick: give it 2 to 4 options, each with a label and the step it goes to (or "end").');
-    expect(() => flowFromSteps([{ title: "Pick", kind: "choose", options: [{ label: "A", goesTo: "end" }, { label: "B", goesTo: "end" }], ifNoReply: "end" }], null)).toThrow("Step Pick: say how long to wait for a choice first");
+    expect(bad([{ label: "Only", to: "x" }])).toThrow("stages[0].options: at least 2 items");
+    expect(bad([1, 2, 3, 4, 5].map(n => ({ label: `O${n}`, to: "x" })))).toThrow("stages[0].options: at most 4 items");
+    expect(bad([{ label: "Go", to: "x" }, { label: "go", to: "end" }])).toThrow("stages[0].options[1]: two are called go");
+    expect(bad([{ label: "Go", to: "nowhere" }, { label: "Stop", to: "end" }])).toThrow("stages[0].options[0].to: there's no zone called nowhere");
+    expect(bad([{ label: "Again", to: "c" }, { label: "Stop", to: "end" }])).toThrow("stages[0].options[0].to: can't lead back into the same zone");
+    expect(bad([{ label: "Go", to: "x" }, { label: "", to: "end" }])).toThrow("stages[0].options[1].label: required");
+    expect(() => flowFromSteps([{ title: "Pick", kind: "choose" }], null)).toThrow('steps[0].options: give it 2 to 4 options, each with a label and the step it goes to (or "end")');
+    expect(() => flowFromSteps([{ title: "Pick", kind: "choose", options: [{ label: "A", goesTo: "end" }, { label: "B", goesTo: "end" }], ifNoReply: "end" }], null)).toThrow("steps[0].remindAfter: say how long to wait for a choice first");
   });
 });
 

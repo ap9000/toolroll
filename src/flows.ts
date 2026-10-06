@@ -49,94 +49,18 @@
  */
 import { TEXT_LIMITS } from "./text-limits.js";
 import { createHash } from "node:crypto";
+import { parseContract, readVersioned, type ContractIssue, type ContractResult } from "./contracts/contract.js";
+import {
+  CHOICES_MAX, CHOICES_MIN, FLOW_ALIASES, FLOW_COLORS, FLOW_DEFINITION_VERSION, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, flowDefinitionSchema, flowStepsSchema,
+  HEADERS_MAX, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
+  type FlowChoice, type FlowColor, type FlowDefinition, type FlowLimit, type FlowSort, type FlowStage, type FlowStageKind, type FlowStepFields, type FlowWait, type FlowZone, type ScriptLanguage, type TriggerInput,
+} from "./contracts/flow.js";
 
-export const FLOW_STAGE_KINDS = ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "teammate", "send", "choose", "done"] as const;
-export type FlowStageKind = (typeof FLOW_STAGE_KINDS)[number];
-export const FLOW_COLORS = ["slate", "blue", "violet", "amber", "green", "rose"] as const;
-export type FlowColor = (typeof FLOW_COLORS)[number];
-
-export type FlowZone = { x: number; y: number; w: number; h: number; color: FlowColor };
-
-/** One answer a sort zone can pick: its name, what it means (what Jev reads), and the zone it sends the card to. */
-export type FlowSortAnswer = { answer: string; means: string; to: string };
-/** Something else a sort zone notes on the card: a score on a scale of levels, or a yes/no. */
-export type FlowSortNote = { id: string; kind: "score" | "yes-no"; question: string; levels: string[] | null };
-/** sort: the question, its answers, how sure Jev must be to act alone (0.5–0.99), and what else it notes. */
-export type FlowSort = { question: string; answers: FlowSortAnswer[]; sureAt: number; notes: FlowSortNote[] };
-/** request: what is called. The address's scheme and host are fixed; fill-ins go in its path and query (encoded), headers and body. */
-export type FlowRequest = { method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; url: string; headers: Record<string, string>; body: string | null };
-/** email: who it goes to, the subject and the text — all with fill-ins. */
-export type FlowEmail = { to: string; subject: string; body: string };
-/** tool: which of the project's tools (MCP servers), which of its functions, and the arguments as JSON with fill-ins. */
-export type FlowTool = { server: string; name: string; args: string };
-/** wait (v91): for a reply to the card's email (next: replied, onFail: no reply in time), or for a set time (then next).
- * "hours": until the clock is between `from` and `to` (like 22:00–06:00), in the computer's time zone unless one is named. */
-export type FlowWait = { for: "reply" | "time" | "hours"; minutes: number; from?: string; to?: string; timeZone?: string };
-/** How a Pull request zone merges once checks pass. */
-export const FLOW_MERGE_METHODS = ["squash", "merge", "rebase"] as const;
-export type FlowMergeMethod = (typeof FLOW_MERGE_METHODS)[number];
-/** A choose zone's option: its button's words, and the zone it leads to (FLOW_END closes the card as Ignored). */
-export type FlowChoice = { label: string; to: string };
-/** Where a choose option that ends the card leads. */
-export const FLOW_END = "end";
-/** How many options a choose zone offers. */
-export const CHOICES_MIN = 2, CHOICES_MAX = 4;
-/** A time limit on a zone (v91): after this long, the person it waits on is reminded, and a Holding or
- * "Person decides" zone can move the card on (`to`). */
-export type FlowLimit = { minutes: number; to: string | null };
-
-export type FlowStage = {
-  id: string;
-  title: string;
-  kind: FlowStageKind;
-  zone: FlowZone;
-  /** task/report: what the agent is asked to do. `{{card.title}}`,
-   * `{{card.description}}`, `{{note}}` (the latest send-back note) and
-   * `{{stage.<id>}}` (an earlier zone's report) are filled in. */
-  instructions: string | null;
-  /** task: plan first (required), let Toolroll decide (auto), or build directly (skip). */
-  planning: "auto" | "required" | "skip" | null;
-  /** approval: the one person who decides, or null for any approver on the project. */
-  approver: string | null;
-  /** approval: the flow's owner decides (v86), whoever that is when the card arrives; `approver` is then unused. */
-  toOwner?: boolean;
-  /** notify: the message; update: the comment left on the issue. Same fill-ins. */
-  message: string | null;
-  /** update: also close the issue (Linear: move it to the team's done state). */
-  close: boolean | null;
-  /** check: the project script (by name) run with no AI. */
-  script: string | null;
-  /** check (v90): where it runs — a clean folder, or a copy of the card's work (the default for zones made before v90);
-   * the answers a script's "goto:" line may pick, each with the zone it leads to; and the flow secrets it gets as variables. */
-  runIn?: "folder" | "copy";
-  routes?: { answer: string; to: string }[];
-  secrets?: string[];
-  /** sort: what Jev is asked and where each answer leads. Its onFail is where a card goes when Jev isn't sure. */
-  sort: FlowSort | null;
-  /** request, email, tool (v87): what the step sends, and to where. */
-  request?: FlowRequest;
-  email?: FlowEmail;
-  tool?: FlowTool;
-  /** wait (v91): what it waits for, and how long. */
-  wait?: FlowWait;
-  /** Any zone but Wait and Done (v91): how long a card may sit here before someone is reminded. */
-  limit?: FlowLimit;
-  /** v92: the AI teammate (by handle) who decides a "Person decides" zone (handing hard ones to its person), or handles a "Teammate handles it" zone. */
-  teammate?: string;
-  /** v96: a "Teammate handles it" zone sends what the teammate writes back to whoever asked (the person who added the card, its chat thread, or the teammate's manager). */
-  reply?: boolean;
-  /** choose: the buttons the person picks from, in order. Its onFail is where a reply goes, with the reply as {{note}}. */
-  options?: FlowChoice[];
-  /** task: the project it builds in, when not the flow's own (one the flow's owner may file in). */
-  repo?: string;
-  /** pull-request: merge once checks pass, this way. Only allowed after a "Person decides" zone, and a card merges only when a person approved it after it was built. */
-  merge?: FlowMergeMethod;
-  /** Where a card goes when this zone's step succeeds, and when it fails or is sent back (sort: when it isn't sure). */
-  next: string | null;
-  onFail: string | null;
-};
-
-export type FlowDefinition = { version: 1; start: string; stages: FlowStage[] };
+export { CHOICES_MAX, CHOICES_MIN, FLOW_COLORS, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, LONGEST_WAIT_MINUTES, SCRIPT_LANGUAGES, SCRIPT_NAME };
+export type {
+  FlowChoice, FlowColor, FlowDefinition, FlowEmail, FlowLimit, FlowMergeMethod, FlowRequest, FlowSort, FlowSortAnswer, FlowSortNote, FlowStage, FlowStageKind,
+  FlowStepInput, FlowTool, FlowWait, FlowZone, ScriptLanguage,
+} from "./contracts/flow.js";
 
 /** What each kind is called and does, in the words the canvas uses. */
 export const FLOW_KIND_WORDS: Record<FlowStageKind, { label: string; about: string }> = {
@@ -160,114 +84,15 @@ export const FLOW_KIND_WORDS: Record<FlowStageKind, { label: string; about: stri
   done: { label: "Done", about: "The end of the flow." },
 };
 
-const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
-/** A project script's name: short, lowercase, dashes — how zones and chat refer to it. */
-export const SCRIPT_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
-/** The languages a project script is written in (v90). */
-export const SCRIPT_LANGUAGES = ["shell", "python", "node"] as const;
-export type ScriptLanguage = (typeof SCRIPT_LANGUAGES)[number];
 export const LANGUAGE_WORDS: Record<ScriptLanguage, string> = { shell: "Shell", python: "Python", node: "Node" };
-const text = (value: unknown, cap: number): string | null => {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "string") throw new Error("Zone text must be plain text.");
-  const trimmed = value.trim();
-  if (trimmed.length > cap) throw new Error(`Zone text is up to ${cap} characters.`);
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(trimmed)) throw new Error("Zone text cannot contain control characters.");
-  return trimmed === "" ? null : trimmed;
-};
-const coordinate = (value: unknown, min: number, max: number, fallback: number): number =>
-  typeof value === "number" && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value))) : fallback;
 
 /** How an answer is named to Jev: its words as a short key. */
 export const sortKeyOf = (answer: string) => answer.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "answer";
 /** The default for "sure enough to act alone". */
 export const SORT_SURE_AT = 0.8;
 
-const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HEADER = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
 
-/** A web request's settings, checked: an http(s) address whose scheme and host are written out, not filled in. */
-function validateRequest(input: unknown, title: string): FlowRequest {
-  const raw = (input ?? {}) as Record<string, unknown>;
-  const method = METHODS.includes(raw["method"] as typeof METHODS[number]) ? raw["method"] as FlowRequest["method"] : "POST";
-  const url = text(raw["url"], 2000);
-  if (url === null) throw new Error(`Zone ${title}: give the address it calls.`);
-  const origin = /^(https?):\/\/([^/?#]*)/i.exec(url);
-  if (origin === null) throw new Error(`Zone ${title}: the address must start with https:// or http://.`);
-  if (origin[2]!.includes("{{") || origin[2]!.includes("@") || origin[2] === "") throw new Error(`Zone ${title}: write the address's host out in full; fill-ins go after it.`);
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries((raw["headers"] ?? {}) as Record<string, unknown>)) {
-    if (!HEADER.test(name)) throw new Error(`Zone ${title}: “${name}” isn't a header name.`);
-    const said = text(value, 500);
-    if (said !== null) headers[name] = said;
-  }
-  if (Object.keys(headers).length > 10) throw new Error(`Zone ${title}: up to 10 headers.`);
-  return { method, url, headers, body: method === "GET" || method === "DELETE" ? null : text(raw["body"], 8000) };
-}
-
-/** An email's settings, checked. */
-function validateEmail(input: unknown, title: string): FlowEmail {
-  const raw = (input ?? {}) as Record<string, unknown>;
-  const to = text(raw["to"], 500), subject = text(raw["subject"], 200), body = text(raw["body"], 8000);
-  if (to === null) throw new Error(`Zone ${title}: say who it goes to, for example {{card.email}}.`);
-  if (subject === null) throw new Error(`Zone ${title}: give the email a subject.`);
-  if (body === null) throw new Error(`Zone ${title}: write what the email says.`);
-  return { to, subject, body };
-}
-
-/** A tool call's settings, checked: the arguments are a JSON object. */
-function validateTool(input: unknown, title: string): FlowTool {
-  const raw = (input ?? {}) as Record<string, unknown>;
-  const server = text(raw["server"], 64), name = text(raw["name"], 100);
-  if (server === null || name === null) throw new Error(`Zone ${title}: choose the tool it uses.`);
-  const args = text(raw["args"], 4000) ?? "{}";
-  let parsed: unknown;
-  try { parsed = JSON.parse(args); } catch { throw new Error(`Zone ${title}: the arguments aren't valid JSON.`); }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Zone ${title}: the arguments are a JSON object, like {"text": "{{stage.draft}}"}.`);
-  return { server, name, args };
-}
-
-/** A sort zone's settings, checked. Answers name zones by id; `ids` says which exist. */
-function validateSort(input: unknown, title: string): FlowSort {
-  const raw = (input ?? {}) as Record<string, unknown>;
-  const question = text(raw["question"], 300);
-  if (question === null) throw new Error(`Zone ${title}: write the question it sorts by.`);
-  const answers = Array.isArray(raw["answers"]) ? raw["answers"] : [];
-  if (answers.length < 2 || answers.length > 12) throw new Error(`Zone ${title}: give it 2 to 12 answers.`);
-  const keys = new Set<string>();
-  const checked = answers.map(one => {
-    const answer = one as Record<string, unknown>;
-    const name = text(answer["answer"], 40);
-    if (name === null) throw new Error(`Zone ${title}: every answer needs a name.`);
-    const means = text(answer["means"], 200) ?? name;
-    const to = text(answer["to"], 32);
-    if (to === null) throw new Error(`Zone ${title}: say where “${name}” goes.`);
-    const key = sortKeyOf(name);
-    if (keys.has(key)) throw new Error(`Zone ${title}: two answers are called ${name}.`);
-    keys.add(key);
-    return { answer: name, means, to };
-  });
-  const sureAt = typeof raw["sureAt"] === "number" && Number.isFinite(raw["sureAt"]) ? Math.round(Math.min(0.99, Math.max(0.5, raw["sureAt"])) * 100) / 100 : SORT_SURE_AT;
-  const notes = Array.isArray(raw["notes"]) ? raw["notes"] : [];
-  if (notes.length > 3) throw new Error(`Zone ${title}: it can note up to 3 other things.`);
-  const noteIds = new Set<string>(["route"]);
-  const checkedNotes = notes.map(one => {
-    const note = one as Record<string, unknown>;
-    const noteQuestion = text(note["question"], 300);
-    if (noteQuestion === null) throw new Error(`Zone ${title}: every extra note needs a question.`);
-    const kind = note["kind"] === "score" ? "score" : "yes-no";
-    let id = typeof note["id"] === "string" && ID.test(note["id"]) ? note["id"] : sortKeyOf(noteQuestion).slice(0, 24);
-    for (let n = 2; noteIds.has(id); n++) id = `${sortKeyOf(noteQuestion).slice(0, 20)}-${n}`;
-    noteIds.add(id);
-    const levels = kind === "score" ? (Array.isArray(note["levels"]) ? note["levels"] : []).map(level => text(level, 120)).filter((level): level is string => level !== null) : null;
-    if (levels !== null && (levels.length < 2 || levels.length > 10)) throw new Error(`Zone ${title}: a score needs 2 to 10 levels, lowest first.`);
-    return { id, kind, question: noteQuestion, levels } as FlowSortNote;
-  });
-  return { question, answers: checked, sureAt, notes: checkedNotes };
-}
-
-/** The longest a zone waits or a limit runs: 30 days. */
-export const LONGEST_WAIT_MINUTES = 30 * 24 * 60;
 const UNITS: readonly [RegExp, number][] = [[/^(m|min|mins|minute|minutes)$/, 1], [/^(h|hr|hrs|hour|hours)$/, 60], [/^(d|day|days)$/, 24 * 60], [/^(w|wk|wks|week|weeks)$/, 7 * 24 * 60]];
 /** "3 days", "4 hours", "90 minutes", "1 week" (or a number of minutes) as minutes; null when it isn't one. */
 export function durationMinutes(value: unknown): number | null {
@@ -287,27 +112,12 @@ export function durationWords(minutes: number): string {
   return [days > 0 ? plural(days, "day") : "", hours > 0 ? plural(hours, "hour") : "", rest > 0 ? plural(rest, "minute") : ""].filter(one => one !== "").join(" ");
 }
 
-/** A Wait zone's settings, checked. */
-function validateWait(input: unknown, title: string): FlowWait {
-  const raw = (input ?? {}) as Record<string, unknown>;
-  if (raw["for"] === "hours") {
-    const from = clockTime(raw["from"]), to = clockTime(raw["to"]);
-    if (from === null || to === null || from === to) throw new Error(`Zone ${title}: say the hours it waits for, like 22:00 to 06:00.`);
-    const zone = typeof raw["timeZone"] === "string" && raw["timeZone"].trim() !== "" ? raw["timeZone"].trim() : null;
-    if (zone !== null && !knownTimeZone(zone)) throw new Error(`Zone ${title}: ${zone} isn't a time zone, like Europe/London.`);
-    return { for: "hours", minutes: 0, from, to, ...(zone === null ? {} : { timeZone: zone }) };
-  }
-  const minutes = durationMinutes(raw["minutes"]);
-  if (minutes === null) throw new Error(`Zone ${title}: say how long it waits, from 1 minute to 30 days.`);
-  return { for: raw["for"] === "time" ? "time" : "reply", minutes };
-}
-
 /** "22:00", "9:30" as "HH:MM"; null when it isn't a time of day. */
 export function clockTime(value: unknown): string | null {
   const match = typeof value === "string" ? /^\s*([01]?[0-9]|2[0-3]):([0-5][0-9])\s*$/.exec(value) : null;
   return match === null ? null : `${match[1]!.padStart(2, "0")}:${match[2]}`;
 }
-function knownTimeZone(zone: string): boolean {
+export function knownTimeZone(zone: string): boolean {
   try { new Intl.DateTimeFormat("en-GB", { timeZone: zone }); return true; } catch { return false; }
 }
 /** Whether a time falls inside an "hours" wait (22:00–06:00 runs past midnight), in its time zone or this computer's. */
@@ -319,94 +129,251 @@ export function withinHours(wait: Pick<FlowWait, "from" | "to" | "timeZone">, no
   return from < to ? at >= from && at < to : at >= from || at < to;
 }
 
-/** A zone's time limit, checked; null when it has none. Only Holding and "Person decides" zones move a card on. */
-function validateLimit(input: unknown, kind: FlowStageKind, title: string): FlowLimit | null {
-  if (input === undefined || input === null) return null;
-  const raw = input as Record<string, unknown>;
-  if (kind === "wait" || kind === "done") throw new Error(`Zone ${title}: ${kind === "wait" ? "a Wait zone has its own time" : "the end has no time limit"}.`);
-  const minutes = durationMinutes(raw["minutes"]);
-  if (minutes === null) throw new Error(`Zone ${title}: say how long a card may wait, from 1 minute to 30 days.`);
-  const to = text(raw["to"], 32);
-  if (to !== null && kind !== "inbox" && kind !== "approval" && kind !== "choose") throw new Error(`Zone ${title}: only Holding, "Person decides" and "Person chooses" zones move a card on when it waits too long; other zones remind.`);
-  return { minutes, to };
-}
-
 /** Who decides at an approval zone: its named person, the flow's owner, or null for anyone who approves on the project. */
 export function deciderOf(stage: Pick<FlowStage, "approver" | "toOwner">, flow: { owner: string }): string | null {
   return stage.toOwner === true ? flow.owner : stage.approver;
 }
 
-/** A flow as drawn on the canvas, checked whole. Throws in plain words. */
-/** `stored`: reading a flow saved earlier, which keeps working under rules added since (its cards say what's wrong). */
-export function validateFlowDefinition(input: unknown, options: { stored?: boolean } = {}): FlowDefinition {
-  const raw = input as { version?: unknown; start?: unknown; stages?: unknown } | null;
-  if (raw === null || typeof raw !== "object" || !Array.isArray(raw.stages)) throw new Error("A flow is a list of zones.");
-  if (raw.stages.length === 0 || raw.stages.length > 24) throw new Error("A flow has 1 to 24 zones.");
-  const stages: FlowStage[] = raw.stages.map((one, index) => {
-    const stage = one as Record<string, unknown>;
-    const id = typeof stage["id"] === "string" ? stage["id"] : "";
-    if (!ID.test(id)) throw new Error("Each zone needs a short id: lowercase letters, numbers and dashes.");
-    const kind = stage["kind"];
-    if (!FLOW_STAGE_KINDS.includes(kind as FlowStageKind)) throw new Error(`Zone ${id}: choose what it does.`);
-    const title = text(stage["title"], 60);
-    if (title === null) throw new Error(`Zone ${id} needs a name.`);
-    const zone = (stage["zone"] ?? {}) as Record<string, unknown>;
-    const color = FLOW_COLORS.includes(zone["color"] as FlowColor) ? zone["color"] as FlowColor : "slate";
-    const planning = stage["planning"] === "required" || stage["planning"] === "skip" || stage["planning"] === "auto" ? stage["planning"] : null;
-    return {
-      id, title, kind: kind as FlowStageKind,
-      zone: { x: coordinate(zone["x"], -20000, 20000, index * 320), y: coordinate(zone["y"], -20000, 20000, 0), w: coordinate(zone["w"], 220, 1200, 280), h: coordinate(zone["h"], 160, 1600, 360), color },
-      // Reading a saved flow never re-checks length: a limit is for writing.
-      instructions: text(stage["instructions"], options.stored ? Number.POSITIVE_INFINITY : TEXT_LIMITS.flowInstructions),
-      planning: kind === "task" ? planning ?? "auto" : null,
-      approver: kind === "approval" && stage["toOwner"] !== true ? text(stage["approver"], 64) : null,
-      ...(kind === "approval" && stage["toOwner"] === true ? { toOwner: true } : {}),
-      message: text(stage["message"], 1000),
-      close: kind === "update" ? stage["close"] !== false : null,
-      script: kind === "check" ? text(stage["script"], 40) : null,
-      ...(kind === "check" ? validateCode(stage, title) : {}),
-      sort: kind === "sort" ? validateSort(stage["sort"], title) : null,
-      ...(kind === "request" ? { request: validateRequest(stage["request"], title) } : {}),
-      ...(kind === "email" ? { email: validateEmail(stage["email"], title) } : {}),
-      ...(kind === "tool" ? { tool: validateTool(stage["tool"], title) } : {}),
-      ...(kind === "wait" ? { wait: validateWait(stage["wait"], title) } : {}),
-      ...(kind === "pull-request" && stage["merge"] !== undefined && stage["merge"] !== null && stage["merge"] !== false ? { merge: validateMerge(stage["merge"], title) } : {}),
-      ...((kind === "approval" || kind === "teammate") && stage["teammate"] !== undefined && stage["teammate"] !== null && stage["teammate"] !== "" ? { teammate: validateTeammate(stage["teammate"], title) } : {}),
-      ...(kind === "teammate" ? validateRoutes(stage, title) : {}),
-      ...(kind === "teammate" && stage["reply"] === true ? { reply: true } : {}),
-      ...(kind === "choose" ? { options: validateChoices(stage["options"], title) } : {}),
-      ...(kind === "task" && stage["repo"] !== undefined && stage["repo"] !== null && stage["repo"] !== "" ? { repo: validateRepo(stage["repo"], title) } : {}),
-      ...(() => { const limit = validateLimit(stage["limit"], kind as FlowStageKind, title); return limit === null ? {} : { limit }; })(),
-      next: kind === "sort" || kind === "choose" ? null : text(stage["next"], 32),
-      onFail: text(stage["onFail"], 32),
-    };
+/** A flow refused by its contract: every problem, each naming its path (`stages[2].instructions: required`). */
+export class FlowContractError extends Error {
+  constructor(readonly lines: readonly string[]) {
+    super(lines.join("\n"));
+  }
+}
+
+// ------------------------------------------------------------------ reading a drawing
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Text as every release has kept it: trimmed, and blank as none. Anything else is left for the schema to name. */
+const said = (value: unknown): unknown => value === undefined || value === null ? null : typeof value === "string" ? value.trim() === "" ? null : value.trim() : value;
+const coordinate = (value: unknown, min: number, max: number, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value))) : fallback;
+const given = (value: unknown) => value !== undefined && value !== null;
+
+/** A sort zone's settings as every release has kept them: an answer's meaning defaults to its name, sureAt to 0.8 (within
+ * 0.5–0.99), and each extra note gets a free id. */
+function canonicalSort(input: unknown): unknown {
+  const raw = isRecord(input) ? input : {};
+  const answers = Array.isArray(raw["answers"]) ? raw["answers"] : given(raw["answers"]) ? raw["answers"] : [];
+  const sureAt = typeof raw["sureAt"] === "number" && Number.isFinite(raw["sureAt"]) ? Math.round(Math.min(SURE_AT_MAX, Math.max(SURE_AT_MIN, raw["sureAt"])) * 100) / 100 : SORT_SURE_AT;
+  const noteIds = new Set<string>(["route"]);
+  const notes = Array.isArray(raw["notes"]) ? raw["notes"].map(one => {
+    const note = isRecord(one) ? one : {};
+    const question = said(note["question"]);
+    const kind = note["kind"] === "score" ? "score" : "yes-no";
+    const words = typeof question === "string" ? question : "";
+    let id = typeof note["id"] === "string" && ZONE_ID.test(note["id"]) ? note["id"] : sortKeyOf(words).slice(0, 24);
+    for (let n = 2; noteIds.has(id); n++) id = `${sortKeyOf(words).slice(0, 20)}-${n}`;
+    noteIds.add(id);
+    const levels = kind === "score" ? (Array.isArray(note["levels"]) ? note["levels"] : []).map(said).filter(level => level !== null) : null;
+    return { id, kind, question, levels };
+  }) : given(raw["notes"]) ? raw["notes"] : [];
+  return {
+    question: said(raw["question"]),
+    answers: Array.isArray(answers) ? answers.map(one => {
+      const answer = isRecord(one) ? one : {};
+      const name = said(answer["answer"]);
+      return { answer: name, means: said(answer["means"]) ?? name, to: said(answer["to"]) };
+    }) : answers,
+    sureAt, notes,
+  };
+}
+
+/** A script's or teammate's answers as every release has kept them: trimmed, none left out. */
+function canonicalRoutes(input: unknown): unknown {
+  if (!given(input)) return undefined;
+  if (!Array.isArray(input)) return input;
+  if (input.length === 0) return undefined;
+  return input.map(one => {
+    const row = isRecord(one) ? one : {};
+    return { answer: typeof row["answer"] === "string" ? row["answer"].trim() : row["answer"] ?? "", to: typeof row["to"] === "string" ? row["to"].trim() : row["to"] ?? "" };
   });
+}
+
+/** A Wait zone's settings: "hours" between two times of day, or a reply or a set time for so long. */
+function canonicalWait(input: unknown): unknown {
+  const raw = isRecord(input) ? input : {};
+  if (raw["for"] === "hours") {
+    const zone = typeof raw["timeZone"] === "string" && raw["timeZone"].trim() !== "" ? raw["timeZone"].trim() : null;
+    return { for: "hours", minutes: 0, from: clockTime(raw["from"]) ?? raw["from"], to: clockTime(raw["to"]) ?? raw["to"], ...(zone === null ? {} : { timeZone: zone }) };
+  }
+  return { for: raw["for"] === "time" ? "time" : "reply", minutes: durationMinutes(raw["minutes"]) };
+}
+
+/**
+ * One zone of a version 1 drawing, as every release from 0.9.0 has read it: a zone saved before a field existed gets
+ * that field's default, text is trimmed (blank is none), the canvas place is clamped, a field another kind uses is
+ * set aside, and a value no release accepted is left as it is for the schema to name.
+ */
+function canonicalStage(input: unknown, index: number): unknown {
+  if (!isRecord(input)) return input;
+  const stage = input;
+  const kind = stage["kind"];
+  const zone = isRecord(stage["zone"]) ? stage["zone"] : {};
+  const planning = stage["planning"] === "required" || stage["planning"] === "skip" || stage["planning"] === "auto" ? stage["planning"] : null;
+  const runIn = stage["runIn"] === undefined || stage["runIn"] === null ? undefined : stage["runIn"];
+  const routes = canonicalRoutes(stage["routes"]);
+  const secrets = !given(stage["secrets"]) ? undefined : Array.isArray(stage["secrets"]) ? stage["secrets"].length === 0 ? undefined : stage["secrets"].every(one => typeof one === "string") ? [...new Set(stage["secrets"] as string[])] : stage["secrets"] : stage["secrets"];
+  const limit = !given(stage["limit"]) ? undefined : isRecord(stage["limit"]) ? { minutes: durationMinutes(stage["limit"]["minutes"]), to: said(stage["limit"]["to"]) } : stage["limit"];
+  const request = isRecord(stage["request"]) ? stage["request"] : {};
+  const method = (["GET", "POST", "PUT", "PATCH", "DELETE"] as const).includes(request["method"] as "GET") ? request["method"] as string : "POST";
+  const email = isRecord(stage["email"]) ? stage["email"] : {};
+  const tool = isRecord(stage["tool"]) ? stage["tool"] : {};
+  return {
+    id: stage["id"], title: said(stage["title"]), kind,
+    zone: { x: coordinate(zone["x"], -20000, 20000, index * 320), y: coordinate(zone["y"], -20000, 20000, 0), w: coordinate(zone["w"], 220, 1200, 280), h: coordinate(zone["h"], 160, 1600, 360), color: FLOW_COLORS.includes(zone["color"] as FlowColor) ? zone["color"] : "slate" },
+    instructions: said(stage["instructions"]),
+    planning: kind === "task" ? planning ?? "auto" : null,
+    approver: kind === "approval" && stage["toOwner"] !== true ? said(stage["approver"]) : null,
+    ...(kind === "approval" && stage["toOwner"] === true ? { toOwner: true } : {}),
+    message: said(stage["message"]),
+    close: kind === "update" ? stage["close"] !== false : null,
+    script: kind === "check" ? said(stage["script"]) : null,
+    // Left out, a script runs where every script ran before v90: in a copy of the card's work.
+    ...(kind === "check" ? { ...(runIn === undefined ? {} : { runIn }), ...(routes === undefined ? {} : { routes }), ...(secrets === undefined ? {} : { secrets }) } : {}),
+    sort: kind === "sort" ? canonicalSort(stage["sort"]) : null,
+    ...(kind === "request" ? { request: { method, url: said(request["url"]), headers: Object.fromEntries(Object.entries(isRecord(request["headers"]) ? request["headers"] : {}).flatMap(([name, value]) => { const one = said(value); return one === null ? [] : [[name, one]]; })), body: method === "GET" || method === "DELETE" ? null : said(request["body"]) } } : {}),
+    ...(kind === "email" ? { email: { to: said(email["to"]), subject: said(email["subject"]), body: said(email["body"]) } } : {}),
+    ...(kind === "tool" ? { tool: { server: said(tool["server"]), name: said(tool["name"]), args: said(tool["args"]) ?? "{}" } } : {}),
+    ...(kind === "wait" ? { wait: canonicalWait(stage["wait"]) } : {}),
+    // true is a squash, the default; false or none is no merge.
+    ...(kind === "pull-request" && given(stage["merge"]) && stage["merge"] !== false ? { merge: stage["merge"] === true ? "squash" : stage["merge"] } : {}),
+    ...((kind === "approval" || kind === "teammate") && given(stage["teammate"]) && stage["teammate"] !== "" ? { teammate: stage["teammate"] } : {}),
+    ...(kind === "teammate" && routes !== undefined ? { routes } : {}),
+    ...(kind === "teammate" && stage["reply"] === true ? { reply: true } : {}),
+    ...(kind === "choose" ? { options: Array.isArray(stage["options"]) ? stage["options"].map(one => { const row = isRecord(one) ? one : {}; return { label: said(row["label"]), to: said(row["to"]) }; }) : given(stage["options"]) ? stage["options"] : [] } : {}),
+    ...(kind === "task" && given(stage["repo"]) && stage["repo"] !== "" ? { repo: said(stage["repo"]) } : {}),
+    ...(limit === undefined ? {} : { limit }),
+    next: kind === "sort" || kind === "choose" ? null : said(stage["next"]),
+    onFail: said(stage["onFail"]),
+  };
+}
+
+/** A version 1 drawing as every release has read it (canonicalStage); its start is the first zone unless it names one. */
+function canonicalDefinition(input: Record<string, unknown>): Record<string, unknown> {
+  const stages = Array.isArray(input["stages"]) ? input["stages"].map(canonicalStage) : input["stages"];
+  const ids = Array.isArray(stages) ? stages.map(one => (isRecord(one) ? one["id"] : undefined)) : [];
+  const start = typeof input["start"] === "string" && ids.includes(input["start"]) ? input["start"] : ids[0];
+  return { version: Object.prototype.hasOwnProperty.call(input, "version") ? input["version"] : FLOW_DEFINITION_VERSION, start, stages };
+}
+
+const issue = (path: string, what: string, kind: ContractIssue["kind"] = "invalid"): ContractIssue => ({ path, kind, line: `${path}: ${what}` });
+
+/** What JSON Schema can't say about a drawing, each named by its path: paths lead to zones that exist and never back into
+ * their own zone, answers and options have names of their own, a web address's host is written out, tool arguments are a
+ * JSON object, an hours wait's times differ in a real time zone, and a merge comes after a person's decision. */
+export function drawingProblems(definition: FlowDefinition): ContractIssue[] {
+  const problems: ContractIssue[] = [];
   const ids = new Set<string>();
-  for (const stage of stages) {
-    if (ids.has(stage.id)) throw new Error(`Two zones are called ${stage.id}.`);
+  definition.stages.forEach((stage, index) => {
+    if (ids.has(stage.id)) problems.push(issue(`stages[${index}].id`, `two zones are called ${stage.id}`));
     ids.add(stage.id);
-  }
-  for (const stage of stages) {
-    for (const target of [stage.next, stage.onFail, stage.limit?.to ?? null, ...(stage.sort?.answers.map(one => one.to) ?? []), ...(stage.routes?.map(one => one.to) ?? []), ...choiceTargets(stage)]) if (target !== null && !ids.has(target)) throw new Error(`Zone ${stage.title} points at a zone that no longer exists.`);
-    if (stage.options !== undefined && ids.has(FLOW_END) && stage.options.some(one => one.to === FLOW_END)) throw new Error(`Zone ${stage.title}: an option that ends the card can't be told apart from the zone called ${FLOW_END}. Rename that zone.`);
-    if (stage.options?.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an option can't send cards back into the same zone.`);
-    if (stage.limit?.to === stage.id) throw new Error(`Zone ${stage.title}: a card that waits too long can't move back into the same zone.`);
-    if (stage.routes?.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an answer can't send cards back into the same zone.`);
-    if (stage.sort !== null && stage.sort.answers.some(one => one.to === stage.id)) throw new Error(`Zone ${stage.title}: an answer can't send cards back into the same zone.`);
-    if ((stage.kind === "task" || stage.kind === "report") && stage.instructions === null) throw new Error(`Zone ${stage.title}: say what the agent should do.`);
-    if (stage.kind === "draft" && stage.instructions === null) throw new Error(`Zone ${stage.title}: say what Claude should write.`);
-    if (stage.kind === "notify" && stage.message === null) throw new Error(`Zone ${stage.title}: write the message to post.`);
-    if (stage.kind === "check" && (stage.script === null || !SCRIPT_NAME.test(stage.script))) throw new Error(`Zone ${stage.title}: choose which script it runs.`);
-    if (stage.kind === "done" && (stage.next !== null || stage.onFail !== null)) throw new Error(`Zone ${stage.title} is the end; it can't lead anywhere.`);
-    if (stage.kind === "teammate" && stage.teammate === undefined) throw new Error(`Zone ${stage.title}: choose which teammate handles it.`);
-  }
-  const start = typeof raw.start === "string" && ids.has(raw.start) ? raw.start : stages[0]!.id;
+  });
+  definition.stages.forEach((stage, index) => {
+    const at = `stages[${index}]`;
+    const target = (path: string, to: string | null) => {
+      if (to !== null && !ids.has(to)) problems.push(issue(`${at}.${path}`, `there's no zone called ${to}`));
+      else if (to === stage.id && path !== "next" && path !== "onFail") problems.push(issue(`${at}.${path}`, "can't lead back into the same zone"));
+    };
+    target("next", stage.next);
+    target("onFail", stage.onFail);
+    if (stage.limit !== undefined) target("limit.to", stage.limit.to);
+    stage.sort?.answers.forEach((one, n) => target(`sort.answers[${n}].to`, one.to));
+    stage.routes?.forEach((one, n) => target(`routes[${n}].to`, one.to));
+    stage.options?.forEach((one, n) => {
+      if (one.to !== FLOW_END) target(`options[${n}].to`, one.to);
+      else if (ids.has(FLOW_END)) problems.push(issue(`${at}.options[${n}].to`, `an option that ends the card can't be told apart from the zone called ${FLOW_END}; rename that zone`));
+    });
+    const twice = (path: string, names: readonly string[], key: (name: string) => string) => {
+      const seen = new Set<string>();
+      names.forEach((name, n) => {
+        if (seen.has(key(name))) problems.push(issue(`${at}.${path}[${n}]`, `two are called ${name}`));
+        seen.add(key(name));
+      });
+    };
+    if (stage.sort !== null) twice("sort.answers", stage.sort.answers.map(one => one.answer), sortKeyOf);
+    if (stage.routes !== undefined) twice("routes", stage.routes.map(one => one.answer), name => name.toLowerCase());
+    if (stage.options !== undefined) twice("options", stage.options.map(one => one.label), name => name.toLowerCase());
+    if (stage.request !== undefined) {
+      const origin = /^(https?):\/\/([^/?#]*)/i.exec(stage.request.url);
+      if (origin === null) problems.push(issue(`${at}.request.url`, "must start with https:// or http://"));
+      else if (origin[2]!.includes("{{") || origin[2]!.includes("@") || origin[2] === "") problems.push(issue(`${at}.request.url`, "write the address's host out in full; fill-ins go after it"));
+      const names = Object.keys(stage.request.headers);
+      for (const name of names) if (!HEADER.test(name)) problems.push(issue(`${at}.request.headers`, `“${name}” isn't a header name`));
+      if (names.length > HEADERS_MAX) problems.push(issue(`${at}.request.headers`, `at most ${HEADERS_MAX} headers`, "too-many"));
+    }
+    if (stage.tool !== undefined) {
+      let args: unknown;
+      try { args = JSON.parse(stage.tool.args); } catch { args = undefined; }
+      if (!isRecord(args)) problems.push(issue(`${at}.tool.args`, `must be a JSON object, like {"text": "{{stage.draft}}"}`));
+    }
+    if (stage.wait !== undefined && (stage.wait.for === "hours") !== (stage.wait.minutes === 0)) problems.push(issue(`${at}.wait.minutes`, stage.wait.for === "hours" ? "must be 0: an hours wait waits for the clock" : "say how long it waits, from 1 minute to 30 days"));
+    if (stage.wait !== undefined && (stage.wait.for === "hours") !== (stage.wait.from !== undefined && stage.wait.to !== undefined)) problems.push(issue(`${at}.wait`, stage.wait.for === "hours" ? "say the hours it waits for, like 22:00 to 06:00" : "only an hours wait has from and to"));
+    if (stage.wait?.for === "hours") {
+      if (stage.wait.from === stage.wait.to) problems.push(issue(`${at}.wait.to`, "must differ from from, like 22:00 to 06:00"));
+      if (stage.wait.timeZone !== undefined && !knownTimeZone(stage.wait.timeZone)) problems.push(issue(`${at}.wait.timeZone`, `${stage.wait.timeZone} isn't a time zone, like Europe/London`));
+    }
+  });
+  if (problems.length > 0) return problems;
   // A zone that merges comes after a person's decision on every path to it: never merged without one.
-  const unapproved = reachableWithout(stages, start, one => one.kind === "approval");
-  for (const stage of stages) {
-    if (stage.merge !== undefined && unapproved.has(stage.id)) throw new Error(`Zone ${stage.title} merges, so a “Person decides” zone must come before it on every path.`);
-  }
-  return { version: 1, start, stages };
+  const unapproved = reachableWithout(definition.stages, definition.start, one => one.kind === "approval");
+  definition.stages.forEach((stage, index) => {
+    if (stage.merge !== undefined && unapproved.has(stage.id)) problems.push(issue(`stages[${index}].merge`, "a “Person decides” zone must come before it on every path"));
+  });
+  return problems;
+}
+
+/**
+ * Read a flow's drawing: the canvas's, a step list's once built, or one saved earlier (`stored`, which keeps working under
+ * rules added since: its instructions keep the length they were saved with). A version 1 drawing is read as every release
+ * has read it (canonicalStage), then the schema checks it, then drawingProblems; a newer version is refused plainly.
+ */
+export function readFlowDefinition(input: unknown, options: { stored?: boolean } = {}): ContractResult<FlowDefinition> {
+  const body = isRecord(input) ? canonicalDefinition(input) : input;
+  const read = readVersioned(options.stored === true ? savedFlowDefinitionSchema : flowDefinitionSchema, body, {}, FLOW_ALIASES) as ContractResult<FlowDefinition>;
+  // The start is the first zone unless a zone it names exists: a problem with it is a problem with the zones, said there.
+  if (!read.ok) return { ok: false, issues: read.issues.some(one => one.path.startsWith("stages")) ? read.issues.filter(one => one.path !== "start") : read.issues };
+  const problems = drawingProblems(read.value);
+  return problems.length === 0 ? read : { ok: false, issues: problems };
+}
+
+/** The saved drawing's fields in the words steps and flow files use for them. */
+const STEP_WORDS: readonly [RegExp, string][] = [
+  [/^tool\.args/, "args"], [/^tool\.server/, "server"], [/^tool\.name/, "tool"], [/^request\.(url|headers|body|method)/, "$1"], [/^email\.(to|subject|body)/, "$1"],
+  [/^sort\.answers\[(\d+)\]\.to/, "answers[$1].goesTo"], [/^sort\.answers/, "answers"], [/^sort\.question/, "question"], [/^sort\.sureAt/, "sureAt"], [/^sort\.notes/, "alsoNote"],
+  [/^(routes|options)\[(\d+)\]\.to/, "$1[$2].goesTo"], [/^limit\.to/, "thenMoveTo"], [/^limit(\.minutes)?/, "remindAfter"], [/^wait\.to/, "until"], [/^wait\.(from|timeZone)/, "$1"], [/^wait(\.minutes)?/, "wait"],
+  [/^approver/, "decider"], [/^toOwner/, "decider"],
+];
+
+/** A refusal of the drawing a step list or flow file became, in its words: `stages[2].sort.answers[0].to` is
+ * `steps[2].answers[0].goesTo` (each zone is the step at its index), and a zone's failure path is the step's own name for it. */
+export function inStepWords(line: string, list: "steps" | "zones", kinds: readonly (string | undefined)[]): string {
+  const match = /^stages\[(\d+)\](?:\.([^:]*))?:(.*)$/s.exec(line);
+  if (match === null) return line;
+  const index = Number(match[1]), kind = kinds[index];
+  let field = match[2] ?? "";
+  if (field === "onFail") field = kind === "sort" ? "ifNotSure" : kind === "wait" ? "ifNoReply" : kind === "choose" ? "ifReplied" : "ifFails";
+  else for (const [from, to] of STEP_WORDS) if (from.test(field)) { field = field.replace(from, to); break; }
+  return `${list}[${index}]${field === "" ? "" : `.${field}`}:${match[3]}`;
+}
+
+/** A flow as drawn on the canvas, checked whole (readFlowDefinition). Throws FlowContractError, naming every path. */
+export function validateFlowDefinition(input: unknown, options: { stored?: boolean } = {}): FlowDefinition {
+  const read = readFlowDefinition(input, options);
+  if (!read.ok) throw new FlowContractError(read.issues.map(one => one.line));
+  return read.value;
+}
+
+/** A drawing's refusal as the canvas shows it: each line as it is, after the name of the zone it is about, so a person
+ * finds it on the canvas (`Build · stages[1].instructions: required`). */
+export function withZoneNames(lines: readonly string[], input: unknown): string {
+  const stages = isRecord(input) && Array.isArray(input["stages"]) ? input["stages"] : [];
+  return lines.map(line => {
+    const index = /^stages\[(\d+)\]/.exec(line)?.[1];
+    const stage = index === undefined ? undefined : stages[Number(index)];
+    const title = isRecord(stage) && typeof stage["title"] === "string" && stage["title"].trim() !== "" ? stage["title"].trim() : null;
+    return title === null ? line : `${title} · ${line}`;
+  }).join("\n");
 }
 
 /** The instructions 0.9.26 and earlier read from a saved zone: they re-check this length on every read, and a flow with a
@@ -449,13 +416,6 @@ export function flowDefinitionFromStore(json: string): string {
   return JSON.stringify({ ...(raw as object), stages: whole });
 }
 
-/** A Pull request zone's merge: true is squash, the default. */
-function validateMerge(value: unknown, title: string): FlowMergeMethod {
-  if (value === true) return "squash";
-  if (typeof value === "string" && (FLOW_MERGE_METHODS as readonly string[]).includes(value)) return value as FlowMergeMethod;
-  throw new Error(`Zone ${title}: merge by squash, merge or rebase.`);
-}
-
 /** The zones a card can reach from `start` without passing through a zone `stop` picks (those zones aren't included). */
 export function reachableWithout(stages: readonly FlowStage[], start: string, stop: (stage: FlowStage) => boolean): Set<string> {
   const seen = new Set<string>();
@@ -478,74 +438,6 @@ export function choiceTargets(stage: Pick<FlowStage, "options">): string[] {
 /** Where a reply to a choice goes, as its {{note}}: the zone's reply path, else its first option that leads somewhere; null when none does. */
 export function replyTarget(stage: Pick<FlowStage, "options" | "onFail">): string | null {
   return stage.onFail ?? choiceTargets(stage)[0] ?? null;
-}
-
-/** A choose zone's options, checked: 2 to 4, each with short words of its own and where it leads. */
-function validateChoices(input: unknown, title: string): FlowChoice[] {
-  const raw = Array.isArray(input) ? input : [];
-  if (raw.length < CHOICES_MIN || raw.length > CHOICES_MAX) throw new Error(`Zone ${title}: give it ${CHOICES_MIN} to ${CHOICES_MAX} options.`);
-  const seen = new Set<string>();
-  return raw.map(one => {
-    const row = (one ?? {}) as Record<string, unknown>;
-    const label = text(row["label"], 40);
-    const to = text(row["to"], 32);
-    if (label === null || to === null) throw new Error(`Zone ${title}: each option needs a few words and where it leads.`);
-    if (seen.has(label.toLowerCase())) throw new Error(`Zone ${title}: two options are called ${label}.`);
-    seen.add(label.toLowerCase());
-    return { label, to };
-  });
-}
-
-/** A build zone's project, when it isn't the flow's: its path. Whether the flow's owner may file there is checked when work is filed. */
-function validateRepo(value: unknown, title: string): string {
-  const repo = text(value, 1000);
-  if (repo === null) throw new Error(`Zone ${title}: choose the project it builds in.`);
-  return repo;
-}
-
-/** A teammate's handle on a zone (v92): which teammate works it. Whether it exists is the project's to say, when a card arrives. */
-function validateTeammate(value: unknown, title: string): string {
-  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(value)) throw new Error(`Zone ${title}: choose a teammate by its short name, like maya.`);
-  return value;
-}
-
-/** The answers a zone may pick, each with the zone it leads to (a script's "goto:" line, or a teammate's choice). */
-function validateRoutes(stage: Record<string, unknown>, title: string): Pick<FlowStage, "routes"> {
-  const rawRoutes = stage["routes"] === undefined || stage["routes"] === null ? [] : stage["routes"];
-  if (!Array.isArray(rawRoutes) || rawRoutes.length > 12) throw new Error(`Zone ${title}: pick from up to 12 answers.`);
-  const seen = new Set<string>();
-  const routes = rawRoutes.map(one => {
-    const row = (one ?? {}) as Record<string, unknown>;
-    const answer = typeof row["answer"] === "string" ? row["answer"].trim() : "";
-    const to = typeof row["to"] === "string" ? row["to"].trim() : "";
-    if (!/^[^\n]{1,40}$/.test(answer) || to === "") throw new Error(`Zone ${title}: each answer needs a short name and the zone it leads to.`);
-    if (seen.has(answer.toLowerCase())) throw new Error(`Zone ${title}: two answers are called ${answer}.`);
-    seen.add(answer.toLowerCase());
-    return { answer, to };
-  });
-  return routes.length === 0 ? {} : { routes };
-}
-
-/** A code zone's settings (v90): where it runs, its answers, and its secrets. Throws in plain words. */
-function validateCode(stage: Record<string, unknown>, title: string): Pick<FlowStage, "runIn" | "routes" | "secrets"> {
-  // Left out, it runs where every script ran before v90: in a copy of the card's work (and the zone's digest stays the same).
-  const runIn = stage["runIn"] === "folder" || stage["runIn"] === "copy" ? stage["runIn"] : stage["runIn"] === undefined || stage["runIn"] === null ? undefined : null;
-  if (runIn === null) throw new Error(`Zone ${title}: choose where the script runs: a clean folder or a copy of the card's work.`);
-  const rawRoutes = stage["routes"] === undefined || stage["routes"] === null ? [] : stage["routes"];
-  if (!Array.isArray(rawRoutes) || rawRoutes.length > 12) throw new Error(`Zone ${title}: a script picks from up to 12 answers.`);
-  const seen = new Set<string>();
-  const routes = rawRoutes.map(one => {
-    const row = (one ?? {}) as Record<string, unknown>;
-    const answer = typeof row["answer"] === "string" ? row["answer"].trim() : "";
-    const to = typeof row["to"] === "string" ? row["to"].trim() : "";
-    if (!/^[^\n]{1,40}$/.test(answer) || to === "") throw new Error(`Zone ${title}: each answer needs a short name and the zone it leads to.`);
-    if (seen.has(answer.toLowerCase())) throw new Error(`Zone ${title}: two answers are called ${answer}.`);
-    seen.add(answer.toLowerCase());
-    return { answer, to };
-  });
-  const rawSecrets = stage["secrets"] === undefined || stage["secrets"] === null ? [] : stage["secrets"];
-  if (!Array.isArray(rawSecrets) || rawSecrets.length > 10 || rawSecrets.some(one => typeof one !== "string" || !/^[A-Z][A-Z0-9_]{0,39}$/.test(one))) throw new Error(`Zone ${title}: name up to 10 saved secrets in capitals, like API_TOKEN.`);
-  return { ...(runIn === undefined ? {} : { runIn }), ...(routes.length === 0 ? {} : { routes }), ...(rawSecrets.length === 0 ? {} : { secrets: [...new Set(rawSecrets as string[])] }) };
 }
 
 /** What a card's work is held to: the zones' steps and paths, never where they sit on the canvas. */
@@ -642,40 +534,6 @@ function fillOne(key: string, stage: string | undefined, card: { title: string; 
   }
 }
 
-/** A step as the lead describes it, in list order. A step that keeps an
- * existing zone (by `id`) carries over whatever it leaves out. */
-export type FlowStepInput = {
-  id?: string; title?: string; kind?: FlowStageKind;
-  instructions?: string; planning?: "auto" | "required" | "skip"; decider?: string | null; message?: string;
-  script?: string; close?: boolean;
-  /** check (v90): "folder" (a clean folder) or "copy" (a copy of the card's work); the answers a "goto:" line picks, each with the step it goes to; saved secrets it gets. */
-  runIn?: "folder" | "copy"; routes?: { answer?: string; goesTo?: string }[]; secrets?: string[];
-  /** sort: the question, each answer with what it means and the step it goes to, how sure Jev must be (a percentage), and up to 3 other things to note. */
-  question?: string; answers?: { answer?: string; means?: string; goesTo?: string }[]; sureAt?: number;
-  alsoNote?: { question?: string; kind?: "score" | "yes-no"; levels?: string[] }[];
-  /** request: method, address, headers and body; email: to, subject, body; tool: the tool (server), its function (tool) and arguments. */
-  method?: FlowRequest["method"]; url?: string; headers?: Record<string, string>; body?: string;
-  to?: string; subject?: string;
-  server?: string; tool?: string; args?: Record<string, unknown> | string;
-  /** wait (v91): for a reply (the default) or a set time, and how long ("3 days"); where a card goes when no reply comes.
-   * "hours": until the clock is between `from` and `until` ("22:00", "06:00"). */
-  waitFor?: "reply" | "time" | "hours"; wait?: string | number; ifNoReply?: string; from?: string; until?: string;
-  /** pull-request: merge once checks pass (true is squash). Needs a decision before it. */
-  merge?: boolean | FlowMergeMethod;
-  /** Any step but wait and done (v91): remind after this long ("2 days"; "none" removes it), and on holding and approval steps, move the card to this step then. */
-  remindAfter?: string | number; thenMoveTo?: string;
-  /** v92: the AI teammate (by name) who decides an approval step (handing hard ones to its decider) or handles a teammate step. */
-  teammate?: string;
-  /** v96: a teammate step sends what it writes back to whoever asked. */
-  reply?: boolean;
-  /** choose: 2 to 4 buttons, each with its words and the step it goes to ("end" ignores the card); where a reply goes instead
-   * (the reply is its {{note}}; the nearest earlier build or research step when left out). ifNoReply (with remindAfter) moves it on. */
-  options?: { label?: string; goesTo?: string }[]; ifReplied?: string;
-  /** task: the project it builds in (path), when not the flow's own. */
-  repo?: string;
-  next?: string; ifFails?: string; ifNotSure?: string;
-};
-
 const KIND_COLORS: Record<FlowStageKind, FlowColor> = { inbox: "slate", task: "blue", report: "violet", approval: "amber", check: "blue", "pull-request": "blue", update: "green", notify: "green", sort: "violet", draft: "violet", request: "blue", email: "green", tool: "blue", wait: "slate", teammate: "violet", send: "green", choose: "amber", done: "green" };
 /** A step id as the lead may write it (sort_by_hand, Sort-By-Hand) in the one form zones use. */
 const idOf = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -683,24 +541,25 @@ const slugOf = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-"
 const overlaps = (a: FlowZone, b: FlowZone) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 /** A wait step's settings: what it waits for and how long (3 days when neither the step nor the zone it keeps says). */
-function waitFromStep(step: FlowStepInput, old: FlowWait | null, title: string): FlowWait {
+function waitFromStep(step: FlowStepFields, old: FlowWait | null, at: string): FlowWait {
   if ((step.waitFor ?? old?.for) === "hours") {
     const from = clockTime(step.from ?? old?.from ?? "22:00"), to = clockTime(step.until ?? old?.to ?? "06:00");
-    if (from === null || to === null) throw new Error(`Step ${title}: say the hours it waits for, like from 22:00 until 06:00.`);
-    return { for: "hours", minutes: 0, from, to, ...(old?.timeZone === undefined ? {} : { timeZone: old.timeZone }) };
+    if (from === null || to === null) throw new FlowContractError([`${at}.from: say the hours it waits for, like from 22:00 until 06:00`]);
+    const timeZone = step.timeZone ?? old?.timeZone;
+    return { for: "hours", minutes: 0, from, to, ...(timeZone === undefined ? {} : { timeZone }) };
   }
   const minutes = step.wait === undefined ? old?.minutes ?? 3 * 24 * 60 : durationMinutes(step.wait);
-  if (minutes === null) throw new Error(`Step ${title}: say how long it waits, like "3 days" or "4 hours" (up to 30 days).`);
+  if (minutes === null) throw new FlowContractError([`${at}.wait: say how long it waits, like "3 days" or "4 hours" (up to 30 days)`]);
   return { for: step.waitFor ?? old?.for ?? "reply", minutes };
 }
 
 /** A step's time limit: the one it gives, the one its zone had, or none ("none" removes one). */
-function limitFromStep(step: FlowStepInput, old: FlowLimit | null, title: string, find: (ref: string) => string): FlowLimit | null {
-  if (step.remindAfter === undefined) return old === null ? null : { ...old, ...(step.thenMoveTo === undefined ? {} : { to: step.thenMoveTo.trim() === "" ? null : find(step.thenMoveTo) }) };
+function limitFromStep(step: FlowStepFields, old: FlowLimit | null, at: string, find: (ref: string, path: string) => string): FlowLimit | null {
+  if (step.remindAfter === undefined) return old === null ? null : { ...old, ...(step.thenMoveTo === undefined ? {} : { to: step.thenMoveTo.trim() === "" ? null : find(step.thenMoveTo, "thenMoveTo") }) };
   if (typeof step.remindAfter === "string" && /^\s*(none|never|no|off)?\s*$/i.test(step.remindAfter)) return null;
   const minutes = durationMinutes(step.remindAfter);
-  if (minutes === null) throw new Error(`Step ${title}: say when to remind, like "2 days" (up to 30 days).`);
-  return { minutes, to: typeof step.thenMoveTo === "string" && step.thenMoveTo.trim() !== "" ? find(step.thenMoveTo) : step.thenMoveTo === undefined ? old?.to ?? null : null };
+  if (minutes === null) throw new FlowContractError([`${at}.remindAfter: say when to remind, like "2 days" (up to 30 days)`]);
+  return { minutes, to: typeof step.thenMoveTo === "string" && step.thenMoveTo.trim() !== "" ? find(step.thenMoveTo, "thenMoveTo") : step.thenMoveTo === undefined ? old?.to ?? null : null };
 }
 
 /** What a draft zone asks for when the steps leave it out. */
@@ -716,62 +575,87 @@ function defaultInstructions(kind: "task" | "report", earlier: readonly FlowStag
 
 /** Steps as the lead's flow tool and `toolroll flows` take them: "me" as a decider is the person asking, stored by name. */
 export function stepsFor(steps: unknown, name: string): unknown {
-  return Array.isArray(steps) ? steps.map(step => step !== null && typeof step === "object" && typeof (step as FlowStepInput).decider === "string" && /^(me|myself|i|you|the operator)$/i.test((step as FlowStepInput).decider!.trim()) ? { ...step, decider: name } : step) : steps;
+  return Array.isArray(steps) ? steps.map(step => isRecord(step) && typeof step["decider"] === "string" && /^(me|myself|i|you|the operator)$/i.test(step["decider"].trim()) ? { ...step, decider: name } : step) : steps;
+}
+
+/** An edit's steps with what a kept step leaves out of its kind and name filled from the zone it keeps (by id), so each
+ * reads as the one schema its kind has. Anything else it leaves out carries over when the flow is drawn (flowFromSteps). */
+export function withKeptSteps(steps: unknown, previous: FlowDefinition | null): unknown {
+  if (previous === null || !Array.isArray(steps)) return steps;
+  const kept = new Map(previous.stages.map(one => [one.id, one]));
+  const asked = new Set<string>();
+  return steps.map(step => {
+    if (!isRecord(step) || typeof step["id"] !== "string") return step;
+    const id = idOf(step["id"]);
+    const old = asked.has(id) ? undefined : kept.get(id);
+    asked.add(id);
+    if (old === undefined) return step;
+    return {
+      ...step,
+      ...(step["kind"] === undefined ? { kind: old.kind } : {}),
+      ...(step["title"] === undefined || (typeof step["title"] === "string" && step["title"].trim() === "") ? { title: old.title } : {}),
+    };
+  });
+}
+
+/** A flow's steps, read by their one schema: `steps[0].routes[0]: unknown key 'to' (did you mean goesTo?)`. */
+export function readFlowSteps(input: unknown, previous: FlowDefinition | null = null): ContractResult<FlowStepFields[]> {
+  const read = parseContract(flowStepsSchema, { steps: withKeptSteps(input, previous) }, FLOW_ALIASES);
+  return read.ok ? { ok: true, value: read.value.steps as FlowStepFields[] } : read;
 }
 
 /**
  * A flow from an ordered list of steps: ids from names, each step leading
  * to the next, a Done zone at the end when none is listed, and a decision
  * sending work back to the nearest earlier step that does work. New zones
- * are laid out in rows; zones kept from `previous` keep their place.
+ * are laid out in rows; zones kept from `previous` keep their place. Throws
+ * FlowContractError, each line naming the step's path (`steps[2].next: ...`).
  */
 export function flowFromSteps(input: unknown, previous: FlowDefinition | null = null): FlowDefinition {
-  if (!Array.isArray(input) || input.length === 0) throw new Error("List the flow's steps in order.");
-  if (input.length > 24) throw new Error("A flow has 1 to 24 steps.");
+  const read = readFlowSteps(input, previous);
+  if (!read.ok) throw new FlowContractError(read.issues.map(one => one.line));
   const kept = new Map((previous?.stages ?? []).map(one => [one.id, one]));
   const used = new Set<string>();
-  const drafts = input.map((raw, index) => {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Step ${index + 1} isn't a step.`);
-    const step = raw as FlowStepInput;
+  const drafts = read.value.map((step, index) => {
     const asked = typeof step.id === "string" ? idOf(step.id) : "";
     const old = asked !== "" && !used.has(asked) ? kept.get(asked) ?? null : null;
-    const title = typeof step.title === "string" && step.title.trim() !== "" ? step.title.trim() : old?.title ?? "";
-    if (title === "") throw new Error(`Step ${index + 1} needs a name.`);
-    const kind = step.kind ?? old?.kind;
-    if (!FLOW_STAGE_KINDS.includes(kind as FlowStageKind)) throw new Error(`Step ${title}: choose what it does.`);
+    const title = step.title.trim() !== "" ? step.title.trim() : old?.title ?? "";
+    if (title === "") throw new FlowContractError([`steps[${index}].title: must not be empty`]);
+    const kind = step.kind;
     // A new step keeps an id it is given (so the other steps can point at it by that id); otherwise its name makes one.
-    const given = ID.test(asked) && !used.has(asked) ? asked : null;
+    const given = ZONE_ID.test(asked) && !used.has(asked) ? asked : null;
     let id = old?.id ?? given ?? slugOf(title);
     for (let n = 2; old === null && used.has(id); n++) id = `${slugOf(title).slice(0, 25)}-${n}`;
     used.add(id);
     const same = old !== null && old.kind === kind;
-    return { step, old: same ? old : null, id, title, kind: kind as FlowStageKind };
+    return { step, old: same ? old : null, id, title, kind, at: `steps[${index}]` };
   });
   if (!drafts.some(one => one.kind === "done")) {
     let id = "done";
     for (let n = 2; used.has(id); n++) id = `done-${n}`;
-    drafts.push({ step: {}, old: kept.get(id)?.kind === "done" ? kept.get(id)! : null, id, title: "Done", kind: "done" });
+    drafts.push({ step: { title: "Done", kind: "done" }, old: kept.get(id)?.kind === "done" ? kept.get(id)! : null, id, title: "Done", kind: "done", at: `steps[${drafts.length}]` });
   }
-  const find = (ref: string, from: string): string => {
+  const findFrom = (at: string) => (ref: string, path: string): string => {
     const wanted = ref.trim().toLowerCase();
     const hit = drafts.find(one => one.id === ref.trim() || one.id === idOf(ref) || one.title.toLowerCase() === wanted);
-    if (hit === undefined) throw new Error(`Step ${from}: there's no step called ${ref}.`);
+    if (hit === undefined) throw new FlowContractError([`${at}.${path}: there's no step called ${ref}`]);
     return hit.id;
   };
   const stages: FlowStage[] = [];
-  drafts.forEach(({ step, old, id, title, kind }, index) => {
+  drafts.forEach(({ step, old, id, title, kind, at }, index) => {
+    const find = findFrom(at);
     const earlier = stages.slice();
     const following = drafts.slice(index + 1).find(() => true) ?? null;
     const next = kind === "done" || kind === "sort" || kind === "choose" ? null
-      : typeof step.next === "string" && step.next.trim() !== "" ? find(step.next, title)
+      : typeof step.next === "string" && step.next.trim() !== "" ? find(step.next, "next")
       : following?.id ?? drafts.find(one => one.kind === "done")!.id;
     const keptFail = old?.onFail !== null && old?.onFail !== undefined && drafts.some(one => one.id === old.onFail) ? old.onFail : null;
     const worker = [...earlier].reverse().find(one => one.kind === "task" || one.kind === "report");
-    const notSure = kind === "sort" && typeof step.ifNotSure === "string" && step.ifNotSure.trim() !== "" ? step.ifNotSure
-      : kind === "wait" && typeof step.ifNoReply === "string" && step.ifNoReply.trim() !== "" ? step.ifNoReply
-      : kind === "choose" ? step.ifReplied : step.ifFails;
+    const [failKey, notSure] = kind === "sort" ? ["ifNotSure", step.ifNotSure] as const
+      : kind === "wait" ? ["ifNoReply", step.ifNoReply] as const
+      : kind === "choose" ? ["ifReplied", step.ifReplied] as const : ["ifFails", step.ifFails] as const;
     const onFail = kind === "done" ? null
-      : typeof notSure === "string" && notSure.trim() !== "" ? find(notSure, title)
+      : typeof notSure === "string" && notSure.trim() !== "" ? find(notSure, failKey)
       : keptFail ?? (kind === "approval" ? worker?.id ?? (drafts[0]!.id === id ? null : drafts[0]!.id)
         // A reply to a choice says what to change: it goes back to the work before it, as its note.
         : kind === "choose" ? worker?.id ?? null
@@ -782,6 +666,7 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
     const approver = kind !== "approval" || toOwner ? null
       : step.decider === undefined ? old?.approver ?? null
       : step.decider === null || /^(anyone|any approver|anybody)$/i.test(step.decider.trim()) ? null : step.decider.trim();
+    const routesOf = (routes: NonNullable<FlowStepFields["routes"]>) => routes.length === 0 ? {} : { routes: routes.map((one, n) => ({ answer: one.answer.trim(), to: find(one.goesTo, `routes[${n}].goesTo`) })) };
     stages.push({
       id, title, kind,
       zone: old?.zone ?? { x: 0, y: 0, w: 260, h: kind === "done" || kind === "notify" || kind === "send" ? 220 : 300, color: KIND_COLORS[kind] },
@@ -793,7 +678,7 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
         : null,
       planning: kind === "task" ? step.planning ?? old?.planning ?? "auto" : null,
       approver,
-      ...(toOwner ? { toOwner: true } : {}),
+      ...(toOwner ? { toOwner: true as const } : {}),
       message: kind === "notify" ? step.message?.trim() || old?.message || (drafts.find(one => one.id === next)?.kind === "done" ? "Finished: {{card.title}}" : "Update on {{card.title}}")
         : kind === "update" ? step.message?.trim() || old?.message || "Done: {{card.title}}" : null,
       close: kind === "update" ? step.close ?? old?.close ?? true : null,
@@ -801,26 +686,26 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
       // Left out, a code step runs in a copy of the project (the card's work, or the main branch), as scripts always have.
       ...(kind === "check" ? {
         ...(step.runIn !== undefined ? { runIn: step.runIn } : old?.runIn === undefined ? {} : { runIn: old.runIn }),
-        ...(step.routes !== undefined ? step.routes.length === 0 ? {} : { routes: step.routes.map(one => ({ answer: String(one.answer ?? "").trim(), to: find(String(one.goesTo ?? ""), title) })) } : old?.routes === undefined ? {} : { routes: old.routes }),
+        ...(step.routes !== undefined ? routesOf(step.routes) : old?.routes === undefined ? {} : { routes: old.routes }),
         ...(step.secrets !== undefined ? step.secrets.length === 0 ? {} : { secrets: step.secrets } : old?.secrets === undefined ? {} : { secrets: old.secrets }),
       } : {}),
-      sort: kind === "sort" ? sortFromStep(step, old?.sort ?? null, ref => find(ref, title)) : null,
+      sort: kind === "sort" ? sortFromStep(step, old?.sort ?? null, find) : null,
       ...(kind === "request" ? { request: { method: step.method ?? old?.request?.method ?? "POST", url: step.url ?? old?.request?.url ?? "", headers: step.headers ?? old?.request?.headers ?? {}, body: step.body ?? old?.request?.body ?? null } } : {}),
       ...(kind === "email" ? { email: { to: step.to ?? old?.email?.to ?? "{{card.email}}", subject: step.subject ?? old?.email?.subject ?? "Re: {{card.title}}", body: step.body ?? old?.email?.body ?? "" } } : {}),
       ...(kind === "tool" ? { tool: { server: step.server ?? old?.tool?.server ?? "", name: step.tool ?? old?.tool?.name ?? "", args: typeof step.args === "string" ? step.args : step.args !== undefined ? JSON.stringify(step.args) : old?.tool?.args ?? "{}" } } : {}),
-      ...(kind === "wait" ? { wait: waitFromStep(step, old?.wait ?? null, title) } : {}),
+      ...(kind === "wait" ? { wait: waitFromStep(step, old?.wait ?? null, at) } : {}),
       ...(kind === "pull-request" && (step.merge === undefined ? old?.merge !== undefined : step.merge !== false) ? { merge: step.merge === undefined || step.merge === true || step.merge === false ? old?.merge ?? "squash" : step.merge } : {}),
       // v92: "nobody" (or "none") takes a teammate off an approval step.
       ...((kind === "approval" || kind === "teammate") && (step.teammate === undefined ? old?.teammate !== undefined : !/^(nobody|none|no one)$/i.test(step.teammate.trim())) ? { teammate: idOf(step.teammate ?? old!.teammate!) } : {}),
-      ...(kind === "teammate" ? step.routes !== undefined ? step.routes.length === 0 ? {} : { routes: step.routes.map(one => ({ answer: String(one.answer ?? "").trim(), to: find(String(one.goesTo ?? ""), title) })) } : old?.routes === undefined ? {} : { routes: old.routes } : {}),
-      ...(kind === "teammate" && (step.reply ?? old?.reply) === true ? { reply: true } : {}),
-      ...(kind === "choose" ? { options: choicesFromStep(step, old?.options ?? null, title, ref => find(ref, title)) } : {}),
+      ...(kind === "teammate" ? step.routes !== undefined ? routesOf(step.routes) : old?.routes === undefined ? {} : { routes: old.routes } : {}),
+      ...(kind === "teammate" && (step.reply ?? old?.reply) === true ? { reply: true as const } : {}),
+      ...(kind === "choose" ? { options: choicesFromStep(step, old?.options ?? null, at, find) } : {}),
       ...(kind === "task" && (step.repo ?? old?.repo) !== undefined && (step.repo ?? old?.repo)!.trim() !== "" ? { repo: (step.repo ?? old?.repo)!.trim() } : {}),
       ...(() => {
         // "If no reply" on a choice is where it moves once the reminder comes.
         const asked = kind === "choose" && step.thenMoveTo === undefined && typeof step.ifNoReply === "string" ? { ...step, thenMoveTo: step.ifNoReply } : step;
-        if (kind === "choose" && asked.thenMoveTo !== undefined && asked.remindAfter === undefined && old?.limit === undefined) throw new Error(`Step ${title}: say how long to wait for a choice first, with remindAfter (like "2 days").`);
-        const limit = kind === "wait" || kind === "done" ? null : limitFromStep(asked, old?.limit ?? null, title, ref => find(ref, title)); return limit === null ? {} : { limit };
+        if (kind === "choose" && asked.thenMoveTo !== undefined && asked.remindAfter === undefined && old?.limit === undefined) throw new FlowContractError([`${at}.remindAfter: say how long to wait for a choice first (like "2 days")`]);
+        const limit = kind === "wait" || kind === "done" ? null : limitFromStep(asked, old?.limit ?? null, at, find); return limit === null ? {} : { limit };
       })(),
       next, onFail,
     });
@@ -876,30 +761,35 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
     stage.zone = at;
     placed.push(at);
   });
-  return validateFlowDefinition({ version: 1, start: stages[0]!.id, stages });
+  // The drawing is checked as the canvas's is; its zones are the steps, in order, so a zone's problem names its step.
+  const drawn = readFlowDefinition({ version: FLOW_DEFINITION_VERSION, start: stages[0]!.id, stages });
+  if (!drawn.ok) throw new FlowContractError(drawn.issues.map(one => inStepWords(one.line, "steps", stages.map(stage => stage.kind))));
+  return drawn.value;
 }
 
 /** A choose step's options: each with its words and the step it goes to ("end", or no step, ignores the card); kept ones carry over. */
-function choicesFromStep(step: FlowStepInput, old: FlowChoice[] | null, title: string, find: (ref: string) => string): FlowChoice[] {
-  if (!Array.isArray(step.options) || step.options.length === 0) {
+function choicesFromStep(step: FlowStepFields, old: FlowChoice[] | null, at: string, find: (ref: string, path: string) => string): FlowChoice[] {
+  if (step.options === undefined) {
     if (old !== null) return old;
-    throw new Error(`Step ${title}: give it ${CHOICES_MIN} to ${CHOICES_MAX} options, each with a label and the step it goes to (or "end").`);
+    throw new FlowContractError([`${at}.options: give it ${CHOICES_MIN} to ${CHOICES_MAX} options, each with a label and the step it goes to (or "end")`]);
   }
-  return step.options.map(one => {
-    const label = String(one?.label ?? "").trim();
-    const goes = typeof one?.goesTo === "string" ? one.goesTo.trim() : "";
-    return { label, to: goes === "" || /^(end|ignore|ignored|stop|close)$/i.test(goes) ? FLOW_END : find(goes) };
+  return step.options.map((one, n) => {
+    const label = one.label.trim();
+    const goes = (one.goesTo ?? "").trim();
+    return { label, to: goes === "" || /^(end|ignore|ignored|stop|close)$/i.test(goes) ? FLOW_END : find(goes, `options[${n}].goesTo`) };
   });
 }
 
 /** A sort step as the lead describes it: answers name the steps they go to; what it leaves out carries over from the zone it keeps. */
-function sortFromStep(step: FlowStepInput, old: FlowSort | null, find: (ref: string) => string): FlowSort {
-  const answers = Array.isArray(step.answers) && step.answers.length > 0
-    ? step.answers.map(one => ({ answer: String(one?.answer ?? "").trim(), means: String(one?.means ?? "").trim() || String(one?.answer ?? "").trim(), to: typeof one?.goesTo === "string" && one.goesTo.trim() !== "" ? find(one.goesTo) : "" }))
+function sortFromStep(step: FlowStepFields, old: FlowSort | null, find: (ref: string, path: string) => string): FlowSort {
+  const answers = step.answers !== undefined
+    ? step.answers.map((one, n) => ({ answer: one.answer.trim(), means: (one.means ?? "").trim() || one.answer.trim(), to: one.goesTo.trim() !== "" ? find(one.goesTo, `answers[${n}].goesTo`) : "" }))
     : old?.answers ?? [];
   // A percentage (80) or a fraction (0.8).
-  const sure = typeof step.sureAt === "number" && Number.isFinite(step.sureAt) ? (step.sureAt > 1 ? step.sureAt / 100 : step.sureAt) : old?.sureAt ?? SORT_SURE_AT;
-  const notes = Array.isArray(step.alsoNote) ? step.alsoNote.map(one => ({ id: "", kind: one?.kind === "score" ? "score" as const : "yes-no" as const, question: String(one?.question ?? "").trim(), levels: one?.kind === "score" ? (one.levels ?? []).map(String) : null }))
+  const sure = step.sureAt !== undefined ? (step.sureAt > 1 ? step.sureAt / 100 : step.sureAt) : old?.sureAt ?? SORT_SURE_AT;
+  const notes = step.alsoNote !== undefined ? step.alsoNote.map(one => one.kind === "score"
+    ? { id: one.id ?? "", kind: "score" as const, question: one.question.trim(), levels: one.levels ?? [] }
+    : { id: one.id ?? "", kind: "yes-no" as const, question: one.question.trim(), levels: null })
     : old?.notes ?? [];
   return { question: step.question?.trim() || old?.question || "", answers, sureAt: sure, notes };
 }
@@ -1000,7 +890,7 @@ export const ISSUE_LABEL = "toolroll";
 
 /** Ready-made flows: the coding flow is the whole business process around a change. A template's `trigger`
  * (a trigger's settings, as flow-triggers.ts reads them) is added with it. */
-export const FLOW_TEMPLATES: readonly { id: string; label: string; about: string; definition: FlowDefinition; trigger?: Record<string, unknown> }[] = [
+export const FLOW_TEMPLATES: readonly { id: string; label: string; about: string; definition: FlowDefinition; trigger?: TriggerInput }[] = [
   {
     id: "coding",
     label: "Coding flow",

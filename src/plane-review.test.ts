@@ -193,7 +193,7 @@ describe("the morning plane review", () => {
 
   test("a plane review's time is checked", () => {
     const flow = store.createFlow({ repo, name: "Review", definitionJson: JSON.stringify(flowFromSteps([{ title: "Look", kind: "inbox" }], null)), by: "alex" }, DAY1);
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "plane-review", at: "25:00" }, "alex", DAY1, null)).toMatchObject({ ok: false, message: expect.stringMatching(/^Say the time it reviews the day as HH:MM/) });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "plane-review", at: "25:00" }, "alex", DAY1, null)).toMatchObject({ ok: false, message: expect.stringMatching(/^at: say the time it reviews the day as HH:MM/) });
     const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "plane-review", timeZone: "Europe/London" }, "alex", DAY1, null) as { id: number };
     expect(triggerConfigOf(store.getFlowTrigger(made.id)!)).toEqual({ kind: "plane-review", schedule: "daily:07:30@Europe/London", zone: null });
   });

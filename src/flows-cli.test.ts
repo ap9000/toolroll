@@ -82,7 +82,7 @@ test("refuses an unknown project, invalid steps and a merge without a decision b
   const unknown = await flows(["create", "--repo", other, "--name", "X", "--template", "coding", "--yes", ...as()]);
   expect(unknown).toMatchObject({ code: 3, body: { reason: "unknown-project" } });
   const notSteps = await flows(["create", "--repo", repo, "--name", "X", "--steps", stepsFile({ nope: true }), "--yes", ...as()]);
-  expect(notSteps.body).toMatchObject({ reason: "invalid-steps", message: "List the flow's steps in order." });
+  expect(notSteps.body).toMatchObject({ reason: "invalid-steps", message: "steps: must be an array (got an object)" });
   const merge = await flows(["create", "--repo", repo, "--name", "Ship", "--yes", ...as(), "--steps", stepsFile([
     { id: "build", title: "Build", kind: "task" },
     { id: "pr", title: "Open PR", kind: "pull-request", merge: "squash" },
@@ -166,7 +166,7 @@ test("trigger add previews and adds every kind, schedule scripts included; pause
   expect(asked[0]).toContain("repos/acme/shop/pulls?state=open&sort=created&direction=desc&per_page=30");
   expect((await flows(["trigger", "check", id, trigger, ...as()])).body).toMatchObject({ ok: false, reason: "check-failed" });
 
-  expect((await flows(["trigger", "add", id, '{"kind":"schedule","schedule":"daily 09:00","title":"x","zone":"nowhere"}', "--yes", ...as()])).body).toMatchObject({ reason: "invalid-trigger", message: "This flow has no zone called nowhere." });
+  expect((await flows(["trigger", "add", id, '{"kind":"schedule","schedule":"daily 09:00","title":"x","zone":"nowhere"}', "--yes", ...as()])).body).toMatchObject({ reason: "invalid-trigger", message: "zone: this flow has no zone called nowhere" });
   expect((await flows(["trigger", "pause", id, trigger, ...as()])).body.said).toBe("Trigger paused.");
   expect((await flows(["show", id])).body.flow.triggers.find((one: { id: number }) => String(one.id) === trigger)).toMatchObject({ state: "paused", kind: "schedule" });
   expect((await flows(["trigger", "resume", id, trigger, ...as()])).body.said).toBe("Trigger on again.");

@@ -157,7 +157,7 @@ describe("a schedule that runs a script", () => {
     ].join("\n") });
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }]);
     const bad = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "every 2 hours", script: "nope" }, "alex", T0, dir);
-    expect(bad).toEqual({ ok: false, message: "There's no script called nope in this project. Make it on the flow's Scripts panel first." });
+    expect(bad).toEqual({ ok: false, message: "script: there's no script called nope in this project; make it on the flow's Scripts panel first" });
     const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "every 2 hours", script: "new-orders" }, "alex", T0, dir);
     if (!made.ok) throw new Error(made.message);
     const trigger = () => store.flowTriggers(flow)[0]!;

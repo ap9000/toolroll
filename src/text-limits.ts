@@ -17,6 +17,67 @@ export const TEXT_LIMITS = {
   noteBytes: 16_000,
   /** A flow work zone's instructions; nothing is held back for the card's details (they are attached when long). */
   flowInstructions: 8_000,
+  /** A flow's zones and steps (src/contracts/flow.ts): a zone's name, a step's id as written, and a reference to another step. */
+  flowTitle: 60,
+  flowStepId: 32,
+  flowRef: 60,
+  /** A Message zone's message, or the comment an Update zone leaves. */
+  flowMessage: 1_000,
+  /** Who decides a "Person decides" zone (a sign-in name), and the AI teammate who works a zone, as written. */
+  flowDecider: 64,
+  flowTeammate: 40,
+  /** A Build zone's other project: its path. */
+  flowRepo: 1_000,
+  /** A script's or teammate's answer, a choice's button, a Sort zone's answer and what it means, its question, and a score's level. */
+  flowAnswer: 40,
+  flowChoice: 40,
+  flowSortMeans: 200,
+  flowSortQuestion: 300,
+  flowSortLevel: 120,
+  /** A Web request zone's address, one header's value and the body it sends (an email's body too). */
+  flowUrl: 2_000,
+  flowHeader: 500,
+  flowBody: 8_000,
+  /** An email's recipients and subject. */
+  flowEmailTo: 500,
+  flowEmailSubject: 200,
+  /** A tool zone's tool (MCP server), its function, and the arguments as JSON. */
+  flowToolServer: 64,
+  flowToolName: 100,
+  flowToolArgs: 4_000,
+  /** A wait or reminder said in words ("3 days"), and a time zone's name. */
+  flowDuration: 40,
+  flowTimeZone: 60,
+  /** A flow's name, and a flow file's about line, needs, parameter questions and answers, and scripts. */
+  flowName: 80,
+  flowFileAbout: 600,
+  flowFileNeed: 80,
+  flowParameter: 200,
+  flowScriptAbout: 160,
+  flowScriptBody: 20_000,
+  flowScriptFile: 200,
+  /** A trigger's settings: a button's label and questions, a schedule and the card it makes, GitHub, Linear, webhook and email terms. */
+  triggerButton: 40,
+  triggerQuestion: 80,
+  triggerSchedule: 80,
+  triggerTitle: 200,
+  triggerDescription: 2_000,
+  triggerGithubRepo: 140,
+  triggerLabel: 50,
+  triggerBranch: 100,
+  triggerTeam: 12,
+  triggerState: 40,
+  triggerWebhookTitle: 120,
+  triggerWebhookField: 80,
+  triggerFolder: 100,
+  triggerSender: 300,
+  triggerSubject: 100,
+  /** A schedule's secrets written as one line ("API_KEY, CRM_TOKEN"). */
+  triggerSecrets: 500,
+  /** A card the lead adds to a flow: its title and description; a script it saves inline. */
+  flowCardTitle: 200,
+  flowCardDescription: 4_000,
+  flowScriptInline: 1_600,
   /** A research report's summary, in UTF-8 bytes. */
   reportSummary: 2_500,
   /** What one flow step passes on to the steps after it. */
