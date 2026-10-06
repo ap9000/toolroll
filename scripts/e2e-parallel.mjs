@@ -9,6 +9,8 @@
  * (default at most 4; check-memory.mjs). Run by the release check, it shares that check's gate
  * (TOOLROLL_CHECK_GATE) with the other suites. A wait for room comes before a
  * group starts, so it never eats into a journey's own time.
+ * Scripted app runs default to at most four lanes (TOOLROLL_E2E_LANES overrides this within --at-once/the six-slot
+ * budget). Extra app lanes require normal pressure; small machines keep their old cap. Every start rechecks.
  *
  *   npm run e2e:app:parallel      (or: node scripts/e2e-parallel.mjs scripts/app-e2e.mjs [--no-retry] [--at-once <n>] [--run-groups <a,b>] [--journeys scripted|real|all] [--output <dir>] [--keep] [--only <pattern>] …)
  *
@@ -21,7 +23,8 @@
  * profile, anything else it makes there), removed when the run ends unless --keep.
  *
  * Each group's output is prefixed with its name; its report goes to
- * output/e2e/<script>-parallel-<time>/<group>/report.md and is printed at the end.
+ * evidence/<script>-parallel-<time>/<group>/report.md and is printed at the end. lanes.json records wall time,
+ * sampled process-tree peaks for each group and the whole run, and admission's actual concurrency.
  *
  * A group with failed journeys runs once more in a fresh world with just those
  * journeys, what they need (each report names every journey's needs) and the
@@ -30,10 +33,10 @@
  * the whole group runs again.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopLeftovers } from "./e2e-kit.mjs";
-import { admissionWords, browserSlots, DEMAND, limiter, openGate } from "./check-memory.mjs";
+import { admissionWords, appLanes, browserSlots, DEMAND, laneWords, limiter, memoryWords, openGate, treeBytes, watchMemory } from "./check-memory.mjs";
 import { runSuite } from "./suite-lifecycle.mjs";
 
 const [script, ...given] = process.argv.slice(2);
@@ -57,22 +60,40 @@ const hasKind = one => journeys === "scripted" ? (one.ownScripted ?? one.scripte
 const groups = listed.filter(one => (picked === null || picked.includes(one.name)) && hasKind(one));
 const name = basename(script, ".mjs").replace(/-e2e$/, "");
 if (groups.length === 0) { console.log(`No ${journeys === "all" ? "" : `${journeys} `}journeys to run in ${picked === null ? "any group" : picked.join(", ")}.`); process.exit(0); }
-const out = resolve(at === -1 ? join(here, "output/e2e", `${name}-parallel-${new Date().toISOString().replace(/[:.]/g, "-")}`) : given[at + 1]);
+const out = resolve(at === -1 ? join(here, "evidence", `${name}-parallel-${new Date().toISOString().replace(/[:.]/g, "-")}`) : given[at + 1]);
 const started = Date.now();
 const minutes = ms => Math.round(ms / 6000) / 10;
 const width = Math.max(...groups.map(one => one.name.length)) + "-retry".length;
 let gate;
 try { gate = openGate({ log: line => console.log(line) }); } catch (error) { console.error(error.message); process.exit(2); }
-const available = gate.sample().available;
-const limit = Math.min(groups.length, atOnce ?? browserSlots(available));
+const machine = gate.sample(), available = machine.available;
+const app = name === "app" && journeys !== "real";
+const laneOptions = { baseline: atOnce ?? 1, max: Math.min(groups.length, atOnce ?? 6) };
+let choice;
+try { choice = app ? appLanes(machine, laneOptions) : null; } catch (error) { gate.close(); console.error(error.message); process.exit(2); }
+const limit = Math.min(groups.length, choice?.count ?? atOnce ?? browserSlots(available));
+let said = choice === null ? null : laneWords(choice);
+if (said !== null) console.log(`${name}: ${said}`);
+const memory = watchMemory();
 // The limit is the most at once; the gate decides, at each start, whether there is room for one more.
 const slot = limiter(limit, { room: () => true });
 console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
+
+// Recheck after waiting for a gate, including retries. If pressure rises, drain to one lane before starting more;
+// running journeys finish normally. This predicate executes inside admission's lock, so queued starts cannot race.
+const ready = app ? (sample, held) => {
+  const next = appLanes(sample, { ...laneOptions, max: limit });
+  const words = laneWords(next);
+  if (words !== said) { console.log(`${name}: ${words}`); said = words; }
+  return held.filter(one => one.owner === process.pid).length < next.count
+    ? { ok: true, why: null } : { ok: false, why: `${name}: ${words}; waiting for a lane` };
+} : null;
 
 // A scripted run answers from the stand-in provider: it holds memory but no real provider turn.
 const groupDemand = journeys === "scripted" ? { ...DEMAND.group, providers: 0 } : DEMAND.group;
 const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${folder}`, groupDemand, async () => {
   const tag = `[${folder.padEnd(width)}]`;
+  let laneMemory;
   let partial = "";
   const print = chunk => {
     const lines = (partial + chunk).split("\n");
@@ -84,15 +105,16 @@ const runGroup = (group, folder, extra = []) => slot(() => gate.hold(`${name} ${
   // processes.json (a run killed outright never reaches its own finally), is stopped, then the folder goes, before a
   // retry starts (scripts/suite-lifecycle.mjs). It starts only once the gate has room for it (check-memory.mjs).
   const one = await runSuite({
-    command: process.execPath, args: [script, "--group", group, "--output", join(out, folder), ...extra], prefix: "so-e2e-tmp-", keep, onData: print,
+    command: process.execPath, args: [script, "--group", group, "--output", join(out, folder), ...extra], prefix: "so-e", keep, onData: print,
+    onSpawn: pid => { laneMemory = watchMemory({ tree: () => treeBytes(pid) }); },
     beforeRemove: async () => {
       const left = await stopLeftovers(join(out, folder));
       if (left > 0) console.log(`${tag} stopped ${left} process group${left === 1 ? "" : "s"} it left running`);
     },
   });
   if (partial !== "") console.log(`${tag} ${partial}`);
-  return { group, folder, code: one.code, signal: one.signal, minutes: minutes(one.ms) };
-}));
+  return { group, folder, code: one.code, signal: one.signal, minutes: minutes(one.ms), ms: one.ms, peakBytes: laneMemory?.stop().peakCheck ?? null };
+}, ready));
 
 const report = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
 // The first run's own --only is replaced by the journeys to retry (they are a subset of it).
@@ -139,6 +161,11 @@ console.log(finished.map(one => `${one.code === 0 ? "✅" : "❌"} ${one.group.p
 if (flaky.length > 0) console.log(`\nFlaky, passed on the second try:\n${flaky.map(one => `- ${one}`).join("\n")}`);
 console.log(`\n${groups.length - failed.length} of ${groups.length} groups passed${flaky.length > 0 ? ` (${flaky.length} flaky journey${flaky.length === 1 ? "" : "s"})` : ""} in ${minutes(Date.now() - started)} min — ${out}`);
 // This runner's own starts: "admission: ran up to 3 groups at a time: lowest 3.1 GB free, swap up to 97% used; …".
-console.log(admissionWords(gate.facts(process.pid), "groups"));
+const admission = gate.facts(process.pid);
+console.log(admissionWords(admission, "groups"));
+const measured = memory.stop();
+console.log(memoryWords(measured));
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, "lanes.json"), `${JSON.stringify({ lanes: limit, choice, wallMs: Date.now() - started, memory: measured, admission, groups: [...first, ...again] }, null, 2)}\n`);
 gate.close();
 process.exitCode = failed.length === 0 ? 0 : 1;

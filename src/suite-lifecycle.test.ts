@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isTestTemp } from "./test-temp.js";
@@ -125,11 +125,26 @@ test("a Vitest run interrupted mid-test removes its temp root and stops what its
 
 test("tempRoot: false runs a suite in its own process group without one more temp folder level (socket paths stay short)", async () => {
   const { runSuite } = await import("../scripts/suite-lifecycle.mjs");
-  const seen = await runSuite({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.TMPDIR ?? '')"], env: { TMPDIR: tmpdir() }, tempRoot: false });
+  let spawned = 0;
+  const seen = await runSuite({ command: process.execPath, args: ["-e", "process.stdout.write(JSON.stringify({ tmp: process.env.TMPDIR, pid: process.pid }))"], env: { TMPDIR: tmpdir() }, tempRoot: false, onSpawn: (pid: number) => { spawned = pid; } });
   expect(seen.code).toBe(0);
   expect(seen.root).toBeNull();
-  expect(seen.output.toString()).toBe(tmpdir());
+  expect(spawned).toBeGreaterThan(0);
+  expect(JSON.parse(seen.output.toString())).toEqual({ tmp: tmpdir(), pid: spawned });
   const own = await runSuite({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.TMPDIR ?? '')"], prefix: "so-suite-" });
   expect(own.output.toString()).toBe(own.root);
   expect(existsSync(own.root)).toBe(false);
+});
+
+test("parallel lane roots keep the worker's control socket below macOS's 103-byte limit", async () => {
+  const { runSuite } = await import("../scripts/suite-lifecycle.mjs");
+  const script = "const fs = require('node:fs'), path = require('node:path'); process.stdout.write(path.join(fs.realpathSync(process.env.TMPDIR), 'so-0123456789ab.sock'))";
+  const runs = await Promise.all([1, 2].map(() => runSuite({ command: process.execPath, args: ["-e", script], prefix: "so-e" })));
+  expect(new Set(runs.map(one => one.root)).size).toBe(2);
+  for (const one of runs) {
+    expect(one.code).toBe(0);
+    expect(one.output.toString().startsWith(realpathSync(tmpdir()))).toBe(true);
+    expect(Buffer.byteLength(one.output.toString())).toBeLessThanOrEqual(103);
+    expect(existsSync(one.root)).toBe(false);
+  }
 });

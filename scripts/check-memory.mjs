@@ -201,6 +201,28 @@ export function providerCap(env = process.env, total = totalmem()) {
 const swapPct = sample => sample.swapTotal ? Math.round((sample.swapUsed / sample.swapTotal) * 100) : null;
 const pressureName = level => ({ 1: "normal", 2: "warn", 4: "critical" })[level] ?? "unknown";
 
+/** App lanes share the existing six-browser budget. Small runners keep their old share; overrides never bypass
+ * pressure or memory. Unknown pressure cannot authorize extra work. The gate checks this again at every start. */
+export function appLanes(sample, { env = process.env, total = totalmem(), baseline = 1, max = MAX_GROUPS } = {}) {
+  const set = env.TOOLROLL_E2E_LANES;
+  if (set !== undefined && set !== "" && (!/^[0-9]+$/.test(set) || !Number.isSafeInteger(Number(set)) || Number(set) < 1)) {
+    throw new Error(`TOOLROLL_E2E_LANES takes a whole number, 1 or more (not "${set}").`);
+  }
+  const requested = set === undefined || set === "" ? 4 : Number(set);
+  if (sample.platform === "darwin" && sample.pressure !== 1) return { count: 1, why: `memory pressure ${pressureName(sample.pressure)}` };
+  if (sample.platform !== "darwin") {
+    if (sample.swapTotal === null || sample.swapUsed === null) return { count: 1, why: "memory pressure unknown" };
+    if (sample.swapTotal > 0 && sample.swapUsed / sample.swapTotal >= SWAP_PRESSED) return { count: 1, why: "memory pressure warn (swap)" };
+  }
+  const fits = Math.max(1, Math.floor((sample.available - RESERVE_BYTES) / DEMAND.group.bytes));
+  const small = total <= 8 * GB;
+  const count = Math.min(requested, max, fits, small ? baseline : Infinity);
+  const why = small ? "small runner: keeping current lane cap" : fits < Math.min(requested, max) ? "available memory" : "memory normal";
+  return { count, why: `${why}${set === undefined || set === "" ? "" : `; TOOLROLL_E2E_LANES=${set}`}` };
+}
+
+export const laneWords = ({ count, why }) => `${count} lane${count === 1 ? "" : "s"}: ${why}`;
+
 /**
  * Whether a start with `demand` ({ bytes, providers }) may go ahead now, given the machine's `sample` and the leases
  * the check holds ({ bytes, providers, at }): { ok, why } where why says what it waits for.
@@ -271,7 +293,7 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   let count = 0;
   const releaseAll = () => { for (const file of mine) rmSync(join(root, "leases", file), { force: true }); mine.clear(); };
   process.on("exit", releaseAll);
-  async function acquire(label, demand) {
+  async function acquire(label, demand, ready) {
     const asked = now();
     let said = null, lowest = Infinity, highest = null, highestPressure = null, macOS = false, why = null;
     for (;;) {
@@ -280,7 +302,9 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
       try {
         held = leases();
         seen = sample();
-        decided = admit(demand, seen, held, { cap, now: now() });
+        // Extra constraints run under the same lock and on the same fresh sample as memory/provider admission.
+        const extra = ready?.(seen, held);
+        decided = extra && !extra.ok ? extra : admit(demand, seen, held, { cap, now: now() });
         lowest = Math.min(lowest, seen.available);
         const pct = swapPct(seen);
         if (pct !== null) highest = Math.max(highest ?? 0, pct);
@@ -310,8 +334,8 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   const release = file => { rmSync(join(root, "leases", file), { force: true }); mine.delete(file); };
   return {
     dir: root, cap, from, sample,
-    async hold(label, demand, body) {
-      const { file, waitedMs } = await acquire(label, demand);
+    async hold(label, demand, body, ready = null) {
+      const { file, waitedMs } = await acquire(label, demand, ready);
       try { return await body({ waitedMs }); } finally { release(file); }
     },
     /** What admission did: every start recorded (by `owner` alone when given). */

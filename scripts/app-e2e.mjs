@@ -24,7 +24,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, sleep, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
@@ -158,7 +158,30 @@ const w = await world(group === null ? "app" : `app-${group}`, {
     writeFileSync(join(repo, "README.md"), "# Shop\n\nA tiny shop library. `add` lives in src/math.js.\n");
   },
 });
-const { base, page, cli, rows, until, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
+const { base, page, cli, rows, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
+/** A wait on a condition. In a scripted run it looks at least every half second: the scripted model answers at once and
+ * the worker wakes on every change, so a look every 3 or 5 seconds only adds its own delay. A real-model run keeps each
+ * wait's own pace. */
+const until = (what, test, options = {}) => w.until(what, test, w.scripted ? { ...options, everyMs: Math.min(options.everyMs ?? 1500, 500) } : options);
+/** A page that has settled: laid out (two frames), and any finite animation it started finished (never mid-fade). The
+ * no-script fallback's delayed reveal (so-fallback-in, workspace.css) isn't one: once the workspace renders it only holds
+ * back the toasts' empty region for 1.2 s. */
+const settle = on => on.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))
+  .then(() => Promise.race([
+    Promise.all(document.getAnimations().filter(one => one.effect?.getComputedTiming().iterations !== Infinity && one.animationName !== "so-fallback-in").map(one => one.finished.catch(() => undefined))),
+    new Promise(done => setTimeout(done, 2000)),
+  ]))).catch(() => undefined);
+/**
+ * alex on a phone (390 × 844), signed in once per group and kept: each journey that looks at a page on a phone takes it in
+ * the colour scheme it asks for, and leaves it on a blank page (no live page left streaming behind the next journey).
+ */
+let phonePage = null;
+async function alexPhone(colorScheme = "light") {
+  if (phonePage === null || phonePage.isClosed()) phonePage = await signIn("alex", { width: 390, height: 844 }, colorScheme);
+  await phonePage.emulateMedia({ colorScheme });
+  return phonePage;
+}
+const putPhoneDown = async () => { await phonePage?.goto("about:blank").catch(() => undefined); };
 /** A journey in its group (or groups), scripted or real-model: it runs when one of them (or every group) runs and the run
  * takes its mode, and what it needs is in each of them (e2e-kit.mjs checks the catalogue against GROUPS). */
 function journey(name, mode, title, needs, body) {
@@ -221,8 +244,10 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
     for (const [who, on] of [["desktop", page], ["phone", phone]]) {
       const answer = await on.goto(`${base}${path}`);
       if (answer === null || answer.status() >= 400) { broken.push(`${who} ${path}: ${answer?.status()}`); continue; }
-      // Live pages keep a stream open, so the network never goes quiet: let the page settle instead.
-      await on.waitForLoadState("load"); await sleep(700);
+      // Live pages keep a stream open, so the network never goes quiet: wait for the workspace to render and settle instead.
+      await on.waitForLoadState("load");
+      await on.locator("[data-workspace-shell]").waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
+      await settle(on);
       // Every signed-in page is inside the workspace: one navigation, one look.
       if (!(await on.evaluate(() => document.querySelector("[data-workspace-shell]") !== null))) { broken.push(`${who} ${path}: not in the workspace look`); continue; }
       // No page scrolls sideways on a phone.
@@ -234,7 +259,8 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
   }
   // A page that doesn't exist is still a page in the workspace, not bare text.
   const missing = await page.goto(`${base}/no-such-page`);
-  await sleep(700);
+  await page.locator("[data-workspace-shell]").waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
+  await settle(page);
   if (missing?.status() !== 404 || !(await page.evaluate(() => document.querySelector("[data-workspace-shell]") !== null)) || !/Not found/.test(await page.locator("h1").last().innerText())) broken.push("a missing page isn't a workspace page saying Not found");
   await phone.context().close();
   w.openPages.splice(w.openPages.indexOf(phone), 1);
@@ -616,14 +642,14 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
   const reason = await amended.innerText();
   await amended.scrollIntoViewIfNeeded();
   await shot("plan-amended");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "dark");
-  await phone.goto(`${base}/t/${child}`);
-  const phoneReview = phone.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
+  const onPhone = await alexPhone("dark");
+  await onPhone.goto(`${base}/t/${child}`);
+  const phoneReview = onPhone.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
   if (await phoneReview.count() > 0) await phoneReview.click();
-  await phone.locator("#contract-amendment").scrollIntoViewIfNeeded();
-  await phone.screenshot({ path: join(w.out, "plan-amended-phone.png") });
-  const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await onPhone.locator("#contract-amendment").scrollIntoViewIfNeeded();
+  await onPhone.screenshot({ path: join(w.out, "plan-amended-phone.png") });
+  const wide = await onPhone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  await putPhoneDown();
   if (wide) throw new Error("the phone page scrolls sideways");
   await approveOnPage(child);
   const built = await builtAndChecked(child);
@@ -948,9 +974,12 @@ await journey("flows", SCRIPTED, "A schedule runs a script and makes a card of e
   await page.locator('[data-add-trigger] select[aria-label="Script"]').selectOption("new-leads");
   await page.locator('[data-add-trigger] button:has-text("Add trigger")').click();
   const trigger = await until("the trigger", async () => (await flowView(codeFlow)).triggers.find(one => one.kind === "schedule" && one.state === "active"), { timeoutMs: 15_000, everyMs: 500 });
+  // Run now runs the script before it answers: each press is done when its answer comes back.
   for (let round = 0; round < 2; round++) {
-    await page.locator(`[data-flow-drawer] button:has-text("Run now")`).first().click();
-    await sleep(3000);
+    await Promise.all([
+      page.waitForResponse(answer => answer.request().method() === "POST" && new URL(answer.url()).pathname === `/flows/${codeFlow}/triggers/${trigger.id}/check`, { timeout: 60_000 }),
+      page.locator(`[data-flow-drawer] button:has-text("Run now")`).first().click(),
+    ]);
   }
   const made = await until("two cards from the script", async () => { const cards = (await flowView(codeFlow)).cards.filter(one => /from the CRM/.test(one.title)); return cards.length >= 2 ? cards : null; }, { timeoutMs: 60_000, everyMs: 2000 });
   if (made.length !== 2) throw new Error(`the script made ${made.length} cards, not 2`);
@@ -1052,7 +1081,9 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
 await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; their reply moves it on (a stranger's doesn't), one nobody answers gets a nudge in the same thread, and a stalled decision reminds its owner and moves on", ["Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread"], async () => {
   const mail = await mailServer();
   try {
-    const WAIT = 3;
+    // The mailbox is read for replies about once a minute (flow-replies.ts): two minutes leave both replies a full read
+    // inside the wait, and Sam's card still runs out of time.
+    const WAIT = 2;
     const at = (id, title, kind, x, y, rest) => ({ id, title, kind, zone: zone(x, y), ...none, next: null, onFail: null, ...rest });
     // A decision that stalls: after a minute its owner is reminded and it's anyone's to decide.
     const decisions = await newFlow("Decisions", [
@@ -1107,11 +1138,11 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
     const reminded = rows(`SELECT subject FROM notification WHERE recipient = 'alex' AND subject LIKE '%has waited 1 minute in Owner decides%'`);
     if (reminded.length !== 1) throw new Error(`the owner got ${reminded.length} reminders`);
     // On a phone: the flow's cards, with what they wait on.
-    const phone = await signIn("alex", { width: 390, height: 844 }, "dark");
-    await phone.goto(`${base}/flows/${id}`); await phone.waitForLoadState("load"); await sleep(700);
+    const phone = await alexPhone("dark");
+    await phone.goto(`${base}/flows/${id}`); await phone.waitForLoadState("load"); await settle(phone);
     await phone.screenshot({ path: join(w.out, "follow-ups-phone.png") });
     const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-    await phone.context().close();
+    await putPhoneDown();
     if (wide) throw new Error("the flow scrolls sideways on a phone");
     return { reply: kept.slice(0, 120), nudge: nudge.subject, reminder: reminded[0].subject };
   } finally {
@@ -1194,13 +1225,12 @@ await journey("maya", SCRIPTED, "AI teammates: Maya (a support rep) answers a qu
   await page.goto(`${base}/teammates/${mateId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Send today\'s summary")')]);
   if (rows(`SELECT 1 FROM notification WHERE kind = 'teammate-summary' AND recipient = 'alex'`).length === 0) throw new Error("no summary was sent");
-  await sleep(600);
   await shot("teammate-page");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "dark");
-  await phone.goto(`${base}/teammates/${mateId}`); await phone.waitForLoadState("load"); await sleep(700);
+  const phone = await alexPhone("dark");
+  await phone.goto(`${base}/teammates/${mateId}`); await phone.waitForLoadState("load"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "teammate-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await putPhoneDown();
   if (wide) throw new Error("the teammate page scrolls sideways on a phone");
   return { reply: reply.slice(0, 120), summary: (await page.locator(".teammate-summary").innerText()).slice(0, 200) };
 });
@@ -1288,7 +1318,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   await Promise.all([page.waitForNavigation(), shopRules.locator('button:has-text("Save rules")').click()]);
   const rules = JSON.parse(rows(`SELECT rules_json FROM teammate_tool WHERE teammate = ${mateId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
   if (rules.refund_order?.limit?.over !== 50 || rules.delete_customer?.use !== "never") throw new Error(`the saved rules: ${JSON.stringify(rules)}`);
-  await page.locator("#tools").scrollIntoViewIfNeeded(); await sleep(300);
+  await page.locator("#tools").scrollIntoViewIfNeeded(); await settle(page);
   await shot("teammate-tools");
   // A flow Rosa handles: she reads the refund request, uses the store, and says where it goes.
   const at = (id, title, kind, x, y, rest) => ({ id, title, kind, zone: zone(x, y), ...none, next: null, onFail: null, ...rest });
@@ -1331,17 +1361,17 @@ createInterface({ input: process.stdin }).on("line", line => {
   await page.locator(`[data-card="${approved.id}"]`).click();
   await page.waitForSelector("[data-teammate-calls]");
   await page.evaluate(() => { const one = document.querySelector("[data-teammate-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
-  await sleep(400);
+  await settle(page);
   await shot("teammate-receipts");
   // Her page lists the calls with what came of them; on a phone it fits.
   await page.goto(`${base}/teammates/${mateId}`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
   if (!/Used store → refund_order/.test(await page.locator(".teammate-activity").innerText())) throw new Error("her page doesn't list her tool calls");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "light");
-  await phone.goto(`${base}/teammates/${mateId}#tools`); await phone.waitForLoadState("load"); await sleep(700);
+  const phone = await alexPhone("light");
+  await phone.goto(`${base}/teammates/${mateId}#tools`); await phone.waitForLoadState("load"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "teammate-tools-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await putPhoneDown();
   if (wide) throw new Error("the teammate page scrolls sideways on a phone");
   return { small: small.outputs.find(one => one.stage === "rosa")?.text?.slice(0, 120), big: approved.outputs.find(one => one.stage === "rosa")?.text?.slice(0, 120), calls: calls().map(one => `${one.name} ${JSON.stringify(one.arguments)}`) };
 });
@@ -1354,8 +1384,10 @@ await journey("rosa", REAL_MODEL, "The lead changes a teammate's tool rule from 
   await waitFor(pending.first(), "a card changing Rosa's rule in the lead's reply", { seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
   // The lead may draft her soul file's words too: confirm each card it drafted; the rule itself is what's checked.
   for (let left = 3; left > 0 && await pending.count() > 0; left--) {
+    const before = await pending.count();
     await pending.first().locator("[data-card-confirm]").click();
-    await sleep(2000);
+    // Done with that card once it is no longer pending; one that never settles is left to the rule check below.
+    await until("the confirmed card to settle", async () => (await pending.count()) < before, { timeoutMs: 10_000, everyMs: 250 }).catch(() => undefined);
   }
   const rules = await until("Rosa's refund rule to change", async () => {
     const saved = JSON.parse(rows("SELECT t.rules_json FROM teammate_tool t JOIN teammate m ON m.id = t.teammate WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
@@ -1385,7 +1417,7 @@ await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a cu
   await line.locator("textarea").fill("Priya Shah prefers store credit over refunds, and email over phone calls.");
   await Promise.all([page.waitForNavigation(), line.locator('button:has-text("Save")').click()]);
   if (rows(`SELECT text FROM teammate_memory WHERE id = ${kept.id}`)[0]?.text !== "Priya Shah prefers store credit over refunds, and email over phone calls.") throw new Error("the memory wasn't changed");
-  await page.locator("#memory").scrollIntoViewIfNeeded(); await sleep(300);
+  await page.locator("#memory").scrollIntoViewIfNeeded(); await settle(page);
   await shot("teammate-memory");
   // Refunds over her limit, each approved: the approvals in a row teach her to suggest a looser rule.
   await page.goto(`${base}/flows/${flowId}`); await page.waitForSelector("[data-zone]");
@@ -1405,13 +1437,13 @@ await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a cu
   const offered = page.locator("[data-suggestion]");
   await offered.waitFor();
   await shot("teammate-suggests");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "dark");
-  await phone.goto(`${base}/teammates/${mate}`); await phone.waitForLoadState("load"); await sleep(700);
+  const phone = await alexPhone("dark");
+  await phone.goto(`${base}/teammates/${mate}`); await phone.waitForLoadState("load"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "teammate-suggests-phone.png") });
-  await phone.goto(`${base}/teammates/${mate}#memory`); await sleep(500);
+  await phone.goto(`${base}/teammates/${mate}#memory`); await phone.waitForLoadState("load"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "teammate-memory-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await putPhoneDown();
   if (wide) throw new Error("the teammate page scrolls sideways on a phone");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM teammate_tool WHERE teammate = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
@@ -1451,14 +1483,14 @@ await journey("rosa", SCRIPTED, "A teammate's routine: added on its page for wee
   if (!/^Rosa · Support: Look up order 2201/.test(answer.subject) || !/2201|lamp|refund/i.test(answer.body)) throw new Error(`the answer: ${answer.subject} — ${answer.body}`);
   const card = (await flowView(desk)).cards[0];
   if (card?.stage !== "done") throw new Error(`the routine's card is in ${card?.stage}`);
-  await page.goto(`${base}/teammates/${mate}#desk`); await sleep(400);
+  await page.goto(`${base}/teammates/${mate}#desk`); await page.waitForLoadState("load");
   await page.locator("#desk").scrollIntoViewIfNeeded();
   await shot("teammate-desk");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "light");
-  await phone.goto(`${base}/teammates/${mate}#desk`); await phone.waitForLoadState("load"); await sleep(600);
+  const phone = await alexPhone("light");
+  await phone.goto(`${base}/teammates/${mate}#desk`); await phone.waitForLoadState("load"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "teammate-desk-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await putPhoneDown();
   if (wide) throw new Error("the teammate page scrolls sideways on a phone");
   return { answer: answer.body.slice(0, 160) };
 });
@@ -1487,7 +1519,7 @@ await journey("rosa", SCRIPTED, "A teammate's week and undo: its page shows the 
   if (rows("SELECT undone_by FROM teammate_call WHERE action = 'refund_order' AND undone_by IS NOT NULL").length !== 1) throw new Error("the refund isn't marked undone");
   await page.reload(); await page.waitForSelector(`[data-flow-card-panel="${cardId}"]`);
   await page.evaluate(() => { const one = document.querySelector("[data-teammate-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
-  await sleep(400);
+  await settle(page);
   await shot("teammate-undone");
   // Its page: the week, and the report sent now.
   await page.goto(`${base}/teammates/${mate}#week`);
@@ -1496,7 +1528,7 @@ await journey("rosa", SCRIPTED, "A teammate's week and undo: its page shows the 
   await Promise.all([page.waitForNavigation(), page.click('#week button:has-text("Send the week\'s report")')]);
   const report = rows("SELECT subject, body FROM notification WHERE kind = 'teammate-weekly' AND recipient = 'alex'")[0];
   if (report?.subject !== "Rosa · Support: the week") throw new Error(`the report: ${JSON.stringify(report)}`);
-  await page.locator("#week").scrollIntoViewIfNeeded(); await sleep(300);
+  await page.locator("#week").scrollIntoViewIfNeeded(); await settle(page);
   await shot("teammate-week");
   return { report: report.body.slice(0, 300) };
 });
@@ -1507,11 +1539,11 @@ await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up May
   await page.waitForSelector('[data-kit="support-desk"]');
   if ((await page.locator("[data-kit]").count()) !== 4) throw new Error("the gallery doesn't show the four kits");
   await shot("kits-gallery");
-  const phone = await signIn("alex", { width: 390, height: 844 }, "dark");
-  await phone.goto(`${base}/kits`); await phone.waitForSelector("[data-kit]"); await sleep(400);
+  const phone = await alexPhone("dark");
+  await phone.goto(`${base}/kits`); await phone.waitForSelector("[data-kit]"); await settle(phone);
   await phone.screenshot({ path: join(w.out, "kits-gallery-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  await phone.context().close();
+  await putPhoneDown();
   if (wide) throw new Error("the kits gallery scrolls sideways on a phone");
   // One click sets it up; its page is the checklist.
   await Promise.all([page.waitForNavigation(), page.locator('[data-kit="support-desk"] button:has-text("Set it up")').click()]);
@@ -1555,11 +1587,11 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     if (!(await page.locator("#connect-heading").isVisible()) || (await page.locator("button.connect-wanted").innerText()) !== `Connect Stripe to ${basename(repo)}`) throw new Error("the page doesn't open on Connect and a Connect Stripe button naming the project");
     if ((await page.locator('select[name="catalog"] option[value="sentry"]').count()) !== 0) throw new Error("Sentry is still offered with a key as well as by signing in");
     await shot("connect-tiles");
-    const phone = await signIn("alex", { width: 390, height: 844 });
-    await phone.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}&kit=support-desk&connect=stripe#connect`); await phone.waitForSelector("#connect-stripe"); await sleep(300);
+    const phone = await alexPhone("light");
+    await phone.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}&kit=support-desk&connect=stripe#connect`); await phone.waitForSelector("#connect-stripe"); await settle(phone);
     await phone.screenshot({ path: join(w.out, "connect-tiles-phone.png") });
     const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-    await phone.context().close();
+    await putPhoneDown();
     if (wide) throw new Error("the connect tiles scroll sideways on a phone");
     // One click (with the password every new tool takes), then Stripe's own page.
     await page.fill('.tool-connect input[name="password"]', w.passwords.alex);
@@ -1610,7 +1642,7 @@ await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on i
   try {
     const priya = await context.newPage();
     await priya.goto(`${base}/login`);
-    await sleep(300); await priya.screenshot({ path: join(w.out, "sign-in-with-provider.png") });
+    await settle(priya); await priya.screenshot({ path: join(w.out, "sign-in-with-provider.png") });
     await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), priya.click('a.login-sso:has-text("Sign in with Acme SSO")')]);
     await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && !url.pathname.startsWith("/login"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.waitForSelector("[data-workspace-shell]");
@@ -1622,7 +1654,7 @@ await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on i
     await priya.selectOption('select[name="catalog"]', "chrome-devtools");
     await Promise.all([priya.waitForNavigation(), priya.click('form:has(select[name="catalog"]) button:has-text("Add")')]);
     if (!/Added Chrome DevTools/.test(await priya.locator('[role="status"]').first().innerText())) throw new Error("priya's tool wasn't added");
-    await sleep(300); await priya.screenshot({ path: join(w.out, "sign-in-step-up.png") });
+    await settle(priya); await priya.screenshot({ path: join(w.out, "sign-in-step-up.png") });
     // A group that may not enter.
     await priya.context().clearCookies();
     await priya.goto(`${base}/login`);
@@ -1696,10 +1728,6 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
     });
     if (!/[\\/]toolroll-demo-[^\\/]+$/.test(started.sandbox)) throw new Error(`the sandbox folder is ${started.sandbox}`);
     const password = /password: (.*)/.exec(readFileSync(started.login.passwordFile, "utf8"))[1].trim();
-    const settle = on => on.evaluate(() => Promise.race([
-      Promise.all(document.getAnimations().filter(one => one.effect?.getComputedTiming().iterations !== Infinity).map(one => one.finished.catch(() => undefined))),
-      new Promise(done => setTimeout(done, 2000)),
-    ])).catch(() => undefined);
     for (const [width, height, asked] of [[1440, 900, "fix the flaky refund test"], [390, 844, "The payouts page copy is confusing"]]) {
       const context = await w.browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
       context.setDefaultTimeout(30_000);
@@ -1878,8 +1906,7 @@ async function bothSizes(on, name) {
   for (const [width, height] of [[1440, 900], [390, 844]]) {
     await on.setViewportSize({ width, height });
     // Laid out at the new size: two frames after the resize, then any animation it started.
-    await on.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
-    await on.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter(one => one.effect?.getComputedTiming().iterations !== Infinity).map(one => one.finished.catch(() => undefined))), new Promise(done => setTimeout(done, 1500))])).catch(() => undefined);
+    await settle(on);
     const overflow = await on.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) throw new Error(`${name} scrolls sideways by ${overflow}px at ${width} wide`);
     await on.screenshot({ path: join(w.out, `onboarding-${name}-${width}.png`) });
