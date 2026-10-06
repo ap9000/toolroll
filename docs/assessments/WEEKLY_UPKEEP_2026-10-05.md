@@ -2,7 +2,10 @@
 
 Dependency updates prepared for review on base `1c1ec2c00cf325b93c66b23a9c759b417416a384`
 (0.9.36), the supplied task checkout. The advisory plan named the older `6cfacfb` base;
-this attempt did not move HEAD. No installed runtime or agent CLI was changed.
+that attempt did not move HEAD. Review comment 844 on build #2538 is addressed
+by this revision from `7421af2ef2aa8984eaab0026848ee05f335c8c35`: retain the Vitest
+security patch and defer the major upgrade. No installed runtime or agent CLI
+was changed.
 
 | Package | Before | After |
 | --- | --- | --- |
@@ -16,7 +19,7 @@ this attempt did not move HEAD. No installed runtime or agent CLI was changed.
 | mailparser | 3.9.28 | 3.9.36 |
 | nodemailer | 10.0.10 | 10.0.15 |
 | tsx | 4.23.12 | 4.23.15 |
-| vitest | 4.1.10 | 5.0.3 |
+| vitest | 4.1.10 | 4.1.11 |
 | @parcel/watcher (transitive) | 2.5.1 | 2.6.0 |
 | source-map-js (transitive) | 1.2.1 | 1.2.2 |
 
@@ -27,12 +30,18 @@ dependency removes the vulnerable chain. Remove the override when a future CLI
 release includes a fixed watcher. The additional source-map-js advisory was fixed
 within its existing range. Final `npm audit` reports zero vulnerabilities.
 
-Vitest was first patched to 4.1.11 for the audit fix, then migrated separately to
-5.0.3. npm resolved its Vite peer to 8.3.2. Both support the project's Node 22.13
-minimum; checks ran on Node 22.22.0. Vitest 5 clears mock histories before tests,
-requires top-level hoisted mocks and awaited asynchronous assertions, and makes
-Vite a peer dependency. The focused tests required no compatibility settings or
-assertion changes. See the [upstream migration guide](https://vitest.dev/guide/migration/).
+Vitest is pinned to 4.1.11, whose [release notes](https://github.com/vitest-dev/vitest/releases/tag/v4.1.11)
+include the redirect-mock filesystem allowlist fix. Its matching `@vitest/*`
+packages resolve to 4.1.11; Vite remains at 8.3.2. This keeps the audit fix within
+the existing Vitest major version. Test settings, assertions and the approved
+verification command are unchanged.
+
+**Deferred: Vitest 5.0.3.** The saved result's 148 focused tests did not establish
+compatibility across the full suite. The [upstream migration guide](https://vitest.dev/guide/migration/)
+describes changed mock-history defaults, top-level hoisted mocks, awaited async
+assertions and Vite dependency handling. A later migration should inspect those
+uses and runner integrations, run the affected journeys, then pass the existing
+full machine gate on that exact candidate before adoption.
 
 The `typescript-parser` alias stays at TypeScript 6.0.3. `src/repository-context.ts`
 uses `createSourceFile` and `resolveModuleName`; TypeScript 7.0.2's root export
@@ -41,7 +50,27 @@ The normal build compiler remains TypeScript 7.0.2. The filed CLI inventory
 (Claude 2.1.289, Codex 0.156.1, Gemini 0.60.0) contained no version-change line;
 no CLI upgrade or live provider certification was performed.
 
-Validation on the resulting package files:
+Revision verification on Node 22.22.0, using the revised package files over
+`7421af2ef2aa8984eaab0026848ee05f335c8c35`:
+
+- `npm run typecheck` passed. The focused runner's normal setup also ran
+  `npm run build` successfully, including the browser bundle and Tailwind.
+- `npx vitest run src/suite-lifecycle.test.ts src/release-check.test.ts
+  src/browser/overlay-motion.test.ts src/browser/team-chat.test.ts
+  src/browser/workspace-client.test.ts` passed: 5 files, 78 tests. These cover
+  runner cleanup on pass/failure/interruption/timeout, release-check selection,
+  and browser test integration, including happy-dom, mocks and async assertions.
+- `npm audit --json` reports zero vulnerabilities; `npm ls --all --json`
+  passed. The manifest and lockfile agree on Vitest and its packages at 4.1.11.
+- Logs and package fingerprints are under this run's ignored `evidence/`;
+  they are excluded from the commit. The runner logged denied `sysctl` reads
+  for machine diagnostics; none of the checks failed.
+- The unchanged approved full command still belongs to the final machine gate.
+  It was not run in this revision, so full-suite success is not claimed. No
+  desktop/phone, live-provider or native-watch verification was added here.
+
+Prior build #2538 reported the following checks on its Vitest 5.0.3 candidate.
+These are historical context, not fresh verification of this revision:
 
 - `npm run typecheck` and `npm run build` passed, including Tailwind, XYFlow,
   Lucide and bundled license checks.
@@ -61,7 +90,8 @@ Validation on the resulting package files:
   gate is pending; it was not run here. Desktop/phone and live service behavior
   are not claimed by these focused checks.
 
-Logs, local smoke fixtures and JSON results are under ignored `evidence/`, outside
-the commit. A fresh outdated query also lists eleven Radix packages beyond the
-filed list; those remain unchanged for subsequent upkeep. The intentionally
-retained parser alias will continue to appear in weekly upkeep output.
+The prior run's logs, local smoke fixtures and JSON results were saved under its
+ignored `evidence/`. Its outdated query also listed eleven Radix packages beyond
+the filed list; those remain unchanged for subsequent upkeep. The intentionally
+retained parser alias and deferred Vitest major will continue to appear in
+weekly upkeep output.
