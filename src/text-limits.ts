@@ -107,6 +107,8 @@ export const TEXT_LIMITS = {
   /** One proof line — a criterion statement, evidence ref, check command or summary, changed path, caveat, or
    * screenshot path or caption — in UTF-8 bytes. */
   proofLineBytes: 300,
+  /** A Telegram button's callback_data, in UTF-8 bytes: Telegram refuses a button with more. */
+  telegramCallbackDataBytes: 64,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

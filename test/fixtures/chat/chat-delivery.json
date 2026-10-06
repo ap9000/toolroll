@@ -1,0 +1,31 @@
+{
+ "about": "Slack, Discord and Teams delivery state as 0.9.36 saved it (slack_/discord_/teams_ chat_part.payload and chat_event.payload): JSON text, no version.",
+ "parts": [
+  {"name": "a plain reply", "payload": "{\"text\":\"The footer now shows the current year.\"}"},
+  {"name": "the lead's shaped reply about a task", "payload": "{\"text\":\"Done: **Fix the footer year** — [the result](/tasks/fix-footer)\",\"task\":\"fix-footer\",\"run\":41,\"voice\":true}"},
+  {"name": "a proposal card in a room", "payload": "{\"text\":\"\",\"proposal\":17,\"channel\":\"C0FIXTURE\"}"},
+  {"name": "an armed confirmation edit", "payload": "{\"text\":\"Accept and finish: Fix the footer year\",\"proposal\":17,\"edit\":\"1789700000.000001\",\"phase\":\"armed\"}"},
+  {"name": "a finished batch with links", "payload": "{\"text\":\"Fix the footer year is ready.\",\"link\":{\"label\":\"Open result\",\"path\":\"/tasks/fix-footer\"},\"also\":[{\"label\":\"Look first\",\"path\":\"/tasks/fix-footer/result\"}],\"task\":\"fix-footer\",\"run\":41}"},
+  {"name": "a result screenshot following its message", "payload": "{\"text\":\"Footer at 390 wide\",\"image\":{\"taskId\":\"fix-footer\",\"run\":41,\"artifact\":88,\"sha256\":\"c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00\"},\"shot\":{\"follows\":203},\"task\":\"fix-footer\",\"run\":41}"},
+  {"name": "a flow decision's buttons", "payload": "{\"text\":\"Review the reply to order 1043\",\"flow\":{\"card\":12,\"entry\":3,\"actions\":[\"approve\",\"edit\",\"send-back\"]}}"},
+  {"name": "a flow choice's options", "payload": "{\"text\":\"Pick a path\",\"choose\":{\"card\":12,\"entry\":4,\"options\":[{\"choice\":0,\"label\":\"Ship it\"},{\"choice\":1,\"label\":\"Ignore\"}]}}"},
+  {"name": "use this as your note?", "payload": "{\"text\":\"Use this as your note on “Footer year”?\",\"note\":{\"card\":12,\"entry\":4,\"held\":\"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"}}"},
+  {"name": "a teammate's question", "payload": "{\"text\":\"Maya asks: refund order 1043?\",\"question\":{\"id\":4,\"choices\":[{\"choice\":\"yes\",\"label\":\"Refund it\"},{\"choice\":null,\"label\":\"✏️ Answer in words\"}]}}"},
+  {"name": "the lead's question to its owner", "payload": "{\"text\":\"Which footer style?\",\"ask\":{\"turn\":55,\"options\":[\"Short\",\"Long\"]}}"},
+  {"name": "an older field no reader reads", "payload": "{\"text\":\"Connected to Toolroll.\",\"kind\":\"welcome\"}", "reads": {"text": "Connected to Toolroll."}}
+ ],
+ "events": [
+  {"name": "pair", "kind": "pair", "payload": "{\"hash\":\"4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\"}"},
+  {"name": "a message", "kind": "message", "payload": "{\"text\":\"What changed in the footer?\",\"originalLength\":27}"},
+  {"name": "a message with a file", "kind": "message", "payload": "{\"text\":\"see this\",\"originalLength\":8,\"unsupported\":\"Incoming files are not supported yet. Describe the request in a message; saved result screenshots can still be sent here.\"}"},
+  {"name": "a message whose task was chosen", "kind": "message", "payload": "{\"text\":\"Ship it?\",\"originalLength\":8,\"about\":{\"task\":\"fix-footer\",\"run\":41}}"},
+  {"name": "a held message passed to the lead", "kind": "message", "payload": "{\"text\":\"Can we do dark mode next?\",\"originalLength\":25,\"lead\":true}"},
+  {"name": "a room's carrier event", "kind": "message", "payload": "{}"},
+  {"name": "a button", "kind": "action", "payload": "{\"token\":\"0123456789abcdef0123456789abcdef\"}"},
+  {"name": "a notice", "kind": "notice", "payload": "{}"}
+ ],
+ "heldWords": [
+  {"name": "words kept for a note", "payload": "{\"text\":\"Make it shorter.\",\"originalLength\":16}"},
+  {"name": "words without a length", "payload": "{\"text\":\"Make it shorter.\"}"}
+ ]
+}

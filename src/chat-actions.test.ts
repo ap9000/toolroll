@@ -890,7 +890,7 @@ describe("shared chat action lifecycle", () => {
         root,
         now,
       ),
-    ).toThrow(/unsupported/);
+    ).toThrow("This action can't be read — payload: unknown key 'restore'.");
     expect(() =>
       prepareSharedAction(
         store,
@@ -900,7 +900,7 @@ describe("shared chat action lifecycle", () => {
         root,
         now,
       ),
-    ).toThrow(/unsupported/);
+    ).toThrow("payload: unknown key 'run'");
   });
   test.each([false, true])("secure HTTP review preserves owner, CSRF and receipt checks (All projects: %s)", async (multiple) => {
     const repos = [repo];

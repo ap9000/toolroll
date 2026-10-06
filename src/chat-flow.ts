@@ -34,7 +34,8 @@ import { renderReply } from "./reply-shape.js";
 import { deciderOf, replyTarget } from "./flows.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { verifyApproverStanding } from "./principal.js";
-import { chatHash, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
+import { chatHash, partContent, savedChatPart, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
+import { readHeldWords } from "./contracts/chat-content.js";
 import type { Store } from "./store.js";
 import { FLOW_DECIDE_KEY, flowDecisionAt } from "./telegram-flow.js";
 import { phoneCommand } from "./telegram-status.js";
@@ -154,11 +155,11 @@ const retire = (state: ChatState, card: number, entry: number, now: Date): void 
 /** Show the tapped notice again with what happened, and without its buttons. */
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
   const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
-  const before = row === undefined ? { text: "" } : JSON.parse(String(row["payload"])) as ChatContent;
+  const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   // An item list (flow-items.ts) stays whole and keeps its bold titles and labelled links; only plain text is capped.
   const content: ChatContent = { text: before.voice === true ? `${before.text}\n\n${line}` : `${before.text}\n\n${line}`.slice(0, PART_CHARS + 400), edit: event.ts, ...(before.voice === true ? { voice: true as const } : {}),
     ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(JSON.stringify(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
 }
 
 /**
@@ -313,12 +314,13 @@ function applyChatNoteTap(options: { store: Store; state: ChatState; label: stri
   }
   state.prepare("UPDATE chat_flow_note SET consumed=?,words=NULL WHERE part=?").run(now.toISOString(), part);
   const held = state.event(String(tapped["held"]));
-  const words = typeof tapped["words"] === "string" ? JSON.parse(tapped["words"]) as { text?: unknown; originalLength?: unknown } : null;
-  if (held === null || words === null || typeof words.text !== "string") { repaint(state, part, event, "That message is no longer kept; nothing was changed."); state.finish(event.id); return true; }
+  const kept = typeof tapped["words"] === "string" ? readHeldWords(tapped["words"]) : null;
+  const words = kept?.ok === true ? kept.value : null;
+  if (held === null || words === null) { repaint(state, part, event, "That message is no longer kept; nothing was changed."); state.finish(event.id); return true; }
   if (tapped["answer"] === "no") {
     // Passed on as the message it was, to the lead, once.
     state.enqueue({ id: chatHash(`${held.id}:lead`), installation: held.installation, binding: held.binding, kind: "message", channel: held.channel, member: held.member,
-      ts: held.ts, thread: held.thread, payload: JSON.stringify({ ...words, lead: true }), created: now.toISOString() });
+      ts: held.ts, thread: held.thread, payload: { ...words, lead: true }, created: now.toISOString() });
     repaint(state, part, event, "Passed to the lead.");
     state.finish(event.id);
     return true;

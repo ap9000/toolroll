@@ -27,11 +27,14 @@ import {
   ChatState,
   ChatDeliveryError,
   chatHash,
+  savedChatPart,
   type ChatBinding,
   type ChatContent,
   type ChatEvent,
   type ChatIdentity,
 } from "./chat-delivery-state.js";
+import { readChatActionBody, readChatMessageBody, readChatPairBody, readChatPart } from "./contracts/chat-content.js";
+import { readProposalActionRow } from "./contracts/chat-callback-rows.js";
 import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisionParts, flowSendParts } from "./chat-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
@@ -156,13 +159,10 @@ export async function processChatEvent(
         !options.current()
       )
         return false;
-      const paired = state.pair(
-        identity,
-        String(object(JSON.parse(event.payload)).hash),
-        event.member,
-        event.channel,
-        nowOf(options),
-      );
+      const body = readChatPairBody(event.payload);
+      const paired = body.ok
+        ? state.pair(identity, body.value.hash, event.member, event.channel, nowOf(options))
+        : null;
       if (!paired) {
         state.finish(event.id, true);
         return true;
@@ -193,7 +193,12 @@ export async function processChatEvent(
       applyChatAction(options, event, binding, repos);
       return true;
     }
-    const input = object(JSON.parse(event.payload));
+    const body = readChatMessageBody(event.payload);
+    if (!body.ok) {
+      state.plan(event.id, [{ text: `That message couldn't be read (${body.issues.map(issue => issue.line).join("; ")}). Send it again.` }], nowOf(options));
+      return true;
+    }
+    const input = body.value;
     if (typeof input.unsupported === "string") {
       state.plan(event.id, [{ text: input.unsupported }], nowOf(options));
       return true;
@@ -271,8 +276,7 @@ export async function processChatEvent(
         [
           {
             text: tooLongText(
-              Number(object(JSON.parse(event.payload)).originalLength) ||
-                text.length,
+              input.originalLength || text.length,
             ),
           },
         ],
@@ -346,7 +350,8 @@ export async function processChatEvent(
           "SELECT p.payload FROM chat_part p JOIN chat_event e ON e.id=p.event WHERE e.binding=? AND e.channel=? AND (p.message=? OR e.thread=?) AND p.state='sent' ORDER BY p.id DESC LIMIT 100",
         )
         .all(binding.id, binding.channel, event.thread, event.thread)
-        .map((row) => JSON.parse(String(row.payload)) as ChatContent)
+        // Context only: a part that can't be read adds none.
+        .flatMap((row) => { const read = readChatPart(String(row.payload)); return read.ok ? [read.value] : []; })
         // A card is about the task it names, or the one confirming it filed.
         .map((c) => {
           if (c.task || c.proposal === undefined) return c;
@@ -552,8 +557,10 @@ async function channelInboxEvent(options: ChatDeliveryOptions, event: ChatEvent)
   const { store, identity } = options, state = options.state, app = state.channel;
   const binding = event.binding === null ? null : state.bindingById(event.binding);
   if (binding !== null && event.channel === binding.channel) return false;
-  const input = object(JSON.parse(event.payload));
-  const text = String(input.text ?? "");
+  const body = readChatMessageBody(event.payload);
+  // One that can't be read is answered, by path, on the ordinary path.
+  if (!body.ok) return false;
+  const text = body.value.text ?? "";
   if (FLOW_WORDS.test(text.trim())) {
     // Only a paired approver connects a channel, and only to a flow in their projects.
     if (binding === null || !state.live(binding)) { state.finish(event.id, true); return true; }
@@ -598,18 +605,28 @@ export function applyChatAction(
       (event.channel !== binding.channel && state.room(options.identity.installation, event.channel)?.kind !== "group")
     )
       return;
-    const token = String(object(JSON.parse(event.payload)).token);
+    // A button the paired person tapped whose data couldn't be read is answered plainly: what was wrong, and that nothing was done.
+    const body = readChatActionBody(event.payload);
+    if (!body.ok || "problem" in body.value) {
+      const problem = body.ok ? ("problem" in body.value ? body.value.problem : "") : body.issues.map(issue => issue.line).join("; ");
+      state.plan(event.id, [{ text: `That button couldn't be read (${problem}). Nothing was done.` }], now);
+      return;
+    }
+    const token = body.value.token;
     // A flow decision's button (v88) is answered by the flow's own door.
     if (applyChatFlowTap({ store, state, label: options.label }, event, binding, token, repos, now)) return;
     // A teammate's question's button (v93) is answered by the question's own door.
     if (applyChatQuestionTap({ store, state, label: options.label }, event, binding, token, now)) return;
     // The lead's question to its owner: the tapped option becomes their next message.
     if (applyChatAskTap({ store, state }, event, binding, token, now)) return;
-    const action = state
+    const saved = state
       .prepare(
         "SELECT a.*,p.message,e.binding,e.channel,e.thread FROM chat_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE token=?",
       )
       .get(token);
+    // The saved button, read by its schema: one that can't be read is a spent button, never a guess.
+    const read = saved === undefined ? null : readProposalActionRow({ ...saved });
+    const action = read?.ok === true ? read.value : null;
     const invalid =
       !action ||
       action.binding !== binding.id ||
@@ -617,7 +634,7 @@ export function applyChatAction(
       action.message !== event.ts ||
       (options.state.channel === "slack" && action.thread !== event.thread) ||
       action.consumed !== null ||
-      String(action.expires) <= now.toISOString();
+      action.expires <= now.toISOString();
     if (invalid) {
       state.plan(
         event.id,
@@ -630,7 +647,7 @@ export function applyChatAction(
       );
       return;
     }
-    const proposal = store.getMateProposal(Number(action.proposal));
+    const proposal = store.getMateProposal(action.proposal);
     const verified = verifyApproverStanding(
       store,
       binding.approver,
@@ -647,7 +664,7 @@ export function applyChatAction(
       edit: event.ts,
     };
     const preview = proposalPreview(store, proposal, repos, options.state.channel);
-    const phase = String(action.phase);
+    const phase = action.phase;
     if (proposal.state !== "pending")
       content = { text: proposalOutcomeText(proposal), edit: event.ts };
     else if (
@@ -657,7 +674,7 @@ export function applyChatAction(
       content = { ...content, text: "Review this action in Toolroll." };
     else if (phase === "cancel") {
       state.tokens(
-        Number(action.part),
+        action.part,
         proposal.id,
         ["confirm", "dismiss"],
         now,
@@ -681,7 +698,7 @@ export function applyChatAction(
       proposal.payload.reversible === false
     ) {
       content = { ...content, phase: "armed" };
-      state.tokens(Number(action.part), proposal.id, ["yes", "cancel"], now);
+      state.tokens(action.part, proposal.id, ["yes", "cancel"], now);
     } else {
       const outcome = confirmMateProposal(
         store,
@@ -698,7 +715,7 @@ export function applyChatAction(
       );
       if (!outcome.ok && outcome.reason === "needs-confirm") {
         content = { ...content, phase: "armed" };
-        state.tokens(Number(action.part), proposal.id, ["yes", "cancel"], now);
+        state.tokens(action.part, proposal.id, ["yes", "cancel"], now);
       } else {
         content = {
           text: confirmedCardText(store, outcome, proposal, null),
@@ -714,7 +731,7 @@ export function applyChatAction(
       .prepare(
         "UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?",
       )
-      .run(JSON.stringify(content), Number(action.part));
+      .run(savedChatPart(content), action.part);
     if (!content.proposal)
       state
         .prepare(
@@ -772,7 +789,7 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
       const id = chatHash(`${state.channel}:room:${room.id}:${message.id}`);
       const target = carrier;
       store.transact(() => {
-        if (parts.length > 0 && state.enqueue({ id, installation: identity.installation, binding: target.id, kind: "message", channel: room.chat, member: target.member, ts: "", thread: "", payload: "{}", created: now.toISOString() }))
+        if (parts.length > 0 && state.enqueue({ id, installation: identity.installation, binding: target.id, kind: "message", channel: room.chat, member: target.member, ts: "", thread: "", payload: {}, created: now.toISOString() }))
           state.plan(id, parts, now);
         state.advanceRoomCursor(room.id, message.id);
       });
@@ -792,13 +809,13 @@ function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notif
   const shown = chatHash(JSON.stringify(content));
   if (card.message !== null) {
     if (card.digest === shown) return;
-    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(JSON.stringify(content), now.toISOString(), Number(card.message));
+    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(card.message));
     store.setChatCardMessage(card.id, card.message, shown);
     return;
   }
   const id = chatHash(`${state.channel}:card:${binding.id}:${card.id}`);
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-    ts: "", thread: "", payload: "{}", created: now.toISOString() });
+    ts: "", thread: "", payload: {}, created: now.toISOString() });
   state.plan(id, [content], now);
   const part = state.prepare("SELECT id FROM chat_part WHERE event=?").get(id);
   if (part !== undefined) store.setChatCardMessage(card.id, String(part.id), shown);
@@ -820,13 +837,13 @@ function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRe
   const shown = chatHash(JSON.stringify(content));
   if (batch.message !== null) {
     if (batch.digest === shown) return true;
-    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(JSON.stringify(content), now.toISOString(), Number(batch.message));
+    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(batch.message));
     store.setChatBatchMessage(batch.id, batch.message, shown);
     return true;
   }
   const id = chatHash(`${state.channel}:batch:${binding.id}:${batch.id}`);
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-    ts: "", thread: "", payload: "{}", created: now.toISOString() });
+    ts: "", thread: "", payload: {}, created: now.toISOString() });
   state.plan(id, [content], now);
   const part = state.prepare("SELECT id FROM chat_part WHERE event=?").get(id);
   if (part !== undefined) store.setChatBatchMessage(batch.id, String(part.id), shown);
@@ -870,7 +887,7 @@ function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, not
       image: image(plan.shots[0]!.artifact, plan.shots[0]!.sha256), shot: { follows: null }, ...where }]
     : plan.shots.map(one => ({ text: one.caption, image: image(one.artifact, one.sha256), shot: { follows }, ...where }));
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-    ts: "", thread: "", payload: "{}", created: now.toISOString() });
+    ts: "", thread: "", payload: {}, created: now.toISOString() });
   state.plan(id, parts, now);
 }
 
@@ -937,11 +954,11 @@ export async function planChatNotifications(
           const earlier = leadSayEarlier(store, notification).map(one => state.prepare("SELECT id FROM chat_part WHERE event=?")
             .get(chatHash(`${options.state.channel}:notice:${binding.id}:${one}`))).find(one => one !== undefined);
           if (earlier !== undefined) {
-            state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(JSON.stringify(content), now.toISOString(), Number(earlier.id));
+            state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(earlier.id));
             return;
           }
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-            ts: "", thread: "", payload: "{}", created: now.toISOString() });
+            ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, [content], now);
           return;
         }
@@ -1008,7 +1025,7 @@ export async function planChatNotifications(
               member: binding.member,
               ts: "",
               thread: "",
-              payload: "{}",
+              payload: {},
               created: now.toISOString(),
             });
             state.plan(id, [content], now);
@@ -1024,18 +1041,18 @@ export async function planChatNotifications(
           const parts = flowDecisionParts(store, notification, state.channel);
           if (parts !== null) {
             state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-              ts: "", thread: "", payload: "{}", created: now.toISOString() });
+              ts: "", thread: "", payload: {}, created: now.toISOString() });
             state.plan(id, parts, now);
           }
         } else if (personal && flowSendParts(store, notification, state.channel) !== null) {
           // A flow's "Send to me" (flow-send.ts): what was done, with its links as buttons.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-            ts: "", thread: "", payload: "{}", created: now.toISOString() });
+            ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, flowSendParts(store, notification, state.channel)!, now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A teammate's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
-            ts: "", thread: "", payload: "{}", created: now.toISOString() });
+            ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, questionParts(store, notification, binding)!, now);
         } else if (notification.pushClass !== null || personal || quiet) {
           state.enqueue({
@@ -1047,7 +1064,7 @@ export async function planChatNotifications(
             member: binding.member,
             ts: "",
             thread: "",
-            payload: "{}",
+            payload: {},
             created: now.toISOString(),
           });
           state.plan(

@@ -12,10 +12,12 @@
  */
 import { randomBytes } from "node:crypto";
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
+import { partContent, savedChatPart } from "./chat-delivery-state.js";
 import type { Store, TelegramBinding, TeammateQuestionRow } from "./store.js";
 import type { InlineButton } from "./telegram-mate.js";
 import { answerTeammateQuestion } from "./teammate-work.js";
 import { labelOf } from "./teammate-admin.js";
+import { telegramButton } from "./contracts/telegram-callback.js";
 
 /** The key notifyPeople gives a teammate's question: flow-card:<card>:teammate-q:<question>:<person>. */
 export const TEAMMATE_Q_KEY = /^flow-card:[1-9][0-9]{0,14}:teammate-q:([1-9][0-9]{0,14}):/;
@@ -48,8 +50,8 @@ export function telegramQuestionButtons(store: Store, binding: TelegramBinding, 
   store.createTelegramQuestionActions({ binding: binding.id, chatId: binding.chatId, question: question.id }, choices, now);
   const rows: InlineButton[][] = [];
   const options = choices.filter(one => one.choice !== null);
-  for (let at = 0; at < options.length; at += 2) rows.push(options.slice(at, at + 2).map(one => ({ text: one.label.slice(0, 60), callback_data: one.token })));
-  rows.push([{ text: choices.at(-1)!.label, callback_data: choices.at(-1)!.token }]);
+  for (let at = 0; at < options.length; at += 2) rows.push(options.slice(at, at + 2).map(one => telegramButton(one.label.slice(0, 60), one.token)));
+  rows.push([telegramButton(choices.at(-1)!.label, choices.at(-1)!.token)]);
   return { keyboard: rows, tokens: choices.map(one => one.token) };
 }
 
@@ -97,7 +99,7 @@ export function questionParts(store: Store, notification: { dedupeKey: string; s
 /** The live buttons on one part, in the order they were minted. */
 export function chatQuestionButtons(state: ChatState, part: number, now: Date): Array<{ token: string; label: string; words: boolean }> {
   const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
-  const content = row === undefined ? null : JSON.parse(String(row["payload"])) as ChatContent;
+  const content = row === undefined ? null : partContent(String(row["payload"]));
   const labels = new Map((content?.question?.choices ?? []).map(one => [one.choice ?? "", one.label]));
   return (state.prepare("SELECT token,choice FROM chat_question_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: string | null }>)
     .map(one => ({ token: String(one.token), label: (labels.get(one.choice ?? "") ?? IN_WORDS).slice(0, 75), words: one.choice === null }));
@@ -106,9 +108,9 @@ export function chatQuestionButtons(state: ChatState, part: number, now: Date): 
 /** Show the tapped notice again with the answer, and without its buttons. */
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
   const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
-  const before = row === undefined ? { text: "" } : JSON.parse(String(row["payload"])) as ChatContent;
+  const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(JSON.stringify(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
 }
 
 /** A tapped question button, inside the action's transaction; false when the token isn't one. */

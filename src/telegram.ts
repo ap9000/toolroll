@@ -59,6 +59,7 @@ import {
   whichTaskText,
   type TelegramConversationOptions,
 } from "./telegram-mate.js";
+import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegramUpdate, telegramButton, type TelegramUpdate } from "./contracts/telegram-callback.js";
 
 /** Read the enrolled project list on demand. No callback means no task data,
  * never an implicit all-database ceiling. Shared by pass and embedded follower. */
@@ -118,11 +119,9 @@ export function pushedByTelegram(header: unknown, secret: string | null): boolea
 
 /** Keep one pushed update for the bridge: a JSON object with a positive integer update_id. */
 export function keepPushedUpdate(store: Store, botId: string, body: Buffer, now: Date): { ok: true; kept: boolean } | { ok: false } {
-  let update: unknown;
-  try { update = JSON.parse(body.toString("utf8")); } catch { return { ok: false }; }
-  const id = (update as { update_id?: unknown } | null)?.update_id;
-  if (update === null || typeof update !== "object" || typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return { ok: false };
-  return { ok: true, kept: store.queueTelegramUpdate(botId, id, JSON.stringify(update), now) };
+  const update = parseTelegramUpdate(body.toString("utf8"));
+  if (!update.ok) return { ok: false };
+  return { ok: true, kept: store.queueTelegramUpdate(botId, update.value.update_id, JSON.stringify(JSON.parse(body.toString("utf8"))), now) };
 }
 
 // ---- the credential --------------------------------------------------------
@@ -730,7 +729,7 @@ function decideSeat(binding: TelegramBinding): DecideSeat {
 function decideKeyboard(phoneOrigin: (() => string | null) | undefined, rows: readonly DecideButton[][]): InlineButton[][] {
   let origin: string | null = null;
   try { origin = phoneOrigin?.() ?? null; } catch { origin = null; }
-  return rows.map(row => row.flatMap((one): InlineButton[] => "token" in one ? [{ text: one.label, callback_data: one.token }]
+  return rows.map(row => row.flatMap((one): InlineButton[] => "token" in one ? [telegramButton(one.label, one.token)]
     : phoneLinkButton(origin, one.link) ?? [])).filter(row => row.length > 0);
 }
 
@@ -1340,10 +1339,7 @@ async function deliverOne(
     );
   }
   const keyboard = tokens.map(({ option, token }) => [
-    {
-      text: `${option.label}${option.id === decision.recommendation ? " ✓" : ""}${option.reversible ? "" : " ⚠"}`,
-      callback_data: token,
-    },
+    telegramButton(`${option.label}${option.id === decision.recommendation ? " ✓" : ""}${option.reversible ? "" : " ⚠"}`, token),
   ]);
   const last = parts[parts.length - 1] as string;
   const sent = await sender(last, keyboard);
@@ -1441,29 +1437,8 @@ function taskOf(store: Store, decision: Decision): string {
 
 // ---- inbound ---------------------------------------------------------------
 
-type Update = {
-  update_id: number;
-  message?: {
-    message_id: number;
-    text?: string;
-    chat?: { id: number; type?: string };
-    from?: { id: number };
-    reply_to_message?: { message_id: number };
-    /** Presence of any of these disqualifies a note: only direct, initial,
-     * plain text counts as authored-and-confirmed by the paired operator. */
-    forward_origin?: unknown;
-    forward_date?: unknown;
-    via_bot?: unknown;
-    sender_chat?: unknown;
-    caption?: string;
-  };
-  callback_query?: {
-    id: string;
-    data?: string;
-    from?: { id: number };
-    message?: { message_id: number; chat?: { id: number }; text?: string; entities?: unknown[] };
-  };
-};
+/** An update as Telegram sends it (contracts/telegram-callback.ts). */
+type Update = TelegramUpdate;
 
 type Context = {
   store: Store;
@@ -1516,12 +1491,21 @@ async function drainUpdates(
       report.problems.push(`getUpdates: ${said}`);
       return;
     }
-    const updates = (answer.result as Update[] | undefined) ?? [];
+    const updates: unknown[] = Array.isArray(answer.result) ? answer.result : [];
     if (updates.length === 0) return;
 
-    for (const update of updates) {
-      await processUpdate(context, update, owner, generation);
-      offset = update.update_id + 1;
+    for (const raw of updates) {
+      const update = readTelegramUpdate(raw);
+      if (!update.ok) {
+        // Telegram's own update in a shape this bridge doesn't read: said, and passed over so the next one is read.
+        const id = (raw as { update_id?: unknown } | null)?.update_id;
+        report.problems.push(`an update Telegram sent couldn't be read: ${update.issues.map(issue => issue.line).join("; ")}`);
+        if (typeof id !== "number" || !Number.isSafeInteger(id)) return;
+        offset = id + 1;
+        continue;
+      }
+      await processUpdate(context, update.value, owner, generation);
+      offset = update.value.update_id + 1;
     }
   }
   // The budget ran out with Telegram still holding pages: said, not hidden.
@@ -1557,9 +1541,9 @@ async function processUpdate(context: Context, update: Update, owner: string, ge
 async function drainInbox(context: Context, owner: string, generation: number): Promise<number> {
   let applied = 0;
   for (const queued of context.store.telegramInbox(context.botId, PAGE_BUDGET * 100)) {
-    let update: Update | null = null;
-    try { update = JSON.parse(queued.payload) as Update; } catch { update = null; }
-    if (update !== null && update.update_id === queued.updateId) await processUpdate(context, update, owner, generation);
+    const update = parseTelegramUpdate(queued.payload);
+    if (update.ok && update.value.update_id === queued.updateId) await processUpdate(context, update.value, owner, generation);
+    else if (!update.ok) context.report.problems.push(`a pushed update couldn't be read: ${update.issues.map(issue => issue.line).join("; ")}`);
     context.store.dropTelegramInbox(queued.updateId);
     applied++;
   }
@@ -1894,9 +1878,9 @@ function pickKeyboard(store: Store, choices: readonly PhoneTaskChoice[], focused
   const rows: InlineButton[][] = [];
   for (const one of choices) {
     const ref = store.lookupRef(one.id);
-    if (ref !== null) rows.push([{ text: `${one.title} · ${one.label}`.slice(0, 60), callback_data: `pick:${ref.id}` }]);
+    if (ref !== null) rows.push([telegramButton(`${one.title} · ${one.label}`.slice(0, 60), `pick:${ref.id}`)]);
   }
-  if (focused) rows.push([{ text: "Back to the lead", callback_data: "pick:lead" }]);
+  if (focused) rows.push([telegramButton("Back to the lead", "pick:lead")]);
   return rows;
 }
 
@@ -2164,21 +2148,28 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     report.ignored++;
     return;
   }
+  // The paired person, in their chat: a button whose data isn't one Toolroll makes is answered with why, and does nothing.
+  const data = readTelegramButtonData(callback.data);
+  if (!data.ok) {
+    report.ignored++;
+    ack(`That button couldn't be read (${data.issues.map(issue => issue.line).join("; ")}). Nothing was done.`.slice(0, 190));
+    return;
+  }
 
   // A task picked from /tasks: this private chat now talks about it (or,
   // "Back to the lead", about everything again). The task is re-proved
   // against the chat's ceiling at the tap.
-  if (token.startsWith("pick:")) {
+  const pick = pickOf(token);
+  if (pick !== null) {
     if (tapChat !== binding.chatId) { report.ignored++; return; }
-    if (token === "pick:lead") {
+    if (pick.ref === null) {
       store.setChatFocus("telegram", binding.id, null, clock());
       store.recordTelegramTaskMessage(binding, String(message.message_id), null, null, clock());
       ack("Back to the lead");
       editText(PHONE_BACK_TO_LEAD);
       return;
     }
-    const refId = /^pick:([1-9][0-9]{0,14})$/.exec(token)?.[1];
-    const taskId = refId === undefined ? null : store.externalIdFor(Number(refId));
+    const taskId = store.externalIdFor(pick.ref);
     const repos = context.projects === null ? null : telegramConversationRepos(store, binding.approver, context.projects);
     if (taskId === null || repos === null || !taskInCeiling(store, taskId, repos)) {
       ack("That task isn't available here now.");
@@ -2192,7 +2183,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     const current = store.taskFamilyOf(taskId, repos, false)?.current.id ?? id;
     const view = phoneTaskView(store, repos, current, clock());
     store.recordTelegramTaskMessage(binding, String(message.message_id), current, view.run, clock());
-    editText(phoneFocusText(view.text), [[{ text: "Back to the lead", callback_data: "pick:lead" }]]);
+    editText(phoneFocusText(view.text), [[telegramButton("Back to the lead", "pick:lead")]]);
     return;
   }
   // A teammate's question (v93): an option answers it; "Answer in words" asks for a reply.
@@ -2243,10 +2234,10 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     return;
   }
   // The lead's question to its owner: an option is sent as their next message; "Something else" asks them to type it.
-  const askTap = /^ask:([1-9][0-9]{0,14}):([0-3]|x)$/.exec(token);
+  const askTap = askOf(token);
   if (askTap !== null) {
     if (tapChat !== binding.chatId || context.conversation === undefined) { report.ignored++; return; }
-    const turn = Number(askTap[1]);
+    const turn = askTap.turn;
     const found = store.getMateTurn(turn)?.approver === binding.approver ? store.mateAskState(turn, clock()) : { state: "expired" as const };
     if (found.state !== "open") {
       const line = found.state === "answered" ? "That question was already answered." : "That question expired. Send your answer as a message.";
@@ -2256,8 +2247,8 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     }
     const ask = found.ask;
     if (store.telegramConversationWaitingOn(binding.id, String(message.message_id))) { ack("Your answer is on its way."); return; }
-    if (askTap[2] === "x") { ack("Type your answer as a message."); return; }
-    const option = ask.options[Number(askTap[2])];
+    if (askTap.option === "x") { ack("Type your answer as a message."); return; }
+    const option = ask.options[askTap.option];
     if (option === undefined) { ack("That option is no longer there."); return; }
     const focused = store.chatFocus("telegram", binding.id);
     store.enqueueTelegramConversation({
@@ -2391,8 +2382,8 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
           draft === null ? "" : `\nWith your note:\n${draft.note.split("\n").map(line => `| ${line}`).join("\n")}\n`
         }\nConfirm?`,
         [
-          [{ text: `⚠ Yes, ${option.label}`, callback_data: confirm }],
-          [{ text: "Cancel", callback_data: cancel }],
+          [telegramButton(`⚠ Yes, ${option.label}`, confirm)],
+          [telegramButton("Cancel", cancel)],
         ],
       );
       return;
@@ -2447,10 +2438,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   editText(
     `Q: ${decision.question}`,
     fresh.map(({ option, token: choose }) => [
-      {
-        text: `${option.label}${option.id === decision.recommendation ? " ✓" : ""}${option.reversible ? "" : " ⚠"}`,
-        callback_data: choose,
-      },
+      telegramButton(`${option.label}${option.id === decision.recommendation ? " ✓" : ""}${option.reversible ? "" : " ⚠"}`, choose),
     ]),
   );
 }

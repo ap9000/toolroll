@@ -27,6 +27,7 @@ import { chooseFlowCard, flowChoiceAt, flowSendPaths, readFlowSend, type FlowCho
 import { deciderOf, type FlowStage } from "./flows.js";
 import { phoneLinkButton, type InlineButton } from "./telegram-mate.js";
 import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
+import { telegramButton, type TelegramCallbackButton } from "./contracts/telegram-callback.js";
 
 export const FLOW_DECIDE_KEY = /^flow-decide:([1-9][0-9]{0,14}):([1-9][0-9]{0,9})$/;
 const DRAFT_LIMIT = 4000;
@@ -52,9 +53,9 @@ export function flowButtons(store: Store, binding: TelegramBinding, waiting: Wai
   const back = waiting.stage.onFail !== null ? mint("send-back") : null;
   const all = [approve, edit, back].filter((one): one is NonNullable<typeof one> => one !== null);
   store.createTelegramFlowActions({ binding: binding.id, chatId: binding.chatId, card: waiting.card.id, entry: waiting.card.entry }, all, now);
-  const second = [edit === null ? null : { text: "✏️ Edit", callback_data: edit.token }, back === null ? null : { text: "↩️ Send back", callback_data: back.token }]
-    .filter((one): one is { text: string; callback_data: string } => one !== null);
-  return { keyboard: [[{ text: "✅ Approve", callback_data: approve.token }], ...(second.length === 0 ? [] : [second])], tokens: all.map(one => one.token) };
+  const second = [edit === null ? null : telegramButton("✏️ Edit", edit.token), back === null ? null : telegramButton("↩️ Send back", back.token)]
+    .filter((one): one is TelegramCallbackButton => one !== null);
+  return { keyboard: [[telegramButton("✅ Approve", approve.token)], ...(second.length === 0 ? [] : [second])], tokens: all.map(one => one.token) };
 }
 
 /** What a "Send to me" or "Person chooses" visit sent, read back for its message. */
@@ -75,7 +76,7 @@ export function flowChoiceButtons(store: Store, binding: TelegramBinding, visit:
   // Only the options the zone still offers as they were sent: a flow changed since sends no stale button.
   const options = (content.options ?? []).filter(one => visit.stage.options?.[one.choice]?.label === one.label).map(one => ({ ...one, token: randomBytes(16).toString("hex") }));
   store.createTelegramFlowChoices({ binding: binding.id, chatId: binding.chatId, card: visit.card.id, entry: visit.card.entry }, options, now);
-  return { keyboard: options.map(one => [{ text: one.label, callback_data: one.token }]), tokens: options.map(one => one.token) };
+  return { keyboard: options.map(one => [telegramButton(one.label, one.token)]), tokens: options.map(one => one.token) };
 }
 
 /** A tapped option, applied inside the update's transaction. */

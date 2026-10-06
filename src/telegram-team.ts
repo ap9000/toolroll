@@ -15,6 +15,7 @@ import { PART_CAP, mintCardTokens, phoneLinkButton, splitParts, type InlineButto
 import type { TelegramTransport } from "./telegram.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { phoneText } from "./telegram-status.js";
+import type { TelegramMessage } from "./contracts/telegram-callback.js";
 
 export type TeamCommand = { kind: "list" } | { kind: "select"; index: number } | { kind: "off" };
 
@@ -41,18 +42,7 @@ export type TeamInbound = {
   projects: readonly string[] | null;
   phoneOrigin: (() => string | null) | undefined;
   updateId: number;
-  message: {
-    message_id: number;
-    text?: string;
-    chat?: { id: number; type?: string };
-    from?: { id: number };
-    reply_to_message?: { message_id: number };
-    forward_origin?: unknown;
-    forward_date?: unknown;
-    via_bot?: unknown;
-    sender_chat?: unknown;
-    caption?: string;
-  };
+  message: TelegramMessage;
   /** Queue one reply for after the update's transaction commits. */
   say: (chatId: string, text: string, keyboard?: InlineButton[][]) => void;
 };

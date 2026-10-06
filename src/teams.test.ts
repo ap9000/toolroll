@@ -176,6 +176,17 @@ describe("Teams shared chat", () => {
     const confirm = lastActions().find(action => action.title === "Confirm")!;
     const cardId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.proposal')=?").get(proposal)?.message);
     const tap = (data: Record<string, unknown>) => receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: data });
+    // A button whose data Toolroll didn't make is answered with why; a stale one says so; neither does anything.
+    expect(tap({ so: "not-a-token" })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toBe("That button couldn't be read (value.so: must be a Toolroll button token). Nothing was done.");
+    expect(tap({ ...(confirm as { data: Record<string, unknown> }).data, extra: 1 })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toContain("value: unknown key 'extra'");
+    expect(tap({ so: "0".repeat(32) })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toContain("That button expired or was already used.");
+    expect(store.getMateProposal(proposal)?.state).toBe("pending");
     expect(tap((confirm as { data: Record<string, unknown> }).data)).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("This records that you handled this exact result. Confirm?");

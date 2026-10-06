@@ -580,6 +580,25 @@ describe("Slack shared chat", () => {
       expect(store.activeHolds(ref, now)).toHaveLength(0);
     },
   );
+  test("a button Toolroll didn't make is answered with why and does nothing; a stale one says so; a link or a stranger's tap gets no answer", async () => {
+    const { ref } = source();
+    draft({ task: "sample", reason: "Inspect the wording" }, "hold");
+    await drain();
+    const card = latestCard();
+    const said = () => JSON.stringify(sends().at(-1)!.args);
+    await tap("not-a-token", card.ts);
+    expect(said()).toContain("That button couldn't be read (actions[0].value: must be a Toolroll button token). Nothing was done.");
+    await tap(card.token, card.ts, { actions: [{ action_id: "toolroll_launch", value: card.token, action_ts: "1789700000.900001" }] });
+    expect(said()).toContain("actions[0].action_id: not a Toolroll button");
+    await tap("0".repeat(32), card.ts);
+    expect(said()).toContain("That button expired or was already used.");
+    const sent = sends().length;
+    await tap("not-a-token", card.ts, { user: { id: "UOTHER" } });
+    await tap(card.token, card.ts, { actions: [{ action_id: "toolroll_link_2", action_ts: "1789700000.900002" }] });
+    expect(sends()).toHaveLength(sent);
+    expect(store.activeHolds(ref, now)).toHaveLength(0);
+    expect(store.getMateProposal(card.proposal)?.state).toBe("pending");
+  });
   test("revocation during a provider wait suppresses tools, proposals and outbound data", async () => {
     answers.push({
       text: "Ready.",

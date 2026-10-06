@@ -32,6 +32,9 @@ import {
   type SlackPart,
   type SlackContent,
 } from "./slack-state.js";
+import { partContent } from "./chat-delivery-state.js";
+import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
+import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
   object,
   slackId,
@@ -110,7 +113,7 @@ export function receiveSlack(
     ts: unknown,
     thread: unknown,
     id: string,
-    payload: Record<string, unknown>,
+    payload: ChatEventBody,
     kind: SlackEvent["kind"];
   if (type === "events_api" && event.type === "message") {
     if (
@@ -136,29 +139,22 @@ export function receiveSlack(
         };
     id = slackHash(`${identity.installation}:event:${body.event_id}`);
   } else if (type === "interactive" && body.type === "block_actions") {
-    const actions = Array.isArray(body.actions) ? body.actions : [];
-    if (actions.length !== 1) return false;
-    const action = object(actions[0]),
-      container = object(body.container);
-    if (
-      // toolroll_* since the rename; standing_orders_* buttons on older messages still work.
-      !/^(?:toolroll|standing_orders)_(confirm|dismiss|yes|cancel|flow_approve|flow_edit|flow_send_back|flow_choose_[0-3]|flow_note_(?:yes|no)|question_choice|question_words)$/.test(
-        String(action.action_id),
-      ) ||
-      typeof action.value !== "string" ||
-      !/^[a-f0-9]{32}$/.test(action.value) ||
-      !slackTs(action.action_ts) ||
-      container.type !== "message"
-    )
-      return false;
-    member = object(body.user).id;
+    const interaction = readSlackBlockActions(body);
+    if (!interaction.ok || interaction.value.container.type !== "message") return false;
+    const { actions, container, user } = interaction.value;
+    // A link button opens its page itself: nothing to do, and nothing to say.
+    if (actions.length === 1 && SLACK_LINK_ACTION.test(actions[0]!.action_id ?? "")) return false;
+    member = user.id;
     channel = container.channel_id;
     ts = container.message_ts;
-    thread = object(body.message).thread_ts ?? ts;
+    thread = interaction.value.message?.thread_ts ?? ts;
     kind = "action";
-    payload = { token: action.value };
+    // A button that isn't one Toolroll made is answered with why, once the tap is proved to be the paired person's below.
+    const button = readSlackButton(interaction.value);
+    payload = button.ok ? { token: button.value.value } : { problem: button.issues.map(issue => issue.line).join("; ") };
+    const tapped = actions[0];
     id = slackHash(
-      `${identity.installation}:action:${member}:${ts}:${action.value}:${action.action_ts}`,
+      `${identity.installation}:action:${member}:${ts}:${tapped?.value ?? ""}:${tapped?.action_ts ?? ""}`,
     );
   } else return false;
   if (
@@ -172,9 +168,10 @@ export function receiveSlack(
   // A channel or private group is a room: accepted only while it follows a
   // conversation, or for the `/team` words that make it follow one.
   const isRoom = !slackId(channel, "D");
+  const words = "text" in payload ? payload.text ?? "" : "";
   // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "slack", identity.installation, String(channel), String(payload.text ?? "")) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(String(payload.text ?? "")) !== null) || inbox.watched || inbox.command);
+  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "slack", identity.installation, String(channel), words) : { watched: false, command: false };
+  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
   if (isRoom && !roomish) return false;
   const binding = state.bindingFor(identity.installation, member);
   const open = inbox.watched && !inbox.command;
@@ -195,7 +192,7 @@ export function receiveSlack(
     member,
     ts,
     thread,
-    payload: JSON.stringify(payload),
+    payload,
     created: now.toISOString(),
   });
 }
@@ -341,7 +338,7 @@ export async function deliverSlackPart(
     const repos = await access(options, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
-    const content = JSON.parse(row.payload) as SlackContent;
+    const content = partContent(row.payload);
     const destination = content.channel ?? binding.channel;
     let text = content.text,
       buttons: Record<string, unknown>[] = [];
@@ -607,8 +604,8 @@ export async function deliverSlackPart(
     return true;
   } catch (error) {
     // No permission to upload files here: one plain line instead of the result's screenshots.
-    const content = JSON.parse(row.payload) as SlackContent;
-    if (content.image && content.shot && error instanceof SlackError && ["missing_scope", "no_permission"].includes(error.code)) {
+    const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    if (content !== null && content.image && content.shot && error instanceof SlackError && ["missing_scope", "no_permission"].includes(error.code)) {
       refuseResultShots(state, store, row, content, "Slack", nowOf(options));
       return true;
     }
