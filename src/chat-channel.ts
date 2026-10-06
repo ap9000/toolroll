@@ -407,6 +407,8 @@ export function proposalPreview(
           headline,
           ...(consequence === null ? [] : [consequence]),
           ...(body.length === 0 ? [] : ["", ...body]),
+          "",
+          "Nothing changes until you confirm.",
         ]
       : [
           headline,

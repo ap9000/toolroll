@@ -376,7 +376,8 @@ describe("a lead's proposal", () => {
       "Create task in alpha: Log refused payouts",
       "Confirm files it. You still approve its scope before work starts.", "",
       "Goal: Write one line per refused payout with its id and the limit it passed.",
-      "Not: Change the limit itself.",
+      "Not: Change the limit itself.", "",
+      "Nothing changes until you confirm.",
     ].join("\n"));
     // Slack, Discord and Teams keep their own card words.
     expect(proposalPreview(store, store.getMateProposal(card.id)!, [REPO], "slack").text).toContain("Confirm or Dismiss below. Nothing changes until you confirm.");
