@@ -25,7 +25,8 @@ const recordShape = (text: Text) => ({
   why: text("reason", "decisionWhyBytes"),
   status: z.enum(DECISION_STATUSES),
   supersedes: z.int().nullable(),
-  decidedBy: text("who decided", "decisionByBytes"),
+  // An omitted draft author defaults to the account name, which has never had the explicit author's byte limit.
+  decidedBy: z.string(),
   decidedAt: z.string(),
   sourceKind: z.enum(DECISION_SOURCES),
   sourceRef: text("source", "decisionSourceBytes").nullable(),

@@ -1,12 +1,12 @@
 /**
  * The memory pass (memory-pass.ts): one schema for the verdict a model returns on one session — the analyser's
- * `--json-schema` (Codex's output schema) and the parser of its answer — the verdict as each session keeps it
+ * `--json-schema` (Codex's output schema), with a tolerant read side for older answers — the verdict each session keeps
  * (`memory_session.verdict`), and a proposal with its evidence (`memory_proposal`). What JSON Schema cannot state —
  * a quote really in the trace, an instruction id on the surface audited — is checked in plain code after parsing.
  */
 
 import { z } from "zod";
-import type { TextLimitKey } from "../text-limits.js";
+import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { limited, readVersioned, toModelSchema, versioned, type ContractResult } from "./contract.js";
 
 export const MEMORY_EFFECTS = ["harm", "non-compliance", "irrelevant"] as const;
@@ -43,6 +43,38 @@ export const memoryVerdictSchema = z.strictObject(verdictShape(bounded));
 export const MEMORY_VERDICT_MODEL_SCHEMA = toModelSchema(memoryVerdictSchema);
 
 export type Verdict = z.infer<typeof memoryVerdictSchema>;
+
+/** Parse-side compatibility with the pre-Zod analyser: clip with the same trailing ellipsis, coerce effects and
+ * instruction ids, default gap metadata, ignore unknown keys and discard bad claims individually. These transforms
+ * never enter the strict model schema. */
+const clipped = (key: TextLimitKey) => z.string().transform(text => text.length > TEXT_LIMITS[key] ? `${text.slice(0, TEXT_LIMITS[key])}…` : text);
+const readShape = verdictShape(saved);
+const effectFields = {
+  instruction: z.coerce.string(),
+  effect: z.preprocess(value => String(value ?? ""), clipped("memoryEffect")),
+};
+
+/** Keep the quote even when a claim is bad: the old reader applied its twenty-quote cap before dropping bad claims. */
+function readClaims<S extends z.ZodType>(schema: S) {
+  return z.array(z.looseObject({ quote: z.string() }).transform(input => {
+    const parsed = schema.safeParse(input);
+    return { quote: input.quote, claim: parsed.success ? parsed.data : null };
+  }).nullable().catch(null)).catch([]);
+}
+
+export const memoryVerdictReadSchema = memoryVerdictSchema.strip().extend({
+  positive: readClaims(readShape.positive.element.strip().extend(effectFields)),
+  negative: readClaims(readShape.negative.element.strip().extend({
+    ...effectFields,
+    class: z.coerce.string().pipe(readShape.negative.element.shape.class),
+  })),
+  gaps: readClaims(readShape.gaps.element.strip().extend({
+    mistake: clipped("memoryMistake"),
+    proposedInstruction: clipped("memoryInstruction"),
+    domain: z.preprocess(value => value === "orchestration" ? value : "project", readShape.gaps.element.shape.domain),
+    matchesGap: readShape.gaps.element.shape.matchesGap.catch(null),
+  })),
+});
 
 export const MEMORY_VERDICT_VERSION = 1;
 

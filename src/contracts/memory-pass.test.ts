@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { parseContract, toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
-import { MEMORY_VERDICT_MODEL_SCHEMA, memoryEvidenceSchema, memoryVerdictSchema, readSavedVerdict, savedVerdictSchema } from "./memory-pass.js";
+import { MEMORY_VERDICT_MODEL_SCHEMA, memoryEvidenceSchema, memoryVerdictReadSchema, memoryVerdictSchema, readSavedVerdict, savedVerdictSchema } from "./memory-pass.js";
 import { savedRows } from "../../test/context-fixture.js";
+import { parseVerdict } from "../memory-pass.js";
 
 const verdict = (read: { ok: true } | { ok: false; issues: { line: string }[] }): SampleVerdict => (read.ok ? { ok: true } : { ok: false, lines: read.issues.map(issue => issue.line) });
 
@@ -14,6 +15,62 @@ const answer = {
 };
 const gap = answer.gaps[0]!;
 const kept = savedRows.memory.verdicts.map(row => JSON.parse(row.verdict) as Record<string, unknown> & { gaps: Record<string, unknown>[] });
+const trace = [answer.positive[0]!.quote, answer.negative[0]!.quote, gap.quote].join("\n");
+const surface = { version: "test", instructions: [{ id: "IN-001", text: "Keep labels short." }, { id: "IN-002", text: "Ask before merging." }], decisions: [] };
+
+describe("reading older analyser answers", () => {
+  const overBudget = { ...answer,
+    positive: [{ ...answer.positive[0], effect: "e".repeat(TEXT_LIMITS.memoryEffect + 5) }],
+    negative: [{ ...answer.negative[0], effect: "n".repeat(TEXT_LIMITS.memoryEffect + 5) }],
+    gaps: [{ ...gap, mistake: "m".repeat(TEXT_LIMITS.memoryMistake + 5), proposedInstruction: "p".repeat(TEXT_LIMITS.memoryInstruction + 5) }],
+  };
+  const missingMatch = { ...answer, gaps: [{ ...gap, matchesGap: undefined }] };
+  const badItems = { ...answer,
+    positive: [null, { instruction: "IN-002", effect: "No quote" }, ...answer.positive],
+    negative: [{ ...answer.negative[0], class: "bad" }, ...answer.negative],
+    gaps: [{ ...gap, mistake: 123 }, ...answer.gaps],
+  };
+
+  it("replays clipped fields, a missing matchesGap and single bad items through the contract harness", () => {
+    assertContract({
+      read: input => verdict(parseContract(memoryVerdictReadSchema, input)),
+      valid: [
+        { name: "over-budget fields are clipped", input: overBudget },
+        { name: "matchesGap was optional", input: missingMatch },
+        { name: "bad items do not lose good siblings", input: badItems },
+      ],
+      invalid: [{ name: "a verdict is an object", input: null, paths: ["payload"] }],
+    });
+    expect(parseVerdict(JSON.stringify(overBudget), trace, surface)).toEqual({ ok: true, verdict: {
+      positive: [{ ...answer.positive[0], effect: `${"e".repeat(TEXT_LIMITS.memoryEffect)}…` }],
+      negative: [{ ...answer.negative[0], effect: `${"n".repeat(TEXT_LIMITS.memoryEffect)}…` }],
+      gaps: [{ ...gap, mistake: `${"m".repeat(TEXT_LIMITS.memoryMistake)}…`, proposedInstruction: `${"p".repeat(TEXT_LIMITS.memoryInstruction)}…` }],
+    } });
+    expect(parseVerdict(JSON.stringify(missingMatch), trace, surface)).toEqual({ ok: true, verdict: answer });
+    expect(parseVerdict(JSON.stringify(badItems), trace, surface)).toEqual({ ok: true, verdict: answer });
+  });
+
+  it("keeps the old defaults, coercion and unknown-key handling", () => {
+    const input = { extra: true,
+      positive: [{ ...answer.positive[0], effect: 42, extra: true }, { ...answer.positive[0], effect: undefined }],
+      negative: "not a list",
+      gaps: [{ ...gap, domain: "unknown", matchesGap: 3, extra: true }],
+    };
+    expect(parseVerdict(JSON.stringify(input), trace, surface)).toEqual({ ok: true, verdict: {
+      positive: [{ ...answer.positive[0], effect: "42" }, { ...answer.positive[0], effect: "" }], negative: [], gaps: [gap],
+    } });
+    expect(parseVerdict("{}", trace, surface)).toEqual({ ok: true, verdict: { positive: [], negative: [], gaps: [] } });
+  });
+
+  it("limits to the first twenty quoted items before dropping malformed claims or unknown instructions", () => {
+    const input = {
+      positive: [...Array.from({ length: 20 }, () => ({ ...answer.positive[0], instruction: "IN-999" })), ...answer.positive],
+      negative: [...Array.from({ length: 20 }, () => ({ ...answer.negative[0], class: "bad" })), ...answer.negative],
+      gaps: [...Array.from({ length: 20 }, () => ({ ...gap, mistake: false })), gap],
+    };
+    expect(parseVerdict(JSON.stringify(input), trace, surface)).toEqual({ ok: true, verdict: { positive: [], negative: [], gaps: [] } });
+  });
+});
 
 describe("the memory verdict contract (the analyser's answer)", () => {
   it("holds: the JSON Schema round trip loses nothing, answers read, malformed ones are refused by path", () => {
@@ -48,6 +105,12 @@ describe("the memory verdict contract (the analyser's answer)", () => {
     expect(json.properties["gaps"]?.items.properties["mistake"]?.maxLength).toBe(TEXT_LIMITS.memoryMistake);
     expect(json.properties["gaps"]?.items.properties["proposedInstruction"]?.maxLength).toBe(TEXT_LIMITS.memoryInstruction);
     expect(json.properties["gaps"]?.items.properties["quote"]?.maxLength).toBe(TEXT_LIMITS.memoryTrace);
+    // All objects (including both effect lists) must meet Codex's strict-output requirements.
+    for (const object of [json, ...Object.values(json.properties).map(list => list.items)]) {
+      expect(object.additionalProperties).toBe(false);
+      expect(object.required).toEqual(Object.keys(object.properties));
+    }
+    expect(() => toModelSchema(memoryVerdictReadSchema)).toThrow();
   });
 });
 

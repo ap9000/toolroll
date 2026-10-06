@@ -23,7 +23,7 @@ import { performSubscriptionMateRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { contractError, parseContract } from './contracts/contract.js';
-import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
+import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictReadSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
 export type { MemoryProposal, Verdict };
 
@@ -200,7 +200,7 @@ export function defaultAnalyzer(store: Store, options: { configDir?: string; env
 const UNREADABLE = 'The analysis was not a readable verdict.';
 
 /**
- * Read the analyser's answer with the verdict schema (a refusal names the field), then keep only claims whose quote
+ * Read the analyser's answer with the tolerant parse-side schema, then keep only claims whose quote
  * is really in the trace and, for an instruction's effect, whose id is on the surface audited.
  */
 export function parseVerdict(text: string, trace: string, surface: MemorySurface): { ok: true; verdict: Verdict } | { ok: false; problem: string } {
@@ -208,11 +208,13 @@ export function parseVerdict(text: string, trace: string, surface: MemorySurface
   if (start < 0 || end <= start) return { ok: false, problem: UNREADABLE };
   let raw: unknown;
   try { raw = JSON.parse(text.slice(start, end + 1)); } catch { return { ok: false, problem: UNREADABLE }; }
-  const read = parseContract(memoryVerdictSchema, raw);
+  const read = parseContract(memoryVerdictReadSchema, raw);
   if (!read.ok) return { ok: false, problem: `${UNREADABLE.slice(0, -1)}: ${read.issues.slice(0, 5).map(issue => issue.line).join('; ')}` };
   const ids = new Set(surface.instructions.map(i => i.id));
   const quoted = (item: { quote: string }): boolean => item.quote.trim().length >= 12 && trace.includes(item.quote.trim());
-  const list = <T extends { quote: string }>(items: T[]): T[] => items.filter(quoted).slice(0, VERDICT_ITEMS).map(item => ({ ...item, quote: item.quote.trim() }));
+  const list = <T extends { quote: string }>(items: ({ quote: string; claim: T | null } | null)[]): T[] => items
+    .filter(item => item !== null && quoted(item)).slice(0, VERDICT_ITEMS)
+    .flatMap(item => item === null || item.claim === null ? [] : [{ ...item.claim, quote: item.quote.trim() }]);
   return { ok: true, verdict: {
     positive: list(read.value.positive).filter(i => ids.has(i.instruction)),
     negative: list(read.value.negative).filter(i => ids.has(i.instruction)),

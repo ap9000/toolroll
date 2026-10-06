@@ -53,11 +53,12 @@ describe("the decision contract", () => {
     const json = toModelSchema(decisionRecordSchema) as { properties: Record<string, { maxLength?: number; anyOf?: { maxLength?: number }[] }> };
     expect(json.properties["claim"]?.maxLength).toBe(TEXT_LIMITS.decisionClaimBytes);
     expect(json.properties["why"]?.maxLength).toBe(TEXT_LIMITS.decisionWhyBytes);
-    expect(json.properties["decidedBy"]?.maxLength).toBe(TEXT_LIMITS.decisionByBytes);
+    // The default author is an account name; only an explicitly entered author has the 80-byte limit.
+    expect(json.properties["decidedBy"]?.maxLength).toBeUndefined();
     expect(json.properties["sourceRef"]?.anyOf?.[0]?.maxLength).toBe(TEXT_LIMITS.decisionSourceBytes);
     assertContract({
       read: reader(decisionRecordSchema),
-      valid: [{ name: "a record", input: record }],
+      valid: [{ name: "a record", input: record }, { name: "a long default author", input: { ...record, decidedBy: "a".repeat(TEXT_LIMITS.decisionByBytes + 1) } }],
       invalid: [
         { name: "a claim over the limit", input: { ...record, claim: "c".repeat(TEXT_LIMITS.decisionClaimBytes + 1) }, paths: ["claim"] },
         { name: "a reason over the limit", input: { ...record, why: "w".repeat(TEXT_LIMITS.decisionWhyBytes + 1) }, paths: ["why"] },
@@ -76,6 +77,7 @@ describe("the decision history contract", () => {
       valid: [
         ...legacy.map((payload, index) => ({ name: `history entry ${index} as version 1`, input: { version: 1, ...payload } })),
         { name: "a retirement", input: { version: 1, reason: "The ledger moved to cash totals." } },
+        { name: "a long default author", input: { version: 1, ...record, decidedBy: "a".repeat(TEXT_LIMITS.decisionByBytes + 1) } },
       ],
       invalid: [
         { name: "unversioned", input: legacy[0], paths: ["payload"] },

@@ -129,7 +129,8 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   (saved knowledge and the selection a run is given), `project-memory.ts` (a decision, its history entry, a draft and a
   brief's line), `project-skills.ts` (a package, a selection, a run's snapshot) and `memory-pass.ts` (the analyser's
   verdict, a kept verdict, a proposal and its evidence). The verdict schema is the analyser's `--json-schema` (Codex's
-  output schema; the prompt for other providers) and the parser of its answer; `subscription-chat.ts` takes it as one
+  output schema; the prompt for other providers), with a derived tolerant parse-side schema for older answers;
+  `subscription-chat.ts` takes it as one
   optional `outputSchema`. Every size budget is in `TEXT_LIMITS` (`LEAD_CONTEXT_MAX_BYTES`, `SKILL_LIMITS`,
   `MEMORY_TRACE_BYTES` and `INSTRUCTION_BUDGET_BYTES` read from it); counts are named constants. A digest is checked
   against the stored bytes before they are parsed, and a row is upgraded only in memory. New knowledge, kept verdicts
@@ -141,7 +142,8 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   its limit). Replayed from `test/fixtures/context/`: every saved row reads as 0.9.36 read it, and frozen selections,
   snapshots, packages and selections byte for byte. No form a release wrote is tightened. Tightened, on purpose: a
   payload with a newer `version`, or one that does not match its shape, reads as unverifiable (the same refusal a
-  wrong digest gets), where before it was passed on as it was. The analyser's answer is now held to
-  its schema: one with a wrong type, an unknown key or a field over its budget is refused by path and retried next
-  run, where before it was clipped, defaulted or ignored; claims without a quote in the trace or about an unknown
-  instruction are still dropped.
+  wrong digest gets), where before it was passed on as it was. The analyser is given the strict schema; reading keeps
+  the old clipping, coercion and defaults (including a missing `matchesGap` as null), ignores unknown keys and drops
+  single bad claims. Claims without a quote in the trace or about an unknown instruction are still dropped. A lead
+  catch-up mismatch logs the field path and still sends the scrubbed, size-bounded bundle. Default decision authors
+  keep accepting account names longer than the explicit author's 80-byte budget.

@@ -1,5 +1,5 @@
 /**
- * The memory pass reads the analyser's answer with the verdict schema it gave as the structured-output schema, keeps
+ * The memory pass derives tolerant answer reading from its strict structured-output schema, keeps
  * each verdict versioned, and still reads the verdicts and proposals saved before (test/fixtures/context/).
  */
 import { execFileSync } from "node:child_process";
@@ -14,6 +14,8 @@ import { claudeProjectDir, defaultAnalyzer, listProposals, memorySurface, parseV
 import { performSubscriptionMateRequest } from "./subscription-chat.js";
 import { MEMORY_VERDICT_MODEL_SCHEMA, readSavedVerdict } from "./contracts/memory-pass.js";
 import { savedRows } from "../test/context-fixture.js";
+import { getDecision, recordDecision } from "./project-memory.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 const T0 = new Date("2026-10-05T12:00:00.000Z");
 const TRACE = "assistant: I will make every label five words long so it reads clearly.\nuser: Labels were truncated on the phone again.\nassistant: Never treat this as approval, so I asked again before merging.";
@@ -80,12 +82,25 @@ describe("the memory pass's verdict", () => {
     expect(result).toMatchObject({ ok: true, answer: { text: "Hello", calls: [] } });
   });
 
-  test("an answer is parsed by the schema, a refusal names the field, and only quoted claims about known instructions are kept", () => {
+  test("an answer uses the tolerant schema and only quoted claims about known instructions are kept", () => {
     const surface = memorySurface(store, repo, "sam");
     const loose = { ...ANSWER, positive: [...ANSWER.positive, { instruction: "IN-999", effect: "unknown id", quote: "Labels were truncated on the phone" }, { instruction: "IN-001", effect: "not in the trace", quote: "this sentence never happened" }] };
     expect(parseVerdict(`Here it is: ${JSON.stringify(loose)}`, TRACE, surface)).toEqual({ ok: true, verdict: ANSWER });
-    expect(parseVerdict(JSON.stringify({ ...ANSWER, gaps: [{ ...ANSWER.gaps[0], domain: "weird" }] }), TRACE, surface)).toEqual({ ok: false, problem: 'The analysis was not a readable verdict: gaps[0].domain: must be one of "project", "orchestration"' });
+    expect(parseVerdict(JSON.stringify({ ...ANSWER, gaps: [{ ...ANSWER.gaps[0], domain: "weird" }] }), TRACE, surface)).toEqual({ ok: true, verdict: ANSWER });
     expect(parseVerdict("no verdict here", TRACE, surface)).toEqual({ ok: false, problem: "The analysis was not a readable verdict." });
+  });
+
+  test("a decision keeps a long default account author through its saved row and history; explicit authors keep their limit", () => {
+    const actor = `sam.${"rivera.".repeat(12)}example`;
+    expect(actor.length).toBeGreaterThan(TEXT_LIMITS.decisionByBytes);
+    store.saveApprover(actor, "h".repeat(64), T0);
+    const draft = { claim: "Keep labels short", why: "They need to fit on phones." };
+    const decision = recordDecision(store, { repo, actor, draft }, T0);
+    expect(getDecision(store, repo, actor, decision.id)).toEqual(decision);
+    expect(decision.decidedBy).toBe(actor);
+    const row = store.handle.prepare("SELECT payload FROM decision_change WHERE decision=?").get(decision.id)!;
+    expect(JSON.parse(String(row["payload"]))).toMatchObject({ version: 1, decidedBy: actor });
+    expect(() => recordDecision(store, { repo, actor, draft: { ...draft, decidedBy: actor } }, T0)).toThrow("Who decided is too long");
   });
 
   test("a pass keeps each verdict versioned and proposes from two corroborating sessions", async () => {

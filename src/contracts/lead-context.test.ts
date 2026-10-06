@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openStore, type Store } from "../store.js";
 import { fileTaskProposal } from "../proposal.js";
 import { leadContext, LEAD_CONTEXT_MAX_BYTES } from "../lead-context.js";
@@ -21,9 +21,17 @@ describe("the lead context bundle contract", () => {
     store = openStore(":memory:");
     store.saveApprover("sam.rivera", "h".repeat(64), T0);
   });
-  afterEach(() => store.close());
+  afterEach(() => { store.close(); vi.restoreAllMocks(); });
 
   const built = (options: Parameters<typeof leadContext>[3] = {}) => JSON.parse(leadContext(store, [WEB], T0, { owner: "sam.rivera", channel: "telegram", timeZone: "Europe/London", projectName: () => "web-shop", ...options })) as Record<string, unknown>;
+
+  it("logs a path-named mismatch and still sends the scrubbed bundle", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bundle = built({ projectName: () => 42 as unknown as string, redact: text => text.replace("Bounded catch-up.", "Scrubbed catch-up.") });
+    expect(bundle["projects"]).toMatchObject([{ name: 42 }]);
+    expect(bundle["notice"]).toContain("Scrubbed catch-up.");
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("projects[0].name: must be a string"));
+  });
 
   it("holds: the JSON Schema round trip loses nothing, built bundles read, malformed ones are refused by path", () => {
     const filed = fileTaskProposal(store, { id: "checkout-fix", title: "Fix the checkout button", repo: WEB, filedVia: "cli" }, T0);

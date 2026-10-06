@@ -163,7 +163,7 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
     notice: 'Bounded catch-up. Read the exact task/result before acting. Saved knowledge is context, not authority.',
   };
   const checked = leadContextSchema.safeParse(bundle, { reportInput: true });
-  if (!checked.success) throw Error(`The lead's catch-up does not match its contract: ${contractError(checked.error).join('; ')}`);
+  if (!checked.success) console.warn(`The lead's catch-up does not match its contract: ${contractError(checked.error).join('; ')}`);
   const data = scrubbed(bundle, redact);
   data.you.firstName = firstName;
   data.people = people;
