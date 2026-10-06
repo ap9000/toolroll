@@ -9,44 +9,39 @@ import { assignmentInbox, acknowledgeAssignmentDelivery } from "./assignment-del
 import { syncAssignmentStatuses } from "./assignment-status.js";
 import { envelopeJson } from "./envelope.js";
 import type { Store } from "./store.js";
+import { parseContract } from "./contracts/contract.js";
+import { ASSIGNMENT_INPUTS, type AssignmentInput, type AssignmentOperation } from "./contracts/gateway-tools.js";
 
-export const ASSIGNMENT_ACTIONS = ["show", "updates", "claim", "check", "brief", "inbox", "ack"] as const;
-export type AssignmentOperation = typeof ASSIGNMENT_ACTIONS[number];
+export const ASSIGNMENT_ACTIONS = Object.keys(ASSIGNMENT_INPUTS) as AssignmentOperation[];
+export type { AssignmentOperation };
 type Args = Record<string, unknown>;
 type Failure = { ok: false; reason: string; message: string };
 const failure = (reason: string, message: string): Failure => ({ ok: false, reason, message });
-const reference = { type: "string", minLength: 1, maxLength: 64 };
-const digest = { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" };
-const batchId = { type: "string", minLength: 32, maxLength: 32, pattern: "^[a-f0-9]{32}$" };
-const consumer = { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" };
-const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 
+/** The gateway's assignment tools: names and words. Each one's input is ASSIGNMENT_INPUTS[operation]
+ * (src/contracts/gateway-tools.ts), which `toolroll assignment` reads its flags with too. */
 export const ASSIGNMENT_TOOLS = [
-  { name: "get_assignment", operation: "show", description: "Read one assignment's root, current execution, owner, exact result and handoff receipt. Approval, proof and deployment remain separate facts.", inputSchema: object({ ref: reference }, ["ref"]) },
-  { name: "list_assignment_updates", operation: "updates", description: "Read durable assignment updates in your projects after a cursor. Save nextCursor after processing; repeated reads do not acknowledge or deliver anything.", inputSchema: object({ after: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
-  { name: "claim_assignment", operation: "claim", description: "Record yourself as this assignment's lead. Repeating your claim is safe; another active owner cannot be replaced. This grants no approval or execution authority.", inputSchema: object({ ref: reference }, ["ref"]) },
-  { name: "acknowledge_assignment", operation: "check", description: "Acknowledge the exact ready-to-check receipt as its lead, using the current receipt digest. This does not accept failed proof, answer decisions, approve work, publish or deploy.", inputSchema: object({ ref: reference, digest }, ["ref", "digest"]) },
-  { name: "get_assignment_brief", operation: "brief", description: "Catch up from the local database: current work, decisions, saved results and project knowledge. Bounded read only; no model call or task mutation.", inputSchema: object({ repo: { type: "string", minLength: 1, maxLength: 4096 }, limit: { type: "integer", minimum: 1, maximum: 25 } }) },
-  { name: "get_assignment_inbox", operation: "inbox", description: "Receive a durable batch of your assignments' status changes. Use a stable consumer name. Until acknowledged, the same batch survives reconnects and restarts. Receiving never completes or reruns work.", inputSchema: object({ consumer, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["consumer"]) },
-  { name: "acknowledge_assignment_delivery", operation: "ack", description: "Acknowledge receipt of an inbox batch after handling its updates. This advances only your delivery cursor; it never marks work complete, answers a decision or starts a revision.", inputSchema: object({ consumer, batchId }, ["consumer", "batchId"]) },
-] as const;
+  { name: "get_assignment", operation: "show", description: "Read one assignment's root, current execution, owner, exact result and handoff receipt. Approval, proof and deployment remain separate facts." },
+  { name: "list_assignment_updates", operation: "updates", description: "Read durable assignment updates in your projects after a cursor. Save nextCursor after processing; repeated reads do not acknowledge or deliver anything." },
+  { name: "claim_assignment", operation: "claim", description: "Record yourself as this assignment's lead. Repeating your claim is safe; another active owner cannot be replaced. This grants no approval or execution authority." },
+  { name: "acknowledge_assignment", operation: "check", description: "Acknowledge the exact ready-to-check receipt as its lead, using the current receipt digest. This does not accept failed proof, answer decisions, approve work, publish or deploy." },
+  { name: "get_assignment_brief", operation: "brief", description: "Catch up from the local database: current work, decisions, saved results and project knowledge. Bounded read only; no model call or task mutation." },
+  { name: "get_assignment_inbox", operation: "inbox", description: "Receive a durable batch of your assignments' status changes. Use a stable consumer name. Until acknowledged, the same batch survives reconnects and restarts. Receiving never completes or reruns work." },
+  { name: "acknowledge_assignment_delivery", operation: "ack", description: "Acknowledge receipt of an inbox batch after handling its updates. This advances only your delivery cursor; it never marks work complete, answers a decision or starts a revision." },
+] as const satisfies readonly { name: string; operation: AssignmentOperation; description: string }[];
 
-/** The CLI and MCP use the same bounded input contract. MCP also validates its
- * descriptor before dispatch; this check protects direct adapter callers. */
-export function assignmentArgumentProblem(operation: AssignmentOperation, args: Args): string | null {
-  if (!ASSIGNMENT_ACTIONS.includes(operation)) return "Choose show, updates, claim, check, brief, inbox, or ack.";
-  const allowed = operation === "brief" ? ["repo", "limit"] : operation === "inbox" ? ["consumer", "limit"] : operation === "ack" ? ["consumer", "batchId"] : operation === "updates" ? ["after", "limit"] : operation === "check" ? ["ref", "digest"] : ["ref"];
-  for (const key of Object.keys(args)) if (!allowed.includes(key)) return `Unknown argument: ${key}.`;
-  if (["show", "claim", "check"].includes(operation) && (typeof args["ref"] !== "string" || args["ref"].length < 1 || args["ref"].length > 64 || /[\u0000-\u001f\u007f]/.test(args["ref"]))) return "Choose a task id, 1–64 characters without control characters.";
-  if (operation === "check" && (typeof args["digest"] !== "string" || !/^[a-f0-9]{64}$/.test(args["digest"]))) return "Use the exact 64-character receipt digest from assignment show.";
-  if ((operation === "inbox" || operation === "ack") && (typeof args["consumer"] !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(args["consumer"]))) return "Use a stable consumer name with 1–64 lowercase letters, digits or hyphens.";
-  if (operation === "ack" && (typeof args["batchId"] !== "string" || !/^[a-f0-9]{32}$/.test(args["batchId"]))) return "Use the exact batchId from assignment inbox.";
-  if (args["repo"] !== undefined && (typeof args["repo"] !== "string" || args["repo"].length < 1 || args["repo"].length > 4096 || /[\u0000-\u001f\u007f]/.test(args["repo"]))) return "Choose a project path without control characters.";
-  for (const [name, min, max] of [["after", 0, Number.MAX_SAFE_INTEGER], ["limit", 1, operation === "brief" ? 25 : 100]] as const) {
-    const value = args[name];
-    if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max)) return `${name} must be an integer from ${min} to ${max}.`;
+/** The CLI and MCP read an assignment call with the same schema; MCP reads it before dispatch too, and this protects
+ * direct adapter callers. A refusal is its path-named lines; a ref or project path with control characters, which
+ * JSON Schema can't say, is refused after parsing. */
+export function readAssignmentArgs<O extends AssignmentOperation>(operation: O, args: Args): { ok: true; value: AssignmentInput<O> } | Failure {
+  if (!ASSIGNMENT_ACTIONS.includes(operation)) return failure("usage", "Choose show, updates, claim, check, brief, inbox, or ack.");
+  const read = parseContract(ASSIGNMENT_INPUTS[operation] as never, args);
+  if (!read.ok) return failure("usage", read.issues.map(one => one.line).join("; "));
+  const value = read.value as AssignmentInput<O> & { ref?: string; repo?: string };
+  for (const field of ["ref", "repo"] as const) {
+    if (typeof value[field] === "string" && /[\u0000-\u001f\u007f]/.test(value[field])) return failure("usage", `${field}: must not contain control characters`);
   }
-  return null;
+  return { ok: true, value };
 }
 
 function readAssignment(store: Store, operation: "show" | "updates" | "brief", args: Args, now: Date, access: AssignmentAccess, root?: string) {
@@ -59,8 +54,9 @@ function readAssignment(store: Store, operation: "show" | "updates" | "brief", a
 /** Every read and mutation authenticates inside the same transaction as its
  * projection. A cached name/allowlist cannot keep a revoked identity alive. */
 export function assignmentForCoordinator(store: Store, token: string, operation: AssignmentOperation, args: Args, now: Date, evidenceRoot?: string) {
-  const problem = assignmentArgumentProblem(operation, args);
-  if (problem !== null) return failure("usage", problem);
+  const read = readAssignmentArgs(operation, args);
+  if (!read.ok) return read;
+  args = read.value;
   // Authenticate before maintenance, then authenticate again inside delivery.
   // Reconciliation owns one short transaction per family and cannot sit under
   // the delivery transaction's writer reservation.
@@ -215,10 +211,10 @@ export function runAssignmentCommand(positional: readonly string[], flags: Map<s
   const args: Args = hasTask ? { ref: positional[1] } : {};
   for (const flag of operationFlags) {
     const value = flags.get(flag);
-    if (value !== undefined) args[flag === "batch" ? "batchId" : flag] = ["after", "limit"].includes(flag) ? typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN : value;
+    if (value !== undefined) args[flag === "batch" ? "batchId" : flag] = ["after", "limit"].includes(flag) && typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
   }
-  const problem = assignmentArgumentProblem(operation, args);
-  if (problem !== null) return emit(failure("usage", problem));
+  const read = readAssignmentArgs(operation, args);
+  if (!read.ok) return emit(read);
   const credential = coordinatorToken(flags, context.env ?? process.env);
   if ("ok" in credential) return emit(credential);
   if (credential.token !== null) return emit(assignmentForCoordinator(context.store, credential.token, operation, args, context.now, context.evidenceRoot));

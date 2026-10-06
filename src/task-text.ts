@@ -7,10 +7,8 @@
 import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 
-export const TASK_TEXT_LIMITS = { title: 200, text: TEXT_LIMITS.goal, textBytes: TEXT_LIMITS.goalBytes } as const;
+export const TASK_TEXT_LIMITS = { title: TEXT_LIMITS.taskTitle, text: TEXT_LIMITS.goal, textBytes: TEXT_LIMITS.goalBytes } as const;
 const n = (value: number) => value.toLocaleString("en-US");
-export const TASK_SCOPE_TEXT_SCHEMA = { type: "string", maxLength: TASK_TEXT_LIMITS.text,
-  description: `At most ${n(TASK_TEXT_LIMITS.text)} characters (UTF-16 code units) and ${n(TASK_TEXT_LIMITS.textBytes)} UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again.` } as const;
 
 export type TaskTextRefusal = { ok: false; reason: "bad-title" | "bad-goal"; message: string };
 const dishonest = (text: string) => hasForbiddenControls(text) || hasDisguisedText(text);

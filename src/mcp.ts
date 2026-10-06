@@ -1,8 +1,10 @@
-import { TASK_SCOPE_TEXT_SCHEMA } from "./task-text.js";
 import { dirname, join } from 'node:path';
 import { statSync } from 'node:fs';
 import { repositoryContextRead } from './repository-context.js';
 import { ASSIGNMENT_TOOLS, assignmentForCoordinator } from "./assignment-adapters.js";
+import { parseContract, toModelSchema } from "./contracts/contract.js";
+import { GATEWAY_TOOL_INPUTS, GATEWAY_TOOL_OUTPUTS, type GatewayToolInput, type GatewayToolName } from "./contracts/gateway-tools.js";
+import { reportToolOutput } from "./contracts/lead-tools.js";
 /**
  * `toolroll mcp` — the MCP stdio server (MCP gateway spec v6).
  *
@@ -73,9 +75,10 @@ function depthOf(value: unknown): number {
   return maximum;
 }
 
-/** One typed descriptor per tool — THE source for parsing, inputSchema,
- * and projection. Output is built field-by-field; spreading a database
- * row into a result is forbidden in this module (arch-tested). */
+/** One handler per tool; its input is GATEWAY_TOOL_INPUTS[name]
+ * (src/contracts/gateway-tools.ts) — THE source for parsing and inputSchema.
+ * Output is built field-by-field; spreading a database row into a result is
+ * forbidden in this module (arch-tested). */
 type ToolContext = {
   store: Store;
   who: VerifiedCoordinator;
@@ -95,14 +98,9 @@ type ToolContext = {
   evidenceRoot?: string;
 };
 
-type Tool = {
-  name: string;
-  description: string;
-  inputSchema: Json;
-  handle: (ctx: ToolContext, args: Record<string, unknown>) =>
-    | { ok: true; body: Json }
-    | { ok: false; message: string };
-};
+type Answer = { ok: true; body: Json } | { ok: false; message: string };
+type Handler<N extends GatewayToolName> = { description: string; handle: (ctx: ToolContext, args: GatewayToolInput<N>) => Answer };
+type Tool = { name: GatewayToolName; description: string; inputSchema: Json; handle: (ctx: ToolContext, args: Record<string, unknown>) => Answer };
 
 const CONTRACT_GUIDE = [
   "Toolroll MCP contract.",
@@ -116,144 +114,68 @@ const CONTRACT_GUIDE = [
   "Claim one assignment, then follow list_assignment_updates with a saved cursor; inspect get_assignment when a current result or decision needs attention. claim_assignment records its lead; acknowledge_assignment records that lead's check of an exact ready receipt. Neither operation grants authority, accepts proof, answers decisions, approves work, publishes, or deploys.",
 ].join("\n");
 
-/** The descriptor's inputSchema IS the runtime parser (review finding 2):
- * unknown fields, bad types, bad enums, and bound violations are protocol
- * errors (InvalidParams), never tool refusals. Small on purpose — it
- * covers exactly the schema features the descriptors use. */
-function invalidArgs(schema: Json, args: Record<string, unknown>): string | null {
-  const shape = schema as { properties?: Record<string, Record<string, unknown>>; required?: string[] };
-  const properties = shape.properties ?? {};
-  for (const key of Object.keys(args)) {
-    if (properties[key] === undefined) return "unknown argument `" + key + "`";
-  }
-  for (const key of shape.required ?? []) {
-    if (args[key] === undefined) return "missing required argument `" + key + "`";
-  }
-  for (const [key, rule] of Object.entries(properties)) {
-    const value = args[key];
-    if (value === undefined) continue;
-    // A union type (`["string","null"]`) admits null or its other member;
-    // an array checks its items and its cap (v3 review, finding 8).
-    if (Array.isArray(rule["type"])) {
-      const types = rule["type"] as string[];
-      if (value === null) {
-        if (!types.includes("null")) return "`" + key + "` must not be null";
-        continue;
-      }
-      const member = types.find(one => one !== "null");
-      const problem = invalidArgs({ type: "object", properties: { [key]: { ...rule, type: member ?? "string" } } } as unknown as Json, { [key]: value });
-      if (problem !== null) return problem;
-      continue;
-    }
-    if (rule["type"] === "array") {
-      if (!Array.isArray(value)) return "`" + key + "` must be an array";
-      const maxItems = rule["maxItems"];
-      if (typeof maxItems === "number" && value.length > maxItems) return "`" + key + "` has more than " + String(maxItems) + " items";
-      const items = rule["items"] as Record<string, unknown> | undefined;
-      if (items !== undefined) {
-        for (const one of value) {
-          const problem = invalidArgs({ type: "object", properties: { item: items } } as unknown as Json, { item: one });
-          if (problem !== null) return "`" + key + "`: " + problem.replace("`item`", "an item");
-        }
-      }
-      continue;
-    }
-    if (rule["type"] === "boolean" && typeof value !== "boolean") return "`" + key + "` must be a boolean";
-    if (rule["type"] === "string") {
-      if (typeof value !== "string") return "`" + key + "` must be a string";
-      const min = rule["minLength"];
-      const max = rule["maxLength"];
-      if (typeof min === "number" && value.length < min) return "`" + key + "` is shorter than " + String(min);
-      if (typeof max === "number" && value.length > max) return "`" + key + "` is longer than " + String(max);
-      const pattern = rule["pattern"];
-      if (typeof pattern === "string" && !new RegExp(pattern).test(value)) return "`" + key + "` does not match its required format";
-      const allowed = rule["enum"];
-      if (Array.isArray(allowed) && !allowed.includes(value)) return "`" + key + "` must be one of " + allowed.join(", ");
-    }
-    if (rule["type"] === "integer") {
-      if (typeof value !== "number" || !Number.isInteger(value)) return "`" + key + "` must be an integer";
-      const min = rule["minimum"];
-      const max = rule["maximum"];
-      if (typeof min === "number" && value < min) return "`" + key + "` is below " + String(min);
-      if (typeof max === "number" && value > max) return "`" + key + "` is above " + String(max);
-    }
-  }
-  return null;
-}
+/** An assignment tool: the adapter reads its call with the same schema `toolroll assignment` does. */
+const assignmentHandler = (operation: (typeof ASSIGNMENT_TOOLS)[number]["operation"]) => (ctx: ToolContext, args: Record<string, unknown>): Answer => {
+  const result = assignmentForCoordinator(ctx.store, ctx.token, operation, args, ctx.now, ctx.evidenceRoot);
+  return result.ok ? { ok: true as const, body: result.body as unknown as Json } : { ok: false as const, message: `${result.reason}: ${result.message}` };
+};
+const assignmentTool = (name: GatewayToolName) => {
+  const spec = ASSIGNMENT_TOOLS.find(one => one.name === name)!;
+  return { description: spec.description, handle: assignmentHandler(spec.operation) };
+};
 
-function str(args: Record<string, unknown>, name: string, max: number): string | null {
-  const value = args[name];
-  if (typeof value !== "string" || value.length === 0 || value.length > max) return null;
-  return value;
-}
+/** A propose_* tool: it writes one proposal row through the coordinator door. */
+const proposeTool = (kind: CoordinatorProposalKind, description: string) => ({
+  description,
+  handle: (ctx: ToolContext, args: Record<string, unknown>): Answer => {
+    const outcome = proposeAsCoordinator(ctx.store, ctx.token, kind, args, ctx.now, { readDecisions: ctx.readDecisions });
+    if (!outcome.ok) return { ok: false, message: outcome.message };
+    return { ok: true, body: { proposal: outcome.id, kind: outcome.kind, awaiting: outcome.awaiting } };
+  },
+});
 
-const TOOLS: Tool[] = [
-  {
-    name: 'get_project_context', description: 'Read bounded source excerpts or advisory static import impact in an admitted project. Falls back to text search without an index.',
-    inputSchema: { type: 'object', properties: { repo: { type: 'string', minLength: 1, maxLength: 4096 }, query: { type: 'string', minLength: 1, maxLength: 1000 }, mode: { type: 'string', enum: ['search', 'impact'] } }, required: ['repo', 'query'], additionalProperties: false },
+const HANDLERS: { [N in GatewayToolName]: Handler<N> } = {
+  get_project_context: {
+    description: 'Read bounded source excerpts or advisory static import impact in an admitted project. Falls back to text search without an index.',
     handle: (ctx, args) => {
-      const repo = String(args['repo']);
+      const repo = args.repo;
       if (!ctx.who.repos.includes(repo) || ctx.enrolled !== null && !ctx.enrolled.includes(repo)) return { ok: false, message: 'That project is outside your access.' };
-      return { ok: true, body: repositoryContextRead({ repo, query: String(args['query']), mode: args['mode'] === 'impact' ? 'impact' : 'search', audience: 'lead',
+      return { ok: true, body: repositoryContextRead({ repo, query: args.query, mode: args.mode === 'impact' ? 'impact' : 'search', audience: 'lead',
         ...(ctx.evidenceRoot === undefined ? {} : { cacheRoot: join(dirname(ctx.evidenceRoot), 'repository-context') }) }) as unknown as Json };
     },
   },
-  ...ASSIGNMENT_TOOLS.map(spec => ({
-    name: spec.name, description: spec.description, inputSchema: spec.inputSchema as unknown as Json,
-    handle: (ctx: ToolContext, args: Record<string, unknown>) => {
-      const result = assignmentForCoordinator(ctx.store, ctx.token, spec.operation, args, ctx.now, ctx.evidenceRoot);
-      return result.ok ? { ok: true as const, body: result.body as unknown as Json } : { ok: false as const, message: `${result.reason}: ${result.message}` };
-    },
-  })),
-  {
-    name: "status",
+  get_assignment: assignmentTool("get_assignment"),
+  list_assignment_updates: assignmentTool("list_assignment_updates"),
+  claim_assignment: assignmentTool("claim_assignment"),
+  acknowledge_assignment: assignmentTool("acknowledge_assignment"),
+  get_assignment_brief: assignmentTool("get_assignment_brief"),
+  get_assignment_inbox: assignmentTool("get_assignment_inbox"),
+  acknowledge_assignment_delivery: assignmentTool("acknowledge_assignment_delivery"),
+  status: {
     description: "The plane's liveness facts over your repo allowlist: what waits on the operator, what runs, what finished in the last 24h.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handle: ctx => ({ ok: true, body: statusFor(ctx.store, ctx.who, ctx.now) as unknown as Json }),
   },
-  {
-    name: "list_tasks",
+  list_tasks: {
     description: "Tasks in your repo allowlist. Filter by state and repo; cursor-paginated, stable order.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        state: { type: "string", enum: ["queued", "running", "done", "failed", "cancelled"] },
-        repo: { type: "string", maxLength: 800 },
-        cursor: { type: "integer", minimum: 0 },
-        limit: { type: "integer", minimum: 1, maximum: 50 },
-      },
-      additionalProperties: false,
-    },
     handle: (ctx, args) => {
       const filter: { state?: string; repo?: string; cursor?: number; limit?: number } = {};
-      if (typeof args["state"] === "string") filter.state = args["state"];
-      if (typeof args["repo"] === "string") filter.repo = args["repo"];
-      if (typeof args["cursor"] === "number") filter.cursor = args["cursor"];
-      if (typeof args["limit"] === "number") filter.limit = args["limit"];
+      if (args.state !== undefined) filter.state = args.state;
+      if (args.repo !== undefined) filter.repo = args.repo;
+      if (args.cursor !== undefined) filter.cursor = args.cursor;
+      if (args.limit !== undefined) filter.limit = args.limit;
       return { ok: true, body: listTasksFor(ctx.store, ctx.who, filter, ctx.now) as unknown as Json };
     },
   },
-  {
-    name: "get_task",
+  get_task: {
     description: "One task's deliverable (branch or report), scope standing, filer provenance, attempt ledger, and — for a finished scout — the report's title, summary, and follow-ups. A ref outside your allowlist answers not-found.",
-    inputSchema: {
-      type: "object",
-      properties: { ref: { type: "string", minLength: 1, maxLength: 64 } },
-      required: ["ref"],
-      additionalProperties: false,
-    },
     handle: (ctx, args) => {
-      const ref = str(args, "ref", 64);
-      if (ref === null) return { ok: false, message: "ref is a task id, 1-64 characters" };
-      const detail = taskDetailFor(ctx.store, ctx.who, ref, ctx.evidenceRoot, ctx.now);
-      if (detail === null) return { ok: false, message: `not-found: no task \`${ref}\` in your repositories` };
+      const detail = taskDetailFor(ctx.store, ctx.who, args.ref, ctx.evidenceRoot, ctx.now);
+      if (detail === null) return { ok: false, message: `not-found: no task \`${args.ref}\` in your repositories` };
       return { ok: true, body: detail as unknown as Json };
     },
   },
-  {
-    name: "list_repos",
+  list_repos: {
     description: "The repositories your credential may see and file into, with their operating-mode standing.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handle: ctx => {
       // FAIL CLOSED when the project registry cannot be read (round-2
       // finding 4): answering the full allowlist would claim enrollment
@@ -274,31 +196,25 @@ const TOOLS: Tool[] = [
       };
     },
   },
-  {
-    name: "recap",
+  recap: {
     description: "How things stand per repository in your allowlist, counts and ids: what waits on the operator (decisions, incidents, scopes awaiting approval), what runs, what is queued, finished, failed. Pass `since` (an ISO timestamp) to count only decisions, incidents, and attempts newer than it, to the hour; queued work and scopes awaiting approval always count.",
-    inputSchema: { type: "object", properties: { since: { type: "string", maxLength: 30 } }, additionalProperties: false },
     handle: (ctx, args) => {
-      const since = args["since"];
-      if (since !== undefined && (typeof since !== "string" || !ISO_STAMP_RULE.test(since) || Number.isNaN(Date.parse(since)))) {
+      const since = args.since;
+      if (since !== undefined && (!ISO_STAMP_RULE.test(since) || Number.isNaN(Date.parse(since)))) {
         return { ok: false, message: "since is an ISO timestamp like 2026-09-02T12:00:00Z" };
       }
-      return { ok: true, body: labelRepos(recapOver(ctx.store, ctx.who.repos, ctx.now, typeof since === "string" ? since : null), index => ctx.who.repos[index] ?? "") as unknown as Json };
+      return { ok: true, body: labelRepos(recapOver(ctx.store, ctx.who.repos, ctx.now, since ?? null), index => ctx.who.repos[index] ?? "") as unknown as Json };
     },
   },
-  {
-    name: "list_decisions",
+  list_decisions: {
     description: "Open decisions in your allowlist: id, task, question, options (id, label, reversible), age in hours. Never consequences or recommendations; the operator answers them.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handle: ctx => ({ ok: true, body: labelRepos(decisionsOver(ctx.store, ctx.who.repos, ctx.now), index => ctx.who.repos[index] ?? "") as unknown as Json }),
   },
-  {
-    name: "queue",
+  queue: {
     description: "One repository's queue by column — the shared column, then each worker's reserved column — each in dispatch order.",
-    inputSchema: { type: "object", properties: { repo: { type: "string", minLength: 1, maxLength: 800 } }, required: ["repo"], additionalProperties: false },
     handle: (ctx, args) => {
-      const repo = str(args, "repo", 800);
-      if (repo === null || !ctx.who.repos.includes(repo)) return { ok: false, message: "not-found: that repository is not in your allowlist" };
+      const repo = args.repo;
+      if (!ctx.who.repos.includes(repo)) return { ok: false, message: "not-found: that repository is not in your allowlist" };
       // The installation-wide revision stays home (slice-2 review, finding
       // 12): a coordinator cannot move queues, and the counter would tell it
       // about repos it may not see.
@@ -306,54 +222,35 @@ const TOOLS: Tool[] = [
       return { ok: true, body: { repo, ...columns } as unknown as Json };
     },
   },
-  {
-    name: "get_decision",
+  get_decision: {
     description: "One open decision in your allowlist in full: question, options with id, label, reversible, and consequence. Never the builder's recommendation.",
-    inputSchema: { type: "object", properties: { decision: { type: "integer", minimum: 1 } }, required: ["decision"], additionalProperties: false },
     handle: (ctx, args) => {
-      const found = decisionOver(ctx.store, ctx.who.repos, Number(args["decision"]), ctx.now);
+      const found = decisionOver(ctx.store, ctx.who.repos, args.decision, ctx.now);
       if (found === null) return { ok: false, message: "not-found: no such decision in your repositories" };
-      ctx.readDecisions.add(Number(args["decision"]));
+      ctx.readDecisions.add(args.decision);
       return { ok: true, body: labelRepos(found, index => ctx.who.repos[index] ?? "") as unknown as Json };
     },
   },
-  ...proposeTools(),
-  {
-    name: "get_contract",
+  propose_next: proposeTool("next", "Propose moving a queued task to the front of its column. An approver confirms; a queue that moved meanwhile refuses."),
+  propose_reserve: proposeTool("reserve", "Propose reserving a queued task for one worker, or releasing it to the shared queue with worker null."),
+  propose_hold: proposeTool("hold", "Propose holding a task's next attempt, with a reason. A running attempt is never interrupted."),
+  propose_unhold: proposeTool("unhold", "Propose lifting the operator's own hold on a task."),
+  propose_scope: proposeTool("scope", "Propose rewriting a task's scope. An approver confirms the rewrite, then approves it with a password — a scope you wrote never seals under a mode."),
+  propose_cancel: proposeTool("cancel", "Propose cancelling a task, with a reason. The approver arms and confirms it on the task itself."),
+  propose_answer: proposeTool("answer", "Propose an answer to an open decision you read with get_decision, with a rationale. The approver confirms where every consequence and the builder's recommendation are shown; an irreversible option needs their explicit confirmation."),
+  get_contract: {
     description: "This surface's contract: what a coordinator may do, the proposal lifecycle, and the admission promise.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handle: () => ({ ok: true, body: { contract: CONTRACT_GUIDE } }),
   },
-  {
-    name: "file_proposal",
+  file_proposal: {
     description: "File a task proposal into one of your repositories. It stays quarantined until the operator signs its scope.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo: { type: "string", minLength: 1, maxLength: 800 },
-        title: { type: "string", minLength: 1, maxLength: 200 },
-        intent: TASK_SCOPE_TEXT_SCHEMA,
-        idempotency_key: { type: "string", minLength: 8, maxLength: 64 },
-        deliverable: { type: "string", enum: ["branch", "report"] },
-      },
-      required: ["repo", "title", "idempotency_key"],
-      additionalProperties: false,
-    },
     handle: (ctx, args) => {
-      const repo = str(args, "repo", 800);
-      const title = str(args, "title", 200);
-      const key = str(args, "idempotency_key", 64);
-      const intent = typeof args["intent"] === "string" ? args["intent"] : undefined;
-      const deliverable = args["deliverable"] === "report" ? ("report" as const) : args["deliverable"] === "branch" ? ("branch" as const) : undefined;
-      if (repo === null || title === null || key === null) {
-        return { ok: false, message: "file_proposal needs repo, title, and idempotency_key (8-64 chars)" };
-      }
       // The token, not the pre-verified identity: filing re-authenticates
       // INSIDE its own transaction (the session's `who` is a courtesy).
       const outcome = fileCoordinatorProposal(
         ctx.store,
         ctx.token,
-        { repo, title, ...(intent === undefined ? {} : { intent }), ...(deliverable === undefined ? {} : { deliverable }), idempotencyKey: key },
+        { repo: args.repo, title: args.title, ...(args.intent === undefined ? {} : { intent: args.intent }), ...(args.deliverable === undefined ? {} : { deliverable: args.deliverable }), idempotencyKey: args.idempotency_key },
         ctx.now,
       );
       if (!outcome.ok) return { ok: false, message: outcome.message };
@@ -367,31 +264,13 @@ const TOOLS: Tool[] = [
       };
     },
   },
-];
+};
 
-/** The propose_* tools: each writes one proposal row through the coordinator door. */
-function proposeTools(): Tool[] {
-  const ref = { type: "string", minLength: 1, maxLength: 64 };
-  const make = (kind: CoordinatorProposalKind, description: string, properties: Record<string, unknown>, required: string[]): Tool => ({
-    name: `propose_${kind}`,
-    description,
-    inputSchema: { type: "object", properties, required, additionalProperties: false } as unknown as Json,
-    handle: (ctx, args) => {
-      const outcome = proposeAsCoordinator(ctx.store, ctx.token, kind, args, ctx.now, { readDecisions: ctx.readDecisions });
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-      return { ok: true, body: { proposal: outcome.id, kind: outcome.kind, awaiting: outcome.awaiting } };
-    },
-  });
-  return [
-    make("next", "Propose moving a queued task to the front of its column. An approver confirms; a queue that moved meanwhile refuses.", { ref }, ["ref"]),
-    make("reserve", "Propose reserving a queued task for one worker, or releasing it to the shared queue with worker null.", { ref, worker: { type: ["string", "null"], maxLength: 60 } }, ["ref", "worker"]),
-    make("hold", "Propose holding a task's next attempt, with a reason. A running attempt is never interrupted.", { ref, reason: { type: "string", maxLength: 200 } }, ["ref", "reason"]),
-    make("unhold", "Propose lifting the operator's own hold on a task.", { ref }, ["ref"]),
-    make("scope", "Propose rewriting a task's scope. An approver confirms the rewrite, then approves it with a password — a scope you wrote never seals under a mode.", { ref, goal: TASK_SCOPE_TEXT_SCHEMA, not: TASK_SCOPE_TEXT_SCHEMA, touches: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 50 } }, ["ref", "goal"]),
-    make("cancel", "Propose cancelling a task, with a reason. The approver arms and confirms it on the task itself.", { ref, reason: { type: "string", maxLength: 200 } }, ["ref", "reason"]),
-    make("answer", "Propose an answer to an open decision you read with get_decision, with a rationale. The approver confirms where every consequence and the builder's recommendation are shown; an irreversible option needs their explicit confirmation.", { decision: { type: "integer", minimum: 1 }, option: { type: "string", minLength: 1, maxLength: 64 }, rationale: { type: "string", maxLength: 400 } }, ["decision", "option", "rationale"]),
-  ];
-}
+/** The gateway's tools in tools/list order, each inputSchema derived from its contract. */
+const TOOLS: Tool[] = (Object.keys(GATEWAY_TOOL_INPUTS) as GatewayToolName[]).map(<N extends GatewayToolName>(name: N): Tool => {
+  const handler = HANDLERS[name] as Handler<N>;
+  return { name, description: handler.description, inputSchema: toModelSchema(GATEWAY_TOOL_INPUTS[name]) as Json, handle: (ctx, args) => handler.handle(ctx, args as GatewayToolInput<N>) };
+});
 
 export type McpIo = {
   onLine: (handler: (line: string) => void) => void;
@@ -519,17 +398,21 @@ export function serveMcp(
       error(id, -32602, "arguments must be an object");
       return;
     }
-    const args = rawArgs as Record<string, unknown>;
-    const invalid = invalidArgs(tool.inputSchema, args);
-    if (invalid !== null) {
-      error(id, -32602, invalid);
+    // The call is read by the schema tools/list advertised (review finding
+    // 2): unknown fields, bad types, bad enums, and bound violations are
+    // protocol errors (InvalidParams) naming each path, never tool refusals.
+    const read = parseContract<Record<string, unknown>>(GATEWAY_TOOL_INPUTS[tool.name] as never, rawArgs);
+    if (!read.ok) {
+      error(id, -32602, read.issues.map(one => one.line).join("; "));
       return;
     }
-    const answered = tool.handle({ store, who: session.who, token, enrolled, now: clock(), readDecisions, ...(evidenceRoot === undefined ? {} : { evidenceRoot }) }, args);
+    const answered = tool.handle({ store, who: session.who, token, enrolled, now: clock(), readDecisions, ...(evidenceRoot === undefined ? {} : { evidenceRoot }) }, read.value);
     if (!answered.ok) {
       respond(id, era, { content: [{ type: "text", text: answered.message }], isError: true }, false);
       return;
     }
+    // Checked against its output schema before delivery; a disagreement is reported, never refused.
+    reportToolOutput("gateway", tool.name, GATEWAY_TOOL_OUTPUTS[tool.name], answered.body);
     respond(id, era, { content: [{ type: "text", text: JSON.stringify(answered.body) }] }, false);
     });
   };

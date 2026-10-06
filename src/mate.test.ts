@@ -191,7 +191,7 @@ describe("the mate's turn", () => {
     expect(drafted[1]).toMatchObject({ planning: "auto" });
     expect(executeMateTool(ctx, "propose_task", { ...base, planning: "sometimes" })).toMatchObject({
       ok: false,
-      message: "planning is auto, required, or skip",
+      message: 'planning: must be one of "auto", "required", "skip"',
     });
   });
 
@@ -396,6 +396,20 @@ describe("the mate's turn", () => {
     expect(seen).toMatchObject({ ok: true, body: { proposal: 99 } });
   });
 
+  test("a malformed call is read by the tool's schema: the next step is told each path, and the corrected call drafts", async () => {
+    const script = scripted([
+      answer([call("propose_hold", { task: "in-1", why: "not this week" }, "bad")]),
+      answer([call("propose_hold", { task: "in-1", reason: "not this week" }, "good")]),
+      text("Held."),
+    ]);
+    const outcome = await turn("hold in-1", script.fetcher);
+    expect(outcome).toMatchObject({ ok: true, proposals: 1 });
+    // The repair is the refusal's own lines, by path: the field it left out and the key it made up.
+    expect(script.bodies[1]).toContain("reason: required");
+    expect(script.bodies[1]).toContain("payload: unknown key 'why'");
+    expect(store.listMateProposals(thread().id, ["pending"]).map(one => one.payload["reason"])).toEqual(["not this week"]);
+  });
+
   test("a turn holds at most five proposals; the sixth is a typed refusal to the model", async () => {
     const holds = Array.from({ length: 6 }, (_, index) => call("propose_hold", { task: index % 2 === 0 ? "in-1" : "in-2", reason: `reason ${index}` }, `h${index}`));
     const script = scripted([answer(holds.slice(0, 4)), answer(holds.slice(4)), text("proposed what I could")]);
@@ -408,11 +422,14 @@ describe("the mate's turn", () => {
   test("chat task and scope tools share new-text limits and expose no inheritance option", () => {
     let drafts = 0;
     const ctx = { store, who, now: clock(), draft: () => ++drafts };
-    const base = { repo: "r1", task: "in-1", title: "Task", goal: "valid", acceptance: [{ id: "c1", statement: "Works", evidence: ["check"] }] };
+    const shared = { goal: "valid", acceptance: [{ id: "c1", statement: "Works", evidence: ["check"] }] };
     for (const tool of ["propose_task", "propose_scope"]) {
+      // Each tool's own arguments: a key the other takes is refused by name.
+      const base = tool === "propose_task" ? { repo: "r1", title: "Task", ...shared } : { task: "in-1", ...shared };
+      expect(executeMateTool(ctx, tool, { ...base, ...(tool === "propose_task" ? { task: "in-1" } : { repo: "r1" }) })).toEqual({ ok: false, message: `payload: unknown key '${tool === "propose_task" ? "task" : "repo"}'` });
       for (const field of ["goal", "not"]) {
         for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(8001), "bad\u0000", "bad\u202e", "ok\r"]) {
-          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/the limit is 8,000|control or hidden/) });
+          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/over 8,000 characters|the limit is 8,000|control or hidden/) });
           expect(executeMateTool(ctx, tool, { ...base, [field]: value, inheritLegacy: true, filedVia: "revision" })).toMatchObject({ ok: false });
         }
       }
