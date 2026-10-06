@@ -731,6 +731,16 @@ async function turnLeadChatOn() {
   await Promise.all([page.waitForNavigation(), page.click('form[action="/chat/config"] button[type="submit"]')]);
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
+  // The thread is the page: Home sits in the Work panel, never inside the conversation, and a desk opens ready to type.
+  await page.locator("[data-workspace-detail] [data-home]").waitFor({ timeout: 15_000 });
+  if (await page.locator("[data-workspace-chat] [data-home]").count() !== 0) throw new Error("Home is inside the conversation");
+  if (!(await page.evaluate(() => document.activeElement?.id === "lead-message"))) throw new Error("the composer isn't ready to type on a desk");
+  // Every link Home had still opens.
+  const links = await page.locator("[data-workspace-detail] [data-home] a[href]").evaluateAll(all => [...new Set(all.map(one => one.getAttribute("href")))]);
+  for (const href of links) {
+    const answer = await page.request.get(new URL(href, base).href);
+    if (answer.status() >= 400) throw new Error(`Home's link ${href}: ${answer.status()}`);
+  }
   leadChatOn = true;
 }
 await journey(["lead", "maya"], SCRIPTED, "Turn the lead chat on (first-run setup, with your password)", [], turnLeadChatOn);
@@ -2032,9 +2042,12 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const ended = await stepNow();
   if (ended === "checks" && await on.locator('[data-first-task-journey] [data-step="checks"][data-state="stuck"]').count() === 0) throw new Error("a held result isn't marked at Checks");
   await bothSizes(on, `3-task-result-${ended}`);
-  // After the first Ready result: one card offers the phone.
+  // After the first Ready result: one line in Chat points to the phone setup, which lives in Settings → Chat apps.
   await on.goto(`${install.base}/chat`);
-  await waitFor(on.locator("[data-phone-card]"), "the phone card after the first Ready result", { timeoutMs: 30_000 });
+  await waitFor(on.locator("[data-phone-notice]"), "the phone notice after the first Ready result", { timeoutMs: 30_000 });
+  if (await on.locator("[data-phone-card]").count() !== 0) throw new Error("the phone card is still in Chat");
+  await on.goto(`${install.base}/settings`);
+  await waitFor(on.locator("[data-phone-card]"), "the phone card in Settings", { timeoutMs: 30_000 });
   const phone = await on.locator("[data-phone-card]").innerText();
   if (!/Pair Telegram/.test(phone) || !/Tailscale/.test(phone)) throw new Error(`the phone card: ${phone}`);
   await bothSizes(on, "4-phone");

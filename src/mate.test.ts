@@ -957,6 +957,29 @@ describe("the mate's turn", () => {
     expect(store.listMateProposals(old.id).map(one => one.state)).toEqual(["expired"]);
   });
 
+  test("a replaced lead thread stays readable only while its words are kept: a ceiling change shows it, an end or revocation does not", () => {
+    const narrowed = principal("alex", [INSIDE]);
+    const old = store.openMateThread("alex", who.ceilingDigest, clock()).thread;
+    // Nothing said, nothing to show.
+    expect(store.replacedLeadThread(store.openMateThread("alex", narrowed.ceilingDigest, clock()).thread)).toBeNull();
+    const said = store.openMateThread("alex", who.ceilingDigest, clock()).thread;
+    expect(said.id).not.toBe(old.id);
+    store.appendMateMessage({ thread: said.id, turn: null, role: "operator", text: "the earlier words" }, clock());
+    const opened = store.openMateThread("alex", narrowed.ceilingDigest, clock());
+    expect(opened.ceilingChanged).toBe(true);
+    expect(store.replacedLeadThread(opened.thread)?.id).toBe(said.id);
+    // Reading it writes nothing.
+    const threads = () => store.raw().prepare("SELECT COUNT(*) AS n FROM mate_thread").get();
+    const before = threads();
+    store.replacedLeadThread(opened.thread);
+    expect(threads()).toEqual(before);
+    // A task's or project's thread never shows it.
+    expect(store.replacedLeadThread(store.openMateThread("alex", narrowed.ceilingDigest, clock(), { kind: "task", key: "a" }).thread)).toBeNull();
+    // Ending the conversation (or revocation, which ends the same way): the next thread follows an ended one, whose text is gone.
+    store.closeMateThreadsFor("alex", clock());
+    expect(store.replacedLeadThread(store.openMateThread("alex", narrowed.ceilingDigest, clock()).thread)).toBeNull();
+  });
+
   test("revocation DURING the model's answer ends the turn with nothing kept and the reservation charged; afterwards the principal is dead", async () => {
     const live = session();
     const t = thread();

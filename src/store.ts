@@ -23260,6 +23260,19 @@ export class Store {
     return row === undefined ? null : readMateThread(row);
   }
 
+  /** The lead thread a ceiling change closed just before `current` (ruling 9),
+   * read only and for display only: it never continues and never reaches the
+   * model. Null when there is none, when it was ended or revoked (its text is
+   * gone), or when it closed under the same ceiling. */
+  replacedLeadThread(current: MateThread): MateThread | null {
+    if (current.scope.kind !== "lead") return null;
+    const row = this.db.prepare(`SELECT * FROM mate_thread WHERE approver = ? AND scope_kind = 'lead' AND scope_key IS NULL AND id < ? AND closed_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_thread.id) ORDER BY id DESC LIMIT 1`).get(current.approver, current.id);
+    if (row === undefined || String(row["ceiling_digest"]) === current.ceilingDigest) return null;
+    const previous = readMateThread(row);
+    return this.db.prepare("SELECT 1 FROM mate_message WHERE thread = ? LIMIT 1").get(previous.id) === undefined ? null : previous;
+  }
+
   /** The task a paired chat is talking about (v78), or null for the lead conversation. */
   chatFocus(surface: string, binding: number): string | null {
     const row = this.db.prepare("SELECT task FROM chat_focus WHERE surface = ? AND binding = ?").get(surface, binding);

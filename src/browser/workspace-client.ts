@@ -151,11 +151,16 @@ export function isWorkspace(value: unknown): value is BrowserWorkspace {
     && (chat.taskId === null || typeof chat.taskId === "string") && (chat.resultRunId === null || typeof chat.resultRunId === "number")
     && (chat.project === undefined || chat.project === null || typeof chat.project === "string")
     && (chat.pendingTurnId === null || typeof chat.pendingTurnId === "number")
-    && Array.isArray(chat.messages) && chat.messages.every(item => record(item) && typeof item.id === "number"
-      && (item.role === "operator" || item.role === "assistant") && typeof item.text === "string" && typeof item.html === "string"
-      && typeof item.cardsHtml === "string" && typeof item.createdAt === "string" && (item.activity === null || typeof item.activity === "string")
-      && (item.cards === undefined || (Array.isArray(item.cards) && item.cards.every(card => record(card) && typeof card.id === "number" && typeof card.kind === "string"
-        && typeof card.label === "string" && typeof card.state === "string" && typeof card.body === "string" && Array.isArray(card.links) && typeof card.dismissable === "boolean")))));
+    && Array.isArray(chat.messages) && chat.messages.every(isMessage)
+    && (chat.previous === undefined || chat.previous === null || (record(chat.previous) && Array.isArray(chat.previous.messages) && chat.previous.messages.every(isMessage))));
+}
+
+function isMessage(item: unknown): boolean {
+  return record(item) && typeof item.id === "number"
+    && (item.role === "operator" || item.role === "assistant") && typeof item.text === "string" && typeof item.html === "string"
+    && typeof item.cardsHtml === "string" && typeof item.createdAt === "string" && (item.activity === null || typeof item.activity === "string")
+    && (item.cards === undefined || (Array.isArray(item.cards) && item.cards.every(card => record(card) && typeof card.id === "number" && typeof card.kind === "string"
+      && typeof card.label === "string" && typeof card.state === "string" && typeof card.body === "string" && Array.isArray(card.links) && typeof card.dismissable === "boolean")));
 }
 
 export class WorkspaceAuthError extends Error {}

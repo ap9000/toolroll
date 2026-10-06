@@ -82,8 +82,8 @@ export function FirstRequest({ firstRun, onDraft }: { firstRun: BrowserFirstRun;
   </div>;
 }
 
-/** After the first Ready result, once: the same work from the phone. */
-export function PhoneCard({ phone, csrf }: { phone: BrowserPhoneCard; csrf: string }) {
+/** The same work from the phone (Settings → Chat apps). `dismissable`: offer Not now, which puts away chat's pointer to it. */
+export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserPhoneCard; csrf: string; dismissable?: boolean }) {
   const [hidden, setHidden] = useState(false);
   if (hidden) return null;
   const [first, ...others] = phone.chatApps;
@@ -105,11 +105,11 @@ export function PhoneCard({ phone, csrf }: { phone: BrowserPhoneCard; csrf: stri
             : <><p className="so-first-run-choice-hint">Start Toolroll with this, then on your phone open <code>{phone.tailnet.address}</code> and sign in:</p><Command command={phone.tailnet.restart} /></>}
       </div>
     </div>
-    <form method="post" action={phone.dismissHref} onSubmit={event => {
+    {dismissable && <form method="post" action={phone.dismissHref} onSubmit={event => {
       event.preventDefault();
       setHidden(true);
       void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
-    }}><input type="hidden" name="csrf" value={csrf} /><Button variant="ghost" size="sm" type="submit">Not now</Button></form>
+    }}><input type="hidden" name="csrf" value={csrf} /><Button variant="ghost" size="sm" type="submit">Not now</Button></form>}
   </section>;
 }
 
