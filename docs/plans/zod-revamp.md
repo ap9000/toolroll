@@ -81,7 +81,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 |---|---|---|
 | 18 | **JSON columns in the store** (46 `JSON.parse` sites) — parse on read with versioned schemas | `store.ts` |
 | 19 | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
-| 20 | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
+| 20 ✅ | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
 
 ## How each item ships
 
@@ -282,3 +282,14 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+- **20. Evidence files** (2026-10-06). Every structured evidence read in `evidence.ts` and `verification-evidence.ts`
+  goes through one schema: handoffs, proofs (and their screenshot list), receipts and stored reports through items 4
+  and 6's contracts; the terminal diff-stat through `src/contracts/diff-stat.ts` (`DiffStat` and `DiffStatFile` are
+  derived; a legacy gate's endpoints and a saved assessment's file list are picks of it); and the gate view through
+  `src/contracts/verification-view.ts` (a sealed receipt, or the strict view of a legacy machine log header). A view
+  is returned as written once checked, so reused gates compare and re-seal the same bytes. Writers, key order,
+  digests and seals are unchanged. Kept: inventories ignore unknown keys and accept exactly what the old checks did.
+  Loosened: a literal `null` inventory is refused like any mismatch instead of throwing. Replayed base against
+  candidate over the 15 real runs in `test/fixtures/evidence/` and 337 receipt, legacy-header and inventory cases:
+  zero differences besides that one. The installed database and evidence folder were denied to this build, so a
+  replay of every installed evidence directory remains an evidence gap.
