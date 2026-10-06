@@ -1,5 +1,6 @@
 import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import type { DecisionOption } from "./contracts/decision.js";
+import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn } from "./contracts/store-json.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
 import { SKILLS_SCHEMA } from "./project-skills.js";
@@ -571,9 +572,9 @@ const isCheckExitCode = (value: unknown): boolean =>
 /** Read a stored suite list; a malformed optional summary reads as no suite detail. */
 export function checkSuitesOf(value: unknown): RunCheckSuite[] {
   try {
-    const parsed = JSON.parse(String(value ?? "[]")) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((one): one is RunCheckSuite => {
+    const read = readStoreColumn("run_check.suites_json", value ?? "[]");
+    if (!read.ok) return [];
+    return read.value.filter((one): one is RunCheckSuite => {
       if (one === null || typeof one !== "object") return false;
       const row = one as Record<string, unknown>;
       return typeof row["name"] === "string" && row["name"].trim() !== "" && row["name"].length <= 80 &&
@@ -1061,9 +1062,9 @@ function readTeammateMemory(row: Record<string, unknown>): TeammateMemoryRow {
 }
 
 function readTeammateSuggestion(row: Record<string, unknown>): TeammateSuggestionRow {
-  const parsed = <T>(key: string, fallback: T): T => { try { return JSON.parse(String(row[key])) as T; } catch { return fallback; } };
-  return { id: Number(row["id"]), teammate: Number(row["teammate"]), tool: String(row["tool"]), action: String(row["action"]), rule: parsed<ToolRule>("rule_json", { use: "ask" }), was: parsed<ToolRule>("was_json", { use: "ask" }),
-    evidence: parsed<number[]>("evidence_json", []), said: String(row["said"]), state: String(row["state"]) as TeammateSuggestionRow["state"],
+  const parsed = <T>(column: StoreColumn, key: string, fallback: T): T => { const read = readStoreColumn(column, row[key]); return read.ok ? read.value as T : fallback; };
+  return { id: Number(row["id"]), teammate: Number(row["teammate"]), tool: String(row["tool"]), action: String(row["action"]), rule: parsed<ToolRule>("teammate_suggestion.rule_json", "rule_json", { use: "ask" }), was: parsed<ToolRule>("teammate_suggestion.was_json", "was_json", { use: "ask" }),
+    evidence: parsed<number[]>("teammate_suggestion.evidence_json", "evidence_json", []), said: String(row["said"]), state: String(row["state"]) as TeammateSuggestionRow["state"],
     decidedBy: row["decided_by"] === null ? null : String(row["decided_by"]), decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]), createdAt: String(row["created_at"]) };
 }
 /** v94: one action a project tool offers, as it described itself when listed. */
@@ -1084,16 +1085,16 @@ export type TeammateTurnRow = { id: number; teammate: number; card: number | nul
 
 function readTeammateCall(row: Record<string, unknown>): TeammateCallRow {
   const text = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
-  let input: Record<string, unknown> = {};
-  try { input = JSON.parse(String(row["input_json"])) as Record<string, unknown>; } catch { input = {}; }
+  const read = readStoreColumn("teammate_call.input_json", row["input_json"]);
+  const input: Record<string, unknown> = read.ok ? read.value : {};
   return { id: Number(row["id"]), teammate: Number(row["teammate"]), card: Number(row["card"]), entry: Number(row["entry"]), tool: String(row["tool"]), action: String(row["action"]), input,
     rule: String(row["rule"]) as ToolRule["use"], why: String(row["why"]), state: String(row["state"]) as TeammateCallState, result: text("result"), decidedBy: text("decided_by"), decidedAt: text("decided_at"),
     createdAt: String(row["created_at"]), doneAt: text("done_at"), undoOf: row["undo_of"] === null || row["undo_of"] === undefined ? null : Number(row["undo_of"]), undoneBy: text("undone_by"), undoneAt: text("undone_at") };
 }
 
 function readTeammateGrant(row: Record<string, unknown>): TeammateGrantRow {
-  const parsed = <T>(key: string, fallback: T): T => { try { return JSON.parse(String(row[key])) as T; } catch { return fallback; } };
-  return { teammate: Number(row["teammate"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("actions_json", []), rules: parsed<Record<string, ToolRule>>("rules_json", {}),
+  const parsed = <T>(column: StoreColumn, key: string, fallback: T): T => { const read = readStoreColumn(column, row[key]); return read.ok ? read.value as T : fallback; };
+  return { teammate: Number(row["teammate"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("teammate_grant.actions_json", "actions_json", []), rules: parsed<Record<string, ToolRule>>("teammate_grant.rules_json", "rules_json", {}),
     listedAt: row["listed_at"] === null ? null : String(row["listed_at"]), updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]) };
 }
 
@@ -1107,7 +1108,7 @@ function readTeammateRow(row: Record<string, unknown>): TeammateRow {
 function readTeammateQuestion(row: Record<string, unknown>): TeammateQuestionRow {
   const text = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
   return { id: Number(row["id"]), teammate: Number(row["teammate"]), card: Number(row["card"]), entry: Number(row["entry"]), question: String(row["question"]),
-    options: JSON.parse(String(row["options_json"])) as { id: string; label: string }[], askedOf: String(row["asked_of"]), state: String(row["state"]) as TeammateQuestionRow["state"],
+    options: parseStoreColumn("teammate_question.options_json", row["options_json"]), askedOf: String(row["asked_of"]), state: String(row["state"]) as TeammateQuestionRow["state"],
     choice: text("choice"), answer: text("answer"), answeredBy: text("answered_by"), answeredVia: text("answered_via"), answeredAt: text("answered_at"), createdAt: String(row["created_at"]),
     toolCall: row["tool_call"] === null || row["tool_call"] === undefined ? null : Number(row["tool_call"]),
     suggestion: row["suggestion"] === null || row["suggestion"] === undefined ? null : Number(row["suggestion"]) };
@@ -1168,9 +1169,10 @@ function readFlowCardRow(row: Record<string, unknown>): FlowCardRow {
 
 function readFlowCardSource(value: unknown): FlowCardSource | null {
   if (typeof value !== "string") return null;
+  const read = readStoreColumn("flow_card.source_json", value);
+  if (!read.ok) return null;
   try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (typeof parsed["label"] !== "string") return null;
+    const parsed = read.value;
     const mail = parsed["mail"] !== null && typeof parsed["mail"] === "object" ? parsed["mail"] as Record<string, unknown> : null;
     const chat = parsed["chat"] !== null && typeof parsed["chat"] === "object" ? parsed["chat"] as Record<string, unknown> : null;
     return { kind: String(parsed["kind"] ?? ""), label: parsed["label"], url: typeof parsed["url"] === "string" ? parsed["url"] : null,
@@ -8256,7 +8258,8 @@ function migrateToV24(db: Database): void {
       pinApproved.run(snapshot, snapshot, provenance, row.taskId);
     } else {
       let touches: string[] = [];
-      try { touches = JSON.parse(row.touches) as string[]; } catch { touches = []; }
+      const read = readStoreColumn("task_scope.touches", row.touches);
+      if (read.ok) touches = read.value as string[];
       const recomputed = digestOf(
         { goal: row.goal, outOfScope: row.outOfScope, touches, budgetMicrousd: row.budget },
         resolved.profile,
@@ -11051,7 +11054,7 @@ export class Store {
       if (mode === null) return { ok: true as const };
       let terms: { dailyRunCap?: number | null; dailyMeasuredCapMicrousd?: number | null };
       try {
-        terms = JSON.parse(mode.termsJson) as typeof terms;
+        terms = parseStoreColumn("operating_mode.terms_json", mode.termsJson) as typeof terms;
       } catch {
         return { ok: true as const };
       }
@@ -11214,8 +11217,7 @@ export class Store {
   approvalRules(repo: string): ApprovalRules & { updatedBy: string | null; updatedAt: string | null } {
     const row = this.db.prepare("SELECT * FROM approval_policy WHERE repo = ?").get(repo);
     if (row === undefined) return { ...NO_RULES, updatedBy: null, updatedAt: null };
-    let paths: string[] = [];
-    try { const parsed = JSON.parse(String(row["protected_paths"])); if (Array.isArray(parsed)) paths = parsed.filter((one): one is string => typeof one === "string"); } catch { paths = []; }
+    const paths = readStoreTextList("approval_policy.protected_paths", row["protected_paths"]);
     return { notRequester: Number(row["not_requester"]) === 1, protectProject: Number(row["protect_project"]) === 1, protectedPaths: paths, updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]) };
   }
 
@@ -11267,8 +11269,7 @@ export class Store {
     if (ref === undefined || ref["repo"] == null) return { verdict: "seal", protectedWork: false };
     const repo = String(ref["repo"]);
     const rules = this.approvalRules(repo);
-    let touches: string[] = [];
-    try { const parsed = JSON.parse(String(scope?.["touches"] ?? "[]")); if (Array.isArray(parsed)) touches = parsed.map(String); } catch { touches = []; }
+    const touches = readStoreStringifiedList("task_scope.touches", scope?.["touches"] ?? "[]");
     const protectedWork = isProtectedWork(rules, touches);
     if (!rules.notRequester && !protectedWork) return { verdict: "seal", protectedWork: false };
     if (kind === "ai") return { verdict: "refuse", reason: "person-required" };
@@ -14437,7 +14438,7 @@ export class Store {
         let reviewAuto = false;
         if (mode !== null && mode.digest === String(row["mode_digest"] ?? "")) {
           try {
-            reviewAuto = (JSON.parse(mode.termsJson) as { reviewAuto?: unknown }).reviewAuto === true;
+            reviewAuto = (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { reviewAuto?: unknown }).reviewAuto === true;
           } catch {
             reviewAuto = false;
           }
@@ -16094,12 +16095,9 @@ export class Store {
   private readFallbackConfig(scope: string): { ok: true; entries: { provider: string; model: string; authMode: "subscription" | "api-key"; repairModel?: string }[] } | { ok: false; problem: string } {
     const row = this.db.prepare("SELECT entries_json FROM fallback_config WHERE scope = ? AND phase = 'build'").get(scope);
     if (row === undefined) return { ok: true, entries: [] };
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(String(row["entries_json"]));
-    } catch {
-      return { ok: false, problem: `the fallback configuration for ${scope} is not valid JSON — set it again with \`config set fallback\`, or clear it` };
-    }
+    const read = readStoreColumn("fallback_config.entries_json", row["entries_json"]);
+    if (!read.ok && read.malformed) return { ok: false, problem: `the fallback configuration for ${scope} is not valid JSON — set it again with \`config set fallback\`, or clear it` };
+    const parsed: unknown = read.ok ? read.value : null;
     if (!Array.isArray(parsed)) return { ok: false, problem: `the fallback configuration for ${scope} is not a list of entries — set it again with \`config set fallback\`, or clear it` };
     // A PRESENT row carries one to three entries (atomic authority
     // closure) — the very bound `config set fallback` enforces. An empty
@@ -16507,7 +16505,7 @@ export class Store {
     const eligible = rows
       .filter(row => {
         if (assignedRunner !== null) return String(row["runner"]) === assignedRunner;
-        const repos = readJsonArray(row["repos"]);
+        const repos = readStoreTextList("runner.repos", row["repos"]);
         return repo === null || repos.includes(repo);
       })
       .sort((a, b) => Number(alive(b)) - Number(alive(a)));
@@ -16666,7 +16664,7 @@ export class Store {
     if (open !== null) {
       let pinned: ExecutionProfile | null = null;
       try {
-        const terms = JSON.parse(open.termsJson) as { profileJson?: unknown };
+        const terms = parseStoreColumn("attended_authorization.terms_json", open.termsJson);
         pinned = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
       } catch {
         pinned = null;
@@ -17575,7 +17573,9 @@ export class Store {
         .all(...admittedRepos);
       const optionsOf = (raw: unknown): { id: string; label: string; reversible: boolean }[] => {
         try {
-          const parsed = JSON.parse(String(raw)) as { id?: unknown; label?: unknown; reversible?: unknown }[];
+          const read = readStoreColumn("decision.options", raw);
+          if (!read.ok) return [];
+          const parsed = read.value as unknown as { id?: unknown; label?: unknown; reversible?: unknown }[];
           return Array.isArray(parsed)
             ? parsed.slice(0, 6).map(one => ({ id: String(one?.id ?? ""), label: String(one?.label ?? ""), reversible: one?.reversible === true }))
             : [];
@@ -19090,7 +19090,7 @@ export class Store {
       if (live.runnerGeneration !== named.generation) refuse(`the attended authorization ${live.id} was minted for ${live.runner} at generation ${live.runnerGeneration}, not ${named.generation}`);
       let pinned: ExecutionProfile | null = null;
       try {
-        const terms = JSON.parse(live.termsJson) as { profileJson?: unknown };
+        const terms = parseStoreColumn("attended_authorization.terms_json", live.termsJson);
         pinned = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
       } catch {
         pinned = null;
@@ -20897,7 +20897,7 @@ export class Store {
           let quickMint = false;
           if (mode !== null && mode.digest === input.basis.digest && mode.signedBy === input.approver) {
             try {
-              quickMint = (JSON.parse(mode.termsJson) as { quickMint?: unknown }).quickMint === true;
+              quickMint = (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { quickMint?: unknown }).quickMint === true;
             } catch {
               quickMint = false;
             }
@@ -22699,7 +22699,7 @@ export class Store {
       if (mode !== null) {
         let publication: unknown;
         try {
-          publication = (JSON.parse(mode.termsJson) as { publication?: unknown }).publication;
+          publication = (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { publication?: unknown }).publication;
         } catch {
           publication = undefined;
         }
@@ -22854,7 +22854,7 @@ export class Store {
       if (basis === "mode") {
         let publication: unknown;
         try {
-          publication = mode === null ? undefined : (JSON.parse(mode.termsJson) as { publication?: unknown }).publication;
+          publication = mode === null ? undefined : (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { publication?: unknown }).publication;
         } catch {
           publication = undefined;
         }
@@ -22864,7 +22864,7 @@ export class Store {
       } else if (basis === "grant" && mode !== null) {
         let publication: unknown;
         try {
-          publication = (JSON.parse(mode.termsJson) as { publication?: unknown }).publication;
+          publication = (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { publication?: unknown }).publication;
         } catch {
           publication = undefined;
         }
@@ -23500,7 +23500,7 @@ export class Store {
   teammateEvents(teammate: number, limit: number, since: string | null = null): TeammateEventRow[] {
     return this.db.prepare(`SELECT * FROM teammate_event WHERE teammate = ? ${since === null ? "" : "AND at >= ?"} ORDER BY id DESC LIMIT ?`).all(...(since === null ? [teammate, limit] : [teammate, since, limit])).map(row => ({
       id: Number(row["id"]), teammate: Number(row["teammate"]), card: row["card"] === null ? null : Number(row["card"]), entry: row["entry"] === null ? null : Number(row["entry"]),
-      kind: String(row["kind"]) as TeammateEventKind, said: String(row["said"]), detail: row["detail_json"] === null ? null : JSON.parse(String(row["detail_json"])) as Record<string, unknown>,
+      kind: String(row["kind"]) as TeammateEventKind, said: String(row["said"]), detail: row["detail_json"] === null ? null : parseStoreColumn("teammate_event.detail_json", row["detail_json"]),
       by: row["by"] === null ? null : String(row["by"]), at: String(row["at"]) }));
   }
 
@@ -23904,8 +23904,7 @@ export class Store {
   /** A card's discussion, oldest first. */
   flowComments(card: number): FlowCommentRow[] {
     return this.db.prepare("SELECT * FROM flow_comment WHERE card = ? ORDER BY id").all(card).map(row => {
-      let mentions: string[] = [];
-      try { const parsed = JSON.parse(String(row["mentions_json"])) as unknown; if (Array.isArray(parsed)) mentions = parsed.filter((one): one is string => typeof one === "string"); } catch { mentions = []; }
+      const mentions = readStoreTextList("flow_comment.mentions_json", row["mentions_json"]);
       return { id: Number(row["id"]), card: Number(row["card"]), kind: String(row["kind"]) as FlowCommentRow["kind"], author: String(row["author"]), body: String(row["body"]), mentions, at: String(row["at"]) };
     });
   }
@@ -24030,12 +24029,8 @@ export class Store {
   toolSealFor(taskId: string, approvedDigest: string): { name: string; digest: string }[] | null {
     const row = this.db.prepare("SELECT tools_json FROM tool_seal WHERE task = ? AND approved_digest = ?").get(taskId, approvedDigest);
     if (row === undefined) return null;
-    try {
-      const parsed = JSON.parse(String(row["tools_json"])) as unknown;
-      return Array.isArray(parsed) ? parsed.filter((one): one is { name: string; digest: string } => typeof one?.name === "string" && typeof one?.digest === "string") : [];
-    } catch {
-      return [];
-    }
+    const read = readStoreColumn("tool_seal.tools_json", row["tools_json"]);
+    return read.ok ? read.value.filter((one): one is { name: string; digest: string } => typeof (one as { name?: unknown } | null)?.name === "string" && typeof (one as { digest?: unknown } | null)?.digest === "string") : [];
   }
 
   /** What one attempt launched with (first launch of the run wins its record; a resumed turn updates it). */
@@ -24053,14 +24048,15 @@ export class Store {
   runFence(run: number): { method: string; paths: number } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
-    try { return JSON.parse(String(row["fence"])) as { method: string; paths: number }; } catch { return null; }
+    const read = readStoreColumn("run_tool.tools_json.fence", row["fence"]);
+    return read.ok ? read.value : null;
   }
 
   runTools(run: number): { tools: { name: string; digest: string }[]; skipped: { name: string; reason: string }[] } | null {
     const row = this.db.prepare("SELECT tools_json FROM run_tool WHERE run = ?").get(run);
     if (row === undefined) return null;
     try {
-      const parsed = JSON.parse(String(row["tools_json"])) as { tools?: unknown; skipped?: unknown };
+      const parsed = parseStoreColumn("run_tool.tools_json", row["tools_json"]);
       return { tools: Array.isArray(parsed.tools) ? parsed.tools as { name: string; digest: string }[] : [], skipped: Array.isArray(parsed.skipped) ? parsed.skipped as { name: string; reason: string }[] : [] };
     } catch {
       return null;
@@ -24165,7 +24161,7 @@ export class Store {
   mateAsk(turn: number): MateAsk | null {
     const row = this.db.prepare("SELECT a.* FROM mate_ask a JOIN mate_turn t ON t.id = a.turn WHERE a.turn = ? AND t.state = 'answered'").get(turn);
     if (row === undefined) return null;
-    const options = JSON.parse(String(row["options_json"])) as unknown;
+    const options = parseStoreColumn("mate_ask.options_json", row["options_json"]);
     return { turn: Number(row["turn"]), thread: Number(row["thread"]), question: String(row["question"]), options: Array.isArray(options) ? options.map(String) : [], createdAt: String(row["created_at"]) };
   }
 
@@ -27213,10 +27209,7 @@ export class Store {
   leadAbout(account: string): string[] {
     const row = this.db.prepare("SELECT about_json FROM lead_config WHERE account = ?").get(account);
     if (row === undefined) return [];
-    try {
-      const lines = JSON.parse(String(row["about_json"]));
-      return Array.isArray(lines) ? lines.filter((one): one is string => typeof one === "string") : [];
-    } catch { return []; }
+    return readStoreTextList("lead_config.about_json", row["about_json"]);
   }
 
   /** Save what this person's lead knows about them (checked by the caller: lead-about.ts). A person who never named
@@ -27842,7 +27835,7 @@ export class Store {
   mateRequestReceipt(session: number, request: string): { digest: string; turn: number } | null {
     const row = this.db.prepare("SELECT result FROM mutation WHERE idempotency_key = ? AND operation = 'mate-send'")
       .get(`mate-send:${session}:${request}`);
-    return row === undefined ? null : JSON.parse(String(row["result"])) as { digest: string; turn: number };
+    return row === undefined ? null : parseStoreColumn("mutation.result", row["result"]) as { digest: string; turn: number };
   }
 
   /**
@@ -27884,7 +27877,7 @@ export class Store {
     const seen = this.db
       .prepare("SELECT result FROM mutation WHERE idempotency_key = ?")
       .get(idempotencyKey);
-    if (seen !== undefined) return JSON.parse(String(seen["result"])) as T;
+    if (seen !== undefined) return parseStoreColumn("mutation.result", seen["result"]) as T;
 
     const result = body();
     if (!worthRecording(result)) return result;
@@ -28188,7 +28181,7 @@ function readDecision(row: Record<string, unknown>): Decision {
     state: String(row["state"]) as Decision["state"],
     recap: String(row["recap"]),
     question: String(row["question"]),
-    options: JSON.parse(String(row["options"])) as DecisionOption[],
+    options: parseStoreColumn("decision.options", row["options"]),
     recommendation: String(row["recommendation"]),
     assignee: row["assignee"] === null ? null : String(row["assignee"]),
     deadline: row["deadline"] === null ? null : String(row["deadline"]),
@@ -28233,7 +28226,7 @@ function readPlanRevision(row: Record<string, unknown>): PlanRevision {
     kind: String(row["kind"]) as PlanRevisionKind,
     authorityKind: String(row["authority_kind"]) as "plan-only" | "authority-change",
     authorityDigest: String(row["authority_digest"]),
-    changedFields: row["changed_fields"] === null || row["changed_fields"] === undefined ? [] : (JSON.parse(String(row["changed_fields"])) as string[]),
+    changedFields: row["changed_fields"] === null || row["changed_fields"] === undefined ? [] : parseStoreColumn("plan_revision.changed_fields", row["changed_fields"]),
     status: String(row["status"]) as PlanRevisionStatus,
     createdAt: String(row["created_at"]),
     resolvedAt: row["resolved_at"] === null || row["resolved_at"] === undefined ? null : String(row["resolved_at"]),
@@ -28262,7 +28255,7 @@ function readRunCheckpoint(row: Record<string, unknown>): RunCheckpoint {
     run: Number(row["run"]),
     taskRef: Number(row["task_ref"]),
     planRevision: Number(row["plan_revision"]),
-    snapshot: JSON.parse(String(row["snapshot_json"])) as ProgressSnapshot,
+    snapshot: parseStoreColumn("run_checkpoint.snapshot_json", row["snapshot_json"]) as ProgressSnapshot,
     createdAt: String(row["created_at"]),
   };
 }
@@ -28339,7 +28332,7 @@ function readTelegramConversationPart(row: Record<string, unknown>): TelegramCon
     text: String(row["text"]),
     replyTo: text("reply_to"),
     proposal: row["proposal"] === null || row["proposal"] === undefined ? null : Number(row["proposal"]),
-    keyboard: row["keyboard_json"] === null || row["keyboard_json"] === undefined ? null : JSON.parse(String(row["keyboard_json"])) as TelegramConversationPart["keyboard"],
+    keyboard: row["keyboard_json"] === null || row["keyboard_json"] === undefined ? null : parseStoreColumn("telegram_conversation_part.keyboard_json", row["keyboard_json"]) as TelegramConversationPart["keyboard"],
     state: String(row["state"]) as TelegramConversationPart["state"],
     messageId: text("message_id"),
     taskId: text("task_id"),
@@ -28410,7 +28403,7 @@ function readPublicationGrant(row: Record<string, unknown>): PublicationGrant {
     remote: String(row["remote"]),
     headPrefix: String(row["head_prefix"]),
     base: String(row["base"]),
-    capabilities: JSON.parse(String(row["capabilities"])) as PublicationCapability[],
+    capabilities: parseStoreColumn("publication_grant.capabilities", row["capabilities"]) as PublicationCapability[],
     selector: String(row["selector"]) as "ours" | "all",
     draft: Number(row["draft"]) === 1,
     grantedBy: String(row["granted_by"]),
@@ -28495,8 +28488,8 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
         : String(row["coordinator_cid"]),
     assignedRunner:
       row["assigned_runner"] === null || row["assigned_runner"] === undefined ? null : String(row["assigned_runner"]),
-    zones: readJsonArray(row["zones"]),
-    capabilityRequirements: readJsonArray(row["capability_requirements"]),
+    zones: readStoreTextList("task_ref.zones", row["zones"]),
+    capabilityRequirements: readStoreTextList("task_ref.capability_requirements", row["capability_requirements"]),
     parkRate: Number(row["park_rate"]),
     plan:
       row["plan"] === null || row["plan"] === undefined
@@ -28587,9 +28580,9 @@ function readRoutine(row: Record<string, unknown>): Routine {
     repo: String(row["repo"]),
     goal: String(row["goal"]),
     outOfScope: row["out_of_scope"] === null ? null : String(row["out_of_scope"]),
-    touches: readJsonArray(row["touches"]),
-    acceptance: readAcceptance(row["acceptance_json"]),
-    requirements: readJsonArray(row["requirements"]),
+    touches: readStoreTextList("routine.touches", row["touches"]),
+    acceptance: readAcceptance("routine.acceptance_json", row["acceptance_json"]),
+    requirements: readStoreTextList("routine.requirements", row["requirements"]),
     schedule: String(row["schedule"]),
     singleFlight: Number(row["single_flight"]) === 1,
     costCeilingUsd: row["cost_ceiling_usd"] === null ? null : Number(row["cost_ceiling_usd"]),
@@ -28628,7 +28621,7 @@ function readTournamentTerms(row: Record<string, unknown>): TournamentTerms {
     active: Number(row["active"]) === 1,
     kind: String(row["kind"] ?? "race") === "comparison" ? "comparison" : "race",
     raceDigest: String(row["race_digest"]),
-    agents: JSON.parse(String(row["agents"])) as TournamentTerms["agents"],
+    agents: parseStoreColumn("tournament_terms.agents", row["agents"]) as TournamentTerms["agents"],
     n: Number(row["n"]),
     perAgentBudgetMicrousd: Number(row["per_agent_budget_microusd"]),
     overrunReserveMicrousd: Number(row["overrun_reserve_microusd"]),
@@ -28801,12 +28794,12 @@ function readCoordinatorProposal(row: Record<string, unknown>): CoordinatorPropo
     name: String(row["name"]),
     repo: String(row["repo"]),
     kind: String(row["kind"]) as CoordinatorProposalKind,
-    payload: JSON.parse(String(row["payload_json"])) as Record<string, unknown>,
+    payload: parseStoreColumn("coordinator_proposal.payload_json", row["payload_json"]),
     state: String(row["state"]) as CoordinatorProposalState,
     createdAt: String(row["created_at"]),
     resolvedAt: row["resolved_at"] === null ? null : String(row["resolved_at"]),
     resolvedBy: row["resolved_by"] === null ? null : String(row["resolved_by"]),
-    outcome: row["outcome_json"] === null ? null : (JSON.parse(String(row["outcome_json"])) as Record<string, unknown>),
+    outcome: row["outcome_json"] === null ? null : parseStoreColumn("coordinator_proposal.outcome_json", row["outcome_json"]),
   };
 }
 
@@ -28818,13 +28811,13 @@ function readMateProposal(row: Record<string, unknown>): MateProposal {
     thread: Number(row["thread"]),
     turn: Number(row["turn"]),
     kind: String(row["kind"]) as MateProposalKind,
-    payload: JSON.parse(String(row["payload_json"])) as Record<string, unknown>,
+    payload: parseStoreColumn("mate_proposal.payload_json", row["payload_json"]),
     ceilingDigest: String(row["ceiling_digest"]),
     state: String(row["state"]) as MateProposalState,
     createdAt: String(row["created_at"]),
     resolvedAt: maybe("resolved_at"),
     resolvedBy: maybe("resolved_by"),
-    outcome: outcome === null ? null : (JSON.parse(outcome) as Record<string, unknown>),
+    outcome: outcome === null ? null : parseStoreColumn("mate_proposal.outcome_json", outcome),
   };
 }
 
@@ -29010,8 +29003,9 @@ export type ProofVerdictRow = {
 function readMatrixJson(raw: unknown): CriterionMatrixRow[] {
   if (raw === null || raw === undefined) return [];
   try {
-    const parsed = JSON.parse(String(raw));
-    if (!Array.isArray(parsed)) return [];
+    const read = readStoreColumn("proof_verdict.matrix_json", raw);
+    if (!read.ok) return [];
+    const parsed = read.value;
     // `answered` and `review` are additive (post-v39/v40 review findings):
     // a row stored before either fix simply has none, never a throw at
     // render.
@@ -29022,13 +29016,7 @@ function readMatrixJson(raw: unknown): CriterionMatrixRow[] {
 }
 
 function readProofVerdict(row: Record<string, unknown>): ProofVerdictRow {
-  let reasons: string[] = [];
-  try {
-    const parsed = JSON.parse(String(row["reasons_json"]));
-    if (Array.isArray(parsed)) reasons = parsed.map(one => String(one));
-  } catch {
-    reasons = [];
-  }
+  const reasons = readStoreStringifiedList("proof_verdict.reasons_json", row["reasons_json"]);
   return {
     run: Number(row["run"]),
     verdict: String(row["verdict"]) as ProofVerdictRow["verdict"],
@@ -29074,9 +29062,9 @@ export type CriterionReviewRow = {
 function readReviewBindingList(raw: unknown): ReviewBindingArtifact[] {
   if (typeof raw !== "string") return [];
   try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
+    const read = readStoreColumn("criterion_review.screenshots_json", raw);
+    if (!read.ok) return [];
+    return read.value
       .filter((one): one is Record<string, unknown> => typeof one === "object" && one !== null)
       .map(one => ({
         artifact: Number(one["artifact"]),
@@ -29300,13 +29288,7 @@ export type RepairChainRow = {
 };
 
 function readRepairChain(row: Record<string, unknown>): RepairChainRow {
-  let unresolved: string[] = [];
-  try {
-    const parsed = JSON.parse(String(row["unresolved_json"]));
-    if (Array.isArray(parsed)) unresolved = parsed.map(one => String(one));
-  } catch {
-    unresolved = [];
-  }
+  const unresolved = readStoreStringifiedList("repair_chain.unresolved_json", row["unresolved_json"]);
   return {
     id: Number(row["id"]),
     rootTask: String(row["root_task"]),
@@ -29382,10 +29364,10 @@ export function contestantProfileOf(
 /** The stored rubric, re-proved through the same strict parser that admits
  * one on the way in — never trusted bytes back out. Malformed or absent
  * reads back as `[]`, matching every rubric-less scope. */
-function readAcceptance(value: unknown): AcceptanceCriterion[] {
+function readAcceptance(column: "task_scope.acceptance_json" | "routine.acceptance_json", value: unknown): AcceptanceCriterion[] {
   if (value === null || value === undefined) return [];
   try {
-    return parseAcceptanceCriteria(JSON.parse(String(value))).criteria;
+    return parseAcceptanceCriteria(parseStoreColumn(column, value)).criteria;
   } catch {
     return [];
   }
@@ -29433,7 +29415,7 @@ function readScope(row: Record<string, unknown>): Scope {
     taskId: String(row["task_id"]),
     goal: String(row["goal"]),
     outOfScope: row["out_of_scope"] === null ? null : String(row["out_of_scope"]),
-    touches: readJsonArray(row["touches"]),
+    touches: readStoreTextList("task_scope.touches", row["touches"]),
     proposedAt: String(row["proposed_at"]),
     digest: String(row["digest"]),
     budgetMicrousd: row["budget_microusd"] === null || row["budget_microusd"] === undefined ? null : Number(row["budget_microusd"]),
@@ -29462,7 +29444,7 @@ function readScope(row: Record<string, unknown>): Scope {
     approvedChainJson:
       row["approved_chain_json"] === null || row["approved_chain_json"] === undefined ? null : String(row["approved_chain_json"]),
     approvalKind: String(row["approval_kind"] ?? "profile") === "chain" ? "chain" : "profile",
-    acceptance: readAcceptance(row["acceptance_json"]),
+    acceptance: readAcceptance("task_scope.acceptance_json", row["acceptance_json"]),
     qualityMode: row["quality_mode"] === "strict" ? "strict" : "default",
     riskLevel: isRiskLevel(row["risk_level"]) ? row["risk_level"] : "routine",
     proposedRouteJson:
@@ -29480,8 +29462,8 @@ function readRunner(row: Record<string, unknown>): Runner {
     name: String(row["name"]),
     host: String(row["host"]),
     capacity: Number(row["capacity"]),
-    repos: readJsonArray(row["repos"]),
-    agents: readJsonArray(row["agents"]),
+    repos: readStoreTextList("runner.repos", row["repos"]),
+    agents: readStoreTextList("runner.agents", row["agents"]),
     registeredAt: String(row["registered_at"]),
     heartbeatAt: String(row["heartbeat_at"]),
     retiredAt: row["retired_at"] === null ? null : String(row["retired_at"]),
@@ -29602,8 +29584,8 @@ function readGrant(row: Record<string, unknown>): BackendGrant {
   return {
     repo: String(row["repo"]),
     backend: String(row["backend"]),
-    paths: readJsonArray(row["paths"]),
-    mutations: readJsonArray(row["mutations"]) as MutationClass[],
+    paths: readStoreTextList("external_mirror.paths", row["paths"]),
+    mutations: readStoreTextList("external_mirror.mutations", row["mutations"]) as MutationClass[],
     selector: String(row["selector"]) === "all" ? "all" : "ours",
     credentialScope: row["credential_scope"] === null ? null : String(row["credential_scope"]),
     observedByGit: Number(row["observed_by_git"]) === 1,
@@ -29622,14 +29604,6 @@ function readGrant(row: Record<string, unknown>): BackendGrant {
   };
 }
 
-function readJsonArray(value: unknown): string[] {
-  try {
-    const parsed = JSON.parse(String(value));
-    return Array.isArray(parsed) ? parsed.filter((one): one is string => typeof one === "string") : [];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * A steering author the plane VERIFIED (ruling 11): constructible only by
