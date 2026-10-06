@@ -222,7 +222,7 @@ describe("c1: after research, the message lists each item", () => {
     cardAfterResearch("look-6", "choose");
     const script = scripted();
     await pass(script);
-    const notice = script.calls.find(one => one.method === "sendMessage" && String(one.params["text"]).includes("Choose one."))!;
+    const notice = script.calls.find(one => one.method === "sendMessage" && String(one.params["text"]).includes("Choose what happens to"))!;
     const keyboard = (notice.params["reply_markup"] as { inline_keyboard: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard.flat();
     const implement = keyboard.find(one => one.text === "Implement")!.callback_data!;
     const messageId = notice.messageId!;
@@ -309,7 +309,7 @@ describe("c1: the items' words are cleaned and the message is never over a limit
     cardAfterResearch("look-11", "choose");
     const script = scripted();
     await pass(script);
-    const notice = script.calls.find(one => one.method === "sendMessage" && String(one.params["text"]).includes("Choose one."))!;
+    const notice = script.calls.find(one => one.method === "sendMessage" && String(one.params["text"]).includes("Choose what happens to"))!;
     expect(notice.params["entities"]).toBeUndefined();
     const keyboard = (notice.params["reply_markup"] as { inline_keyboard: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard.flat();
     script.updates.push([{ update_id: 10, callback_query: { id: "cb-2", data: keyboard.find(one => one.text === "Implement")!.callback_data!, from: { id: CHAT },
