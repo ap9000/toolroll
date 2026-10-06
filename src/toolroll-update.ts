@@ -38,6 +38,7 @@ import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurab
 import { NAME } from "./names.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
+import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -52,9 +53,9 @@ export const PROVENANCE_ISSUER = "https://token.actions.githubusercontent.com";
 /** How long a watch's `toolroll up` may take to exit once launchd stops it (controller-supervisor's shutdown). */
 const UP_EXIT_MS = 45_000;
 /** The steps a person sees, in order. */
-export const UPDATE_STEPS = ["verifying", "draining", "backing-up", "rehearsing", "switching", "restarting", "health"] as const;
+export const UPDATE_STEPS = RUNTIME_UPDATE_STEPS;
 export type UpdateStep = typeof UPDATE_STEPS[number];
-export type RuntimePhase = "scheduled" | UpdateStep | "complete" | "rolling-back" | "restored" | "refused" | "cancelled" | "needs-attention";
+export type RuntimePhase = typeof RUNTIME_PHASES[number];
 export const STEP_WORDS: Record<UpdateStep, string> = {
   verifying: "Verify the package", draining: "Let running work finish", "backing-up": "Stop and back up",
   rehearsing: "Rehearse the migration", switching: "Switch to the new version", restarting: "Restart", health: "Health check",
@@ -66,45 +67,9 @@ export const KEEP_RUNTIMES = 2;
 /** The one-off launchd job the console starts the updater as. */
 export const UPDATE_JOB_LABEL = "com.toolroll.update";
 
-export type RuntimeUpdateJournal = {
-  version: 1; id: string; kind: "update" | "rollback";
-  stateDir: string; databaseFile: string; stageDir: string;
-  from: RuntimeRef; to: RuntimeRef;
-  when: When; at: string | null; actor: string;
-  phase: RuntimePhase; detail: string; error?: string;
-  steps: { phase: RuntimePhase; at: string }[];
-  startedAt: string; updatedAt: string; finishedAt?: string;
-  package?: { sha512: string; repository: string; workflow: string };
-  notes?: string[];
-  /** This run's own verified copies of the live database and coding catalog: what a failure restores. */
-  backupPath?: string; backupHash?: string;
-  codingBackupPath?: string; codingBackupHash?: string;
-  /** A rollback installs the update's earlier backups (checked against their recorded hashes). */
-  restoreFrom?: { path: string; hash: string; updateId: string; codingPath?: string; codingHash?: string };
-  rehearsal?: { tables: number; rows: number };
-  /** The background service, recorded before it is stopped: its definition and the processes that must be gone. */
-  service?: { unit: string; pids: number[] };
-  /** Each repo's watch daemon that runs this version, recorded the same way: switched with the service, and stopped and
-   * restarted with it only when launchd had it loaded before the update (`loaded` absent: 0.8.1 stopped every one). */
-  watches?: { unit: string; pids: number[]; loaded?: boolean }[];
-  /** Recorded before each change so a resumed or failed run knows what to put back. */
-  switched?: { links: { path: string; previous: string }[]; unit: { path: string; saved: string } | null; watches?: { path: string; saved: string }[]; databaseRestored?: boolean };
-  /** What the live database held when a failed run restored its backup: nothing written is lost. The newest of `kept`. */
-  keptAside?: string;
-  /** The live database could not be read, so it was moved aside whole rather than copied. */
-  keptAsideUnreadable?: boolean;
-  /** Every copy kept aside, oldest first: a retried restore adds one and never drops the pointer to an earlier one. */
-  kept?: { path: string; unreadable: boolean }[];
-  /** The restore put the backup back: a retried restore never puts it back again (what was written since belongs to
-   * the restored version and would be lost), and it keeps a fresh copy aside before every attempt until then. */
-  restoredDatabase?: boolean;
-  /** A stale coding owner record this run released after proving its processes gone. */
-  codingOwnerReleased?: ReleasedCodingOwner;
-  seen?: boolean;
-  /** The finished run the update is waiting on (or stopped waiting on): what is in the way and the command that
-   * clears it. Absent while it waits on ordinary running work. */
-  waiting?: LingeringRun & { since: string };
-};
+/** The update's journal (`toolroll-update.json`, `.last.json` and the stage's `update.json`):
+ * src/contracts/update-journal.ts. */
+export type RuntimeUpdateJournal = RuntimeUpdateJournalRecord;
 
 export type PackageRelease = { version: string; tarball: string; integrity: string; attestations: string | null };
 export type UpdateSystem = {
@@ -148,10 +113,10 @@ export type UpdateSystem = {
   checkpoint?: (phase: RuntimePhase | "kept-aside") => void;
 };
 
-export type UpdateOutcome = { ok: boolean; phase: RuntimePhase; message: string; journal: RuntimeUpdateJournal | null };
+export type UpdateOutcome = { ok: boolean; phase: RuntimeUpdateJournal["phase"]; message: string; journal: RuntimeUpdateJournal | null };
 
 const TERMINAL: readonly RuntimePhase[] = ["complete", "restored", "refused", "cancelled"];
-export const runtimeUpdateTerminal = (phase: RuntimePhase) => TERMINAL.includes(phase);
+export const runtimeUpdateTerminal = (phase: string) => TERMINAL.some(known => known === phase);
 const journalFile = (stateDir: string) => join(stateDir, "toolroll-update.json");
 /** The last completed update, kept apart from the journal: what `--rollback` returns from. */
 const lastUpdateFile = (stateDir: string) => join(stateDir, "toolroll-update.last.json");
@@ -166,8 +131,9 @@ function markStarting(j: RuntimeUpdateJournal, state: "launched" | "resuming", n
 }
 function updaterStarting(j: RuntimeUpdateJournal, now: Date): boolean {
   try {
-    const mark = JSON.parse(readFileSync(startingFile(j), "utf8")) as { id?: string; at?: string };
-    const age = now.getTime() - Date.parse(mark.at ?? "");
+    const mark = updaterStartingOf(JSON.parse(readFileSync(startingFile(j), "utf8")));
+    if (mark === null) return false;
+    const age = now.getTime() - mark.at;
     return mark.id === j.id && age >= 0 && age < UPDATER_START_MS;
   } catch { return false; }
 }
@@ -181,9 +147,11 @@ export function readRuntimeUpdate(stateDir: string, file = journalFile(stateDir)
   if (!existsSync(file)) return null;
   const stat = lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink()) throw Error("The saved update record is not a regular file. Nothing was changed.");
-  const j = JSON.parse(readFileSync(file, "utf8")) as RuntimeUpdateJournal;
+  const read = readRuntimeUpdateJournal(JSON.parse(readFileSync(file, "utf8")));
+  if (!read.ok) throw Error(`The saved update record is invalid. Preserve it and its backups; nothing was changed. (${read.issues.map(issue => issue.line).join("; ")})`);
+  const j = read.value;
   const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
-  if (j.version !== 1 || !/^[a-f0-9-]{36}$/.test(j.id) || typeof j.stateDir !== "string" || real(j.stateDir) !== real(stateDir) || !isAbsolute(j.stageDir ?? "") || real(dirname(j.stageDir)) !== real(join(stateDir, "staged-upgrades"))) throw Error("The saved update record is invalid. Preserve it and its backups; nothing was changed.");
+  if (!/^[a-f0-9-]{36}$/.test(j.id) || typeof j.stateDir !== "string" || real(j.stateDir) !== real(stateDir) || !isAbsolute(j.stageDir ?? "") || real(dirname(j.stageDir)) !== real(join(stateDir, "staged-upgrades"))) throw Error("The saved update record is invalid. Preserve it and its backups; nothing was changed.");
   return j;
 }
 
@@ -204,10 +172,14 @@ function keepCompletedUpdate(stateDir: string): void {
   durableJson(lastUpdateFile(stateDir), saved);
 }
 
-function save(j: RuntimeUpdateJournal, phase: RuntimePhase, detail: string, now: Date): void {
-  if (j.phase !== phase) j.steps.push({ phase, at: now.toISOString() });
-  j.phase = phase; j.detail = detail; j.updatedAt = now.toISOString();
-  if (runtimeUpdateTerminal(phase)) j.finishedAt = now.toISOString();
+/** A null phase saves progress without changing the saved phase, including one a newer release wrote. */
+function save(j: RuntimeUpdateJournal, phase: RuntimePhase | null, detail: string, now: Date): void {
+  if (phase !== null) {
+    if (j.phase !== phase) j.steps.push({ phase, at: now.toISOString() });
+    j.phase = phase;
+  }
+  j.detail = detail; j.updatedAt = now.toISOString();
+  if (runtimeUpdateTerminal(j.phase)) j.finishedAt = now.toISOString();
   durableJson(join(j.stageDir, "update.json"), j);
   durableJson(journalFile(j.stateDir), j);
 }
@@ -529,7 +501,7 @@ async function stopServices(j: RuntimeUpdateJournal, system: UpdateSystem, main:
     watching.push({ unit, pids: loaded ? await pidsOf(unit, earlier?.pids ?? []) : [], loaded });
   }
   if (watching.length > 0) j.watches = watching;
-  save(j, j.phase, j.detail, system.now());
+  save(j, null, j.detail, system.now());
   for (const unit of [main, ...loadedWatches(j, watches)]) if (unit) await system.stopService(unit);
   const pids = [...(main ? j.service!.pids : []), ...watching.flatMap(w => w.pids)];
   const deadline = system.now().getTime() + (system.exitTimeoutMs ?? 60_000);
@@ -713,7 +685,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
   const j = readRuntimeUpdate(stateDir);
   if (!j || runtimeUpdateTerminal(j.phase)) return "No update is in progress.";
   const tooLate = (at: RuntimeUpdateJournal) => `The update to ${at.to.version} is past the point it can be cancelled (${at.phase}); it will finish or restore on its own.`;
-  if (!CANCELLABLE.includes(j.phase)) return tooLate(j);
+  if (!CANCELLABLE.some(phase => phase === j.phase)) return tooLate(j);
   // No updater is running to see the request: cancel here, so the admission pause does not outlive it.
   const lock = sqliteLock(join(j.stageDir, "worker.sqlite"));
   if (!lock) {
@@ -726,7 +698,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
     const held = readRuntimeUpdate(stateDir);
     if (!held || runtimeUpdateTerminal(held.phase)) return "No update is in progress.";
     if (held.id !== j.id) return "A different update was saved while cancelling. Nothing was cancelled.";
-    if (!CANCELLABLE.includes(held.phase)) return tooLate(held);
+    if (!CANCELLABLE.some(phase => phase === held.phase)) return tooLate(held);
     durableJson(cancelFile(held), { id: held.id, action: "cancel" });
     try { ungate(held); } catch { /* no pause yet */ }
     if (held.kind === "update") rmSync(join(held.stageDir, "runtime"), { recursive: true, force: true });
@@ -750,7 +722,7 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
   }
   // The lock now says an updater is here; the starting mark has done its job.
   rmSync(startingFile(j), { force: true });
-  const at = (phase: RuntimePhase) => UPDATE_STEPS.indexOf(phase as UpdateStep);
+  const at = (phase: string) => UPDATE_STEPS.findIndex(step => step === phase);
   const step = (phase: RuntimePhase, detail: string) => { save(j, phase, detail, system.now()); system.checkpoint?.(phase); };
   const noun = j.kind === "update" ? "update" : "rollback";
   const verb = j.kind === "update" ? `${j.from.version} → ${j.to.version}` : `${j.from.version} → ${j.to.version} (back)`;
@@ -963,7 +935,8 @@ async function drain(j: RuntimeUpdateJournal, system: UpdateSystem): Promise<voi
  * the rollback-* records are not this updater's to remove. */
 export function pruneRuntimes(stateDir: string, keep: readonly string[]): string[] {
   const root = join(stateDir, "staged-upgrades");
-  const started = (dir: string) => { try { return String((JSON.parse(readFileSync(join(dir, "update.json"), "utf8")) as { startedAt?: string }).startedAt ?? ""); } catch { return statSync(dir).mtime.toISOString(); } };
+  // A partial or older stage file still says when it started; one that is not JSON (or is null) falls back to the mtime.
+  const started = (dir: string) => { try { const at = stagedStartedAt(JSON.parse(readFileSync(join(dir, "update.json"), "utf8"))); if (at !== null) return at; } catch { /* below */ } return statSync(dir).mtime.toISOString(); };
   const releases = readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory() && entry.name.startsWith("release-"))
     .map(entry => join(root, entry.name)).sort((a, b) => started(b).localeCompare(started(a)));
   const kept = new Set(releases.filter(dir => keep.some(dist => dist !== "" && dist.startsWith(dir + sep))));

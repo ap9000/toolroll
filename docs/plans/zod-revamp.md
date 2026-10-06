@@ -79,8 +79,8 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today |
 |---|---|---|
-| 18 | **JSON columns in the store** — 45 physical columns and one SQL projection; implementation revised, live replay pending | `store.ts` |
-| 19 | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
+| 18 ✅ | **JSON columns in the store** — 45 columns and one SQL projection | `store.ts` |
+| 19 ✅ | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
 | 20 ✅ | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
 
 ## How each item ships
@@ -371,28 +371,41 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   (item 18 can use `retentionRowSchema` and `checkoutCleanupRowSchema`); the `retention set` and `storage cleanup`
   refusals live in `operate.ts` and `serve.ts` (items 13 and 14); recipe limits are named in `RECIPE_LIMITS` until
   they can move into `TEXT_LIMITS`.
-- **18. JSON columns in the store — implementation revised; live replay pending** (2026-10-06).
-  `store-json.ts` replaces `asSaved<T>()` with saved-shape schemas and derives the tool-rule/action types. It imports
-  the decision, scope (and its plan fields), proof evidence, chat-action and Telegram button contracts. Existing flow,
-  route, stage-output and chat-content readers retain ownership; `chat-tables.ts` supplies DDL, while plan/handoff
-  artifacts are files, not store JSON columns. The manifest uses `teammate_tool` and `backend_grant`; the run fence is
-  listed separately as a SQL projection. Reads use `readVersioned` with an in-memory envelope only.
-  Compatibility: original JSON values, key order, unknown keys, nulls, coercion, clipping and catch boundaries stay;
-  v24 passes non-array `touches` into the digest as before, and failed string coercion still returns an empty list.
-  No tightening: schema mismatches in cast-only legacy columns are advisory (`legacyIssues`), never a new failure.
-  These raw-value exceptions are `teammate_suggestion.{rule_json,was_json,evidence_json}`, `teammate_call.input_json`,
-  `teammate_tool.{actions_json,rules_json}`, `teammate_question.options_json`, `teammate_event.detail_json`,
-  `task_scope.{touches,acceptance_json}`, `routine.acceptance_json`, `operating_mode.terms_json`,
-  `attended_authorization.terms_json`, `decision.options`, `run_tool.tools_json` and its `fence` projection,
-  `mate_ask.options_json`, `mutation.result`, `plan_revision.changed_fields`, `run_checkpoint.snapshot_json`,
-  `telegram_conversation_part.keyboard_json`, `publication_grant.capabilities`, `tournament_terms.agents`, and both
-  `payload_json`/`outcome_json` in `coordinator_proposal` and `mate_proposal`. A proof matrix still accepts any list
-  before its reader applies historical defaults. Truly open payloads are mutation results, tool input, event details,
-  proposal outcomes and operation-specific proposal payloads; action proposals also reuse `sharedActionSchema`.
-  Writes are unchanged; focused tests cover raw bytes, schema round trips, malformed/legacy values and the v24 digest.
-  Exhaustive live-row replay is **not verified**: this build's filesystem policy denies the live database and its
-  backups, including a SQLite `.backup` read. The handoff records unavailable counts per column. Item 18 stays
-  unchecked until an authorized read-only replay reports its counts and zero differences.
+- **18. JSON columns in the store** (2026-10-06). Every read of a JSON column in `store.ts` goes through
+  `src/contracts/store-json.ts`, importing the existing contracts where a shape has one; writes are unchanged. Replayed by
+  the lead against a copy of the live database: 49 read sites across 45 columns, 5,158 live rows plus 1,127 loose
+  variants, 0 differences and 0 new errors. Read as they are (pass-through): `mutation.result` and the 5 open-object
+  columns, and 17 list columns read as `z.array(z.unknown())` whose readers filter their items.
+
+- **19. Journals and recovery state** (2026-10-06). `src/contracts/update-journal.ts` holds the desktop app's update
+  journal (`desktop-update.json`, `receipt.json`) and `toolroll update`'s (`toolroll-update.json`, `.last.json`, a
+  stage's `update.json`), with the small records beside them (restore and stop requests, the updater's starting mark,
+  the guardian's `recovery.json` as Update status reads it, the supervisor's pids, a stage's start time);
+  `src/contracts/coding-activity.ts` the coding workspace's items, approval requests, RPC ids and custody witness; and
+  `src/contracts/native-census.ts` the macOS process census. `UpdateJournal`, `RuntimeUpdateJournal`, `CodingItem`,
+  `CodingQuestion`, `CodingRequest` and `DarwinProcessIdentity` are derived from them. Journals stay `version: 1`; a
+  reader returns the saved object itself, so a journal saved again keeps its bytes, key order and keys a newer release
+  added (a rolled-back runtime reads its successor's journal, so unknown keys are ignored, not refused). Paths,
+  ownership, identities and hashes still run after parsing with their old words; a structural refusal gives the
+  refusal the old reader gave for that field, followed by the path-named lines. Every catch that keeps a bad journal
+  from stopping startup or status is unchanged. Coding rows keep their bytes and carry no version (steering note): a
+  row that is not JSON fails as before, and one that does not match its schema is read as saved and logged. The
+  census keeps its reason codes and rebuilds each identity in its sealed key order, so snapshot, receipt and
+  certificate digests are unchanged. Compatibility revision (comment 855): unknown runtime kinds, schedules,
+  journal phases and step phases read as strings; null, missing and wrong-typed informational fields (`error`,
+  `finishedAt`, `notes`, `seen`, `actor`, `detail`, `checkedAt` and bundle `development`) pass through unchanged.
+  Catch values only permit the read; they never replace saved values. Writers still use known phases and schedules.
+  Synthetic contract regressions check object identity and identical serialized bytes for these legacy values;
+  update tests cover status, cancel, abandon, resume and rollback. The earlier 1,543-case generated replay did not
+  cover this regression and is not proof of full legacy compatibility. Real saved state remains unreplayed (zero
+  records): this revision must stay inside its worktree, and the installed database, coding catalog,
+  `staged-upgrades/` and `process-recovery/` are denied by policy. Tightened, on purpose: a newer journal version
+  is refused plainly; a version 1 journal with a malformed structural field (for example `steps` or `waiting`)
+  is refused as invalid; a null `backupPath` is refused; a recovery
+  record field of the wrong type reads as absent; a custody witness is not taken as proof unless it has its host,
+  descendants and observation flag. Left as is: the reviewed provenance profile and audit files, which are
+  hash-pinned before they are parsed.
+
 - **20. Evidence files** (2026-10-06). Every structured evidence read in `evidence.ts` and `verification-evidence.ts`
   goes through one schema: handoffs, proofs (and their screenshot list), receipts and stored reports through items 4
   and 6's contracts; the terminal diff-stat through `src/contracts/diff-stat.ts` (`DiffStat` and `DiffStatFile` are

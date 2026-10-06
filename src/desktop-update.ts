@@ -13,6 +13,8 @@ import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate
 import { currentDesktopAccess } from "./desktop-access.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, type ReleasedCodingOwner } from "./coding-update.js";
 import { processMayBeAlive } from "./process-liveness.js";
+import { readDesktopRecoveryView, readDesktopUpdateJournal, supervisorPidsOf, updateRequestIs, type DesktopRecoveryView, type DesktopUpdateJournal, type DesktopUpdatePhase } from "./contracts/update-journal.js";
+import type { ContractIssue } from "./contracts/contract.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -21,23 +23,9 @@ function sqlite(): typeof import("node:sqlite") {
 }
 
 
-type Phase = "prepared" | "draining" | "backing-up" | "stopping" | "installing" | "verifying" | "rolling-back" | "releasing" | "complete" | "restored" | "cancelled" | "needs-attention";
-export type UpdateJournal = {
-  version: 1; id: string; stateDir: string; workDir: string; label: string; databaseFile: string; configHash: string;
-  old: DesktopBundle; next: DesktopBundle; phase: Phase; intended: "install" | "restore";
-  startedAt: string; updatedAt: string; wasRunning: boolean; backupHash?: string; backupPath?: string;
-  codingBackupPath?: string; codingBackupHash?: string; codingCatalogExpected?: boolean;
-  detail: string; error?: string; checkedAt?: string;
-  serviceInterrupted?: boolean;
-  replacementOccurred?: boolean;
-  retryableRecovery?: boolean;
-  /** The finished run the update is waiting on (or stopped waiting on). Absent while it waits on ordinary work. */
-  waiting?: LingeringRun & { since: string };
-  /** The service's supervisor and controller, recorded before it is stopped: the processes proved gone afterwards. */
-  stoppedPids?: number[];
-  /** A stale coding owner record this update released after proving those processes gone. */
-  codingOwnerReleased?: ReleasedCodingOwner;
-};
+type Phase = DesktopUpdatePhase;
+/** The update's journal (`desktop-update.json`, and `receipt.json` in its folder): src/contracts/update-journal.ts. */
+export type UpdateJournal = DesktopUpdateJournal;
 type ServiceState = { state: string; stale?: boolean };
 export type UpdateHooks = {
   verify?: (old: DesktopBundle, next: DesktopBundle) => Promise<void>;
@@ -85,12 +73,31 @@ function privateFile(file: string): void {
   const stat = lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()))) throw Error("The update record must be an owner-only regular file.");
 }
+/** The refusal the hand-written reader gave for the field a saved journal first gets wrong, so callers and people read
+ * the same words; fields it never checked read as an invalid record. */
+function journalRefusal(issue: ContractIssue): string {
+  const [field, inner] = issue.path.split(/[.[]/);
+  switch (field) {
+    case "old":
+      if (inner === undefined || inner === "path") return "The saved update record is invalid. Preserve it and the app backups; nothing was changed.";
+      return "The saved update paths or build identities are invalid. Nothing was changed.";
+    case "next": case "databaseFile": case "configHash": case "wasRunning": case "backupPath": case "backupHash":
+      return "The saved update paths or build identities are invalid. Nothing was changed.";
+    case "replacementOccurred": return "The recorded replacement state is invalid. Nothing was changed.";
+    case "codingCatalogExpected": return "The recorded coding catalog presence is invalid. Nothing was changed.";
+    case "stoppedPids": return "The recorded service processes are invalid. Nothing was changed.";
+    case "codingBackupPath": case "codingBackupHash": return "The retained coding backup paths or identity are invalid. Nothing was changed.";
+    default: return "The saved update record is invalid. Preserve it and the app backups; nothing was changed.";
+  }
+}
 export function readUpdateJournal(stateDir: string, retainedReceipt?: string): UpdateJournal | null {
   const file = retainedReceipt ?? journalPath(stateDir);
   if (!existsSync(file)) return null;
   privateFile(file);
-  const j = JSON.parse(readFileSync(file, "utf8")) as UpdateJournal;
-  if (j.version !== 1 || !/^[a-f0-9-]{36}$/.test(j.id) || j.stateDir !== resolve(stateDir) || !isAbsolute(j.old?.path ?? "") || j.workDir !== join(dirname(j.old.path), ".standing-orders-updates", j.id) || !/^[a-zA-Z0-9.-]+$/.test(j.label) || !["install", "restore"].includes(j.intended) || !["prepared", "draining", "backing-up", "stopping", "installing", "verifying", "rolling-back", "releasing", "complete", "restored", "cancelled", "needs-attention"].includes(j.phase)) throw Error("The saved update record is invalid. Preserve it and the app backups; nothing was changed.");
+  const read = readDesktopUpdateJournal(JSON.parse(readFileSync(file, "utf8")));
+  if (!read.ok) throw Error(`${journalRefusal(read.issues[0]!)} (${read.issues.map(issue => issue.line).join("; ")})`);
+  const j = read.value;
+  if (!/^[a-f0-9-]{36}$/.test(j.id) || j.stateDir !== resolve(stateDir) || !isAbsolute(j.old?.path ?? "") || j.workDir !== join(dirname(j.old.path), ".standing-orders-updates", j.id) || !/^[a-zA-Z0-9.-]+$/.test(j.label) || !["install", "restore"].includes(j.intended) || !["prepared", "draining", "backing-up", "stopping", "installing", "verifying", "rolling-back", "releasing", "complete", "restored", "cancelled", "needs-attention"].includes(j.phase)) throw Error("The saved update record is invalid. Preserve it and the app backups; nothing was changed.");
   if (retainedReceipt && retainedReceipt !== join(j.workDir, "receipt.json")) throw Error("The retained recovery receipt is at the wrong path.");
   const validBundle = (b: DesktopBundle) => b && isAbsolute(b.path) && b.path.endsWith(".app") && /^[a-f0-9]{64}$/.test(b.hash) && /^[a-f0-9-]{36}$/.test(b.buildId) && /^\d+\.\d+\.\d+$/.test(b.version) && b.schemaVersion === SCHEMA_VERSION && b.bundleId === (b.development === true ? "com.standing-orders.desktop.development" : "com.standing-orders.desktop") && typeof b.providerBin === "string";
   if (!validBundle(j.old) || !validBundle(j.next) || j.old.bundleId !== j.next.bundleId || !isAbsolute(j.databaseFile) || !/^[a-f0-9]{64}$/.test(j.configHash) || typeof j.wasRunning !== "boolean" || (j.backupPath && (dirname(j.backupPath) !== j.workDir || !/^orders\.backup(?:\.[a-f0-9-]{36})?\.db$/.test(basename(j.backupPath)))) || (j.backupHash && !/^[a-f0-9]{64}$/.test(j.backupHash))) throw Error("The saved update paths or build identities are invalid. Nothing was changed.");
@@ -306,8 +313,8 @@ export function desktopUpdateStatus(stateDir: string) {
   const j = readUpdateJournal(stateDir);
   if (!j) return { active: false, phase: "none", detail: "No update is in progress.", running: false, canResume: false, canCancel: false };
   const lock = workerLock(j), running = lock === null; lock?.close();
-  let recovery: { id?: string; state?: string; detail?: string; attempts?: number; repairs?: number; updatedAt?: string } | null = null;
-  try { privateFile(join(j.workDir, "recovery.json")); recovery = JSON.parse(readFileSync(join(j.workDir, "recovery.json"), "utf8")); } catch { /* A legacy/manual update has no guardian. */ }
+  let recovery: DesktopRecoveryView | null = null;
+  try { privateFile(join(j.workDir, "recovery.json")); recovery = readDesktopRecoveryView(JSON.parse(readFileSync(join(j.workDir, "recovery.json"), "utf8"))); } catch { /* A legacy/manual update has no guardian. */ }
   const wantsAutomatic = recovery?.id === j.id && ["armed", "running", "backoff"].includes(recovery.state ?? "") && !terminal(j.phase);
   const guardianLock = wantsAutomatic ? sqliteLock(join(j.workDir, "guardian.sqlite")) : undefined;
   const automatic = wantsAutomatic && (guardianLock === null || Date.now() - Date.parse(recovery?.updatedAt ?? "") < 45_000); guardianLock?.close();
@@ -318,8 +325,7 @@ export function updateStopRequested(j: UpdateJournal): boolean {
   const file = join(j.workDir, "stop-request.json");
   if (!existsSync(file)) return false;
   privateFile(file);
-  const request = JSON.parse(readFileSync(file, "utf8"));
-  if (request.id !== j.id || request.action !== "stop") throw Error("The saved stop request is invalid. Automatic starts are refused.");
+  if (!updateRequestIs(JSON.parse(readFileSync(file, "utf8")), j.id, "stop")) throw Error("The saved stop request is invalid. Automatic starts are refused.");
   return true;
 }
 export function requestUpdateStop(stateDir: string): void {
@@ -334,7 +340,11 @@ export function requestUpdateRestore(stateDir: string): void {
   durableJson(join(j.workDir, "request.json"), { id: j.id, action: "restore" });
 }
 function restoreRequested(j: UpdateJournal): boolean {
-  try { const request = JSON.parse(readFileSync(join(j.workDir, "request.json"), "utf8")); return request.id === j.id && request.action === "restore"; }
+  try {
+    const request: unknown = JSON.parse(readFileSync(join(j.workDir, "request.json"), "utf8"));
+    if (request === null) throw Error("The saved restore request is invalid.");
+    return updateRequestIs(request, j.id, "restore");
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 export async function launchDesktopUpdate(stateDir: string, retry = false): Promise<void> {
@@ -429,8 +439,7 @@ function assertDesktopCodingStopped(j: UpdateJournal, db: DatabaseSync): void {
 /** The service's own processes, from its supervisor's status file: read before the stop, never after. */
 function servicePids(stateDir: string): number[] {
   try {
-    const status = JSON.parse(readFileSync(join(stateDir, "controller-supervisor.json"), "utf8")) as { supervisorPid?: unknown; controllerPid?: unknown };
-    return [status.supervisorPid, status.controllerPid].filter((pid): pid is number => Number.isSafeInteger(pid) && Number(pid) > 1);
+    return supervisorPidsOf(JSON.parse(readFileSync(join(stateDir, "controller-supervisor.json"), "utf8")));
   } catch { return []; }
 }
 
