@@ -11,12 +11,19 @@ const read = (input: unknown): SampleVerdict => {
 
 const legacy = savedSessionRows.map(row => JSON.parse(row.document) as Record<string, unknown>);
 const [withContext, closed] = legacy as [Record<string, unknown>, Record<string, unknown>];
-/** What the old reader made of a saved document, with the capture inside it now carrying its version. */
-const asRead = (document: Record<string, unknown>): CodingSession => {
+const asVersioned = (document: Record<string, unknown>): CodingSession => {
   const context = document["context"] as Record<string, unknown> | undefined;
   return { ...document, ...(context === undefined ? {} : { context: { version: 1, ...context } }) } as CodingSession;
 };
-const current = { version: 1, ...asRead(withContext) };
+const current = { version: 1, ...asVersioned(withContext) };
+const partialLegacy = [
+  {},
+  { id: "partial", status: "ready", nativeThreadId: "old-thread" },
+  { ...closed, status: "paused", provider: "retired", worktree: null, initialRequest: null },
+  { ...withContext, context: null },
+  { ...withContext, initialRequest: { requestId: "old-request", retired: true }, context: { metadata: { extra: { nested: true } }, sha256: null }, retired: "keep" },
+  { ...withContext, context: { ...(withContext["context"] as object), metadata: { ...((withContext["context"] as { metadata: object }).metadata), extra: true } } },
+];
 
 describe("the coding workspace record contract", () => {
   it("holds: the JSON Schema round trip loses nothing, saved and current records read, malformed ones are refused by path", () => {
@@ -25,6 +32,7 @@ describe("the coding workspace record contract", () => {
       read,
       valid: [
         ...legacy.map((input, index) => ({ name: `saved by 0.9.36: ${savedSessionRows[index]!.id}`, input })),
+        ...partialLegacy.map((input, index) => ({ name: `legacy cast compatibility ${index}`, input })),
         { name: "saved before startup finished, no context or receipt fields", input: (({ context: _c, initialRequest: _r, ...rest }) => ({ ...rest, status: "starting", nativeThreadId: null }))(withContext) },
         { name: "saved with a field the old reader ignored", input: { ...closed, retired: "x" } },
         { name: "current version 1", input: current },
@@ -32,12 +40,13 @@ describe("the coding workspace record contract", () => {
       invalid: [
         { name: "newer version", input: { ...current, version: 2 }, paths: ["version"] },
         { name: "version 1 is strict", input: { ...current, retired: "x" }, paths: ["payload"] },
-        { name: "unknown status", input: { ...closed, status: "paused" }, paths: ["status"] },
-        { name: "only Codex sessions", input: { ...closed, provider: "claude" }, paths: ["provider"] },
-        { name: "missing worktree", input: { ...closed, worktree: undefined }, paths: ["worktree"] },
-        { name: "initial request names its prompt", input: { ...closed, initialRequest: { requestId: "initial-request-0002" } }, paths: ["initialRequest.prompt"] },
+        { name: "unknown status", input: { ...current, status: "paused" }, paths: ["status"] },
+        { name: "only Codex sessions", input: { ...current, provider: "claude" }, paths: ["provider"] },
+        { name: "missing worktree", input: { ...current, worktree: undefined }, paths: ["worktree"] },
+        { name: "initial request names its prompt", input: { ...current, initialRequest: { requestId: "initial-request-0002" } }, paths: ["initialRequest.prompt"] },
         { name: "a version 1 record carries a version 1 context", input: { ...current, context: (withContext as { context: unknown }).context }, paths: ["context.version"] },
-        { name: "the saved context is checked too", input: { ...withContext, context: { ...(withContext["context"] as object), sha256: null } }, paths: ["context.sha256"] },
+        { name: "the saved context is checked too", input: { ...current, context: { ...current.context, sha256: null } }, paths: ["context.sha256"] },
+        { name: "nested version 1 objects are strict", input: { ...current, initialRequest: { requestId: "r", prompt: "p", extra: true } }, paths: ["initialRequest"] },
       ],
     });
   });
@@ -45,11 +54,26 @@ describe("the coding workspace record contract", () => {
   it("reads every saved row as the old reader did, and writes it back as version 1 that reads the same", () => {
     for (const [index, row] of savedSessionRows.entries()) {
       const session = parseCodingSessionDocument(row.document);
-      expect(session, row.id).toEqual(asRead(legacy[index]!));
+      expect(session, row.id).toEqual(legacy[index]);
       const written = codingSessionDocument(session);
       expect(JSON.parse(written), row.id).toMatchObject({ version: 1 });
-      expect(parseCodingSessionDocument(written), row.id).toEqual(session);
+      expect(parseCodingSessionDocument(written), row.id).toEqual(asVersioned(legacy[index]!));
     }
+  });
+
+  it("keeps partial legacy records and unknown nested fields intact through reads and saves", () => {
+    for (const input of partialLegacy) {
+      const document = JSON.stringify(input);
+      const session = parseCodingSessionDocument(document);
+      expect(session).toEqual(JSON.parse(document));
+      expect(codingSessionDocument(session)).toBe(document);
+      expect(parseCodingSessionDocument(codingSessionDocument(session))).toEqual(session);
+    }
+  });
+
+  it("distinguishes a null value from a missing field in a version 1 record", () => {
+    expect(read({ ...current, context: { ...current.context, sha256: null } })).toEqual({ ok: false, lines: ["context.sha256: must be a string (got null)"] });
+    expect(read({ ...current, context: { ...current.context, sha256: undefined } })).toEqual({ ok: false, lines: ["context.sha256: required"] });
   });
 
   it("refuses an unreadable document with its path", () => {

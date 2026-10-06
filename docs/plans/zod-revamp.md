@@ -131,8 +131,11 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   reuses the plan's acceptance criterion schema. The receipt's saved hash is checked before parsing; its identity,
   branch and scope seal, the context's digest, project identity and skill files, and session ownership run after, as
   before. Receipt and context metadata keys keep their written order, so parsed values hash, seal and digest to the
-  saved bytes. Saved unversioned sessions and captures read as before (known fields only) and are written as version 1
-  only when a save already happens; startup does not rewrite them. Replayed from `test/fixtures/coding/` through
-  restart, context verification and the receipt and seal checks. Tightened, on purpose: a newer version of any of the
-  three is refused plainly, version 1 records and captures are strict about unknown keys, and a saved session that does
-  not match its schema is refused with its path instead of being read as a cast.
+  saved bytes. Unversioned sessions retain the old cast's fields exactly, including partial rows, nulls and unknown
+  nested keys. A normal save writes version 1 only when the entire record fits without losing fields; other legacy
+  records stay unversioned. Reads alone do not rewrite saved bytes. Replayed from `test/fixtures/coding/` through
+  restart, context verification and the receipt and seal checks, with the original partial deployment and desktop
+  update fixtures retained. Tightened, on purpose: a newer version of any of the three is refused plainly, and version
+  1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
+  path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
+  null as a wrong value, not as a missing field.

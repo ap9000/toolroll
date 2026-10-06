@@ -49,4 +49,9 @@ describe("the coding context contract", () => {
     expect(JSON.stringify(parsed.value.metadata)).toBe(JSON.stringify(saved.metadata));
     expect(learningSha(JSON.stringify({ text: parsed.value.text, metadata: parsed.value.metadata }))).toBe(saved.sha256);
   });
+
+  it("distinguishes a null digest from a missing digest", () => {
+    expect(read({ ...current, sha256: null })).toEqual({ ok: false, lines: ["sha256: must be a string (got null)"] });
+    expect(read({ ...current, sha256: undefined })).toEqual({ ok: false, lines: ["sha256: required"] });
+  });
 });

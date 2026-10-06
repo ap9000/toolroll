@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { readVersioned, versioned, type ContractResult } from "./contract.js";
-import { codingContextSchema, upgradeUnversionedContext } from "./coding-context.js";
+import { CODING_CONTEXT_VERSION, codingContextSchema } from "./coding-context.js";
 
 export const CODING_STATUSES = ["starting", "ready", "working", "needs-input", "stopping", "interrupted", "failed", "uncertain", "closed"] as const;
 
@@ -42,28 +42,15 @@ export const codingSessionRecordSchema = versioned(CODING_SESSION_VERSION, codin
 export type CodingStatus = z.infer<typeof codingSessionSchema>["status"];
 export type CodingSession = z.infer<typeof codingSessionSchema>;
 
-const SESSION_FIELDS = Object.keys(codingSessionSchema.shape);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * A record saved before it carried `version` (every session through 0.9.36), as version 1. The old reader cast the
- * document and read only the fields it knew, so this keeps exactly those, and upgrades the capture inside it.
+ * Unversioned records were read as a cast, including partial fields, nulls and unknown nested keys. Preserve that
+ * boundary exactly; only records explicitly written as version 1 are subject to its strict schema.
  */
-export function upgradeUnversionedSession(body: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { version: CODING_SESSION_VERSION };
-  for (const field of SESSION_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(body, field) && body[field] !== undefined) out[field] = body[field];
-  }
-  const context = out["context"];
-  if (isRecord(context) && !Object.prototype.hasOwnProperty.call(context, "version")) out["context"] = upgradeUnversionedContext(context);
-  return out;
-}
-
-export const CODING_SESSION_UPGRADES = { 0: upgradeUnversionedSession } as const;
-
-/** Read a workspace record as its session: version 1 as itself, an unversioned one upgraded, a newer one refused. */
 export function readCodingSessionRecord(input: unknown): ContractResult<CodingSession> {
-  const read = readVersioned(codingSessionRecordSchema, input, CODING_SESSION_UPGRADES);
+  if (isRecord(input) && !Object.prototype.hasOwnProperty.call(input, "version")) return { ok: true, value: input as CodingSession };
+  const read = readVersioned(codingSessionRecordSchema, input, {}, { distinguishNull: true });
   if (!read.ok) return read;
   const { version: _version, ...session } = read.value;
   return { ok: true, value: session };
@@ -82,7 +69,11 @@ export function parseCodingSessionDocument(document: string): CodingSession {
   return read.value;
 }
 
-/** The document a session is saved as: always the current version. */
+/** Stamp the current version only if the entire record fits, without dropping any legacy fields. */
 export function codingSessionDocument(session: CodingSession): string {
-  return JSON.stringify({ version: CODING_SESSION_VERSION, ...session });
+  const record = { version: CODING_SESSION_VERSION, ...session };
+  if (isRecord(record.context) && !Object.prototype.hasOwnProperty.call(record.context, "version")) {
+    record.context = { ...record.context, version: CODING_CONTEXT_VERSION };
+  }
+  return JSON.stringify(codingSessionRecordSchema.safeParse(record).success ? record : session);
 }

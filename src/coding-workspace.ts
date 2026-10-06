@@ -79,8 +79,9 @@ export class CodingWorkspace {
       const clean = !prior || prior['clean'] === 1;
       this.recoveryRequired = !clean;
       this.db.prepare('INSERT OR REPLACE INTO coding_owner VALUES(1,?,?,?,?)').run(this.owner, process.pid, prior?.['native_pid'] as number ?? null, clean ? 1 : 0);
-      for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-        const session = parseCodingSessionDocument(String(row['document']));
+      for (const row of this.db.prepare('SELECT * FROM coding_session').all()) {
+        const { session, usable } = this.catalogRow(row);
+        if (!usable) continue;
         if (session.status !== 'closed' && (!clean || busy.has(session.status))) this.save({ ...session, status: clean ? 'interrupted' : 'uncertain', turnId: null, error: clean ? null : 'The previous server stopped without a verified process exit. Work is preserved; session recovery needs a process check before resuming.' });
       }
       this.db.prepare("UPDATE coding_request SET status='withdrawn' WHERE status='pending'").run();
@@ -98,6 +99,23 @@ export class CodingWorkspace {
     return parseCodingSessionDocument(String(row['document']));
   }
 
+  /** Preserve legacy reads, but never mutate an unidentified row or save an unreadable record's error projection. */
+  private catalogRow(row: Record<string, unknown>): { session: CodingSession; usable: boolean } {
+    try {
+      const session = parseCodingSessionDocument(String(row['document']));
+      const usable = session.id === row['id'] && session.owner === row['owner'] && session.generation === row['generation'] && session.repo === row['repo'];
+      return { session, usable };
+    }
+    catch (error) {
+      return { usable: false, session: {
+        id: String(row['id']), owner: String(row['owner']), generation: Number(row['generation']), repo: String(row['repo']),
+        title: 'Unreadable coding session', provider: 'codex', model: null, branch: '', base: '', worktree: '',
+        nativeThreadId: null, turnId: null, status: 'failed', createdAt: '', updatedAt: '',
+        error: error instanceof Error ? error.message : 'The saved coding session could not be read.',
+      } };
+    }
+  }
+
   private admit(): void {
     if (this.closed || this.closing || this.persistenceFailed) throw new CodingActionError('The coding server is closing or cannot save activity. Reopen it after recovery.', 'rejected');
     if (this.options.admissionPaused?.()) throw new CodingActionError('Toolroll is preparing an update. Finish or stop current work; new coding turns can start after the update.', 'rejected');
@@ -109,7 +127,7 @@ export class CodingWorkspace {
   }
 
   list(actor: CodingActor): CodingSession[] {
-    return this.db.prepare('SELECT document FROM coding_session WHERE owner=? AND generation=? ORDER BY rowid DESC').all(actor.name, actor.generation).map(row => parseCodingSessionDocument(String(row['document'])));
+    return this.db.prepare('SELECT * FROM coding_session WHERE owner=? AND generation=? ORDER BY rowid DESC').all(actor.name, actor.generation).map(row => this.catalogRow(row).session);
   }
 
   /** Inspect a fixed metadata window before loading admitted documents.
@@ -121,7 +139,12 @@ export class CodingWorkspace {
     const window = rows.slice(0, 100);
     const admitted = window.filter(row => options.authorized(String(row['repo'])));
     const selected = admitted.slice(0, Math.min(100, Math.max(1, options.limit)));
-    return { sessions: selected.map(row => this.get(String(row['id']), actor)), truncated: rows.length > window.length || admitted.length > selected.length };
+    const sessions = selected.map(row => {
+      const session = this.catalogRow(this.db.prepare('SELECT * FROM coding_session WHERE id=? AND owner=? AND generation=?').get(String(row['id']), actor.name, actor.generation)!).session;
+      this.authorize(actor, session.repo);
+      return session;
+    });
+    return { sessions, truncated: rows.length > window.length || admitted.length > selected.length };
   }
 
   get(id: string, actor: CodingActor): CodingSession {
@@ -199,8 +222,10 @@ export class CodingWorkspace {
 
   private byThread(thread: unknown): CodingSession | null {
     if (typeof thread !== 'string') return null;
-    const row = this.db.prepare("SELECT document FROM coding_session WHERE json_extract(document,'$.nativeThreadId')=?").get(thread);
-    return row ? parseCodingSessionDocument(String(row['document'])) : null;
+    const row = this.db.prepare("SELECT * FROM coding_session WHERE json_extract(document,'$.nativeThreadId')=?").get(thread);
+    if (!row) return null;
+    const { session, usable } = this.catalogRow(row);
+    return usable ? session : null;
   }
 
   private putItem(session: string, item: CodingItem): void {
@@ -263,8 +288,9 @@ export class CodingWorkspace {
     this.db.prepare('UPDATE coding_owner SET native_pid=? WHERE token=?').run(this.provider?.processId() ?? null, this.owner);
     if (event.kind === 'exit') {
       this.flush(); this.loaded.clear();
-      for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-        const session = parseCodingSessionDocument(String(row['document']));
+      for (const row of this.db.prepare('SELECT * FROM coding_session').all()) {
+        const { session, usable } = this.catalogRow(row);
+        if (!usable) continue;
         if (busy.has(session.status)) this.save({ ...session, status: 'uncertain', error: 'The agent connection closed. Work is preserved; delivery and process exit need to be checked before continuing.' });
       }
       this.db.prepare("UPDATE coding_request SET status='withdrawn' WHERE status='pending'").run();
@@ -438,7 +464,11 @@ export class CodingWorkspace {
     this.recovering = true; this.operations.add(id);
     try {
       if (this.provider) {
-        const active = this.db.prepare('SELECT document FROM coding_session').all().some(row => busy.has(parseCodingSessionDocument(String(row['document'])).status));
+        const active = this.db.prepare('SELECT * FROM coding_session').all().some(row => {
+          const { session, usable } = this.catalogRow(row);
+          if (!usable) throw new CodingActionError('A saved coding session could not be checked. Repair its record before reconnecting the agent.', 'rejected', id);
+          return busy.has(session.status);
+        });
         if (active) throw new CodingActionError('Another coding turn is still active. Wait for it to finish or stop it before reconnecting the agent.', 'rejected', id);
         await this.provider.close(); this.unsubscribe?.(); this.unsubscribe = null; this.provider = null; this.loaded.clear();
       } else if (this.recoveryRequired && !this.priorProcessesGone()) throw Error('The previous agent may still be running. Its process exit could not be verified; work remains preserved.');
@@ -615,8 +645,9 @@ export class CodingWorkspace {
       this.db.prepare("UPDATE coding_owner SET token='',pid=0 WHERE token=?").run(this.owner);
       this.closed = true; this.db.close(); return;
     }
-    for (const row of this.db.prepare('SELECT document FROM coding_session').all()) {
-      const session = parseCodingSessionDocument(String(row['document']));
+    for (const row of this.db.prepare('SELECT * FROM coding_session').all()) {
+      const { session, usable } = this.catalogRow(row);
+      if (!usable) continue;
       const uncertain = this.db.prepare("SELECT 1 FROM coding_submission WHERE session=? AND status IN ('preparing','pending','uncertain')").get(session.id);
       if (!uncertain && (busy.has(session.status) || session.status === 'uncertain')) this.save({ ...session, status: 'interrupted', turnId: null, error: null });
     }

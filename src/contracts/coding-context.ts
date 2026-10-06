@@ -66,5 +66,5 @@ export const CODING_CONTEXT_UPGRADES = { 0: upgradeUnversionedContext } as const
 
 /** Read a saved capture: version 1 as itself, an unversioned one upgraded, a newer one refused plainly. */
 export function readCodingContext(input: unknown): ContractResult<CodingContext> {
-  return readVersioned(codingContextSchema, input, CODING_CONTEXT_UPGRADES);
+  return readVersioned(codingContextSchema, input, CODING_CONTEXT_UPGRADES, { distinguishNull: true });
 }

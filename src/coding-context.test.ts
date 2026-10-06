@@ -129,7 +129,7 @@ test('a capture saved in a session before the versioned record still verifies af
   expect(version).toBe(1);
   const session = { id: 'a'.repeat(32), owner: 'alex', generation: 1, repo, title: 'Labels', provider: 'codex', model: null, branch: `toolroll/code-${'a'.repeat(32)}`, base, worktree: join(root, 'worktree'), nativeThreadId: 'thread', turnId: null, status: 'interrupted', error: null, createdAt: '2026-10-04T18:00:00.000Z', updatedAt: '2026-10-04T18:05:00.000Z', initialRequest: { requestId: 'initial-request-0001', prompt: 'Improve mobile labels' } };
   const read = parseCodingSessionDocument(JSON.stringify({ ...session, context: unversioned }));
-  expect(read.context).toEqual({ version: 1, ...unversioned });
+  expect(read.context).toEqual(unversioned);
   expect(() => verifyCodingContext(read.context!, repo, base)).not.toThrow();
   const resaved = parseCodingSessionDocument(codingSessionDocument(read));
   expect(() => verifyCodingContext(resaved.context!, repo, base)).not.toThrow();

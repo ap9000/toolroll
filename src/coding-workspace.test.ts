@@ -764,7 +764,7 @@ describe('native coding workspace', () => {
     const rows = () => (workspace as unknown as { db: DatabaseSync }).db.prepare('SELECT id,document,revision FROM coding_session ORDER BY rowid').all().map(row => ({ ...row }));
     const before = savedSessionRows.map(({ id, document, revision }) => ({ id, document, revision }));
     const [open0, closed0] = savedSessionRows.map(row => JSON.parse(row.document) as Record<string, unknown>) as [Record<string, unknown>, Record<string, unknown>];
-    const asRead = { ...open0, context: { version: 1, ...(open0['context'] as object) } };
+    const asRead = open0;
 
     workspace = open();
     // A clean restart with nothing busy reads the old documents in memory and leaves their bytes and revisions alone.
@@ -782,7 +782,86 @@ describe('native coding workspace', () => {
     expect(after[1]).toEqual(before[1]);
     expect(after[0]!['revision']).toBe(before[0]!.revision + 1);
     expect(JSON.parse(String(after[0]!['document']))).toMatchObject({ version: 1, status: 'uncertain', turnId: null, context: { version: 1 } });
-    expect(workspace.get(before[0]!.id, saved)).toEqual({ ...asRead, status: 'uncertain', error: expect.stringContaining('without a verified process exit'), updatedAt: expect.any(String) });
+    expect(workspace.get(before[0]!.id, saved)).toEqual({ ...asRead, context: { version: 1, ...(open0['context'] as object) }, status: 'uncertain', error: expect.stringContaining('without a verified process exit'), updatedAt: expect.any(String) });
+  });
+
+  test('partial legacy rows and nested fields survive restart, listing, native events and another save', async () => {
+    await workspace.close();
+    const raw = new DatabaseSync(db);
+    const legacy = {
+      id: 'partial-legacy', owner: actor.name, generation: actor.generation, repo, status: 'ready', nativeThreadId: 'legacy-thread', turnId: null,
+      initialRequest: { requestId: 'old-request', extra: true }, context: { metadata: { extra: true }, sha256: null }, extra: { retained: true },
+    };
+    try {
+      raw.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(legacy.id, legacy.owner, legacy.generation, legacy.repo, JSON.stringify(legacy));
+      workspace = open();
+      expect(workspace.list(actor)).toEqual([legacy]);
+      expect(workspace.listBounded(actor, { limit: 10, authorized: () => true }).sessions).toEqual([legacy]);
+      const healthy = await start();
+      expect(() => provider.note('turn/completed', { threadId: legacy.nativeThreadId, turn: { status: 'completed' } })).not.toThrow();
+      const resaved = { ...legacy, error: null, updatedAt: expect.any(String) };
+      expect(workspace.get(legacy.id, actor)).toEqual(resaved);
+      const document = String(raw.prepare('SELECT document FROM coding_session WHERE id=?').get(legacy.id)?.['document']);
+      expect(JSON.parse(document)).toEqual(resaved);
+      expect(JSON.parse(document)).not.toHaveProperty('version');
+      expect(workspace.get(healthy.id, actor).status).toBe('working');
+      await workspace.close(); workspace = open();
+      expect(workspace.get(legacy.id, actor)).toEqual(resaved);
+      expect(raw.prepare('SELECT document FROM coding_session WHERE id=?').get(legacy.id)?.['document']).toBe(document);
+    } finally { raw.close(); }
+  });
+
+  test.each([1, 2])('an unreadable version %s row stays visible without disabling startup, lists or native events', async version => {
+    const healthy = await start();
+    await workspace.close();
+    const raw = new DatabaseSync(db);
+    const badId = 'unreadable-row';
+    const document = JSON.stringify({ ...healthy, id: badId, nativeThreadId: 'bad-thread', version, title: null });
+    try {
+      raw.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(badId, actor.name, actor.generation, repo, document);
+      workspace = open();
+      const message = version === 1 ? 'title: must be a string (got null)' : 'version: made by a newer Toolroll';
+      expect(workspace.list(actor)).toMatchObject([{ id: badId, status: 'failed', error: expect.stringContaining(message) }, { id: healthy.id }]);
+      expect(workspace.listBounded(actor, { limit: 10, authorized: () => true }).sessions).toMatchObject([{ id: badId, status: 'failed', error: expect.stringContaining(message) }, { id: healthy.id }]);
+      expect(() => workspace.get(badId, actor)).toThrow(message);
+      await workspace.resume(healthy.id, actor);
+      expect(() => provider.note('turn/completed', { threadId: 'bad-thread', turn: { status: 'completed' } })).not.toThrow();
+      provider.emit({ kind: 'request', id: 'bad-request', method: 'item/commandExecution/requestApproval', params: { threadId: 'bad-thread' } });
+      expect(provider.rejects).toContainEqual({ id: 'bad-request', code: -32602, message: 'The requested coding session is not registered.' });
+      provider.note('turn/completed', { turn: { status: 'completed' } });
+      expect(workspace.get(healthy.id, actor).status).toBe('ready');
+      await workspace.close(); workspace = open();
+      expect(raw.prepare('SELECT document,revision FROM coding_session WHERE id=?').get(badId)).toMatchObject({ document, revision: 0 });
+      expect(workspace.list(actor)).toHaveLength(2);
+      await workspace.close();
+      raw.prepare('UPDATE coding_owner SET clean=0').run();
+      workspace = open();
+      expect(workspace.get(healthy.id, actor)).toMatchObject({ status: 'uncertain', error: expect.stringContaining('without a verified process exit') });
+      expect(workspace.list(actor)[0]).toMatchObject({ id: badId, status: 'failed', error: expect.stringContaining(message) });
+      expect(raw.prepare('SELECT document,revision FROM coding_session WHERE id=?').get(badId)).toMatchObject({ document, revision: 0 });
+    } finally { raw.close(); }
+  });
+
+  test('a legacy row with no identity fields stays readable and cannot break crash recovery or native events', async () => {
+    const healthy = await start();
+    await workspace.close();
+    const raw = new DatabaseSync(db);
+    const legacy = { status: 'working', nativeThreadId: 'unidentified-thread', context: null };
+    const document = JSON.stringify(legacy);
+    try {
+      raw.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run('unidentified-row', actor.name, actor.generation, repo, document);
+      workspace = open();
+      expect(workspace.list(actor)[0]).toEqual(legacy);
+      expect(workspace.get('unidentified-row', actor)).toEqual(legacy);
+      await workspace.resume(healthy.id, actor);
+      expect(() => provider.note('turn/completed', { threadId: legacy.nativeThreadId, turn: { status: 'completed' } })).not.toThrow();
+      await workspace.close();
+      raw.prepare('UPDATE coding_owner SET clean=0').run();
+      workspace = open();
+      expect(workspace.list(actor)[0]).toEqual(legacy);
+      expect(workspace.get(healthy.id, actor).status).toBe('uncertain');
+      expect(raw.prepare('SELECT document,revision FROM coding_session WHERE id=?').get('unidentified-row')).toMatchObject({ document, revision: 0 });
+    } finally { raw.close(); }
   });
 
   test('a newer session record is refused plainly instead of being read as something else', async () => {

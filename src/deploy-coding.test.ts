@@ -43,7 +43,7 @@ test('browser deployment uses installed SQLite backup for WAL history and refuse
   const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
   const db = new DatabaseSync(file);
   try {
-    const session = { id: 'retained-session', owner: 'alex', generation: 1, repo: f.root, title: 'Retained session', provider: 'codex', model: null, branch: 'toolroll/code-retained-session', base: 'a'.repeat(40), worktree: join(f.root, 'worktrees', 'retained-session'), nativeThreadId: 'native-saved', turnId: null, status: 'ready', error: null, createdAt: '2026-10-04T18:00:00.000Z', updatedAt: '2026-10-04T18:00:00.000Z' };
+    const session = { id: 'retained-session', owner: 'alex', generation: 1, repo: f.root, status: 'ready', nativeThreadId: 'native-saved', turnId: null };
     db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(session.id, session.owner, session.generation, session.repo, JSON.stringify(session));
     db.prepare('INSERT INTO coding_item(session,id,payload) VALUES(?,?,?)').run(session.id, 'reply', JSON.stringify({ text: 'Keep this committed WAL reply.' }));
     const agentPid = fakePid(1), toolPid = fakePid(2);

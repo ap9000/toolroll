@@ -38,7 +38,7 @@ export type CodingHandoffReceipt = z.infer<typeof codingHandoffReceiptSchema>;
 
 /** Read a receipt: version 1 as itself, a newer one refused plainly. Receipts have always carried `version`. */
 export function readCodingHandoffReceipt(input: unknown): ContractResult<CodingHandoffReceipt> {
-  return readVersioned(codingHandoffReceiptSchema, input);
+  return readVersioned(codingHandoffReceiptSchema, input, {}, { distinguishNull: true });
 }
 
 /** Read a receipt's saved bytes: JSON first, then the schema. */

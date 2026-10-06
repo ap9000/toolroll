@@ -39,4 +39,9 @@ describe("the coding handoff receipt contract", () => {
     if (parsed.ok) expect(JSON.stringify(parsed.value)).toBe(savedHandoff.handoff.payload);
     expect(parseCodingHandoffReceipt("{")).toEqual({ ok: false, issues: [{ path: "payload", kind: "invalid", line: "payload: not JSON" }] });
   });
+
+  it("distinguishes a null candidate from a missing candidate", () => {
+    expect(read({ ...saved, candidate: null })).toEqual({ ok: false, lines: ["candidate: must be a string (got null)"] });
+    expect(read({ ...saved, candidate: undefined })).toEqual({ ok: false, lines: ["candidate: required"] });
+  });
 });
