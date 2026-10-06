@@ -196,6 +196,21 @@ function source() {
   store.finishRun(run, { outcome: "built", committed: true, now });
   return { ref, run };
 }
+test.each([
+  ['{"text":42}', "text:"], ["not JSON", "payload:"], ['{"version":2,"text":"Later version"}', "version:"],
+])("an unreadable saved part stops retrying and keeps its problem: %s", async (payload, path) => {
+  const event = plan([{ text: "Saved reply" }]);
+  state.prepare("UPDATE chat_part SET payload=? WHERE event=?").run(payload, event);
+  expect(await deliverDiscordPart(options)).toBe(true);
+  const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event);
+  expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
+  expect(sends()).toEqual([]);
+  now = new Date(now.getTime() + 60_000);
+  state.lease(ID.installation, "test", now);
+  expect(await deliverDiscordPart(options)).toBe(false);
+  expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event)).toEqual(row);
+});
+
 function plan(parts: ChatContent[]) {
   const id = snow();
   state.enqueue({

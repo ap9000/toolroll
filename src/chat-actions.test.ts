@@ -35,6 +35,7 @@ import { approve } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
 import { assignmentOf } from "./assignment.js";
 import { routinesOf } from "./teammate-desk.js";
+import { readSharedAction } from "./contracts/chat-actions.js";
 const bareLegacy = (
   phase: "build",
   provider: string,
@@ -219,6 +220,27 @@ describe("shared chat action lifecycle", () => {
     expect(confirm(remove)).toMatchObject({ ok: true, said: "Tool removed from every build." });
     expect(projectToolsOf(store, repo)).toEqual([]);
   });
+  test("0.9.36 ignored optionals and watching defaults still prepare the same actions", () => {
+    const prepare = (operation: ChatAction, input: Record<string, unknown>) => prepareSharedAction(store, who, operation, input, root, now);
+    const template = prepare("teammate_create", { repo, template: "support" });
+    for (const ignored of [null, false, 0, {}]) {
+      expect(prepare("teammate_create", { repo, template: "support", name: ignored, soul: ignored })).toEqual(template);
+      expect(prepare("teammate_create", { repo, template: ignored, name: ignored, soul: template.request["soul"] })).toEqual(template);
+    }
+    const localTool = { repo, name: "shop", command: "node" };
+    expect(prepare("tool_add", { ...localTool, url: null, about: null, args: null, secrets: null })).toEqual(prepare("tool_add", localTool));
+    expect(prepare("tool_add", { repo, catalog: "github", name: null, command: null, args: null, url: null, secrets: null, about: null }))
+      .toEqual(prepare("tool_add", { repo, catalog: "github" }));
+    // A null catalog was not a valid selection in 0.9.36 either; its owning reader still gives that reason.
+    expect(() => prepare("tool_add", { ...localTool, catalog: null })).toThrow("Choose a tool from get_project_tools' common list.");
+    const flow = store.createFlow({ repo, name: "Support", by: who.name, definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "inbox", by: who.name }, now);
+    const watching = prepare("flow_card_watch", { card });
+    for (const value of [null, "false", 0, {}, [], true]) expect(prepare("flow_card_watch", { card, watching: value })).toEqual(watching);
+    expect(watching.request).toEqual({ card, watching: true });
+    expect(prepare("flow_card_watch", { card, watching: false }).request).toEqual({ card, watching: false });
+  });
+
   test("a flow card note from chat is taken whole up to 4,000 characters; over it is refused with its length, never cut", () => {
     const flow = store.createFlow({ repo, name: "Support", by: who.name, definitionJson: JSON.stringify(flowFromSteps([
       { title: "Inbox", kind: "inbox" },
@@ -238,14 +260,19 @@ describe("shared chat action lifecycle", () => {
     expect(confirm(proposal("tool_add", { repo, catalog: "github" }), true)).toMatchObject({ ok: true });
     expect(() => prepareSharedAction(store, who, "teammate_tools", { teammate: mate, tool: "github", change: "grant" }, root, now)).toThrow("github hasn't said what it can do yet. Test it on the Tools page first.");
     store.recordProjectToolTest(repo, "github", JSON.stringify({ at: now.toISOString(), ok: true, tools: ["list_issues", "create_issue"], problem: null }));
-    const grant = proposal("teammate_tools", { teammate: mate, tool: "github", change: "grant" });
+    const grantRequest = { teammate: mate, tool: "github", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null };
+    const grant = proposal("teammate_tools", grantRequest);
+    const { version: _version, ...legacy } = store.getMateProposal(grant)!.payload;
+    const read = readSharedAction(legacy);
+    expect(read).toMatchObject({ ok: true, value: { request: grantRequest, stamp: legacy["stamp"] } });
+    expect(JSON.stringify(legacy["request"])).toBe(JSON.stringify(grantRequest));
     expect(store.getMateProposal(grant)!.payload).toMatchObject({ title: "Let Maya use github", terms: expect.arrayContaining(["list_issues: does it", "create_issue: asks you first"]) });
     const stale = proposal("teammate_tools", { teammate: mate, tool: "github", change: "grant" });
     expect(confirm(grant)).toMatchObject({ ok: true });
     expect(store.teammateGrant(mate, "github")?.rules).toEqual({ list_issues: { use: "free" }, create_issue: { use: "ask" } });
     expect(confirm(stale)).toMatchObject({ ok: false });
     expect(() => prepareSharedAction(store, who, "teammate_tools", { teammate: mate, tool: "github", change: "rule", action: "delete_repo", use: "free" }, root, now)).toThrow("github has no action called delete_repo. Its actions: list_issues, create_issue.");
-    const rule = proposal("teammate_tools", { teammate: mate, tool: "github", change: "rule", action: "create_issue", use: "never" });
+    const rule = proposal("teammate_tools", { teammate: mate, tool: "github", change: "rule", action: "create_issue", use: "never", undoWith: null, limitField: null, limitOver: null });
     expect(store.getMateProposal(rule)!.payload).toMatchObject({ title: "Maya: create_issue — never" });
     expect(confirm(rule)).toMatchObject({ ok: true });
     expect(store.teammateGrant(mate, "github")?.rules["create_issue"]).toEqual({ use: "never" });

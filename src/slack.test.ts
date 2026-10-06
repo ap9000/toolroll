@@ -107,6 +107,23 @@ describe("Slack shared chat", () => {
   async function drain() {
     for (let i = 0; i < 20 && (await deliverSlackPart(options)); i++);
   }
+  test.each([
+    ['{"text":42}', "text:"], ["not JSON", "payload:"], ['{"version":2,"text":"Later version"}', "version:"],
+  ])("an unreadable saved part stops retrying and keeps its problem: %s", async (payload, path) => {
+    const binding = state.binding(ID.installation)!;
+    state.enqueue({ id: "bad-part", installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: "", thread: "", payload: {}, created: now.toISOString() });
+    state.plan("bad-part", [{ text: "Saved reply" }], now);
+    state.prepare("UPDATE chat_part SET payload=? WHERE event='bad-part'").run(payload);
+    expect(await deliverSlackPart(options)).toBe(true);
+    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get();
+    expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
+    expect(sends()).toEqual([]);
+    now = new Date(now.getTime() + 60_000);
+    state.lease(ID.installation, "test", now);
+    expect(await deliverSlackPart(options)).toBe(false);
+    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get()).toEqual(row);
+  });
+
   const pair = () => {
     const code = state.pairing(
       ID.installation,
@@ -116,6 +133,26 @@ describe("Slack shared chat", () => {
     );
     return state.pair(ID, slackHash(code), MEMBER, CHANNEL, now)!;
   };
+
+  test("a callback for an unreadable saved question replies with the problem without retrying or applying it", async () => {
+    const binding = state.binding(ID.installation)!;
+    state.enqueue({ id: "bad-question", installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: TS, thread: TS, payload: {}, created: now.toISOString() });
+    state.plan("bad-question", [{ text: "Which page first?", ask: { turn: 1, options: ["Login", "Signup"] } }], now);
+    state.prepare("UPDATE chat_part SET payload=?,state='sent',message=? WHERE event='bad-question'").run('{"text":42}', TS);
+    const button = state.prepare("SELECT token FROM chat_ask_action WHERE choice=0").get()!;
+    expect(receiveSlack(state, ID, "interactive", action(String(button.token)), now)).toBe(true);
+    expect(await processSlackEvent(options)).toBe(true);
+    expect(state.prepare("SELECT state,problem,next_at FROM chat_event WHERE kind='action'").get()).toMatchObject({ state: "done", problem: expect.stringContaining("text:"), next_at: null });
+    expect(state.prepare("SELECT consumed FROM chat_ask_action WHERE token=?").get(String(button.token))?.consumed).toBeNull();
+    expect(state.prepare("SELECT COUNT(*) n FROM chat_event WHERE kind='message'").get()?.n).toBe(0);
+    await drain();
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]?.args.text).toContain("This saved message can't be read: text:");
+    now = new Date(now.getTime() + 60_000);
+    state.lease(ID.installation, "test", now);
+    expect(await processSlackEvent(options)).toBe(false);
+    expect(runner).not.toHaveBeenCalled();
+  });
   function action(token: string, ts = TS, extra: Record<string, unknown> = {}) {
     return {
       api_app_id: ID.app,

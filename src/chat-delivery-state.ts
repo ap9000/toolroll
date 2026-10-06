@@ -539,7 +539,7 @@ export const chatTables = (channel: "slack" | "discord" | "teams"): string[] =>
 /** A saved part's content. One that can't be read is a delivery problem that names the field, never a guess. */
 export function partContent(payload: string): ChatContent {
   const read = readChatPart(payload);
-  if (!read.ok) throw new ChatDeliveryError(`This saved message can't be read: ${read.issues.map(issue => issue.line).join("; ")}`, 60_000);
+  if (!read.ok) throw new ChatDeliveryError(`This saved message can't be read: ${read.issues.map(issue => issue.line).join("; ")}`, 0, false, true);
   return read.value;
 }
 export class ChatDeliveryError extends Error {
@@ -547,6 +547,7 @@ export class ChatDeliveryError extends Error {
     readonly code: string,
     readonly retryMs = 5000,
     readonly uncertain = false,
+    readonly permanent = false,
   ) {
     super(code);
   }

@@ -1131,7 +1131,11 @@ describe("the follower — on the wire until told to stop", () => {
     expect(keepPushedUpdate(store, BOT, Buffer.from(JSON.stringify(pushedTap)), later(6_000))).toEqual({ ok: true, kept: false });
     expect(store.telegramInbox(BOT, 10)).toEqual([]);
     expect(keepPushedUpdate(store, BOT, Buffer.from("not json"), later(6_000))).toEqual({ ok: false });
-    expect(keepPushedUpdate(store, BOT, Buffer.from('{"update_id": -1}'), later(6_000))).toEqual({ ok: false });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(keepPushedUpdate(store, BOT, Buffer.from('{"update_id": -1}'), later(6_000))).toEqual({ ok: true, kept: false });
+      expect(warning).toHaveBeenCalledWith("Ignoring a pushed Telegram update: update_id: at least 1");
+    } finally { warning.mockRestore(); }
   });
 
   test("another program asking for the bot's updates is no problem to report: nothing is logged, and the next ask gets the tap (v98)", async () => {

@@ -528,6 +528,11 @@ export async function processChatEvent(
       error instanceof ChatDeliveryError
         ? error
         : new ChatDeliveryError(`${options.label} is waiting to retry`);
+    if (problem.permanent) {
+      state.plan(event.id, [{ text: problem.message }], nowOf(options));
+      state.prepare("UPDATE chat_event SET next_at=NULL,problem=? WHERE id=?").run(problem.message, event.id);
+      return true;
+    }
     state
       .prepare(
         "UPDATE chat_runtime SET problem=? WHERE installation=? AND owner=?",

@@ -32,7 +32,7 @@ import {
   type SlackPart,
   type SlackContent,
 } from "./slack-state.js";
-import { partContent } from "./chat-delivery-state.js";
+import { ChatDeliveryError, partContent } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
@@ -603,6 +603,10 @@ export async function deliverSlackPart(
       .run(identity.installation, options.owner);
     return true;
   } catch (error) {
+    if (error instanceof ChatDeliveryError && error.permanent) {
+      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      return true;
+    }
     // No permission to upload files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
     if (content !== null && content.image && content.shot && error instanceof SlackError && ["missing_scope", "no_permission"].includes(error.code)) {

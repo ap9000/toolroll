@@ -563,6 +563,10 @@ export async function deliverDiscordPart(
       .run(identity.installation, options.owner);
     return true;
   } catch (error) {
+    if (error instanceof ChatDeliveryError && error.permanent) {
+      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      return true;
+    }
     // No permission to attach files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
     if (content !== null && content.image && content.shot && error instanceof DiscordError && error.code === DISCORD_REFUSED) {

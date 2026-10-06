@@ -3,7 +3,7 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
 import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";
@@ -218,6 +218,10 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     state.prepare("UPDATE chat_part SET state='sent',message=?,attempts=attempts+1,next_at=NULL,problem=NULL WHERE id=?").run(messageId, row.id);
     return true;
   } catch (error) {
+    if (error instanceof ChatDeliveryError && error.permanent) {
+      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      return true;
+    }
     const problem = error instanceof TeamsError ? error : new TeamsError("Teams delivery failed", 15_000, true);
     state.prepare("UPDATE chat_part SET attempts=attempts+1,uncertain=?,next_at=?,problem=?,state=CASE WHEN attempts>=20 THEN 'dropped' ELSE state END WHERE id=?")
       .run(problem.uncertain ? 1 : 0, new Date(now.getTime() + problem.retryMs).toISOString(), problem.message, row.id);

@@ -7,7 +7,8 @@ import { CHAT_ACTION_FIELDS, CHAT_ACTION_OPERATIONS, chatActionRequestSchemas, r
 import { CHAT_ACTIONS } from "../chat-actions.js";
 
 type Sample = { name: string; payload: Record<string, unknown>; reads?: Record<string, unknown> };
-const saved = (JSON.parse(readFileSync(new URL("../../test/fixtures/chat/shared-actions.json", import.meta.url), "utf8")) as { samples: Sample[] }).samples;
+const saved = ["shared-actions.json", "shared-actions-null-optionals.json"].flatMap(file =>
+  (JSON.parse(readFileSync(new URL(`../../test/fixtures/chat/${file}`, import.meta.url), "utf8")) as { samples: Sample[] }).samples);
 
 const verdict = <T>(read: ContractResult<T>): SampleVerdict => (read.ok ? { ok: true } : { ok: false, lines: read.issues.map(issue => issue.line) });
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -61,6 +62,34 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   task_resume: { task: "fix-footer", run: 40 },
 };
 
+/** Values the 0.9.36 preparation branches ignored, defaulted or delegated to their owning reader. */
+const COMPATIBLE_REQUESTS: Partial<Record<ChatActionOperation, Record<string, unknown>[]>> = {
+  teammate_create: [
+    { repo: "/work/app", template: "support", name: null, soul: null },
+    { repo: "/work/app", template: null, name: null, soul: "---\nname: Maya\nrole: Support\n---\nHelpful." },
+    { repo: "/work/app", template: "support", name: false, soul: 0 },
+  ],
+  teammate_tools: [
+    { teammate: 3, tool: "shop", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null },
+    { teammate: 3, tool: "shop", change: "revoke", action: 0, use: false, undoWith: [], limitField: {}, limitOver: "unused" },
+    { teammate: 3, tool: "shop", change: "rule", action: "refund_order", use: "free", undoWith: null, limitField: "amount", limitOver: "100" },
+  ],
+  tool_add: [
+    { repo: "/work/app", catalog: null, about: null, url: null },
+    { repo: "/work/app", name: "shop", command: "node", about: null, url: null, args: null, secrets: null },
+    { repo: "/work/app", catalog: "github", name: false, command: 3, args: {}, about: [], url: false, secrets: false },
+  ],
+  teammate_memory: [{ teammate: 3, memory: 8, change: "forget", text: null }],
+  teammate_routine: [
+    { teammate: 3, change: "remove", routine: 2, schedule: null, text: false },
+    { teammate: 3, change: "add", routine: null, schedule: "daily 09:00", text: "Check the inbox." },
+  ],
+  teammate_answer: [{ question: 4, choice: "yes", text: false }, { question: 4, choice: 0, text: "Refund it." }],
+  flow_card_add: [{ flow: 3, title: "Footer year", description: false }],
+  flow_card_choose: [{ card: 12, choice: 1, note: null }],
+  flow_card_watch: [null, "false", 0, {}, [], false, true].map(watching => ({ card: 12, watching })),
+};
+
 describe("the chat action contracts", () => {
   it("every action has one schema, and its fields are the schema's", () => {
     expect([...CHAT_ACTION_OPERATIONS].sort()).toEqual(Object.keys(CHAT_ACTIONS).sort());
@@ -75,7 +104,7 @@ describe("the chat action contracts", () => {
     assertContract({
       schema: chatActionRequestSchemas[operation],
       read: input => verdict(readChatActionRequest(operation, input)),
-      valid: [{ name: "its request", input: REQUESTS[operation] }],
+      valid: [{ name: "its request", input: REQUESTS[operation] }, ...(COMPATIBLE_REQUESTS[operation] ?? []).map(input => ({ name: "0.9.36 request", input }))],
       invalid: [
         ...(CHAT_ACTION_FIELDS[operation].includes(extra) ? [] : [{ name: "another action's field", input: { ...REQUESTS[operation], [extra]: 1 }, paths: ["payload"] }]),
         { name: "not an object", input: [], paths: ["payload"] },
@@ -92,7 +121,6 @@ describe("the chat action contracts", () => {
     expect(lines("flow_card_move", { card: "12", zone: "review" })).toEqual(["card: must be a number (got a string)"]);
     expect(lines("result_accept", { task: "fix-footer", run: 0 })).toEqual(["run: at least 1"]);
     expect(lines("teammate_state", { teammate: 3, state: "asleep" })).toEqual(['state: must be one of "active", "paused", "removed"']);
-    expect(lines("flow_card_watch", { card: 12, watching: "yes" })).toEqual(["watching: must be a boolean (got a string)"]);
     expect(lines("skill_enable", { repo: "/work/app", version: "abc", restore: 1 })).toEqual(["payload: unknown key 'restore'"]);
     expect(lines("flow_card_move", { cards: 12, zone: "review" })).toEqual(["card: required", "payload: unknown key 'cards' (did you mean card?)"]);
   });
@@ -112,13 +140,13 @@ describe("a saved proposal's action", () => {
         { name: "terms are lines", input: { ...current, terms: [1] }, paths: ["terms[0]"] },
         { name: "no stamp", input: { ...current, stamp: undefined }, paths: ["stamp"] },
         { name: "its request by its action's schema", input: { ...current, request: { repo: "/work/app", titel: "x", content: "y" } }, paths: ["request.title", "request"] },
-        { name: "a request field of the wrong kind", input: { ...saved[3]!.payload, request: { card: "12", choice: 2 } }, paths: ["request.card"] },
+        { name: "a versioned request field of the wrong kind", input: { ...saved[3]!.payload, version: 1, request: { card: "12", choice: 2 } }, paths: ["request.card"] },
       ],
     });
   });
 
   it("reads every saved proposal as before: the same fields, and the same request bytes, so its stamp still matches", () => {
-    expect(saved).toHaveLength(13);
+    expect(saved).toHaveLength(16);
     for (const one of saved) {
       const read = readSharedAction(one.payload);
       if (!read.ok) throw Error(`${one.name}: ${read.issues.map(issue => issue.line).join("; ")}`);
@@ -126,6 +154,14 @@ describe("a saved proposal's action", () => {
       // The stamp is a hash over the request as saved: key order and values are kept exactly.
       expect(JSON.stringify(read.value.request), one.name).toBe(JSON.stringify(one.payload["request"]));
       expect(sha(read.value.state), one.name).toBe(sha(one.payload["state"]));
+    }
+  });
+
+  it("reads unversioned requests without adding field checks the old reader never made", () => {
+    for (const request of [{ card: "12", choice: 2 }, { card: 12, choice: 2, ignored: null }, {}]) {
+      const payload = { ...saved[3]!.payload, request };
+      expect(readSharedAction(payload)).toEqual({ ok: true, value: { version: 1, ...payload } });
+      expect(readSharedAction({ ...payload, version: 0 })).toEqual({ ok: true, value: { version: 1, ...payload } });
     }
   });
 });

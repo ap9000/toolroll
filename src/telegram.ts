@@ -117,11 +117,16 @@ export function pushedByTelegram(header: unknown, secret: string | null): boolea
   return given.length === wanted.length && timingSafeEqual(given, wanted);
 }
 
-/** Keep one pushed update for the bridge: a JSON object with a positive integer update_id. */
+/** Keep one pushed update for the bridge. A schema-invalid JSON update is logged and acknowledged, never retried. */
 export function keepPushedUpdate(store: Store, botId: string, body: Buffer, now: Date): { ok: true; kept: boolean } | { ok: false } {
-  const update = parseTelegramUpdate(body.toString("utf8"));
-  if (!update.ok) return { ok: false };
-  return { ok: true, kept: store.queueTelegramUpdate(botId, update.value.update_id, JSON.stringify(JSON.parse(body.toString("utf8"))), now) };
+  let raw: unknown;
+  try { raw = JSON.parse(body.toString("utf8")); } catch { return { ok: false }; }
+  const update = readTelegramUpdate(raw);
+  if (!update.ok) {
+    console.warn(`Ignoring a pushed Telegram update: ${update.issues.map(issue => issue.line).join("; ")}`);
+    return { ok: true, kept: false };
+  }
+  return { ok: true, kept: store.queueTelegramUpdate(botId, update.value.update_id, JSON.stringify(raw), now) };
 }
 
 // ---- the credential --------------------------------------------------------

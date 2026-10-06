@@ -133,13 +133,17 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   decide button's saved row; `telegram-callback.ts` is the Telegram update (Telegram's, unknown fields ignored) and the
   data a Toolroll button carries, within the new `TEXT_LIMITS.telegramCallbackDataBytes` (64): every keyboard is built
   with `telegramButton`, which refuses data Telegram would. `slack-callback.ts`, `discord-callback.ts` and
-  `teams-callback.ts` read each app's tap (the app's envelope loosely, Toolroll's button data strictly). The propose_action
+  `teams-callback.ts` read each app's tap (the app's envelope loosely, Toolroll's button data strictly; Teams reads
+  `value.so` and ignores extra submit keys as before). The propose_action
   JSON Schema in `mate-tools.ts` is left to item 5, which imports these. Kept: every saved proposal, part, event body,
   inbox update, button row and app tap in `test/fixtures/chat/` reads as 0.9.36 read it — the same fields and the same
   request bytes, so a saved proposal's stamp still matches — and unversioned rows are never rewritten; authentication,
-  pairing, exact chat and message binding, one-use tokens and stale replies are unchanged. Tightened, on purpose: a
-  chat action's data is checked by kind as well as by key (`card: must be a number`), and its refusal names the field;
-  a newer `version` of any of these is refused plainly; a button tap from the paired person whose data Toolroll didn't
+  pairing, exact chat and message binding, one-use tokens and stale replies are unchanged. Action requests retain
+  ignored values, null optionals and branch-specific defaults, including `watching !== false`; an unversioned
+  proposal's request is kept byte for byte and checked again only when preparing confirmation, as before.
+  Tightened, on purpose: a newer `version` of any of these is refused plainly; a button tap from the paired person whose data Toolroll didn't
   make (or can't read) is answered with the path-named reason and does nothing, where Slack, Discord and Teams dropped
   it silently and Telegram called it stale; a Telegram update that doesn't match the schema is passed over with a
-  named problem instead of being half-read.
+  named problem instead of being half-read. Schema-invalid pushed JSON updates are logged and acknowledged with
+  HTTP 200, so Telegram does not resend them. Unreadable saved message parts keep their field-path problem and
+  payload, with delivery stopped instead of scheduled for another retry.

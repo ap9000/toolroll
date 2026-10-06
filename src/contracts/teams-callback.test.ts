@@ -15,14 +15,15 @@ describe("a Teams card's button", () => {
     assertContract({
       schema: teamsSubmitSchema,
       read,
-      valid: taps.map(one => ({ name: one.name, input: one.value })),
+      valid: [...taps.map(one => ({ name: one.name, input: one.value })),
+        { name: "extra submit keys are ignored", input: { so: "0123456789abcdef0123456789abcdef", extra: 1 } }],
       invalid: [
         { name: "a token Toolroll didn't mint", input: { so: "nope" }, paths: ["value.so"] },
         { name: "no token", input: {}, paths: ["value.so"] },
-        { name: "Toolroll's data is strict", input: { so: "0123456789abcdef0123456789abcdef", extra: 1 }, paths: ["value"] },
         { name: "not an object", input: "0123456789abcdef0123456789abcdef", paths: ["value"] },
       ],
     });
     expect(readTeamsSubmit(taps[0]!.value)).toEqual({ ok: true, value: "0123456789abcdef0123456789abcdef" });
+    expect(readTeamsSubmit({ so: "0123456789abcdef0123456789abcdef", extra: { field: null } })).toEqual({ ok: true, value: "0123456789abcdef0123456789abcdef" });
   });
 });

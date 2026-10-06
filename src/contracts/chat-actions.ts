@@ -23,8 +23,9 @@ const skillFile = z.strictObject({ path: z.string(), base64: z.string() });
 const anyObject = z.object({}).catchall(z.unknown());
 
 /**
- * Each action's data, field order as the lead reads it in `get_actions`. Optional where the action works without it;
- * nullable where a prepared request saves "none" as null (an answer with no option, a card with no owner).
+ * Each action's data, field order as the lead reads it in `get_actions`. Fields a branch ignores or reads through
+ * its own validator stay unknown: 0.9.36 accepted null and other non-string values there. Preparation still checks
+ * the selected branch and saves the same request bytes. No schema defaults or coercion may change its stamp.
  */
 export const chatActionRequestSchemas = {
   skill_import: z.strictObject({ repo: words, content: words.optional(), files: z.array(skillFile).optional() }),
@@ -37,39 +38,39 @@ export const chatActionRequestSchemas = {
   knowledge_remove: z.strictObject({ repo: words, id: words }),
   knowledge_restore: z.strictObject({ repo: words, restore: id }),
   tool_add: z.strictObject({
-    repo: words, catalog: words.optional(), name: words.optional(), command: words.optional(), args: z.array(words).optional(),
-    url: words.optional(), secrets: z.array(words).optional(), about: words.optional(),
+    repo: words, catalog: z.unknown().optional(), name: z.unknown().optional(), command: z.unknown().optional(), args: z.unknown().optional(),
+    url: z.unknown().optional(), secrets: z.unknown().optional(), about: z.unknown().optional(),
   }),
   tool_remove: z.strictObject({ repo: words, name: words }),
   flow_create: z.strictObject({ repo: words, name: words, definition: nested, trigger: nested.optional() }),
   flow_starter: z.strictObject({ repo: words, starter: words }),
   flow_edit: z.strictObject({ flow: id, name: words.optional(), definition: nested.optional() }),
-  flow_card_add: z.strictObject({ flow: id, title: words, description: words.nullable().optional(), zone: words.optional() }),
+  flow_card_add: z.strictObject({ flow: id, title: words, description: z.unknown().optional(), zone: words.optional() }),
   flow_card_move: z.strictObject({ card: id, zone: words }),
   flow_card_approve: z.strictObject({ card: id, note: words.optional() }),
   flow_card_send_back: z.strictObject({ card: id, note: words.optional() }),
   /** An option by its number (from 1), or a reply that becomes the note. */
-  flow_card_choose: z.strictObject({ card: id, choice: z.int().nullable().optional(), note: words.optional() }),
+  flow_card_choose: z.strictObject({ card: id, choice: z.int().nullable().optional(), note: z.unknown().optional() }),
   flow_card_cancel: z.strictObject({ card: id }),
   flow_card_comment: z.strictObject({ card: id, note: words }),
   flow_card_assign: z.strictObject({ card: id, owner: words.nullable().optional() }),
-  flow_card_watch: z.strictObject({ card: id, watching: z.boolean().optional() }),
+  flow_card_watch: z.strictObject({ card: id, watching: z.unknown().optional() }),
   flow_script_save: z.strictObject({ repo: words, script: anyObject }),
   flow_trigger_add: z.strictObject({ flow: id, trigger: nested }),
   flow_trigger_pause: z.strictObject({ trigger: id }),
   flow_trigger_resume: z.strictObject({ trigger: id }),
   flow_trigger_remove: z.strictObject({ trigger: id }),
-  teammate_create: z.strictObject({ repo: words, template: words.optional(), name: words.optional(), soul: words.optional() }),
+  teammate_create: z.strictObject({ repo: words, template: z.unknown().optional(), name: z.unknown().optional(), soul: z.unknown().optional() }),
   teammate_soul: z.strictObject({ teammate: id, soul: words }),
   teammate_state: z.strictObject({ teammate: id, state: z.enum(["active", "paused", "removed"]) }),
   teammate_note: z.strictObject({ teammate: id, note: words }),
-  teammate_answer: z.strictObject({ question: id, choice: words.nullable().optional(), text: words.nullable().optional() }),
+  teammate_answer: z.strictObject({ question: id, choice: z.unknown().optional(), text: z.unknown().optional() }),
   teammate_tools: z.strictObject({
-    teammate: id, tool: words, change: z.enum(["grant", "revoke", "rule"]), action: words.optional(), use: z.enum(["free", "ask", "never"]).optional(),
-    limitField: words.nullable().optional(), limitOver: z.number().nullable().optional(), undoWith: words.optional(),
+    teammate: id, tool: words, change: z.enum(["grant", "revoke", "rule"]), action: z.unknown().optional(), use: z.unknown().optional(),
+    limitField: z.unknown().optional(), limitOver: z.unknown().optional(), undoWith: z.unknown().optional(),
   }),
-  teammate_memory: z.strictObject({ teammate: id, memory: id, change: z.enum(["edit", "forget"]), text: words.optional() }),
-  teammate_routine: z.strictObject({ teammate: id, change: z.enum(["add", "remove"]), routine: id.optional(), schedule: words.optional(), text: words.optional() }),
+  teammate_memory: z.strictObject({ teammate: id, memory: id, change: z.enum(["edit", "forget"]), text: z.unknown().optional() }),
+  teammate_routine: z.strictObject({ teammate: id, change: z.enum(["add", "remove"]), routine: z.unknown().optional(), schedule: z.unknown().optional(), text: z.unknown().optional() }),
   teammate_undo: z.strictObject({ teammate: id, call: id }),
   kit_setup: z.strictObject({ repo: words, kit: words }),
   decision_record: z.strictObject({ repo: words, claim: words, why: words, supersedes: id.optional(), source: words.optional() }),
@@ -137,11 +138,12 @@ const under = (prefix: string, issues: readonly ContractIssue[]): ContractIssue[
     return { ...issue, path, line: `${path}${issue.line.slice(issue.path.length)}` };
   });
 
-/** Read a saved proposal's action: the envelope, then its request by the action's own schema (`request.card: required`). */
+/** Legacy readers checked only the envelope. Confirmation still prepares the request again before acting. */
 export function readSharedAction(input: unknown): ContractResult<SharedAction> {
   const read = readVersioned(sharedActionSchema, input, SHARED_ACTION_UPGRADES);
   if (!read.ok) return read;
   if (!isOperation(read.value.operation)) return { ok: false, issues: [{ path: "operation", kind: "bad-value", line: "operation: not an action" }] };
+  if (!Object.hasOwn(input as object, "version") || (input as Record<string, unknown>)["version"] === 0) return read;
   const request = readChatActionRequest(read.value.operation, read.value.request);
   return request.ok ? read : { ok: false, issues: under("request", request.issues) };
 }
