@@ -51,7 +51,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
 | 6 ✅ | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
-| 7 | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
+| 7 ✅ | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
 
 ### Wave 2 — shared context passed between steps (P1)
 
@@ -124,3 +124,28 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **7. Small structured answers** (2026-10-05). One schema each in `src/contracts/`: `task-sizing.ts` (the sizing
+  answer), `review-findings.ts` (the build review's findings and `build_review.findings_json`), `decision.ts` (a parked
+  decision and its options), `teammate-turn.ts` (a teammate's turn) and `sort-answer.ts` (Jev's reply to a Sort zone, and
+  the decision a sort step keeps). `SizeAnswer`, `BuildFinding`, `ParsedDecision`/`DecisionOption`, `TurnAnswer` and
+  `SortDecision` are derived from them; `SIZING_SCHEMA`, `TURN_SCHEMA`, the scout's hand-written decision shape, the
+  findings fragment of the Claude review schema, `FINDING_LIMITS` and the hand-written parsers are gone. The JSON Schema
+  a model gets is generated where the transport takes one: the Claude sizer's and teammate's `--json-schema`, the
+  `findings` of the review channel the build review shares with evidence reviews (provider.ts; no separate build-review
+  schema), and the scout's question branch (the exported decision schema). A park file has no JSON Schema transport (its
+  shape stays in the brief and repair prompt) and Jev's Decisions API takes questions, not a schema: its request keys
+  (`SORT_ROUTE_KEY`, `sortNoteKeyOf`, `sortKeyOf`) come from the flow contract and its reply is read through the schema
+  before anything routes. A teammate's text limits stay out of its schema on purpose (the CLI refuses an answer a few
+  characters over whole; TURN_LIMITS are checked after parsing and asked once to shorten). The answer limits moved into
+  `TEXT_LIMITS`. What JSON Schema can't say runs after parsing with a path-named error: blank or control-carrying
+  decision text, duplicate option ids, the recommendation, deadlines, the zone's allowed actions and answers, one-line
+  findings. Every refusal, and the decision repair turn, names its path, under the decision reason codes incidents
+  already recorded (`missing-reversible`, `too-few-options`). Kept: a decision without `version` (what agents still
+  write, and every saved one) reads as before; saved findings rows are version 1 already; saved sort decisions and
+  teammate turns are read exactly as before (`parseSortDecision`, the engine's hand-off note, spend). Samples are in
+  `test/fixtures/answers/`, taken from the writers and tests: the installed database was not readable from the build
+  that wrote them. Tightened, on purpose: a version 1 decision is strict about unknown keys and a newer one is refused;
+  a finding with a key it doesn't take, a sizing answer without a reason or with an unknown key, a teammate turn
+  missing a field (the CLI already enforced this; only the plain-text fallback could), and a Jev reply whose
+  confidence, chance, score or yes/no is present but not a number are refused by path; a finding's file or scenario,
+  and a sizing reason are held to their limit as written, before whitespace is collapsed.

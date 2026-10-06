@@ -15,21 +15,15 @@
  * has already failed the milestone sentence.
  */
 
+import type { ContractIssue } from "./contracts/contract.js";
+import { readDecisionPayload, type DecisionOption, type DecisionPayload } from "./contracts/decision.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 
-export type ParsedOption = {
-  id: string;
-  label: string;
-  consequence: string;
-  reversible: boolean;
-};
+/** One option as a decision keeps it (src/contracts/decision.ts). */
+export type ParsedOption = DecisionOption;
 
-export type ParsedDecision = {
-  urgency: "blocking";
-  recap: string;
-  question: string;
-  options: ParsedOption[];
-  recommendation: string;
+/** A decision as read: the payload's fields, its text trimmed, and the optional ones present or null. */
+export type ParsedDecision = Omit<DecisionPayload, "version" | "assignee" | "deadline"> & {
   assignee: string | null;
   /** Normalized to toISOString(), like every timestamp in the store. */
   deadline: string | null;
@@ -41,17 +35,10 @@ export type ParseResult =
   | { ok: true; decision: ParsedDecision }
   | { ok: false; problems: Problem[] };
 
-/** One screen's worth, enforced rather than hoped for. */
+/** One screen's worth, enforced rather than hoped for. The payload's fields are bounded by its schema (src/contracts/decision.ts, from TEXT_LIMITS). */
 export const LIMITS = {
   /** Bytes, before parsing. Applied by the reader too; this is the backstop. */
   payload: 64 * 1024,
-  recap: 2_000,
-  question: 2_000,
-  consequence: 500,
-  label: 120,
-  optionId: 40,
-  assignee: 120,
-  options: 6,
   /** UTF-16 code units (TEXT_LIMITS.note: revise feedback, steering and decision notes); the byte backstop lives in validateNote. */
   note: TEXT_LIMITS.note,
 } as const;
@@ -86,9 +73,6 @@ export function validateNote(raw: string): { ok: true; note: string } | { ok: fa
   return { ok: true, note };
 }
 
-/** Option ids travel in URLs, CLI arguments, and CAS updates — they are identifiers, not prose. */
-const OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-
 /**
  * Multi-line prose may contain newlines and tabs; nothing anywhere in a
  * decision may contain the rest of C0/C1 — those are how text stops being
@@ -114,9 +98,14 @@ export function hasDisguisedText(text: string): boolean {
   return FORBIDDEN_MULTILINE.test(text) || FORBIDDEN_INVISIBLES.test(text);
 }
 
+/**
+ * A parked decision, read against its contract (src/contracts/decision.ts): fail closed, every problem at once, each
+ * naming its path (`options[1].reversible: required`) under the reason code the repair turn, incidents and tests have
+ * always used (`missing-reversible`). A decision written without `version` reads as it always did.
+ */
 export function parseDecision(raw: string): ParseResult {
   if (Buffer.byteLength(raw, "utf8") > LIMITS.payload) {
-    return refuse("too-large", `the payload is over ${LIMITS.payload} bytes — one screen does not need that`);
+    return refuse("too-large", `payload: over ${LIMITS.payload} bytes — one screen does not need that`);
   }
 
   let parsed: unknown;
@@ -126,198 +115,106 @@ export function parseDecision(raw: string): ParseResult {
     return refuse("not-json", `the payload is not JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return refuse("not-an-object", "the payload must be one JSON object");
+    return refuse("not-an-object", "payload: must be one JSON object");
   }
 
+  const read = readDecisionPayload(parsed);
+  const contract = read.ok ? [] : read.issues.map(decisionProblemOf);
+  if (contract.some(problem => problem.reason === "newer-version" || problem.reason === "bad-version")) return { ok: false, problems: contract };
   const body = parsed as Record<string, unknown>;
-  const problems: Problem[] = [];
+  const problems = [...contract, ...decisionRuleProblems(body, contract)];
+  if (!read.ok || problems.length > 0) return { ok: false, problems };
 
-  // Urgency is required rather than defaulted: an agent that did not say
-  // whether the loop can continue has not composed a decision. Only
-  // 'blocking' exists in M3 — advisory needs a commit-and-complete lifecycle
-  // this park-before-commit path does not have.
-  if (body["urgency"] !== "blocking") {
-    problems.push({
-      reason: "bad-urgency",
-      message: `urgency must be the string "blocking" (got ${describe(body["urgency"])})`,
-    });
-  }
-
-  const recap = prose(body["recap"], "recap", LIMITS.recap, problems);
-  const question = prose(body["question"], "question", LIMITS.question, problems);
-  const options = parseOptions(body["options"], problems);
-
-  let recommendation: string | null = null;
-  if (typeof body["recommendation"] !== "string" || body["recommendation"] === "") {
-    problems.push({
-      reason: "missing-recommendation",
-      message: "recommendation is required and must be an option id — a decision without one is a shrug",
-    });
-  } else if (options !== null && !options.some(option => option.id === body["recommendation"])) {
-    problems.push({
-      reason: "bad-recommendation",
-      message: `recommendation "${truncate(String(body["recommendation"]), 60)}" does not match any option id`,
-    });
-  } else {
-    recommendation = body["recommendation"];
-  }
-
-  let assignee: string | null = null;
-  if (body["assignee"] !== undefined && body["assignee"] !== null) {
-    const line = singleLine(body["assignee"], "assignee", LIMITS.assignee, problems);
-    if (line !== null) assignee = line;
-  }
-
-  let deadline: string | null = null;
-  if (body["deadline"] !== undefined && body["deadline"] !== null) {
-    const stamp = typeof body["deadline"] === "string" ? Date.parse(body["deadline"]) : NaN;
-    if (Number.isNaN(stamp)) {
-      problems.push({
-        reason: "bad-deadline",
-        message: `deadline must be an ISO 8601 timestamp (got ${describe(body["deadline"])})`,
-      });
-    } else {
-      // Normalized so the store's lexicographic-comparison invariant holds.
-      deadline = new Date(stamp).toISOString();
-    }
-  }
-
-  if (problems.length > 0) return { ok: false, problems };
+  const payload = read.value;
   return {
     ok: true,
     decision: {
-      urgency: "blocking",
-      recap: recap as string,
-      question: question as string,
-      options: options as ParsedOption[],
-      recommendation: recommendation as string,
-      assignee,
-      deadline,
+      urgency: payload.urgency,
+      recap: payload.recap.trim(),
+      question: payload.question.trim(),
+      options: payload.options.map(option => ({ id: option.id, label: option.label.trim(), consequence: option.consequence.trim(), reversible: option.reversible })),
+      recommendation: payload.recommendation,
+      assignee: payload.assignee === undefined || payload.assignee === null ? null : payload.assignee.trim(),
+      // Normalized so the store's lexicographic-comparison invariant holds.
+      deadline: payload.deadline === undefined || payload.deadline === null ? null : new Date(Date.parse(payload.deadline)).toISOString(),
     },
   };
 }
 
-function parseOptions(value: unknown, problems: Problem[]): ParsedOption[] | null {
-  if (!Array.isArray(value)) {
-    problems.push({ reason: "no-options", message: "options must be an array" });
-    return null;
+/** The reason code a contract issue has always had: `missing-recap`, `too-few-options`, `bad-option-id`. */
+function decisionReasonOf(issue: ContractIssue): string {
+  const at = issue.path;
+  if (issue.kind === "newer-version") return "newer-version";
+  if (at === "version") return "bad-version";
+  if (issue.kind === "unknown-key") return `${at}-unknown-key`;
+  const text = (field: string) => (issue.kind === "too-long" ? `${field}-too-long` : `missing-${field}`);
+  switch (at) {
+    case "urgency": return "bad-urgency";
+    case "options": return issue.kind === "too-few" ? "too-few-options" : issue.kind === "too-many" ? "too-many-options" : "no-options";
+    case "recommendation": return issue.kind === "too-long" ? "bad-recommendation" : "missing-recommendation";
+    case "deadline": return "bad-deadline";
   }
-  if (value.length < 2) {
-    // One option is not a decision, it is a notification wearing one's
-    // clothes — and the operator's real alternative ("do neither") deserves
-    // to be an option with a stated consequence, not an implied one.
-    problems.push({ reason: "too-few-options", message: "a decision needs at least 2 options" });
-    return null;
+  const option = /^options\[(\d+)\](?:\.(\w+))?$/.exec(at);
+  if (option !== null) {
+    const [, index, field] = option;
+    if (field === undefined) return "bad-option";
+    if (field === "id") return "bad-option-id";
+    if (field === "reversible") return "missing-reversible";
+    return text(`option-${index}-${field}`);
   }
-  if (value.length > LIMITS.options) {
-    problems.push({
-      reason: "too-many-options",
-      message: `at most ${LIMITS.options} options fit on one screen (got ${value.length})`,
-    });
-    return null;
-  }
+  return text(at);
+}
 
-  const options: ParsedOption[] = [];
-  const seen = new Set<string>();
-  let sound = true;
+const decisionProblemOf = (issue: ContractIssue): Problem => ({ reason: decisionReasonOf(issue), message: issue.line });
 
-  value.forEach((entry, index) => {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: "bad-option", message: `option ${index} must be an object` });
-      sound = false;
-      return;
+/** True when `problems` name `field` or anything under it. */
+const touched = (problems: readonly Problem[], field: string) =>
+  problems.some(problem => problem.message.startsWith(`${field}:`) || problem.message.startsWith(`${field}[`) || problem.message.startsWith(`${field}.`));
+
+/**
+ * The rules JSON Schema cannot state, in plain code with named errors: text not blank once trimmed and free of control
+ * characters (a label or assignee on one line), unique option ids, a recommendation naming one of them, and a deadline
+ * that is a timestamp. Fields the contract already refused are skipped, so every problem is reported once and all at
+ * once.
+ */
+function decisionRuleProblems(body: Record<string, unknown>, contract: readonly Problem[]): Problem[] {
+  const problems: Problem[] = [];
+  const text = (value: unknown, path: string, slug: string, oneLine: boolean) => {
+    if (typeof value !== "string" || touched(contract, path)) return;
+    if (value.trim() === "") problems.push({ reason: `missing-${slug}`, message: `${path}: must not be blank` });
+    else if ((oneLine ? FORBIDDEN_SINGLE_LINE : FORBIDDEN_MULTILINE).test(value)) {
+      problems.push({ reason: `${slug}-control-characters`, message: `${path}: ${oneLine ? "must be one line with no control characters" : "contains control characters — text only"}` });
     }
+  };
+  text(body["recap"], "recap", "recap", false);
+  text(body["question"], "question", "question", false);
+  const options = Array.isArray(body["options"]) ? (body["options"] as unknown[]) : [];
+  const seen = new Set<string>();
+  options.forEach((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return;
     const option = entry as Record<string, unknown>;
-
     const id = option["id"];
-    if (typeof id !== "string" || !OPTION_ID.test(id) || id.length > LIMITS.optionId) {
-      problems.push({
-        reason: "bad-option-id",
-        message: `option ${index} needs an id of 1-${LIMITS.optionId} letters, digits, - or _ (got ${describe(id)})`,
-      });
-      sound = false;
-    } else if (seen.has(id)) {
-      problems.push({ reason: "duplicate-option-id", message: `option id "${id}" appears twice` });
-      sound = false;
-    } else {
+    if (typeof id === "string" && !touched(contract, `options[${index}].id`)) {
+      if (seen.has(id)) problems.push({ reason: "duplicate-option-id", message: `options[${index}].id: "${id}" appears twice` });
       seen.add(id);
     }
-
-    const label = singleLine(option["label"], `option ${index} label`, LIMITS.label, problems);
-    const consequence = prose(option["consequence"], `option ${index} consequence`, LIMITS.consequence, problems);
-
-    // Absent is invalid, never defaulted: a defaulted reversibility is a
-    // guess wearing a schema, and reversible=false is the field the
-    // scheduler's refusal to auto-apply rests on.
-    if (typeof option["reversible"] !== "boolean") {
-      problems.push({
-        reason: "missing-reversible",
-        message: `option ${index} must say reversible: true or false — unstated is not reversible, it is unstated`,
-      });
-      sound = false;
-    }
-
-    if (label === null || consequence === null) {
-      sound = false;
-      return;
-    }
-    if (sound) {
-      options.push({
-        id: id as string,
-        label,
-        consequence,
-        reversible: option["reversible"] as boolean,
-      });
-    }
+    text(option["label"], `options[${index}].label`, `option-${index}-label`, true);
+    text(option["consequence"], `options[${index}].consequence`, `option-${index}-consequence`, false);
   });
-
-  return sound && options.length === value.length ? options : null;
-}
-
-function prose(value: unknown, field: string, cap: number, problems: Problem[]): string | null {
-  if (typeof value !== "string" || value.trim() === "") {
-    problems.push({ reason: `missing-${slug(field)}`, message: `${field} is required` });
-    return null;
+  const recommendation = body["recommendation"];
+  if (typeof recommendation === "string" && !touched(contract, "recommendation") && !touched(contract, "options") && !options.some(option => typeof option === "object" && option !== null && (option as Record<string, unknown>)["id"] === recommendation)) {
+    problems.push({ reason: "bad-recommendation", message: `recommendation: "${truncate(recommendation, 60)}" does not match any option id` });
   }
-  if (value.length > cap) {
-    problems.push({ reason: `${slug(field)}-too-long`, message: `${field} is over ${cap} characters` });
-    return null;
+  if (body["assignee"] !== null) text(body["assignee"], "assignee", "assignee", true);
+  const deadline = body["deadline"];
+  if (typeof deadline === "string" && !touched(contract, "deadline") && Number.isNaN(Date.parse(deadline))) {
+    problems.push({ reason: "bad-deadline", message: `deadline: must be an ISO 8601 timestamp (got ${describe(deadline)})` });
   }
-  if (FORBIDDEN_MULTILINE.test(value)) {
-    problems.push({
-      reason: `${slug(field)}-control-characters`,
-      message: `${field} contains control characters — text only`,
-    });
-    return null;
-  }
-  return value.trim();
-}
-
-function singleLine(value: unknown, field: string, cap: number, problems: Problem[]): string | null {
-  if (typeof value !== "string" || value.trim() === "") {
-    problems.push({ reason: `missing-${slug(field)}`, message: `${field} is required` });
-    return null;
-  }
-  if (value.length > cap) {
-    problems.push({ reason: `${slug(field)}-too-long`, message: `${field} is over ${cap} characters` });
-    return null;
-  }
-  if (FORBIDDEN_SINGLE_LINE.test(value)) {
-    problems.push({
-      reason: `${slug(field)}-control-characters`,
-      message: `${field} must be one line with no control characters`,
-    });
-    return null;
-  }
-  return value.trim();
+  return problems;
 }
 
 function refuse(reason: string, message: string): ParseResult {
   return { ok: false, problems: [{ reason, message }] };
-}
-
-function slug(field: string): string {
-  return field.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
 
 function describe(value: unknown): string {

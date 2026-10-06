@@ -44,7 +44,9 @@ const io = (teammate: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec
 const reply = "Hi Priya, your lamp shipped on the 15th and arrives tomorrow. ".repeat(250).trim();
 
 test("an answer is read whole, never sliced, and its fields over their limits are named", () => {
-  const answer = readTurn({ ...blank, action: "route", answer: "Replied", text: reply, note: "n".repeat(TURN_LIMITS.note + 1) }, { kind: "handle", canSendBack: false, answers: ["Replied"] })!;
+  const read = readTurn({ ...blank, action: "route", answer: "Replied", text: reply, note: "n".repeat(TURN_LIMITS.note + 1) }, { kind: "handle", canSendBack: false, answers: ["Replied"] });
+  if (!read.ok) throw new Error(read.issues.map(issue => issue.line).join("; "));
+  const answer = read.value;
   expect(answer.text).toBe(reply);
   expect(turnOverruns(answer)).toEqual([{ field: "text", limit: 12_000, length: reply.length }, { field: "note", limit: 4_000, length: 4_001 }]);
 });

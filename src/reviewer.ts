@@ -4,7 +4,7 @@
 import type { CriterionJudgementWord } from "./proof.js";
 import { citesSuppliedProvenance } from "./review-context.js";
 import { normalizeStructuredJson, REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
-import type { BuildFinding } from "./review-switch.js";
+import { readBuildFindings, type BuildFinding } from "./contracts/review-findings.js";
 
 /** The files the pass writes INTO the scratch directory for the agent —
  * the patch always; the rubric, re-serialized proof, check log, and
@@ -252,16 +252,18 @@ export function parseReview(
   return { ok: true, comments, criteria, ...(payload["learning"] === undefined ? {} : { learning: payload["learning"] }), ...(payload["learningAssessment"] === undefined ? {} : { learningAssessment: payload["learningAssessment"] }) };
 }
 
-export type { BuildFinding, FindingSeverity } from "./review-switch.js";
+export type { BuildFinding, FindingSeverity } from "./contracts/review-findings.js";
 
-export const FINDING_LIMITS = { findings: 40, file: REVIEW_OUTPUT_LIMITS.path, scenario: REVIEW_OUTPUT_LIMITS.note } as const;
+/** One line, as a revision note and a terminal show it: controls and runs of whitespace become one space. */
+const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
 
 /**
- * The automatic build review's reply, strict and wholesale like parseReview:
- * `{"version":1,"findings":[{"severity","file","line","scenario"}]}`. Any
- * invalid finding refuses the whole reply — a review that did not answer
- * what it was asked is "not reviewed", never a partial pass. Text is kept
- * to one line so it can travel in a revision note and a terminal.
+ * The automatic build review's reply, read through its contract (src/contracts/review-findings.ts), strict and
+ * wholesale like parseReview: `{"version":1,"findings":[{"severity","file","line","scenario"}]}`. Any invalid
+ * finding refuses the whole reply — a review that did not answer what it was asked is "not reviewed", never a partial
+ * pass — and the refusal names each path (`findings[0].line: at least 1`). The reply shares Claude's review channel
+ * (provider.ts), so only its version and findings are read, as always. Text is kept to one line so it can travel in a
+ * revision note and a terminal; a file or scenario that is blank once it is one line is refused by path.
  */
 export function parseBuildFindings(raw: string): { ok: true; findings: BuildFinding[] } | { ok: false; problem: string } {
   let parsed: unknown;
@@ -271,25 +273,15 @@ export function parseBuildFindings(raw: string): { ok: true; findings: BuildFind
     return { ok: false, problem: "the reply is not JSON" };
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, problem: "the reply is not an object" };
-  const payload = parsed as Record<string, unknown>;
-  if (payload["version"] !== 1) return { ok: false, problem: "version must be 1" };
-  const list = payload["findings"];
-  if (!Array.isArray(list)) return { ok: false, problem: "findings must be an array" };
-  if (list.length > FINDING_LIMITS.findings) return { ok: false, problem: `at most ${FINDING_LIMITS.findings} findings` };
+  const reply = parsed as Record<string, unknown>;
+  const read = readBuildFindings({ ...(Object.prototype.hasOwnProperty.call(reply, "version") ? { version: reply["version"] } : {}), findings: reply["findings"] });
+  if (!read.ok) return { ok: false, problem: read.issues.map(issue => issue.line).join("; ") };
   const findings: BuildFinding[] = [];
-  const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
-  for (const [index, one] of list.entries()) {
-    if (one === null || typeof one !== "object" || Array.isArray(one)) return { ok: false, problem: `finding ${index}: not an object` };
-    const finding = one as Record<string, unknown>;
-    const severity = finding["severity"];
-    if (severity !== "HIGH" && severity !== "MEDIUM" && severity !== "LOW") return { ok: false, problem: `finding ${index}: severity must be HIGH, MEDIUM or LOW` };
-    const file = typeof finding["file"] === "string" ? oneLine(finding["file"]) : "";
-    if (file.length === 0 || file.length > FINDING_LIMITS.file) return { ok: false, problem: `finding ${index}: file must be a path of 1..${FINDING_LIMITS.file} characters` };
-    const line = finding["line"];
-    if (typeof line !== "number" || !Number.isInteger(line) || line < 1) return { ok: false, problem: `finding ${index}: line must be a positive whole number` };
-    const scenario = typeof finding["scenario"] === "string" ? oneLine(finding["scenario"]) : "";
-    if (scenario.length === 0 || scenario.length > FINDING_LIMITS.scenario) return { ok: false, problem: `finding ${index}: scenario must be one sentence of 1..${FINDING_LIMITS.scenario} characters` };
-    findings.push({ severity, file, line, scenario });
+  for (const [index, finding] of read.value.findings.entries()) {
+    const file = oneLine(finding.file), scenario = oneLine(finding.scenario);
+    if (file === "") return { ok: false, problem: `findings[${index}].file: must not be blank` };
+    if (scenario === "") return { ok: false, problem: `findings[${index}].scenario: must not be blank` };
+    findings.push({ ...finding, file, scenario });
   }
   return { ok: true, findings };
 }

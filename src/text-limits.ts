@@ -107,6 +107,23 @@ export const TEXT_LIMITS = {
   /** One proof line — a criterion statement, evidence ref, check command or summary, changed path, caveat, or
    * screenshot path or caption — in UTF-8 bytes. */
   proofLineBytes: 300,
+  /** The task sizing classifier's reason (src/contracts/task-sizing.ts). */
+  sizingReason: 160,
+  /** A review comment's or build-review finding's path, and its note or failure scenario (src/contracts/review-findings.ts). */
+  reviewPath: 300,
+  reviewNote: 500,
+  /** A parked decision (src/contracts/decision.ts): its recap and question, an option's id, label and consequence, and who it is for. */
+  decisionRecap: 2_000,
+  decisionQuestion: 2_000,
+  decisionOptionId: 40,
+  decisionLabel: 120,
+  decisionConsequence: 500,
+  decisionAssignee: 120,
+  /** A teammate's turn (src/contracts/teammate-turn.ts): the answer it picks (and each option it offers), its question, its reason and what it remembers. */
+  teammateAnswer: 60,
+  teammateQuestion: 600,
+  teammateReason: 400,
+  teammateRemember: 300,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

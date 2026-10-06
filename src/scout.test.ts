@@ -524,7 +524,7 @@ describe("scout tasks, against real git", () => {
     const schema = JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}");
     expect(schema).toMatchObject({ required: ["kind"], properties: { kind: { enum: ["report", "question"] } } });
     expect(schema.properties.report.required).toEqual(["title", "summary", "report"]);
-    expect(schema.properties.decision.required).toEqual(["urgency", "recap", "question", "options", "recommendation"]);
+    expect(schema.properties.decision.required).toEqual(["version", "urgency", "recap", "question", "options", "recommendation"]);
     expect(prompts.at(-1)).toContain("final structured");
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");

@@ -1,0 +1,735 @@
+{
+ "about": "Build review findings replayed by src/contracts/review-findings.test.ts through parseBuildFindings: replies as reviewers give them and build_review.findings_json rows as settle() writes them ({version: 1, findings}). The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "saved row: no findings",
+   "source": "src/build-review.ts settle (a clean review)",
+   "payload": {
+    "version": 1,
+    "findings": []
+   }
+  },
+  {
+   "name": "saved row: one HIGH that sent the work back",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "HIGH",
+      "file": "src/payouts.ts",
+      "line": 1,
+      "scenario": "A payout of 101 is accepted because the limit is never checked."
+     }
+    ]
+   }
+  },
+  {
+   "name": "saved row: graded findings",
+   "source": "src/task-review-brief.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "src/labels.ts",
+      "line": 2,
+      "scenario": "An optional hint could be shorter."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/labels.ts",
+      "line": 5,
+      "scenario": "An empty label has no error message."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/labels.ts",
+      "line": 9,
+      "scenario": "Reload loses the saved label."
+     }
+    ]
+   }
+  },
+  {
+   "name": "saved row: the most a review may raise",
+   "source": "src/task-review-brief.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "HIGH",
+      "file": "src/file-0.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 0."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-1.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 1."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-2.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 2."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-3.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 3."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-4.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 4."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-5.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 5."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-6.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 6."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-7.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 7."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-8.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 8."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-9.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 9."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-10.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 10."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-11.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 11."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-12.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 12."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-13.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 13."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-14.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 14."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-15.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 15."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-16.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 16."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-17.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 17."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-18.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 18."
+     },
+     {
+      "severity": "HIGH",
+      "file": "src/file-19.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 19."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-20.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 20."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-21.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 21."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-22.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 22."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-23.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 23."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-24.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 24."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-25.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 25."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-26.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 26."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-27.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 27."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-28.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 28."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-29.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 29."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-30.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 30."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-31.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 31."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-32.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 32."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-33.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 33."
+     },
+     {
+      "severity": "MEDIUM",
+      "file": "src/file-34.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 34."
+     },
+     {
+      "severity": "LOW",
+      "file": "src/file-35.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 35."
+     },
+     {
+      "severity": "LOW",
+      "file": "src/file-36.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 36."
+     },
+     {
+      "severity": "LOW",
+      "file": "src/file-37.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 37."
+     },
+     {
+      "severity": "LOW",
+      "file": "src/file-38.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 38."
+     },
+     {
+      "severity": "LOW",
+      "file": "src/file-39.ts",
+      "line": 4,
+      "scenario": "A saved label can be lost in case 39."
+     }
+    ]
+   }
+  },
+  {
+   "name": "reply on the shared review channel, with its other fields",
+   "source": "src/provider.ts review schema (comments ride beside findings)",
+   "payload": {
+    "version": 1,
+    "findings": [],
+    "comments": []
+   }
+  },
+  {
+   "name": "reply with a scenario over two lines",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 3,
+      "scenario": "one\nline"
+     }
+    ]
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "a newer version",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 2,
+    "findings": []
+   },
+   "paths": [
+    "version"
+   ]
+  },
+  {
+   "name": "no findings",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1
+   },
+   "paths": [
+    "findings"
+   ]
+  },
+  {
+   "name": "line 0",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "HIGH",
+      "file": "a.ts",
+      "line": 0,
+      "scenario": "x"
+     }
+    ]
+   },
+   "paths": [
+    "findings[0].line"
+   ]
+  },
+  {
+   "name": "empty file",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "HIGH",
+      "file": "",
+      "line": 1,
+      "scenario": "x"
+     }
+    ]
+   },
+   "paths": [
+    "findings[0].file"
+   ]
+  },
+  {
+   "name": "empty scenario",
+   "source": "src/build-review.test.ts",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "HIGH",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": ""
+     }
+    ]
+   },
+   "paths": [
+    "findings[0].scenario"
+   ]
+  },
+  {
+   "name": "a blank scenario once on one line",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": " \n\t "
+     }
+    ]
+   },
+   "paths": [
+    "findings[0].scenario"
+   ]
+  },
+  {
+   "name": "a severity that isn't one",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "CRITICAL",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     }
+    ]
+   },
+   "paths": [
+    "findings[0].severity"
+   ]
+  },
+  {
+   "name": "a finding with a key it doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x",
+      "title": "t"
+     }
+    ]
+   },
+   "paths": [
+    "findings[0]"
+   ]
+  },
+  {
+   "name": "more than 40 findings",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     },
+     {
+      "severity": "LOW",
+      "file": "a.ts",
+      "line": 1,
+      "scenario": "x"
+     }
+    ]
+   },
+   "paths": [
+    "findings"
+   ]
+  },
+  {
+   "name": "saved row written without a version (a test's hand-made row; buildReviewOf still reads it as before)",
+   "source": "src/task-review-brief.test.ts",
+   "payload": {
+    "findings": [
+     {
+      "severity": "LOW",
+      "file": "safe.ts",
+      "line": 3,
+      "scenario": "Use a shorter hint."
+     }
+    ]
+   },
+   "paths": [
+    "version"
+   ]
+  }
+ ]
+}

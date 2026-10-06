@@ -84,6 +84,11 @@ export const flowSortNoteSchema = z.discriminatedUnion("kind", [
   z.strictObject({ id: zoneId, kind: z.literal("score"), question: words("question", "flowSortQuestion").min(1), levels: z.array(words("level", "flowSortLevel").min(1)).min(SORT_LEVELS_MIN).max(SORT_LEVELS_MAX) }),
   z.strictObject({ id: zoneId, kind: z.literal("yes-no"), question: words("question", "flowSortQuestion").min(1), levels: z.null() }),
 ]);
+/** How a sort answer is named to Jev: its words as a short key (the request's criteria, and the choice Jev returns). */
+export const sortKeyOf = (answer: string) => answer.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "answer";
+/** The key of a sort zone's question in its Jev request (a choice over its answers), and of each thing it also notes. */
+export const SORT_ROUTE_KEY = "route";
+export const sortNoteKeyOf = (noteId: string) => `note_${noteId.replace(/-/g, "_")}`;
 /** sort: the question, its answers, how sure Jev must be to act alone (0.5–0.99), and what else it notes. */
 export const flowSortSchema = z.strictObject({
   question: words("question", "flowSortQuestion").min(1),

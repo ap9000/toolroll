@@ -131,8 +131,9 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     // v97: every turn is kept with what it cost, for its weekly report.
     store.addTeammateTurn({ teammate: mate.id, card: card.id, model, ok: reply.ok, ms: reply.ok ? reply.ms : Date.now() - asked, costUsd: reply.costUsd ?? null, tokensIn: reply.tokensIn ?? null, tokensOut: reply.tokensOut ?? null }, now);
     if (!reply.ok) return { state: "retry", said: reply.said, ...(log.length === 0 ? {} : { log: log.join("\n\n") }) };
-    const answer = readTurn(reply.value, context);
-    if (answer === null) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
+    const read = readTurn(reply.value, context);
+    if (!read.ok) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, read.issues.map(issue => issue.line).join("\n"), JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
+    const answer = read.value;
     const header = `${context.name} (${model}) · ${(reply.ms / 1000).toFixed(1)} s`;
     const over = turnOverruns(answer);
     if (over.length > 0 && !shortened) {

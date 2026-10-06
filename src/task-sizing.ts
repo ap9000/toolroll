@@ -20,12 +20,13 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readSizeAnswer, SIZING_MODEL_SCHEMA, type SizeAnswer } from "./contracts/task-sizing.js";
 import { strictJsonParse } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { run, terminateOwnedProcesses, type ExecResult } from "./exec.js";
 import { JEV_MODEL, JEV_URL } from "./flow-sort.js";
 import { readProviderKey } from "./keys.js";
-import { isTaskSize, type TaskSize, type TaskSizing } from "./phase-routing.js";
+import { type TaskSize, type TaskSizing } from "./phase-routing.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { Store } from "./store.js";
 
@@ -35,7 +36,7 @@ export const SIZING_BUDGET_MS = 5_000;
 export const SIZING_CLAUDE_MODEL = "haiku";
 
 export type SizingInput = { title: string; goal?: string | undefined; outOfScope?: string | null | undefined; touches?: readonly string[] | undefined };
-export type SizeAnswer = { size: TaskSize; risky: boolean; reason: string };
+export type { SizeAnswer } from "./contracts/task-sizing.js";
 /** One classifier: null (or a throw) is "no answer"; the signal ends at the budget. */
 export type Sizer = (input: SizingInput, signal: AbortSignal) => Promise<SizeAnswer | null>;
 
@@ -60,8 +61,14 @@ export function heuristicSizing(input: SizingInput, why: string | null = null): 
 const clip = (text: string, cap: number): string => (text.length <= cap ? text : `${text.slice(0, cap - 1)}…`);
 /** Key-shaped lines never leave the machine. */
 const blank = (text: string): string => redactSecretLines(text, scanForSecrets(text));
-/** One plain line, bounded. */
-const oneLine = (text: string): string => clip(text.replace(/\s+/g, " ").trim(), 160);
+/** A reason as the task shows it: one plain line. */
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/** An answer read through the contract (src/contracts/task-sizing.ts), its reason on one line; null when it isn't one. */
+function answerOf(value: unknown): SizeAnswer | null {
+  const read = readSizeAnswer(value);
+  return read.ok ? { ...read.value, reason: oneLine(read.value.reason) } : null;
+}
 
 const SIZE_MEANS: Record<TaskSize, string> = {
   small: "a contained change a fast model can make directly: copy, a style, a config value, one small function, one or two files",
@@ -78,25 +85,6 @@ export function sizingText(input: SizingInput): string {
     ...(input.outOfScope == null || input.outOfScope.trim() === "" ? [] : [`Out of scope:\n${blank(clip(input.outOfScope, 1500))}`]),
     ...(input.touches === undefined || input.touches.length === 0 ? [] : [`Paths: ${clip(input.touches.slice(0, 40).join(", "), 1500)}`]),
   ].join("\n");
-}
-
-export const SIZING_SCHEMA = {
-  type: "object",
-  properties: {
-    size: { type: "string", enum: ["small", "medium", "large"] },
-    risky: { type: "boolean" },
-    reason: { type: "string", maxLength: 160 },
-  },
-  required: ["size", "risky", "reason"],
-  additionalProperties: false,
-} as const;
-
-/** Read an answer back: only the three sizes, a boolean, and a short reason. */
-export function readSizeAnswer(value: unknown): SizeAnswer | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const v = value as Record<string, unknown>;
-  if (!isTaskSize(v["size"]) || typeof v["risky"] !== "boolean") return null;
-  return { size: v["size"], risky: v["risky"], reason: typeof v["reason"] === "string" ? oneLine(v["reason"]) : "" };
 }
 
 type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
@@ -123,14 +111,14 @@ export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_M
         sizingText(input),
       ].join("\n");
       const result = await runner("claude", [
-        "-p", "--output-format", "json", "--json-schema", JSON.stringify(SIZING_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
+        "-p", "--output-format", "json", "--json-schema", JSON.stringify(SIZING_MODEL_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
         "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--model", model,
       ], { cwd: dir, stdin: prompt, timeoutMs: budgetMs, maxBuffer: 256 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true, owner, beforeSpawn: () => !signal.aborted });
       if (signal.aborted || result.notFound || result.timedOut || result.code !== 0) return null;
       const parsed = strictJsonParse(Buffer.from(result.stdout, "utf8"), 256 * 1024, 12);
       const body = parsed.ok && typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value) ? (parsed.value as Record<string, unknown>) : null;
       if (body === null || body["is_error"] === true || body["subtype"] !== "success") return null;
-      return readSizeAnswer(body["structured_output"]);
+      return answerOf(body["structured_output"]);
     } finally {
       signal.removeEventListener("abort", stop);
       rmSync(dir, { recursive: true, force: true });
@@ -162,9 +150,9 @@ export function jevSizer(fetcher: typeof fetch, key: string): Sizer {
     const answers = (body["answers"] ?? {}) as Record<string, Record<string, unknown> | undefined>;
     const size = answers["size"]?.["choice"];
     const risky = answers["risky"]?.["noul"];
-    if (!isTaskSize(size) || typeof risky !== "number" || !Number.isFinite(risky)) return null;
+    if (typeof risky !== "number" || !Number.isFinite(risky)) return null;
     const sure = answers["size"]?.["confidence"];
-    return { size, risky: risky >= 0.5, reason: typeof sure === "number" && Number.isFinite(sure) ? `Jev is ${Math.round(Math.min(1, Math.max(0, sure)) * 100)}% sure` : "" };
+    return answerOf({ size, risky: risky >= 0.5, reason: typeof sure === "number" && Number.isFinite(sure) ? `Jev is ${Math.round(Math.min(1, Math.max(0, sure)) * 100)}% sure` : "" });
   };
 }
 
