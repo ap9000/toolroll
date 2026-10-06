@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, setToolSecrets, testTool } from "./project-tools.js";
-import { CONNECT_CALLBACK, ONE_CLICK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, oneClickServices, refreshConnections, readsOnly, researchToolsOf, startConnect } from "./mcp-connect.js";
+import { CONNECT_CALLBACK, ONE_CLICK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, grantOf, oneClickServices, readOnlyGrant, refreshConnections, readsOnly, researchToolsOf, scopeList, startConnect } from "./mcp-connect.js";
 import { scoutProxyEnv } from "./scout.js";
 
 const T0 = new Date("2026-09-26T23:00:00.000Z");
@@ -408,4 +408,150 @@ test("PostHog's sign-in names no scope, so PostHog applies its own MCP preset in
   const go = new URL(started.go);
   expect(go.searchParams.has("scope")).toBe(false);
   expect(go.searchParams.get("resource")).toBe("https://mcp.posthog.com/mcp");
+});
+
+/** PostHog's sign-in as its servers answer it (Oct 2026: 224 scopes, reads and writes), with the token answer given. */
+function posthog(tokens: () => Record<string, unknown> = () => ({ access_token: "ph-access-1", refresh_token: "ph-refresh-1", expires_in: 3600 })) {
+  const seen: { url: string; body: string }[] = [];
+  const reply = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input), body = init?.body instanceof URLSearchParams ? init.body.toString() : typeof init?.body === "string" ? init.body : "";
+    seen.push({ url, body });
+    if (url === "https://mcp.posthog.com/mcp" && init?.method === "POST") return reply(401, {}, { "www-authenticate": 'Bearer resource_metadata="https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp"' });
+    if (url === "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp") return reply(200, { resource: "https://mcp.posthog.com/mcp", authorization_servers: ["https://oauth.posthog.com"],
+      scopes_supported: ["openid", "profile", "email", "introspection", "action:read", "action:write", "error_tracking:read", "error_tracking:write", "insight:read", "insight:write", "query:read", "user:read", "user:write"] });
+    if (url === "https://oauth.posthog.com/.well-known/oauth-authorization-server") return reply(200, { authorization_endpoint: "https://oauth.posthog.com/oauth/authorize/", token_endpoint: "https://oauth.posthog.com/oauth/token/", registration_endpoint: "https://oauth.posthog.com/oauth/register/", code_challenge_methods_supported: ["S256"] });
+    if (url === "https://oauth.posthog.com/oauth/register/") return reply(201, { client_id: "posthog-client" });
+    if (url === "https://oauth.posthog.com/oauth/token/") return reply(200, tokens());
+    return reply(404, {});
+  }) as typeof fetch;
+  return { fetcher, seen };
+}
+const WRITE_REASON = "PostHog is connected with write access, so research runs can't use it; reconnect read-only";
+const UNKNOWN_REASON = "PostHog didn't say what access it granted, so research runs can't use it; reconnect read-only";
+
+test("a granted scope is read-only only by an allow-list: reads and identity, nothing else, and never unknown", () => {
+  expect(scopeList("user:read  openid insight:read user:read")).toEqual(["insight:read", "openid", "user:read"]);
+  for (const bad of [undefined, null, "", "   ", 7, 'insight:read bad"scope']) expect(scopeList(bad)).toBeNull();
+  expect(readOnlyGrant(["openid", "profile", "email", "user:read", "error_tracking:read"])).toBe(true);
+  for (const grant of [null, [], ["*"], ["insight:read", "insight:write"], ["introspection"], ["Insight:READ"], ["read"], ["insight:read:all"]]) expect(readOnlyGrant(grant), JSON.stringify(grant)).toBe(false);
+});
+
+test("PostHog's exec reaches research only with a read-only grant; a write or unknown grant is skipped with a plain reason on the run and its Tools entry", () => {
+  expect(addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+  store.recordProjectToolTest(repo, "posthog", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["exec"], problem: null }));
+  const research = () => researchToolsOf(projectToolsOf(store, repo), null, tool => grantOf(repo, tool, dir));
+  const grant = (scope: string) => setToolSecrets(repo, "posthog", { OAUTH_ACCESS_TOKEN: "ph-secret-token", OAUTH_GRANTED_SCOPE: scope }, dir);
+  const runs = {
+    projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(),
+    getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "research" }), getScope: () => null, toolSealFor: () => null,
+    recordRunTools: (_run: number, json: string) => { recorded = json; },
+  } as unknown as Parameters<typeof prepareRunTools>[0];
+  let recorded = "";
+
+  grant("openid profile email user:read query:read error_tracking:read");
+  expect(research()).toEqual({ services: [{ id: "posthog", label: "PostHog" }], allowed: ["mcp__posthog__exec"], reads: { posthog: ["exec"] }, local: [] });
+  expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")).toEqual({ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected" });
+  const allowed = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false, readOnly: research().reads });
+  try {
+    expect(allowed.argv.join(" ")).toContain('mcp_servers.posthog.enabled_tools=["exec"]');
+    expect(JSON.parse(recorded)).toEqual({ provider: "codex", tools: [{ name: "posthog", digest: expect.any(String) }], skipped: [] });
+    // Its token rides only the run's private file, never argv or the record; the saved grant isn't even there.
+    expect(allowed.argv.join(" ")).not.toContain("ph-secret-token");
+    expect(recorded).not.toContain("ph-secret-token");
+    const file = allowed.argv.find(one => one.startsWith("mcp_servers.posthog.args="))!;
+    expect(readFileSync(JSON.parse(file.slice("mcp_servers.posthog.args=".length))[1], "utf8")).not.toContain("OAUTH_GRANTED_SCOPE");
+  } finally {
+    allowed.cleanup();
+  }
+
+  grant("user:read insight:read insight:write");
+  expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: WRITE_REASON } });
+  expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")?.research).toBe("PostHog is connected with write access, so research runs can't use it.");
+  const { reads, withheld } = research();
+  const skipped = prepareRunTools(runs, 7, "claude", { home: dir, now: T0, includeModel: false, readOnly: reads, withheld: withheld! });
+  skipped.cleanup();
+  expect(JSON.parse(recorded)).toEqual({ provider: "claude", tools: [], skipped: [{ name: "posthog", reason: WRITE_REASON }] });
+
+  // Anything outside the allow-list (a wildcard, introspection) is no safer than a write.
+  for (const scope of ["*", "user:read introspection"]) { grant(scope); expect(research().withheld).toEqual({ posthog: WRITE_REASON }); }
+  // A connection from before grants were saved, or one whose grant was never said: withheld, saying so.
+  setToolSecrets(repo, "posthog", { OAUTH_GRANTED_SCOPE: "" }, dir);
+  expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: UNKNOWN_REASON } });
+  expect(researchToolsOf(projectToolsOf(store, repo)).withheld).toEqual({ posthog: UNKNOWN_REASON });
+  expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")?.research).toBe("PostHog didn't say what access it granted, so research runs can't use it.");
+
+  // A builder launch is unchanged whatever the grant: the whole server, no allow-list, nothing skipped.
+  grant("insight:read insight:write");
+  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false });
+  try {
+    expect(build.argv.join(" ")).toContain("mcp_servers.posthog.command");
+    expect(build.argv.join(" ")).not.toContain("enabled_tools");
+    expect(JSON.parse(recorded)).toMatchObject({ tools: [{ name: "posthog" }], skipped: [] });
+  } finally {
+    build.cleanup();
+  }
+});
+
+test("other services are unchanged by grants: names that only read, whatever is saved beside their tokens", () => {
+  const connect = (id: string, tools: string[]) => {
+    expect(addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+    store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools, problem: null }));
+    setToolSecrets(repo, id, { OAUTH_ACCESS_TOKEN: "access", OAUTH_GRANTED_SCOPE: "issues:write" }, dir);
+  };
+  connect("linear", ["list_issues", "get_issue", "create_issue", "exec"]);
+  connect("mobbin", ["search_screens", "save_to_collection"]);
+  connect("stripe", ["list_customers", "create_refund"]);
+  const expected = { services: [{ id: "linear", label: "Linear" }, { id: "mobbin", label: "Mobbin" }], allowed: ["mcp__linear__list_issues", "mcp__linear__get_issue", "mcp__mobbin__search_screens"],
+    reads: { linear: ["list_issues", "get_issue"], mobbin: ["search_screens"] }, local: [] };
+  expect(researchToolsOf(projectToolsOf(store, repo), null, tool => grantOf(repo, tool, dir))).toEqual(expected);
+  expect(researchToolsOf(projectToolsOf(store, repo), null, () => ["openid", "user:read"])).toEqual(expected);
+  expect(connectionsOf(store, repo, dir).filter(one => one.research !== undefined)).toEqual([]);
+});
+
+test("Reconnect read-only asks PostHog for its listed reads and identity only; the usual Connect still asks for nothing", async () => {
+  const { fetcher } = posthog();
+  const read = await startConnect({ service: "posthog", repo, by: "alex", origin: "http://127.0.0.1:4180", readOnly: true }, fetcher, T0.getTime());
+  if (!read.ok) throw new Error(read.said);
+  const asked = "openid profile email action:read error_tracking:read insight:read query:read user:read";
+  expect(new URL(read.go).searchParams.get("scope")).toBe(asked);
+  expect(read.visit.scope).toBe(asked);
+  const usual = await startConnect({ service: "posthog", repo, by: "alex", origin: "http://127.0.0.1:4180" }, fetcher, T0.getTime());
+  if (!usual.ok) throw new Error(usual.said);
+  expect(new URL(usual.go).searchParams.has("scope")).toBe(false);
+  expect(usual.visit.scope).toBeNull();
+  // A service that can't name research actions has no read-only sign-in: asked for one, it signs in as usual.
+  const { fetcher: stripeFetch } = stripe();
+  const plain = await startConnect({ service: "stripe", repo, by: "alex", origin: "http://127.0.0.1:4180", readOnly: true }, stripeFetch, T0.getTime());
+  expect(plain.ok && new URL(plain.go).searchParams.has("scope")).toBe(false);
+});
+
+test("the grant is saved from the token answer (or the scope asked for, when it says none), replaced on each sign-in, and kept through a refresh that doesn't say", async () => {
+  let answer: Record<string, unknown> = { access_token: "ph-access-1", refresh_token: "ph-refresh-1", expires_in: 60, scope: "user:read insight:write insight:read" };
+  const { fetcher, seen } = posthog(() => answer);
+  const visit = async (readOnly: boolean) => { const started = await startConnect({ service: "posthog", repo, by: "alex", origin: "http://127.0.0.1:4180", readOnly }, fetcher, T0.getTime()); if (!started.ok) throw new Error(started.said); return started.visit; };
+  // The usual Connect: PostHog says what it granted, writes included.
+  expect(await finishConnect(store, await visit(false), "code-1", T0, { fetcher, home: dir, test: false })).toMatchObject({ ok: true });
+  expect(grantOf(repo, "posthog", dir)).toEqual(["insight:read", "insight:write", "user:read"]);
+  // The tool's spec (and so its approval seal and what a build launches with) is unchanged by the grant.
+  expect(projectToolsOf(store, repo)[0]!.spec).toEqual(connectedSpec("posthog"));
+  // Reconnect read-only, answered without `scope`: the grant is what was asked for.
+  answer = { access_token: "ph-access-2", refresh_token: "ph-refresh-2", expires_in: 60 };
+  expect(await finishConnect(store, await visit(true), "code-2", T0, { fetcher, home: dir, test: false })).toMatchObject({ ok: true });
+  expect(grantOf(repo, "posthog", dir)).toEqual(["action:read", "email", "error_tracking:read", "insight:read", "openid", "profile", "query:read", "user:read"]);
+  expect(readToolSecrets(repo, "posthog", dir)["OAUTH_ACCESS_TOKEN"]).toBe("ph-access-2");
+  // A refresh that doesn't say keeps it; one that narrows it says so.
+  answer = { access_token: "ph-access-3", refresh_token: "ph-refresh-3", expires_in: 3600 };
+  expect(await refreshConnections(store, [repo], T0, { fetcher, home: dir })).toEqual({ refreshed: 1, problems: [] });
+  expect(grantOf(repo, "posthog", dir)).toContain("error_tracking:read");
+  setToolSecrets(repo, "posthog", { OAUTH_EXPIRES_AT: T0.toISOString() }, dir);
+  answer = { access_token: "ph-access-4", expires_in: 3600, scope: "user:read" };
+  expect(await refreshConnections(store, [repo], new Date(T0.getTime() + 6 * 60_000), { fetcher, home: dir })).toEqual({ refreshed: 1, problems: [] });
+  expect(grantOf(repo, "posthog", dir)).toEqual(["user:read"]);
+  // The usual Connect again, answered without `scope`: nothing proves what it granted, so the read-only grant isn't kept.
+  answer = { access_token: "ph-access-5", expires_in: 3600 };
+  expect(await finishConnect(store, await visit(false), "code-5", T0, { fetcher, home: dir, test: false })).toMatchObject({ ok: true });
+  expect(grantOf(repo, "posthog", dir)).toBeNull();
+  // Tokens went only to PostHog's token address, in the request body.
+  expect(seen.filter(one => one.body.includes("ph-refresh")).every(one => one.url === "https://oauth.posthog.com/oauth/token/")).toBe(true);
 });

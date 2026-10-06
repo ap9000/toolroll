@@ -94,6 +94,8 @@ export type Invocation = {
   /** A research step's project tools: only these servers, each offering only
    * these read-only actions (Codex's `enabled_tools`). Others are left out. */
   readOnlyTools?: Readonly<Record<string, readonly string[]>>;
+  /** Why a research step's connected service was left out, by server, when it isn't the usual reason (its grant writes). */
+  researchWithheld?: Readonly<Record<string, string>>;
 };
 
 export type ProviderRunner = (

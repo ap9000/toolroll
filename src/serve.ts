@@ -1015,7 +1015,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       tools: tools.map(tool => ({ tool, secretsSet: secretsSetFor(repo, tool.spec, toolHome) })),
       // A service that connects by signing in (or an app's own Connect) is offered only that way.
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
-      connections: connectionsOf(store, repo), kit, wanted,
+      connections: connectionsOf(store, repo, toolHome), kit, wanted,
       found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
     };
   };
@@ -7771,7 +7771,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (service === null) return back("Choose a service to connect.");
       const origin = consoleOrigin(request.headers.host);
       if (origin === null) return back("Connect tools from this computer (localhost) or from your https address.");
-      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template }, options.connectFetch ?? fetch);
+      // Reconnect read-only (from a connected service's Tools entry): the same sign-in, asking only to read.
+      const readOnly = also === null && body.get("access") === "read";
+      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
       if (!started.ok) return back(started.said);
       for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
       connectVisits.set(started.state, started.visit);
