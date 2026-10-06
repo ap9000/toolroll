@@ -35,7 +35,7 @@ import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerso
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
 import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubjectOf } from "./lead-voice.js";
 import { applyTeamInbound, deliverTeamChats, teamCommand } from "./telegram-team.js";
-import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowDecisionAt, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
+import { applyFlowChoiceTap, applyFlowReply, applyFlowTap, FLOW_DECIDE_KEY, flowButtons, flowChoiceButtons, flowChoiceHead, flowDecisionAt, flowDecisionText, flowSendKeyboardRow, flowSentContent } from "./telegram-flow.js";
 import { flowChoiceAt, flowSendTail, FLOW_CHOOSE_KEY, FLOW_SEND_KEY } from "./flow-send.js";
 import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
 import { telegramReply, type TelegramEntity } from "./reply-shape.js";
@@ -742,7 +742,7 @@ function decideKeyboard(phoneOrigin: (() => string | null) | undefined, rows: re
 function decideOfferFor(store: Store, binding: TelegramBinding, target: DecideTarget | null | undefined, projects: readonly string[], now: Date, root?: string): DecideOffer | null {
   if (target === null || target === undefined) return null;
   const principal = verifyApproverStanding(store, binding.approver, binding.approverGeneration, telegramConversationRepos(store, binding.approver, projects));
-  return principal.ok ? decideOffer(store, target, principal.who, now, root) : null;
+  return principal.ok ? decideOffer(store, target, principal.who, now, root, "telegram") : null;
 }
 
 /** Team-conversation traffic to the chats that follow one — after the outbox, under the same delivery switch, never a problem to raise when nothing follows anything. */
@@ -1255,13 +1255,21 @@ async function deliverOne(
     const choiceKeys = choosing === null || sent === null ? null : flowChoiceButtons(store, binding, choosing, sent, clock());
     const sentRow = sent === null ? null : (() => { try { return flowSendKeyboardRow(phoneOrigin?.() ?? null, sent); } catch { return []; } })();
     if (sentRow !== null) button = sentRow.length === 0 ? null : sentRow;
+    // A flow decision or choice for this person leads with what to do and where each button takes the card
+    // (telegram-flow.ts); the flow and zone close it. The saved notice keeps its own words for every other place.
+    const pull = sent === null ? [] : sent.links.flatMap(one => "url" in one ? [`${one.label}: ${one.url}`] : []).slice(0, 1);
+    const choiceHead = choosing === null || sent === null ? null : flowChoiceHead(choosing, sent);
+    const choiceTail = choosing === null ? [] : [...pull, `${choosing.flow.name}${sent?.from === undefined ? "" : ` · after ${sent.from}`}`];
+    if (offer === null && flowKeys !== null && waiting !== null) parts = split(`${notificationIdentity(notification)}${chatText(flowDecisionText(waiting, notification.body), task)}`);
+    else if (offer === null && choiceHead !== null && sent !== null) parts = split(`${notificationIdentity(notification)}${chatText([...choiceHead, "", sent.summary, "", ...choiceTail.flatMap((line, index) => index === 0 ? [line] : ["", line])].join("\n"), task)}`);
     // After research (flow-items.ts): each item numbered under the summary, its words cleaned as the rest of the message's
     // are, within Telegram's limit with every link kept — one message, unless head, links and tail alone overflow it.
     let entities: TelegramEntity[][] = [];
     if (sent?.items !== undefined && sent.items.length > 0 && offer === null) {
       const subject = chatText(leadSubjectOf(store, notification, binding.approver), task);
-      const head = `${notificationIdentity(notification, title !== undefined && mentions(subject, title) ? undefined : title)}${subject}`;
-      const message = cleanFlowMessage({ head, summary: sent.summary, items: sent.items, tail: flowSendTail(sent) }, words => chatText(words, task));
+      const head = choiceHead !== null ? `${notificationIdentity(notification)}${choiceHead.join("\n")}`
+        : `${notificationIdentity(notification, title !== undefined && mentions(subject, title) ? undefined : title)}${subject}`;
+      const message = cleanFlowMessage({ head, summary: sent.summary, items: sent.items, tail: choiceHead !== null ? choiceTail : flowSendTail(sent) }, words => chatText(words, task));
       const voiced = fitFlowMessage(message, TELEGRAM_TEXT_MAX, shaped => telegramReply(shaped).text.length).map(telegramReply);
       parts = voiced.map(one => one.text);
       entities = voiced.map(one => one.entities);
@@ -1294,24 +1302,11 @@ async function deliverOne(
   }
 
   // A decision. Every safety-bearing word goes out before anything tappable
-  // exists: recap, question, and every option's consequence, split across as
-  // many plain messages as they need — a button whose warning was truncated
-  // away is a trap, so the keyboard rides the LAST part only, and only if
-  // every earlier part arrived.
-  const lines = [
-    `${notificationIdentity(notification)}Decision needed`,
-    "",
-    decision.recap,
-    "",
-    `Q: ${decision.question}`,
-    "",
-    ...decision.options.flatMap(option => [
-      `[${option.id}] ${option.label}${option.id === decision.recommendation ? "  (recommended)" : ""}${option.reversible ? "" : "  — IRREVERSIBLE"}`,
-      `    ${option.consequence}`,
-    ]),
-    ...(decision.deadline === null ? [] : ["", `deadline: ${decision.deadline}`]),
-  ];
-  const parts = split(lines.join("\n"));
+  // exists: the question and every option's consequence first, then the
+  // recap, split across as many plain messages as they need — a button whose
+  // warning was truncated away is a trap, so the keyboard rides the LAST part
+  // only, and only if every earlier part arrived.
+  const parts = split([`${notificationIdentity(notification)}${decisionAsk(decision)}`, "", `Background: ${decision.recap}`].join("\n"));
 
   for (const part of parts.slice(0, -1)) {
     const sent = await sender(part);
@@ -2383,9 +2378,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
       );
       ack("irreversible — confirm it");
       editText(
-        `⚠ ${option.label} is IRREVERSIBLE.\n${option.consequence}\n${
-          draft === null ? "" : `\nWith your note:\n${draft.note.split("\n").map(line => `| ${line}`).join("\n")}\n`
-        }\nConfirm?`,
+        armedDecisionText(option, draft?.note ?? null),
         [
           [telegramButton(`⚠ Yes, ${option.label}`, confirm)],
           [telegramButton("Cancel", cancel)],
@@ -2440,8 +2433,10 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     );
   }
   ack("cancelled");
+  // The card again, within one message; a decision too long for one keeps the consequences its earlier parts show.
+  const ask = decisionAsk(decision);
   editText(
-    `Q: ${decision.question}`,
+    ask.length <= PART_CAP ? ask : `Decide: ${decision.question}`,
     fresh.map(({ option, token: choose }) => [
       telegramButton(`${option.label}${option.id === decision.recommendation ? " ✓" : ""}${option.reversible ? "" : " ⚠"}`, choose),
     ]),
@@ -2482,10 +2477,30 @@ function answerNow(
   ack(`could not answer: ${answered.reason}`);
 }
 
-function answeredText(store: Store, decision: Decision): string {
+/** A decision's card, action first: the question, then each option with what it does, then its deadline. */
+function decisionAsk(decision: Decision): string {
   return [
-    `✓ ${taskOf(store, decision)} — answered: ${decision.choice ?? "?"}`,
-    `by ${decision.answeredBy ?? "?"} via ${decision.answeredVia ?? "?"}`,
+    `Decide: ${decision.question}`,
+    ...decision.options.map(option =>
+      `• ${option.label}${option.id === decision.recommendation ? " (recommended)" : ""}${option.reversible ? "" : " ⚠ can't be undone"}: ${option.consequence}`),
+    ...(decision.deadline === null ? [] : [`Decide by ${decision.deadline.slice(0, 16).replace("T", " ")} UTC`]),
+  ].join("\n");
+}
+
+/** The armed confirm of an option that can't be undone: what it is and what it does, then the note that travels. */
+function armedDecisionText(option: Decision["options"][number], note: string | null): string {
+  return [
+    `${option.label}? ⚠ This can't be undone.`,
+    option.consequence,
+    ...(note === null ? [] : ["", "With your note:", ...note.split("\n").map(line => `| ${line}`)]),
+  ].join("\n");
+}
+
+function answeredText(store: Store, decision: Decision): string {
+  const chosen = decision.options.find(one => one.id === decision.choice)?.label ?? decision.choice ?? "?";
+  return [
+    `✓ Answered: ${chosen}`,
+    `${taskOf(store, decision)} · by ${decision.answeredBy ?? "?"} via ${decision.answeredVia ?? "?"}`,
     // Line-prefixed, never inline: a multiline note must not be able to
     // draw fake status lines (Codex free-text review, finding 7).
     ...(decision.note === null ? [] : ["with note:", ...decision.note.split("\n").map(line => `| ${line}`)]),

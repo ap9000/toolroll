@@ -156,8 +156,9 @@ export function mergeInChat(store: Store, taskId: string, run: number, approver:
   return { ok: true, modeDigest: mode.digest, head: publication.headSha };
 }
 
-/** The plan card: title, goal in two lines, what changes, done when, and what the yes allows. */
-export function planCardText(store: Store, taskId: string, scope: Scope, root?: string): string {
+/** The plan card: title, goal in two lines, what changes, done when, and what the yes allows. On Telegram the yes's
+ * terms come second, under the title, and the steps are fewer: the full plan is behind Edit. */
+export function planCardText(store: Store, taskId: string, scope: Scope, root?: string, channel?: DecideChannel): string {
   const ref = store.lookupRef(taskId);
   const artifact = ref === null ? null : store.latestPlanArtifact(ref.id);
   let milestones: string[] = [];
@@ -174,6 +175,19 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   const goal = scope.goal.split("\n").filter(one => one.trim() !== "").slice(0, 2).map(one => phoneText(one, 160));
   const allowing = [permissionPlainWords(scope.profile), scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`]
     .filter((one): one is string => one !== null);
+  if (channel === "telegram") {
+    return [
+      `Plan ready: ${title(store, taskId)}`,
+      `Starting allows: ${allowing.join(" · ")}`,
+      "",
+      ...goal,
+      ...(scope.touches.length > 0 ? [`Only in: ${scope.touches.slice(0, 6).map(one => phoneText(one, 80)).join(", ")}${scope.touches.length > 6 ? ", …" : ""}`] : ["Any file in the project."]),
+      "",
+      "Done when:",
+      ...(scope.acceptance.length > 0 ? bullets(scope.acceptance.map(one => one.statement), 5) : ["You decide when you review the result."]),
+      ...(milestones.length > 0 ? ["", "Steps:", ...bullets(milestones, 3)] : []),
+    ].join("\n");
+  }
   return [
     `Plan ready: ${title(store, taskId)}`,
     "",
@@ -194,7 +208,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
 
 /** The acts a card about this target can take in chat right now, or null when none can (the card keeps its own
  * link). Reads only; nothing is minted. */
-export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, root?: string): DecideOffer | null {
+export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, root?: string, channel?: DecideChannel): DecideOffer | null {
   const ref = store.lookupRef(target.taskId);
   if (ref === null || ref.repo === null || !who.repos.includes(ref.repo)) return null;
   switch (target.kind) {
@@ -216,7 +230,7 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
     case "plan": {
       const plan = planInChat(store, target.taskId, who.name, now, root);
       if (!plan.ok) return null;
-      return { text: planCardText(store, target.taskId, plan.scope, root),
+      return { text: planCardText(store, target.taskId, plan.scope, root, channel),
         rows: [[{ act: "approve", run: null, digest: plan.digest }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: plan.digest }]] };
     }
     case "merge": {
@@ -430,7 +444,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
 
   if (row.phase === "cancel") {
     spend();
-    const offer = decideOffer(store, target, who, now, input.root);
+    const offer = decideOffer(store, target, who, now, input.root, seat.channel);
     if (offer === null) return { ack: "Cancelled.", edit: { text: body, rows: linksFor(target), tokens: [] } };
     const minted = mintDecideButtons(store, seat, target, offer, now, input.message);
     return { ack: "Cancelled.", edit: { text: offer.text ?? body, ...minted } };

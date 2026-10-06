@@ -24,7 +24,7 @@ import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, draftFor, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
-import { deciderOf, type FlowStage } from "./flows.js";
+import { deciderOf, FLOW_END, replyTarget, type FlowStage } from "./flows.js";
 import { phoneLinkButton, type InlineButton } from "./telegram-mate.js";
 import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
 import { telegramButton, type TelegramCallbackButton } from "./contracts/telegram-callback.js";
@@ -43,6 +43,31 @@ export function flowDecisionAt(store: Store, cardId: number, entry: number): Wai
   const stage = definition.stages.find(one => one.id === card.stage);
   if (stage === undefined || stage.kind !== "approval") return null;
   return { card, flow, stage, draft: draftFor(definition, stage) };
+}
+
+/** Where Approve and Send back take the card, on one line. */
+function decisionTerms(waiting: Waiting): string {
+  const approve = waiting.stage.next === null ? "Approve → done" : `Approve → ${titleOf(waiting, waiting.stage.next)}`;
+  return [approve, ...(waiting.stage.onFail === null ? [] : [`Send back → ${titleOf(waiting, waiting.stage.onFail)}, with your note`])].join(" · ");
+}
+
+/**
+ * A flow decision as Telegram shows it: the action and where each button takes the card first, then the draft (as
+ * the card holds it now, so what is approved is what is read) and why a teammate handed it over, then the flow and
+ * zone. `said` is the saved notice's body: the words before its instruction are the teammate's handoff.
+ */
+export function flowDecisionText(waiting: Waiting, said: string | null, head = `Approve “${waiting.card.title}”`): string {
+  const at = said === null ? -1 : said.indexOf(`${waiting.stage.title}: approve`);
+  const handoff = at > 0 ? said!.slice(0, at).trim() : "";
+  const draft = waiting.draft === null ? undefined : waiting.card.outputs[waiting.draft.id]?.trim();
+  return [
+    head,
+    decisionTerms(waiting),
+    ...(handoff === "" ? [] : ["", handoff]),
+    ...(draft === undefined || draft === "" ? [] : ["", "Draft:", draft]),
+    "",
+    `${waiting.flow.name} · ${waiting.stage.title}`,
+  ].join("\n");
 }
 
 /** Buttons for one visit, minted before the send; `place` stamps the message they landed on. */
@@ -71,6 +96,18 @@ export function flowSendKeyboardRow(origin: string | null, content: FlowSendCont
   return [...pages.slice(0, 1), ...pull, ...pages.slice(1)].slice(0, 3);
 }
 
+/** A choice as Telegram shows it, first: what to choose, then where each option (and a reply) takes the card. The
+ * options are the ones its buttons carry: offered when sent, and still offered. */
+export function flowChoiceHead(visit: FlowChoiceVisit, content: FlowSendContent): string[] {
+  const titleIn = (id: string) => visit.definition.stages.find(one => one.id === id)?.title ?? id;
+  const options = (content.options ?? []).flatMap(one => {
+    const option = visit.stage.options?.[one.choice];
+    return option === undefined || option.label !== one.label ? [] : [`${one.label} → ${option.to === FLOW_END ? "closes the card" : titleIn(option.to)}`];
+  });
+  const reply = content.reply === true ? replyTarget(visit.stage) : null;
+  return [`Choose what happens to “${visit.card.title}”`, [...options, ...(reply === null ? [] : [`or reply → ${titleIn(reply)}, with your note`])].join(" · ")];
+}
+
 /** A choice's buttons for one visit, one option to a row, minted before the send; `place` stamps the message they landed on. */
 export function flowChoiceButtons(store: Store, binding: TelegramBinding, visit: FlowChoiceVisit, content: FlowSendContent, now: Date): { keyboard: InlineButton[][]; tokens: string[] } {
   // Only the options the zone still offers as they were sent: a flow changed since sends no stale button.
@@ -92,7 +129,9 @@ export function applyFlowChoiceTap(store: Store, binding: TelegramBinding, choic
   const chosen = chooseFlowCard(store, { card: choice.card, entry: choice.entry, choice: choice.choice, label: choice.label, note: null, actor: binding.approver, where: "Telegram", repos }, now);
   if (!chosen.ok) return [{ kind: "ack", text: chosen.message.slice(0, 190) }];
   store.retireFlowChoices(choice.card, choice.entry, now);
-  return [{ kind: "ack", text: choice.label.slice(0, 190) }, { kind: "edit", text: `${message.text}\n\n✅ You chose “${choice.label}”. ${chosen.said}`.slice(0, 4000) }];
+  // The door's words name the option already ("Ship it. Moved to Ship."); an ending says what happened instead.
+  const said = chosen.said.startsWith(`${choice.label}.`) ? chosen.said : `You chose “${choice.label}”. ${chosen.said}`;
+  return [{ kind: "ack", text: choice.label.slice(0, 190) }, { kind: "edit", text: `${message.text}\n\n✅ ${said}`.slice(0, 4000) }];
 }
 
 export type FlowTapEffect =
@@ -112,7 +151,7 @@ export function applyFlowTap(store: Store, binding: TelegramBinding, action: Tel
     const decided = decideFlowCard(store, { card: waiting.card.id, decision: "approve", note: null, actor: binding.approver, repos, entry: action.entry }, now);
     if (!decided.ok) return [{ kind: "ack", text: decided.message.slice(0, 190) }];
     store.retireTelegramFlowVisit(action.card, action.entry, now);
-    return [{ kind: "ack", text: "Approved" }, { kind: "edit", text: `${message.text}\n\n✅ You approved it. ${decided.said}`.slice(0, 4000) }];
+    return [{ kind: "ack", text: "Approved" }, { kind: "edit", text: `${message.text}\n\n✅ ${decided.said}`.slice(0, 4000) }];
   }
   const prompt = { chatId: binding.chatId, binding: binding.id, card: action.card, entry: action.entry, mode: action.action };
   if (action.action === "edit") {
@@ -158,8 +197,7 @@ export function applyFlowReply(store: Store, binding: TelegramBinding, prompt: T
     store.retireTelegramFlowVisit(prompt.card, prompt.entry, now);
     const fresh = flowDecisionAt(store, prompt.card, prompt.entry)!;
     const buttons = flowButtons(store, binding, fresh, now);
-    return [{ kind: "decide", keyboard: buttons.keyboard, tokens: buttons.tokens,
-      text: `${waiting.flow.name}: your version of the draft for “${waiting.card.title}”\n\n${kept}\n\nApprove to send it as written.` }];
+    return [{ kind: "decide", keyboard: buttons.keyboard, tokens: buttons.tokens, text: flowDecisionText(fresh, null, `Approve your version of “${waiting.card.title}”`) }];
   }
   // A note over its limit is refused with the limit, never cut.
   if (said.length > LIMITS.note) return [{ kind: "say", text: `That's ${said.length.toLocaleString("en-US")} characters. Keep the note to ${LIMITS.note.toLocaleString("en-US")}, or send it back in Toolroll.` }];

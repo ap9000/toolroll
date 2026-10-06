@@ -325,12 +325,12 @@ describe("decisions finish in the chat app", () => {
     planReady(ref, "plan-5");
     await pass();
     const card = script.cardWith(BOB, /^Approve & start$/);
+    // On Telegram the yes's terms come right under the title; the plan's detail follows.
     expect(card.text).toBe([
-      "Plan ready: Refuse over-limit payouts", "",
-      "Refuse over-limit payouts.", "Keep the public API unchanged.", "",
-      "Changes:", "Only in: src/guard.ts", "",
-      "Done when:", "• Over-limit payouts are refused.", "",
-      "You're allowing: file edits and routine commands; anything risky stops · up to $2.00 per attempt",
+      "Plan ready: Refuse over-limit payouts",
+      "Starting allows: file edits and routine commands; anything risky stops · up to $2.00 per attempt", "",
+      "Refuse over-limit payouts.", "Keep the public API unchanged.", "Only in: src/guard.ts", "",
+      "Done when:", "• Over-limit payouts are refused.",
     ].join("\n"));
     expect(card.labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
     await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
@@ -544,7 +544,7 @@ describe("decisions finish in the chat app", () => {
     store.enqueueNotification({ source: { run }, dedupeKey: `decision:${decision}`, kind: "decision", subject: "payout-10 parked a decision", body: "q" }, now);
     await pass();
     const card = script.cardWith(BOB, /^Fail closed/);
-    expect(card.text).toContain("Q: Fail open or fail closed?");
+    expect(card.text).toContain("Decide: Fail open or fail closed?\n• Fail open: Bad payouts slip through.\n• Fail closed (recommended): Payouts pause.");
     expect(card.labels).toEqual(["Fail open", "Fail closed ✓"]);
     await tapIn(BOB, card.token(/^Fail closed/), card.messageId);
     expect(store.getDecision(decision)).toMatchObject({ state: "answered", choice: "closed", answeredBy: "bob", answeredVia: "telegram" });
