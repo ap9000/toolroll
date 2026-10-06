@@ -96,15 +96,16 @@ describe("e2e-parallel.mjs", () => {
   type Run = { group: string; out: string; ran: string[]; tmp: string; start: number; end: number; journeys?: string | null; leftoverAlive?: boolean };
   const GB = 1024 ** 3;
   /** The stand-in and the machine's readings it runs on (TOOLROLL_CHECK_MACHINE): an idle machine unless a test says. */
-  const prepare = (machine: object = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 }) => {
+  const prepare = (machine: object = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 }, app = false) => {
     dir = mkdtempSync(join(tmpdir(), "so-e2e-parallel-"));
-    writeFileSync(join(dir, "stand-in-e2e.mjs"), STAND_IN);
+    const script = join(dir, app ? "app-e2e.mjs" : "stand-in-e2e.mjs");
+    writeFileSync(script, STAND_IN);
     writeFileSync(join(dir, "machine.json"), JSON.stringify(machine));
-    return { script: join(dir, "stand-in-e2e.mjs"), env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_MACHINE: join(dir, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } };
+    return { script, env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_MACHINE: join(dir, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "", TOOLROLL_E2E_LANES: "" } };
   };
   const runsIn = (at: string) => !existsSync(join(at, "runs.jsonl")) ? [] : readFileSync(join(at, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Run);
-  const runParallel = (env: Record<string, string> = {}, extra: string[] = [], machine?: object) => {
-    const { script, env: base } = prepare(machine);
+  const runParallel = (env: Record<string, string> = {}, extra: string[] = [], machine?: object, app = false) => {
+    const { script, env: base } = prepare(machine, app);
     let stdout: string, code = 0;
     try {
       stdout = execFileSync(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir!, "out"), ...extra], { encoding: "utf8", env: { ...base, ...env } });
@@ -116,6 +117,31 @@ describe("e2e-parallel.mjs", () => {
   };
   /** Whether any two runs were going at the same time. */
   const overlapped = (runs: Run[]) => { const spans = [...runs].sort((a, b) => a.start - b.start); return spans.some((one, at) => at > 0 && one.start < spans[at - 1]!.end); };
+
+  test.each([{ pressure: 1, lanes: 3 }, { pressure: 2, lanes: 1 }, { pressure: null, lanes: 1 }])("app runner chooses $lanes lanes at pressure $pressure and saves wall time and memory", ({ pressure, lanes }) => {
+    const { code, stdout, runs } = runParallel({}, ["--journeys", "scripted"], { platform: "darwin", pressure, available: 32 * GB, swapTotal: 100, swapUsed: 99, providers: 40 }, true);
+    expect(code).toBe(0);
+    expect(stdout).toContain(`app: ${lanes} lane${lanes === 1 ? "" : "s"}: memory ${pressure === 1 ? "normal" : `pressure ${pressure === 2 ? "warn" : "unknown"}`}`);
+    const metrics = JSON.parse(readFileSync(join(dir!, "out", "lanes.json"), "utf8"));
+    expect(metrics).toMatchObject({ lanes, admission: { most: lanes, providers: 0 } });
+    expect(metrics.wallMs).toBeGreaterThan(0);
+    expect(metrics.memory).toHaveProperty("peakCheck");
+    expect(metrics.groups.every((one: { ms: number; peakBytes: number | null }) => one.ms > 0 && (one.peakBytes === null || one.peakBytes > 0))).toBe(true);
+    if (lanes === 1) expect(overlapped(runs)).toBe(false);
+    expect(new Set(runs.map(one => one.tmp)).size).toBe(runs.length);
+    for (const one of runs) expect(existsSync(one.tmp)).toBe(false);
+  });
+
+  test("app lane override forces one, and malformed overrides fail before running any group", () => {
+    const one = runParallel({ TOOLROLL_E2E_LANES: "1" }, ["--journeys", "scripted"], undefined, true);
+    expect(one.code).toBe(0);
+    expect(overlapped(one.runs)).toBe(false);
+    expect(one.stdout).toContain("TOOLROLL_E2E_LANES=1");
+    rmSync(dir!, { recursive: true, force: true });
+    const bad = runParallel({ TOOLROLL_E2E_LANES: "many" }, [], undefined, true);
+    expect(bad.code).toBe(2);
+    expect(bad.runs).toEqual([]);
+  });
 
   test("retries only a failed journey, with what it needs and what it held up, and names it flaky when it then passes", () => {
     const { stdout, code, runs } = runParallel();

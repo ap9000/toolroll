@@ -157,7 +157,7 @@ function installHandlers() {
  * left in its group have ended and its root is gone: { code, signal, timedOut, ms, root, output } (output: what it
  * printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes.
  */
-export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, beforeRemove = null, tempRoot = true }) {
+export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, beforeRemove = null, tempRoot = true }) {
   // `tempRoot: false`: a suite that keeps its own short temp root (the unit tests: test/temp-root.ts) runs without one
   // more folder level, which would push the socket paths its tests make past the OS limit (103 bytes on macOS).
   const root = tempRoot ? makeTempRoot(prefix, { keep }) : null;
@@ -187,6 +187,7 @@ export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, 
     };
     child.on("error", () => void end(127, null));
     child.on("exit", (code, signal) => void end(code, signal));
+    if (child.pid !== undefined) onSpawn?.(child.pid);
   });
 }
 
