@@ -72,7 +72,6 @@ import {
   isImagePath,
   WORKTREE_EVIDENCE_DIR,
   storeHandoffArtifact,
-  type HandoffArtifact,
   looksLikeProtocolFile,
   mailboxName,
   progressFileName,
@@ -89,6 +88,7 @@ import {
   imageDimensions,
   SCREENSHOT_BYTE_CAP, boundStreamHeadTail } from "./evidence.js";
 import { PROOF_LIMITS, parseProof, serializeProof, adjudicate, artifactManifestOnly, sameDiffStatFacts, type DiffStatFacts, type ScreenshotOutcome, type VerifyCommandFacts } from "./proof.js";
+import { parseHandoffArtifact, type HandoffArtifact } from "./contracts/handoff.js";
 import { captureReviewContext } from "./review-context.js";
 import {
   authoritySnapshotDigest,
@@ -1421,18 +1421,9 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       try {
         const verified = readVerifiedArtifact(root, handoffArtifact);
         if (verified.ok) {
-          const parsed = JSON.parse(verified.content.toString("utf8")) as {
-            branch?: unknown;
-            conclusion?: unknown;
-            outcome?: unknown;
-            freshness?: { currentAsOf?: unknown };
-          };
-          if (
-            parsed.branch === branch &&
-            typeof parsed.conclusion === "string" &&
-            parsed.freshness?.currentAsOf === baseRevision
-          ) {
-            previousHandoff = `A previous attempt (${String(parsed.outcome ?? "finished")}) left the branch exactly where it now stands and concluded: ${parsed.conclusion}`;
+          const parsed = parseHandoffArtifact(verified.content.toString("utf8"));
+          if (parsed.ok && parsed.value.branch === branch && parsed.value.freshness.currentAsOf === baseRevision) {
+            previousHandoff = `A previous attempt (${parsed.value.outcome}) left the branch exactly where it now stands and concluded: ${parsed.value.conclusion}`;
           }
         }
       } catch {
@@ -2123,7 +2114,6 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     store.setRunPhase(request.runId, "capturing-evidence");
     const diffEvidence = await captureTerminalDiff(store, git, worktree, pinnedBase, baseRevision, root, request.runId, clock());
     storeHandoffArtifact(store, root, {
-      schema: 1,
       taskId,
       runId: request.runId,
       provider,
@@ -2215,7 +2205,6 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       store.setRunPhase(request.runId, "capturing-evidence");
       const diffEvidence = await captureTerminalDiff(store, git, worktree, pinnedBase, head, root, request.runId, clock());
       storeHandoffArtifact(store, root, {
-        schema: 1,
         taskId,
         runId: request.runId,
         provider,

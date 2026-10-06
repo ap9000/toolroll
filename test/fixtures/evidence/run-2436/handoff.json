@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "taskId": "revise-revise-integration-templates-from-1-annotation-on",
+  "runId": 2436,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "435a7e21f838c22e6a1537540b1ac85a",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "0206bfc0-b0d3-48a7-89e4-f11b28830dc0",
+  "branch": "toolroll/revise-revise-integration-templates-from-1-annotation-on",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-revise-revise-integration-templates-from-1-annotation-on-54e89a33",
+  "base": "829f0299bfbe7d5b5c9030e5fbe35a1c3af8504d",
+  "head": "a120c97a5a623f3750226db97cfe90959f68f9f5",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Replaced the zone drawing on gallery cards and template pages with a step strip: the main path's short titles joined by arrows, with You choose / You approve in the attention chip and Sent to you for send steps. Done and Ignore are left out, and sorts and chooses show their first real way. zonesDiagram is removed. Proof screenshots were redone on desktop and phone, and the 390px wrap is checked. Focused tests and typecheck pass. The full vitest run has 31 failures, all in process/sandbox files outside this change.",
+  "changes": [
+    "src/flow-gallery-ui.ts: mainPath and stepStrip replace zonesDiagram; .gallery-steps CSS uses caption type and signal-soft/signal for person steps",
+    "src/flow-gallery.test.ts: new step-strip test (fix-drop-off, worker-errors, weekly-upkeep, email-replies; no Done/Ignore on any template); card assertion now checks the strip",
+    "scripts/flow-gallery-proof.mjs: checks strips don't overflow, asserts the fix-drop-off strip text, and adds top-of-page screenshots"
+  ],
+  "verification": [
+    "npx vitest run src/flow-gallery.test.ts src/flow-send.test.ts src/serve.tools.test.ts: pass; npx tsc --noEmit: clean",
+    "node scripts/flow-gallery-proof.mjs after npm run build: passes on desktop 1440 and phone 390",
+    "Full npx vitest run: 31 failed / 4351 passed in 5 files: coding-provider, exec.held, exec, mcp-cli, task-control-adversarial",
+    "On rerun, exec idle-watchdog passed (timing flake); mcp-cli setuid 4600 failed again (sandbox file mode); none of these touch the gallery"
+  ],
+  "followUps": [
+    "Strip uses the zones' own titles, e.g. 'Build the fix' rather than the owner's example 'Build'; rename template step titles if shorter words are wanted"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-04T22:54:56.150Z",
+    "currentAsOf": "a120c97a5a623f3750226db97cfe90959f68f9f5"
+  }
+}

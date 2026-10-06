@@ -26,6 +26,8 @@ import { resultFactsFromHtml, resultReturnTarget } from "./result-review.js";
 import { Window } from "happy-dom";
 import { validateTaskText, TASK_TEXT_LIMITS } from "./task-text.js";
 import { presented, T0, stylesOf, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf } from "../test/serve-kit.js";
+import { handoffBytes } from "../test/handoff-fixture.js";
+import type { HandoffArtifact } from "./contracts/handoff.js";
 
 describe("the review cockpit (Priority 5): a ranked, verified projection of completed work", () => {
   let store: Store;
@@ -99,7 +101,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     parts: {
       patch?: string;
       stat?: { path: string; additions: number | null; deletions: number | null }[];
-      handoff?: Record<string, unknown>;
+      handoff?: Partial<Omit<HandoffArtifact, "version" | "runId">>;
       proof?: Record<string, unknown>;
       checkLog?: string;
       screenshot?: { path: string; caption: string };
@@ -124,7 +126,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       storeEvidence(store, evidenceRoot, run, "diff-stat", "diff-stat.json", Buffer.from(JSON.stringify(stat), "utf8"), "parsed from git diff --numstat -z", when, { captureStatus: "ok" });
     }
     if (parts.handoff !== undefined) {
-      storeEvidence(store, evidenceRoot, run, "handoff", "handoff.json", Buffer.from(JSON.stringify(parts.handoff), "utf8"), "composed at completion", when);
+      storeEvidence(store, evidenceRoot, run, "handoff", "handoff.json", handoffBytes(run, parts.handoff), "composed at completion", when);
     }
     if (parts.proof !== undefined) {
       storeEvidence(store, evidenceRoot, run, "proof", "proof.json", Buffer.from(JSON.stringify(parts.proof), "utf8"), "agent-authored proof (validated)", when);

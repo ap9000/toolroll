@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "taskId": "is-the-site-current-oct-4",
+  "runId": 2465,
+  "provider": "claude",
+  "model": "sonnet",
+  "route": {
+    "digest": "cc159c39e2bebc843cda633fd65b762b",
+    "phase": "build",
+    "provider": "claude",
+    "model": "sonnet",
+    "chosen": "recommended"
+  },
+  "sessionId": "e9848469-6607-4728-b806-4f273cef4a25",
+  "branch": "toolroll/is-the-site-current-oct-4",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/toolroll-site/toolroll-is-the-site-current-oct-4-dabab5f5",
+  "base": "953e13b64f717ee2afc1c0369ffb0834e9739e3e",
+  "head": "1e213cd8960e07cec1cade2a61ae7193d3b30fa5",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Synced site to 0.9.32 (npm latest moved past 0.9.25): release.json, llms.txt Current release line, and Integrations One-click services now lists Mobbin, PostHog, Better Stack plus a Figma desktop-app note. Build green; sync check prints goto: current.",
+  "changes": [],
+  "verification": [
+    "npm run build passed",
+    "release-sync-check exit 0"
+  ],
+  "followUps": [
+    "Desktop/320px visual check not run (text-only change); no new commands or install steps in 0.9.18-0.9.32, so Install page and home untouched"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T05:24:56.607Z",
+    "currentAsOf": "1e213cd8960e07cec1cade2a61ae7193d3b30fa5"
+  }
+}

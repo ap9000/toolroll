@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "taskId": "lead-stall",
+  "runId": 2449,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "52812442d5b0508e39261cbd28e8dfa8",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "69b3e015-aea9-4e6d-b809-da2272483849",
+  "branch": "toolroll/lead-stall",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-lead-stall-256166a5",
+  "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+  "head": "bfd28a7de449eda601d879ed7f2ea7eb798550d6",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "The mate turn now owns its 120 s deadline. It aborts the provider, kills the harness process group, and stops waiting 5 s later even if the provider ignores the abort. A timed-out turn saves one took-too-long notice in the thread, keeps proposals from completed tool calls (confirmable), releases the team queue so the next message is answered, and late output is fenced out. In the journey the notice appeared at ~125.5 s on desktop and phone.",
+  "changes": [
+    "mate.ts: outer deadline race (settleBy + MATE_ABORT_GRACE_MS 5 s) around provider calls and channel revalidation; abort signal passed to the subscription runner",
+    "exec.ts run(): new signal option kills the process group like the timeout; subscription-chat.ts passes it",
+    "store.ts: timed-out finalize and the stale sweep save the notice and promote validated drafts in one write; mateTimeoutNotice and mateTurnKeepsProposals",
+    "mate-doors.ts and chat-actions.ts: cards kept by a timeout or crash can be confirmed; every other failure still deletes its drafts",
+    "serve.ts: no extra one-off warning when the notice is saved. React chat JSON no longer repeats a card under the person's own message (existing bug on every turn)",
+    "team-runtime.ts and team-leads.ts: no repeated error on the team message; docs/mate-arc.md finding 4 now records the narrow exception"
+  ],
+  "verification": [
+    "npm run typecheck: pass",
+    "vitest: mate, mate-doors, subscription-chat, team-runtime (new), serve.*, browser/*, exec, chat-actions, telegram-mate, migration-v35 and others: all pass",
+    "subscription-chat test: aborting kills and reaps a real sh child and its sleep grandchild",
+    "Headless Chromium journey (evidence/lead-stall/journey.mjs, synthetic stub that proposes then hangs and ignores abort), 1440x900 and 390x844: 22 checks pass"
+  ],
+  "followUps": [
+    "Telegram, Slack and Discord still send only the failure text; they do not send cards kept by a timed-out turn",
+    "A team message that timed out keeps its existing Could not finish badge beside the lead notice",
+    "Desktop card buttons are 28 px tall (existing size, unchanged); phone buttons are 44 px",
+    "Not reproduced on a swap-starved machine or with a real claude or codex harness; the root cause in run 2438 is inferred, not observed",
+    "With direct API keys, a timeout still pauses chat until the unknown cost is confirmed (existing safety rule, unchanged)"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T01:08:27.510Z",
+    "currentAsOf": "bfd28a7de449eda601d879ed7f2ea7eb798550d6"
+  }
+}

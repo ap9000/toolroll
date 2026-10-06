@@ -1,0 +1,33 @@
+{
+ "version": 1,
+ "run": 2465,
+ "head": "1e213cd8960e07cec1cade2a61ae7193d3b30fa5",
+ "base": "953e13b64f717ee2afc1c0369ffb0834e9739e3e",
+ "scopeDigest": "4a546bece79f9b175b4ac0feb58ebd47",
+ "command": {
+  "id": 18,
+  "repo": "/Users/owner/Developer/toolroll-site",
+  "command": "npm ci --no-audit --no-fund && npm run build",
+  "timeoutMs": 600000,
+  "digest": "db378617ac947fb4",
+  "recoverySetupDigest": null,
+  "approvedBy": "alex",
+  "approvedAt": "2026-09-30T21:39:30.890Z",
+  "revokedAt": null,
+  "revokedBy": null
+ },
+ "result": {
+  "configured": true,
+  "ran": true,
+  "exitCode": 0
+ },
+ "log": {
+  "artifactId": 5886,
+  "sha256": "867de4eb68695593cd7654cf9768fed2291cd520131920006aeb339972ce78e6",
+  "bytesStored": 1688,
+  "bytesOriginal": 1688,
+  "truncated": false,
+  "redacted": false,
+  "captureStatus": "ok"
+ }
+}

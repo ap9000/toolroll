@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/batch-checks/settings-desktop.png",
+      "caption": "Settings → Projects → Checks (desktop): Batch checks card, On, with its change behind a disclosure and the password"
+    },
+    {
+      "path": "evidence/batch-checks/settings-phone.png",
+      "caption": "Settings → Projects → Checks (phone 390px): Batch checks card with Turn off expanded"
+    },
+    {
+      "path": "evidence/batch-checks/together-desktop.png",
+      "caption": "Synthetic result (desktop): Ready for review, Project checks row says Checked together with round-prices-to-cents on the batch commit"
+    },
+    {
+      "path": "evidence/batch-checks/together-phone.png",
+      "caption": "Synthetic result with a long title (phone): checked-together status fits without overflow"
+    },
+    {
+      "path": "evidence/batch-checks/failed-phone.png",
+      "caption": "Synthetic result that broke its batch (phone): Failed, Project checks Failed on its own (exit 1)"
+    },
+    {
+      "path": "evidence/batch-checks/waiting-phone.png",
+      "caption": "Synthetic lone result inside the window (phone): Waiting to check with other results"
+    },
+    {
+      "path": "evidence/batch-checks/result-checks-desktop.png",
+      "caption": "Result Checks tab (desktop): Full checks passed together with the other result on the batch commit, with its log"
+    }
+  ]
+}

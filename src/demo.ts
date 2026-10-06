@@ -39,6 +39,7 @@ import { fileTaskProposal, fileRoutineProposal } from "./proposal.js";
 import { storeEvidence, budgetedStatJson, imageDimensions, type DiffStat } from "./evidence.js";
 import { parseProof, adjudicate } from "./proof.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
+import { HANDOFF_VERSION, readHandoffArtifact, type HandoffArtifact } from "./contracts/handoff.js";
 import { parseExecutionPlanDocument, milestonesOf } from "./plan.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { deflateSync } from "node:zlib";
@@ -99,9 +100,26 @@ index 11aa0b2..c44d1f7 100644
 +  });
 `;
 
+/** A demo run's handoff artifact: the run's own identity around the story's conclusion and lists, written through
+ * the handoff schema like a real one. */
+function demoHandoffBytes(
+  store: Store,
+  runId: number,
+  told: Pick<HandoffArtifact, "outcome" | "committed" | "conclusion" | "changes" | "verification" | "followUps" | "decisionsIncorporated">,
+): Buffer {
+  const run = store.getRun(runId)!;
+  const head = run.headRevision ?? run.baseRevision ?? "0".repeat(40);
+  const read = readHandoffArtifact({
+    version: HANDOFF_VERSION, taskId: store.externalIdFor(run.taskRef) ?? String(run.taskRef), runId, provider: run.provider,
+    sessionId: null, branch: run.branch ?? "", worktree: run.worktree ?? "", base: run.baseRevision ?? head, head, ...told,
+    freshness: { stampedAt: run.startedAt, currentAsOf: head },
+  });
+  if (!read.ok) throw new Error(`demo handoff: ${read.issues.map(issue => issue.line).join("; ")}`);
+  return Buffer.from(JSON.stringify(read.value, null, 2), "utf8");
+}
+
 const DEMO_HANDOFF = {
-  schema: 1,
-  outcome: "built",
+  outcome: "built" as const,
   committed: true,
   conclusion:
     "Fixed the payout rounding drift: settle() now rounds at cent precision instead of accumulating half-cent errors. Added boundary tests against the ledger fixtures. All 214 tests pass.",
@@ -141,8 +159,7 @@ index 2b3c4d5..8e9f0a1 100644
 `;
 
 const DEMO_FAILED_HANDOFF = {
-  schema: 1,
-  outcome: "built",
+  outcome: "built" as const,
   committed: true,
   conclusion: "Removed LEGACY_PAYOUT from settlement and config. The admin override still reads it, so one reference remains.",
   changes: ["Dropped the legacy settlement branch in src/payout.ts.", "Removed the LEGACY_PAYOUT flag from src/config.ts."],
@@ -215,8 +232,7 @@ index a1b2c3d..d4e5f6a 100644
 `;
 
 const DEMO_COPY_HANDOFF = {
-  schema: 1,
-  outcome: "built",
+  outcome: "built" as const,
   committed: true,
   conclusion: "Rewrote the inbox's empty-state copy so it explains why the list is empty instead of just saying so.",
   changes: ["Replaced the empty-state body copy in src/inbox-copy.ts."],
@@ -734,7 +750,7 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     doneRun,
     "handoff",
     "handoff.json",
-    Buffer.from(JSON.stringify(DEMO_HANDOFF, null, 2), "utf8"),
+    demoHandoffBytes(store, doneRun, DEMO_HANDOFF),
     "composed at completion [demo: synthetic]",
     hoursAgo(8.4),
   );
@@ -835,7 +851,7 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     filesTruncated: false,
   };
   storeEvidence(store, evidenceRoot, failedRun, "diff-stat", "diff-stat.json", budgetedStatJson(failedStat), "parsed from git diff --numstat -z [demo: synthetic]", hoursAgo(5.6));
-  storeEvidence(store, evidenceRoot, failedRun, "handoff", "handoff.json", Buffer.from(JSON.stringify(DEMO_FAILED_HANDOFF, null, 2), "utf8"), "composed at completion [demo: synthetic]", hoursAgo(5.6));
+  storeEvidence(store, evidenceRoot, failedRun, "handoff", "handoff.json", demoHandoffBytes(store, failedRun, DEMO_FAILED_HANDOFF), "composed at completion [demo: synthetic]", hoursAgo(5.6));
   storeEvidence(store, evidenceRoot, failedRun, "proof", "proof.json", Buffer.from(JSON.stringify(DEMO_FAILED_PROOF, null, 2), "utf8"), "agent-authored proof (validated, re-serialized) [demo: synthetic]", hoursAgo(5.6));
   const failedAdjudicated = adjudicate({
     proofArtifactPresent: true,
@@ -930,7 +946,7 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     copyReviewRun,
     "handoff",
     "handoff.json",
-    Buffer.from(JSON.stringify(DEMO_COPY_HANDOFF, null, 2), "utf8"),
+    demoHandoffBytes(store, copyReviewRun, DEMO_COPY_HANDOFF),
     "composed at completion [demo: synthetic]",
     hoursAgo(3.5),
   );
@@ -1047,8 +1063,13 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     hoursAgo(4.6),
   );
   const DEMO_REPAIR_HANDOFF = {
-    summary: "Added a TODO comment marking the per-account lock — ran out of turns before wiring the actual guard.",
-    filesTouched: ["src/payout-limiter.ts"],
+    outcome: "built" as const,
+    committed: true,
+    conclusion: "Added a TODO comment marking the per-account lock — ran out of turns before wiring the actual guard.",
+    changes: ["Marked the per-account lock in src/payout-limiter.ts."],
+    verification: [],
+    followUps: [],
+    decisionsIncorporated: [],
   };
   storeEvidence(
     store,
@@ -1056,7 +1077,7 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     reviewedRun,
     "handoff",
     "handoff.json",
-    Buffer.from(JSON.stringify(DEMO_REPAIR_HANDOFF, null, 2), "utf8"),
+    demoHandoffBytes(store, reviewedRun, DEMO_REPAIR_HANDOFF),
     "composed at completion [demo: synthetic]",
     hoursAgo(4.5),
   );
@@ -1711,7 +1732,7 @@ export function createDemoLead(input: {
     };
     const shotPath = `evidence/${plan.kind}.png`;
     const png = demoScreenshot(plan.screenshot.accent);
-    const handoff = { schema: 1, outcome: "built", committed: true, conclusion: plan.conclusion, changes: diffs.map(one => `Changed ${one.path}.`), verification: [plan.checks[0]!], followUps: [], decisionsIncorporated: [] };
+    const handoff = { outcome: "built" as const, committed: true, conclusion: plan.conclusion, changes: diffs.map(one => `Changed ${one.path}.`), verification: [plan.checks[0]!], followUps: [], decisionsIncorporated: [] };
     const proof = {
       version: 1 as const,
       criteria: [
@@ -1726,7 +1747,7 @@ export function createDemoLead(input: {
     const synthetic = "[demo: scripted]";
     storeEvidence(store, evidenceRoot, run, "terminal-diff", "terminal-diff.patch", Buffer.from(diffs.map(one => one.patch).join(""), "utf8"), `git diff --no-ext-diff --no-textconv --no-color ${base.slice(0, 8)}..HEAD (exit 0) ${synthetic}`, at);
     storeEvidence(store, evidenceRoot, run, "diff-stat", "diff-stat.json", budgetedStatJson(stat), `parsed from git diff --numstat -z ${synthetic}`, at);
-    storeEvidence(store, evidenceRoot, run, "handoff", "handoff.json", Buffer.from(JSON.stringify(handoff, null, 2), "utf8"), `composed at completion ${synthetic}`, at);
+    storeEvidence(store, evidenceRoot, run, "handoff", "handoff.json", demoHandoffBytes(store, run, handoff), `composed at completion ${synthetic}`, at);
     storeEvidence(store, evidenceRoot, run, "proof", "proof.json", Buffer.from(JSON.stringify(proof, null, 2), "utf8"), `agent-authored proof (validated, re-serialized) ${synthetic}`, at);
     storeEvidence(store, evidenceRoot, run, "screenshot", `screenshot-${plan.kind}.png`, png, `agent-claimed screenshot at ${shotPath} (validated png) ${synthetic}`, at);
     const log = `=== Attempt summary ===\n- Project check · attempt 1: (exit 0)\n\n=== Project check · attempt 1 ===\n$ ${DEMO_CHECK_COMMAND}\n(exit 0)\n\n--- stdout ---\n${plan.checkOutput}\n--- stderr ---\n`;

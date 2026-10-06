@@ -50,7 +50,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 3 ✅ | **Flow definitions and step inputs** (every zone kind, routes/answers/options, triggers) for `flows create/edit`, gallery templates, the lead's `propose_flow` | `flows.ts` (13 parsers), `flow-triggers.ts`, `flow-gallery.ts` | wrong-field-name failures; flows are authored by people, the lead and templates |
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
-| 6 | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
+| 6 ✅ | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
 | 7 | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
 
 ### Wave 2 — shared context passed between steps (P1)
@@ -115,3 +115,12 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   zone, trigger setting or `propose_flow` argument's kind doesn't take is refused by name (a sort's `ifFails`, a wait's
   `remindAfter`); a drawing or file with a newer `version` is refused plainly; flow and trigger refusals are path-named
   lines.
+- **6. Builder handoff and proof** (2026-10-05). `src/contracts/handoff.ts`, `src/contracts/proof.ts` and
+  `src/contracts/verification-receipt.ts` are the one schema each for `handoff.json`, the builder's proof and the
+  verification receipt; `HandoffArtifact`, `ParsedProof` and `VerifyCommandFacts` are derived from them, and
+  `PROOF_LIMITS` reads its byte limits from `TEXT_LIMITS`. Handoffs saved as `schema: 1` read as `version: 1`; a proof
+  a builder writes (`version: 1`) is read as before and stored as strict `version: 2`; receipts keep their version 1
+  (direct) and 2 (reused) bytes, so saved digests still match. Replayed from 15 real runs in `test/fixtures/evidence/`:
+  every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
+  is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
+  its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).

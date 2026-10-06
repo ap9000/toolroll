@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "criteria": [],
+  "checks": [],
+  "changed": [],
+  "caveats": [],
+  "screenshots": [
+    {
+      "path": "evidence/flow-gallery/desktop-gallery.png",
+      "caption": "Desktop gallery: each card's step strip with You choose / You approve chips, tool marks and connected state"
+    },
+    {
+      "path": "evidence/flow-gallery/phone-gallery.png",
+      "caption": "Phone 390px gallery: step strips wrap cleanly inside cards"
+    },
+    {
+      "path": "evidence/flow-gallery/desktop-fix-drop-off-top.png",
+      "caption": "Desktop template page: Find the drop-off → You choose → Build the fix → Pull request → Sent to you"
+    },
+    {
+      "path": "evidence/flow-gallery/phone-fix-drop-off-top.png",
+      "caption": "Phone template page: the same step strip wrapped at 390px"
+    },
+    {
+      "path": "evidence/flow-gallery/desktop-ui-inspiration-connect-failed.png",
+      "caption": "Desktop: Mobbin not connected, its Connect offered first; a wrong password comes back to the template"
+    },
+    {
+      "path": "evidence/flow-gallery/phone-ui-inspiration-preview.png",
+      "caption": "Phone: preview says Find examples needs Mobbin, which isn't connected"
+    },
+    {
+      "path": "evidence/flow-gallery/phone-error-to-fix-taken.png",
+      "caption": "Phone: Error to fix with Sentry added another way"
+    },
+    {
+      "path": "evidence/flow-gallery/desktop-fix-drop-off-steps.png",
+      "caption": "Desktop: connected PostHog template with every step expanded"
+    }
+  ]
+}

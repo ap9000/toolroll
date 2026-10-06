@@ -17,6 +17,7 @@ import { createDecisionServer, earlierVersionsWords } from "./serve.js";
 import { assignmentOf } from "./assignment.js";
 import { Window } from "happy-dom";
 import { presented, stylesOf, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
+import { handoffBytes } from "../test/handoff-fixture.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
 import { workIndexPage } from "./work-index.js";
 
@@ -62,7 +63,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     sealScopeFixture(store, id, approverToken, `do ${title}`);
     const run = store.startRun({ taskRef: ref, leaseId: `lease-${id}`, runner: "night-shift-1", provider: "claude", branch: `standing-orders/${id}`, worktree: `/pool/${id}`, now: new Date(now.getTime() - 1_800_000), ...presented(store, ref, "builder") });
     storeEvidence(store, root, run, "terminal-diff", "terminal-diff.patch", Buffer.from("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n", "utf8"), "git diff --no-ext-diff 0000..HEAD (exit 0)", now, { captureStatus: "ok" });
-    storeEvidence(store, root, run, "handoff", "handoff.json", Buffer.from(JSON.stringify({ schema: 1, outcome: "built", committed: true, conclusion: `Finished ${title}.`, changes: [], verification: [], followUps: [], decisionsIncorporated: [] }), "utf8"), "composed at completion", now);
+    storeEvidence(store, root, run, "handoff", "handoff.json", handoffBytes(run, { conclusion: `Finished ${title}.`, changes: [], verification: [], followUps: [] }), "composed at completion", now);
     store.finishRun(run, { outcome: "built", committed: true, now: new Date(now.getTime() - 1_200_000) });
     if (verdict !== null) store.saveProofVerdict(run, verdict.verdict, verdict.reasons, now);
     store.setTaskState(id, "done", new Date(now.getTime() - 1_200_000));
@@ -1019,7 +1020,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const { ref, run: older } = finished("t-rev", "Review me", alpha, { verdict: "verified", reasons: ["the approved verification command passed"] });
     const latest = store.startRun({ taskRef: ref, leaseId: "lease-t-rev-2", runner: "night-shift-1", provider: "claude", branch: "standing-orders/t-rev", worktree: "/pool/t-rev-2", now: new Date(now.getTime() - 900_000), ...presented(store, ref, "builder") });
     storeEvidence(store, root, latest, "terminal-diff", "terminal-diff.patch", Buffer.from("diff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n", "utf8"), "git diff --no-ext-diff 0000..HEAD (exit 0)", now, { captureStatus: "ok" });
-    storeEvidence(store, root, latest, "handoff", "handoff.json", Buffer.from(JSON.stringify({ schema: 1, outcome: "built", committed: true, conclusion: "Finished again.", changes: [], verification: [], followUps: [], decisionsIncorporated: [] }), "utf8"), "composed at completion", now);
+    storeEvidence(store, root, latest, "handoff", "handoff.json", handoffBytes(latest, { conclusion: "Finished again.", changes: [], verification: [], followUps: [] }), "composed at completion", now);
     store.finishRun(latest, { outcome: "built", committed: true, now: new Date(now.getTime() - 600_000) });
     store.saveProofVerdict(latest, "refuted", ["the repository's approved verification command exited 1"], now);
     store.setTaskState("t-rev", "done", new Date(now.getTime() - 600_000));

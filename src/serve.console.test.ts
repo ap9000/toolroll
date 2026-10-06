@@ -20,6 +20,7 @@ import { parseExecutionPlanDocument, milestonesOf } from "./plan.js";
 import { resolveRoutineAuthority } from "./agentconfig.js";
 import { Window } from "happy-dom";
 import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
+import { handoffBytes } from "../test/handoff-fixture.js";
 
 describe("the operations console", () => {
   let store: Store;
@@ -1031,15 +1032,12 @@ describe("the operations console", () => {
     store.stampProviderStart(run, T0);
     store.recordUsage(run, { tokensIn: 10, tokensOut: 5, costUsd: 0.42 });
     store.recordOutcomeFacts(run, { handoff: "Wired the guard; tests added." });
-    const handoff = Buffer.from(JSON.stringify({
-      schema: 1,
-      outcome: "built",
-      committed: true,
+    const handoff = handoffBytes(run, {
       conclusion: "Wired the guard; tests added.",
       changes: ["Added the payout boundary"],
       verification: ["Focused tests pass"],
       followUps: ["Watch the first production run"],
-    }), "utf8");
+    });
     mkdirSync(join(evidenceRoot, String(run)), { recursive: true });
     writeFileSync(join(evidenceRoot, String(run), "handoff.json"), handoff);
     store.saveArtifact({

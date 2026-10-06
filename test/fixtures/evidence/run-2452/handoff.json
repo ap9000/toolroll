@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "taskId": "batch-checks",
+  "runId": 2452,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "2d8cd425f151cb19b45f7e1faeccc0e5",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "69b44d9c-5808-4ef3-bb5f-f9efd7030b5f",
+  "branch": "toolroll/batch-checks",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-batch-checks-c26a0d79",
+  "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+  "head": "6b91ca59e63118d58fe112e5b9a294b423fceb75",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Batch checks added, off by default per project (project checks --batch on|off, Settings → Projects → Checks). With Full checks, results that finish within 10 minutes share one check on a temporary detached merge commit. A pass gives each result a sealed receipt naming that commit (Checked together with … on <sha>). A failure splits the batch down to the breaking result. Conflicts are checked one by one. No real ref changes, and Merge waits for the batch check.",
+  "changes": [
+    "New src/batch-policy.ts (setting, ledger-audited) and src/batch-checks.ts (queue, cohorts, merge/split/conflict runner, sealed receipts) built on the follow-up check ledger",
+    "builder.ts: with batching on, a Full build queues its exact commit instead of checking inline; its proof reads like Off (attested) until the batch receipt lands",
+    "Shared status, the assignment projection, the result Checks tab, the CLI command, the surface entry, lead facts and docs/design/task-status.md all show batching",
+    "workspace-ui.ts: a log section header is no longer offered as a silent check's failing line (regression test added)"
+  ],
+  "verification": [
+    "npm run typecheck: clean",
+    "vitest: batch-checks, check-levels, task-status, task-status-surfaces, lead-capabilities, cli, builder, operate, serve.results, workspace-ui: 453 passed",
+    "Headless journey (synthetic data) at 1280 and 390 px: settings, together, failed, waiting and Checks tab, with no horizontal overflow; screenshots in evidence/batch-checks"
+  ],
+  "followUps": [
+    "A batched build's inline proof is attested, not verified, so automatic review (which needs a passing check) won't run for it. Decide whether review should wait for the batch receipt",
+    "A cohort closes when a second result arrives (per the plan), so most batches have 2 results; a size or time-based close would batch more",
+    "An abandoned batch claim shows as not finished and needs Run checks; it isn't re-queued automatically",
+    "Chat has no batch-toggle action; the lead's project facts point to the existing Settings path"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T00:42:53.900Z",
+    "currentAsOf": "6b91ca59e63118d58fe112e5b9a294b423fceb75"
+  }
+}
