@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Scopes, acceptance criteria and sealed routes have one contract.** A task's
+  scope (goal, exclusions, touch paths, rubric) and an acceptance criterion are
+  described once from the plan contract's own fields (`src/contracts/scope.ts`);
+  a sealed agent route, in both versions it has been saved in, with its
+  overrides and task size, is one schema (`src/contracts/route.ts`). The shared
+  rubric input schema is ready for the lead-tool migration. Every saved scope,
+  standing order and sealed route reads and digests exactly as before, so no
+  approval changes.
+  Nothing new is refused: a scope still names up to 50 paths and a criterion
+  still ignores keys it doesn't use. Rubric and route refusals are now
+  field-named lines (`acceptance[0].statement over 1,000 bytes`), and a route
+  made by a newer Toolroll says so.
+
 ## 0.9.36 — 2026-10-06
 
 - **Flows have one contract.** Every kind of zone, step, route, answer,

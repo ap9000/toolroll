@@ -47,22 +47,39 @@
  */
 
 import { createHash } from "node:crypto";
+import type { EvidenceKind } from "./contracts/acceptance-terms.js";
+import {
+  MODEL_ID_SHAPE,
+  postureOf,
+  readRouteOverrides,
+  readSealedRoute,
+  RISKS,
+  ROUTE_PHASES,
+  ROUTE_PROVIDERS,
+  ROUTE_VERSION,
+  TASK_SIZE_WORDS,
+  taskSizingSchema,
+  type PhaseRoute,
+  type RouteLeg,
+  type RouteOverride,
+  type RouteVersion,
+  type TaskSizing,
+} from "./contracts/route.js";
 import type { Phase, ProviderId } from "./provider.js";
 import type { QualityMode } from "./quality.js";
 
-// Type-only imports above: provider.ts sits under evidence.ts and scope.ts
+/** The sealed route's shape is its contract (contracts/route.ts); these are its types. */
+export type { PhaseRoute, RouteLeg, RouteOverride, RouteVersion, TaskSizing };
+export { MODEL_ID_SHAPE };
+
+// Type-only imports from provider.ts: it sits under evidence.ts and scope.ts
 // in the module graph, and this policy is imported by scope.ts — a value
-// import would be a cycle at load time. The id list is restated here and
-// pinned to provider.ts's by the test suite.
-export const PROVIDER_ID_LIST: readonly ProviderId[] = ["claude", "codex", "openrouter", "gemini"];
+// import would be a cycle at load time. The route contract restates the id
+// list, pinned to provider.ts's by the test suite.
+export const PROVIDER_ID_LIST: readonly ProviderId[] = ROUTE_PROVIDERS;
 function isProviderId(value: string): value is ProviderId {
   return (PROVIDER_ID_LIST as readonly string[]).includes(value);
 }
-/** provider.ts's MODEL_ID, restated for the same reason and pinned by the
- * same test: an exact model id is argv-safe — no leading dash, no
- * whitespace or control bytes — or it is not a model id this policy can
- * seal, stamp, or rehydrate. */
-export const MODEL_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 function exactModel(v: unknown): v is string {
   return typeof v === "string" && MODEL_ID_SHAPE.test(v);
 }
@@ -75,20 +92,19 @@ export function exactModelId(v: unknown): v is string {
 /** v2 adds the task's size (small / medium / large, risky or not), the
  * light tier, and plan headroom. A v1 route — sealed before sizing — still
  * reads back exactly and keeps its own digest domain. */
-export const ROUTE_VERSION = 2;
-export type RouteVersion = 1 | 2;
+export { ROUTE_VERSION };
 /** The durable route ERA a scope row carries once it was filed under this
  * policy: NULL on a row proven to predate v47 (legacy — the sealed profile
  * alone governs), this value on every row filed since. A row with an era
  * and no readable route is corrupt and fails closed. The era marks a ROUTED
  * row; which route version it holds rides in the snapshot itself. */
 export const ROUTE_ERA = 1;
-export const PHASES: readonly Phase[] = ["plan", "build", "repair", "review"];
+export const PHASES: readonly Phase[] = ROUTE_PHASES;
 /** The review leg remains readable in signed history but is no longer scheduled. */
 export const ACTIVE_PHASES: readonly Phase[] = ["plan", "build", "repair"];
 
-export type RiskLevel = "routine" | "elevated" | "high";
-export const RISK_LEVELS: readonly RiskLevel[] = ["routine", "elevated", "high"];
+export type RiskLevel = (typeof RISKS)[number];
+export const RISK_LEVELS: readonly RiskLevel[] = RISKS;
 
 export function isRiskLevel(value: unknown): value is RiskLevel {
   return value === "routine" || value === "elevated" || value === "high";
@@ -96,10 +112,9 @@ export function isRiskLevel(value: unknown): value is RiskLevel {
 
 /** How big a change the task is, sized once at filing (by the classifier,
  * by the description when it cannot answer, or by a person). */
-export type TaskSize = "small" | "medium" | "large";
-export const TASK_SIZES: readonly TaskSize[] = ["small", "medium", "large"];
-export type SizeSource = "classifier" | "heuristic" | "person";
-export type TaskSizing = { size: TaskSize; risky: boolean; source: SizeSource; reason: string };
+export type TaskSize = TaskSizing["size"];
+export const TASK_SIZES: readonly TaskSize[] = TASK_SIZE_WORDS;
+export type SizeSource = TaskSizing["source"];
 
 export function isTaskSize(value: unknown): value is TaskSize {
   return value === "small" || value === "medium" || value === "large";
@@ -116,15 +131,10 @@ export function sizeSourceWords(source: SizeSource): string {
   return source === "classifier" ? "sized automatically" : source === "person" ? "set by a person" : "sized from the description";
 }
 
-/** Strict read of a stored sizing: exact keys, known words, bounded reason. */
+/** Strict read of a stored sizing (the route contract's): exact keys, known words, bounded reason. */
 export function parseSizing(raw: unknown): TaskSizing | null {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const v = raw as Record<string, unknown>;
-  if (!exactKeysOf(v, ["size", "risky", "source", "reason"])) return null;
-  if (!isTaskSize(v["size"]) || typeof v["risky"] !== "boolean") return null;
-  if (v["source"] !== "classifier" && v["source"] !== "heuristic" && v["source"] !== "person") return null;
-  if (typeof v["reason"] !== "string" || v["reason"].length > 300) return null;
-  return { size: v["size"], risky: v["risky"], source: v["source"], reason: v["reason"] };
+  const parsed = taskSizingSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export function riskTitle(risk: RiskLevel): string {
@@ -205,17 +215,9 @@ export type RouteCandidates = {
   review: PhaseCandidates;
 };
 
-/** An approver's explicit per-phase choice, recorded with attribution.
- * Always an exact pair. */
-export type RouteOverride = ExactSpec & {
-  phase: Phase;
-  by: string;
-  at: string;
-};
-
 /** The evidence kinds an acceptance rubric demands — `scope.ts` owns the
  * full type; the policy only needs the names. */
-export type RouteEvidenceKind = "check" | "screenshot" | "changed-path" | "manual-review";
+export type RouteEvidenceKind = EvidenceKind;
 
 /** How far the plane may carry a result without a person: no publication
  * grant at all, a grant whose merges wait for a human (notify), or a live
@@ -287,46 +289,6 @@ export type RouteInput = {
    * candidates on more than one provider, the one with more room runs; a
    * provider past its limits gives way even to a stronger tier. */
   headroom?: readonly ProviderRoom[];
-};
-
-export type RouteLeg = {
-  phase: Phase;
-  provider: ProviderId;
-  /** The exact model id this leg runs — never null on a frozen route. */
-  model: string;
-  /** The tier the recommendation drew from; an override or pin still
-   * records what tier the policy would have used. */
-  tier: CandidateTier;
-  chosen: "recommended" | "override" | "pinned";
-  /** What the policy recommended before any override or pin — shown so an
-   * overridden leg can say what it replaced. */
-  recommended: { provider: ProviderId; model: string; tier: CandidateTier };
-  /** Plain-English, ordered, deterministic. */
-  reasons: string[];
-  /** A configuration that cannot run this leg at all (gemini on review,
-   * cross-provider repair) — stated, never repaired by substitution; a
-   * route with any problem files its scope unresolved. */
-  problem: string | null;
-};
-
-export type PhaseRoute = {
-  version: RouteVersion;
-  risk: RiskLevel;
-  qualityMode: QualityMode;
-  publication: PublicationAuthority;
-  evidence: RouteEvidenceKind[];
-  /** The posture the route ACTUALLY runs under: "strong" only when at
-   * least one leg draws from a configured strong agent; "economy" when
-   * every selected agent is the routine one — however demanding the task,
-   * a route that keeps every default never claims stronger agents. */
-  posture: "economy" | "strong";
-  /** Why a stronger tier was wanted, in order (empty for a routine task). */
-  demands: string[];
-  legs: RouteLeg[];
-  overrides: RouteOverride[];
-  /** The task's size as it was routed (v2); null on a v1 route or an
-   * unsized task. */
-  size: TaskSizing | null;
 };
 
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
@@ -651,7 +613,7 @@ function withHeadroom(
 
 /** Whether any leg actually runs a configured strong agent. */
 function drawsStrong(legs: readonly RouteLeg[]): boolean {
-  return legs.some(leg => leg.chosen === "recommended" && leg.tier === "strong");
+  return postureOf(legs) === "strong";
 }
 
 export function legOf(route: PhaseRoute, phase: Phase): RouteLeg {
@@ -725,121 +687,41 @@ export function routeDigestOf(route: PhaseRoute): string {
 function str(v: unknown): v is string {
   return typeof v === "string" && v !== "";
 }
-/** Exactly these keys, every one present, nothing unknown. */
-function exactKeysOf(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const own = Object.keys(value);
-  return own.length === keys.length && keys.every(key => own.includes(key));
-}
-function strOrNull(v: unknown): v is string | null {
-  return v === null || str(v);
-}
-function stringList(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every(one => typeof one === "string");
-}
 
-/** Strict rehydration of a stored route — every field type-proved, every
- * model an exact non-empty string; anything unexpected is null, never a
- * guess. A null from a row that carries a route era is a corrupt seal. */
+/** Strict rehydration of a stored route through the route contract — every
+ * field type-proved, every model an exact non-empty string, nothing unknown;
+ * anything unexpected is null, never a guess. A null from a row that carries
+ * a route era is a corrupt seal. */
 // Recovery and normal admission share this strict decoder; neither may replace
 // unreadable signed routing with a convenient current default.
 export function routeFromJson(json: string | null): PhaseRoute | null {
   if (json === null) return null;
+  const read = readRouteJson(json);
+  return read.ok ? read.route : null;
+}
+
+/** Why a stored route does not read, as path-named lines (`legs[1].model: …`); null when it reads. */
+export function routeJsonProblem(json: string): string | null {
+  const read = readRouteJson(json);
+  return read.ok ? null : read.lines.join("; ");
+}
+
+function readRouteJson(json: string): { ok: true; route: PhaseRoute } | { ok: false; lines: string[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {
-    return null;
+    return { ok: false, lines: ["payload: not valid JSON"] };
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const r = parsed as Record<string, unknown>;
-  // Exact keys (v48 integrity): the snapshot carries what canonicalRouteJson
-  // writes and nothing else — on the route, on every leg, on every leg's
-  // recommendation, and on every override.
-  // A v1 route (sealed before sizing) reads back exactly as it was written:
-  // no size, routine and strong tiers only.
-  const version = r["version"];
-  if (version !== 1 && version !== 2) return null;
-  const v1Keys = ["version", "risk", "qualityMode", "publication", "evidence", "posture", "demands", "legs", "overrides"];
-  if (!exactKeysOf(r, version === 1 ? v1Keys : [...v1Keys, "size"])) return null;
-  const tierOk = (tier: unknown): tier is CandidateTier => tier === "routine" || tier === "strong" || (version === 2 && tier === "light");
-  const size = version === 1 || r["size"] === null ? null : parseSizing(r["size"]);
-  if (version === 2 && r["size"] !== null && size === null) return null;
-  if (!isRiskLevel(r["risk"])) return null;
-  if (r["qualityMode"] !== "default" && r["qualityMode"] !== "strict") return null;
-  if (r["publication"] !== "none" && r["publication"] !== "notify" && r["publication"] !== "automerge") return null;
-  if (r["posture"] !== "economy" && r["posture"] !== "strong") return null;
-  if (!stringList(r["demands"])) return null;
-  const evidence = r["evidence"];
-  if (!Array.isArray(evidence) || !evidence.every(one => one === "check" || one === "screenshot" || one === "changed-path" || one === "manual-review")) return null;
-  if (!Array.isArray(r["legs"]) || r["legs"].length !== PHASES.length) return null;
-  const legs: RouteLeg[] = [];
-  for (const [index, raw] of (r["legs"] as unknown[]).entries()) {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const leg = raw as Record<string, unknown>;
-    if (!exactKeysOf(leg, ["phase", "provider", "model", "tier", "chosen", "recommended", "reasons", "problem"])) return null;
-    if (leg["phase"] !== PHASES[index]) return null;
-    if (!str(leg["provider"]) || !isProviderId(leg["provider"])) return null;
-    if (!exactModel(leg["model"])) return null;
-    if (!tierOk(leg["tier"])) return null;
-    if (leg["chosen"] !== "recommended" && leg["chosen"] !== "override" && leg["chosen"] !== "pinned") return null;
-    const rec = leg["recommended"];
-    if (rec === null || typeof rec !== "object" || Array.isArray(rec)) return null;
-    const recommended = rec as Record<string, unknown>;
-    if (!exactKeysOf(recommended, ["provider", "model", "tier"])) return null;
-    if (!str(recommended["provider"]) || !isProviderId(recommended["provider"])) return null;
-    if (!exactModel(recommended["model"])) return null;
-    if (!tierOk(recommended["tier"])) return null;
-    if (!stringList(leg["reasons"])) return null;
-    if (!strOrNull(leg["problem"])) return null;
-    legs.push({
-      phase: PHASES[index] as Phase,
-      provider: leg["provider"],
-      model: leg["model"],
-      tier: leg["tier"],
-      chosen: leg["chosen"],
-      recommended: { provider: recommended["provider"], model: recommended["model"], tier: recommended["tier"] },
-      reasons: [...leg["reasons"]],
-      problem: leg["problem"],
-    });
-  }
-  // The posture must be what the legs say — a snapshot claiming a strong
-  // posture over routine legs (or the reverse) is not one this policy wrote.
-  if ((drawsStrong(legs) ? "strong" : "economy") !== r["posture"]) return null;
-  const overrides = parseOverrides(r["overrides"]);
-  if (overrides === null) return null;
-  return {
-    version,
-    risk: r["risk"],
-    qualityMode: r["qualityMode"],
-    publication: r["publication"],
-    evidence: [...(evidence as RouteEvidenceKind[])].sort(),
-    posture: r["posture"],
-    demands: [...r["demands"]],
-    legs,
-    overrides,
-    size,
-  };
+  const read = readSealedRoute(parsed);
+  return read.ok ? { ok: true, route: read.value } : { ok: false, lines: read.issues.map(one => one.line) };
 }
 
-/** Strict parse of an override list: one per phase, every field proved,
- * every model exact. */
+/** Strict parse of an override list (the route contract's): one per phase,
+ * every field proved, every model exact, in phase order. */
 export function parseOverrides(raw: unknown): RouteOverride[] | null {
-  if (!Array.isArray(raw)) return null;
-  const overrides: RouteOverride[] = [];
-  const seen = new Set<string>();
-  for (const entry of raw) {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
-    const o = entry as Record<string, unknown>;
-    if (!exactKeysOf(o, ["phase", "provider", "model", "by", "at"])) return null;
-    if (!str(o["phase"]) || !PHASES.includes(o["phase"] as Phase)) return null;
-    if (seen.has(o["phase"])) return null;
-    seen.add(o["phase"]);
-    if (!str(o["provider"]) || !isProviderId(o["provider"])) return null;
-    if (!exactModel(o["model"])) return null;
-    if (!str(o["by"]) || !str(o["at"])) return null;
-    overrides.push({ phase: o["phase"] as Phase, provider: o["provider"], model: o["model"], by: o["by"], at: o["at"] });
-  }
-  return overrides.sort((a, b) => PHASES.indexOf(a.phase) - PHASES.indexOf(b.phase));
+  const read = readRouteOverrides(raw);
+  return read.ok ? read.value : null;
 }
 
 /** The stored override list (a task-level column). Malformed reads as
