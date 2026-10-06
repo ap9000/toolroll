@@ -50,6 +50,7 @@
 import { TEXT_LIMITS } from "./text-limits.js";
 import { createHash } from "node:crypto";
 import { parseContract, readVersioned, type ContractIssue, type ContractResult } from "./contracts/contract.js";
+import { stageReferenceProblems } from "./contracts/stage-output.js";
 import {
   CHOICES_MAX, CHOICES_MIN, FLOW_ALIASES, FLOW_COLORS, FLOW_DEFINITION_VERSION, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, flowDefinitionSchema, flowStepsSchema,
   HEADERS_MAX, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
@@ -761,7 +762,11 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
   });
   // The drawing is checked as the canvas's is; its zones are the steps, in order, so a zone's problem names its step.
   const drawn = readFlowDefinition({ version: FLOW_DEFINITION_VERSION, start: stages[0]!.id, stages });
-  if (!drawn.ok) throw new FlowContractError(drawn.issues.map(one => inStepWords(one.line, "steps", stages.map(stage => stage.kind))));
+  const refuse = (issues: readonly ContractIssue[]) => new FlowContractError(issues.map(one => inStepWords(one.line, "steps", stages.map(stage => stage.kind))));
+  if (!drawn.ok) throw refuse(drawn.issues);
+  // A {{stage.…}} these steps add must be one its zone hands on (src/contracts/stage-output.ts); ones the flow had stay.
+  const references = stageReferenceProblems(drawn.value, previous);
+  if (references.length > 0) throw refuse(references);
   return drawn.value;
 }
 

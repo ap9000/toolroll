@@ -72,6 +72,7 @@ test("a reply still over its limit after the one ask is attached whole to the ca
   expect(moved.stage).toBe("done");
   expect(moved.outputs["maya"]).toBe(`This is ${reply.length.toLocaleString("en-US")} characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${card}.`);
   expect(store.flowComments(card).map(one => one.body)).toEqual([`What Maya · Support wrote for the next zones, in full (${reply.length.toLocaleString("en-US")} characters):\n\n${reply}`]);
+  expect(moved.attached).toEqual({ maya: reply });
   expect(store.flowStepRun(card, 1)?.log).toContain(reply);
 });
 

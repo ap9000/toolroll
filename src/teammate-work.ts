@@ -254,7 +254,11 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   // route: the answer names where the card goes; its text is what the next zones use.
   const picked = handleAnswers(stage).find(one => one.answer.toLowerCase() === answer.answer.toLowerCase())!;
   // What the next zones read: whole up to what a step passes on; longer is attached whole to the card, and they read a link to it.
-  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: keptWhole(store, flow, card, actor, wholeDraft(answer.text), TEXT_LIMITS.stageOutput, "a step passes on", `What ${label} wrote for the next zones`, now) } }, now);
+  if (answer.text !== "") {
+    const whole = wholeDraft(answer.text);
+    const text = keptWhole(store, flow, card, actor, whole, TEXT_LIMITS.stageOutput, "a step passes on", `What ${label} wrote for the next zones`, now);
+    store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: text }, ...(text === whole ? {} : { attached: { [stage.id]: whole } }) }, now);
+  }
   const said = `Sent “${card.title}” to ${titleOf(picked.to)}${picked.answer === CARRY_ON ? "" : ` (${picked.answer})`}${answer.reason === "" ? "" : `: ${answer.reason}`}`;
   event("handled", said);
   // v96: a zone that answers whoever asked sends what it wrote back to them, under its name.

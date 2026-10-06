@@ -14,6 +14,21 @@
   still ignores keys it doesn't use. Rubric and route refusals are now
   field-named lines (`acceptance[0].statement over 1,000 bytes`), and a route
   made by a newer Toolroll says so.
+- **What a flow's steps hand on has one contract.** A finished zone's
+  `{{stage.…}}` words, a card's saved outputs, and what Send to me and Person
+  chooses send are each described once (`src/contracts/stage-output.ts`,
+  `flow-send.ts`, `flow-card.ts`). Saved cards and sends read exactly as
+  before. A build or research task filed after a step whose output was too
+  long to pass on now gets that output whole, not just a link to it.
+- **Tightened, on purpose.** Saving a flow with a new `{{stage.…}}` that its
+  zone doesn't hand on is refused, naming where:
+  `stages[2].instructions: stage.research.unknown is not available (Research
+  hands on {{stage.research}}, {{stage.research.items}} and
+  {{stage.research.report}})`. This covers the canvas, `toolroll flows
+  create/edit/import`, the lead and templates. A reference a flow already had
+  is never refused, and nothing changes for flows that are only read or run.
+  Card outputs and kept sends are saved with a version; ones a newer Toolroll
+  wrote are refused rather than misread or overwritten.
 
 ## 0.9.36 — 2026-10-06
 

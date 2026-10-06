@@ -48,6 +48,7 @@ import type { ToolLister } from "./teammate-tools.js";
 import { budgetHoldWords, claudeMachineBilling, monthOf } from "./spend.js";
 import { toolRefusal } from "./policy.js";
 import { pullRequestStep } from "./flow-pull-request.js";
+import { withStageHandoff } from "./contracts/stage-output.js";
 
 export type StepIo = {
   /** `gh` for GitHub; git and the check's shell, both without a model. */
@@ -263,11 +264,11 @@ function settle(store: Store, definition: FlowDefinition, stage: FlowStage, card
   }
   store.finishFlowStep(card.id, card.entry, { state: outcome.state === "passed" ? "passed" : "failed", result: outcome.said, ...kept }, now);
   // What the steps after it read: whole up to TEXT_LIMITS.stageOutput; longer is attached whole to the card's discussion,
-  // and they read a link to it. Never cut.
+  // and they read a link to it, while a task filed after it is given it whole (the card keeps it attached). Never cut.
   const whole = outcome.output ?? outcome.said;
   const passed = passOn(whole, TEXT_LIMITS.stageOutput, { label: "the card's discussion", href: flowCardHref(card.flow, card.id) });
   if (passed.kept) store.addFlowComment({ card: card.id, author: "flow", body: `What ${stage.title} produced, in full (${whole.length.toLocaleString("en-US")} characters):\n\n${whole}`, mentions: [] }, now);
-  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: passed.text }, waiting: null }, now);
+  store.updateFlowCard(card.id, { outputs: withStageHandoff(card.outputs, stage.id, { text: passed.text }), ...(passed.kept ? { attached: { [stage.id]: whole } } : {}), waiting: null }, now);
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "another zone";
   if (outcome.state === "passed") {
     // A sort names where the card goes; one it isn't sure about is a person's to place.
