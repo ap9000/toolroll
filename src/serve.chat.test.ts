@@ -759,6 +759,43 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect((await fetch(url('/chat/stream'), { redirect: 'manual' })).status).not.toBe(200);
   });
 
+  test('chat streaming preserves each tool outcome, including failure in an answered turn, alongside legacy labels', async () => {
+    const cookie = await login(); const csrf = await mint(cookie);
+    let finish!: (value: Response) => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    script.push(
+      () => answer([
+        { type: 'tool_use', id: 'f1', name: 'get_flows', input: { flow: 999 } },
+        { type: 'tool_use', id: 'f2', name: 'get_flows', input: {} },
+      ]),
+      () => new Promise<Response>(resolve => { finish = resolve; entered(); }) as unknown as Response,
+    );
+    expect((await sendJson(cookie, { csrf, message: 'Read the flows.', request: 'd'.repeat(32), 'request-session': '1' })).status).toBe(202);
+    await waiting;
+    const response = await fetch(url('/chat/stream'), { headers: { cookie } });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let body = '';
+    try {
+      while (!body.includes('\n\n')) body += decoder.decode((await reader.read()).value);
+      const snapshot = JSON.parse(body.split('data: ')[1]!.split('\n\n')[0]!);
+      expect(snapshot.done).toBe(false);
+      expect(snapshot.steps[0].tools).toEqual(['Reading the flows', 'Reading the flows']);
+      expect(snapshot.steps[0].toolCalls).toEqual([
+        { id: expect.any(String), label: 'Reading the flows', state: 'failed', reason: 'No such flow in your projects.' },
+        { id: expect.any(String), label: 'Reading the flows', state: 'succeeded' },
+      ]);
+      expect(snapshot.steps[0].toolCalls[0].id).not.toBe(snapshot.steps[0].toolCalls[1].id);
+    } finally {
+      finish(answer([{ type: 'text', text: 'That flow is unavailable. I checked the list.' }]));
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) body += decoder.decode(chunk.value);
+    }
+    const last = JSON.parse(body.trimEnd().split('\n\n').at(-1)!.split('data: ')[1]!);
+    expect(last).toMatchObject({ done: true, ok: true, steps: [{ toolCalls: [{ state: 'failed', reason: 'No such flow in your projects.' }, { state: 'succeeded' }] }, { tools: [] }] });
+    await settle();
+  });
+
   test('v77: task and project pages dock their own threads, and the chat list names them', async () => {
     const cookie = await login(); const csrf = await mint(cookie);
     type Workspace = import('./browser-workspace.js').BrowserWorkspace;

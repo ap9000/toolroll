@@ -13,6 +13,7 @@ import {
 } from "./workspace-client.js";
 import type { ChatDraft, DraftScope, DraftStorage } from "./workspace-client.js";
 import { TeamChat } from "./team-chat.js";
+import { LiveReplyBubble, useLiveReply } from "./live-reply.js";
 import { browserCrewFromIndex } from "../browser-crew.js";
 import type { TeamSnapshot } from "../team-contract.js";
 import { GuardedHtml, notifyWorkspaceRendered, regionIsEditing } from "./guarded-html.js";
@@ -396,57 +397,6 @@ const DOCKED_SUGGESTIONS: Record<string, { title: string; hint: string; placehol
   tasks: { title: "Ask about this project", hint: "Plan work, file tasks and check progress. Actions come back as cards you confirm.", placeholder: "Ask about this project…",
     suggestions: ["What needs my attention here?", "What should we build next?", "File a task: "] },
 };
-
-type LiveReply = { steps: { tools: string[]; text: string }[]; done: boolean };
-
-/** The reply being written (chat streaming): opens the thread's live stream
- * while a reply is on its way and closes it when the turn ends, then asks
- * for the saved message. Without EventSource, or on any error, the regular
- * refresh carries the answer as before. */
-function useLiveReply(chat: BrowserWorkspace["conversation"], watching: boolean, done: () => void): LiveReply | null {
-  const [live, setLive] = useState<LiveReply | null>(null);
-  const finished = useRef(done);
-  finished.current = done;
-  useEffect(() => {
-    if (chat === null || !watching || typeof EventSource === "undefined") { setLive(null); return; }
-    const params = new URLSearchParams();
-    if (chat.taskId) params.set("task", chat.taskId);
-    else if (chat.project) params.set("project", chat.project);
-    const query = params.toString();
-    const source = new EventSource(`/chat/stream${query === "" ? "" : `?${query}`}`);
-    source.addEventListener("turn", event => {
-      let data: unknown;
-      try { data = JSON.parse((event as MessageEvent<string>).data); } catch { return; }
-      if (typeof data !== "object" || data === null || !Array.isArray((data as LiveReply).steps)) return;
-      const reply = data as LiveReply;
-      const steps = reply.steps.filter(step => typeof step === "object" && step !== null && Array.isArray(step.tools) && typeof step.text === "string")
-        .map(step => ({ tools: step.tools.filter((tool): tool is string => typeof tool === "string"), text: step.text }));
-      setLive({ steps, done: reply.done === true });
-      if (reply.done === true) { source.close(); finished.current(); }
-    });
-    source.onerror = () => { source.close(); };
-    return () => source.close();
-  }, [chat?.sessionId, chat?.taskId, chat?.project, watching]);
-  return watching ? live : null;
-}
-
-/** What the lead is doing, then the words as they are written. */
-function LiveReplyBubble({ live, leadName }: { live: LiveReply | null; leadName: string }) {
-  const steps = live?.steps ?? [];
-  const tools = steps.flatMap(step => step.tools).filter((tool, index, all) => index === 0 || all[index - 1] !== tool);
-  const text = [...steps].reverse().find(step => step.text.trim() !== "")?.text ?? "";
-  const writing = steps.length > 0 && steps.at(-1)!.text.trim() !== "";
-  return <Message from="assistant" className="so-live-reply" data-live-reply>
-    <div className="so-message-label">{leadName}</div>
-    <MessageContent>
-      {tools.length > 0 && <ul className="so-live-steps" aria-label="What the lead is doing">
-        {tools.map((tool, index) => <li key={index} data-done={writing || index < tools.length - 1 ? "true" : "false"}>{tool}</li>)}
-      </ul>}
-      {text !== "" && <p className="so-live-text">{text}<span className="so-live-caret" aria-hidden="true" /></p>}
-      <div className="so-working" role="status"><span className="so-live-dot" />{writing ? "Writing…" : tools.length > 0 ? `${tools.at(-1)}…` : "Thinking…"}</div>
-    </MessageContent>
-  </Message>;
-}
 
 function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof useWorkspace>; docked?: string | null }) {
   const { workspace, draft, notice, storageAvailable, sending, stale, offline } = controller;
