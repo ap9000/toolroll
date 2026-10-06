@@ -395,20 +395,31 @@ export function proposalPreview(
       : undefined;
     return path === undefined ? id : projectLabel(path);
   })();
+  // Telegram's card leads with the action and what confirming does, then the exact terms; its buttons say the rest.
+  const phone = channel === "telegram";
   const card = (
     headline: string,
     body: string[] = [],
     consequence: string | null = null,
   ): { text: string; buttons: boolean } => ({
-    text: [
-      headline,
-      ...body,
-      ...(consequence === null ? [] : ["", consequence]),
-      "",
-      "Confirm or Dismiss below. Nothing changes until you confirm.",
-    ].join("\n"),
+    text: (phone
+      ? [
+          headline,
+          ...(consequence === null ? [] : [consequence]),
+          ...(body.length === 0 ? [] : ["", ...body]),
+          "",
+          "Nothing changes until you confirm.",
+        ]
+      : [
+          headline,
+          ...body,
+          ...(consequence === null ? [] : ["", consequence]),
+          "",
+          "Confirm or Dismiss below. Nothing changes until you confirm.",
+        ]).join("\n"),
     buttons: true,
   });
+  const lasting = phone ? " ⚠ can't be undone" : " — IRREVERSIBLE";
   // A handoff's text is origin-free on purpose: it is persisted before the
   // send, and the button or the missing-setup line joins it at send time.
   const handoff = (
@@ -526,7 +537,7 @@ export function proposalPreview(
               `Q: ${phoneText(decision.question, 400)}`,
               ...decision.options.map(
                 (one) =>
-                  `${one.id === pick ? "→" : " "} ${phoneText(one.label, 120)}${one.reversible ? "" : " — IRREVERSIBLE"}${one.id === decision.recommendation ? " (the builder recommends this)" : ""}: ${phoneText(one.consequence, 300)}`,
+                  `${one.id === pick ? "→" : " "} ${phoneText(one.label, 120)}${one.reversible ? "" : lasting}${one.id === decision.recommendation ? " (the builder recommends this)" : ""}: ${phoneText(one.consequence, 300)}`,
               ),
               ...(t("rationale") === "" ? [] : [`Why: ${t("rationale", 300)}`]),
             ];
@@ -534,7 +545,7 @@ export function proposalPreview(
         `Answer decision #${String(id ?? "?")} on ${taskName} with "${t("optionLabel", 120) || pick}"`,
         body,
         irreversible
-          ? "⚠ This choice is irreversible. Confirming asks you once more."
+          ? phone ? "⚠ This choice can't be undone. Confirming asks you once more." : "⚠ This choice is irreversible. Confirming asks you once more."
           : null,
       );
     }

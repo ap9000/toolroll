@@ -5,8 +5,14 @@
 export type MateProgress =
   | { kind: "started"; turn: number }
   | { kind: "step"; turn: number; step: number }
-  | { kind: "tool"; turn: number; step: number; label: string }
+  | { kind: "tool"; turn: number; step: number; id: string; label: string }
+  | { kind: "tool-result"; turn: number; step: number; id: string; outcome: MateToolOutcome }
   | { kind: "text"; turn: number; step: number; text: string };
+
+export type MateToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
+export type MateLiveTool = { id: string; label: string } & ({ state: "running" } | MateToolOutcome);
+/** Keep tools as labels for older clients; toolCalls adds per-call outcomes. */
+export type MateLiveStep = { tools: string[]; toolCalls: MateLiveTool[]; text: string };
 
 /** Plain words for each tool the lead uses, as the person watching reads them. */
 const TOOL_LABELS: Record<string, string> = {
@@ -49,6 +55,32 @@ const TOOL_LABELS: Record<string, string> = {
 export function mateToolLabel(name: string): string {
   if (name in TOOL_LABELS) return TOOL_LABELS[name]!;
   return name.startsWith("propose_") ? "Preparing a card for you to confirm" : "Working";
+}
+
+/** Tool errors instruct the model how to retry. Only known, fixed copy belongs
+ * in the live UI; never echo arguments, redaction placeholders or exceptions. */
+const TOOL_FAILURE_REASONS = new Map<string, string>([
+  ["Choose a project from list_repos.", "That project isn't available."],
+  ["Choose an available project from list_repos.", "That project isn't available."],
+  ["repo must be one of the ids from list_repos", "That project isn't available."],
+  ["not-found: no such task in your projects", "That task isn't available in your projects."],
+  ["That task is not in your projects.", "That task isn't available in your projects."],
+  ["not-found: no such decision in your projects", "That decision isn't available in your projects."],
+  ["that decision is no longer open", "That decision is already closed."],
+  ["No such flow in your projects.", "No such flow in your projects."],
+  ["That action is outside your access.", "You don't have access to that action."],
+  ["Read the current task version before proposing this action.", "The task needs to be checked again before this action."],
+  ["That file is not in these changes. Call get_diff without file for the list.", "That file isn't in the saved changes."],
+  ["The saved changes could not be verified.", "The saved changes could not be verified."],
+  ["The saved check log could not be verified.", "The saved check log could not be verified."],
+  ["Saved results are unavailable here.", "Saved results are unavailable here."],
+  ["There is no finished result for that version yet.", "There is no finished result for that version yet."],
+  ["Task text cannot contain credentials.", "The task text contains a password or secret key."],
+  ["that tool refused — the plane could not answer it right now", "Toolroll couldn't finish that step right now."],
+]);
+
+export function mateToolFailureReason(name: string, message: string): string {
+  return TOOL_FAILURE_REASONS.get(message) ?? `That step didn't work (${mateToolLabel(name)}).`;
 }
 
 /** The `text` of a structured answer still being written, when the answer

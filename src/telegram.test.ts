@@ -722,7 +722,7 @@ describe("the telegram bridge", () => {
     // The message was edited to the answered state and the tap acknowledged.
     expect(script.calls.some(call => call.method === "answerCallbackQuery")).toBe(true);
     const edit = script.calls.find(call => call.method === "editMessageText");
-    expect(String(edit?.params["text"])).toContain("answered: open");
+    expect(String(edit?.params["text"])).toBe("✓ Answered: Fail open\nt-1 · by alex via telegram");
   });
 
   test("a tap from anyone but the paired person is nothing", async () => {

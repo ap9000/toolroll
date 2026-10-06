@@ -304,7 +304,7 @@ export function applyProposalTap(
       return;
     }
     ack("irreversible — confirm it");
-    edit(`⚠ This answer is IRREVERSIBLE.\n\n${body}\n\nConfirm?`, [
+    edit(`${body}\n\n⚠ Last step: this answer can't be undone. Confirm?`, [
       [telegramButton("⚠ Yes, answer it", yes)],
       [telegramButton("Cancel", cancel)],
     ]);

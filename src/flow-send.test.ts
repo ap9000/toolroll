@@ -199,14 +199,20 @@ describe("c2: Person chooses", () => {
     expect(row.body).toBe("Totals now round half-up, with a regression test.\n\nChoose one. Or reply with what you'd change.");
     const script = scripted();
     await pass(script);
-    const notice = script.sent("Choose one.");
-    expect(String(notice.params["text"])).toContain("Totals now round half-up, with a regression test.\n\nChoose one. Or reply with what you'd change.");
+    // Telegram leads with the choice and where each option takes the card; the saved notice above keeps its words.
+    const notice = script.sent("Choose what happens to");
+    expect(String(notice.params["text"])).toBe([
+      "alpha · Choose what happens to “Checkout rounding”",
+      "Ship it → Ship · Ignore → closes the card · or reply → Build, with your note", "",
+      "Totals now round half-up, with a regression test.", "",
+      "Fixes · after Build",
+    ].join("\n"));
     expect(script.buttons(notice).map(one => one.text)).toEqual(["Ship it", "Ignore", "Result", "Card"]);
     const ship = script.buttons(notice).find(one => one.text === "Ship it")!.callback_data!;
     await tap(script, ship, notice.messageId!);
     expect(store.getFlowCard(card)).toMatchObject({ stage: "ship", state: "active" });
     expect(script.calls.at(-1)).toMatchObject({ method: "editMessageText" });
-    expect(String(script.calls.at(-1)!.params["text"])).toContain("✅ You chose “Ship it”. Ship it. Moved to Ship.");
+    expect(String(script.calls.at(-1)!.params["text"])).toMatch(/\n\n✅ Ship it\. Moved to Ship\.$/);
     expect(store.flowEvents(card).at(-1)).toMatchObject({ toStage: "ship", actor: "alex", note: "Chose “Ship it” in Telegram" });
     expect(store.actionLedger({ repos: [ALPHA] }).filter(one => one.action === "flow choice"))
       .toEqual([expect.objectContaining({ actor: "alex", repo: ALPHA, outcome: "chosen", detail: "Fixes · card 1 · What next?: “Ship it” · via Telegram" })]);
@@ -224,7 +230,7 @@ describe("c2: Person chooses", () => {
     advanceFlows(store, ALPHA, now, { evidenceRoot: root });
     const script = scripted();
     await pass(script);
-    const notice = script.sent("Choose one.");
+    const notice = script.sent("Choose what happens to");
     script.updates.push([{ update_id: next++, message: { message_id: 900, chat: { id: CHAT, type: "private" }, from: { id: CHAT }, text: "Round half-even instead, please.", reply_to_message: { message_id: notice.messageId } } }]);
     await pass(script);
     expect(store.getFlowCard(card)).toMatchObject({ stage: "build", note: "Round half-even instead, please." });

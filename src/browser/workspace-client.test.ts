@@ -2,9 +2,11 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import { CommandMenu, GuardedHtml, useWorkspace, workspaceCommands } from "./app.js";
+import { CommandMenu, CrewRows, GuardedHtml, useWorkspace, workspaceCommands } from "./app.js";
 import {
   carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -22,6 +24,56 @@ const fixture = (): BrowserWorkspace => ({
 });
 const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 let root: Root | null = null;
+
+test("Crew reasons disclose plain text separately from navigation, without repeating the lead", async () => {
+  const workspace = fixture();
+  const detail = 'Checks failed on payout rounding. Maya is on it. <script>not markup</script>';
+  const item = { id: 'payouts', title: 'Fix payout rounding', state: 'failed' as const, label: 'Failed', tone: 'problem' as const,
+    updatedAt: '2026-10-05T10:00:00Z', project: '/projects/payments', href: '/chat?task=payouts',
+    resultHref: '/chat?task=payouts&result=9', action: null, detail, lead: 'Maya is on it.' };
+  const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  const render = async (items: BrowserWorkspace['crew']) => act(async () => root!.render(createElement(CrewRows, { workspace, items })));
+  await render([item]);
+  const disclosure = host.querySelector('details')!;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.querySelector('summary')?.title).toBe(detail);
+  expect(disclosure.textContent).toBe(detail);
+  expect(disclosure.closest('a')).toBeNull();
+  expect(host.querySelector('script')).toBeNull();
+  expect(host.querySelector('[data-crew-lead]')).toBeNull();
+  expect(host.querySelector('a')?.getAttribute('href')).toBe(item.resultHref);
+  // A server update must not retain an expanded disclosure or stale reason.
+  disclosure.open = true;
+  await render([{ ...item, detail: 'Waiting for a worker.' }]);
+  expect(host.querySelector('details')?.open).toBe(false);
+  expect(host.querySelector('[data-crew-lead]')?.textContent).toBe(item.lead);
+  const { detail: _detail, ...withoutReason } = item;
+  await render([withoutReason]);
+  expect(host.querySelector('details')).toBeNull();
+});
+
+test("the whole Crew row taps through to the task, while the reason toggles in place", async () => {
+  const workspace = fixture();
+  const item = { id: 'payouts', title: 'Fix payout rounding', state: 'failed' as const, label: 'Failed', tone: 'problem' as const,
+    updatedAt: '2026-10-05T10:00:00Z', project: '/projects/payments', href: '/chat?task=payouts',
+    resultHref: '/chat?task=payouts&result=9', action: null, detail: 'Checks failed on payout rounding.', lead: 'Maya is on it.' };
+  const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(CrewRows, { workspace, items: [item] })));
+  const row = host.querySelector('.so-work-row')!;
+  // One link per row; its overlay covers the row, so the lead and project lines tap through to it.
+  expect(row.querySelectorAll('a.so-work-link')).toHaveLength(1);
+  expect(row.querySelector('[data-crew-lead]')?.closest('.so-work-row')).toBe(row);
+  expect([...row.querySelectorAll('.so-work-project')].map(line => line.textContent)).toEqual(['Maya is on it.', 'payments']);
+  const css = readFileSync(join(import.meta.dirname, "workspace.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.so-work-row \{[^}]*position: relative/);
+  expect(css).toMatch(/\.so-work-link::after \{[^}]*position: absolute; inset: 0/);
+  // The reason sits above that overlay, so tapping it expands it without navigating.
+  expect(css).toMatch(/\.so-work-reason \{[^}]*position: relative; z-index: 1/);
+  const disclosure = row.querySelector('details')!;
+  expect(disclosure.closest('a')).toBeNull();
+  disclosure.querySelector('summary')!.click();
+  expect(disclosure.open).toBe(true);
+});
 
 beforeEach(() => {
   sessionStorage.clear();

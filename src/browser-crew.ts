@@ -35,6 +35,10 @@ export function browserCrewFromIndex(page: WorkIndexPage, conversationId?: strin
   const link = (href: string) => conversationId && href.startsWith('/chat?') ? href + '&conversation=' + encodeURIComponent(conversationId) : href;
   const rows = page.items.map(summary => {
     const status = summary.status;
+    // Keep the server's sentence intact; ignore only empty or repeated badge words.
+    const words = (text: string) => text.trim().replace(/\s+/g, ' ').replace(/[.!?]+$/, '').toLowerCase();
+    const detail = ['Waiting', 'Failed', 'Needs you'].includes(status.label)
+      && words(status.detail) !== '' && words(status.detail) !== words(status.label) ? status.detail : undefined;
     const resultHref = summary.resultRunId === null || summary.resultTaskId === null || (summary.resultOutcome !== 'built' && summary.resultOutcome !== 'no-change')
       ? null : chatResultHref(summary.resultTaskId, summary.resultRunId);
     const href = chatControlHref('task', summary.rootId);
@@ -45,6 +49,7 @@ export function browserCrewFromIndex(page: WorkIndexPage, conversationId?: strin
       state: summary.assignmentState, label: status.label, tone: status.tone, href: link(href), resultHref: resultHref === null ? null : link(resultHref),
       action: action === null || actionHref === null ? null : { label: action.label, href: link(actionHref) },
       updatedAt: summary.updatedAt,
+      ...(detail === undefined ? {} : { detail }),
       ...(summary.lead === undefined ? {} : { lead: summary.lead }),
     };
     return { item, rank: status.rank };
@@ -53,4 +58,3 @@ export function browserCrewFromIndex(page: WorkIndexPage, conversationId?: strin
   rows.sort((a, b) => a.rank - b.rank);
   return { crew: rows.map(row => row.item), crewTruncated: page.nextCursor !== null };
 }
-
