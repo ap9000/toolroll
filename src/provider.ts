@@ -23,6 +23,7 @@ import { claudeFenceSettings, codexFenceArgv } from "./agent-fence.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
 import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
+import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
 
 export type ProviderId = "claude" | "codex" | "openrouter" | "gemini";
@@ -94,6 +95,8 @@ export type Invocation = {
   /** A research step's project tools: only these servers, each offering only
    * these read-only actions (Codex's `enabled_tools`). Others are left out. */
   readOnlyTools?: Readonly<Record<string, readonly string[]>>;
+  /** Why a research step's connected service was left out, by server, when it isn't the usual reason (its grant writes). */
+  researchWithheld?: Readonly<Record<string, string>>;
 };
 
 export type ProviderRunner = (
@@ -315,22 +318,9 @@ const CLAUDE_REVIEW_JSON_SCHEMA = {
         additionalProperties: false,
       },
     },
-    // The automatic build review's reply (build-review.ts). Shape only;
-    // parseBuildFindings is the validator.
-    findings: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          severity: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] },
-          file: { type: "string" },
-          line: { type: "integer", minimum: 1 },
-          scenario: { type: "string" },
-        },
-        required: ["severity", "file", "line", "scenario"],
-        additionalProperties: false,
-      },
-    },
+    // The automatic build review's reply (build-review.ts), from its one
+    // schema (src/contracts/review-findings.ts); parseBuildFindings reads it.
+    findings: FINDINGS_MODEL_SCHEMA,
     // The read request rides the same structured reply channel and
     // session. The machine validates the exact allowlist/hash/range
     // before supplying bytes; this only shapes the request.

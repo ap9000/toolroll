@@ -3,7 +3,7 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./teammate-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatState, chatHash, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
 import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";
@@ -14,6 +14,8 @@ import { chatFlowButtons } from "./chat-flow.js";
 import { channelInbox } from "./chat-inbox.js";
 import { chatResultHref } from "./chat-controls.js";
 import { TeamsError, type TeamsApi } from "./teams-api.js";
+import { readTeamsSubmit } from "./contracts/teams-callback.js";
+import type { ChatEventBody } from "./contracts/chat-content.js";
 
 export type TeamsChatOptions = Omit<ChatDeliveryOptions, "state" | "label" | "member" | "partSize" | "maxProposal"> & { api: TeamsApi };
 
@@ -82,13 +84,16 @@ export function receiveTeams(state: ChatState, identity: ChatIdentity, raw: unkn
   if (recipient.id !== identity.bot || (typeof conversation.tenantId === "string" && conversation.tenantId.toLowerCase() !== identity.team)) return false;
   if (!validServiceUrl(activity.serviceUrl) || (serviceUrlClaim !== null && serviceUrlClaim.replace(/\/$/, "") !== activity.serviceUrl.replace(/\/$/, ""))) return false;
   if (!isRoom && conversation.conversationType !== "personal") return false;
-  const value = object(activity.value);
-  const submitted = typeof value.so === "string" && /^[a-f0-9]{32}$/.test(value.so) ? value.so : null;
-  let kind: "message" | "pair" | "action", payload: Record<string, unknown>, eventId: string;
-  if (submitted !== null) {
+  // A card's button: its data is Toolroll's. One that can't be read is answered with why, once the tap is proved to
+  // be the paired person's below. A button carries no words of its own: other data beside words is a message, as before.
+  const read = activity.value === undefined || activity.value === null ? null : readTeamsSubmit(activity.value);
+  const button = read !== null && (read.ok || typeof activity.text !== "string") ? read : null;
+  const submitted = button?.ok === true ? button.value : null;
+  let kind: "message" | "pair" | "action", payload: ChatEventBody, eventId: string;
+  if (button !== null) {
     kind = "action";
-    payload = { token: submitted };
-    eventId = chatHash(`${identity.installation}:action:${member}:${activity.replyToId ?? id}:${submitted}`);
+    payload = button.ok ? { token: button.value } : { problem: button.issues.map(issue => issue.line).join("; ") };
+    eventId = chatHash(`${identity.installation}:action:${member}:${activity.replyToId ?? id}:${submitted ?? JSON.stringify(activity.value) ?? ""}`);
   } else {
     if (typeof activity.text !== "string") return false;
     const text = isRoom ? withoutMentions(activity.text) : activity.text.trim();
@@ -98,9 +103,10 @@ export function receiveTeams(state: ChatState, identity: ChatIdentity, raw: unkn
       ...(Array.isArray(activity.attachments) && activity.attachments.length > 0 ? { unsupported: "Incoming files are not supported yet. Describe the request in a message; saved result screenshots open from their links." } : {}) };
     eventId = chatHash(`${identity.installation}:message:${id}`);
   }
+  const words = "text" in payload ? payload.text ?? "" : "";
   // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "teams", identity.installation, channel, String(payload.text ?? "")) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, channel) !== null || (kind === "message" && roomCommand(String(payload.text ?? "")) !== null) || inbox.watched || inbox.command);
+  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "teams", identity.installation, channel, words) : { watched: false, command: false };
+  const roomish = isRoom && (state.room(identity.installation, channel) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
   if (isRoom && !roomish) return false;
   const binding = state.bindingFor(identity.installation, member);
   const open = inbox.watched && !inbox.command;
@@ -109,8 +115,8 @@ export function receiveTeams(state: ChatState, identity: ChatIdentity, raw: unkn
     state.setMeta(identity.installation, serviceKey(channel), activity.serviceUrl as string, now);
     return state.enqueue({
       id: eventId, installation: identity.installation, binding: kind === "pair" || binding === null ? null : binding.id, kind, channel, member,
-      ts: submitted !== null ? String(activity.replyToId ?? id) : id, thread: submitted !== null ? String(activity.replyToId ?? id) : id,
-      payload: JSON.stringify(payload), created: now.toISOString(),
+      ts: kind === "action" ? String(activity.replyToId ?? id) : id, thread: kind === "action" ? String(activity.replyToId ?? id) : id,
+      payload, created: now.toISOString(),
     });
   });
 }
@@ -160,7 +166,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     const session = event.session === null ? null : store.getMateSession(event.session);
     const repos = await channelAccess(shared, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false) return false;
-    const content = JSON.parse(row.payload) as ChatContent;
+    const content = partContent(row.payload);
     const destination = content.channel ?? binding.channel;
     const serviceUrl = state.meta(identity.installation, serviceKey(destination));
     if (serviceUrl === null) throw new TeamsError("This Teams conversation has no known service address yet; send it a message first", 60_000);
@@ -212,6 +218,10 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     state.prepare("UPDATE chat_part SET state='sent',message=?,attempts=attempts+1,next_at=NULL,problem=NULL WHERE id=?").run(messageId, row.id);
     return true;
   } catch (error) {
+    if (error instanceof ChatDeliveryError && error.permanent) {
+      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      return true;
+    }
     const problem = error instanceof TeamsError ? error : new TeamsError("Teams delivery failed", 15_000, true);
     state.prepare("UPDATE chat_part SET attempts=attempts+1,uncertain=?,next_at=?,problem=?,state=CASE WHEN attempts>=20 THEN 'dropped' ELSE state END WHERE id=?")
       .run(problem.uncertain ? 1 : 0, new Date(now.getTime() + problem.retryMs).toISOString(), problem.message, row.id);

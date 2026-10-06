@@ -9,10 +9,13 @@ import {
   ChatState,
   ChatDeliveryError,
   chatHash,
+  partContent,
   type ChatIdentity,
   type ChatContent,
   type ChatPart,
 } from "./chat-delivery-state.js";
+import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
+import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";
 import {
   processChatEvent,
   planChatNotifications,
@@ -88,7 +91,7 @@ export function receiveDiscord(
     ts: unknown,
     thread: unknown,
     kind: "message" | "pair" | "action",
-    payload: Record<string, unknown>;
+    payload: ChatEventBody;
   if (type === "MESSAGE_CREATE") {
     const author = object(body.author),
       ref = object(body.message_reference);
@@ -122,24 +125,26 @@ export function receiveDiscord(
             : {}),
         };
   } else if (type === "INTERACTION_CREATE") {
-    const data = object(body.data),
-      message = object(body.message);
+    // Only a tap on one of this bot's own messages, in a DM (or a followed guild text channel), from this app.
+    const interaction = readDiscordComponentInteraction(body);
+    if (!interaction.ok) return false;
+    const tap = interaction.value;
     if (
-      body.type !== 3 ||
-      body.application_id !== identity.app ||
-      (isRoom ? object(body.channel).type !== 0 : object(body.channel).type !== 1) ||
-      object(message.author).id !== identity.bot ||
-      message.channel_id !== body.channel_id ||
-      !/^so_[a-f0-9]{32}$/.test(String(data.custom_id))
+      tap.application_id !== identity.app ||
+      tap.channel.type !== (isRoom ? 0 : 1) ||
+      tap.message.author.id !== identity.bot ||
+      tap.message.channel_id !== tap.channel_id
     )
       return false;
-    member = isRoom ? object(object(body.member).user).id : object(body.user).id;
-    channel = body.channel_id;
-    id = body.id;
-    ts = message.id;
-    thread = message.id;
+    member = isRoom ? tap.member?.user.id : tap.user?.id;
+    channel = tap.channel_id;
+    id = tap.id;
+    ts = tap.message.id;
+    thread = tap.message.id;
     kind = "action";
-    payload = { token: String(data.custom_id).slice(3) };
+    // A button that isn't one Toolroll made is answered with why, once the tap is proved to be the paired person's below.
+    const button = readDiscordButtonToken(tap);
+    payload = button.ok ? { token: button.value } : { problem: button.issues.map(issue => issue.line).join("; ") };
   } else return false;
   if (
     !discordId(member) ||
@@ -150,9 +155,10 @@ export function receiveDiscord(
     member === identity.bot
   )
     return false;
+  const words = "text" in payload ? payload.text ?? "" : "";
   // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "discord", identity.installation, String(channel), String(payload.text ?? "")) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(String(payload.text ?? "")) !== null) || inbox.watched || inbox.command);
+  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "discord", identity.installation, String(channel), words) : { watched: false, command: false };
+  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
   if (isRoom && !roomish) return false;
   const binding = state.bindingFor(identity.installation, member);
   const open = inbox.watched && !inbox.command;
@@ -175,7 +181,7 @@ export function receiveDiscord(
     member,
     ts,
     thread,
-    payload: JSON.stringify(payload),
+    payload,
     created: now.toISOString(),
   });
 }
@@ -292,7 +298,7 @@ export async function deliverDiscordPart(
       repos = await channelAccess(shared, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
-    const content = JSON.parse(row.payload) as ChatContent;
+    const content = partContent(row.payload);
     const destination = content.channel ?? binding.channel;
     if (
       content.task &&
@@ -557,9 +563,13 @@ export async function deliverDiscordPart(
       .run(identity.installation, options.owner);
     return true;
   } catch (error) {
+    if (error instanceof ChatDeliveryError && error.permanent) {
+      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      return true;
+    }
     // No permission to attach files here: one plain line instead of the result's screenshots.
-    const content = JSON.parse(row.payload) as ChatContent;
-    if (content.image && content.shot && error instanceof DiscordError && error.code === DISCORD_REFUSED) {
+    const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    if (content !== null && content.image && content.shot && error instanceof DiscordError && error.code === DISCORD_REFUSED) {
       refuseResultShots(state, store, row, content, "Discord", options.clock?.() ?? new Date());
       return true;
     }

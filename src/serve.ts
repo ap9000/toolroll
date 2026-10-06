@@ -55,6 +55,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, rece
 import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";
 import { FlowContractError, FLOW_TEMPLATES, validateFlowDefinition, withZoneNames } from "./flows.js";
+import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { TOOL_CATALOG, addToolTo, catalogTool, discoverTools, localAppOf, projectToolsOf, removeToolFrom, secretsSetFor, setToolSecret, splitCommandLine, testToolOf, type ToolSpec } from "./project-tools.js";
 import { changeLearning, learningView } from "./project-learning.js";
 import { applySavedKnowledge, changeKnowledge, knowledgeView, knowledgeVersion, readKnowledgeSnapshot, type KnowledgeDraft } from "./project-knowledge.js";
@@ -1015,7 +1016,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       tools: tools.map(tool => ({ tool, secretsSet: secretsSetFor(repo, tool.spec, toolHome) })),
       // A service that connects by signing in (or an app's own Connect) is offered only that way.
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
-      connections: connectionsOf(store, repo), kit, wanted,
+      connections: connectionsOf(store, repo, toolHome), kit, wanted,
       found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
     };
   };
@@ -7249,7 +7250,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (action === "archive") { store.archiveFlow(flow.id, who.name, now); return redirect(response, "/flows"); }
       if (action === "save") {
         let saved, drawn: unknown;
-        try { drawn = JSON.parse(body.get("definition") ?? "null"); saved = validateFlowDefinition(drawn); }
+        try {
+          drawn = JSON.parse(body.get("definition") ?? "null"); saved = validateFlowDefinition(drawn);
+          // A {{stage.…}} this save adds must be one its zone hands on; ones the saved flow had stay.
+          const references = stageReferenceProblems(saved, flowDefinitionOf(flow));
+          if (references.length > 0) throw new FlowContractError(references.map(one => one.line));
+        }
         catch (error) { return answer(400, { ok: false, said: error instanceof SyntaxError ? "That flow couldn't be read." : error instanceof FlowContractError ? withZoneNames(error.lines, drawn) : error instanceof Error ? error.message : "That flow isn't valid." }); }
         const name = (body.get("name") ?? flow.name).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || flow.name;
         // The owner (v86) is whom "the owner decides" zones ask: someone who can approve on this project.
@@ -7771,7 +7777,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (service === null) return back("Choose a service to connect.");
       const origin = consoleOrigin(request.headers.host);
       if (origin === null) return back("Connect tools from this computer (localhost) or from your https address.");
-      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template }, options.connectFetch ?? fetch);
+      // Reconnect read-only (from a connected service's Tools entry): the same sign-in, asking only to read.
+      const readOnly = also === null && body.get("access") === "read";
+      const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
       if (!started.ok) return back(started.said);
       for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
       connectVisits.set(started.state, started.visit);

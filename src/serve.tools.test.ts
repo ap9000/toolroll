@@ -12,7 +12,7 @@ import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
-import { addToolTo, catalogTool, projectToolsOf } from "./project-tools.js";
+import { addToolTo, catalogTool, projectToolsOf, setToolSecrets } from "./project-tools.js";
 import { connectedSpec } from "./mcp-connect.js";
 import { T0 } from "../test/serve-kit.js";
 
@@ -29,6 +29,11 @@ const stripe = (async (input: string | URL | Request, init?: RequestInit) => {
   if (url === "https://access.stripe.com/.well-known/oauth-authorization-server/mcp") return reply(200, { authorization_endpoint: "https://access.stripe.com/mcp/oauth2/authorize", token_endpoint: "https://access.stripe.com/mcp/oauth2/token",
     registration_endpoint: "https://access.stripe.com/mcp/oauth2/register", code_challenge_methods_supported: ["S256"] });
   if (url === "https://access.stripe.com/mcp/oauth2/register") { signIns.push(url); return reply(201, { client_id: "client-7" }); }
+  // PostHog's, for Reconnect read-only.
+  if (url === "https://mcp.posthog.com/mcp" && method === "POST") return reply(401, {}, { "www-authenticate": 'Bearer resource_metadata="https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp"' });
+  if (url === "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp") return reply(200, { resource: "https://mcp.posthog.com/mcp", authorization_servers: ["https://oauth.posthog.com"], scopes_supported: ["openid", "insight:read", "insight:write", "user:read"] });
+  if (url === "https://oauth.posthog.com/.well-known/oauth-authorization-server") return reply(200, { authorization_endpoint: "https://oauth.posthog.com/oauth/authorize/", token_endpoint: "https://oauth.posthog.com/oauth/token/", registration_endpoint: "https://oauth.posthog.com/oauth/register/", code_challenge_methods_supported: ["S256"] });
+  if (url === "https://oauth.posthog.com/oauth/register/") { signIns.push(url); return reply(201, { client_id: "posthog-client" }); }
   return reply(404, {});
 }) as typeof fetch;
 
@@ -233,4 +238,27 @@ test("a gallery template shows its tools for the project, offers Connect first a
   const made = await post(cookie, "/flows/new/figma-to-pr", { csrf: fields["csrf"]!, repo: BENTO, name: "", intent: "create", previewed });
   expect(made.status).toBe(303);
   expect(store.listFlows([BENTO]).map(one => one.name)).toEqual(["Figma frame to pull request"]);
+});
+
+test("PostHog connected with write access says why research can't use it, and Reconnect read-only asks PostHog only to read", async () => {
+  expect(addToolTo(store, BENTO, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home })).toMatchObject({ ok: true });
+  store.recordProjectToolTest(BENTO, "posthog", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["exec"], problem: null }));
+  setToolSecrets(BENTO, "posthog", { OAUTH_ACCESS_TOKEN: "ph-secret", OAUTH_GRANTED_SCOPE: "insight:read insight:write user:read" }, home);
+  const cookie = await login();
+  const html = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
+  expect(html).toContain('<p class="tool-note" role="status">PostHog is connected with write access, so research runs can&#39;t use it.</p>');
+  expect(html).not.toContain("ph-secret");
+  const card = html.slice(html.indexOf('id="tool-posthog"'));
+  const fields = formOf(card, "/settings/tools/connect");
+  expect(fields).toMatchObject({ repo: BENTO, shown: BENTO, service: "posthog", access: "read" });
+  const started = await post(cookie, "/settings/tools/connect", { ...fields, password: token });
+  expect(started.status).toBe(200);
+  const go = new URL(/url=([^"]+)"/.exec(await started.text())![1]!.replace(/&amp;/g, "&"));
+  expect(go.origin + go.pathname).toBe("https://oauth.posthog.com/oauth/authorize/");
+  expect(go.searchParams.get("scope")).toBe("openid insight:read user:read");
+  // Read-only: the grant now reads only, the note goes, and the card is as before.
+  setToolSecrets(BENTO, "posthog", { OAUTH_GRANTED_SCOPE: "insight:read openid user:read" }, home);
+  const after = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
+  expect(after).not.toContain("tool-note");
+  expect(after).not.toContain("Reconnect read-only");
 });

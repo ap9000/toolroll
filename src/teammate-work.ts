@@ -131,8 +131,9 @@ export async function teammateTurn(store: Store, flow: FlowRow, definition: Flow
     // v97: every turn is kept with what it cost, for its weekly report.
     store.addTeammateTurn({ teammate: mate.id, card: card.id, model, ok: reply.ok, ms: reply.ok ? reply.ms : Date.now() - asked, costUsd: reply.costUsd ?? null, tokensIn: reply.tokensIn ?? null, tokensOut: reply.tokensOut ?? null }, now);
     if (!reply.ok) return { state: "retry", said: reply.said, ...(log.length === 0 ? {} : { log: log.join("\n\n") }) };
-    const answer = readTurn(reply.value, context);
-    if (answer === null) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
+    const read = readTurn(reply.value, context);
+    if (!read.ok) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, read.issues.map(issue => issue.line).join("\n"), JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
+    const answer = read.value;
     const header = `${context.name} (${model}) · ${(reply.ms / 1000).toFixed(1)} s`;
     const over = turnOverruns(answer);
     if (over.length > 0 && !shortened) {
@@ -253,7 +254,11 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   // route: the answer names where the card goes; its text is what the next zones use.
   const picked = handleAnswers(stage).find(one => one.answer.toLowerCase() === answer.answer.toLowerCase())!;
   // What the next zones read: whole up to what a step passes on; longer is attached whole to the card, and they read a link to it.
-  if (answer.text !== "") store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: keptWhole(store, flow, card, actor, wholeDraft(answer.text), TEXT_LIMITS.stageOutput, "a step passes on", `What ${label} wrote for the next zones`, now) } }, now);
+  if (answer.text !== "") {
+    const whole = wholeDraft(answer.text);
+    const text = keptWhole(store, flow, card, actor, whole, TEXT_LIMITS.stageOutput, "a step passes on", `What ${label} wrote for the next zones`, now);
+    store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: text }, ...(text === whole ? {} : { attached: { [stage.id]: whole } }) }, now);
+  }
   const said = `Sent “${card.title}” to ${titleOf(picked.to)}${picked.answer === CARRY_ON ? "" : ` (${picked.answer})`}${answer.reason === "" ? "" : `: ${answer.reason}`}`;
   event("handled", said);
   // v96: a zone that answers whoever asked sends what it wrote back to them, under its name.

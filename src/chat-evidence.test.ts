@@ -296,7 +296,8 @@ describe("shared result image selection", () => {
     expect(console_).toMatchObject({ ok: true, body: { run, imageCount: RESULT_IMAGES_PER_TURN_CAP + 1, sendCount: 0, delivery: "This surface does not send image files. Name the result so the operator can open it." } });
     expect(executeMateTool(base, "get_result_images", { task: "alpha" })).toMatchObject({ ok: true, body: { run, delivery: "This surface does not send image files. Name the result so the operator can open it." } });
     expect(executeMateTool(base, "get_result_images", { task: "nope" })).toEqual({ ok: false, message: "That task is not in your projects." });
-    expect(executeMateTool(base, "get_result_images", { task: "alpha", run: 0 })).toEqual({ ok: false, message: "Choose a task and valid result number." });
+    // A malformed call is refused by the tool's schema, by path, before the handler reads anything.
+    expect(executeMateTool(base, "get_result_images", { task: "alpha", run: 0 })).toEqual({ ok: false, message: "run: at least 1" });
     // A failed turn keeps nothing: the selection is deleted with the drafts, and a turn that is not running records nothing.
     expect(store.finalizeMateTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, failureReason: "provider-error" }, T0)).toBe(true);
     expect(store.listMateTurnEvidence(opened.id)).toEqual([]);
@@ -378,12 +379,12 @@ describe("shared result image selection", () => {
     expect(ask({ task: "alpha", run, images: [betaShot] }).answer).toEqual({ ok: false, message: "Choose image ids from this result's list of deliverable images." });
     expect(ask({ task: "alpha", run, images: [shots[0], 9_999] }).answer).toEqual({ ok: false, message: "Choose image ids from this result's list of deliverable images." });
     expect(ask({ task: "alpha", run, images: [shots[0]], offset: 1 }).answer).toEqual({ ok: false, message: "Choose image ids or an offset, not both." });
-    expect(ask({ task: "alpha", run, images: shots }).answer).toEqual({ ok: false, message: `Choose at most ${RESULT_IMAGES_PER_TURN_CAP} images per request.` });
+    expect(ask({ task: "alpha", run, images: shots }).answer).toEqual({ ok: false, message: `images: at most ${RESULT_IMAGES_PER_TURN_CAP} items` });
     expect(ask({ task: "alpha", run, images: [shots[0], shots[0]] }).answer).toEqual({ ok: false, message: "Each image id once." });
-    expect(ask({ task: "alpha", run, images: [] }).answer).toEqual({ ok: false, message: "Choose at least one image id from this result's list." });
-    expect(ask({ task: "alpha", run, images: ["x"] }).answer).toEqual({ ok: false, message: "Choose valid image ids." });
+    expect(ask({ task: "alpha", run, images: [] }).answer).toEqual({ ok: false, message: "images: at least 1 item" });
+    expect(ask({ task: "alpha", run, images: ["x"] }).answer).toEqual({ ok: false, message: "images[0]: must be a number (got a string)" });
     expect(ask({ task: "alpha", run, offset: RESULT_IMAGES_PER_TURN_CAP + 1 }).answer).toEqual({ ok: false, message: `Choose an image offset below ${RESULT_IMAGES_PER_TURN_CAP + 1}.` });
-    expect(ask({ task: "alpha", run, offset: -1 }).answer).toEqual({ ok: false, message: "Choose a valid image offset." });
+    expect(ask({ task: "alpha", run, offset: -1 }).answer).toEqual({ ok: false, message: "offset: at least 0" });
     expect(ask({ task: "beta", run: betaRun, offset: 0 }).answer).toMatchObject({ ok: true, body: { selected: [betaShot], nextImageOffset: null, delivery: "1 image file(s) will be sent to this chat after your reply. Say they follow; do not say they were delivered." } });
     // The same roads read from the shared selection directly, for every surface.
     expect(selectResultImages(store, me, evidenceRoot, "alpha", run, { offset: RESULT_IMAGES_PER_TURN_CAP })).toMatchObject({ ok: true, selection: { selected: [expect.objectContaining({ artifact: shots[RESULT_IMAGES_PER_TURN_CAP], ordinal: RESULT_IMAGES_PER_TURN_CAP + 1, total: RESULT_IMAGES_PER_TURN_CAP + 1 })], nextOffset: null } });

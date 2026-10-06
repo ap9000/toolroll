@@ -19,9 +19,10 @@ import { run as exec } from "./exec.js";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
-import { parseReport, REPORT_LIMITS } from "./scout-report.js";
+import { parseReport, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA } from "./scout-report.js";
 import { SCOUT_BROWSER, scoutBrowserLaunch, scrubUrl } from "./scout.js";
 import { connectedSpec } from "./mcp-connect.js";
+import * as mcpConnect from "./mcp-connect.js";
 import * as projectTools from "./project-tools.js";
 import * as browserCheck from "./scout-browser.js";
 import { createServer, request as httpRequest } from "node:http";
@@ -51,7 +52,8 @@ describe("the report parser (422 rule)", () => {
       expect(reasons).toContain("missing-summary");
       expect(reasons).toContain("bad-report");
       expect(reasons).toContain("missing-followUps[0].goal");
-      expect(reasons).toContain("followUps[1]-shape");
+      expect(reasons).toContain("bad-followUps[1]");
+      expect(bad.problems.map(one => one.message)).toContain("followUps[1]: must be an object (got a string)");
     }
     const tooMany = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r", followUps: Array.from({ length: REPORT_LIMITS.followUps + 1 }, () => ({ title: "t", goal: "g" })) }));
     expect(tooMany.ok).toBe(false);
@@ -86,9 +88,9 @@ describe("the report parser (422 rule)", () => {
     const reasons = (body: Record<string, unknown>) => { const read = parseReport(JSON.stringify({ title: "t", summary: "s", report: "r", ...body })); return read.ok ? [] : read.problems.map(one => one.reason); };
     expect(reasons({ items: Array.from({ length: REPORT_LIMITS.items + 1 }, (_, index) => item(index)) })).toContain("items-too-many");
     expect(reasons({ images: Array.from({ length: REPORT_LIMITS.images + 1 }, (_, index) => ({ file: `${index}.png`, caption: "c", url: "https://example.com/" })) })).toContain("images-too-many");
-    expect(reasons({ items: [{ ...item(1), image: "nowhere.png" }] })).toContain("items[0]-image");
+    expect(reasons({ items: [{ ...item(1), image: "nowhere.png" }] })).toContain("bad-items[0].image");
     expect(reasons({ items: [{ ...item(1), url: "file:///etc/passwd" }] })).toContain("items[0].url-not-a-link");
-    expect(reasons({ images: [{ file: "a.png", caption: "two\nlines", url: "https://example.com/" }] })).toContain("images[0]-caption-multiline");
+    expect(reasons({ images: [{ file: "a.png", caption: "two\nlines", url: "https://example.com/" }] })).toContain("images[0].caption-multiline");
   });
 });
 
@@ -513,9 +515,14 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: JSON.stringify(result) };
   };
 
-  test("a Claude scout returns its report as structured output and the run succeeds", async () => {
+  test("a Claude scout's version 1 structured report succeeds with extra keys and null lists", async () => {
     const { runnerToken } = await setup();
-    const reported = await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }));
+    const report = {
+      ...FOUND, version: 1, notes: "scratch",
+      followUps: FOUND.followUps.map(one => ({ ...one, notes: "scratch" })),
+      items: null, images: null,
+    };
+    const reported = await tick(runnerToken, planModeAgent({ kind: "report", report }));
     expect(reported).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     // Read-only by permission (dontAsk, no edit tools allowed); the report schema rides beside it.
@@ -523,14 +530,17 @@ describe("scout tasks, against real git", () => {
     expect(argvSeen).not.toContain("--dangerously-skip-permissions");
     const schema = JSON.parse(argvSeen[argvSeen.indexOf("--json-schema") + 1] ?? "{}");
     expect(schema).toMatchObject({ required: ["kind"], properties: { kind: { enum: ["report", "question"] } } });
-    expect(schema.properties.report.required).toEqual(["title", "summary", "report"]);
+    expect(schema.properties.report).toEqual((SCOUT_OUTPUT_JSON_SCHEMA["properties"] as Record<string, unknown>)["report"]);
+    expect(schema.properties.report.required).toEqual(["version", "title", "summary", "report"]);
     expect(schema.properties.decision.required).toEqual(["urgency", "recap", "question", "options", "recommendation"]);
     expect(prompts.at(-1)).toContain("final structured");
+    expect(prompts).toHaveLength(1);
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
     expect(store.getTask("flaky")?.state).toBe("done");
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
-    expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
+    expect(view !== null && view.ok && view.report).toEqual({ ...FOUND, items: [], images: [] });
+    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(false);
     store.close();
   });
 
@@ -655,6 +665,39 @@ describe("scout tasks, against real git", () => {
     expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({ mobbin: ["search_screens"], posthog: ["query-run"] });
     expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
     expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
+  });
+
+  test("a scout gets PostHog's exec only while its saved grant reads; a write grant leaves it out of the launch, saying why", async () => {
+    const { runnerToken, approverToken } = await setup("codex");
+    const prepared = vi.spyOn(projectTools, "prepareRunTools");
+    const codexScout: Runner = async (_file, args, options) => {
+      const name = REPORT_FILE.exec(String(args.at(-1) ?? ""))?.[0];
+      if (name !== undefined) await writeFile(join(options?.cwd ?? "", name), JSON.stringify(FOUND));
+      const lines = [{ type: "thread.started", thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53" }, { type: "item.completed", item: { type: "agent_message", text: "Report written." } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }];
+      return { ...OK, stdout: lines.map(one => JSON.stringify(one)).join("\n") + "\n" };
+    };
+    expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+    const store = openStore(db);
+    expect(projectTools.addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: base })).toMatchObject({ ok: true });
+    store.recordProjectToolTest(repo, "posthog", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["exec"], problem: null }));
+    store.close();
+    vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: [{ spec: connectedSpec("posthog")!, digest: "d", values: {} }], skipped: [] }));
+    const grant = vi.spyOn(mcpConnect, "grantOf");
+    for (const [id, scope] of [["doctor-read", ["openid", "user:read", "error_tracking:read"]], ["doctor-write", ["error_tracking:read", "error_tracking:write"]]] as const) {
+      grant.mockImplementation(() => [...scope]);
+      await run(["task", "add", "why do errors spike", "--id", id, "--repo", repo, "--report", "--json"], reportingAgent);
+      await run(["task", "scope", id, "--goal", "Find why errors spiked this week", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
+      const scoped = openStore(db);
+      const digest = scoped.getScope(id)?.digest as string;
+      scoped.close();
+      await run(["task", "approve", id, "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+      expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
+      expect(payload().dispatched).toContainEqual(expect.objectContaining({ id, outcome: "reported" }));
+    }
+    const [read, write] = prepared.mock.calls.slice(-2).map(call => call[3]);
+    expect(read).toMatchObject({ readOnly: { posthog: ["exec"] } });
+    expect(read).not.toHaveProperty("withheld");
+    expect(write).toMatchObject({ readOnly: {}, withheld: { posthog: "PostHog is connected with write access, so research runs can't use it; reconnect read-only" } });
   });
 
   test("a scout's items and screenshots arrive: each image verified and stored as evidence, the tree proof intact, refused images named", async () => {
@@ -944,7 +987,7 @@ describe("scout tasks, against real git", () => {
     expect(prompts[0]).toContain("Longer text is not cut: you will be asked once to shorten it.");
     expect(calls).toHaveLength(2);
     expect(calls[1]![calls[1]!.indexOf("--resume") + 1]).toBe("scout-session-1");
-    expect(prompts[1]).toContain("summary is over 2500 bytes");
+    expect(prompts[1]).toContain("- summary: over 2,500 bytes");
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
@@ -1029,6 +1072,18 @@ describe("scout tasks, against real git", () => {
     const view = readVerifiedReport(store, join(base, "evidence"), store.refFor("built-in", "flaky").id);
     expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
     expect(store.listDecisions("unanswered")).toHaveLength(0);
+    store.close();
+  });
+
+  test("a malformed structured report names each field's path in its incident", async () => {
+    const { runnerToken } = await setup();
+    const bad = { version: 1, ...FOUND, items: [{ title: "t", why: "w", url: "file:///etc/passwd" }], notes: "x" };
+    expect(await tick(runnerToken, planModeAgent({ kind: "report", report: bad }))).toBe(EXIT.failed);
+    const store = openStore(db);
+    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(true);
+    const notice = store.listNotifications("all").find(one => one.kind === "malformed-report")?.body;
+    expect(notice).toContain("items[0].url: must be an http or https address");
+    expect(notice).not.toContain("unknown key");
     store.close();
   });
 

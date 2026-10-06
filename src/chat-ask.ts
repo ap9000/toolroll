@@ -11,7 +11,7 @@
  * asked, and only while nobody has written in that thread since.
  */
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
-import { chatHash } from "./chat-delivery-state.js";
+import { chatHash, partContent, savedChatPart } from "./chat-delivery-state.js";
 import { MATE_ASK_OTHER, type MateAsk, type Store } from "./store.js";
 
 /** The question as text with its options, where no buttons are drawn. */
@@ -24,7 +24,7 @@ export function chatAskText(ask: Pick<MateAsk, "question" | "options">): string 
 export function chatAskButtons(state: ChatState, part: number, now: Date): Array<{ token: string; label: string; words: boolean }> {
   const row = state.prepare("SELECT p.payload,e.channel,b.channel AS own FROM chat_part p JOIN chat_event e ON e.id=p.event JOIN chat_binding b ON b.id=e.binding WHERE p.id=?").get(part);
   if (row === undefined) return [];
-  const content = JSON.parse(String(row["payload"])) as ChatContent;
+  const content = partContent(String(row["payload"]));
   if ((content.channel ?? row["channel"]) !== row["own"]) return [];
   const options = content.ask?.options ?? [];
   return (state.prepare("SELECT token,choice FROM chat_ask_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: number | null }>)
@@ -47,9 +47,9 @@ function repaint(state: ChatState, part: number, event: ChatEvent, line: string,
     state.plan(event.id, [{ text: line }], now);
     return;
   }
-  const before = JSON.parse(String(row["payload"])) as ChatContent;
+  const before = partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(JSON.stringify(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
   state.finish(event.id);
 }
 
@@ -96,7 +96,7 @@ export function applyChatAskTap(options: { store: Store; state: ChatState }, eve
   state.enqueue({
     id: chatHash(`${state.channel}:ask:${event.id}`).slice(0, 32), installation: event.installation, binding: binding.id, kind: "message",
     channel: event.channel, member: event.member, ts: event.ts, thread: event.thread,
-    payload: JSON.stringify({ text: option, originalLength: option.length }), created: now.toISOString(),
+    payload: { text: option, originalLength: option.length }, created: now.toISOString(),
   });
   repaint(state, part, event, `You chose: ${option}`, now);
   return true;

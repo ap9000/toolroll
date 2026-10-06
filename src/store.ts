@@ -1,5 +1,5 @@
-import {chatSchema,chatTables} from "./chat-delivery-state.js";
-import { SLACK_SCHEMA, SLACK_TABLES } from "./slack-state.js";
+import { chatSchema, chatTables } from "./contracts/chat-tables.js";
+import type { DecisionOption } from "./contracts/decision.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
 import { SKILLS_SCHEMA } from "./project-skills.js";
@@ -8,6 +8,8 @@ import { MEMORY_SCHEMA } from "./project-memory.js";
 import { MODELS_SCHEMA } from "./model-catalog.js";
 import { validateTaskText } from "./task-text.js";
 import { flowDefinitionForStore, flowDefinitionFromStore } from "./flows.js";
+import type { FlowCardChange, FlowCardFields } from "./contracts/flow-card.js";
+import { cardOutputsForStore, cardOutputsFromStore } from "./contracts/stage-output.js";
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { actorLabel, currentActor, leadSecretMatches, mintLeadToken, parseLeadToken, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
@@ -1127,7 +1129,8 @@ export type FlowScriptRow = { id: number; repo: string; name: string; about: str
  * message's thread, and the pairing that connected the channel (whose chat answers there). */
 export type FlowCardSource = { kind: string; label: string; url: string | null; mail?: { id: string | null; references: string[]; subject: string; from: string };
   chat?: { app: string; installation: string; chat: string; conversation: string; thread: string; binding: number } };
-export type FlowCardRow = { id: number; flow: number; title: string; description: string | null; stage: string; entry: number; state: "active" | "done" | "cancelled"; task: string | null; primaryTask: string | null; note: string | null; waiting: string | null; outputs: Record<string, string>; createdBy: string; createdAt: string; updatedAt: string; source: FlowCardSource | null; owner: string | null };
+/** A flow card as read (src/contracts/flow-card.ts), and where it came from. */
+export type FlowCardRow = FlowCardFields & { source: FlowCardSource | null };
 /** One line of a card's discussion: a comment (and whom it @mentioned), or who became its owner. */
 export type FlowCommentRow = { id: number; card: number; kind: "comment" | "owner"; author: string; body: string; mentions: string[]; at: string };
 export type FlowTriggerRow = { id: number; flow: number; kind: string; configJson: string; state: "active" | "paused" | "removed"; hookHash: string | null; cursor: string | null; nextAt: string | null; lastAt: string | null; lastOutcome: string | null; failures: number; createdBy: string; createdAt: string; updatedAt: string };
@@ -1155,11 +1158,11 @@ function readFlowStepRunRow(row: Record<string, unknown>): FlowStepRunRow {
 }
 
 function readFlowCardRow(row: Record<string, unknown>): FlowCardRow {
-  let outputs: Record<string, string> = {};
-  try { const parsed = JSON.parse(String(row["outputs_json"] ?? "{}")) as unknown; if (parsed !== null && typeof parsed === "object") outputs = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string")); } catch { outputs = {}; }
+  // What finished zones handed on (src/contracts/stage-output.ts): a row saved before it carried a version reads as it always did.
+  const { outputs, attached } = cardOutputsFromStore(String(row["outputs_json"] ?? "{}"));
   const optional = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
   return { id: Number(row["id"]), flow: Number(row["flow"]), title: String(row["title"]), description: optional("description"), stage: String(row["stage"]), entry: Number(row["entry"]),
-    state: String(row["state"]) as FlowCardRow["state"], task: optional("task"), primaryTask: optional("primary_task"), note: optional("note"), waiting: optional("waiting"), outputs,
+    state: String(row["state"]) as FlowCardRow["state"], task: optional("task"), primaryTask: optional("primary_task"), note: optional("note"), waiting: optional("waiting"), outputs, attached,
     createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]), source: readFlowCardSource(row["source_json"]), owner: optional("owner") };
 }
 
@@ -1838,13 +1841,8 @@ export type PushPair = {
   acceptedAt: string | null;
 };
 
-/** One option of a decision. `reversible` is a field so a scheduler can refuse to auto-apply. */
-export type DecisionOption = {
-  id: string;
-  label: string;
-  consequence: string;
-  reversible: boolean;
-};
+/** One option of a decision (src/contracts/decision.ts). `reversible` is a field so a scheduler can refuse to auto-apply. */
+export type { DecisionOption };
 
 /** The judgement call an agent refused to guess at (§7). Identity = its run. */
 export type Decision = {
@@ -5265,7 +5263,7 @@ function initializeStore(db: Database, file: string): Store {
     if (typeof ddl !== "string" || canonicalDdl(ddl) !== canonicalDdl(MATE_PROPOSAL_V66_DDL("mate_proposal"))) throw new Error(`${file}: shared action history has an unknown shape; refusing to recreate it`);
   }
   if (preflight !== null && Math.abs(preflight) >= 67) {
-    for (const table of SLACK_TABLES) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
+    for (const table of chatTables("slack")) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
   }
   if (preflight !== null && Math.abs(preflight) >= 68) {
     for (const table of chatTables("discord")) if (!tableExists(db, table)) throw new Error(`${file}: Discord history is missing; refusing to recreate receipts`);
@@ -5282,7 +5280,7 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MEMORY_SCHEMA);
   db.exec(MODELS_SCHEMA);
   db.exec(SKILLS_SCHEMA);
-  db.exec(SLACK_SCHEMA);
+  db.exec(chatSchema("slack"));
   db.exec(chatSchema("discord"));
   db.exec(chatSchema("teams"));
   db.exec(TEAM_SCHEMA);
@@ -23355,18 +23353,25 @@ export class Store {
 
   /** What a card's current zone is doing: its task, the card's main work, what it waits on, what zones reported. */
   /** Read and written in one transaction, so a pass changing one field never writes back another pass's older task or waiting. */
-  updateFlowCard(id: number, change: { task?: string | null; primaryTask?: string; waiting?: string | null; outputs?: Record<string, string>; state?: "done" | "cancelled" }, now: Date): void {
+  /** Outputs are written only when they change (src/contracts/stage-output.ts), never over a row a newer Toolroll wrote;
+   * a zone's attachment stays only while its output does. */
+  updateFlowCard(id: number, change: FlowCardChange, now: Date): void {
     this.transact(() => {
       const card = this.getFlowCard(id);
       if (card === null) return;
-      this.db.prepare("UPDATE flow_card SET task = ?, primary_task = ?, waiting = ?, outputs_json = ?, state = ?, updated_at = ? WHERE id = ?").run(
+      this.db.prepare("UPDATE flow_card SET task = ?, primary_task = ?, waiting = ?, state = ?, updated_at = ? WHERE id = ?").run(
         change.task === undefined ? card.task : change.task,
         change.primaryTask ?? card.primaryTask,
         change.waiting === undefined ? card.waiting : change.waiting,
-        JSON.stringify(change.outputs ?? card.outputs),
         change.state ?? card.state,
         now.toISOString(), id,
       );
+      if (change.outputs === undefined && change.attached === undefined) return;
+      const saved = this.db.prepare("SELECT outputs_json FROM flow_card WHERE id = ?").get(id);
+      if (cardOutputsFromStore(String(saved?.["outputs_json"] ?? "{}")).newer) return;
+      const outputs = change.outputs ?? card.outputs;
+      const attached = { ...Object.fromEntries(Object.entries(card.attached).filter(([zone]) => outputs[zone] === card.outputs[zone])), ...change.attached };
+      this.db.prepare("UPDATE flow_card SET outputs_json = ? WHERE id = ?").run(cardOutputsForStore(outputs, attached), id);
     });
   }
 

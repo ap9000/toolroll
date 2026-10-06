@@ -69,6 +69,24 @@ test("a 20,000-character script result is attached, not cut: the goal keeps ever
   expect(flowGoalCuts(store, filed.task!, goal)).toEqual([{ label: "What Nightly journeys found", text: output }]);
 });
 
+test("an output kept whole on the card's discussion is given whole to the task after it, and a newer output drops it", () => {
+  const flow = store.createFlow({ repo, name: "Nightly journeys", definitionJson: JSON.stringify(validateFlowDefinition(drawing(ASK))), by: "operator" }, now);
+  const card = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description: null, stage: "research", by: "operator" }, now);
+  // As a step leaves it (flow-steps.ts settle): what the next zones read points at the discussion; the card keeps it whole.
+  const pointer = `This is 20,000 characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${card}.`;
+  store.updateFlowCard(card, { outputs: { "nightly-journeys": pointer }, attached: { "nightly-journeys": output } }, now);
+  expect(advanceFlows(store, repo, now).filed).toHaveLength(1);
+  const filed = store.getFlowCard(card)!;
+  const goal = store.getScope(filed.task!)!.goal;
+  expect(goal).toContain(pointer);
+  expect(flowGoalCuts(store, filed.task!, goal)).toEqual([{ label: "What Nightly journeys found", text: output }]);
+  // Waiting and task changes keep it; a new output for that zone replaces it.
+  store.updateFlowCard(card, { waiting: "Working on it" }, now);
+  expect(store.getFlowCard(card)!.attached).toEqual({ "nightly-journeys": output });
+  store.updateFlowCard(card, { outputs: { "nightly-journeys": "All passed." } }, now);
+  expect(store.getFlowCard(card)!.attached).toEqual({});
+});
+
 test("card details go into the goal whole up to the limit; beyond it the longest values are attached, the rest stay whole", () => {
   const card = { title: "Checkout rounding", description: "d".repeat(7_000), note: null, outputs: { a: "x".repeat(9_000), b: "short notes" } };
   const whole = fitFlowText("Fix {{card.title}}.\n{{card.description}}", card)!;

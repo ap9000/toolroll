@@ -196,6 +196,21 @@ function source() {
   store.finishRun(run, { outcome: "built", committed: true, now });
   return { ref, run };
 }
+test.each([
+  ['{"text":42}', "text:"], ["not JSON", "payload:"], ['{"version":2,"text":"Later version"}', "version:"],
+])("an unreadable saved part stops retrying and keeps its problem: %s", async (payload, path) => {
+  const event = plan([{ text: "Saved reply" }]);
+  state.prepare("UPDATE chat_part SET payload=? WHERE event=?").run(payload, event);
+  expect(await deliverDiscordPart(options)).toBe(true);
+  const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event);
+  expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
+  expect(sends()).toEqual([]);
+  now = new Date(now.getTime() + 60_000);
+  state.lease(ID.installation, "test", now);
+  expect(await deliverDiscordPart(options)).toBe(false);
+  expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event)).toEqual(row);
+});
+
 function plan(parts: ChatContent[]) {
   const id = snow();
   state.enqueue({
@@ -540,6 +555,23 @@ test.each([
           : {},
   );
   expect(store.activeHolds(ref, now)).toHaveLength(0);
+});
+test("a button Toolroll didn't make is answered with why and does nothing; a stale one says so; a stranger's tap gets no answer", async () => {
+  const { ref } = source();
+  draft({ task: "sample", reason: "Inspect wording" }, "hold");
+  await drain();
+  const c = card();
+  await tap(c.token, c.message, { data: { component_type: 2, custom_id: "so_not-a-token" } });
+  // Discord shows markdown: the underscore is escaped so it reads as written.
+  expect(JSON.parse(sentText())[0].description).toBe("That button couldn't be read (data.custom\\_id: not a Toolroll button). Nothing was done.");
+  await tap("0".repeat(32), c.message);
+  expect(sentText()).toContain("That button expired or was already used.");
+  const sent = sends().length;
+  await tap(c.token, c.message, { user: { id: snow() }, data: { custom_id: "nope" } });
+  await tap(c.token, c.message, { message: { id: c.message, channel_id: CHANNEL, author: { id: snow() } }, data: { custom_id: "nope" } });
+  expect(sends()).toHaveLength(sent);
+  expect(store.activeHolds(ref, now)).toHaveLength(0);
+  expect(store.getMateProposal(c.proposal)?.state).toBe("pending");
 });
 test("protected actions retain the existing exact review link even for a forged token", async () => {
   source();

@@ -1,0 +1,10 @@
+{
+  "about": "Loose inputs accepted by the 0.9.36 lead handlers despite the stricter schema advertised to the model. Limits and days reach the old clamp/fallback code; get_person ignores unusable selectors; get_flow_insights reads a null repo as every project. Extra top-level keys are also tested for every formerly lenient tool; propose_flow already used a strict contract in 0.9.36.",
+  "calls": {
+    "list_tasks": [{ "limit": 0 }, { "limit": -5 }, { "limit": 100 }, { "limit": 2.9 }, { "limit": null }, { "limit": "3" }, { "limit": {} }, { "limit": 9007199254740992 }],
+    "get_task_conversation": [{ "task": "t-42", "limit": 0 }, { "task": "t-42", "limit": -5 }, { "task": "t-42", "limit": 100 }, { "task": "t-42", "limit": 2.9 }, { "task": "t-42", "limit": null }, { "task": "t-42", "limit": "3" }, { "task": "t-42", "limit": {} }, { "task": "t-42", "limit": 9007199254740992 }],
+    "get_flow_insights": [{ "days": 0 }, { "days": -5 }, { "days": 100 }, { "days": 2.9 }, { "days": null }, { "days": "7" }, { "days": {} }, { "days": 9007199254740992 }, { "repo": null }],
+    "get_person": [{ "id": "invalid", "name": "Sam" }, { "id": null, "name": "Sam" }, { "id": 42, "name": "Sam" }, { "id": "t5", "name": null }, { "id": "t5", "name": 42 }, { "id": "t5", "name": "" }, { "id": "t5", "name": "                                                                                 " }],
+    "propose_agents": [{ "task": "t-42", "role": "builder", "agent": { "provider": "claude", "model": "opus", "zz_unknown": 1 } }]
+  }
+}

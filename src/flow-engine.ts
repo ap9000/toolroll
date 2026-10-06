@@ -20,6 +20,7 @@ import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, teammateLabel } from "./teammates.js";
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
+import { withStageHandoff, type StageHandoff } from "./contracts/stage-output.js";
 
 export type FlowAdvance = { moved: number; filed: string[]; problems: string[] };
 
@@ -269,30 +270,27 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
       const checks = assignmentOf(store, current, now, { principal: "operator", repos: [repo] }, options.evidenceRoot)?.receipt?.checks ?? null;
       if (checks?.status === "failed") {
         const said = `The checks failed on its result: ${checks.detail}`;
-        store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: `${said} (task ${current})` }, primaryTask: current }, now);
+        store.updateFlowCard(card.id, { outputs: withStageHandoff(card.outputs, stage.id, { text: `${said} (task ${current})` }), primaryTask: current }, now);
         if (stage.onFail !== null) onward("fail", said);
         else if (card.waiting !== `${said} Look at the result, then move the card on or back.`) store.updateFlowCard(card.id, { waiting: `${said} Look at the result, then move the card on or back.` }, now);
         return;
       }
     }
-    const outputs = { ...card.outputs };
+    let handoff: StageHandoff = { text: `Result ready on task ${current}.` };
     if (stage.kind === "report") {
       const ref = store.lookupRef(current);
       const summary = ref === null ? null : reportSummaryFor(store, options.evidenceRoot, ref.id);
-      // The summary whole (a report's summary is within TEXT_LIMITS.reportSummary bytes; an older, longer one is linked).
-      outputs[stage.id] = summary !== null && "summary" in summary ? passOn(summary.summary, TEXT_LIMITS.stageOutput, { label: `task ${current}`, href: null }).text : "The report is ready on its task.";
       // {{stage.<id>.items}} and {{stage.<id>.report}}: what it found and the whole report, for the zones after it.
       // A visit's report replaces the last visit's, so nothing stale is left behind.
       const view = ref === null || options.evidenceRoot === undefined ? null : readVerifiedReport(store, options.evidenceRoot, ref.id);
       const found = view?.ok === true ? reportFillIns(view.report) : { items: "", report: "" };
-      for (const [part, text] of Object.entries(found)) {
-        if (text === "") delete outputs[`${stage.id}.${part}`];
-        else outputs[`${stage.id}.${part}`] = text;
-      }
-    } else {
-      outputs[stage.id] = `Result ready on task ${current}.`;
+      handoff = {
+        // The summary whole (a report's summary is within TEXT_LIMITS.reportSummary bytes; an older, longer one is linked).
+        text: summary !== null && "summary" in summary ? passOn(summary.summary, TEXT_LIMITS.stageOutput, { label: `task ${current}`, href: null }).text : "The report is ready on its task.",
+        ...(found.items === "" ? {} : { items: found.items }), ...(found.report === "" ? {} : { report: found.report }),
+      };
     }
-    store.updateFlowCard(card.id, { outputs, ...(stage.kind === "task" ? { primaryTask: current } : {}), waiting: null }, now);
+    store.updateFlowCard(card.id, { outputs: withStageHandoff(card.outputs, stage.id, handoff), ...(stage.kind === "task" ? { primaryTask: current } : {}), waiting: null }, now);
     // A "Send to me" or "Person chooses" zone next reads what this task produced: the task goes with the card there.
     const following = stage.next === null ? undefined : flowDefinitionStage(definition, stage.next);
     onward("ok", undefined, following?.kind === "send" || following?.kind === "choose" ? current : undefined);
@@ -335,8 +333,10 @@ function goalCuts(store: Store, taskId: string, goal: string): { label: string; 
   for (const match of flowWorkTemplate(stage.instructions ?? card.title, card).matchAll(/\{\{\s*(card\.title|card\.description|note|stage\.([a-z0-9-]+)(?:\.(items|report))?)\s*\}\}/g)) {
     if (seen.has(match[1]!)) continue;
     seen.add(match[1]!);
-    const text = fillFlowText(`{{${match[1]}}}`, card);
-    if (text === "" || goal.includes(text)) continue;
+    // An output too long to pass on is kept whole on the card (src/contracts/stage-output.ts): the agent gets it whole.
+    const whole = match[2] !== undefined && match[3] === undefined ? card.attached[match[2]] : undefined;
+    const text = whole ?? fillFlowText(`{{${match[1]}}}`, card);
+    if (text === "" || (whole === undefined && goal.includes(text))) continue;
     cuts.push({ label: flowValueLabel(match[1]!, id => titleIn(definition, id)), text: text.slice(0, FLOW_ATTACHED_LIMIT) });
   }
   return cuts;
@@ -451,7 +451,7 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
       return { ok: false, message: `Keep the draft to ${DRAFT_CHARS.toLocaleString("en-US")} characters; this is ${input.draft.trim().length.toLocaleString("en-US")}.` };
     }
     if (draft !== null && typeof input.draft === "string" && input.draft.trim() !== "" && input.draft.trim() !== card.outputs[draft.id]?.trim()) {
-      store.updateFlowCard(card.id, { outputs: { ...card.outputs, [draft.id]: keptDraft(input.draft) } }, now);
+      store.updateFlowCard(card.id, { outputs: withStageHandoff(card.outputs, draft.id, { text: keptDraft(input.draft) }) }, now);
       store.addFlowComment({ card: card.id, author: input.actor, body: "Edited the draft before approving it.", mentions: [] }, now);
     }
     if (stage.next === null) {

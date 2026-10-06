@@ -180,8 +180,11 @@ test("a step named the way the lead wrote it (draftReply, Draft reply) is found 
     { title: "New questions", kind: "inbox" },
     { id: "draftReply", title: "Draft reply", kind: "draft", instructions: "Answer {{card.title}}" },
     { title: "Approve reply", kind: "approval", decider: "owner" },
-    { title: "Post to team chat", kind: "notify", message: "{{stage.draftReply}} / {{stage.Draft reply}} / {{ stage.draft_reply }} / {{stage.nothing}}" },
+    { title: "Post to team chat", kind: "notify", message: "{{stage.draftReply}} / {{stage.Draft reply}} / {{ stage.draft_reply }}" },
   ], null);
   expect(definition.stages.find(one => one.kind === "draft")!.id).toBe("draftreply");
-  expect(definition.stages.find(one => one.kind === "notify")!.message).toBe("{{stage.draftreply}} / {{stage.draftreply}} / {{stage.draftreply}} / {{stage.nothing}}");
+  expect(definition.stages.find(one => one.kind === "notify")!.message).toBe("{{stage.draftreply}} / {{stage.draftreply}} / {{stage.draftreply}}");
+  // One that names no step is refused where it is written (src/contracts/stage-output.ts).
+  expect(() => flowFromSteps([{ title: "New questions", kind: "inbox" }, { title: "Post to team chat", kind: "notify", message: "{{stage.nothing}}" }], null))
+    .toThrow("steps[1].message: stage.nothing is not available: there's no zone called nothing");
 });

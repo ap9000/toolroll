@@ -9,17 +9,11 @@
  * shortened evenly first; then the summary, then the titles; past that it is split into parts. Links are never cut.
  */
 
-export type FlowSendItem = {
-  title: string;
-  why: string;
-  url: string;
-  /** Where the link goes, by name: "Mobbin", "Linear", "Apple". */
-  source: string;
-  /** One line: how it plugs in (from the why, else the image's own caption). */
-  plug: string;
-  /** The item's screenshot (its evidence id in the report's run), when it has one. */
-  shot: number | null;
-};
+import type { FlowSendItem } from "./contracts/flow-send.js";
+
+/** One item as the message lists it, and kept items read back (src/contracts/flow-send.ts). */
+export type { FlowSendItem };
+export { readFlowItems } from "./contracts/flow-send.js";
 
 const PLUG_CHARS = 160;
 const NAMES: Record<string, string> = {
@@ -142,15 +136,3 @@ export function fitFlowMessage(message: FlowMessage, limit: number, measure: (sh
   return pack(blocks(message, Infinity, Infinity, Infinity), "\n\n", fits, block => pack(block.split("\n"), "\n", fits, line => chop(line, fits)));
 }
 
-/** Items read back from a kept content; anything malformed is left out. */
-export function readFlowItems(raw: unknown): FlowSendItem[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((one): FlowSendItem[] => {
-    if (typeof one !== "object" || one === null) return [];
-    const item = one as Record<string, unknown>;
-    const text = (key: string) => typeof item[key] === "string" ? item[key] as string : null;
-    const [title, why, url, source, plug] = [text("title"), text("why"), text("url"), text("source"), text("plug")];
-    if (title === null || why === null || url === null || source === null || plug === null || !/^https?:\/\//.test(url)) return [];
-    return [{ title, why, url, source, plug, shot: typeof item["shot"] === "number" && Number.isSafeInteger(item["shot"]) ? item["shot"] : null }];
-  });
-}

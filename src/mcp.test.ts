@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { mintCoordinator, fileCoordinatorProposal, revokeCoordinator } from "./coordinator.js";
 import { serveMcp, MODERN, LEGACY, type McpIo } from "./mcp.js";
+import { runAssignmentCommand } from "./assignment-adapters.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
 import { PACKAGE_VERSION } from "./version.js";
@@ -434,7 +435,10 @@ describe("the MCP stdio server", () => {
     // These are the wire bytes clients parse. A renamed field, a reordered
     // key, or a drifted description is a silent protocol break — so the
     // whole line is pinned, byte-for-byte, against JSON.stringify of the
-    // expected object.
+    // expected object. Each inputSchema is derived from its Zod contract
+    // (src/contracts/gateway-tools.ts) and accepts exactly what the
+    // hand-written one did; the derived form spells a nullable as anyOf, leaves out
+    // an empty required list and bounds integers to the safe range.
     const tools = [
       {
         name: 'get_project_context', description: 'Read bounded source excerpts or advisory static import impact in an admitted project. Falls back to text search without an index.',
@@ -446,7 +450,7 @@ describe("the MCP stdio server", () => {
       },
       {
         name: "list_assignment_updates", description: "Read durable assignment updates in your projects after a cursor. Save nextCursor after processing; repeated reads do not acknowledge or deliver anything.",
-        inputSchema: { type: "object", properties: { after: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, limit: { type: "integer", minimum: 1, maximum: 100 } }, required: [], additionalProperties: false },
+        inputSchema: { type: "object", properties: { after: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, limit: { type: "integer", minimum: 1, maximum: 100 } }, additionalProperties: false },
       },
       {
         name: "claim_assignment", description: "Record yourself as this assignment's lead. Repeating your claim is safe; another active owner cannot be replaced. This grants no approval or execution authority.",
@@ -458,7 +462,7 @@ describe("the MCP stdio server", () => {
       },
       {
         name: "get_assignment_brief", description: "Catch up from the local database: current work, decisions, saved results and project knowledge. Bounded read only; no model call or task mutation.",
-        inputSchema: { type: "object", properties: { repo: { type: "string", minLength: 1, maxLength: 4096 }, limit: { type: "integer", minimum: 1, maximum: 25 } }, required: [], additionalProperties: false },
+        inputSchema: { type: "object", properties: { repo: { type: "string", minLength: 1, maxLength: 4096 }, limit: { type: "integer", minimum: 1, maximum: 25 } }, additionalProperties: false },
       },
       {
         name: "get_assignment_inbox", description: "Receive a durable batch of your assignments' status changes. Use a stable consumer name. Until acknowledged, the same batch survives reconnects and restarts. Receiving never completes or reruns work.",
@@ -481,7 +485,7 @@ describe("the MCP stdio server", () => {
           properties: {
             state: { type: "string", enum: ["queued", "running", "done", "failed", "cancelled"] },
             repo: { type: "string", maxLength: 800 },
-            cursor: { type: "integer", minimum: 0 },
+            cursor: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
             limit: { type: "integer", minimum: 1, maximum: 50 },
           },
           additionalProperties: false,
@@ -520,7 +524,7 @@ describe("the MCP stdio server", () => {
       {
         name: "get_decision",
         description: "One open decision in your allowlist in full: question, options with id, label, reversible, and consequence. Never the builder's recommendation.",
-        inputSchema: { type: "object", properties: { decision: { type: "integer", minimum: 1 } }, required: ["decision"], additionalProperties: false },
+        inputSchema: { type: "object", properties: { decision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["decision"], additionalProperties: false },
       },
       {
         name: "propose_next",
@@ -530,7 +534,7 @@ describe("the MCP stdio server", () => {
       {
         name: "propose_reserve",
         description: "Propose reserving a queued task for one worker, or releasing it to the shared queue with worker null.",
-        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, worker: { type: ["string", "null"], maxLength: 60 } }, required: ["ref", "worker"], additionalProperties: false },
+        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, worker: { anyOf: [{ type: "string", maxLength: 60 }, { type: "null" }] } }, required: ["ref", "worker"], additionalProperties: false },
       },
       {
         name: "propose_hold",
@@ -545,7 +549,7 @@ describe("the MCP stdio server", () => {
       {
         name: "propose_scope",
         description: "Propose rewriting a task's scope. An approver confirms the rewrite, then approves it with a password — a scope you wrote never seals under a mode.",
-        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, not: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, touches: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 50 } }, required: ["ref", "goal"], additionalProperties: false },
+        inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, not: { type: "string", maxLength: 8000, description: "At most 8,000 characters (UTF-16 code units) and 32,000 UTF-8 bytes; no control or disguised text. Longer text is refused with its length, not cut: shorten it and call again." }, touches: { maxItems: 50, type: "array", items: { type: "string", maxLength: 200 } } }, required: ["ref", "goal"], additionalProperties: false },
       },
       {
         name: "propose_cancel",
@@ -555,7 +559,7 @@ describe("the MCP stdio server", () => {
       {
         name: "propose_answer",
         description: "Propose an answer to an open decision you read with get_decision, with a rationale. The approver confirms where every consequence and the builder's recommendation are shown; an irreversible option needs their explicit confirmation.",
-        inputSchema: { type: "object", properties: { decision: { type: "integer", minimum: 1 }, option: { type: "string", minLength: 1, maxLength: 64 }, rationale: { type: "string", maxLength: 400 } }, required: ["decision", "option", "rationale"], additionalProperties: false },
+        inputSchema: { type: "object", properties: { decision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, option: { type: "string", minLength: 1, maxLength: 64 }, rationale: { type: "string", maxLength: 400 } }, required: ["decision", "option", "rationale"], additionalProperties: false },
       },
       {
         name: "get_contract",
@@ -693,12 +697,15 @@ describe("the MCP stdio server", () => {
     expect(call(3, "propose_hold", { ref: filed.id, reason: "AKIAABCDEFGHIJKLMNOP" }).body).toContain("plain text");
     expect(call(4, "propose_hold", { ref: filed.id, reason: "later" }).isError).toBe(false);
     // Compound argument shapes are validated at the protocol layer (v3 review, finding 8).
+    // The InvalidParams message names each path, read by the schema tools/list advertised.
     h.send({ jsonrpc: "2.0", id: 40, method: "tools/call", params: { _meta: modernMeta, name: "propose_reserve", arguments: { ref: filed.id, worker: 7 } } });
-    expect(h.last()["error"]).toMatchObject({ code: -32602 });
+    expect(h.last()["error"]).toMatchObject({ code: -32602, message: "worker: must be a string (got a number)" });
     h.send({ jsonrpc: "2.0", id: 41, method: "tools/call", params: { _meta: modernMeta, name: "propose_scope", arguments: { ref: filed.id, goal: "g", touches: { a: 1 } } } });
-    expect(h.last()["error"]).toMatchObject({ code: -32602 });
+    expect(h.last()["error"]).toMatchObject({ code: -32602, message: "touches: must be an array (got an object)" });
     h.send({ jsonrpc: "2.0", id: 42, method: "tools/call", params: { _meta: modernMeta, name: "propose_scope", arguments: { ref: filed.id, goal: "g", touches: ["src/a.ts", 3] } } });
-    expect(h.last()["error"]).toMatchObject({ code: -32602 });
+    expect(h.last()["error"]).toMatchObject({ code: -32602, message: "touches[1]: must be a string (got a number)" });
+    h.send({ jsonrpc: "2.0", id: 43, method: "tools/call", params: { _meta: modernMeta, name: "propose_hold", arguments: { ref: filed.id, resaon: "x" } } });
+    expect(h.last()["error"]).toMatchObject({ code: -32602, message: "reason: required; payload: unknown key 'resaon' (did you mean reason?)" });
     // An answer needs get_decision on THIS connection first.
     const run = store.startRun({ taskRef: store.refFor("built-in", filed.id).id, leaseId: "l-2", runner: "runner-1", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: T0 });
     store.saveDecision({ run, urgency: "blocking", recap: "RECAP", question: "Q?", options: [{ id: "a", label: "A", consequence: "ca", reversible: true }], recommendation: "a" }, T0);
@@ -715,6 +722,35 @@ describe("the MCP stdio server", () => {
     expect(store.listCoordinatorProposals({ repos: [REPO] })).toEqual([]);
     expect(store.getCoordinatorProposal(1)?.state).toBe("expired");
     expect(call(5, "propose_next", { ref: second.id }).body).toContain("no longer stands");
+  });
+});
+
+describe("assignment arguments: the CLI and the gateway read them with one schema", () => {
+  test("the same malformed call is the same path-named lines — a usage failure in the CLI, InvalidParams on the gateway", () => {
+    const store = openStore(":memory:");
+    try {
+      const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+      if (!made.ok) throw new Error("mint failed");
+      const cli = (positional: string[], flags: [string, string][]) => {
+        const lines: string[] = [];
+        const code = runAssignmentCommand(positional, new Map(flags), { store, write: line => lines.push(line), json: false, now: T0 });
+        return { code, text: lines.join("\n") };
+      };
+      const h = harness(store, made.token);
+      const gateway = (name: string, args: Record<string, unknown>) => {
+        h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { _meta: modernMeta, name, arguments: args } });
+        return h.last()["error"] as { code: number; message: string };
+      };
+      const digest = "must be the exact 64-character receipt digest from assignment show";
+      expect(cli(["check", "t-1"], [["digest", "abc"]])).toEqual({ code: 2, text: `digest: at least 64; digest: ${digest}` });
+      expect(gateway("acknowledge_assignment", { ref: "t-1", digest: "abc" })).toEqual({ code: -32602, message: `digest: at least 64; digest: ${digest}` });
+      expect(cli(["updates"], [["limit", "500"]])).toEqual({ code: 2, text: "limit: at most 100" });
+      expect(gateway("list_assignment_updates", { limit: 500 })).toEqual({ code: -32602, message: "limit: at most 100" });
+      expect(cli(["inbox"], [["consumer", "Planner Bot"]]).text).toBe("consumer: must be a stable consumer name: lowercase letters, digits and hyphens");
+      expect(gateway("get_assignment_inbox", { consumer: "Planner Bot" }).message).toBe("consumer: must be a stable consumer name: lowercase letters, digits and hyphens");
+      // What JSON Schema can't say is checked after parsing, by path, on both roads.
+      expect(cli(["show", "t\u0007"], []).text).toBe("ref: must not contain control characters");
+    } finally { store.close(); }
   });
 });
 

@@ -59,6 +59,9 @@ import { starterFlowOf, starterOf, startersFor, starterTerms, STARTER_FLOWS, swi
 import { answerTeammateQuestion } from "./teammate-work.js";
 import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleWords, setToolRules } from "./teammate-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
+import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
+
+export { CHAT_ACTION_FIELDS, type SharedAction };
 
 /** A tool from the lead's card: a common tool by its id, or the operator's own program or address. */
 function toolSpecFromRequest(input: Record<string, unknown>): ToolSpec {
@@ -144,6 +147,9 @@ export const CHAT_ACTIONS = {
   task_resume: { label: "Resume task", protected: true, password: true },
 } as const;
 export type ChatAction = keyof typeof CHAT_ACTIONS;
+// Every action has a schema (contracts/chat-actions.ts) and every schema an action: a mismatch fails to compile.
+const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperation, ChatAction] ? true : never = true;
+void SAME_ACTIONS;
 /** Protected actions a paired phone may confirm behind its own explicit
  * yes/cancel challenge instead of the console's secure screen. Password
  * actions and long or redacted terms never qualify. */
@@ -153,64 +159,8 @@ export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead
 export function isChatAction(value: unknown): value is ChatAction {
   return typeof value === "string" && Object.hasOwn(CHAT_ACTIONS, value);
 }
-export type SharedAction = {
-  operation: ChatAction;
-  request: Record<string, unknown>;
-  repo: string;
-  title: string;
-  terms: string[];
-  stamp: string;
-  state: Record<string, unknown>;
-};
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export const CHAT_ACTION_FIELDS: Record<ChatAction, readonly string[]> = {
-  skill_import: ["repo", "content", "files"],
-  skill_enable: ["repo", "version"],
-  skill_disable: ["repo", "version"],
-  skill_restore: ["repo", "restore"],
-  skill_test: ["repo", "version", "sample", "nonce"],
-  knowledge_instructions: ["repo", "instructions"],
-  knowledge_save: ["repo", "title", "content", "id"],
-  knowledge_remove: ["repo", "id"],
-  knowledge_restore: ["repo", "restore"],
-  tool_add: ["repo", "catalog", "name", "command", "args", "url", "secrets", "about"],
-  tool_remove: ["repo", "name"],
-  flow_create: ["repo", "name", "definition", "trigger"],
-  flow_starter: ["repo", "starter"],
-  flow_edit: ["flow", "name", "definition"],
-  flow_card_add: ["flow", "title", "description", "zone"],
-  flow_card_move: ["card", "zone"],
-  flow_card_approve: ["card", "note"],
-  flow_card_send_back: ["card", "note"],
-  flow_card_choose: ["card", "choice", "note"],
-  flow_card_cancel: ["card"],
-  flow_card_comment: ["card", "note"],
-  flow_card_assign: ["card", "owner"],
-  flow_card_watch: ["card", "watching"],
-  flow_script_save: ["repo", "script"],
-  flow_trigger_add: ["flow", "trigger"],
-  flow_trigger_pause: ["trigger"],
-  flow_trigger_resume: ["trigger"],
-  flow_trigger_remove: ["trigger"],
-  teammate_create: ["repo", "template", "name", "soul"],
-  teammate_soul: ["teammate", "soul"],
-  teammate_state: ["teammate", "state"],
-  teammate_note: ["teammate", "note"],
-  teammate_answer: ["question", "choice", "text"],
-  teammate_tools: ["teammate", "tool", "change", "action", "use", "limitField", "limitOver", "undoWith"],
-  teammate_memory: ["teammate", "memory", "change", "text"],
-  teammate_routine: ["teammate", "change", "routine", "schedule", "text"],
-  teammate_undo: ["teammate", "call"],
-  kit_setup: ["repo", "kit"],
-  decision_record: ["repo", "claim", "why", "supersedes", "source"],
-  decision_retire: ["repo", "decision", "reason"],
-  lead_about_you: ["line", "replaces"],
-  scope_approve: ["task"],
-  result_accept: ["task", "run"],
-  task_cancel: ["task"],
-  task_resume: ["task", "run"],
-};
 const nonceHash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 function requireActor(store: Store, who: VerifiedApprover, repo: string, operation?: ChatAction) {
@@ -332,9 +282,10 @@ export function prepareSharedAction(
   now = new Date(),
 ): SharedAction {
   if (!isChatAction(operation)) throw Error("Choose an available action.");
-  const allowed = CHAT_ACTION_FIELDS[operation];
-  if (Object.keys(input).some((key) => !allowed.includes(key)))
-    throw Error("This action contains an unsupported field.");
+  // The action's own schema: its fields and their kinds, refused by path. The request itself is used as given, so a
+  // confirmation rebuilds the same stamp from the same bytes.
+  const read = readChatActionRequest(operation, input);
+  if (!read.ok) throw Error(`This action can't be read — ${read.issues.map(issue => issue.line).join("; ")}.`);
   if (operation === "lead_about_you") {
     // The owner's own note: the card shows the line, and the line it replaces beside it.
     const checked = checkAboutYouLine(input["line"]);
@@ -353,7 +304,7 @@ export function prepareSharedAction(
     const state = replaces === 0 ? {} : { was: lines[replaces - 1] };
     const title = replaces === 0 ? "Remember about you" : "Update what your lead knows about you";
     const stamp = hash({ operation, request, repo: "", state, terms, actor: who.name, generation: who.generation, ceiling: who.ceilingDigest });
-    return { operation, request, repo: "", title, terms, stamp, state };
+    return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
     operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("teammate_") || operation.startsWith("kit_")
@@ -974,24 +925,12 @@ export function prepareSharedAction(
     generation: who.generation,
     ceiling: who.ceilingDigest,
   });
-  return { operation, request, repo, title, terms, stamp, state };
+  return { version: SHARED_ACTION_VERSION, operation, request, repo, title, terms, stamp, state };
 }
-export function sharedActionPayload(
-  value: Record<string, unknown>,
-): SharedAction | null {
-  return isChatAction(value["operation"]) &&
-    typeof value["stamp"] === "string" &&
-    typeof value["repo"] === "string" &&
-    typeof value["title"] === "string" &&
-    Array.isArray(value["terms"]) &&
-    value["terms"].every((t) => typeof t === "string") &&
-    value["request"] !== null &&
-    typeof value["request"] === "object" &&
-    !Array.isArray(value["request"]) &&
-    value["state"] !== null &&
-    typeof value["state"] === "object"
-    ? (value as unknown as SharedAction)
-    : null;
+/** A saved proposal's action, read by its schema (contracts/chat-actions.ts); null when it can't be read. */
+export function sharedActionPayload(value: unknown): SharedAction | null {
+  const read = readSharedAction(value);
+  return read.ok ? read.value : null;
 }
 /** A shortened or redacted preview is not complete consent. This rule lives
  * in the shared door, so a forged transport callback cannot bypass it. */

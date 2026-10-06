@@ -1,0 +1,58 @@
+{
+ "about": "Saved proposal payloads (mate_proposal.payload, kind action) as 0.9.36 prepareSharedAction returned them: no version.",
+ "samples": [
+  {
+   "name": "knowledge_save",
+   "payload": {"operation": "knowledge_save", "request": {"repo": "/work/sample-app", "title": "Release notes", "content": "Keep each entry to one line, newest first."}, "repo": "/work/sample-app", "title": "Save reference", "terms": ["Reference: Release notes\nKeep each entry to one line, newest first.", "Changes project knowledge for future runs. Existing runs retain their saved context."], "stamp": "3f1c2a9e0b7d4c6e8a1f2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70", "state": {"identity": "9d2e4f6a8b0c1d3e", "revision": 2, "knowledge": {"instructions": "", "references": []}}}
+  },
+  {
+   "name": "skill_import with files",
+   "payload": {"operation": "skill_import", "request": {"repo": "/work/sample-app", "files": [{"path": "SKILL.md", "base64": "LS0tCm5hbWU6IHJlbGVhc2Utbm90ZXMKLS0tCldyaXRlIHNob3J0IG5vdGVzLgo="}]}, "repo": "/work/sample-app", "title": "Add release-notes", "terms": ["Adds this version to your library. It will not be enabled automatically.", "SKILL.md\n---\nname: release-notes\n---\nWrite short notes.\n"], "stamp": "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeff", "state": {"identity": "9d2e4f6a8b0c1d3e", "revision": 0, "selection": {}, "library": []}}
+  },
+  {
+   "name": "tool_add rewritten to what was checked",
+   "payload": {"operation": "tool_add", "request": {"repo": "/work/sample-app", "name": "shop", "url": "https://shop.example/mcp", "secrets": ["SHOP_TOKEN"], "about": "Looks up orders."}, "repo": "/work/sample-app", "title": "Add shop to sample-app", "terms": ["Looks up orders.", "Starts: https://shop.example/mcp", "It runs on this computer with the same access as your builds. Work you approve from now on can use it; tasks approved earlier need approving again to use it.", "Needs SHOP_TOKEN. Set it on the Tools page after adding, never in chat."], "stamp": "0f0e0d0c0b0a09080706050403020100f0e0d0c0b0a090807060504030201000", "state": {"tools": []}}
+  },
+  {
+   "name": "flow_card_choose by option, bound to its label and target",
+   "payload": {"operation": "flow_card_choose", "request": {"card": 12, "choice": 2}, "repo": "/work/sample-app", "title": "Choose “Ship it” for “Footer year”", "terms": ["Pick a path: “Ship it”. It moves to Build."], "stamp": "1111111111111111111111111111111111111111111111111111111111111111", "state": {"card": 12, "entry": 3, "stage": "pick", "label": "Ship it", "to": "build"}}
+  },
+  {
+   "name": "flow_card_assign to nobody",
+   "payload": {"operation": "flow_card_assign", "request": {"card": 7, "owner": null}, "repo": "/work/sample-app", "title": "Leave “Footer year” without an owner", "terms": ["No one owns it; its followers still hear about it."], "stamp": "2222222222222222222222222222222222222222222222222222222222222222", "state": {"card": 7, "entry": 1, "stage": "build", "owner": "alex"}}
+  },
+  {
+   "name": "flow_create with a drawing and a trigger",
+   "payload": {"operation": "flow_create", "request": {"repo": "/work/sample-app", "name": "Footer fixes", "definition": {"version": 1, "start": "inbox", "stages": [{"id": "inbox", "title": "Inbox", "kind": "inbox", "zone": {"x": 0, "y": 0, "w": 260, "h": 300, "color": "slate"}, "instructions": null, "planning": null, "approver": null, "message": null, "next": "done", "onFail": null}, {"id": "done", "title": "Done", "kind": "done", "zone": {"x": 300, "y": 0, "w": 260, "h": 300, "color": "green"}, "instructions": null, "planning": null, "approver": null, "message": null, "next": null, "onFail": null}]}, "trigger": {"kind": "schedule", "schedule": "daily 09:00", "title": "Morning check", "zone": null}}, "repo": "/work/sample-app", "title": "Create the Footer fixes flow in sample-app", "terms": ["Inbox → Done"], "stamp": "3333333333333333333333333333333333333333333333333333333333333333", "state": {}}
+  },
+  {
+   "name": "teammate_answer in words",
+   "payload": {"operation": "teammate_answer", "request": {"question": 4, "choice": null, "text": "Refund it and say sorry."}, "repo": "/work/sample-app", "title": "Answer Maya", "terms": ["Refund order 1043?", "Your answer: Refund it and say sorry."], "stamp": "4444444444444444444444444444444444444444444444444444444444444444", "state": {"question": 4}}
+  },
+  {
+   "name": "teammate_tools rule with a limit",
+   "payload": {"operation": "teammate_tools", "request": {"teammate": 3, "tool": "shop", "change": "rule", "action": "refund_order", "use": "free", "limitField": "amount", "limitOver": 100}, "repo": "/work/sample-app", "title": "Maya: refund_order — does it up to amount 100", "terms": ["shop → refund_order: does it up to amount 100.", "Was: asks you first."], "stamp": "5555555555555555555555555555555555555555555555555555555555555555", "state": {"rules": "{\"refund_order\":{\"use\":\"ask\"}}"}}
+  },
+  {
+   "name": "decision_record replacing an older one",
+   "payload": {"operation": "decision_record", "request": {"repo": "/work/sample-app", "claim": "Dates are shown in UTC.", "why": "Support reads them across time zones.", "supersedes": 9}, "repo": "/work/sample-app", "title": "Record decision", "terms": ["Decision: Dates are shown in UTC.", "Why: Support reads them across time zones.", "Replaces decision 9: Dates are local.", "Records a settled choice with its reason for everyone on this project. It is context, never an instruction or a permission."], "stamp": "6666666666666666666666666666666666666666666666666666666666666666", "state": {"newest": 11, "active": 4, "supersedes": 9}}
+  },
+  {
+   "name": "lead_about_you replacing a line",
+   "payload": {"operation": "lead_about_you", "request": {"line": "Prefers short replies.", "replaces": 2}, "repo": "", "title": "Update what your lead knows about you", "terms": ["Was: Likes detail.", "Now: Prefers short replies.", "Replaces that line in what your lead knows about you. Change it in Settings → Lead."], "stamp": "7777777777777777777777777777777777777777777777777777777777777777", "state": {"was": "Likes detail."}}
+  },
+  {
+   "name": "result_accept with its receipt",
+   "payload": {"operation": "result_accept", "request": {"task": "fix-footer", "run": 41}, "repo": "/work/sample-app", "title": "Accept and finish: Fix the footer year", "terms": ["Result #41 · commit 0123456789ab", "Marks this exact result complete: you handled it. Recorded checks stay unchanged, and publication or deployment is separate.", "Checks: passed"], "stamp": "8888888888888888888888888888888888888888888888888888888888888888", "state": {"task": "fix-footer", "updatedAt": "2026-10-01T09:00:00.000Z", "taskState": "done", "scope": null, "latest": 41, "run": {"id": 41, "head": "0123456789abcdef0123456789abcdef01234567"}, "receipt": "9999999999999999999999999999999999999999999999999999999999999999"}}
+  },
+  {
+   "name": "task_resume",
+   "payload": {"operation": "task_resume", "request": {"task": "fix-footer", "run": 40}, "repo": "/work/sample-app", "title": "Resume task: Fix the footer year", "terms": ["Resume saved work from attempt #40. Only this stop's hold is released. Other holds and approval requirements still apply."], "stamp": "aaaa000000000000000000000000000000000000000000000000000000000000", "state": {"task": "fix-footer", "updatedAt": "2026-10-01T09:00:00.000Z", "taskState": "running", "scope": null, "latest": 40, "stop": null}}
+  },
+  {
+   "name": "an older writer's extra field, which readers never read",
+   "payload": {"operation": "task_cancel", "request": {"task": "fix-footer"}, "repo": "/work/sample-app", "title": "Cancel task: Fix the footer year", "terms": ["Cancel this task. It will no longer be scheduled. Existing work and evidence are preserved."], "stamp": "bbbb000000000000000000000000000000000000000000000000000000000000", "state": {"task": "fix-footer", "updatedAt": "2026-10-01T09:00:00.000Z", "taskState": "queued", "scope": null, "latest": null}, "label": "Cancel task"},
+   "reads": {"version": 1, "operation": "task_cancel", "request": {"task": "fix-footer"}, "repo": "/work/sample-app", "title": "Cancel task: Fix the footer year", "terms": ["Cancel this task. It will no longer be scheduled. Existing work and evidence are preserved."], "stamp": "bbbb000000000000000000000000000000000000000000000000000000000000", "state": {"task": "fix-footer", "updatedAt": "2026-10-01T09:00:00.000Z", "taskState": "queued", "scope": null, "latest": null}}
+  }
+ ]
+}

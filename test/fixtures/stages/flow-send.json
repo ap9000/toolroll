@@ -1,0 +1,209 @@
+{
+ "about": "Kept sends (flow_send.content_json, unversioned before 0.9.37) replayed by src/contracts/flow-send.test.ts. `reads` is what the 0.9.36 readFlowSend returned for `raw` (null: unreadable, the visit is worked out again). The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (macOS refused even read-only access), so no row here is copied from it; each sample names the writer whose shape it records, with made-up, public-safe words.",
+ "samples": [
+  {
+   "name": "a build's result, with its pull request and screenshots",
+   "source": "flow-send.ts flowSendContent (send after a build)",
+   "raw": "{\"title\":\"Fix the total · Build\",\"from\":\"Build\",\"summary\":\"Totals now round half-up, with a regression test.\",\"links\":[{\"label\":\"Result\",\"path\":\"/t/fix-total\"},{\"label\":\"Pull request\",\"url\":\"https://github.com/example/shop/pull/12\"},{\"label\":\"Card\",\"path\":\"/flows/1?card=2\"}],\"shots\":{\"taskId\":\"fix-total\",\"run\":3}}",
+   "reads": {
+    "title": "Fix the total · Build",
+    "from": "Build",
+    "summary": "Totals now round half-up, with a regression test.",
+    "links": [
+     {
+      "label": "Result",
+      "path": "/t/fix-total"
+     },
+     {
+      "label": "Pull request",
+      "url": "https://github.com/example/shop/pull/12"
+     },
+     {
+      "label": "Card",
+      "path": "/flows/1?card=2"
+     }
+    ],
+    "shots": {
+     "taskId": "fix-total",
+     "run": 3
+    }
+   }
+  },
+  {
+   "name": "a choice, with a reply taken",
+   "source": "flow-send.ts flowSendContent (choose)",
+   "raw": "{\"title\":\"Fix the total · Build\",\"from\":\"Build\",\"summary\":\"Totals now round half-up.\",\"links\":[{\"label\":\"Result\",\"path\":\"/t/fix-total\"},{\"label\":\"Card\",\"path\":\"/flows/1?card=2\"}],\"shots\":null,\"options\":[{\"choice\":0,\"label\":\"Ship it\"},{\"choice\":1,\"label\":\"Ignore\"}],\"reply\":true}",
+   "reads": {
+    "title": "Fix the total · Build",
+    "from": "Build",
+    "summary": "Totals now round half-up.",
+    "links": [
+     {
+      "label": "Result",
+      "path": "/t/fix-total"
+     },
+     {
+      "label": "Card",
+      "path": "/flows/1?card=2"
+     }
+    ],
+    "shots": null,
+    "options": [
+     {
+      "choice": 0,
+      "label": "Ship it"
+     },
+     {
+      "choice": 1,
+      "label": "Ignore"
+     }
+    ],
+    "reply": true
+   }
+  },
+  {
+   "name": "a choice without a reply path",
+   "source": "flow-send.ts flowSendContent (choose, no reply target)",
+   "raw": "{\"title\":\"New lead\",\"summary\":\"Nothing was written down for this step.\",\"links\":[{\"label\":\"Card\",\"path\":\"/flows/3?card=9\"}],\"shots\":null,\"options\":[{\"choice\":0,\"label\":\"Call them\"},{\"choice\":1,\"label\":\"Not now\"}],\"reply\":false}",
+   "reads": {
+    "title": "New lead",
+    "summary": "Nothing was written down for this step.",
+    "links": [
+     {
+      "label": "Card",
+      "path": "/flows/3?card=9"
+     }
+    ],
+    "shots": null,
+    "options": [
+     {
+      "choice": 0,
+      "label": "Call them"
+     },
+     {
+      "choice": 1,
+      "label": "Not now"
+     }
+    ],
+    "reply": false
+   }
+  },
+  {
+   "name": "research, with its items",
+   "source": "flow-send.ts flowSendContent (send after research)",
+   "raw": "{\"title\":\"Onboarding ideas · Research\",\"from\":\"Research\",\"summary\":\"Three onboarding patterns stand out.\",\"links\":[{\"label\":\"Report\",\"path\":\"/t/research-1\"},{\"label\":\"Card\",\"path\":\"/flows/1?card=4\"}],\"shots\":{\"taskId\":\"research-1\",\"run\":7},\"items\":[{\"title\":\"Pattern 1\",\"why\":\"Pattern 1; fits our setup page; plugs in beside the form\",\"url\":\"https://example.com/patterns/1\",\"source\":\"Example\",\"plug\":\"Plugs in beside the form\",\"shot\":41},{\"title\":\"Pattern 2\",\"why\":\"Pattern 2; fits our setup page; plugs in beside the form\",\"url\":\"https://example.com/patterns/2\",\"source\":\"Example\",\"plug\":\"Plugs in beside the form\",\"shot\":null}]}",
+   "reads": {
+    "title": "Onboarding ideas · Research",
+    "from": "Research",
+    "summary": "Three onboarding patterns stand out.",
+    "links": [
+     {
+      "label": "Report",
+      "path": "/t/research-1"
+     },
+     {
+      "label": "Card",
+      "path": "/flows/1?card=4"
+     }
+    ],
+    "shots": {
+     "taskId": "research-1",
+     "run": 7
+    },
+    "items": [
+     {
+      "title": "Pattern 1",
+      "why": "Pattern 1; fits our setup page; plugs in beside the form",
+      "url": "https://example.com/patterns/1",
+      "source": "Example",
+      "plug": "Plugs in beside the form",
+      "shot": 41
+     },
+     {
+      "title": "Pattern 2",
+      "why": "Pattern 2; fits our setup page; plugs in beside the form",
+      "url": "https://example.com/patterns/2",
+      "source": "Example",
+      "plug": "Plugs in beside the form",
+      "shot": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "research, one item unreadable",
+   "source": "flow-send.ts readFlowSend (items filtered)",
+   "raw": "{\"title\":\"Onboarding ideas · Research\",\"from\":\"Research\",\"summary\":\"Two patterns.\",\"links\":[{\"label\":\"Card\",\"path\":\"/flows/1?card=4\"}],\"shots\":null,\"items\":[{\"title\":\"Pattern 1\",\"why\":\"Pattern 1; fits our setup page; plugs in beside the form\",\"url\":\"https://example.com/patterns/1\",\"source\":\"Example\",\"plug\":\"Plugs in beside the form\",\"shot\":41},{\"title\":\"Pattern 2\",\"why\":\"Pattern 2; fits our setup page; plugs in beside the form\",\"url\":\"ftp://example.com/x\",\"source\":\"Example\",\"plug\":\"Plugs in beside the form\",\"shot\":null},{\"title\":\"Pattern 3\",\"why\":\"Pattern 3; fits our setup page; plugs in beside the form\",\"url\":\"https://example.com/patterns/3\",\"source\":\"Example\",\"plug\":\"Plugs in beside the form\",\"shot\":2.5},\"not an item\"]}",
+   "reads": {
+    "title": "Onboarding ideas · Research",
+    "from": "Research",
+    "summary": "Two patterns.",
+    "links": [
+     {
+      "label": "Card",
+      "path": "/flows/1?card=4"
+     }
+    ],
+    "shots": null,
+    "items": [
+     {
+      "title": "Pattern 1",
+      "why": "Pattern 1; fits our setup page; plugs in beside the form",
+      "url": "https://example.com/patterns/1",
+      "source": "Example",
+      "plug": "Plugs in beside the form",
+      "shot": 41
+     },
+     {
+      "title": "Pattern 3",
+      "why": "Pattern 3; fits our setup page; plugs in beside the form",
+      "url": "https://example.com/patterns/3",
+      "source": "Example",
+      "plug": "Plugs in beside the form",
+      "shot": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "research, no item readable",
+   "source": "flow-send.ts readFlowSend (items dropped)",
+   "raw": "{\"title\":\"Onboarding ideas · Research\",\"summary\":\"Nothing usable.\",\"links\":[{\"label\":\"Card\",\"path\":\"/flows/1?card=4\"}],\"shots\":null,\"items\":[{\"title\":\"No link\"}]}",
+   "reads": {
+    "title": "Onboarding ideas · Research",
+    "summary": "Nothing usable.",
+    "links": [
+     {
+      "label": "Card",
+      "path": "/flows/1?card=4"
+     }
+    ],
+    "shots": null
+   }
+  },
+  {
+   "name": "no title",
+   "source": "damaged row",
+   "raw": "{\"summary\":\"x\",\"links\":[],\"shots\":null}",
+   "reads": null
+  },
+  {
+   "name": "links not a list",
+   "source": "damaged row",
+   "raw": "{\"title\":\"t\",\"summary\":\"x\",\"links\":\"none\",\"shots\":null}",
+   "reads": null
+  },
+  {
+   "name": "a number",
+   "source": "damaged row",
+   "raw": "42",
+   "reads": null
+  },
+  {
+   "name": "not JSON",
+   "source": "damaged row",
+   "raw": "{oops",
+   "reads": null
+  }
+ ]
+}

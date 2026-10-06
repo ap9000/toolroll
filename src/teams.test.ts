@@ -69,6 +69,23 @@ describe("Teams shared chat", () => {
     state.setMeta(credentials.installation, `serviceUrl:${conversation}`, SERVICE, now);
     return state.pair(credentials, chatHash(code), member, conversation, now);
   };
+  test.each([
+    ['{"text":42}', "text:"], ["not JSON", "payload:"], ['{"version":2,"text":"Later version"}', "version:"],
+  ])("an unreadable saved part stops retrying and keeps its problem: %s", async (payload, path) => {
+    const binding = pairAs("alex", ALEX, DM_ALEX)!;
+    state.enqueue({ id: "bad-part", installation: credentials.installation, binding: binding.id, kind: "notice", channel: DM_ALEX, member: ALEX, ts: "", thread: "", payload: {}, created: now.toISOString() });
+    state.plan("bad-part", [{ text: "Saved reply" }], now);
+    state.prepare("UPDATE chat_part SET payload=? WHERE event='bad-part'").run(payload);
+    expect(await deliverTeamsPart(options)).toBe(true);
+    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get();
+    expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
+    expect(sends()).toEqual([]);
+    now = new Date(now.getTime() + 60_000);
+    state.lease(credentials.installation, "test", now);
+    expect(await deliverTeamsPart(options)).toBe(false);
+    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get()).toEqual(row);
+  });
+
   /** A pending card on alex's own Teams thread, planned as a part, without a model turn. */
   function draft(payload: Record<string, unknown>) {
     const binding = state.bindingFor(credentials.installation, ALEX)!;
@@ -176,11 +193,20 @@ describe("Teams shared chat", () => {
     const confirm = lastActions().find(action => action.title === "Confirm")!;
     const cardId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.proposal')=?").get(proposal)?.message);
     const tap = (data: Record<string, unknown>) => receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: data });
-    expect(tap((confirm as { data: Record<string, unknown> }).data)).toBe(true);
+    // A button whose data Toolroll didn't make is answered with why; a stale one says so; neither does anything.
+    expect(tap({ so: "not-a-token" })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toBe("That button couldn't be read (value.so: must be a Toolroll button token). Nothing was done.");
+    expect(tap({ so: "0".repeat(32) })).toBe(true);
+    await processTeamsEvent(options); await drain();
+    expect(lastText()).toContain("That button expired or was already used.");
+    expect(store.getMateProposal(proposal)?.state).toBe("pending");
+    // Adaptive Cards may submit other fields with the token; the old reader used only value.so.
+    expect(tap({ ...(confirm as { data: Record<string, unknown> }).data, extra: 1 })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("This records that you handled this exact result. Confirm?");
     const yes = lastActions().find(action => action.title === "Yes, accept and finish")!;
-    expect(tap((yes as { data: Record<string, unknown> }).data)).toBe(true);
+    expect(tap({ ...(yes as { data: Record<string, unknown> }).data, extra: null })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("Accepted and finished.");
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });

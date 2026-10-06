@@ -14,12 +14,13 @@ import { limitRule, TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
  * A string bounded by its TEXT_LIMITS entry, never a literal. The limit rule rides along as the field's description,
  * so a model reads the bound before it writes. Zod counts UTF-16 code units; for a limit named in bytes this is the
  * schema's necessary bound (a string within N bytes is within N code units), and the byte count itself is checked in
- * plain code after parsing.
+ * plain code after parsing. `shorten: false` is for a contract with no shorten turn (a parked decision): its
+ * description states the bound without promising one.
  */
-export function limited(field: string, limitKey: TextLimitKey): z.ZodString {
+export function limited(field: string, limitKey: TextLimitKey, options: { shorten?: boolean } = {}): z.ZodString {
   const limit = TEXT_LIMITS[limitKey];
   const unit = limitKey.endsWith("Bytes") ? "bytes" : "characters";
-  return z.string().max(limit, { error: `over ${limit.toLocaleString("en-US")} ${unit}` }).describe(limitRule(field, limit, unit));
+  return z.string().max(limit, { error: `over ${limit.toLocaleString("en-US")} ${unit}` }).describe(limitRule(field, limit, unit, options.shorten ?? true));
 }
 
 /** A versioned payload envelope: a strict object whose `version` is exactly `version`. */
@@ -57,18 +58,27 @@ function got(input: unknown): string {
  * `ifFails`, `to` for `goesTo`), tried in order against the keys allowed at that place. Without one that fits, a key
  * spelled close to an allowed one (a case or a letter or two off) is suggested.
  */
-export type ContractOptions = { aliases?: Readonly<Record<string, readonly string[]>> };
+export type ContractOptions = {
+  aliases?: Readonly<Record<string, readonly string[]>>;
+  /** Report explicit null as a wrong value; omitted keeps the historical wording for existing contracts. */
+  distinguishNull?: boolean;
+};
 
 type Node = { _zod: { def: Def } };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The keys an object schema allows at `path` in `input`, following arrays, wrappers and (by its discriminator) a union. */
-function keysAt(schema: Node, input: unknown, path: readonly PropertyKey[]): string[] | null {
+/** The schema at `path`, including whether that value may be omitted, following arrays, wrappers and unions. */
+function nodeAt(schema: Node, input: unknown, path: readonly PropertyKey[]): { def: Def; optional: boolean } | null {
   let node: Node | undefined = schema, value = input;
+  let optional = false;
   for (let at = 0; node !== undefined; ) {
     const def: Def = node._zod.def;
-    if (def.type === "optional" || def.type === "nullable" || def.type === "readonly") { node = def["innerType"] as Node; continue; }
+    if (def.type === "optional" || def.type === "nullable" || def.type === "readonly") {
+      if (def.type === "optional") optional = true;
+      node = def["innerType"] as Node;
+      continue;
+    }
     if (def.type === "lazy") { node = (def["getter"] as () => Node)(); continue; }
     if (def.type === "union") {
       const options = def["options"] as Node[];
@@ -83,8 +93,9 @@ function keysAt(schema: Node, input: unknown, path: readonly PropertyKey[]): str
       });
       continue;
     }
-    if (at === path.length) return def.type === "object" ? Object.keys(def["shape"] as Record<string, unknown>) : null;
+    if (at === path.length) return { def, optional };
     const part = path[at++];
+    optional = false;
     if (def.type === "array" && typeof part === "number") { node = def["element"] as Node; value = Array.isArray(value) ? value[part] : undefined; continue; }
     if (def.type === "object" && typeof part === "string") {
       const shape = def["shape"] as Record<string, Node>;
@@ -131,7 +142,8 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
   const one = (kind: ContractIssue["kind"], what: string): ContractIssue => ({ path: at, kind, line: `${at}: ${what}` });
   switch (issue.code) {
     case "unrecognized_keys": {
-      const known = where.schema === undefined ? null : keysAt(where.schema as unknown as Node, where.input, issue.path);
+      const def = where.schema === undefined ? undefined : nodeAt(where.schema as unknown as Node, where.input, issue.path)?.def;
+      const known = def?.type === "object" ? Object.keys(def["shape"] as Record<string, unknown>) : null;
       return issue.keys.map(key => {
         const meant = suggestion(key, known, where.options ?? {});
         return { path: at, kind: "unknown-key" as const, line: `${at}: unknown key '${key}'${meant === null ? "" : ` (did you mean ${meant}?)`}` };
@@ -139,9 +151,11 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
     }
     case "invalid_type": {
       const missing = "input" in issue ? issue.input === undefined : / received undefined$/.test(issue.message);
-      // A null where a value belongs is a value left out.
-      if (missing || ("input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
-      const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
+      // Keep required-null wording for required fields; an optional field given null has the wrong type, and so does
+      // any null when the caller distinguishes null from missing.
+      const optional = where.schema !== undefined && nodeAt(where.schema as unknown as Node, where.input, issue.path)?.optional === true;
+      if (missing || (!optional && !where.options?.distinguishNull && "input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
+      const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "int" ? "an integer" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
       return [one("wrong-type", `must be ${expected}${"input" in issue ? ` (got ${got(issue.input)})` : ""}`)];
     }
     case "too_big":
@@ -161,8 +175,9 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
       if (typeof by === "string" && Array.isArray(options)) {
         const given = "input" in issue && isRecord(issue.input) ? issue.input[by] : undefined;
         const path = at === "payload" || issue.path.at(-1) === by ? at : `${at}.${by}`;
-        const line = given === undefined || given === null ? "required" : `must be one of ${options.map(value => JSON.stringify(value)).join(", ")}`;
-        return [{ path, kind: given === undefined || given === null ? "required" : "bad-value", line: `${path}: ${line}` }];
+        const missing = given === undefined || (given === null && !where.options?.distinguishNull);
+        const line = missing ? "required" : `must be one of ${options.map(value => JSON.stringify(value)).join(", ")}`;
+        return [{ path, kind: missing ? "required" : "bad-value", line: `${path}: ${line}` }];
       }
       return [one("invalid", "does not match any allowed shape")];
     }

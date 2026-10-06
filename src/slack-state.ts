@@ -1,5 +1,6 @@
 /** Slack compatibility names for the shared durable transport state. */
-import { ChatState, chatSchema, chatTables } from "./chat-delivery-state.js";
+import { ChatState } from "./chat-delivery-state.js";
+import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import type { Store } from "./store.js";
 export { chatHash as slackHash } from "./chat-delivery-state.js";
 export type {

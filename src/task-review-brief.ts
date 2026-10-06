@@ -4,7 +4,8 @@ import { assignmentChecksForRun, assignmentOf, type AssignmentAccess } from './a
 import { assignmentPresentationOf } from './assignment-presentation.js';
 import { readVerifiedArtifact, readVerifiedProofForRun, reportShotsOf, scanForSecrets } from './evidence.js';
 import { SCREENSHOT_CAPTURE, structuredHandoffView, terminalDiffView } from './result-evidence-readers.js';
-import { buildReviewOf, type FindingSeverity } from './review-switch.js';
+import { FINDING_SEVERITIES, type BuildFinding as Finding, type FindingSeverity } from './contracts/review-findings.js';
+import { buildReviewOf } from './review-switch.js';
 import { parseReport } from './scout-report.js';
 import { sanitizeTranscriptLine } from './live.js';
 import { redactSecretAssignments } from './builder.js';
@@ -12,8 +13,6 @@ import { parseExecutionPlanDocument } from './plan.js';
 
 const MISSING = 'not recorded' as const;
 type Missing = typeof MISSING;
-const SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
-type Finding = { severity: FindingSeverity; file: string; line: number; scenario: string };
 export type ReviewBrief = {
   header: { task: string; run: number | Missing; provider: string; model: string; minutes: number | Missing; outcome: string; base: string; head: string; state: string };
   conclusion: string;
@@ -79,11 +78,11 @@ export function taskReviewBrief(store: Store, task: string, root: string, now: D
     ...Object.entries(progress?.suites ?? {}).filter(([, suite]) => suite.state === 'failed').map(([name, suite]) => `${name}: ${suite.failed} failed`),
   ])] : [];
   const review = run === null ? null : buildReviewOf(store, run.id);
-  const findings = review === null ? [] : [...review.high, ...review.followUps].filter(one => one && SEVERITIES.includes(one.severity));
-  const counts = Object.fromEntries(SEVERITIES.map(severity => [severity, findings.filter(one => one.severity === severity).length])) as Record<FindingSeverity, number>;
-  const shown = SEVERITIES.flatMap(severity => severity === 'LOW' && !options.all ? [] : findings.filter(one => one.severity === severity))
+  const findings = review === null ? [] : [...review.high, ...review.followUps].filter(one => one && FINDING_SEVERITIES.includes(one.severity));
+  const counts = Object.fromEntries(FINDING_SEVERITIES.map(severity => [severity, findings.filter(one => one.severity === severity).length])) as Record<FindingSeverity, number>;
+  const shown = FINDING_SEVERITIES.flatMap(severity => severity === 'LOW' && !options.all ? [] : findings.filter(one => one.severity === severity))
     .slice(0, 12).map(one => ({ severity: one.severity, file: safe(one.file), line: Number.isSafeInteger(one.line) ? one.line : 0, scenario: safe(one.scenario) }));
-  const omitted = Object.fromEntries(SEVERITIES.map(severity => [severity, counts[severity] - shown.filter(one => one.severity === severity).length])) as Record<FindingSeverity, number>;
+  const omitted = Object.fromEntries(FINDING_SEVERITIES.map(severity => [severity, counts[severity] - shown.filter(one => one.severity === severity).length])) as Record<FindingSeverity, number>;
 
   const proof = run === null ? null : readVerifiedProofForRun(store, root, run.id);
   const shots = artifacts.filter(one => one.kind === 'screenshot');
@@ -156,7 +155,7 @@ export function renderReviewBrief(brief: ReviewBrief): string[] {
   else {
     lines.push(`Automatic review: ${brief.review.state}${brief.review.reason === MISSING ? '' : ` · ${brief.review.reason}`}`);
     lines.push(...brief.review.findings.map(one => `  ${one.severity} ${one.file}:${one.line} — ${one.scenario}`));
-    for (const severity of SEVERITIES) if (brief.review.omitted[severity]) lines.push(`  ${severity}: ${brief.review.omitted[severity]} more (${brief.review.counts[severity]} total)`);
+    for (const severity of FINDING_SEVERITIES) if (brief.review.omitted[severity]) lines.push(`  ${severity}: ${brief.review.omitted[severity]} more (${brief.review.counts[severity]} total)`);
     if (Object.values(brief.review.counts).every(count => count === 0) && brief.review.state === 'reviewed') lines.push('  no findings');
   }
   lines.push('Screenshots:');

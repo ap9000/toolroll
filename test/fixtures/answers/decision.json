@@ -1,0 +1,648 @@
+{
+ "about": "Parked decisions replayed by src/contracts/decision.test.ts through parseDecision: park files as agents write them (unversioned, what they are asked for), a decision with an ignored version field from the initial item 7 migration, and a saved decision row's fields re-read as a payload. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "builder park file (unversioned)",
+   "source": "src/builder.test.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   }
+  },
+  {
+   "name": "scout question (unversioned)",
+   "source": "src/scout.test.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "Two suites fail differently.",
+    "question": "Which suite matters?",
+    "options": [
+     {
+      "id": "unit",
+      "label": "Unit",
+      "consequence": "Faster, narrower.",
+      "reversible": true
+     },
+     {
+      "id": "e2e",
+      "label": "End to end",
+      "consequence": "Slower, the real flake.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "e2e"
+   }
+  },
+  {
+   "name": "planner park file (unversioned)",
+   "source": "src/planner.test.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The repository supports two safe limiter keys.",
+    "question": "Which key should the limiter use?",
+    "options": [
+     {
+      "id": "user",
+      "label": "Per user",
+      "consequence": "Finer fairness.",
+      "reversible": true
+     },
+     {
+      "id": "tenant",
+      "label": "Per tenant",
+      "consequence": "Less state.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "user"
+   }
+  },
+  {
+   "name": "unversioned, with keys the old parser ignored",
+   "source": "the old parseDecision read only the fields it knew",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue.",
+      "reversible": true,
+      "risk": "high"
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause.",
+      "reversible": false
+     }
+    ],
+    "recommendation": "closed",
+    "context": "extra"
+   }
+  },
+  {
+   "name": "unversioned, with an assignee and a deadline",
+   "source": "src/decision.ts (optional fields)",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed",
+    "assignee": "alex",
+    "deadline": "2026-10-07T09:00:00+02:00"
+   }
+  },
+  {
+   "name": "unversioned, null assignee and deadline",
+   "source": "src/decision.ts (null reads as absent)",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed",
+    "assignee": null,
+    "deadline": null
+   }
+  },
+  {
+   "name": "six options, text padded with spaces",
+   "source": "src/decision.ts (text is trimmed)",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "  A recap.  ",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "o0",
+      "label": "Option 0",
+      "consequence": "What 0 does.",
+      "reversible": true
+     },
+     {
+      "id": "o1",
+      "label": "Option 1",
+      "consequence": "What 1 does.",
+      "reversible": true
+     },
+     {
+      "id": "o2",
+      "label": "Option 2",
+      "consequence": "What 2 does.",
+      "reversible": true
+     },
+     {
+      "id": "o3",
+      "label": "Option 3",
+      "consequence": "What 3 does.",
+      "reversible": true
+     },
+     {
+      "id": "o4",
+      "label": "Option 4",
+      "consequence": "What 4 does.",
+      "reversible": true
+     },
+     {
+      "id": "o5",
+      "label": "Option 5",
+      "consequence": "What 5 does.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "o3"
+   }
+  },
+  {
+   "name": "decision with version 1 from the initial item 7 migration",
+   "source": "build #2537 decision model schema (synthetic sample; version now ignored)",
+   "payload": {
+    "version": 1,
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   }
+  },
+  {
+   "name": "saved decision row re-read",
+   "source": "src/store.ts saveDecision columns (recap, question, options JSON, recommendation, assignee, deadline)",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "Two suites fail differently.",
+    "question": "Which suite matters?",
+    "options": [
+     {
+      "id": "unit",
+      "label": "Unit",
+      "consequence": "Faster, narrower.",
+      "reversible": true
+     },
+     {
+      "id": "e2e",
+      "label": "End to end",
+      "consequence": "Slower, the real flake.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "e2e",
+    "assignee": null,
+    "deadline": null
+   }
+  },
+  {
+   "name": "version 1 with a key it doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "version": 1,
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed",
+    "context": "extra"
+   }
+  },
+  {
+   "name": "a newer version",
+   "source": "hand-written",
+   "payload": {
+    "version": 2,
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "recommendation names no option",
+   "source": "src/builder.test.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "ghost"
+   },
+   "paths": [
+    "recommendation"
+   ]
+  },
+  {
+   "name": "no options",
+   "source": "src/builder.test.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "options"
+   ]
+  },
+  {
+   "name": "seven options",
+   "source": "src/decision.ts LIMITS.options",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "o0",
+      "label": "Option 0",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o1",
+      "label": "Option 1",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o2",
+      "label": "Option 2",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o3",
+      "label": "Option 3",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o4",
+      "label": "Option 4",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o5",
+      "label": "Option 5",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "o6",
+      "label": "Option 6",
+      "consequence": "x",
+      "reversible": true
+     }
+    ],
+    "recommendation": "o1"
+   },
+   "paths": [
+    "options"
+   ]
+  },
+  {
+   "name": "reversible left out",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "x"
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "y",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "options[0].reversible"
+   ]
+  },
+  {
+   "name": "an option id with a space",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "fail open",
+      "label": "Fail open",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "y",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "options[0].id"
+   ]
+  },
+  {
+   "name": "a duplicate option id",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "closed",
+      "label": "Fail open",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "y",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "options[1].id"
+   ]
+  },
+  {
+   "name": "a two-line label",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail\nopen",
+      "consequence": "x",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "y",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "options[0].label"
+   ]
+  },
+  {
+   "name": "a blank recap",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "   ",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "recap"
+   ]
+  },
+  {
+   "name": "a question with a terminal escape",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Which?\u001b[2J",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "question"
+   ]
+  },
+  {
+   "name": "a recap over its limit",
+   "source": "TEXT_LIMITS.decisionRecap",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "recap"
+   ]
+  },
+  {
+   "name": "advisory urgency",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "advisory",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed"
+   },
+   "paths": [
+    "urgency"
+   ]
+  },
+  {
+   "name": "a deadline that isn't a time",
+   "source": "src/decision.ts",
+   "payload": {
+    "urgency": "blocking",
+    "recap": "The guard needs a policy call: the payout path can fail open or fail closed.",
+    "question": "Fail open or fail closed on timeout?",
+    "options": [
+     {
+      "id": "open",
+      "label": "Fail open",
+      "consequence": "Payouts continue; bad ones slip through.",
+      "reversible": true
+     },
+     {
+      "id": "closed",
+      "label": "Fail closed",
+      "consequence": "Payouts pause; support tickets.",
+      "reversible": true
+     }
+    ],
+    "recommendation": "closed",
+    "deadline": "next week"
+   },
+   "paths": [
+    "deadline"
+   ]
+  }
+ ]
+}

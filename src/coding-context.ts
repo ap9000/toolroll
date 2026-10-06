@@ -6,26 +6,9 @@ import { KNOWLEDGE_GUIDANCE, selectProjectKnowledge } from './project-knowledge.
 import { materializeProjectSkills, PROJECT_SKILLS_GUIDANCE, selectProjectSkills } from './project-skills.js';
 import { identityMatches, learningIdentity, learningSha } from './project-learning.js';
 import type { Store } from './store.js';
+import { CODING_CONTEXT_VERSION, type CodingContext, type CodingContextMetadata } from './contracts/coding-context.js';
 
-export type CodingContextMetadata = {
-  version: 1;
-  repo: string;
-  identity: string;
-  baseRevision: string;
-  knowledge: {
-    revision: number;
-    selectionSha256: string;
-    references: { id: string; title: string; path: string | null; sourceSha: string | null; sourceRevision: string | null }[];
-    omitted: { title: string; reason: string }[];
-  };
-  skills: {
-    revision: number;
-    packages: { name: string; sha256: string; skillFile: string }[];
-  };
-  directory: string | null;
-  files: { path: string; sha256: string }[];
-};
-export type CodingContext = { text: string; metadata: CodingContextMetadata; sha256: string };
+export type { CodingContext, CodingContextMetadata } from './contracts/coding-context.js';
 
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -91,7 +74,7 @@ export function prepareCodingContext(store: Store, args: {
     directory,
     files: captured.skills.packages.flatMap(skill => skill.files.map(file => ({ path: `${skill.name}/${file.path}`, sha256: fileDigest(Buffer.from(file.base64, 'base64')) }))),
   };
-  return freeze({ text, metadata, sha256: digest(text, metadata) });
+  return freeze({ version: CODING_CONTEXT_VERSION, text, metadata, sha256: digest(text, metadata) });
 }
 
 /** Integrity check for a persisted capture. The caller must separately recheck current account access. */

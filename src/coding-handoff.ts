@@ -7,11 +7,13 @@ import { codingCatalogPath } from './coding-update.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
 import { acceptedIdentities, learningIdentity, learningSha } from './project-learning.js';
 import { fileTaskProposal } from './proposal.js';
-import { parseAcceptanceCriteria, proposeGuarded, type AcceptanceCriterion } from './scope.js';
+import { parseAcceptanceCriteria, proposeGuarded } from './scope.js';
 import { validateTaskText } from './task-text.js';
 import { PROOF_LIMITS } from './proof.js';
 import { readPreparedEvidence } from './prepared-evidence.js';
 import type { CodingSession } from './coding-types.js';
+import { parseCodingHandoffReceipt, type CodingHandoffReceipt } from './contracts/coding-handoff.js';
+import { parseCodingSessionDocument } from './contracts/coding-workspace.js';
 import type { Store } from './store.js';
 import { BRANCH_PREFIXES, taskBranch } from './names.js';
 
@@ -27,15 +29,9 @@ CREATE TRIGGER IF NOT EXISTS coding_handoff_scope_no_update BEFORE UPDATE ON cod
 CREATE TRIGGER IF NOT EXISTS coding_handoff_scope_no_delete BEFORE DELETE ON coding_handoff_scope BEGIN SELECT RAISE(ABORT,'Coding handoff seals are immutable'); END;
 `;
 
-export type CodingHandoffPreview = {
-  sessionId: string; repo: string; base: string; candidate: string; title: string;
-  originalPrompt: string; changedPaths: string[];
-};
-type ReceiptTerms = CodingHandoffPreview & {
-  version: 1; identity: string; actor: string; generation: number; goal: string;
-  acceptance: AcceptanceCriterion[]; outOfScope: string;
-};
-export type CodingHandoffReceipt = ReceiptTerms & { id: string; taskId: string; branch: string };
+export type { CodingHandoffReceipt } from './contracts/coding-handoff.js';
+export type CodingHandoffPreview = Pick<CodingHandoffReceipt, 'sessionId' | 'repo' | 'base' | 'candidate' | 'title' | 'originalPrompt' | 'changedPaths'>;
+type ReceiptTerms = Omit<CodingHandoffReceipt, 'id' | 'taskId' | 'branch'>;
 export type CodingHandoffInput = {
   sessionId: string; repo: string; base: string; candidate: string; title: string;
   goal: string; acceptance: unknown; actor: string;
@@ -81,7 +77,7 @@ function sessionFor(db: DatabaseSync, store: Store, sessionId: string, actor: st
   if (!/^[a-f0-9]{32}$/.test(sessionId)) throw Error('Choose a saved coding session.');
   const row = db.prepare('SELECT owner,generation,repo,document FROM coding_session WHERE id=?').get(sessionId);
   if (!row || row['owner'] !== actor) throw Error('This coding session is not available to your account.');
-  const session = JSON.parse(String(row['document'])) as CodingSession;
+  const session = parseCodingSessionDocument(String(row['document']));
   const generation = actorGeneration(store, actor, String(row['repo']));
   if (row['generation'] !== generation || session.id !== sessionId || session.owner !== actor || session.generation !== generation || session.repo !== row['repo']) throw Error('The coding session no longer matches your account or project.');
   return session;
@@ -117,16 +113,19 @@ function makeReceipt(terms: ReceiptTerms): CodingHandoffReceipt {
   const id = learningSha(JSON.stringify(terms)).slice(0, 32), taskId = `coding-review-${id}`;
   return { ...terms, id, taskId, branch: taskBranch(taskId) };
 }
-function parseReceipt(row: Record<string, unknown>): CodingHandoffReceipt {
+/** The saved bytes are verified before they are parsed; identity and branch are checked on the parsed terms. */
+export function parseReceipt(row: Record<string, unknown>): CodingHandoffReceipt {
   const payload = String(row['payload']);
   if (learningSha(payload) !== row['sha']) throw Error('The coding handoff receipt could not be verified.');
-  const receipt = JSON.parse(payload) as CodingHandoffReceipt;
+  const read = parseCodingHandoffReceipt(payload);
+  if (!read.ok) throw Error(`The coding handoff receipt could not be read: ${read.issues.map(issue => issue.line).join('; ')}`);
+  const receipt = read.value;
   const { id, taskId, branch, ...terms } = receipt;
   const expected = makeReceipt(terms);
-  if (receipt.version !== 1 || row['id'] !== id || id !== expected.id || taskId !== expected.taskId || !BRANCH_PREFIXES.some(prefix => branch === `${prefix}${taskId}`) || !SHA.test(receipt.base) || !SHA.test(receipt.candidate)) throw Error('The coding handoff receipt identity could not be verified.');
+  if (row['id'] !== id || id !== expected.id || taskId !== expected.taskId || !BRANCH_PREFIXES.some(prefix => branch === `${prefix}${taskId}`) || !SHA.test(receipt.base) || !SHA.test(receipt.candidate)) throw Error('The coding handoff receipt identity could not be verified.');
   return receipt;
 }
-function sealPayload(receipt: CodingHandoffReceipt, scopeDigest: string): string {
+export function sealPayload(receipt: CodingHandoffReceipt, scopeDigest: string): string {
   return JSON.stringify({ version: 1, id: receipt.id, receiptSha256: learningSha(JSON.stringify(receipt)), scopeDigest });
 }
 function verifySeal(db: DatabaseSync, receipt: CodingHandoffReceipt, digest: string): void {

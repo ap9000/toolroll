@@ -755,6 +755,38 @@ describe("the telegram bridge", () => {
     expect(String(ack?.params["text"])).toContain("stale");
   });
 
+  test("a callback whose data Toolroll didn't make is answered with why, and does nothing", async () => {
+    const script = scriptedTransport();
+    await pairChat(script);
+    const decisionId = decisionWith(plainOptions, "closed");
+    await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(5_000) });
+
+    script.updates.push([tap(10, "pick:abc"), tap(11, "x".repeat(65))]);
+    const passed = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(10_000) });
+
+    expect(passed).toMatchObject({ ok: true, report: { answered: 0, ignored: 2 } });
+    expect(store.getDecision(decisionId)?.state).toBe("open");
+    expect(script.calls.filter(call => call.method === "answerCallbackQuery").map(call => call.params["text"])).toEqual([
+      "That button couldn't be read (callback_data: not a Toolroll button). Nothing was done.",
+      "That button couldn't be read (callback_data: over 64 bytes; callback_data: not a Toolroll button). Nothing was done.",
+    ]);
+  });
+
+  test("an update in a shape Telegram doesn't send is passed over with a problem, and the next one is read", async () => {
+    const script = scriptedTransport();
+    await pairChat(script);
+    const decisionId = decisionWith(plainOptions, "closed");
+    await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(5_000) });
+    const [token] = keyboardTokens(script);
+
+    script.updates.push([{ update_id: 10, callback_query: { id: "cb-10", data: token, message: { message_id: "not-a-number" } } } as never, tap(11, token as string, placedOn(token as string))]);
+    const passed = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(10_000) });
+
+    expect(passed).toMatchObject({ ok: true, report: { answered: 1 } });
+    expect(passed.ok && passed.report.problems).toContain("an update Telegram sent couldn't be read: callback_query.message.message_id: must be a number (got a string)");
+    expect(store.getDecision(decisionId)?.state).toBe("answered");
+  });
+
   test("irreversible: one tap arms, only the minted confirm answers", async () => {
     const script = scriptedTransport();
     await pairChat(script);
@@ -1099,7 +1131,11 @@ describe("the follower — on the wire until told to stop", () => {
     expect(keepPushedUpdate(store, BOT, Buffer.from(JSON.stringify(pushedTap)), later(6_000))).toEqual({ ok: true, kept: false });
     expect(store.telegramInbox(BOT, 10)).toEqual([]);
     expect(keepPushedUpdate(store, BOT, Buffer.from("not json"), later(6_000))).toEqual({ ok: false });
-    expect(keepPushedUpdate(store, BOT, Buffer.from('{"update_id": -1}'), later(6_000))).toEqual({ ok: false });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(keepPushedUpdate(store, BOT, Buffer.from('{"update_id": -1}'), later(6_000))).toEqual({ ok: true, kept: false });
+      expect(warning).toHaveBeenCalledWith("Ignoring a pushed Telegram update: update_id: at least 1");
+    } finally { warning.mockRestore(); }
   });
 
   test("another program asking for the bot's updates is no problem to report: nothing is logged, and the next ask gets the tap (v98)", async () => {

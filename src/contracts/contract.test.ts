@@ -36,6 +36,18 @@ describe("versioned", () => {
 });
 
 describe("contractError", () => {
+  it("calls integers integers and distinguishes an optional null from a missing required value", () => {
+    const schema = z.strictObject({ run: z.int(), offset: z.int().optional(), nested: z.array(z.strictObject({ note: z.string().optional() })) });
+    const result = parseContract(schema, { run: 1.5, offset: null, nested: [{ note: null }] });
+    expect(result.ok ? [] : result.issues.map(issue => issue.line)).toEqual([
+      "run: must be an integer (got a number)",
+      "offset: must be a number (got null)",
+      "nested[0].note: must be a string (got null)",
+    ]);
+    const missing = parseContract(schema, { nested: [] });
+    expect(missing.ok ? [] : missing.issues.map(issue => issue.line)).toEqual(["run: required"]);
+  });
+
   it("names the path of every problem", () => {
     const result = parseContract(flow, { version: 2, name: "", steps: [{ id: "a", routes: [{ to: "b" }] }, { id: 1, routes: [] }], extra: true });
     expect(result.ok ? [] : result.issues.map(issue => issue.line)).toEqual([
@@ -70,11 +82,21 @@ describe("unknown keys and unions", () => {
     expect(read({ steps: [{ kind: "task", title: "t", colour: "red" }] })).toEqual(["steps[0]: unknown key 'colour'"]);
   });
 
-  it("names a discriminated union's choices, and reads a null or missing discriminator or value as required", () => {
-    expect(read({ steps: [{ kind: "teleport", title: "t" }, { title: "t" }, { kind: "task", title: null }] })).toEqual([
+  it("names a discriminated union's choices and distinguishes null from a missing value", () => {
+    const input = { steps: [{ kind: "teleport", title: "t" }, { title: "t" }, { kind: "task", title: null }, { kind: null, title: "t" }, { kind: "task" }] };
+    expect(read(input)).toEqual([
       "steps[0].kind: must be one of \"task\", \"sort\"",
       "steps[1].kind: required",
       "steps[2].title: required",
+      "steps[3].kind: required",
+      "steps[4].title: required",
+    ]);
+    expect(read(input, { distinguishNull: true })).toEqual([
+      "steps[0].kind: must be one of \"task\", \"sort\"",
+      "steps[1].kind: required",
+      "steps[2].title: must be a string (got null)",
+      "steps[3].kind: must be one of \"task\", \"sort\"",
+      "steps[4].title: required",
     ]);
   });
 });

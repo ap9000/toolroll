@@ -41,6 +41,10 @@ export type SubscriptionMateRequest = {
   dataDocument: string;
   history: readonly MateHistoryMessage[];
   tools: readonly MateToolSchema[];
+  /** A structured answer of another shape (the memory pass's verdict): this JSON Schema is the harness's
+   * `--json-schema` (Codex's `--output-schema`) in place of the mate envelope, and its JSON text comes back as the
+   * answer's text, unread, for the caller's own schema to parse. */
+  outputSchema?: Record<string, unknown>;
   timeoutMs: number;
   /** The turn's own deadline: aborting it ends the harness's whole process group. */
   signal?: AbortSignal;
@@ -215,7 +219,7 @@ export async function performSubscriptionMateRequest(
   try {
     const prompt = composeSubscriptionMatePrompt(request);
     const streaming = request.provider !== "codex-subscription" && request.onText !== undefined;
-    const schema = outputSchema(request.tools);
+    const schema = request.outputSchema ?? outputSchema(request.tools);
     let command: string;
     let args: string[];
     if (request.provider === "codex-subscription") {
@@ -278,6 +282,9 @@ export async function performSubscriptionMateRequest(
     if (result.code !== 0) return { ok: false, problem: `status-${result.code}` };
     const output = request.provider === "codex-subscription" ? codexOutput(result.stdout) : claudeOutput(streaming ? lastResultLine(result.stdout) : result.stdout);
     if (output.text === null) return { ok: false, problem: "malformed-reply" };
+    if (request.outputSchema !== undefined) {
+      return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null } };
+    }
     return parseSubscriptionMateAnswer(output.text, output);
   } finally {
     rmSync(dir, { recursive: true, force: true });

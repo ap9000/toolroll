@@ -1,0 +1,187 @@
+{
+ "about": "Teammate turns replayed by src/contracts/teammate-turn.test.ts through readTurnAnswer: answers in the shape Claude gives under the turn's --json-schema, and decision_json as teammate-work.ts keeps it (the turn as read). Saved turns are read back only for their note (flow-engine.ts handoffWords), unchanged. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "route with a reply",
+   "source": "src/teammate-limits.test.ts",
+   "payload": {
+    "answer": "Replied",
+    "text": "Hi Priya, your lamp arrives tomorrow.",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "Tracking shows it in transit.",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "route"
+   }
+  },
+  {
+   "name": "approve",
+   "source": "src/teammates.test.ts",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "Within my $50 limit.",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "approve"
+   }
+  },
+  {
+   "name": "send back",
+   "source": "src/teammate-desk.test.ts",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "Say when it ships.",
+    "question": "",
+    "options": [],
+    "reason": "The draft promises no date.",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "send_back"
+   }
+  },
+  {
+   "name": "ask with options",
+   "source": "src/teammates.ts turnPrompt",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "Refund all $200?",
+    "options": [
+     "Yes",
+     "Half"
+    ],
+    "reason": "Over my limit.",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "ask"
+   }
+  },
+  {
+   "name": "tool call",
+   "source": "src/teammate-tools.test.ts",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "The customer asked for a refund.",
+    "tool": "shop.refund",
+    "input": "{\"order\": \"1042\"}",
+    "remember": "",
+    "action": "use_tool"
+   }
+  },
+  {
+   "name": "saved decision_json (v95: remember)",
+   "source": "src/teammate-work.ts carryOut (JSON.stringify(answer))",
+   "payload": {
+    "action": "route",
+    "answer": "Replied",
+    "text": "Hi Priya.",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "Tracking.",
+    "tool": "",
+    "input": "",
+    "remember": "Priya prefers email."
+   }
+  },
+  {
+   "name": "options as one string",
+   "source": "hand-written",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "Refund?",
+    "options": "Yes, No",
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "ask"
+   }
+  },
+  {
+   "name": "a key the turn doesn't take",
+   "source": "hand-written",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "approve",
+    "mood": "calm"
+   }
+  },
+  {
+   "name": "a number for text",
+   "source": "hand-written",
+   "payload": {
+    "answer": "Replied",
+    "text": 42,
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "route"
+   }
+  },
+  {
+   "name": "saved decision_json from v92–v93 (before tools and memory)",
+   "source": "src/teammate-work.ts as v92 wrote it; read back only for its note",
+   "payload": {
+    "action": "hand_off",
+    "answer": "",
+    "text": "",
+    "note": "Over my limit.",
+    "question": "",
+    "options": [],
+    "reason": "Over $50."
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "an action that isn't one",
+   "source": "hand-written",
+   "payload": {
+    "answer": "",
+    "text": "",
+    "note": "",
+    "question": "",
+    "options": [],
+    "reason": "",
+    "tool": "",
+    "input": "",
+    "remember": "",
+    "action": "refund"
+   },
+   "paths": [
+    "action"
+   ]
+  }
+ ]
+}

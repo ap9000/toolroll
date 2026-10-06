@@ -6,7 +6,8 @@ import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverSta
 import { MATE_MAX_STEPS, MATE_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, MATE_TOOL_CALL_CAP_BYTES, MATE_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, mateWorstCaseForPrice, parseMateProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { runMateTurn, historyFor, MATE_ABORT_GRACE_MS, MATE_CHANNEL_COPY, MATE_FAILURE_COPY, MATE_REFUSAL_COPY } from "./mate.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
-import { MATE_MAX_PROPOSALS_PER_TURN, executeMateTool, redactForMate } from "./mate-tools.js";
+import { MATE_MAX_PROPOSALS_PER_TURN, MATE_TOOLS, executeMateTool, redactForMate } from "./mate-tools.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
 
@@ -191,7 +192,7 @@ describe("the mate's turn", () => {
     expect(drafted[1]).toMatchObject({ planning: "auto" });
     expect(executeMateTool(ctx, "propose_task", { ...base, planning: "sometimes" })).toMatchObject({
       ok: false,
-      message: "planning is auto, required, or skip",
+      message: 'planning: must be one of "auto", "required", "skip"',
     });
   });
 
@@ -396,6 +397,20 @@ describe("the mate's turn", () => {
     expect(seen).toMatchObject({ ok: true, body: { proposal: 99 } });
   });
 
+  test("a malformed call is read by the tool's schema: the next step is told each path, and the corrected call drafts", async () => {
+    const script = scripted([
+      answer([call("propose_hold", { task: "in-1", why: "not this week" }, "bad")]),
+      answer([call("propose_hold", { task: "in-1", reason: "not this week" }, "good")]),
+      text("Held."),
+    ]);
+    const outcome = await turn("hold in-1", script.fetcher);
+    expect(outcome).toMatchObject({ ok: true, proposals: 1 });
+    // Unknown lead keys are ignored; the repair still names the required field the call left out.
+    expect(script.bodies[1]).toContain("reason: required");
+    expect(script.bodies[1]).not.toContain("unknown key");
+    expect(store.listMateProposals(thread().id, ["pending"]).map(one => one.payload["reason"])).toEqual(["not this week"]);
+  });
+
   test("a turn holds at most five proposals; the sixth is a typed refusal to the model", async () => {
     const holds = Array.from({ length: 6 }, (_, index) => call("propose_hold", { task: index % 2 === 0 ? "in-1" : "in-2", reason: `reason ${index}` }, `h${index}`));
     const script = scripted([answer(holds.slice(0, 4)), answer(holds.slice(4)), text("proposed what I could")]);
@@ -405,19 +420,83 @@ describe("the mate's turn", () => {
     expect(store.listMateProposals(thread().id, ["pending"])).toHaveLength(MATE_MAX_PROPOSALS_PER_TURN);
   });
 
+  test("chat task and scope rubrics enforce UTF-8 byte limits before drafting", () => {
+    // The rubric is lead-tools' `acceptance` (the plan's criterion); its byte limits run after parsing, before a draft.
+    const draft = vi.fn(() => 1);
+    const ctx = { store, who, now: clock(), draft };
+    const base = { repo: "r1", task: "in-1", title: "Task", goal: "valid" };
+    const criterion = { id: "c1", statement: "Works", how: null, evidence: ["check"] };
+    for (const tool of ["propose_task", "propose_scope"]) {
+      for (const [field, limit] of [["id", TEXT_LIMITS.acceptanceIdBytes], ["statement", TEXT_LIMITS.acceptanceStatementBytes], ["how", TEXT_LIMITS.acceptanceHowBytes]] as const) {
+        draft.mockClear();
+        const atLimit = { ...criterion, [field]: "é".repeat(limit / 2) };
+        expect(executeMateTool(ctx, tool, { ...base, acceptance: [atLimit] })).toMatchObject({ ok: true });
+        expect(draft).toHaveBeenCalledExactlyOnceWith(tool === "propose_task" ? "task" : "scope", expect.objectContaining({ acceptance: [atLimit] }));
+        draft.mockClear();
+        const overLimit = { ...atLimit, [field]: atLimit[field]! + "é" };
+        expect(executeMateTool(ctx, tool, { ...base, acceptance: [overLimit] })).toMatchObject({ ok: false });
+        expect(draft).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   test("chat task and scope tools share new-text limits and expose no inheritance option", () => {
     let drafts = 0;
     const ctx = { store, who, now: clock(), draft: () => ++drafts };
-    const base = { repo: "r1", task: "in-1", title: "Task", goal: "valid", acceptance: [{ id: "c1", statement: "Works", evidence: ["check"] }] };
+    const shared = { goal: "valid", acceptance: [{ id: "c1", statement: "Works", evidence: ["check"] }] };
     for (const tool of ["propose_task", "propose_scope"]) {
+      // Each tool ignores keys outside its own arguments, as the older handlers did.
+      const base = tool === "propose_task" ? { repo: "r1", title: "Task", ...shared } : { task: "in-1", ...shared };
+      const before = drafts;
+      expect(executeMateTool(ctx, tool, { ...base, ...(tool === "propose_task" ? { task: "in-1" } : { repo: "r1" }) })).toMatchObject({ ok: true });
       for (const field of ["goal", "not"]) {
         for (const value of ["a".repeat(8001), "😀".repeat(4001), "界".repeat(8001), "bad\u0000", "bad\u202e", "ok\r"]) {
-          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/the limit is 8,000|control or hidden/) });
+          expect(executeMateTool(ctx, tool, { ...base, [field]: value })).toMatchObject({ ok: false, message: expect.stringMatching(/over 8,000 characters|the limit is 8,000|control or hidden/) });
           expect(executeMateTool(ctx, tool, { ...base, [field]: value, inheritLegacy: true, filedVia: "revision" })).toMatchObject({ ok: false });
         }
       }
-      expect(drafts).toBe(tool === "propose_task" ? 0 : 1);
+      expect(drafts).toBe(before + 1);
       expect(executeMateTool(ctx, tool, { ...base, goal: "😀".repeat(4000), not: "界".repeat(8000) })).toMatchObject({ ok: true });
+    }
+  });
+
+  test("lead list limits keep the 0.9.36 clamp, floor and fallback behavior", () => {
+    const ctx = { store, who, now: clock(), draft: () => null, step: 1, readDecisions: new Map() };
+    for (let i = 0; i < 55; i++) expect(fileTaskProposal(store, { id: `page-${i}`, title: `Page ${i}`, repo: INSIDE, filedVia: "cli" }, T0).ok).toBe(true);
+    const taskThread = store.openMateThread(who.name, who.ceilingDigest, T0, { kind: "task", key: "in-1" }).thread;
+    for (let i = 0; i < 35; i++) store.appendMateMessage({ thread: taskThread.id, turn: null, role: "operator", text: `Message ${i}` }, new Date(T0.getTime() + i));
+    for (const [limit, tasks, messages] of [
+      [undefined, 20, 12], [0, 1, 1], [-5, 1, 1], [100, 50, 30], [2.9, 2, 12],
+      [null, 20, 12], ["3", 20, 12], [{}, 20, 12], [Number.MAX_SAFE_INTEGER + 1, 50, 12],
+    ] as const) {
+      const listed = executeMateTool(ctx, "list_tasks", { limit, zz_unknown: true });
+      const conversation = executeMateTool(ctx, "get_task_conversation", { task: "in-1", limit, zz_unknown: true });
+      expect(listed.ok, `list_tasks limit ${JSON.stringify(limit)}`).toBe(true);
+      expect(conversation.ok, `get_task_conversation limit ${JSON.stringify(limit)}`).toBe(true);
+      if (!listed.ok || !conversation.ok) throw Error("call refused");
+      expect((listed.body as { tasks: unknown[] }).tasks).toHaveLength(tasks);
+      expect((conversation.body as { messages: unknown[] }).messages).toHaveLength(messages);
+    }
+  });
+
+  test("lead flow insight days keep the 0.9.36 safe-integer fallback", () => {
+    const ctx = { store, who, now: clock(), draft: () => null, step: 1, readDecisions: new Map() };
+    for (const [days, expected] of [[undefined, 30], [0, 0], [-5, -5], [100, 100], [2.9, 30], [null, 30], ["7", 30], [{}, 30], [Number.MAX_SAFE_INTEGER + 1, 30]] as const) {
+      expect(executeMateTool(ctx, "get_flow_insights", { days, zz_unknown: true })).toMatchObject({ ok: true, body: { days: expected, flows: [] } });
+    }
+  });
+
+  test("a tool still returns its real result when the output contract reports a mismatch under Vitest", () => {
+    const tool = MATE_TOOLS.find(one => one.name === "get_actions")!;
+    const handle = vi.spyOn(tool, "handle").mockReturnValue({ ok: true, body: { actual: "the handler result" } });
+    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      expect(executeMateTool({ store, who, now: clock(), draft: () => null, step: 1, readDecisions: new Map() }, "get_actions", {}))
+        .toEqual({ ok: true, body: { actual: "the handler result" } });
+      expect(write).toHaveBeenCalledWith(expect.stringContaining("lead tool get_actions: its result disagrees with its output schema"));
+    } finally {
+      handle.mockRestore();
+      write.mockRestore();
     }
   });
 

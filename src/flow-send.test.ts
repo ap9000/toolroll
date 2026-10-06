@@ -366,6 +366,12 @@ describe("c3: another project, and Send me the result", () => {
       expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[0]).not.toHaveProperty("repo");
       expect(await save("alex", alexToken, elsewhere)).toMatchObject({ status: 200, body: { ok: true } });
       expect(flowDefinitionOf(store.getFlow(flow)!)!.stages[0]).toMatchObject({ repo: BETA });
+      // A {{stage.…}} a save adds must be one its zone hands on, named by its path; one the saved flow already had stays.
+      const asking = (ask: string) => ({ ...here, stages: here.stages.map((one, index) => index === 0 ? { ...one, instructions: ask } : one) });
+      expect(await save("alex", alexToken, asking("Write the docs. Notes: {{stage.build.items}}"))).toEqual({ status: 400, body: { ok: false,
+        said: "Build the docs · stages[0].instructions: stage.build.items is not available (Build the docs hands on {{stage.build}})" } });
+      store.saveFlow(flow, { name: "Docs", definitionJson: JSON.stringify(asking("Write the docs. Notes: {{stage.build.items}}")), sawRevision: store.getFlow(flow)!.revision, by: "alex" }, now);
+      expect(await save("alex", alexToken, asking("Write the docs, briefly. Notes: {{stage.build.items}}"))).toMatchObject({ status: 200, body: { ok: true } });
     } finally {
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));

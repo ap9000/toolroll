@@ -17,7 +17,9 @@ import { assignmentOf } from "./assignment.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { withActor } from "./actor.js";
 import { flowCardHref, flowDefinitionOf, revisionWithNote, type FlowDecision } from "./flow-engine.js";
-import { itemPlug, itemSource, readFlowItems, type FlowSendItem } from "./flow-items.js";
+import { itemPlug, itemSource } from "./flow-items.js";
+import { withStageHandoff } from "./contracts/stage-output.js";
+import { flowSendForStore, readFlowChoiceAnswer, readFlowItems, readFlowSendPayload, type FlowChoiceAnswer, type FlowSendContent, type FlowSendItem, type FlowSendLink } from "./contracts/flow-send.js";
 import { notifyPeople } from "./flow-people.js";
 import { readVerifiedReport } from "./evidence.js";
 import { FLOW_END, replyTarget, type FlowDefinition, type FlowStage } from "./flows.js";
@@ -33,22 +35,8 @@ export const REPLY_ASK = "Or reply with what you'd change.";
 const SUMMARY_CHARS = 1500;
 const STEP_CHARS = 500;
 
-export type FlowSendLink = { label: string; path: string } | { label: string; url: string };
-export type FlowSendContent = {
-  /** The card's title and the step it comes from. */
-  title: string;
-  /** The step it comes from, when known. */
-  from?: string;
-  summary: string;
-  links: FlowSendLink[];
-  /** The build's result whose screenshots go with it, when it saved any. */
-  shots: { taskId: string; run: number } | null;
-  /** After research: the report's items, numbered in this order in every message and screenshot caption (flow-items.ts). */
-  items?: FlowSendItem[];
-  /** choose: the options as they were offered, and whether a reply is taken. */
-  options?: { choice: number; label: string }[];
-  reply?: boolean;
-};
+/** A visit's content and its links (src/contracts/flow-send.ts). */
+export type { FlowSendContent, FlowSendLink };
 
 /** Who a card's "Send to me" and "Person chooses" zones are for: its owner, else the flow's. */
 export function flowPersonOf(card: Pick<FlowCardRow, "owner">, flow: Pick<FlowRow, "owner">): string {
@@ -137,16 +125,13 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
   };
 }
 
-/** A kept content, read back; null when it can't be. */
+/** A kept content, read back (src/contracts/flow-send.ts: one kept before it carried a version reads as it did); null
+ * when it can't be, and the visit's content is worked out again. */
 export function readFlowSend(json: string): FlowSendContent | null {
-  try {
-    const raw = JSON.parse(json) as FlowSendContent;
-    if (typeof raw.title !== "string" || typeof raw.summary !== "string" || !Array.isArray(raw.links)) return null;
-    if (raw.items === undefined) return raw;
-    const items = readFlowItems(raw.items);
-    const { items: _, ...rest } = raw;
-    return items.length === 0 ? rest : { ...rest, items };
-  } catch { return null; }
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return null; }
+  const read = readFlowSendPayload(raw);
+  return read.ok ? read.value : null;
 }
 
 /** The words of a sent visit: its title, summary and pull request (the one link that isn't a page of Toolroll's). */
@@ -167,7 +152,7 @@ function keep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: Fl
   const read = kept === null ? null : readFlowSend(kept.contentJson);
   if (kept !== null && read !== null) return { content: read, person: kept.person, fresh: false };
   const content = flowSendContent(store, flow, definition, stage, card, now, evidenceRoot);
-  const fresh = store.recordFlowSend({ card: card.id, entry: card.entry, stage: stage.id, person, contentJson: JSON.stringify(content) }, now);
+  const fresh = store.recordFlowSend({ card: card.id, entry: card.entry, stage: stage.id, person, contentJson: flowSendForStore(content) }, now);
   return { content, person, fresh };
 }
 
@@ -188,7 +173,7 @@ function enqueue(store: Store, flow: FlowRow, card: FlowCardRow, person: string,
 export function sendStep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, evidenceRoot?: string): void {
   const { content, person, fresh } = keep(store, flow, definition, stage, card, now, evidenceRoot);
   if (!fresh) return;
-  store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: flowSendText(content) } }, now);
+  store.updateFlowCard(card.id, { outputs: withStageHandoff(card.outputs, stage.id, { text: flowSendText(content) }) }, now);
   enqueue(store, flow, card, person, content, { key: `flow-send:${card.id}:${card.entry}`, kind: "flow-card", attention: false,
     subject: `${flow.name}: ${content.title}`, body: [content.summary, ...content.links.filter((one): one is { label: string; url: string } => "url" in one).map(one => `${one.label}: ${one.url}`)].join("\n\n") }, now);
 }
@@ -234,11 +219,15 @@ const via = (where: string) => where === "" ? "" : ` in ${where}`;
  * reply (`choice` null) that becomes the note for where replies go. `where` names the place it was made, for the card's
  * history and the ledger: "Telegram", "Slack", "the console".
  */
-export function chooseFlowCard(store: Store, input: { card: number; entry?: number; choice: number | null; label?: string; to?: string; note: string | null; actor: string; where: string; repos: readonly string[]; evidenceRoot?: string }, now: Date): FlowDecision {
-  const card = store.getFlowCard(input.card);
+export function chooseFlowCard(store: Store, input: FlowChoiceAnswer & { actor: string; where: string; repos: readonly string[]; evidenceRoot?: string }, now: Date): FlowDecision {
+  // The answer itself (src/contracts/flow-send.ts): an option that isn't one of the places offered is a changed option.
+  const { actor: _actor, where: _where, repos: _repos, evidenceRoot: _root, ...given } = input;
+  const answer = readFlowChoiceAnswer(given);
+  if (!answer.ok) return { ok: false, message: answer.issues.every(one => one.path === "choice") ? "Those options changed since; nothing was changed." : "That card is no longer waiting." };
+  const card = store.getFlowCard(answer.value.card);
   const flow = card === null ? null : store.getFlow(card.flow);
   if (card === null || flow === null || card.state !== "active" || !input.repos.includes(flow.repo)) return { ok: false, message: "That card is no longer waiting." };
-  const visit = flowChoiceAt(store, card.id, input.entry ?? card.entry);
+  const visit = flowChoiceAt(store, card.id, answer.value.entry ?? card.entry);
   if (visit === null) return { ok: false, message: "That card has moved on since; nothing was changed." };
   const { stage, definition, person } = visit;
   if (person !== input.actor) return { ok: false, message: `Only ${person} chooses here.` };

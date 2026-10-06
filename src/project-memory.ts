@@ -8,9 +8,15 @@
  * model; the backward pass that proposes edits lives in memory-pass.ts.
  */
 import { createHash } from 'node:crypto';
+import type { z } from 'zod';
 import type { Store } from './store.js';
 import { scanForSecrets } from './evidence.js';
 import { learningIdentity } from './project-learning.js';
+import { TEXT_LIMITS } from './text-limits.js';
+import { contractError } from './contracts/contract.js';
+import { DECISION_CHANGE_VERSION, decisionChangeSchema, decisionRecordSchema, decisionSchema, type Decision, type DecisionChange, type DecisionDraft, type DecisionLine, type DecisionRecord } from './contracts/project-memory.js';
+
+export type { Decision, DecisionDraft, DecisionLine };
 
 export const MEMORY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS project_decision (
@@ -62,10 +68,6 @@ CREATE TABLE IF NOT EXISTS memory_rejection (
 );
 `;
 
-export type Decision = { id: number; repo: string; revision: number; claim: string; why: string; status: 'active' | 'superseded' | 'retired'; supersedes: number | null;
-  decidedBy: string; decidedAt: string; sourceKind: 'conversation' | 'task' | 'result' | 'manual' | 'backward-pass'; sourceRef: string | null; recordedBy: string };
-export type DecisionDraft = { claim: string; why: string; decidedBy?: string; decidedAt?: string; sourceKind?: Decision['sourceKind']; sourceRef?: string | null; supersedes?: number | null };
-
 const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
 function clean(value: string, bytes: number, label: string): string {
   const trimmed = value.trim();
@@ -78,38 +80,48 @@ function admission(store: Store, repo: string, actor: string, write = false): st
   if (!store.schemaCurrent() || !store.accountCanAccess(actor, repo) || (write && store.accountOf(actor)?.role !== 'approver')) throw Error('Project memory is outside your access.');
   return learningIdentity(repo);
 }
-function decisionOf(row: Record<string, unknown>): Decision {
-  return { id: Number(row['id']), repo: String(row['repo']), revision: Number(row['revision']), claim: String(row['claim']), why: String(row['why']),
-    status: row['status'] as Decision['status'], supersedes: row['supersedes'] === null ? null : Number(row['supersedes']),
-    decidedBy: String(row['decided_by']), decidedAt: String(row['decided_at']), sourceKind: row['source_kind'] as Decision['sourceKind'],
-    sourceRef: row['source_ref'] === null ? null : String(row['source_ref']), recordedBy: String(row['recorded_by']) };
+/** A decision row through its schema; null when the row does not read as one (it is then unverifiable). */
+function decisionOf(row: Record<string, unknown>): Decision | null {
+  const read = decisionSchema.safeParse({ id: Number(row['id']), repo: String(row['repo']), revision: Number(row['revision']), claim: String(row['claim']), why: String(row['why']),
+    status: row['status'], supersedes: row['supersedes'] === null ? null : Number(row['supersedes']),
+    decidedBy: String(row['decided_by']), decidedAt: String(row['decided_at']), sourceKind: row['source_kind'],
+    sourceRef: row['source_ref'] === null ? null : String(row['source_ref']), recordedBy: String(row['recorded_by']) });
+  return read.success ? read.data : null;
 }
-const digestOf = (d: Omit<Decision, 'id'>): string => sha(JSON.stringify([d.repo, d.revision, d.claim, d.why, d.status, d.supersedes, d.decidedBy, d.decidedAt, d.sourceKind, d.sourceRef, d.recordedBy]));
+const digestOf = (d: DecisionRecord): string => sha(JSON.stringify([d.repo, d.revision, d.claim, d.why, d.status, d.supersedes, d.decidedBy, d.decidedAt, d.sourceKind, d.sourceRef, d.recordedBy]));
+/** A record or history entry through its schema before it is written; a refusal names the field. */
+function checked<T>(schema: z.ZodType<T>, value: unknown): T {
+  const read = schema.safeParse(value);
+  if (!read.success) throw Error(`This decision could not be saved: ${contractError(read.error).join('; ')}`);
+  return read.data;
+}
+const history = (payload: Omit<DecisionChange, 'version'>): string => JSON.stringify(checked(decisionChangeSchema, { version: DECISION_CHANGE_VERSION, ...payload }));
 
 export function listDecisions(store: Store, repo: string, actor: string, options: { status?: Decision['status'] | 'all'; limit?: number } = {}): Decision[] {
   admission(store, repo, actor);
   const status = options.status ?? 'active', limit = Math.min(200, Math.max(1, options.limit ?? 50));
   return store.handle.prepare(`SELECT * FROM project_decision WHERE repo=? AND (?='all' OR status=?) ORDER BY id DESC LIMIT ?`).all(repo, status, status, limit)
-    .map(row => decisionOf(row as Record<string, unknown>)).filter(d => digestOf(d) === String((store.handle.prepare('SELECT sha FROM project_decision WHERE id=?').get(d.id) as Record<string, unknown>)['sha']));
+    .flatMap(row => { const d = decisionOf(row as Record<string, unknown>); return d === null ? [] : [d]; })
+    .filter(d => digestOf(d) === String((store.handle.prepare('SELECT sha FROM project_decision WHERE id=?').get(d.id) as Record<string, unknown>)['sha']));
 }
 export function getDecision(store: Store, repo: string, actor: string, id: number): Decision | null {
   admission(store, repo, actor);
   const row = store.handle.prepare('SELECT * FROM project_decision WHERE id=? AND repo=?').get(id, repo) as Record<string, unknown> | undefined;
   if (!row) return null;
   const d = decisionOf(row);
-  if (digestOf(d) !== String(row['sha'])) throw Error('This decision could not be verified.');
+  if (d === null || digestOf(d) !== String(row['sha'])) throw Error('This decision could not be verified.');
   return d;
 }
 
 /** Record one settled choice. A superseding decision retires the older one in the same transaction. */
 export function recordDecision(store: Store, args: { repo: string; actor: string; draft: DecisionDraft }, now = new Date()): Decision {
   const identity = admission(store, args.repo, args.actor, true);
-  const claim = clean(args.draft.claim, 240, 'The decision'), why = clean(args.draft.why, 2000, 'The reason');
-  const decidedBy = args.draft.decidedBy === undefined ? args.actor : clean(args.draft.decidedBy, 80, 'Who decided');
+  const claim = clean(args.draft.claim, TEXT_LIMITS.decisionClaimBytes, 'The decision'), why = clean(args.draft.why, TEXT_LIMITS.decisionWhyBytes, 'The reason');
+  const decidedBy = args.draft.decidedBy === undefined ? args.actor : clean(args.draft.decidedBy, TEXT_LIMITS.decisionByBytes, 'Who decided');
   const decidedAt = args.draft.decidedAt ?? now.toISOString();
   if (!/^\d{4}-\d{2}-\d{2}T/.test(decidedAt)) throw Error('When it was decided must be an ISO timestamp.');
   const sourceKind = args.draft.sourceKind ?? 'manual';
-  const sourceRef = args.draft.sourceRef === undefined || args.draft.sourceRef === null ? null : clean(String(args.draft.sourceRef), 200, 'The source');
+  const sourceRef = args.draft.sourceRef === undefined || args.draft.sourceRef === null ? null : clean(String(args.draft.sourceRef), TEXT_LIMITS.decisionSourceBytes, 'The source');
   return store.transact(() => {
     let supersedes: number | null = null;
     if (args.draft.supersedes !== undefined && args.draft.supersedes !== null) {
@@ -117,11 +129,11 @@ export function recordDecision(store: Store, args: { repo: string; actor: string
       if (older === null || older.status !== 'active') throw Error('The decision being replaced is not active.');
       supersedes = older.id;
     }
-    const record: Omit<Decision, 'id'> = { repo: args.repo, revision: 1, claim, why, status: 'active', supersedes, decidedBy, decidedAt, sourceKind, sourceRef, recordedBy: args.actor };
+    const record = checked(decisionRecordSchema, { repo: args.repo, revision: 1, claim, why, status: 'active', supersedes, decidedBy, decidedAt, sourceKind, sourceRef, recordedBy: args.actor });
     const inserted = store.handle.prepare(`INSERT INTO project_decision(repo,identity,revision,claim,why,status,supersedes,decided_by,decided_at,source_kind,source_ref,recorded_by,sha)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(args.repo, identity, 1, claim, why, 'active', supersedes, decidedBy, decidedAt, sourceKind, sourceRef, args.actor, digestOf(record));
     const id = Number(inserted.lastInsertRowid);
-    store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, 1, args.actor, now.toISOString(), 'record', JSON.stringify(record), digestOf(record));
+    store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, 1, args.actor, now.toISOString(), 'record', history(record), digestOf(record));
     if (supersedes !== null) changeStatus(store, args.repo, args.actor, supersedes, 'superseded', `Replaced by decision ${id}.`, now);
     reindexProjectMemory(store, args.repo);
     return { id, ...record };
@@ -131,15 +143,16 @@ function changeStatus(store: Store, repo: string, actor: string, id: number, sta
   const existing = getDecision(store, repo, actor, id);
   if (existing === null) throw Error('That decision is unavailable.');
   if (existing.status !== 'active') throw Error('That decision is no longer active.');
-  const next: Omit<Decision, 'id'> = { ...existing, revision: existing.revision + 1, status };
+  const { id: _id, ...was } = existing;
+  const next: DecisionRecord = { ...was, revision: existing.revision + 1, status };
   store.handle.prepare('UPDATE project_decision SET revision=?,status=?,sha=? WHERE id=?').run(next.revision, status, digestOf(next), id);
-  store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), status, JSON.stringify({ reason }), digestOf(next));
+  store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), status, history({ reason }), digestOf(next));
   return { id, ...next };
 }
 /** Retire a decision that no longer holds; history keeps it. */
 export function retireDecision(store: Store, args: { repo: string; actor: string; id: number; reason: string }, now = new Date()): Decision {
   admission(store, args.repo, args.actor, true);
-  const reason = clean(args.reason, 500, 'The reason');
+  const reason = clean(args.reason, TEXT_LIMITS.decisionRetireBytes, 'The reason');
   return store.transact(() => { const d = changeStatus(store, args.repo, args.actor, args.id, 'retired', reason, now); reindexProjectMemory(store, args.repo); return d; });
 }
 export function decisionHistory(store: Store, repo: string, actor: string, id: number): { revision: number; actor: string; at: string; action: string }[] {
@@ -152,7 +165,6 @@ export function decisionHistory(store: Store, repo: string, actor: string, id: n
 
 const COMMON = new Set(['the','and','for','with','this','that','from','have','should','will','into','our','use','not','are','was']);
 const tokens = (s: string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? []).filter(t => !COMMON.has(t)));
-export type DecisionLine = { id: number; claim: string; decidedAt: string };
 /**
  * The decisions worth one line each in a brief: relevant to the query first,
  * then newest, within a byte budget. Bodies (the why) load on demand by id,
@@ -164,7 +176,7 @@ export function decisionLines(store: Store, repo: string, query: string, options
   const ranked = rows.map(row => { const claim = String(row['claim']); const score = [...tokens(claim)].reduce((n, t) => n + (q.has(t) ? 3 : 0), 0) + [...tokens(String(row['why']))].reduce((n, t) => n + (q.has(t) ? 1 : 0), 0);
     return { line: { id: Number(row['id']), claim, decidedAt: String(row['decided_at']) }, score }; })
     .sort((a, b) => b.score - a.score || b.line.id - a.line.id);
-  const limit = options.limit ?? 8, bytes = options.bytes ?? 1500, out: DecisionLine[] = [];
+  const limit = options.limit ?? 8, bytes = options.bytes ?? TEXT_LIMITS.knowledgeDecisionsBytes, out: DecisionLine[] = [];
   for (const { line } of ranked) {
     if (out.length >= limit) break;
     if (Buffer.byteLength(JSON.stringify([...out, line])) > bytes) break;

@@ -35,3 +35,21 @@ test("Figma's desktop app has its own Connect, with its one line of how", () => 
   expect(html).toContain('</span><strong>Figma (desktop app)</strong><span>Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.</span></button>');
   expect(html).toContain('<button name="service" value="figma-desktop" class="connect-wanted">Connect Figma (desktop app) to shop</button>');
 });
+
+test("PostHog connected with write access stays Connected, says once why research can't use it, and offers Reconnect read-only", () => {
+  const posthog = { id: 1, repo: "/work/shop", name: "posthog", digest: "d", source: "PostHog, connected by signing in", createdAt: "2026-10-05T00:00:00.000Z", createdBy: "alex",
+    lastTest: { at: "2026-10-05T00:00:00.000Z", ok: true, tools: ["exec"], problem: null },
+    spec: { name: "posthog", transport: "http" as const, command: null, args: [], url: "https://mcp.posthog.com/mcp", bearer: "OAUTH_ACCESS_TOKEN", headerSecrets: {}, secrets: [{ name: "OAUTH_ACCESS_TOKEN", optional: false }], about: "PostHog: Product analytics, funnels and events. Connected by signing in." } };
+  const said = "PostHog is connected with write access, so research runs can&#39;t use it.";
+  const html = toolsHtml({ ...view(null), tools: [{ tool: posthog, secretsSet: ["OAUTH_ACCESS_TOKEN"] }],
+    connections: [{ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected", research: "PostHog is connected with write access, so research runs can't use it." }] }, "csrf", true);
+  expect(html).toContain(`<span class="tool-state" data-ready="true">Working · 1 tool</span>`);
+  expect(html.split(said)).toHaveLength(2);
+  expect(html).toContain(`<p class="tool-note" role="status">${said}</p><details><summary>Reconnect read-only</summary><form method="post" action="/settings/tools/connect"><input type="hidden" name="csrf" value="csrf"><input type="hidden" name="repo" value="/work/shop"><input type="hidden" name="shown" value="/work/shop"><input type="hidden" name="service" value="posthog"><input type="hidden" name="access" value="read"><label>Your Toolroll password`);
+  expect(html.match(/>Reconnect read-only</g)).toHaveLength(2);
+  expect(html).toContain('<strong>PostHog</strong><span>Connected</span></button>');
+  // Someone who can't manage tools sees why, without a control they can't use.
+  const viewer = toolsHtml({ ...view(null), tools: [{ tool: posthog, secretsSet: ["OAUTH_ACCESS_TOKEN"] }], connections: [{ id: "posthog", label: "PostHog", about: "", state: "connected", research: "PostHog is connected with write access, so research runs can't use it." }] }, "", false);
+  expect(viewer).toContain(said);
+  expect(viewer).not.toContain("Reconnect read-only");
+});

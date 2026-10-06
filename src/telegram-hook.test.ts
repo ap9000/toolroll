@@ -3,7 +3,7 @@
  * only a request carrying our secret header, keeps each update once for the
  * bridge, and answers at once — through a real HTTP server.
  */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,4 +48,24 @@ test("only a push carrying our secret is kept, once; anything else is refused an
 test("without a bot token there is no push address", async () => {
   rmSync(join(dir, "telegram-token"));
   expect((await push(update, telegramHookSecret(dir, true)!)).status).toBe(404);
+});
+
+test("a schema-invalid authenticated push is acknowledged and logged without queuing or resending it", async () => {
+  const secret = telegramHookSecret(dir, true)!;
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const [body, path] of [
+      [{ update_id: 12, message: { message_id: "broken" } }, "message.message_id"],
+      [{ update_id: 13, callback_query: { id: "tap", message: { message_id: 2, chat: { id: null } } } }, "callback_query.message.chat.id"],
+      [{ update_id: -1 }, "update_id"],
+    ] as const) {
+      const response = await push(JSON.stringify(body), secret);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+      expect(warning).toHaveBeenLastCalledWith(expect.stringContaining(`${path}:`));
+    }
+    expect(store.telegramInbox(BOT, 10)).toEqual([]);
+    expect((await push(update, secret)).status).toBe(200);
+    expect(store.telegramInbox(BOT, 10)).toEqual([{ updateId: 977559800, payload: update }]);
+  } finally { warning.mockRestore(); }
 });

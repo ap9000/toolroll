@@ -168,7 +168,7 @@ describe("an email", () => {
   }
 
   test("it waits until email is set up, then sends through the real mail server to the card's address", async () => {
-    const flow = flowOf([{ id: "draft", title: "Draft", kind: "inbox" }, { id: "send", title: "Email it", kind: "email", to: "{{card.email}}", subject: "Re: {{card.title}}\nBcc: x@evil.example", body: "{{stage.draft}}", ifFails: "Draft" }]);
+    const flow = flowOf([{ id: "draft", title: "Draft", kind: "draft", instructions: "Answer {{card.title}}" }, { id: "send", title: "Email it", kind: "email", to: "{{card.email}}", subject: "Re: {{card.title}}\nBcc: x@evil.example", body: "{{stage.draft}}", ifFails: "Draft" }]);
     const card = cardIn(flow, "send");
     store.updateFlowCard(card, { outputs: { draft: "Hi Priya, refunded today." } }, T0);
     await runFlowSteps(store, repo, at(1), io());

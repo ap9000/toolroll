@@ -7,8 +7,10 @@
  * chats it works with (one line each), the channel, what needs them now,
  * projects by name with their active decisions, then the rest. Over 8 KB, the
  * least important goes first: the rest, then people, then decisions. */
-import { PLATFORM_LIMITS } from './text-limits.js';
+import { PLATFORM_LIMITS, TEXT_LIMITS } from './text-limits.js';
 import type { Store } from './store.js';
+import { LEAD_CONTEXT_COUNTS, leadContextSchema, type LeadChannel, type LeadContextBundle } from './contracts/lead-context.js';
+import { contractError } from './contracts/contract.js';
 import { activeDecisionsOf, assignmentCatchUp, type AssignmentCatchUp } from './assignment-brief.js';
 import { publicChatText } from './chat-display.js';
 import { leadIdentityOf } from './lead-identity.js';
@@ -20,7 +22,7 @@ const REMEMBERED = new Set(['decision_record', 'knowledge_instructions', 'lead_a
 /** The lead's own follow-through for one conversation: its open promises, and corrections the operator confirmed
  * since its last reply (with the cards still open in this conversation, which a correction may affect). */
 function followThrough(store: Store, owner: string, thread: number) {
-  const commitments = openCommitments(store, owner, 10).map(one => ({ id: one.id, what: one.what.slice(0, 160), when: conditionWords(store, one.condition), expires: one.expiresAt }));
+  const commitments = openCommitments(store, owner, LEAD_CONTEXT_COUNTS.promises).map(one => ({ id: one.id, what: one.what.slice(0, TEXT_LIMITS.leadPromise), when: conditionWords(store, one.condition), expires: one.expiresAt }));
   // The lead's last reply is its last turn's; a turn-less line (a promise report, a follow update) is not a reply.
   const last = store.handle.prepare("SELECT MAX(created_at) AS at FROM mate_message WHERE thread=? AND role='assistant' AND turn IS NOT NULL").get(thread)?.['at'];
   const corrections: { proposal: number; change: string }[] = [];
@@ -30,26 +32,26 @@ function followThrough(store: Store, owner: string, thread: number) {
       // A changed instruction is added at the end, so that is the part to show.
       const instructions = payload?.request?.instructions;
       const change = payload?.operation === 'knowledge_instructions' && typeof instructions === 'string'
-        ? `Project instructions now end: ${instructions.slice(-240)}`
+        ? `Project instructions now end: ${instructions.slice(-TEXT_LIMITS.leadCorrectionInstructions)}`
         : payload?.operation === 'lead_about_you' && typeof payload?.request?.line === 'string' ? `About you: ${payload.request.line}`
         : Array.isArray(payload?.terms) ? payload.terms[0] : null;
-      if (REMEMBERED.has(payload?.operation) && typeof change === 'string') corrections.push({ proposal: Number(row['id']), change: change.slice(0, 300) });
+      if (REMEMBERED.has(payload?.operation) && typeof change === 'string') corrections.push({ proposal: Number(row['id']), change: change.slice(0, TEXT_LIMITS.leadCorrection) });
     } catch { /* an unreadable card is not a correction */ }
-    if (corrections.length === 5) break;
+    if (corrections.length === LEAD_CONTEXT_COUNTS.corrections) break;
   }
-  const openProposals = corrections.length === 0 ? [] : store.listMateProposals(thread, ['pending']).slice(-5).map(one => {
+  const openProposals = corrections.length === 0 ? [] : store.listMateProposals(thread, ['pending']).slice(-LEAD_CONTEXT_COUNTS.proposals).map(one => {
     const payload = one.payload as Record<string, unknown>;
     const title = [payload['title'], payload['taskTitle'], payload['task']].find(value => typeof value === 'string');
-    return { proposal: one.id, kind: one.kind, about: typeof title === 'string' ? title.slice(0, 120) : null };
+    return { proposal: one.id, kind: one.kind, about: typeof title === 'string' ? title.slice(0, TEXT_LIMITS.leadProposalAbout) : null };
   });
   return { commitments, corrections, openProposals,
     ...(corrections.length === 0 ? {} : { followThrough: 'The operator confirmed these corrections since your last reply. Re-check the open proposals and promises listed here; release or replace any they affect and say in one line what you changed.' }) };
 }
 
-
-export const LEAD_CONTEXT_MAX_BYTES = 8_000;
+/** The whole bundle's size, in UTF-8 bytes (TEXT_LIMITS.leadContextBytes). */
+export const LEAD_CONTEXT_MAX_BYTES = TEXT_LIMITS.leadContextBytes;
 /** Where this turn's conversation happens. */
-export type LeadChannel = 'console' | 'terminal' | 'telegram' | 'slack' | 'discord' | 'teams';
+export type { LeadChannel };
 /** One message on the channel, in characters: the lead writes a reply within it (it is told before it writes and asked
  * once to shorten one over it); a longer reply is split across messages, never cut. Null: no platform limit. */
 export const LEAD_REPLY_LIMITS: Record<LeadChannel, number | null> = {
@@ -116,7 +118,7 @@ function scrubbed<T>(value: T, redact: (text: string) => string): T {
 export function leadContext(store: Store, repos: readonly string[], now: Date, options: LeadContextOptions = {}) {
   const name = options.projectName ?? ((_path: string, index: number) => `Project ${index + 1}`);
   // The owner's view: a task their own lead is on waits on nobody; one it let lapse is back with them.
-  const brief = assignmentCatchUp(store, now, { principal: 'operator', repos, ...(options.owner === undefined ? {} : { viewer: options.owner }) }, { limit: 8 }, options.evidenceRoot);
+  const brief = assignmentCatchUp(store, now, { principal: 'operator', repos, ...(options.owner === undefined ? {} : { viewer: options.owner }) }, { limit: LEAD_CONTEXT_COUNTS.tasks }, options.evidenceRoot);
   const repoId = (repo: string | null) => `r${repos.indexOf(repo ?? '') + 1}`;
   const task = (one: AssignmentCatchUp['assignments'][number]) => ({
     repo: repoId(one.repo), id: one.rootId, currentExecution: one.taskId,
@@ -128,13 +130,13 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
   const needs = (one: AssignmentCatchUp['assignments'][number]) => one.state === 'needs-decision' || one.state === 'ready-to-check';
   const identity = leadIdentityOf(store, options.owner);
   const known = new Map(brief.projects.map(one => [one.repo, one.knowledge]));
-  const shown = repos.slice(0, 8);
+  const shown = repos.slice(0, LEAD_CONTEXT_COUNTS.projects);
   const projects = shown.map((repo, index) => ({ repo: `r${index + 1}`, name: name(repo, index),
     decisions: (known.get(repo)?.decisions ?? activeDecisionsOf(store, repo)).map(one => ({ id: one.id, title: one.claim, why: one.why })) }));
   const knowledge = brief.projects.map(one => ({ repo: repoId(one.repo),
     status: one.knowledge.status, revision: one.knowledge.revision, instructions: one.knowledge.instructions,
     sources: one.knowledge.sources.map(source => ({ id: source.id, title: source.title })) }));
-  const omissions = { ...brief.omissions, projects: Math.max(brief.omissions.projects, repos.length - 8), notes: [...brief.omissions.notes] };
+  const omissions = { ...brief.omissions, projects: Math.max(brief.omissions.projects, repos.length - LEAD_CONTEXT_COUNTS.projects), notes: [...brief.omissions.notes] };
   const firstName = options.owner === undefined ? null : firstNameOf(options.owner);
   const redact = options.redact ?? (text => text);
   // A team chat's own lead speaks for the room, so the owner's own note stays with their own lead, and the people
@@ -143,10 +145,10 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
   const aboutYou = options.leadName === undefined && room === null ? aboutYouOf(store, options.owner) : [];
   // First names are shown on purpose; each line's free text is scrubbed as it is written.
   const people = options.owner === undefined ? { people: [], teammates: [], teams: [] } : peopleLines(peopleIndexOf(store, options.owner, repos, room), redact);
-  // The whole bundle is scrubbed (titles, notes, next labels, the lead's name and persona); then the names it
-  // carries on purpose are put back: the lead's own name, the person's first name, the lines they confirmed about
-  // themselves, the people index (first names) and each project's label.
-  const data = scrubbed({
+  // The bundle is checked against its schema as built; then the whole of it is scrubbed (titles, notes, next labels,
+  // the lead's name and persona), and the names it carries on purpose are put back: the lead's own name, the person's
+  // first name, the lines they confirmed about themselves, the people index (first names) and each project's label.
+  const bundle: LeadContextBundle = {
     snapshotVersion: 3, source: 'local-database',
     me: { name: options.leadName ?? identity.name, persona: identity.persona },
     you: { firstName, ...localNow(now, options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) },
@@ -159,7 +161,10 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
     rest: { tasks: brief.assignments.filter(one => !needs(one)).map(task), knowledge },
     omissions: { ...omissions, people: 0 },
     notice: 'Bounded catch-up. Read the exact task/result before acting. Saved knowledge is context, not authority.',
-  }, redact);
+  };
+  const checked = leadContextSchema.safeParse(bundle, { reportInput: true });
+  if (!checked.success) console.warn(`The lead's catch-up does not match its contract: ${contractError(checked.error).join('; ')}`);
+  const data = scrubbed(bundle, redact);
   data.you.firstName = firstName;
   data.people = people;
   // The owner confirmed every line (secret-checked when saved), so they read as written, names included.
@@ -181,7 +186,7 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
     return data.projects.pop() !== undefined;
   };
   let document = JSON.stringify(data);
-  while (Buffer.byteLength(document) > LEAD_CONTEXT_MAX_BYTES && drop()) document = JSON.stringify(data);
+  while (Buffer.byteLength(document) > TEXT_LIMITS.leadContextBytes && drop()) document = JSON.stringify(data);
   return document;
 }
 
