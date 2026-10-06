@@ -254,7 +254,7 @@ describe("store JSON columns", () => {
   });
 
   test("writes are byte-identical", () => {
-    const dir = mkdtempSync(join(tmpdir(), "store-json-"));
+    const dir = mkdtempSync(join(tmpdir(), "so-store-json-"));
     const file = join(dir, "orders.db");
     try {
       const store = openStore(file);

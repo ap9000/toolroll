@@ -12,7 +12,7 @@ const verdictOf = (schema: typeof codexModelSchema | typeof npmLatestSchema | ty
 };
 
 function catalogOf(text: string) {
-  const home = mkdtempSync(join(tmpdir(), "catalog-"));
+  const home = mkdtempSync(join(tmpdir(), "so-catalog-"));
   mkdirSync(join(home, ".codex"));
   writeFileSync(join(home, ".codex", "models_cache.json"), text);
   return codexCatalog(home);
