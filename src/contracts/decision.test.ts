@@ -48,8 +48,22 @@ describe("the parked decision contract", () => {
     });
   });
 
+  it("reads a recommendation given as \"<id>: reason\" as that option's id; a bare id still works", () => {
+    for (const recommendation of ["b", "b: it can be undone", " b :why: with colons"]) {
+      const parsed = parseDecision(JSON.stringify({ ...base, recommendation }));
+      expect(parsed.ok && parsed.decision.recommendation).toBe("b");
+    }
+  });
+
+  it("tells the model each text field's bound without promising a shorten turn decisions do not have", () => {
+    const text = JSON.stringify(DECISION_MODEL_SCHEMA);
+    expect(text).not.toContain("shorten");
+    expect(text).toContain("Longer text is refused.");
+  });
+
   it("keeps the reason codes repair turns and incidents rely on, and every message names its path", () => {
     expect(reasons({ ...base, recommendation: "ghost" })).toEqual([["bad-recommendation", 'recommendation: "ghost" does not match any option id']]);
+    expect(reasons({ ...base, recommendation: "ghost: it is safest" })).toEqual([["bad-recommendation", 'recommendation: "ghost: it is safest" does not match any option id']]);
     expect(reasons({ ...base, options: [] })).toEqual([["too-few-options", "options: at least 2 items"]]);
     expect(reasons({ ...base, options: [option("a"), { id: "b", label: "B", consequence: "c" }] })).toEqual([["missing-reversible", "options[1].reversible: required"]]);
     expect(reasons({ ...base, options: [option("a"), option("a")], recommendation: "a" })).toEqual([["duplicate-option-id", 'options[1].id: "a" appears twice']]);

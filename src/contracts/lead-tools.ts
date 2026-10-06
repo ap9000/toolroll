@@ -160,7 +160,8 @@ export const LEAD_TOOL_READ_INPUTS = {
   ...LEAD_TOOL_INPUTS,
   list_tasks: LEAD_TOOL_INPUTS.list_tasks.extend({ limit: z.unknown().optional() }),
   get_task_conversation: LEAD_TOOL_INPUTS.get_task_conversation.extend({ limit: z.unknown().optional() }),
-  get_flow_insights: LEAD_TOOL_INPUTS.get_flow_insights.extend({ days: z.unknown().optional() }),
+  // 0.9.36 read a null repo as every project.
+  get_flow_insights: LEAD_TOOL_INPUTS.get_flow_insights.extend({ repo: repoId.nullable().optional(), days: z.unknown().optional() }),
   get_person: LEAD_TOOL_INPUTS.get_person.extend({ id: z.unknown().optional(), name: z.unknown().optional() }),
   propose_agents: LEAD_TOOL_INPUTS.propose_agents.extend({ agent: LEAD_TOOL_INPUTS.propose_agents.shape.agent.unwrap().strip().optional() }),
 } as const;

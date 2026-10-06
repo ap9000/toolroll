@@ -132,6 +132,8 @@ export const TEXT_LIMITS = {
   decisionRecap: 2_000,
   decisionQuestion: 2_000,
   decisionOptionId: 40,
+  /** A decision's recommendation: an option's id, optionally followed by ": " and why. */
+  decisionRecommendation: 500,
   decisionLabel: 120,
   decisionConsequence: 500,
   decisionAssignee: 120,
@@ -258,7 +260,8 @@ export type Platform = keyof typeof PLATFORM_LIMITS;
 const count = (n: number) => n.toLocaleString("en-US");
 
 /** The line a model reads before it writes a field with a limit. */
-export function limitRule(what: string, limit: number, unit: "characters" | "bytes" = "characters"): string {
+export function limitRule(what: string, limit: number, unit: "characters" | "bytes" = "characters", shorten = true): string {
+  if (!shorten) return `${what}: at most ${count(limit)} ${unit}. Longer text is refused.`;
   return `${what}: at most ${count(limit)} ${unit}. Put the most important part first. Longer text is not cut: you will be asked to shorten it.`;
 }
 

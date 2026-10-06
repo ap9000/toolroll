@@ -132,7 +132,7 @@ export function parseDecision(raw: string): ParseResult {
       recap: payload.recap.trim(),
       question: payload.question.trim(),
       options: payload.options.map(option => ({ id: option.id, label: option.label.trim(), consequence: option.consequence.trim(), reversible: option.reversible })),
-      recommendation: payload.recommendation,
+      recommendation: recommendedId(payload.recommendation),
       assignee: payload.assignee === undefined || payload.assignee === null ? null : payload.assignee.trim(),
       // Normalized so the store's lexicographic-comparison invariant holds.
       deadline: payload.deadline === undefined || payload.deadline === null ? null : new Date(Date.parse(payload.deadline)).toISOString(),
@@ -198,7 +198,7 @@ function decisionRuleProblems(body: Record<string, unknown>, contract: readonly 
     text(option["consequence"], `options[${index}].consequence`, `option-${index}-consequence`, false);
   });
   const recommendation = body["recommendation"];
-  if (typeof recommendation === "string" && !touched(contract, "recommendation") && !touched(contract, "options") && !options.some(option => typeof option === "object" && option !== null && (option as Record<string, unknown>)["id"] === recommendation)) {
+  if (typeof recommendation === "string" && !touched(contract, "recommendation") && !touched(contract, "options") && !options.some(option => typeof option === "object" && option !== null && (option as Record<string, unknown>)["id"] === recommendedId(recommendation))) {
     problems.push({ reason: "bad-recommendation", message: `recommendation: "${truncate(recommendation, 60)}" does not match any option id` });
   }
   if (body["assignee"] !== null) text(body["assignee"], "assignee", "assignee", true);
@@ -207,6 +207,12 @@ function decisionRuleProblems(body: Record<string, unknown>, contract: readonly 
     problems.push({ reason: "bad-deadline", message: `deadline: must be an ISO 8601 timestamp (got ${describe(deadline)})` });
   }
   return problems;
+}
+
+/** The option id a recommendation names: a bare id, or the id before the first ":" in "<id>: why". */
+function recommendedId(recommendation: string): string {
+  const colon = recommendation.indexOf(":");
+  return (colon === -1 ? recommendation : recommendation.slice(0, colon)).trim();
 }
 
 function refuse(reason: string, message: string): ParseResult {

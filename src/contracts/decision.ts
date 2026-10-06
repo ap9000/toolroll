@@ -20,11 +20,14 @@ export const DECISION_OPTIONS_MAX = 6;
 /** Option ids travel in URLs, CLI arguments, and CAS updates — they are identifiers, not prose. */
 export const OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
+/** Decisions have no shorten turn: an over-long field is refused, so the model is not told it will be asked. */
+const NO_SHORTEN = { shorten: false } as const;
+
 /** One option: its id, a one-line label, what choosing it does, and whether it can be undone (never defaulted). */
 export const decisionOptionSchema = z.object({
-  id: limited("option id", "decisionOptionId").regex(OPTION_ID, { error: "must be letters, digits, - or _, starting with a letter or digit" }),
-  label: limited("option label", "decisionLabel").min(1),
-  consequence: limited("option consequence", "decisionConsequence").min(1),
+  id: limited("option id", "decisionOptionId", NO_SHORTEN).regex(OPTION_ID, { error: "must be letters, digits, - or _, starting with a letter or digit" }),
+  label: limited("option label", "decisionLabel", NO_SHORTEN).min(1),
+  consequence: limited("option consequence", "decisionConsequence", NO_SHORTEN).min(1),
   reversible: z.boolean(),
 });
 
@@ -33,12 +36,12 @@ export type DecisionOption = z.infer<typeof decisionOptionSchema>;
 export const decisionSchema = z.object({
   /** Required rather than defaulted: an agent that did not say whether the loop can continue has not composed a decision. */
   urgency: z.literal("blocking"),
-  recap: limited("recap", "decisionRecap").min(1),
-  question: limited("question", "decisionQuestion").min(1),
+  recap: limited("recap", "decisionRecap", NO_SHORTEN).min(1),
+  question: limited("question", "decisionQuestion", NO_SHORTEN).min(1),
   options: z.array(decisionOptionSchema).min(DECISION_OPTIONS_MIN).max(DECISION_OPTIONS_MAX),
-  /** An option's id. */
-  recommendation: limited("recommendation", "decisionOptionId").min(1),
-  assignee: limited("assignee", "decisionAssignee").min(1).nullable().optional(),
+  /** An option's id, alone or as "<id>: why". */
+  recommendation: limited("recommendation (an option's id, or \"<id>: why\")", "decisionRecommendation", NO_SHORTEN).min(1),
+  assignee: limited("assignee", "decisionAssignee", NO_SHORTEN).min(1).nullable().optional(),
   /** An ISO 8601 timestamp. */
   deadline: z.string().nullable().optional(),
 });

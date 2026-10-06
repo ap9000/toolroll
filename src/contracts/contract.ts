@@ -14,12 +14,13 @@ import { limitRule, TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
  * A string bounded by its TEXT_LIMITS entry, never a literal. The limit rule rides along as the field's description,
  * so a model reads the bound before it writes. Zod counts UTF-16 code units; for a limit named in bytes this is the
  * schema's necessary bound (a string within N bytes is within N code units), and the byte count itself is checked in
- * plain code after parsing.
+ * plain code after parsing. `shorten: false` is for a contract with no shorten turn (a parked decision): its
+ * description states the bound without promising one.
  */
-export function limited(field: string, limitKey: TextLimitKey): z.ZodString {
+export function limited(field: string, limitKey: TextLimitKey, options: { shorten?: boolean } = {}): z.ZodString {
   const limit = TEXT_LIMITS[limitKey];
   const unit = limitKey.endsWith("Bytes") ? "bytes" : "characters";
-  return z.string().max(limit, { error: `over ${limit.toLocaleString("en-US")} ${unit}` }).describe(limitRule(field, limit, unit));
+  return z.string().max(limit, { error: `over ${limit.toLocaleString("en-US")} ${unit}` }).describe(limitRule(field, limit, unit, options.shorten ?? true));
 }
 
 /** A versioned payload envelope: a strict object whose `version` is exactly `version`. */

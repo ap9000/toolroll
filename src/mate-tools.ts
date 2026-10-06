@@ -1021,7 +1021,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const reachable = (repo: string) => ctx.who.repos.includes(repo) && ctx.store.accountCanAccess(ctx.who.name, repo);
       const days = Number.isSafeInteger(args["days"]) ? Number(args["days"]) : 30;
       if (args["flow"] === undefined) {
-        const repo = args["repo"] === undefined ? null : repoPathOf(ctx.who, args["repo"]);
+        const repo = args["repo"] === undefined || args["repo"] === null ? null : repoPathOf(ctx.who, args["repo"]);
         const flows = ctx.store.listFlows(repo === null ? ctx.who.repos : [repo]).filter(one => reachable(one.repo)).slice(0, 20);
         return { ok: true, body: { days, flows: flows.map(flow => { const seen = flowInsights(ctx.store, flow, ctx.now, days); return { flow: flow.id, name: flow.name, project: repoIdOf(ctx.who, flow.repo), cards: seen.cards, breaks: seen.breaks, scripts: seen.scripts }; }) } };
       }
