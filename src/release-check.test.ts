@@ -323,7 +323,10 @@ describe("checks fit memory", () => {
     expect(appLanes({ ...normal, available: 0 }, options).count).toBe(1);
     expect(appLanes({ ...IDLE, swapUsed: 90, swapTotal: 100 }, options).count).toBe(1);
     expect(laneWords(appLanes({ ...IDLE, swapUsed: null, swapTotal: null }, options))).toBe("1 lane: couldn't read memory");
-    expect(appLanes({ ...IDLE, swapUsed: 0, swapTotal: 0 }, options).count).toBe(4);
+    expect(appLanes({ ...IDLE, swapUsed: 0, swapTotal: 0 }, options).count).toBe(4);    // A 7 GB runner keeps its lane cap; a rehearsal's own total wins over the machine running it.
+    expect(laneWords(appLanes(normal, { env: {}, total: 7 * GB }))).toBe("1 lane: small runner: keeping current lane cap");
+    expect(appLanes({ ...normal, total: 64 * GB }, { env: {} }).count).toBe(4);
+    expect(appLanes({ ...normal, total: 7 * GB }, { env: {} }).count).toBe(1);
   });
 
   test("memory that can't be read means one lane, never a crash; only a bad TOOLROLL_E2E_LANES throws", () => {

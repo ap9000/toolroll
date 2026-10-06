@@ -188,7 +188,7 @@ export function sampleMachine({ env = process.env, platform = process.platform, 
     // A rehearsal's readings; unreadable, it is a machine with no room.
     try {
       const fake = JSON.parse(readFileSync(env.TOOLROLL_CHECK_MACHINE, "utf8"));
-      return { platform: fake.platform ?? platform, available: fake.available ?? 0, swapUsed: fake.swapUsed ?? null, swapTotal: fake.swapTotal ?? null, pressure: fake.pressure ?? null, providers: fake.providers ?? null };
+      return { platform: fake.platform ?? platform, available: fake.available ?? 0, swapUsed: fake.swapUsed ?? null, swapTotal: fake.swapTotal ?? null, pressure: fake.pressure ?? null, providers: fake.providers ?? null, ...(fake.total == null ? {} : { total: fake.total }) };
     } catch { return { platform, available: 0, swapUsed: null, swapTotal: null, pressure: null, providers: null }; }
   }
   const known = read => { try { return read() ?? null; } catch { return null; } };
@@ -221,7 +221,7 @@ const pressureName = level => ({ 1: "normal", 2: "warn", 4: "critical" })[level]
  * pressure or memory. Unknown pressure cannot authorize extra work: a sample that is missing, or whose memory, macOS
  * pressure or (elsewhere) swap couldn't be read, gets one lane. Only a bad TOOLROLL_E2E_LANES throws. The gate checks
  * this again at every start. */
-export function appLanes(sample, { env = process.env, total = totalmem(), baseline = 1, max = MAX_GROUPS } = {}) {
+export function appLanes(sample, { env = process.env, total = sample?.total ?? totalmem(), baseline = 1, max = MAX_GROUPS } = {}) {
   const set = env.TOOLROLL_E2E_LANES;
   if (set !== undefined && set !== "" && (!/^[0-9]+$/.test(set) || !Number.isSafeInteger(Number(set)) || Number(set) < 1)) {
     throw new Error(`TOOLROLL_E2E_LANES takes a whole number, 1 or more (not "${set}").`);
