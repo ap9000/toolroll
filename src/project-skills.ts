@@ -3,10 +3,30 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseDocument } from "yaml";
+import type { z } from "zod";
 import { acceptedIdentities, learningIdentity, learningSha } from "./project-learning.js";
 import { scanForSecrets } from "./evidence.js";
 import { fileTaskProposal } from "./proposal.js";
 import type { Store } from "./store.js";
+import { TEXT_LIMITS } from "./text-limits.js";
+import { contractError } from "./contracts/contract.js";
+import {
+  SKILL_COUNTS,
+  SKILL_LIMITS,
+  readSkillsSnapshotPayload,
+  savedSkillPackageSchema,
+  savedSkillsSnapshotSchema,
+  skillPackageSchema,
+  skillSelectionSchema,
+  type SavedSkill,
+  type SkillFile,
+  type SkillPackage,
+  type SkillSelection,
+  type SkillsSnapshot,
+} from "./contracts/project-skills.js";
+
+export { SKILL_LIMITS };
+export type { SavedSkill, SkillFile, SkillPackage, SkillsSnapshot };
 
 export const SKILLS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS skill_package (sha TEXT PRIMARY KEY, payload TEXT NOT NULL);
@@ -16,34 +36,7 @@ CREATE TABLE IF NOT EXISTS skill_snapshot (run INTEGER PRIMARY KEY REFERENCES ru
 CREATE TABLE IF NOT EXISTS skill_test (task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id), package TEXT NOT NULL REFERENCES skill_package(sha), actor TEXT NOT NULL, request_sha TEXT NOT NULL, sample TEXT NOT NULL, source_run INTEGER REFERENCES run(id), feedback TEXT, identity TEXT NOT NULL);
 ${["skill_package", "skill_owner", "project_skill_change", "skill_snapshot", "skill_test"].map((t) => `CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT,'Skill history is immutable'); END; CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT,'Skill history is immutable'); END;`).join("\n")}
 `;
-export type SkillFile = { path: string; base64: string };
-export type SkillPackage = {
-  name: string;
-  description: string;
-  source: string;
-  requirements: string;
-  warnings: string[];
-  files: SkillFile[];
-};
-export type SavedSkill = SkillPackage & { sha: string };
-type Choice = { sha: string; enabled: boolean };
-type Selection = Record<string, Choice>;
-export type SkillsSnapshot = {
-  version: 1;
-  revision: number;
-  identity: string;
-  inheritedFrom: number | null;
-  test: boolean;
-  packages: SavedSkill[];
-};
-export const SKILL_LIMITS = {
-  files: 64,
-  packageBytes: 1024 * 1024,
-  fileBytes: 256 * 1024,
-  bodyBytes: 24 * 1024,
-  enabled: 8,
-  selectionBytes: 2 * 1024 * 1024,
-};
+type Selection = SkillSelection;
 const controls =
   /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufffd]/u;
 const text = (value: unknown, max: number, label: string) => {
@@ -77,7 +70,7 @@ export function validateSkill(
       if (
         !file ||
         typeof file.path !== "string" ||
-        file.path.length > 240 ||
+        file.path.length > TEXT_LIMITS.skillPath ||
         !/^[a-zA-Z0-9_. -]+(?:\/[a-zA-Z0-9_. -]+)*$/.test(file.path) ||
         file.path
           .split("/")
@@ -133,14 +126,14 @@ export function validateSkill(
   }
   if (!front || typeof front !== "object" || Array.isArray(front))
     throw Error("Skill metadata must contain a name and description.");
-  const name = text(front["name"], 64, "Skill name");
+  const name = text(front["name"], TEXT_LIMITS.skillNameBytes, "Skill name");
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
     throw Error("Use a lowercase skill name with hyphens between words.");
-  const description = text(front["description"], 1024, "Description");
+  const description = text(front["description"], TEXT_LIMITS.skillDescriptionBytes, "Description");
   const requirements =
     front["compatibility"] === undefined
       ? ""
-      : text(front["compatibility"], 500, "Requirements");
+      : text(front["compatibility"], TEXT_LIMITS.skillRequirementsBytes, "Requirements");
   const extensions = Object.keys(front).filter(
     (k) =>
       !["name", "description", "license", "compatibility", "metadata"].includes(
@@ -160,14 +153,20 @@ export function validateSkill(
     warnings.push(
       "Includes scripts. Agents may run them only within their task permissions.",
     );
-  return {
+  return written(skillPackageSchema, {
     name,
     description,
-    source: text(source, 500, "Source"),
+    source: text(source, TEXT_LIMITS.skillSourceBytes, "Source"),
     requirements,
     warnings,
     files: safe,
-  };
+  });
+}
+/** A payload through its schema before it is written; a refusal names the field. */
+function written<T>(schema: z.ZodType<T>, value: unknown): T {
+  const read = schema.safeParse(value, { reportInput: true });
+  if (!read.success) throw Error(`This skill could not be saved: ${contractError(read.error).join("; ")}`);
+  return read.data;
 }
 function admit(store: Store, repo: string, actor: string, write = false) {
   if (
@@ -181,17 +180,22 @@ function admit(store: Store, repo: string, actor: string, write = false) {
 /** Revisions under any identity this project accepts, as a bound JSON list. */
 const IN_ACCEPTED = "identity IN (SELECT value FROM json_each(?))";
 const listOf = (accepted: ReadonlySet<string>) => JSON.stringify([...accepted]);
-function unpack<T>(payload: unknown, sha: unknown): T {
+/** Saved bytes are checked against their digest first; only then are they parsed through their schema. */
+function unpack<T>(payload: unknown, sha: unknown, read: (input: unknown) => T | null): T {
   if (typeof payload !== "string" || learningSha(payload) !== sha)
     throw Error("Saved skills could not be verified.");
-  return JSON.parse(payload) as T;
+  const value = read(JSON.parse(payload));
+  if (value === null) throw Error("Saved skills could not be verified.");
+  return value;
 }
+const through = <T>(schema: z.ZodType<T>) => (input: unknown): T | null => { const read = schema.safeParse(input); return read.success ? read.data : null; };
+const unpackSelection = (payload: unknown, sha: unknown): Selection => unpack(payload, sha, through(skillSelectionSchema));
 function packageOf(store: Store, sha: string): SavedSkill {
   const row = store.handle
     .prepare("SELECT payload FROM skill_package WHERE sha=?")
     .get(sha);
   if (!row) throw Error("That skill version is unavailable.");
-  return { ...unpack<SkillPackage>(row["payload"], sha), sha };
+  return { ...unpack(row["payload"], sha, through(savedSkillPackageSchema)), sha };
 }
 function current(store: Store, repo: string, accepted: ReadonlySet<string>) {
   const row = store.handle
@@ -206,7 +210,7 @@ function current(store: Store, repo: string, accepted: ReadonlySet<string>) {
     );
   return {
     revision: Number(row["revision"]),
-    selection: unpack<Selection>(row["payload"], row["sha"]),
+    selection: unpackSelection(row["payload"], row["sha"]),
   };
 }
 export function skillsView(store: Store, repo: string, actor: string) {
@@ -235,7 +239,7 @@ export function skillsView(store: Store, repo: string, actor: string) {
     }
     if (row)
       for (const c of Object.values(
-        unpack<Selection>(row["payload"], row["sha"]),
+        unpackSelection(row["payload"], row["sha"]),
       ))
         visible.add(c.sha);
   }
@@ -258,7 +262,7 @@ export function skillsView(store: Store, repo: string, actor: string) {
       revision: Number(r["revision"]),
       actor: String(r["actor"]),
       at: String(r["at"]),
-      enabled: Object.entries(unpack<Selection>(r["payload"], r["sha"]))
+      enabled: Object.entries(unpackSelection(r["payload"], r["sha"]))
         .filter(([, c]) => c.enabled)
         .map(([name, c]) => ({ name, version: c.sha.slice(0, 10) })),
     }));
@@ -279,7 +283,7 @@ export function skillsVersion(store: Store, repo: string, actor: string, revisio
   if (!Number.isSafeInteger(revision) || revision < 1) throw Error("Choose a saved skills version.");
   const row = store.handle.prepare(`SELECT payload,sha FROM project_skill_change WHERE repo=? AND ${IN_ACCEPTED} AND revision=?`).get(repo, listOf(accepted), revision);
   if (!row) throw Error("That skills version is unavailable.");
-  const selection = unpack<Selection>(row["payload"], row["sha"]);
+  const selection = unpackSelection(row["payload"], row["sha"]);
   for (const choice of Object.values(selection)) packageOf(store, choice.sha);
   return selection;
 }
@@ -305,7 +309,7 @@ export function importSkill(
         store.handle
           .prepare("SELECT COUNT(*) AS n FROM skill_owner WHERE actor=?")
           .get(actor)?.["n"],
-      ) >= 100
+      ) >= SKILL_COUNTS.library
     )
       throw Error(
         "Your library has 100 saved versions. Reuse an existing version.",
@@ -349,7 +353,7 @@ export function changeSkills(
         )
         .get(args.repo, listOf(accepted), args.restore ?? -1);
       if (!row) throw Error("That version is unavailable.");
-      selection = unpack<Selection>(row["payload"], row["sha"]);
+      selection = unpackSelection(row["payload"], row["sha"]);
     } else {
       const skill = view.library.find((p) => p.sha === args.sha);
       if (!skill) throw Error("Choose an available skill version.");
@@ -368,7 +372,7 @@ export function changeSkills(
       Buffer.byteLength(JSON.stringify(enabled)) > SKILL_LIMITS.selectionBytes
     )
       throw Error("Enable up to 8 skills, totaling at most 2 MB.");
-    const payload = JSON.stringify(selection);
+    const payload = JSON.stringify(written(skillSelectionSchema, selection));
     store.handle
       .prepare("INSERT INTO project_skill_change VALUES (?,?,?,?,?,?,?)")
       .run(
@@ -429,9 +433,7 @@ export function readSkillsSnapshot(
   const run = store.getRun(runId);
   if (!run || store.refForId(run.taskRef)?.repo !== row["repo"])
     throw Error("Saved skills belong to another project.");
-  const saved = unpack<
-    Omit<SkillsSnapshot, "packages"> & { packageShas: string[] }
-  >(row["payload"], row["sha"]);
+  const saved = unpack(row["payload"], row["sha"], (input) => { const read = readSkillsSnapshotPayload(input); return read.ok ? read.value : null; });
   const { packageShas, ...facts } = saved;
   if (
     packageShas.length &&
@@ -523,10 +525,10 @@ export function freezeSkills(store: Store, runId: number): SkillsSnapshot {
       }
     }
     const { packages, ...facts } = snapshot;
-    const payload = JSON.stringify({
+    const payload = JSON.stringify(written(savedSkillsSnapshotSchema, {
       ...facts,
       packageShas: packages.map((p) => p.sha),
-    });
+    }));
     store.handle
       .prepare("INSERT INTO skill_snapshot VALUES (?,?,?,?)")
       .run(runId, ref.repo, payload, learningSha(payload));
@@ -614,12 +616,12 @@ export function testSkill(
   admit(store, args.repo, args.actor, true);
   const skill = view.library.find((p) => p.sha === args.sha);
   if (!skill) throw Error("Choose an available skill.");
-  const sample = text(args.sample, 4000, "Sample request");
-  if (sample.length > 800)
+  const sample = text(args.sample, TEXT_LIMITS.skillSampleBytes, "Sample request");
+  if (sample.length > TEXT_LIMITS.skillSample)
     throw Error("Keep the sample request to 800 characters.");
   const feedback =
-    args.feedback === undefined ? null : text(args.feedback, 2000, "Feedback");
-  if (feedback && feedback.length > 500)
+    args.feedback === undefined ? null : text(args.feedback, TEXT_LIMITS.skillFeedbackBytes, "Feedback");
+  if (feedback && feedback.length > TEXT_LIMITS.skillFeedback)
     throw Error("Keep feedback to 500 characters.");
   if (args.sourceRun !== undefined) {
     const source = skillTestResult(store, args.sourceRun, args.actor);

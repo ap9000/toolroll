@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { openStore, type Store } from './store.js';
 import { addApprover, propose, approve } from './scope.js';
 import { register } from './runner.js';
-import { applySavedKnowledge, changeKnowledge, knowledgeContext, knowledgeView, readKnowledgeSnapshot, conversationKnowledge } from './project-knowledge.js';
+import { applySavedKnowledge, changeKnowledge, knowledgeContext, knowledgeVersion, knowledgeView, readKnowledgeSnapshot, conversationKnowledge } from './project-knowledge.js';
+import { savedRows } from '../test/context-fixture.js';
 import { learningIdentity, learningSha, legacyIdentityOf } from './project-learning.js';
 import { runOperate } from './operate.js';
 import { withActor } from './actor.js';
@@ -204,5 +205,22 @@ describe('project knowledge',()=>{
       expect((await post({...data,revision:'2',action:'restore',restore:'1'})).status).toBe(303);expect(view().knowledge.instructions).toBe(data.instructions);
       store.handle.prepare("UPDATE approver SET role='viewer',generation=generation+1 WHERE name='alex'").run();expect((await post({...data,revision:'3'})).status).not.toBe(303);
     }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
+  });
+  test('knowledge saved before it carried a version reads as it was; tampering is still refused; a new revision is version 1',()=>{
+    const identity=learningIdentity(repo),insert=store.handle.prepare('INSERT INTO knowledge_change(repo,identity,revision,actor,at,payload,sha) VALUES (?,?,?,?,?,?,?)');
+    for(const row of savedRows.knowledge.changes)insert.run(repo,identity,row.revision,'sam',now.toISOString(),row.payload,row.sha);
+    const last=savedRows.knowledge.changes.at(-1)!;
+    store.handle.prepare('INSERT INTO project_knowledge VALUES (?,?,?,?,?)').run(repo,identity,last.revision,last.payload,last.sha);
+    expect(view().knowledge).toEqual(JSON.parse(last.payload));expect(view().revision).toBe(last.revision);
+    for(const row of savedRows.knowledge.changes)expect(knowledgeVersion(store,repo,'alex',row.revision)).toEqual(JSON.parse(row.payload));
+    change('instructions',{instructions:'Keep labels short.'});
+    const written=store.handle.prepare('SELECT payload,sha FROM knowledge_change WHERE repo=? ORDER BY revision DESC LIMIT 1').get(repo)!;
+    expect(JSON.parse(String(written['payload']))).toEqual({version:1,instructions:'Keep labels short.',references:JSON.parse(last.payload).references});
+    expect(learningSha(String(written['payload']))).toBe(written['sha']);
+    expect(view().knowledge).toEqual({instructions:'Keep labels short.',references:JSON.parse(last.payload).references});
+    // Restoring a version saved before keeps its knowledge, now written as version 1.
+    change('restore',{},1);expect(view().knowledge).toEqual(JSON.parse(savedRows.knowledge.changes[0]!.payload));
+    store.handle.prepare('UPDATE project_knowledge SET payload=? WHERE repo=?').run(last.payload.replace('concise','vague'),repo);
+    expect(()=>view()).toThrow('Project knowledge could not be verified.');
   });
 });

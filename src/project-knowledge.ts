@@ -2,10 +2,13 @@
 import { execFileSync } from 'node:child_process';
 import { acceptedIdentities, carryProject, learningIdentity, learningSha } from './project-learning.js';
 import { currentActor } from './actor.js';
-import { decisionLines, getDecision, listDecisions, type DecisionLine } from './project-memory.js';
+import { decisionLines, getDecision, listDecisions } from './project-memory.js';
 import { scanForSecrets } from './evidence.js';
-import { repositoryContextRead, type RepositoryContext } from './repository-context.js';
+import { repositoryContextRead } from './repository-context.js';
 import type { Store } from './store.js';
+import { TEXT_LIMITS } from './text-limits.js';
+import { contractError } from './contracts/contract.js';
+import { KNOWLEDGE_COUNTS, KNOWLEDGE_SELECTION_VERSION, KNOWLEDGE_VERSION, knowledgeSchema, knowledgeSelectionSchema, readKnowledge, readKnowledgeSelection, type Knowledge, type KnowledgeDraft, type KnowledgeReference, type KnowledgeSelection } from './contracts/project-knowledge.js';
 
 export const KNOWLEDGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS project_knowledge (
@@ -33,9 +36,7 @@ CREATE TRIGGER IF NOT EXISTS knowledge_change_no_delete BEFORE DELETE ON knowled
 CREATE TRIGGER IF NOT EXISTS knowledge_snapshot_no_update BEFORE UPDATE ON knowledge_snapshot BEGIN SELECT RAISE(ABORT,'Knowledge context is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS knowledge_snapshot_no_delete BEFORE DELETE ON knowledge_snapshot BEGIN SELECT RAISE(ABORT,'Knowledge context is immutable'); END;
 `;
-export type KnowledgeReference = { id: string; title: string; content: string; path: string | null; sourceSha: string | null; sourceRevision: string | null };
-export type Knowledge = { instructions: string; references: KnowledgeReference[] };
-export type KnowledgeDraft = { instructions?: string; title?: string; content?: string; path?: string; id?: string };
+export type { Knowledge, KnowledgeDraft, KnowledgeReference, KnowledgeSelection };
 const EMPTY: Knowledge = { instructions: '', references: [] };
 const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks','-C',repo,...args], { encoding:'utf8', maxBuffer:200_000, stdio:['ignore','pipe','pipe'] }).trimEnd();
 function clean(value: string, bytes: number): string {
@@ -51,9 +52,18 @@ export const STALE_KNOWLEDGE = "This project's saved knowledge is from before a 
 const STALE_OMITTED = { title:'Saved project knowledge', reason:'Saved knowledge is from before a change; it was not applied' };
 /** Revisions under any identity this project accepts, as a bound JSON list. */
 const IN_ACCEPTED = 'identity IN (SELECT value FROM json_each(?))';
+/** The stored bytes are checked against their digest first; only then are they parsed, and upgraded in memory. */
 function decode(payload: string, sha: string): Knowledge {
   if (learningSha(payload) !== sha) throw Error('Project knowledge could not be verified.');
-  return JSON.parse(payload) as Knowledge;
+  const read = readKnowledge(JSON.parse(payload));
+  if (!read.ok) throw Error('Project knowledge could not be verified.');
+  return read.value;
+}
+/** Knowledge (or a selection) as it is written: through its schema, so a refusal names the field. */
+function encode(schema: typeof knowledgeSchema | typeof knowledgeSelectionSchema, value: object, what: string): string {
+  const read = schema.safeParse(value, { reportInput: true });
+  if (!read.success) throw Error(`${what} could not be saved: ${contractError(read.error).join('; ')}`);
+  return JSON.stringify(read.data);
 }
 /** Saved knowledge under another identity is stale: it is returned for review, never applied. */
 function current(store: Store, repo: string, accepted: ReadonlySet<string>): { revision: number; knowledge: Knowledge; stale: boolean } {
@@ -70,8 +80,8 @@ function document(repo: string, revision: string, path: string): { content: stri
   const match = /^100(?:644|755) blob ([a-f0-9]{40,64})\t/.exec(entry);
   if (!match) throw Error('This reference must be a committed text file, not a folder or link.');
   const sha = match[1]!;
-  if (Number(git(repo,['cat-file','-s',sha])) > 12000) throw Error('Choose a shorter reference (up to 12 KB).');
-  return { content:clean(git(repo,['cat-file','blob',sha]),12000), sha };
+  if (Number(git(repo,['cat-file','-s',sha])) > TEXT_LIMITS.knowledgeReferenceBytes) throw Error('Choose a shorter reference (up to 12 KB).');
+  return { content:clean(git(repo,['cat-file','blob',sha]),TEXT_LIMITS.knowledgeReferenceBytes), sha };
 }
 export function knowledgeView(store: Store, repo: string, actor: string) {
   const { identity, accepted } = admission(store,repo,actor), { stale, ...value } = current(store,repo,accepted);
@@ -114,7 +124,7 @@ export function changeKnowledge(store: Store, args: { repo:string; actor:string;
     if (existing.stale) throw Error(`${STALE_KNOWLEDGE} first.`);
     if (existing.revision !== args.revision) throw Error('Knowledge changed in another window. Review your draft below before saving again.');
     let knowledge = existing.knowledge;
-    if (args.action === 'instructions') knowledge.instructions = clean(args.draft.instructions ?? '',4000);
+    if (args.action === 'instructions') knowledge.instructions = clean(args.draft.instructions ?? '',TEXT_LIMITS.knowledgeInstructionsBytes);
     else if (args.action === 'restore') {
       const row = store.handle.prepare(`SELECT payload,sha FROM knowledge_change WHERE repo=? AND ${IN_ACCEPTED} AND revision=?`).get(args.repo,JSON.stringify([...accepted]),args.restore ?? -1);
       if (!row) throw Error('That saved version is unavailable.');
@@ -123,20 +133,20 @@ export function changeKnowledge(store: Store, args: { repo:string; actor:string;
       if (!knowledge.references.some(r=>r.id===args.draft.id)) throw Error('That reference is no longer available.');
       knowledge.references = knowledge.references.filter(r=>r.id!==args.draft.id);
     } else if (args.action === 'save') {
-      const title = clean(args.draft.title ?? '',120);
+      const title = clean(args.draft.title ?? '',TEXT_LIMITS.knowledgeTitleBytes);
       if (!title) throw Error('Give this reference a short name.');
       const id = args.draft.id || learningSha(`${identity}:${existing.revision+1}:${title}`).slice(0,20);
       if (args.draft.id && !knowledge.references.some(r=>r.id===id)) throw Error('That reference is no longer available.');
-      const path = clean(args.draft.path ?? '',300) || null;
+      const path = clean(args.draft.path ?? '',TEXT_LIMITS.knowledgePathBytes) || null;
       const sourceRevision = path ? git(args.repo,['rev-parse','HEAD']) : null;
       const source = path ? document(args.repo,sourceRevision!,path) : null;
-      const content = source?.content ?? clean(args.draft.content ?? '',12000);
+      const content = source?.content ?? clean(args.draft.content ?? '',TEXT_LIMITS.knowledgeReferenceBytes);
       if (!content) throw Error('Add reference text or select a committed project document.');
       const ref = {id,title,content,path,sourceSha:source?.sha ?? null,sourceRevision};
       knowledge.references = [...knowledge.references.filter(r=>r.id!==id),ref];
-      if (knowledge.references.length > 12) throw Error('Keep up to 12 focused references. Remove one before adding another.');
+      if (knowledge.references.length > KNOWLEDGE_COUNTS.references) throw Error('Keep up to 12 focused references. Remove one before adding another.');
     } else throw Error('Choose a supported knowledge action.');
-    const payload = JSON.stringify(knowledge), sha = learningSha(payload), revision = existing.revision+1;
+    const payload = encode(knowledgeSchema,{version:KNOWLEDGE_VERSION,...knowledge},'Project knowledge'), sha = learningSha(payload), revision = existing.revision+1;
     store.handle.prepare('INSERT INTO knowledge_change(repo,identity,revision,actor,at,payload,sha) VALUES (?,?,?,?,?,?,?)').run(args.repo,identity,revision,args.actor,now.toISOString(),payload,sha);
     store.handle.prepare('INSERT INTO project_knowledge VALUES (?,?,?,?,?) ON CONFLICT(repo) DO UPDATE SET identity=excluded.identity,revision=excluded.revision,payload=excluded.payload,sha=excluded.sha').run(args.repo,identity,revision,payload,sha);
   });
@@ -155,7 +165,6 @@ export function applySavedKnowledge(store: Store, repo: string, actor: string, n
     return carryProject(store,repo,{from:String(row['identity']),to:identity,actor,how:'approver'},now);
   });
 }
-export type KnowledgeSelection = { version:1; revision:number; instructions:string; references:KnowledgeReference[]; omitted:{title:string;reason:string}[]; inheritedFrom:number|null; repository?: RepositoryContext; decisions?: DecisionLine[] };
 const COMMON_WORDS = new Set(['the','and','for','with','this','that','from','have','should','will','into','our','use']);
 const tokens = (s:string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? []).filter(t=>!COMMON_WORDS.has(t)));
 function select(store:Store,repo:string,accepted:ReadonlySet<string>,query:string,head:string): KnowledgeSelection {
@@ -166,18 +175,18 @@ function select(store:Store,repo:string,accepted:ReadonlySet<string>,query:strin
   const ranked = knowledge.references.map(ref=>({ref,score:[...tokens(`${ref.title} ${ref.path ?? ''}`)].reduce((n,t)=>n+(q.has(t)?3:0),0)+[...tokens(ref.content)].reduce((n,t)=>n+(q.has(t)?1:0),0)})).sort((a,b)=>b.score-a.score || a.ref.id.localeCompare(b.ref.id));
   const references:KnowledgeReference[] = [];
   for (const {ref,score} of ranked) {
-    let reason = score === 0 ? 'Not relevant to this task' : references.length >= 3 ? 'More relevant references selected' : '';
+    let reason = score === 0 ? 'Not relevant to this task' : references.length >= KNOWLEDGE_COUNTS.selected ? 'More relevant references selected' : '';
     if (ref.path) {
       try { if (document(repo,head,ref.path).sha !== ref.sourceSha) reason='Source changed; refresh this reference'; }
       catch { reason='Source unavailable; refresh this reference'; }
     }
-    if (!reason && Buffer.byteLength(JSON.stringify({instructions:knowledge.instructions,references:[...references,ref]})) > 24000) reason='Context size limit';
+    if (!reason && Buffer.byteLength(JSON.stringify({instructions:knowledge.instructions,references:[...references,ref]})) > TEXT_LIMITS.knowledgeContextBytes) reason='Context size limit';
     if (reason) omitted.push({title:ref.title,reason}); else references.push(ref);
   }
   // Settled decisions ride the same frozen record, one line each; the why
   // loads on demand by id, so nothing is repeated between brief and store.
-  const decisions = decisionLines(store,repo,query,{limit:8,bytes:Math.max(0,Math.min(1500,24000-Buffer.byteLength(JSON.stringify({instructions:knowledge.instructions,references}))-200))});
-  return {version:1,revision,instructions:knowledge.instructions,references,omitted,inheritedFrom:null,...(decisions.length?{decisions}:{})};
+  const decisions = decisionLines(store,repo,query,{limit:KNOWLEDGE_COUNTS.decisions,bytes:Math.max(0,Math.min(TEXT_LIMITS.knowledgeDecisionsBytes,TEXT_LIMITS.knowledgeContextBytes-Buffer.byteLength(JSON.stringify({instructions:knowledge.instructions,references}))-200))});
+  return {version:KNOWLEDGE_SELECTION_VERSION,revision,instructions:knowledge.instructions,references,omitted,inheritedFrom:null,...(decisions.length?{decisions}:{})};
 }
 /** Read the same bounded, source-checked selection without inventing a worker run. */
 export function selectProjectKnowledge(store:Store,args:{repo:string;actor:string;query:string;baseRevision:string}):KnowledgeSelection {
@@ -191,9 +200,14 @@ export function readKnowledgeSnapshot(store:Store,runId:number): KnowledgeSelect
   const row = store.handle.prepare('SELECT * FROM knowledge_snapshot WHERE run=?').get(runId);
   if (!row) return null;
   const run = store.getRun(runId), repo = run && store.refForId(run.taskRef)?.repo;
-  const selection = JSON.parse(String(row['payload'])) as KnowledgeSelection;
+  const unverified = () => Error('The context saved for this run could not be verified.');
+  // The stored bytes are checked against their digest before they are parsed.
+  if (!repo || row['repo'] !== repo || learningSha(String(row['payload'])) !== row['sha']) throw unverified();
+  const read = readKnowledgeSelection(JSON.parse(String(row['payload'])));
+  if (!read.ok) throw unverified();
+  const selection = read.value;
   const empty = row['identity']==='unconfigured' && unconfigured(selection);
-  if (!repo || row['repo'] !== repo || (!empty && !acceptedIdentities(store,repo).has(String(row['identity']))) || learningSha(String(row['payload'])) !== row['sha']) throw Error('The context saved for this run could not be verified.');
+  if (!empty && !acceptedIdentities(store,repo).has(String(row['identity']))) throw unverified();
   return selection;
 }
 /** Freeze at provider admission. Reviewers see the builder's exact project context. */
@@ -218,16 +232,16 @@ export function knowledgeContext(store:Store,runId:number,cacheRoot?:string,vali
       const configured = !!store.handle.prepare('SELECT 1 FROM project_knowledge WHERE repo=?').get(repo);
       // A legacy source without a snapshot did not receive this feature's
       // context. Never give its reviewer newly configured project guidance.
-      selection = inherited ? {...inherited,inheritedFrom:parent!.id} : !configured || parent ? {version:1,revision:0,instructions:'',references:[],omitted:[],inheritedFrom:parent?.id??null} : select(store,repo,acceptedIdentities(store,repo),`${store.getTask(ref.externalId)?.title ?? ''} ${scope?.goal ?? ''} ${(scope?.touches ?? []).join(' ')}`, contextBase || git(repo,['rev-parse','HEAD']));
+      selection = inherited ? {...inherited,inheritedFrom:parent!.id} : !configured || parent ? {version:KNOWLEDGE_SELECTION_VERSION,revision:0,instructions:'',references:[],omitted:[],inheritedFrom:parent?.id??null} : select(store,repo,acceptedIdentities(store,repo),`${store.getTask(ref.externalId)?.title ?? ''} ${scope?.goal ?? ''} ${(scope?.touches ?? []).join(' ')}`, contextBase || git(repo,['rev-parse','HEAD']));
       // Optional source selection is captured once from this crew's actual
       // checkout. It is reused with the immutable run snapshot on resume.
       // Index/source failure stays context metadata, never an admission gate.
       if (!parent && run.worktree && contextBase) {
-        const available = 24000 - Buffer.byteLength(JSON.stringify(selection)) - 30;
-        if (available >= 3000) selection.repository = repositoryContextRead({ repo:run.worktree, project:repo, baseRevision:contextBase, audience:'crew', maxBytes:Math.min(6000,available), ...(cacheRoot === undefined ? {} : {cacheRoot}), query:`${store.getTask(ref.externalId)?.title ?? ''} ${scope?.goal ?? ''} ${(scope?.touches ?? []).join(' ')}` });
+        const available = TEXT_LIMITS.knowledgeContextBytes - Buffer.byteLength(JSON.stringify(selection)) - 30;
+        if (available >= TEXT_LIMITS.knowledgeRepositoryMinBytes) selection.repository = repositoryContextRead({ repo:run.worktree, project:repo, baseRevision:contextBase, audience:'crew', maxBytes:Math.min(TEXT_LIMITS.knowledgeRepositoryBytes,available), ...(cacheRoot === undefined ? {} : {cacheRoot}), query:`${store.getTask(ref.externalId)?.title ?? ''} ${scope?.goal ?? ''} ${(scope?.touches ?? []).join(' ')}` });
         else selection.omitted.push({title:'Repository context',reason:'Context size limit'});
       }
-      const payload=JSON.stringify(selection);
+      const payload=encode(knowledgeSelectionSchema,selection,'Project context');
       store.handle.prepare('INSERT INTO knowledge_snapshot VALUES (?,?,?,?,?)').run(runId,repo,unconfigured(selection)?'unconfigured':learningIdentity(repo),payload,learningSha(payload));
     }
     // JSON escapes ordinary newlines, but not Unicode line separators. Keep

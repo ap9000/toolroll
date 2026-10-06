@@ -21,11 +21,20 @@ import { listDecisions, recordDecision } from './project-memory.js';
 import { composeMateRequest, performMateRequest, isDirectChatProvider, CHAT_KEY_ENV } from './converse.js';
 import { performSubscriptionMateRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
+import { TEXT_LIMITS } from './text-limits.js';
+import { contractError, parseContract } from './contracts/contract.js';
+import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
-export const MEMORY_TRACE_BYTES = 40_000;
+export type { MemoryProposal, Verdict };
+
+/** One session's trace, in characters (TEXT_LIMITS.memoryTrace). */
+export const MEMORY_TRACE_BYTES = TEXT_LIMITS.memoryTrace;
 export const MEMORY_MIN_SESSIONS = 2;
 export const MEMORY_MAX_PROPOSALS = 6;
-export const INSTRUCTION_BUDGET_BYTES = 4000;
+/** The project instructions' budget: the same limit knowledge holds them to. */
+export const INSTRUCTION_BUDGET_BYTES = TEXT_LIMITS.knowledgeInstructionsBytes;
+/** How many claims of each kind one verdict keeps. */
+const VERDICT_ITEMS = 20;
 export const MEMORY_GAP_MAX_AGE_MS = 90 * 24 * 3_600_000;
 
 const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -152,11 +161,6 @@ export function memorySurface(store: Store, repo: string, actor: string): Memory
 
 // ---- 3. analyse --------------------------------------------------------------------
 
-export type Verdict = {
-  positive: { instruction: string; effect: string; quote: string }[];
-  negative: { instruction: string; effect: string; class: 'harm' | 'non-compliance' | 'irrelevant'; quote: string }[];
-  gaps: { mistake: string; proposedInstruction: string; domain: 'project' | 'orchestration'; quote: string; matchesGap?: string }[];
-};
 export type MemoryAnalyzer = (input: { trace: string; surface: MemorySurface; openGaps: { key: string; mistake: string }[]; kind: MemorySource['kind'] }) => Promise<{ ok: true; text: string } | { ok: false; problem: string }>;
 
 export function analysisPrompt(surface: MemorySurface, openGaps: { key: string; mistake: string }[]): string {
@@ -165,7 +169,7 @@ export function analysisPrompt(surface: MemorySurface, openGaps: { key: string; 
     'INSTRUCTIONS (refer to them ONLY by id):', ...surface.instructions.map(i => `[${i.id}] ${i.text}`),
     'DECISIONS on record (refer by id):', ...surface.decisions.map(d => `[${d.id}] ${d.claim}`),
     'GAPS ALREADY ON THE BOOKS (cite the key in matchesGap when the same underlying gap):', ...openGaps.map(g => `[${g.key}] ${g.mistake}`),
-    'Return ONE JSON object and nothing else: {"positive":[{"instruction":"IN-001","effect":"...","quote":"verbatim"}],"negative":[{"instruction":"IN-001","effect":"...","class":"harm|non-compliance|irrelevant","quote":"verbatim"}],"gaps":[{"mistake":"...","proposedInstruction":"one imperative sentence","domain":"project|orchestration","quote":"verbatim","matchesGap":"key when known"}]}',
+    `Return ONE JSON object and nothing else, matching this JSON Schema: ${JSON.stringify(MEMORY_VERDICT_MODEL_SCHEMA)}`,
     'Rules: every item needs a verbatim quote copied from the trace or it is discarded; negative evidence outranks positive; class harm means following the instruction caused damage, non-compliance means it was ignored; a mistake caused by the harness or task framing is domain orchestration; report nothing rather than something weak; an empty array is a good answer.',
   ].join('\n');
 }
@@ -187,26 +191,37 @@ export function defaultAnalyzer(store: Store, options: { configDir?: string; env
       const answer = await performMateRequest(request, config.provider as DirectChatProviderId, AbortSignal.timeout(options.timeoutMs ?? 120_000), options.fetcher);
       return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
     }
-    const answer = await performSubscriptionMateRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system, dataDocument, history, tools: [], timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
+    // The verdict's own schema is the harness's structured output, so the answer is the verdict itself.
+    const answer = await performSubscriptionMateRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system, dataDocument, history, tools: [], outputSchema: MEMORY_VERDICT_MODEL_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
     return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
   };
 }
 
-/** Parse strictly and keep only claims whose quote is really in the trace. */
-export function parseVerdict(text: string, trace: string, surface: MemorySurface): Verdict | null {
+const UNREADABLE = 'The analysis was not a readable verdict.';
+
+/**
+ * Read the analyser's answer with the verdict schema (a refusal names the field), then keep only claims whose quote
+ * is really in the trace and, for an instruction's effect, whose id is on the surface audited.
+ */
+export function parseVerdict(text: string, trace: string, surface: MemorySurface): { ok: true; verdict: Verdict } | { ok: false; problem: string } {
   const start = text.indexOf('{'), end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  let raw: Record<string, unknown>;
-  try { raw = obj(JSON.parse(text.slice(start, end + 1))); } catch { return null; }
+  if (start < 0 || end <= start) return { ok: false, problem: UNREADABLE };
+  let raw: unknown;
+  try { raw = JSON.parse(text.slice(start, end + 1)); } catch { return { ok: false, problem: UNREADABLE }; }
+  const read = parseContract(memoryVerdictSchema, raw);
+  if (!read.ok) return { ok: false, problem: `${UNREADABLE.slice(0, -1)}: ${read.issues.slice(0, 5).map(issue => issue.line).join('; ')}` };
   const ids = new Set(surface.instructions.map(i => i.id));
-  const quoted = (item: Record<string, unknown>): boolean => typeof item['quote'] === 'string' && item['quote'].trim().length >= 12 && trace.includes(item['quote'].trim());
-  const list = (key: string) => (Array.isArray(raw[key]) ? raw[key].map(obj) : []).filter(quoted).slice(0, 20);
-  return {
-    positive: list('positive').filter(i => ids.has(String(i['instruction']))).map(i => ({ instruction: String(i['instruction']), effect: clip(String(i['effect'] ?? ''), 300), quote: String(i['quote']).trim() })),
-    negative: list('negative').filter(i => ids.has(String(i['instruction'])) && ['harm', 'non-compliance', 'irrelevant'].includes(String(i['class']))).map(i => ({ instruction: String(i['instruction']), effect: clip(String(i['effect'] ?? ''), 300), class: i['class'] as 'harm' | 'non-compliance' | 'irrelevant', quote: String(i['quote']).trim() })),
-    gaps: list('gaps').filter(i => typeof i['mistake'] === 'string' && typeof i['proposedInstruction'] === 'string').map(i => ({ mistake: clip(String(i['mistake']), 300), proposedInstruction: clip(String(i['proposedInstruction']), 240), domain: i['domain'] === 'orchestration' ? 'orchestration' as const : 'project' as const, quote: String(i['quote']).trim(), ...(typeof i['matchesGap'] === 'string' ? { matchesGap: i['matchesGap'] } : {}) })),
-  };
+  const quoted = (item: { quote: string }): boolean => item.quote.trim().length >= 12 && trace.includes(item.quote.trim());
+  const list = <T extends { quote: string }>(items: T[]): T[] => items.filter(quoted).slice(0, VERDICT_ITEMS).map(item => ({ ...item, quote: item.quote.trim() }));
+  return { ok: true, verdict: {
+    positive: list(read.value.positive).filter(i => ids.has(i.instruction)),
+    negative: list(read.value.negative).filter(i => ids.has(i.instruction)),
+    gaps: list(read.value.gaps),
+  } };
 }
+
+/** A verdict as a session keeps it: through its schema, with its version. */
+const keptVerdict = (verdict: Verdict): string => JSON.stringify(savedVerdictSchema.parse({ version: MEMORY_VERDICT_VERSION, ...verdict }));
 
 const gapKey = (mistake: string): string => sha(mistake.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()).slice(0, 16);
 
@@ -233,19 +248,20 @@ export async function runMemoryPass(store: Store, args: { repo: string; actor: s
       ON CONFLICT(id) DO UPDATE SET surface=excluded.surface, trace_sha=excluded.trace_sha, analyzed_at=NULL, verdict=NULL, problem=NULL`).run(session.id, args.repo, session.kind, session.source, session.at || now.toISOString(), surface.version, sha(trace));
     const gaps = openGaps();
     const answer = await args.analyzer({ trace, surface, openGaps: gaps, kind: session.kind });
-    const verdict = answer.ok ? parseVerdict(answer.text, trace, surface) : null;
-    if (verdict === null) {
+    const parsed = answer.ok ? parseVerdict(answer.text, trace, surface) : null;
+    if (parsed === null || !parsed.ok) {
       report.failed++;
-      const problem = answer.ok ? 'The analysis was not a readable verdict.' : answer.problem;
+      const problem = parsed === null ? (answer.ok ? UNREADABLE : answer.problem) : parsed.problem;
       report.problems.push(`${session.id}: ${problem}`);
       store.handle.prepare('UPDATE memory_session SET problem=? WHERE id=?').run(problem, session.id);
       continue;
     }
+    const verdict = parsed.verdict;
     store.transact(() => {
-      store.handle.prepare('UPDATE memory_session SET analyzed_at=?, verdict=?, problem=NULL WHERE id=?').run(now.toISOString(), JSON.stringify(verdict), session.id);
+      store.handle.prepare('UPDATE memory_session SET analyzed_at=?, verdict=?, problem=NULL WHERE id=?').run(now.toISOString(), keptVerdict(verdict), session.id);
       for (const gap of verdict.gaps) {
         if (gap.domain === 'orchestration') continue;
-        const key = gap.matchesGap !== undefined && gaps.some(g => g.key === gap.matchesGap) ? gap.matchesGap : gapKey(gap.mistake);
+        const key = gap.matchesGap !== null && gaps.some(g => g.key === gap.matchesGap) ? gap.matchesGap : gapKey(gap.mistake);
         store.handle.prepare(`INSERT INTO memory_gap(repo,key,mistake,proposed,domain,first_seen,last_seen) VALUES (?,?,?,?,?,?,?)
           ON CONFLICT(repo,key) DO UPDATE SET last_seen=excluded.last_seen, retired_at=NULL, retired_reason=NULL`).run(args.repo, key, gap.mistake, gap.proposedInstruction, gap.domain, now.toISOString(), now.toISOString());
         const id = Number(store.handle.prepare('SELECT id FROM memory_gap WHERE repo=? AND key=?').get(args.repo, key)!['id']);
@@ -261,12 +277,13 @@ export async function runMemoryPass(store: Store, args: { repo: string; actor: s
 
 // ---- 4. propose --------------------------------------------------------------------
 
-export type MemoryProposal = { id: number; repo: string; kind: 'instruction-add' | 'instruction-remove' | 'decision-add'; fingerprint: string; title: string; rationale: string; beforeText: string | null; afterText: string; evidence: { session: string; quote: string }[]; sessions: number; status: string; createdAt: string; surface: string };
-
+/** A proposal row through its schema; one that does not read as a proposal names the field. */
 function proposalOf(row: Record<string, unknown>): MemoryProposal {
-  return { id: Number(row['id']), repo: String(row['repo']), kind: row['kind'] as MemoryProposal['kind'], fingerprint: String(row['fingerprint']), title: String(row['title']), rationale: String(row['rationale']),
-    beforeText: row['before_text'] === null ? null : String(row['before_text']), afterText: String(row['after_text']), evidence: JSON.parse(String(row['evidence'])) as { session: string; quote: string }[],
-    sessions: Number(row['sessions']), status: String(row['status']), createdAt: String(row['created_at']), surface: String(row['surface']) };
+  const read = memoryProposalSchema.safeParse({ id: Number(row['id']), repo: String(row['repo']), kind: row['kind'], fingerprint: String(row['fingerprint']), title: String(row['title']), rationale: String(row['rationale']),
+    beforeText: row['before_text'] === null ? null : String(row['before_text']), afterText: String(row['after_text']), evidence: JSON.parse(String(row['evidence'])),
+    sessions: Number(row['sessions']), status: String(row['status']), createdAt: String(row['created_at']), surface: String(row['surface']) }, { reportInput: true });
+  if (!read.success) throw Error(`Memory proposal ${String(row['id'])} could not be read: ${contractError(read.error).join('; ')}`);
+  return read.data;
 }
 
 /**
@@ -290,7 +307,7 @@ export function synthesizeProposals(store: Store, repo: string, actor: string, s
       const sessions = new Set(evidence.map(e => e.session)).size;
       if (sessions < MEMORY_MIN_SESSIONS || (rejected.get(fingerprint) ?? -1) >= sessions) return;
       store.handle.prepare('INSERT INTO memory_proposal(repo,kind,fingerprint,title,rationale,before_text,after_text,evidence,sessions,status,created_at,surface) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(repo, kind, fingerprint, title, rationale, beforeText, afterText, JSON.stringify(evidence.slice(0, 6)), sessions, 'pending', now.toISOString(), surface.version);
+        .run(repo, kind, fingerprint, title, rationale, beforeText, afterText, JSON.stringify(memoryEvidenceSchema.parse(evidence.slice(0, 6))), sessions, 'pending', now.toISOString(), surface.version);
       pendingFingerprints.add(fingerprint);
       made++;
     };
@@ -308,8 +325,10 @@ export function synthesizeProposals(store: Store, repo: string, actor: string, s
     // Removals from harm.
     const harm = new Map<string, { session: string; quote: string }[]>();
     for (const row of store.handle.prepare("SELECT id, verdict FROM memory_session WHERE repo=? AND surface=? AND verdict IS NOT NULL").all(repo, surface.version)) {
-      let verdict: Verdict; try { verdict = JSON.parse(String(row['verdict'])) as Verdict; } catch { continue; }
-      for (const item of verdict.negative) if (item.class === 'harm') harm.set(item.instruction, [...(harm.get(item.instruction) ?? []), { session: String(row['id']), quote: item.quote }]);
+      let kept: unknown; try { kept = JSON.parse(String(row['verdict'])); } catch { continue; }
+      const verdict = readSavedVerdict(kept);
+      if (!verdict.ok) continue;
+      for (const item of verdict.value.negative) if (item.class === 'harm') harm.set(item.instruction, [...(harm.get(item.instruction) ?? []), { session: String(row['id']), quote: item.quote }]);
     }
     for (const [instruction, evidence] of harm) {
       const line = surface.instructions.find(i => i.id === instruction);

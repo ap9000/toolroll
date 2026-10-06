@@ -32,11 +32,15 @@ import {
   skillReviewSource,
   skillsContext,
   skillsView,
+  skillsVersion,
+  selectProjectSkills,
   testSkill,
   validateSkill,
   type SkillFile,
 } from "./project-skills.js";
 import { skillsHtml, skillsSnapshotHtml } from "./skills-ui.js";
+import { learningIdentity, learningSha } from "./project-learning.js";
+import { savedRows } from "../test/context-fixture.js";
 
 const main = (body = "Use short button labels.", name = "copy-review") =>
   `---\nname: ${name}\ndescription: |\n  Review interface copy and suggest clearer labels.\n---\n${body}\n`;
@@ -627,6 +631,33 @@ describe("managed project skills", () => {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
     }
+  });
+  test("packages, selections and snapshots saved before read as they were; the same folder imports as the same version", () => {
+    const identity = learningIdentity(repo);
+    for (const row of savedRows.skills.packages) store.handle.prepare("INSERT INTO skill_package VALUES (?,?)").run(row.sha, row.payload);
+    for (const row of savedRows.skills.changes) store.handle.prepare("INSERT INTO project_skill_change VALUES (?,?,?,?,?,?,?)").run(repo, identity, row.revision, "sam", now.toISOString(), row.payload, row.sha);
+    const last = savedRows.skills.changes.at(-1)!;
+    const packages = new Map(savedRows.skills.packages.map((row) => [row.sha, { ...JSON.parse(row.payload), sha: row.sha }]));
+    expect(view().selection).toEqual(JSON.parse(last.payload));
+    expect(view().library).toEqual([...packages.values()].sort((a, b) => a.name.localeCompare(b.name)));
+    const enabled = Object.values(JSON.parse(last.payload) as Record<string, { sha: string; enabled: boolean }>).filter((one) => one.enabled).map((one) => packages.get(one.sha));
+    expect(selectProjectSkills(store, repo, "alex")).toEqual({ version: 1, revision: last.revision, identity, inheritedFrom: null, test: false, packages: enabled });
+    // A package's digest is its version: the same files and source import as the version saved before.
+    for (const row of savedRows.skills.packages) {
+      const saved = JSON.parse(row.payload) as { files: SkillFile[]; source: string };
+      expect(importSkill(store, repo, "alex", saved.files, saved.source, now).sha).toBe(row.sha);
+    }
+    // A new selection is written as a selection has always been: names to versions, no envelope.
+    const disabled = Object.values(JSON.parse(last.payload) as Record<string, { sha: string; enabled: boolean }>).find((one) => !one.enabled)!;
+    change(disabled.sha, "enable");
+    const written = store.handle.prepare("SELECT payload FROM project_skill_change WHERE repo=? ORDER BY revision DESC LIMIT 1").get(repo)!;
+    expect(Object.keys(JSON.parse(String(written["payload"])))).toEqual(Object.keys(JSON.parse(last.payload)));
+    expect(skillsVersion(store, repo, "alex", 1)).toEqual(JSON.parse(savedRows.skills.changes[0]!.payload));
+    // A package whose bytes are not its digest is refused, as before.
+    const forged = "f".repeat(64), choice = `{"copy-review":{"sha":"${forged}","enabled":true}}`;
+    store.handle.prepare("INSERT INTO skill_package VALUES (?,?)").run(forged, savedRows.skills.packages[0]!.payload);
+    store.handle.prepare("INSERT INTO project_skill_change VALUES (?,?,?,?,?,?,?)").run(repo, identity, 99, "sam", now.toISOString(), choice, learningSha(choice));
+    expect(() => view()).toThrow("Saved skills could not be verified.");
   });
 });
 test("GitHub import verifies commit and blob bytes and refuses symlinks", async () => {

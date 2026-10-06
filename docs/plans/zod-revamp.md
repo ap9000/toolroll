@@ -58,7 +58,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | # | Contract | Where today |
 |---|---|---|
 | 8 | **Flow stage outputs and card state** (`{{stage.x}}`, choose/send payloads, attached long output) | `flow-engine.ts`, `flow-send.ts`, `flow-steps.ts` |
-| 9 | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
+| 9 ✅ | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
 | 10 | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
 | 11 | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
 | 12 | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
@@ -124,3 +124,24 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **9. Lead context and project knowledge, memory and skills** (2026-10-05). One schema each in `src/contracts/`:
+  `lead-context.ts` (the lead's per-turn bundle, checked as built, before it is scrubbed), `project-knowledge.ts`
+  (saved knowledge and the selection a run is given), `project-memory.ts` (a decision, its history entry, a draft and a
+  brief's line), `project-skills.ts` (a package, a selection, a run's snapshot) and `memory-pass.ts` (the analyser's
+  verdict, a kept verdict, a proposal and its evidence). The verdict schema is the analyser's `--json-schema` (Codex's
+  output schema; the prompt for other providers) and the parser of its answer; `subscription-chat.ts` takes it as one
+  optional `outputSchema`. Every size budget is in `TEXT_LIMITS` (`LEAD_CONTEXT_MAX_BYTES`, `SKILL_LIMITS`,
+  `MEMORY_TRACE_BYTES` and `INSTRUCTION_BUDGET_BYTES` read from it); counts are named constants. A digest is checked
+  against the stored bytes before they are parsed, and a row is upgraded only in memory. New knowledge, kept verdicts
+  and decision history entries carry `version: 1`; unversioned ones read as before (knowledge keeps the fields its
+  readers knew; a gap without `matchesGap` reads as null). A skill package (content-addressed: its digest is its
+  version), a selection (skill names as keys; `version` is a valid name) and a proposal's evidence (a list older
+  runtimes read as one) keep their exact bytes, with no envelope. Saved rows are read without length bounds
+  (`text-limits.ts`: reading never re-validates length; a kept verdict through 0.9.36 holds a clipped field one past
+  its limit). Replayed from `test/fixtures/context/`: every saved row reads as 0.9.36 read it, and frozen selections,
+  snapshots, packages and selections byte for byte. No form a release wrote is tightened. Tightened, on purpose: a
+  payload with a newer `version`, or one that does not match its shape, reads as unverifiable (the same refusal a
+  wrong digest gets), where before it was passed on as it was. The analyser's answer is now held to
+  its schema: one with a wrong type, an unknown key or a field over its budget is refused by path and retried next
+  run, where before it was clipped, defaulted or ignored; claims without a quote in the trace or about an unknown
+  instruction are still dropped.
