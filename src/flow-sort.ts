@@ -8,26 +8,16 @@
  * is instructions: an answer is only ever one of the zone's own options.
  */
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
-import { sortKeyOf, type FlowSort, type FlowStage } from "./flows.js";
+import { SORT_ROUTE_KEY, sortKeyOf, sortNoteKeyOf } from "./contracts/flow.js";
+import { readJevReply, type SortDecision, type SortNoteAnswer } from "./contracts/sort-answer.js";
+import type { FlowSort, FlowStage } from "./flows.js";
 
 export const JEV_URL = "https://openrouter.ai/api/alpha/decisions";
 export const JEV_MODEL = "~typesafe/jev-latest";
 /** Jev reads up to 32,000 tokens; the card is kept well under that. */
 const STATE_CHARS = 40_000;
 
-export type SortNoteAnswer = { id: string; question: string; kind: "score" | "yes-no"; answer: string; sure: number };
-/** What a sort step decided, kept on its run (decision_json) and shown on the card. */
-export type SortDecision = {
-  model: string;
-  /** The answer as the zone names it, and how sure Jev was (0–1). */
-  answer: string; sure: number; sureAt: number;
-  /** Sure enough to act alone, and where the card went (null: it waited in the zone). */
-  confident: boolean; to: string | null;
-  /** Every answer's chance, by name. */
-  chances: Record<string, number>;
-  notes: SortNoteAnswer[];
-  cost: number | null; ms: number;
-};
+export type { SortDecision, SortNoteAnswer } from "./contracts/sort-answer.js";
 
 export type SortCard = { title: string; description: string | null; note: string | null; outputs: Record<string, string>; source: { label: string } | null };
 type Question = { type: "choice"; instructions: string; criteria: Record<string, string> } | { type: "score"; instructions: string; criteria: string[] } | { type: "noul"; instructions: string };
@@ -57,10 +47,10 @@ export function sortState(card: SortCard, earlier: readonly { id: string; title:
 /** The one request for a card: the zone's question over its answers, plus what it also notes. */
 export function sortRequest(sort: FlowSort, state: Record<string, string>): JevRequest {
   const questions: Record<string, Question> = {
-    route: { type: "choice", instructions: `${sort.question} Read the card's title and details.`, criteria: Object.fromEntries(sort.answers.map(one => [sortKeyOf(one.answer), one.means])) },
+    [SORT_ROUTE_KEY]: { type: "choice", instructions: `${sort.question} Read the card's title and details.`, criteria: Object.fromEntries(sort.answers.map(one => [sortKeyOf(one.answer), one.means])) },
   };
   for (const note of sort.notes) {
-    questions[`note_${note.id.replace(/-/g, "_")}`] = note.kind === "score" && note.levels !== null
+    questions[sortNoteKeyOf(note.id)] = note.kind === "score" && note.levels !== null
       ? { type: "score", instructions: note.question, criteria: note.levels }
       : { type: "noul", instructions: note.question };
   }
@@ -99,34 +89,38 @@ export async function askJev(fetcher: typeof fetch, key: string, request: JevReq
 
 const shortLevel = (level: string) => level.split(":")[0]!.trim();
 
-/** Jev's answers, read back against the zone's own options only; anything else is a problem, never a route. */
+/**
+ * Jev's answers, read through the reply's contract (src/contracts/sort-answer.ts) and then against the zone's own
+ * options only; anything else is a problem, never a route. Confidences and chances are clamped into 0–1.
+ */
 export function readJevAnswers(stage: FlowStage, body: Record<string, unknown>, ms: number): SortDecision | { problem: string } {
   const sort = stage.sort!;
-  const answers = body["answers"] as Record<string, Record<string, unknown>> | undefined;
-  const route = answers?.["route"];
-  if (route === undefined || typeof route["choice"] !== "string") return { problem: "Jev's answer didn't say which way to go." };
-  const picked = sort.answers.find(one => sortKeyOf(one.answer) === route["choice"]);
-  if (picked === undefined) return { problem: "Jev picked an answer this zone doesn't have." };
+  const read = readJevReply(body);
+  if (!read.ok) return { problem: `Jev's answer didn't say which way to go (${read.issues.map(issue => issue.line).join("; ")}).` };
+  const reply = read.value;
+  const route = reply.answers[SORT_ROUTE_KEY];
+  const picked = sort.answers.find(one => sortKeyOf(one.answer) === route.choice);
+  if (picked === undefined) return { problem: "answers.route.choice: Jev picked an answer this zone doesn't have." };
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-  const sure = number(route["confidence"]);
-  const probabilities = (route["probabilities"] ?? {}) as Record<string, unknown>;
+  const sure = number(route.confidence);
+  const probabilities = (route.probabilities ?? {}) as Record<string, unknown>;
   const chances = Object.fromEntries(sort.answers.map(one => [one.answer, Math.round(number(probabilities[sortKeyOf(one.answer)]) * 100) / 100]));
   const notes: SortNoteAnswer[] = [];
   for (const note of sort.notes) {
-    const said = answers?.[`note_${note.id.replace(/-/g, "_")}`];
+    const said = reply.answers[sortNoteKeyOf(note.id)];
     if (said === undefined) continue;
-    if (note.kind === "score" && note.levels !== null && typeof said["score"] === "number") {
-      const level = note.levels[Math.min(note.levels.length - 1, Math.max(0, Math.round(said["score"])))]!;
-      notes.push({ id: note.id, question: note.question, kind: "score", answer: level, sure: Math.round(number(said["confidence"]) * 100) / 100 });
-    } else if (typeof said["noul"] === "number") {
-      const yes = number(said["noul"]);
+    if (note.kind === "score" && note.levels !== null && typeof said.score === "number") {
+      const level = note.levels[Math.min(note.levels.length - 1, Math.max(0, Math.round(said.score)))]!;
+      notes.push({ id: note.id, question: note.question, kind: "score", answer: level, sure: Math.round(number(said.confidence) * 100) / 100 });
+    } else if (typeof said.noul === "number") {
+      const yes = number(said.noul);
       notes.push({ id: note.id, question: note.question, kind: "yes-no", answer: yes >= 0.5 ? "yes" : "no", sure: Math.round(Math.max(yes, 1 - yes) * 100) / 100 });
     }
   }
   const confident = sure >= sort.sureAt;
-  const usage = body["usage"] as { cost?: unknown } | undefined;
+  const usage = reply.usage as { cost?: unknown } | null | undefined;
   return {
-    model: typeof body["model"] === "string" ? body["model"] : JEV_MODEL,
+    model: typeof reply.model === "string" ? reply.model : JEV_MODEL,
     answer: picked.answer, sure: Math.round(sure * 100) / 100, sureAt: sort.sureAt,
     confident, to: confident ? picked.to : stage.onFail, chances, notes,
     cost: typeof usage?.cost === "number" ? usage.cost : null, ms,

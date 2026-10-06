@@ -38,18 +38,26 @@ test("a teammate decides only a zone it staffs", () => {
   expect(store.getFlowCard(ours)?.stage).toBe("owner-decides");
 });
 
-test("a turn must be one of the zone's own choices", () => {
+test("a turn must be one of the zone's own choices, and a refusal names its path", () => {
   const decide = { kind: "decide" as const, canSendBack: false, answers: [] };
-  const base = { answer: "", text: "", note: "", question: "", options: [], reason: "" };
-  expect(readTurn({ ...base, action: "approve" }, decide)).not.toBeNull();
+  const base = { answer: "", text: "", note: "", question: "", options: [], reason: "", tool: "", input: "", remember: "" };
+  const lines = (value: unknown, context: Parameters<typeof readTurn>[1]) => { const read = readTurn(value, context); return read.ok ? [] : read.issues.map(issue => issue.line); };
+  expect(readTurn({ ...base, action: "approve" }, decide).ok).toBe(true);
   // No send-back path here, and a work zone's actions don't apply to a decision.
-  expect(readTurn({ ...base, action: "send_back", note: "no" }, decide)).toBeNull();
-  expect(readTurn({ ...base, action: "route", answer: "Refund" }, decide)).toBeNull();
+  expect(lines({ ...base, action: "send_back", note: "no" }, decide)).toEqual(['action: "send_back" isn\'t one this zone allows ("approve", "hand_off")']);
+  expect(lines({ ...base, action: "route", answer: "Refund" }, decide)).toHaveLength(1);
   const handle = { kind: "handle" as const, canSendBack: false, answers: ["Reply", "Refund request"] };
-  expect(readTurn({ ...base, action: "route", answer: "refund request" }, handle)).not.toBeNull();
-  expect(readTurn({ ...base, action: "route", answer: "Wire the money" }, handle)).toBeNull();
-  expect(readTurn({ ...base, action: "approve" }, handle)).toBeNull();
-  expect(readTurn("approve it", handle)).toBeNull();
+  expect(readTurn({ ...base, action: "route", answer: "refund request" }, handle).ok).toBe(true);
+  expect(lines({ ...base, action: "route", answer: "Wire the money" }, handle)).toEqual(['answer: "Wire the money" isn\'t one of this zone\'s answers']);
+  expect(lines({ ...base, action: "approve" }, handle)).toHaveLength(1);
+  expect(lines({ ...base, action: "ask" }, handle)).toEqual(["question: required for ask"]);
+  expect(lines("approve it", handle)).toEqual(["payload: must be an object (got a string)"]);
+  // Plain-text and older replies keep the original defaults and ignore unknown keys.
+  expect(readTurn({ action: "approve" }, decide)).toEqual({ ok: true, value: { ...base, action: "approve" } });
+  expect(readTurn({ action: "route", answer: " Reply ", remember: undefined, options: "Yes", mood: "calm" }, handle))
+    .toEqual({ ok: true, value: { ...base, action: "route", answer: "Reply" } });
+  expect(readTurn({ action: "ask", question: " Which? ", options: [null, "", 7, " Yes ", "No", "Later", "Never", "Another"] }, handle))
+    .toEqual({ ok: true, value: { ...base, action: "ask", question: "Which?", options: ["Yes", "No", "Later", "Never"] } });
 });
 
 test("only the person asked answers a teammate's question, once", () => {

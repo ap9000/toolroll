@@ -51,13 +51,13 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
 | 6 ✅ | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
-| 7 | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
+| 7 ✅ | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
 
 ### Wave 2 — shared context passed between steps (P1)
 
 | # | Contract | Where today |
 |---|---|---|
-| 8 | **Flow stage outputs and card state** (`{{stage.x}}`, choose/send payloads, attached long output) | `flow-engine.ts`, `flow-send.ts`, `flow-steps.ts` |
+| 8 ✅ | **Flow stage outputs and card state** (`{{stage.x}}`, choose/send payloads, attached long output) | `flow-engine.ts`, `flow-send.ts`, `flow-steps.ts` |
 | 9 | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
 | 10 | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
 | 11 | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
@@ -124,3 +124,39 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **7. Small structured answers** (2026-10-05; compatibility revision 2026-10-06). One schema each in
+  `src/contracts/`: `task-sizing.ts`, `review-findings.ts`, `decision.ts`, `teammate-turn.ts` and `sort-answer.ts`.
+  Types and model-facing JSON Schemas derive from them; callers use their readers and errors name the field path.
+  Claude sizing, teammate turns and the review channel's findings use the generated schemas. Jev's Decisions API
+  takes questions rather than JSON Schema. `DECISION_MODEL_SCHEMA` is exported for the separate scout migration;
+  `scout-report.ts` and `scout.test.ts` remain unchanged from before item 7.
+  Compatibility follows review comment 843: unknown keys are ignored, decisions keep their unversioned format
+  (including ignoring a supplied `version`), and partial teammate turns default absent or non-text fields to ""
+  and filter non-string options. Sizing reasons default to "" and are clipped after whitespace collapses; findings
+  are limited after controls and whitespace collapse. Jev keeps its old defaults for non-numeric confidence/chance,
+  skips non-numeric notes, defaults non-string model and non-numeric cost, and ignores unrelated answer values.
+  Required choices, decision approval terms and zone action checks remain enforced. Teammate limits still use their
+  one shorten turn; sizing and findings schemas do not promise one. These are compatibility exceptions to the strict
+  object and new envelope ground rules, as requested in comment 843, not new acceptance restrictions.
+  The contract harness replays `test/fixtures/answers/`, including older partial turns. These are synthetic samples
+  from the writers and tests, not database exports: the installed database was denied to both builds. Read-only
+  replay of actual saved findings and decisions remains an evidence gap.
+- **8. Flow stage outputs and card state** (2026-10-06). One schema each in `src/contracts/`: `stage-output.ts` (what a
+  finished zone hands on — `{{stage.<id>}}` and a research zone's `.items` and `.report`, per zone kind in
+  `STAGE_HANDOFFS` — and the card's versioned `outputs_json`, with an output too long to pass on kept whole beside it),
+  `flow-send.ts` (the Send to me and Person chooses payloads kept in `flow_send.content_json`, and a person's choice)
+  and `flow-card.ts` (the card and what an update may change). `FlowCardRow`, `FlowSendContent`, `FlowSendLink` and
+  `FlowSendItem` are derived from them; `readFlowSend`, `readFlowItems` and the store's card reader read through them;
+  the engine, steps and sends write handoffs with `withStageHandoff`. A task filed after a zone whose output was over
+  TEXT_LIMITS.stageOutput is given that output whole (flowGoalCuts), not only the link to the discussion. A
+  `{{stage.…}}` reference a save adds — on the canvas, in `toolroll flows create/edit`, from the lead, a template or an
+  imported file — must be one its zone hands on, refused by path (`stages[2].instructions: stage.research.unknown is
+  not available (Research hands on {{stage.research}}, {{stage.research.items}} and {{stage.research.report}})`); one
+  the saved flow already had is never refused, and nothing is checked when a flow is read or run. Every gallery
+  template, starter, kit and built-in template, and every recorded saved flow and flow file, passes as it is (168
+  flows). Kept: saved outputs and sends read exactly as 0.9.36 read them (replayed from `test/fixtures/stages/`,
+  recorded by running the 0.9.36 readers; synthetic, writer-shaped samples, because the installed database was denied
+  to this build too — read-only replay of real rows remains an evidence gap); sort decisions (`decision_json`) are
+  untouched and keep item 7's schema. Tightened, on purpose: the reference check above; a card's outputs and a kept
+  send now carry `version: 1`, and one made by a newer Toolroll is refused (the card reads it as empty and never writes
+  over it); a version 1 one is strict. A card a newer Toolroll wrote outputs for reads as empty in 0.9.36 and earlier.

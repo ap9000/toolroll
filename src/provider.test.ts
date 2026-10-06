@@ -6,6 +6,7 @@
  * API key excluded from every shell the model itself launches.
  */
 
+import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -145,6 +146,8 @@ describe("argv dialects", () => {
     for (const combinator of ["anyOf", "oneOf", "allOf", "if", "not", "$ref", "$defs"]) expect(schema).not.toHaveProperty(combinator);
     const properties = schema["properties"] as Record<string, unknown>;
     expect(Object.keys(properties).sort()).toEqual(["comments", "criteria", "findings", "learning", "learningAssessment", "readEvidence", "version"]);
+    // The build review's findings are their one schema (src/contracts/review-findings.ts), exactly.
+    expect(properties["findings"]).toEqual(FINDINGS_MODEL_SCHEMA);
     expect(properties["readEvidence"]).toMatchObject({ type: "object", required: ["file", "sha256", "offset", "length"], additionalProperties: false, properties: { file: { maxLength: 100 }, sha256: { pattern: "^[0-9a-f]{64}$" }, offset: { minimum: 0 }, length: { minimum: 1, maximum: 65536 } } });
     // The exact evidence-only reply the read brief dictates is admitted by the
     // machine parser; a reply carrying readEvidence beside review fields is

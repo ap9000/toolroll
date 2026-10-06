@@ -22,6 +22,7 @@ import { readFlowSecrets } from "./flow-secrets.js";
 import { scriptDigest, validateScript, type ScriptDraft } from "./flow-scripts.js";
 import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerConfigOf, validateTriggerConfig, type TriggerConfig } from "./flow-triggers.js";
 import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
+import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_FILE_FORMAT, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./routine.js";
@@ -276,7 +277,13 @@ function definitionOf(zones: readonly Record<string, unknown>[]): FlowDefinition
   ids.forEach((one, index) => { if (typeof one !== "string") refuse(`zones[${index}].id: required`); });
   const stages = zones.map((step, index) => stageInputOf(step, index, find));
   // Its zones are the file's, in order: a zone's problem names the file's zone.
-  try { return validateFlowDefinition({ version: 1, start: stages[0]?.["id"], stages }); }
+  try {
+    const definition = validateFlowDefinition({ version: 1, start: stages[0]?.["id"], stages });
+    // An imported flow is a new one: each {{stage.…}} must be one its zone hands on.
+    const references = stageReferenceProblems(definition, null);
+    if (references.length > 0) throw new FlowContractError(references.map(one => one.line));
+    return definition;
+  }
   catch (error) { return refuse(error instanceof FlowContractError ? error.lines.map(line => inStepWords(line, "zones", zones.map(one => typeof one["kind"] === "string" ? one["kind"] : undefined))).join("\n") : error instanceof Error ? error.message : "Those zones aren't a flow."); }
 }
 
