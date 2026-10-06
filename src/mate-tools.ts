@@ -43,7 +43,8 @@ import type { VerifiedApprover } from "./principal.js";
 import type { MateToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, scanForSecrets } from "./evidence.js";
-import { parseAcceptanceCriteria, ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type AcceptanceCriterion } from "./scope.js";
+import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
+import { rubricInputSchema } from "./contracts/scope.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
@@ -51,7 +52,7 @@ import { agentsSummary, chosenWords, isRiskLevel, isTaskSize, PHASES, postureWor
 import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
-import { parseContract } from "./contracts/contract.js";
+import { parseContract, toModelSchema } from "./contracts/contract.js";
 import { FLOW_ALIASES } from "./contracts/flow.js";
 import { PROPOSE_FLOW_MODEL_SCHEMA, proposeFlowInputSchema } from "./contracts/flow-propose.js";
 import { flowDefinitionOf } from "./flow-engine.js";
@@ -238,22 +239,8 @@ export function readAcceptanceArg(value: unknown): AcceptanceCriterion[] | null 
   return parsed.criteria;
 }
 
-const ACCEPTANCE_ARG_SCHEMA = {
-  type: "array",
-  minItems: 1,
-  maxItems: ACCEPTANCE_LIMITS.criteria,
-  items: {
-    type: "object",
-    properties: {
-      id: { type: "string", maxLength: ACCEPTANCE_LIMITS.id },
-      statement: { type: "string", maxLength: ACCEPTANCE_LIMITS.statement },
-      evidence: { type: "array", minItems: 1, items: { type: "string", enum: [...EVIDENCE_KINDS] } },
-      how: { type: ["string", "null"], maxLength: ACCEPTANCE_LIMITS.how },
-    },
-    required: ["id", "statement", "evidence"],
-    additionalProperties: false,
-  },
-} as const;
+/** The rubric argument, as the acceptance contract states it (src/contracts/scope.ts). */
+const ACCEPTANCE_ARG_SCHEMA = toModelSchema(rubricInputSchema);
 
 const tooMany = (): MateToolResult => ({ ok: false, message: `this turn already holds ${MATE_MAX_PROPOSALS_PER_TURN} proposals` });
 

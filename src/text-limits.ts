@@ -92,6 +92,10 @@ export const TEXT_LIMITS = {
   planItem: 600,
   /** One path a plan expects to touch. */
   planTouch: 200,
+  /** How many paths a task's scope may say it touches (a plan says at most 32 of them). A count, not a length. */
+  scopeTouches: 50,
+  /** Why a task was sized as it was, as its sealed route keeps it. */
+  sizeReason: 300,
   /** A planner's amendment note: why the filed contract must change. */
   planAmendment: 1_000,
   /** An acceptance criterion's id, statement and advisory how, in UTF-8 bytes. */

@@ -59,7 +59,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 |---|---|---|
 | 8 | **Flow stage outputs and card state** (`{{stage.x}}`, choose/send payloads, attached long output) | `flow-engine.ts`, `flow-send.ts`, `flow-steps.ts` |
 | 9 | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
-| 10 | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
+| 10 ✅ | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
 | 11 | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
 | 12 | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
 
@@ -124,3 +124,17 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **10. Scope, acceptance criteria and sealed routes** (2026-10-05). `src/contracts/scope.ts` holds the scope's terms
+  (goal, outOfScope, touches, acceptance) and the acceptance criterion, built from the plan contract's own fields and
+  criterion (`plan.ts` unchanged; a scope names up to `TEXT_LIMITS.scopeTouches` = 50 paths, a plan 32);
+  `src/contracts/route.ts` is one sealed-route schema for version 1 and 2 routes, with overrides and task size.
+  `AcceptanceCriterion`, `PhaseRoute`, `RouteLeg`, `RouteOverride` and `TaskSizing` are derived; `parseAcceptanceCriteria`,
+  `exactAcceptance`, `proposeGuarded`, `routeFromJson`, `parseOverrides` and `parseSizing` read through them, and what
+  JSON Schema can't say (UTF-8 bytes, control characters, duplicate ids and evidence kinds, leg order, posture, one
+  override per phase) runs after parsing with a path-named error. The lead's rubric argument schema is generated. The
+  evidence kinds and rubric limits moved to `src/contracts/acceptance-terms.ts` (re-exported by `scope.ts`) so
+  `plan.ts` and `scope.ts` load in either order. Kept: every recorded scope, standing order and sealed route in
+  `test/fixtures/scopes/` (from the authentic v47 fixture, this release's store and earlier releases' legacy shapes)
+  re-derives its digest, approved digest, rubric and route bytes exactly as before (`npx tsx scripts/scope-replay.ts
+  [db]` replays a real database read-only). No tightening: criteria still ignore unknown keys and read an empty `how`
+  as none; refusals are path-named lines, and a route from a newer Toolroll says so.

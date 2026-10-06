@@ -1,3 +1,5 @@
+// The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
+export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { passwordGuardOf } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -30,8 +32,10 @@ import { claimActor, currentActor, parseLeadToken } from "./actor.js";
  */
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { hasForbiddenControls } from "./decision.js";
-import { TEXT_LIMITS } from "./text-limits.js";
+import { z } from "zod";
+import { type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { parseContract } from "./contracts/contract.js";
+import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCriterion, type AcceptanceProblem, type ScopeTerms } from "./contracts/scope.js";
 import type { Store, Mutation } from "./store.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
@@ -44,6 +48,7 @@ import {
   projectRoute,
   routeDigestOf,
   routeFromJson,
+  routeJsonProblem,
   routeWords,
   type PhaseRoute,
   type ReadinessLookup,
@@ -334,11 +339,15 @@ export function exactAcceptance(value: unknown): { ok: true; criteria: Acceptanc
     return { ok: false, problem: "the rubric is not valid JSON" };
   }
   if (!Array.isArray(parsed)) return { ok: false, problem: "the rubric is not a JSON list" };
-  for (const [index, entry] of parsed.entries()) {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return { ok: false, problem: `rubric entry ${index + 1} is not an object` };
-    if (!exactKeys(entry as object, ["id", "statement", "evidence"], ["how"])) return { ok: false, problem: `rubric entry ${index + 1} carries a key this code never writes` };
+  // Stored, a criterion carries exactly the keys this code writes: the saved rubric schema is strict about them.
+  const strict = parseContract(z.object({ acceptance: storedRubricSchema }), { acceptance: parsed });
+  for (const issue of strict.ok ? [] : strict.issues) {
+    const entry = /^acceptance\[(\d+)\]$/.exec(issue.path);
+    if (entry === null) continue;
+    if (issue.kind === "wrong-type" || issue.kind === "required") return { ok: false, problem: `rubric entry ${Number(entry[1]) + 1} is not an object` };
+    if (issue.kind === "unknown-key") return { ok: false, problem: `rubric entry ${Number(entry[1]) + 1} carries a key this code never writes` };
   }
-  const read = parseAcceptanceCriteria(parsed);
+  const read = readAcceptance(parsed);
   if (read.problems.length > 0) return { ok: false, problem: `the rubric does not parse: ${read.problems.map(one => one.message).join("; ")}` };
   return { ok: true, criteria: read.criteria };
 }
@@ -498,146 +507,18 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
 // proposals, and the planner). `propose` itself, the primitive every one of
 // those calls, stays permissive so a scope already on file — approved or not,
 // written before this code existed — is never retroactively invalidated.
-export type EvidenceKind = "check" | "screenshot" | "changed-path" | "manual-review";
-
-export const EVIDENCE_KINDS: readonly EvidenceKind[] = ["check", "screenshot", "changed-path", "manual-review"];
-
-export type AcceptanceCriterion = {
-  id: string;
-  /** The signed outcome statement. Restating it differently in a proof is
-   * refuted, not short — the same severity as any other altered term. */
-  statement: string;
-  /** Advisory guidance for HOW to satisfy the statement. Never enters the
-   * digest and is never a term the approval binds — an operator can leave
-   * it, change it, or ignore it without touching what was signed. */
-  how: string | null;
-  /** SIGNED: the evidence kinds a proof must reference, by exact id, to
-   * answer this criterion. Never empty. */
-  evidence: EvidenceKind[];
-};
-
-export const ACCEPTANCE_LIMITS = {
-  criteria: 12,
-  id: TEXT_LIMITS.acceptanceIdBytes,
-  // A statement is one testable outcome; three hundred bytes forced people to
-  // drop the qualifying clause that made it testable.
-  statement: TEXT_LIMITS.acceptanceStatementBytes,
-  how: TEXT_LIMITS.acceptanceHowBytes,
-  evidenceKinds: EVIDENCE_KINDS.length,
-} as const;
-
-export type AcceptanceProblem = { reason: string; message: string };
-
-function acceptanceDescribe(value: unknown): string {
-  if (value === undefined) return "nothing";
-  if (value === null) return "null";
-  if (typeof value === "string") return `a ${value.length}-char string`;
-  return `a ${Array.isArray(value) ? "array" : typeof value}`;
-}
-
-function acceptanceProse(
-  value: unknown,
-  field: string,
-  cap: number,
-  required: boolean,
-  problems: AcceptanceProblem[],
-): string | null {
-  if (value === undefined || value === null || value === "") {
-    if (required) problems.push({ reason: `missing-${field}`, message: `${field} is required` });
-    return null;
-  }
-  if (typeof value !== "string") {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be a string (got ${acceptanceDescribe(value)})` });
-    return null;
-  }
-  if (Buffer.byteLength(value, "utf8") > cap) {
-    problems.push({ reason: `${field}-too-long`, message: `${field} is over ${cap} bytes` });
-    return null;
-  }
-  if (hasForbiddenControls(value)) {
-    problems.push({ reason: `${field}-controls`, message: `${field} carries control characters that could become terminal escapes` });
-    return null;
-  }
-  return value;
-}
+export type { AcceptanceCriterion, AcceptanceProblem };
 
 /**
  * Parse a rubric from already-JSON-parsed input (the planner's handoff, a
  * console form, a routine or template definition): fail closed, every
- * problem reported at once, stable reasons — the same discipline as every
- * other quoted-data parser in this codebase (`plan.ts`, `proof.ts`). An
- * absent or empty `value` parses to `[]` with no problems: whether that is
- * ALLOWED is a question for the caller (`propose` says yes; every authoring
- * road says no), never for this parser.
+ * problem reported at once, each naming its path — the acceptance contract
+ * (contracts/scope.ts) reads it. An absent or empty `value` parses to `[]`
+ * with no problems: whether that is ALLOWED is a question for the caller
+ * (`propose` says yes; every authoring road says no), never for this parser.
  */
 export function parseAcceptanceCriteria(value: unknown): { criteria: AcceptanceCriterion[]; problems: AcceptanceProblem[] } {
-  const problems: AcceptanceProblem[] = [];
-  if (value === undefined || value === null) return { criteria: [], problems };
-  if (!Array.isArray(value)) {
-    problems.push({ reason: "bad-acceptance", message: `acceptance must be an array (got ${acceptanceDescribe(value)})` });
-    return { criteria: [], problems };
-  }
-  if (value.length > ACCEPTANCE_LIMITS.criteria) {
-    problems.push({ reason: "acceptance-too-many", message: `acceptance lists ${value.length} — cap is ${ACCEPTANCE_LIMITS.criteria}` });
-    return { criteria: [], problems };
-  }
-  const criteria: AcceptanceCriterion[] = [];
-  const seen = new Set<string>();
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `acceptance[${index}]-shape`, message: `acceptance[${index}] must be an object` });
-      continue;
-    }
-    const one = entry as Record<string, unknown>;
-    const id = acceptanceProse(one["id"], `acceptance[${index}].id`, ACCEPTANCE_LIMITS.id, true, problems);
-    if (id !== null && seen.has(id)) {
-      problems.push({ reason: `acceptance[${index}]-duplicate-id`, message: `criterion id "${id}" appears twice` });
-    } else if (id !== null) {
-      seen.add(id);
-    }
-    const statement = acceptanceProse(one["statement"], `acceptance[${index}].statement`, ACCEPTANCE_LIMITS.statement, true, problems);
-    const how = acceptanceProse(one["how"], `acceptance[${index}].how`, ACCEPTANCE_LIMITS.how, false, problems);
-
-    const rawEvidence = one["evidence"];
-    let evidence: EvidenceKind[] | null = null;
-    if (!Array.isArray(rawEvidence)) {
-      problems.push({
-        reason: `acceptance[${index}]-bad-evidence`,
-        message: `acceptance[${index}].evidence must be a non-empty array of evidence kinds (got ${acceptanceDescribe(rawEvidence)})`,
-      });
-    } else if (rawEvidence.length === 0 || rawEvidence.length > ACCEPTANCE_LIMITS.evidenceKinds) {
-      problems.push({
-        reason: `acceptance[${index}]-evidence-count`,
-        message: `acceptance[${index}].evidence must name 1-${ACCEPTANCE_LIMITS.evidenceKinds} evidence kinds`,
-      });
-    } else {
-      const kinds: EvidenceKind[] = [];
-      const seenKinds = new Set<string>();
-      let bad = false;
-      for (const k of rawEvidence) {
-        if (typeof k !== "string" || !EVIDENCE_KINDS.includes(k as EvidenceKind)) {
-          problems.push({
-            reason: `acceptance[${index}]-bad-evidence-kind`,
-            message: `acceptance[${index}].evidence must draw from ${EVIDENCE_KINDS.join(", ")} (got ${acceptanceDescribe(k)})`,
-          });
-          bad = true;
-          continue;
-        }
-        if (seenKinds.has(k)) {
-          problems.push({ reason: `acceptance[${index}]-duplicate-evidence-kind`, message: `evidence kind "${k}" appears twice` });
-          bad = true;
-          continue;
-        }
-        seenKinds.add(k);
-        kinds.push(k as EvidenceKind);
-      }
-      if (!bad) evidence = kinds;
-    }
-
-    if (id === null || statement === null || evidence === null) continue;
-    criteria.push({ id, statement, how, evidence });
-  }
-  return { criteria, problems };
+  return readAcceptance(value);
 }
 
 /** The exact bytes a rubric's SIGNED terms reduce to for the digest: sorted
@@ -717,19 +598,19 @@ export function canonicalAcceptance(criteria: readonly AcceptanceCriterion[]): {
     .map(c => ({ id: c.id, statement: c.statement.trim(), evidence: [...c.evidence].sort() }));
 }
 
-export type Scope = {
+/**
+ * A scope's terms, from the scope contract (contracts/scope.ts): what
+ * success looks like in the operator's words (`goal`), what the task is
+ * explicitly not allowed to turn into (`outOfScope`), the paths it expects
+ * to touch (advisory, and worth stating), and the signed acceptance rubric
+ * — `[]` on every scope proposed before v39 and on any legacy road that
+ * still calls `propose` directly: a scope-producing ROAD enforces
+ * non-emptiness, never this type, never `propose`, never the digest.
+ */
+export type SavedScopeTerms = { [K in keyof ScopeTerms]-?: Exclude<ScopeTerms[K], undefined> };
+
+export type Scope = SavedScopeTerms & {
   taskId: string;
-  /** What success looks like, in the operator's words. */
-  goal: string;
-  /** What this task is explicitly not allowed to turn into. */
-  outOfScope: string | null;
-  /** Paths the work is expected to touch. Advisory, and worth stating. */
-  touches: string[];
-  /** v39: the signed acceptance rubric. `[]` on every scope proposed before
-   * this migration and on any legacy road that still calls `propose`
-   * directly — a scope-producing ROAD enforces non-emptiness, never this
-   * type, never `propose`, never the digest. */
-  acceptance: AcceptanceCriterion[];
   /** v41: evidence policy, signed with the scope. Default is omitted from
    * the digest so every pre-v41 approval remains byte-for-byte valid. */
   qualityMode?: QualityMode;
@@ -990,14 +871,17 @@ export function proposeGuarded(
   input: Omit<ScopeInput, "acceptance"> & { sawDigest: string | null; taskRef: number | null; acceptance?: unknown },
 ): GuardedProposeResult {
   const touches = [...(input.touches ?? [])].map(one => one.trim()).filter(one => one !== "");
+  // Plain words first for what a person typed (lengths, bytes, hidden text), then the scope contract.
   const badText = validateScopeText({ goal: input.goal, outOfScope: input.outOfScope ?? null, touches });
   if (badText !== null) return badText;
   const goal = input.goal.trim();
   const outOfScope = input.outOfScope?.trim() || null;
-  const acceptanceParse = parseAcceptanceCriteria(input.acceptance);
-  if (acceptanceParse.problems.length > 0) {
-    return { ok: false, reason: "bad-acceptance" };
+  const terms = readScopeTerms({ goal, outOfScope, touches, acceptance: input.acceptance });
+  if (!terms.ok) {
+    const reason = terms.field === "acceptance" ? "bad-acceptance" : terms.field === "touches" ? "bad-touches" : terms.field === "outOfScope" ? "bad-out-of-scope" : "bad-goal";
+    return { ok: false, reason, message: terms.problems.map(one => one.message).join("; ") };
   }
+  const acceptanceParse = { criteria: terms.terms.acceptance };
   if (acceptanceParse.criteria.length === 0) {
     return { ok: false, reason: "acceptance-required" };
   }
@@ -1440,7 +1324,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   const routeJson = scope.proposedRouteJson ?? null;
   const route = routeFromJson(routeJson);
   if (route === null) {
-    return { ok: false, reason: "route", problem: routeJson === null ? "the scope was filed under agent routing but carries no route" : "the scope's agent route cannot be read exactly" };
+    return { ok: false, reason: "route", problem: routeJson === null ? "the scope was filed under agent routing but carries no route" : `the scope's agent route cannot be read exactly (${routeJsonProblem(routeJson)})` };
   }
   const parity = routeParityProblem(route, profile, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
