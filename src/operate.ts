@@ -56,6 +56,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
  *
@@ -447,6 +448,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll backup now|list          back the database up now; list backups and how the last ones went
   toolroll restore <file> [--dry-run]  put a backup back (Toolroll stopped; the current database is kept)
   toolroll review show|on|off --repo <path>  one automatic review of each finished build; only HIGH findings send it back
+  toolroll task review <id> --brief   compact saved result, checks and findings; --run <id>, --all, --json
   toolroll policy show|set          the organisation policy; an instance operator sets it with --providers claude,codex|any,
                                         --models <m,…>|any, --tools <t,…>|any, --ceiling safe|standard|escalated
   toolroll ledger verify             check the action ledger's hash chain (--checkpoint <n:hash> to compare a copied head)
@@ -862,7 +864,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "task",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
-  "json", "yes", "all", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
+  "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "repair-auto", "review-retry-auto", "no-local",
@@ -5793,13 +5795,36 @@ async function planTaskCommand(
   ]);
 }
 
-/** The retired command is a typed refusal, never a new provider request. */
+/** Read saved work; neither form requests a new provider review. */
 async function reviewTaskCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
 ): Promise<number> {
   const { store, write, json } = context;
+  if (flags.has("brief")) {
+    const allowed = new Set(["brief", "all", "run", "json", "db", "as", "token"]);
+    for (const name of flags.keys()) if (!allowed.has(name)) return fail(write, json, "task review", "usage", `--${name} is not a task review --brief option.`, EXIT.usage);
+    const task = positional[0], selected = flags.get("run");
+    if (positional.length !== 1 || !task || task.length > 64 || /[\x00-\x1f\x7f]/.test(task) ||
+        selected !== undefined && (typeof selected !== "string" || !/^[1-9]\d*$/.test(selected) || !Number.isSafeInteger(Number(selected)))) {
+      return fail(write, json, "task review", "usage", "Use toolroll task review <task> --brief [--run <id>] [--all] [--json].", EXIT.usage);
+    }
+    // The normal CLI entry has already authenticated lead tokens. Local reads
+    // stay available; a signed-in lead sees only its owner's admitted projects.
+    let viewer = currentActor()?.account ?? null;
+    if (viewer === null && (flags.has("as") || flags.has("token"))) {
+      const acting = await askCredentials(flags, context);
+      if (acting === null || !authenticateApprover(store, acting.name, acting.token).ok) return fail(write, json, "task review", "unauthenticated", "That sign-in is not valid.", EXIT.refused);
+      viewer = acting.name;
+    }
+    const repos = viewer === null ? null : store.knownRepos().filter(repo => store.accountCanAccess(viewer!, repo));
+    const result = taskReviewBrief(store, task, context.evidenceRoot, context.now, { principal: "operator", repos, includeUnplaced: viewer === null },
+      { ...(selected === undefined ? {} : { run: Number(selected) }), all: flags.has("all"), secrets: [context.leadToken ?? "", text(flags, "token") ?? ""] });
+    if (!result.ok) return fail(write, json, "task review", result.reason, result.message, EXIT.refused);
+    return succeed(write, json, "task review", { brief: result.brief }, () => renderReviewBrief(result.brief));
+  }
+  if (flags.has("run") || flags.has("all")) return fail(write, json, "task review", "usage", "--run and --all require --brief.", EXIT.usage);
   const [runText] = positional;
   const runId = Number(runText ?? "");
   if (runText === undefined || !Number.isInteger(runId) || runId < 1) {
