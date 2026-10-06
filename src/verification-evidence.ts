@@ -9,12 +9,10 @@ import type { VerifyCommandFacts } from "./proof.js";
 import { adjudicate, type AdjudicateResult } from "./proof.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { readVerifiedArtifact, storeEvidence, scanForSecrets, redactSecretLines } from "./evidence.js";
-import { readVerificationReceipt, type VerificationReceipt } from "./contracts/verification-receipt.js";
+import { readVerificationReceipt } from "./contracts/verification-receipt.js";
+import { LEGACY_GATE_SOURCE, readVerificationView, type LegacyGateView } from "./contracts/verification-view.js";
+import { readCandidateEndpoints, savedInventoryPaths } from "./contracts/diff-stat.js";
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
-
-/** What `verificationEvidence` returns as `bytes`: a sealed receipt exactly as sealed (either version), or the view of
- * a legacy machine log header. Both carry these receipt fields. */
-type VerificationView = Pick<VerificationReceipt, "run" | "head" | "base" | "scopeDigest" | "command" | "result" | "log">;
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
 export const REVIEW_GATE_NAME = "REVIEW-VERIFICATION.json";
@@ -87,7 +85,9 @@ export function verificationEvidence(store: Store, root: string, runId: number):
           source.baseRevision !== brief.head || source.headRevision !== brief.head || checked.executedHere !== false) return fail("The reused gate is not bound to an unchanged observation follow-up.");
       const original = verificationEvidence(store, root, reused.run);
       if (!original.ok || !original.bytes || original.digest !== reused.digest) return fail("The original passing gate no longer verifies.");
-      const previous = JSON.parse(original.bytes) as VerificationView;
+      const previousRead = readVerificationView(original.bytes);
+      if (!previousRead.ok) return fail("The original passing gate no longer verifies.");
+      const previous = previousRead.value;
       const originalLog = store.getArtifact(previous.log.artifactId);
       if (previous.head !== source.headRevision || !("exitCode" in previous.result) || previous.result.exitCode !== 0 || JSON.stringify(previous.command) !== JSON.stringify(command) ||
           JSON.stringify(previous.result) !== JSON.stringify(receipt.result) || originalLog?.sha256 !== log.sha256 ||
@@ -102,15 +102,19 @@ export function verificationEvidence(store: Store, root: string, runId: number):
     if (stat.length !== 1 || stat[0]!.truncated || stat[0]!.captureStatus === "failed") return fail("Legacy verification has no exact candidate inventory.");
     const readStat = readVerifiedArtifact(root, stat[0]!);
     if (!readStat.ok) return fail("Legacy candidate inventory no longer verifies.");
-    let endpoints;
-    try { endpoints = JSON.parse(readStat.content.toString("utf8")); } catch { return fail("Legacy candidate inventory is unreadable."); }
+    let inventory: unknown;
+    try { inventory = JSON.parse(readStat.content.toString("utf8")); } catch { return fail("Legacy candidate inventory is unreadable."); }
+    const endpointsRead = readCandidateEndpoints(inventory);
+    if (!endpointsRead.ok) return fail("Legacy verification candidate endpoints do not match.");
+    const endpoints = endpointsRead.value;
     if (!source.headRevision || endpoints.head !== source.headRevision || endpoints.base !== source.baseRevision || endpoints.filesTruncated !== false) return fail("Legacy verification candidate endpoints do not match.");
     const text = read.content.toString("utf8");
     const header = /^=== Attempt summary ===\n- Project check · attempt 1: \(exit (\d+)\)\n\n=== Project check · attempt 1 ===\n/.exec(text);
     const exitCode = header ? Number(header[1]) : -1;
     if (!header || exitCode > 255 || !text.startsWith(`${header[0]}$ ${command.command}\n(exit ${exitCode})\n\n--- stdout ---\n`)) return fail("The original log lacks an unambiguous machine gate receipt; historical output was not reconstructed.");
     if (verified && exitCode !== 0) return fail("The passing machine verdict disagrees with the original failed check.");
-    receipt = { version: 1, source: "legacy machine log header", run: runId, head: source.headRevision, base: source.baseRevision, scopeDigest: source.scopeDigest, command, result: { configured: true, ran: true, exitCode }, log: binding(log), candidate: binding(stat[0]!) };
+    const view: LegacyGateView = { version: 1, source: LEGACY_GATE_SOURCE, run: runId, head: source.headRevision, base: source.baseRevision, scopeDigest: source.scopeDigest, command, result: { configured: true, ran: true, exitCode }, log: binding(log), candidate: binding(stat[0]!) };
+    receipt = view;
   }
   // The view preserves shortened/redacted status and does not claim the omitted
   // output exists. Its fingerprint is re-proved before every turn and ingestion.
@@ -141,8 +145,9 @@ export function failedVerificationEvidence(store: Store, root: string, runId: nu
   const verified = verificationEvidence(store, root, runId);
   if (!verified.ok) return { kind: "unavailable", problem: verified.problem };
   if (verified.bytes === null) return { kind: "none" };
-  const receipt = JSON.parse(verified.bytes) as VerificationView;
-  const result = receipt.result;
+  const view = readVerificationView(verified.bytes);
+  if (!view.ok) return { kind: "unavailable", problem: "The verification receipt cannot be read." };
+  const receipt = view.value, result = receipt.result;
   if (!result.configured || (result.ran ? result.exitCode === 0 :
     result.failure !== "timed-out" && result.failure !== "retry-timed-out")) return { kind: "none" };
   const artifact = store.getArtifact(receipt.log.artifactId);
@@ -182,14 +187,14 @@ export function assessmentFromSavedEvidence(store: Store, root: string, runId: n
   const gate = verificationEvidence(store, root, runId);
   if (!gate.ok || gate.bytes === null) return null;
   try {
-    const inventory = JSON.parse(stat), receipt = JSON.parse(gate.bytes) as VerificationView;
+    const view = readVerificationView(gate.bytes);
     const base = source.branch ? store.firstBuilderBase(source.taskRef, source.branch) ?? source.baseRevision : source.baseRevision;
-    if (inventory.schema !== 1 || inventory.head !== source.headRevision || inventory.base !== base || inventory.filesTruncated !== false ||
-      !Array.isArray(inventory.files) || inventory.fileCount !== inventory.files.length || !inventory.files.every((one: { path?: unknown }) => typeof one?.path === "string") ||
-      new Set(inventory.files.map((one: { path: string }) => one.path)).size !== inventory.files.length) return null;
+    const paths = savedInventoryPaths(stat, source.headRevision, base);
+    if (!view.ok || paths === null) return null;
+    const receipt = view.value;
     return adjudicate({ directAssessment: true, proofArtifactPresent: false, proofParse: null,
       handoffPresent: true, terminalDiffPresent: true, terminalDiffCaptureStatus: "ok",
-      diffStat: { captured: true, truncated: false, paths: new Set(inventory.files.map((one: { path: string }) => one.path)) },
+      diffStat: { captured: true, truncated: false, paths },
       verifyCommand: receipt.result, verificationCommand: receipt.command.command, screenshots: [],
       approvedCriteria: scope.acceptance, reviewContext: parsedContext.inventory.coverage });
   } catch { return null; }
@@ -207,7 +212,9 @@ export function reuseObservationVerification(store: Store, root: string, runId: 
       !readObservationEvidence(store, root, runId)) throw Error("Only complete observations for the unchanged approved candidate can reuse its gate.");
   const original = verificationEvidence(store, root, brief.sourceRun);
   if (!original.ok || !original.bytes || original.digest !== brief.gateDigest) throw Error("The original passing gate is unavailable or changed.");
-  const receipt = JSON.parse(original.bytes) as VerificationView, log = store.getArtifact(receipt.log.artifactId);
+  const view = readVerificationView(original.bytes);
+  if (!view.ok) throw Error("The original passing gate is unavailable or changed.");
+  const receipt = view.value, log = store.getArtifact(receipt.log.artifactId);
   if (!log || receipt.head !== brief.head || !("ran" in receipt.result) || receipt.result.ran !== true || receipt.result.exitCode !== 0) throw Error("The source gate did not pass this candidate.");
   const read = readVerifiedArtifact(root, log);
   if (!read.ok) throw Error("The original check log no longer verifies.");
@@ -216,5 +223,5 @@ export function reuseObservationVerification(store: Store, root: string, runId: 
     { captureStatus: "ok", redacted: log.redacted, sourceBytesOriginal: log.bytesOriginal });
   sealVerificationReceipt(store, root, runId, brief.head, receipt.command, receipt.result, now, { run: brief.sourceRun, digest: brief.gateDigest });
   store.addRunNote(runId, "Toolroll", `Reused the passing project checks from run #${brief.sourceRun} for the unchanged candidate. This attempt collected only the missing focused observations.`, now);
-  return receipt.result as VerifyCommandFacts;
+  return receipt.result;
 }

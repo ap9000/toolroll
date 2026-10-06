@@ -35,6 +35,7 @@ import { TEXT_LIMITS } from "./text-limits.js";
 import { parseReport, REPORT_LIMITS, type ParsedReport, type ReportImage } from "./scout-report.js";
 import { parseProof, PROOF_LIMITS, type ParsedProof } from "./proof.js";
 import { HANDOFF_VERSION, readHandoffArtifact, type HandoffArtifact } from "./contracts/handoff.js";
+import type { DiffStat, DiffStatFile } from "./contracts/diff-stat.js";
 
 export type { HandoffArtifact } from "./contracts/handoff.js";
 import type { Artifact, Store } from "./store.js";
@@ -634,26 +635,8 @@ export async function captureParkEvidence(
   return ids;
 }
 
-/** One file's row in the terminal diff-stat. null adds/dels = binary. */
-export type DiffStatFile = {
-  path: string;
-  additions: number | null;
-  deletions: number | null;
-  renamedFrom?: string;
-};
-
-export type DiffStat = {
-  schema: 1;
-  base: string;
-  head: string;
-  fileCount: number;
-  additions: number;
-  deletions: number;
-  binaryCount: number;
-  files: DiffStatFile[];
-  /** True when the file list was cut to fit the cap — counts stay complete. */
-  filesTruncated: boolean;
-};
+/** The terminal diff-stat and its file rows: src/contracts/diff-stat.ts. */
+export type { DiffStat, DiffStatFile } from "./contracts/diff-stat.js";
 
 const DIFF_STAT_FILE_LIMIT = 400;
 
