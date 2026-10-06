@@ -73,7 +73,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 14 ✅ | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
 | 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
 | 16 ✅ | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
-| 17 | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
+| 17 ✅ | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
 
 ### Wave 4 — what we read back from disk and the database (P3)
 
@@ -346,3 +346,24 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   44 registrations, 48 sign-ins, 432 refreshes): no differences but one. Changed, on purpose: a token answer of JSON
   `null` used to crash finishing a sign-in; it now says the service couldn't be reached, as a non-JSON answer does.
   The real database and tool-secret files could not be read from the build, so no saved data was replayed.
+- **17. Settings and config** (2026-10-06). One schema each in `src/contracts/`: `recipes.ts` (both recipe versions, a
+  discriminated union on `version`, with the scope's saved criterion as a success check), `retention.ts` (kinds, a
+  period of 1–3650 days or forever, the full set, and a `retention_setting` row), `storage.ts` (the four checkout
+  cleanup values and their row), `model-catalog.ts` (the Codex CLI's model cache entries and npm's latest-version
+  answer, read loosely) and `provider.ts` (the agent spec: provider and model id). `RecipeDocument`, `RecipeInput`,
+  `RetentionKind`, `RetentionPeriods`, `CheckoutCleanup`, `ProviderId` and `AgentSpec` are derived. `parseRecipe`,
+  `parsePeriod`, `isRetentionKind`, `parseCleanup`, `codexCatalog`, the npm version check, `validModelId`,
+  `isProviderId` and `validateSpec` read through them; recipe text rules, schedules, budget/schedule combinations,
+  question keys and placeholders, period and cleanup aliases, display-name clipping and OpenRouter/Gemini needing a
+  model still run after parsing. Kept: what each accepted and returned before — recipes stay strict as they always
+  were, and keep their key order, so saved digests and exports are byte for byte the same; a damaged Codex cache
+  still reads as an empty list; a model that isn't a string is still read as its text. Refusals changed in wording
+  only: recipe refusals start with the field (`costCeilingUsd: …`, `inputs[0].key: …`, `payload: unknown key
+  'approvals'. …`), `validateSpec` names `provider` or `model` and no longer repeats the given provider, so a pasted
+  credential is never echoed. Nothing new is refused. Old and new readers gave zero differences over 3,662 recipe
+  documents, 10,449 period, kind and cleanup inputs, 191 spec and Codex cache samples, and the real Codex cache
+  (6 models). The installed database was refused to this build, so saved recipes, previews and setting rows were
+  not replayed — an evidence gap. Left for their owners: `store.ts` still reads the retention and cleanup rows
+  (item 18 can use `retentionRowSchema` and `checkoutCleanupRowSchema`); the `retention set` and `storage cleanup`
+  refusals live in `operate.ts` and `serve.ts` (items 13 and 14); recipe limits are named in `RECIPE_LIMITS` until
+  they can move into `TEXT_LIMITS`.

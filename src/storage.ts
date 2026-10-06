@@ -12,6 +12,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DEPS_FOLDER, sharedCopies } from "./shared-deps.js";
 import type { Store } from "./store.js";
+import { checkoutCleanupSchema, type CheckoutCleanup } from "./contracts/storage.js";
 
 /** Settings → Storage: when a finished task's clean checkout is removed. One row, or none (the default). */
 export const CHECKOUT_CLEANUP_SCHEMA = `
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS storage_sweep (
 );
 `;
 
-export type CheckoutCleanup = "finished" | "2d" | "7d" | "never";
+export type { CheckoutCleanup } from "./contracts/storage.js";
 export const DEFAULT_CLEANUP: CheckoutCleanup = "finished";
 export const CLEANUP_CHOICES: readonly { value: CheckoutCleanup; label: string; days: number | null }[] = [
   { value: "finished", label: "When its task is complete or cancelled", days: 0 },
@@ -43,14 +44,20 @@ export const CLEANUP_CHOICES: readonly { value: CheckoutCleanup; label: string; 
   { value: "never", label: "Never (only when you clean up)", days: null },
 ];
 
+/** The other words each cleanup value may be typed as. */
+const CLEANUP_ALIASES: Readonly<Record<CheckoutCleanup, readonly string[]>> = {
+  finished: ["complete", "completed", "cancelled", "done", "0", "0d"],
+  "2d": ["2", "2 days", "2days"],
+  "7d": ["7", "7 days", "7days", "week", "a week", "1w"],
+  never: ["off"],
+};
+
 /** `finished` (or complete, cancelled), `2d`, `7d` (or week, 1w), `never` (or off); undefined when it's none of those. */
 export function parseCleanup(text: string): CheckoutCleanup | undefined {
   const value = text.trim().toLowerCase().replace(/\s+/g, " ");
-  if (["finished", "complete", "completed", "cancelled", "done", "0", "0d"].includes(value)) return "finished";
-  if (["2d", "2", "2 days", "2days"].includes(value)) return "2d";
-  if (["7d", "7", "7 days", "7days", "week", "a week", "1w"].includes(value)) return "7d";
-  if (["never", "off"].includes(value)) return "never";
-  return undefined;
+  const named = checkoutCleanupSchema.safeParse(value);
+  if (named.success) return named.data;
+  return checkoutCleanupSchema.options.find(one => CLEANUP_ALIASES[one].includes(value));
 }
 
 export function cleanupWords(cleanup: CheckoutCleanup): string {
