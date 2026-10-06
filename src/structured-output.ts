@@ -10,6 +10,7 @@
 
 import type { Store } from "./store.js";
 import { redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
+import { TEXT_LIMITS } from "./text-limits.js";
 
 export const STRUCTURED_REPAIR_ATTEMPTS = 2;
 export const STRUCTURED_REPAIR_MAX_TURNS = 4;
@@ -17,7 +18,7 @@ export const STRUCTURED_REPAIR_TIMEOUT_MS = 5 * 60_000;
 
 /** Native parsing counts UTF-16 code units. A shorter writing target keeps
  * notes concise without imposing a second, stricter transport contract. */
-export const REVIEW_OUTPUT_LIMITS = { comments: 40, criteria: 12, note: 500, path: 300 } as const;
+export const REVIEW_OUTPUT_LIMITS = { comments: 40, criteria: 12, note: TEXT_LIMITS.reviewNote, path: TEXT_LIMITS.reviewPath } as const;
 export const REVIEW_NOTE_CODE_POINTS = Math.floor(REVIEW_OUTPUT_LIMITS.note / 2);
 export const REVIEW_NOTE_GUIDANCE = `Keep each comment and criterion note to one concise finding and its evidence. Aim for ${REVIEW_NOTE_CODE_POINTS} characters or fewer; the hard limit is ${REVIEW_OUTPUT_LIMITS.note} UTF-16 units. Preserve the conclusion and any needed provenance; omit repeated rubric text.`;
 

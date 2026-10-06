@@ -1,0 +1,169 @@
+{
+ "about": "Sort decisions replayed by src/contracts/sort-answer.test.ts through readSortDecision: flow_step_run.decision_json as a sort step writes it (unversioned, every release). The card, Insights and spend read saved ones as before (parseSortDecision, json_extract). The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "demo: confident",
+   "source": "src/demo.ts seedDemoFlows",
+   "payload": {
+    "model": "typesafe/jev-1.13",
+    "answer": "Invoice problem",
+    "sure": 0.94,
+    "sureAt": 0.8,
+    "confident": true,
+    "to": "billing",
+    "chances": {
+     "Invoice problem": 0.94
+    },
+    "ms": 170,
+    "cost": 1.7e-05,
+    "notes": [
+     {
+      "id": "urgency",
+      "question": "How urgent is it?",
+      "kind": "score",
+      "answer": "Now: money is at stake or a deadline is named",
+      "sure": 0.8
+     },
+     {
+      "id": "refund",
+      "question": "Is the customer asking for money back?",
+      "kind": "yes-no",
+      "answer": "yes",
+      "sure": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "name": "demo: not sure, waited in the zone",
+   "source": "src/demo.ts seedDemoFlows",
+   "payload": {
+    "model": "typesafe/jev-1.13",
+    "answer": "Delivery problem",
+    "sure": 0.58,
+    "sureAt": 0.8,
+    "confident": false,
+    "to": "by-hand",
+    "chances": {
+     "Delivery problem": 0.58
+    },
+    "ms": 170,
+    "cost": 1.7e-05,
+    "notes": [
+     {
+      "id": "urgency",
+      "question": "How urgent is it?",
+      "kind": "score",
+      "answer": "Soon: the customer is waiting on it",
+      "sure": 0.8
+     },
+     {
+      "id": "refund",
+      "question": "Is the customer asking for money back?",
+      "kind": "yes-no",
+      "answer": "no",
+      "sure": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "name": "no notes, no cost, held in the zone",
+   "source": "src/flow-sort.ts readJevAnswers",
+   "payload": {
+    "model": "~typesafe/jev-latest",
+    "answer": "Order change",
+    "sure": 0.41,
+    "sureAt": 0.8,
+    "confident": false,
+    "to": null,
+    "chances": {
+     "Order change": 0.41,
+     "Delivery problem": 0.38
+    },
+    "notes": [],
+    "cost": null,
+    "ms": 212
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "spend's minimal row (read by json_extract, not as a decision)",
+   "source": "src/spend.test.ts",
+   "payload": {
+    "model": "jev",
+    "cost": 0.0042
+   },
+   "paths": [
+    "answer",
+    "sure"
+   ]
+  },
+  {
+   "name": "sure out of range",
+   "source": "hand-written",
+   "payload": {
+    "model": "typesafe/jev-1.13",
+    "answer": "Order change",
+    "sure": 1.4,
+    "sureAt": 0.8,
+    "confident": true,
+    "to": "orders",
+    "chances": {
+     "Order change": 0.9
+    },
+    "ms": 170,
+    "cost": 1.7e-05,
+    "notes": [
+     {
+      "id": "urgency",
+      "question": "How urgent is it?",
+      "kind": "score",
+      "answer": "Soon",
+      "sure": 0.8
+     },
+     {
+      "id": "refund",
+      "question": "Is the customer asking for money back?",
+      "kind": "yes-no",
+      "answer": "no",
+      "sure": 0.9
+     }
+    ]
+   },
+   "paths": [
+    "sure"
+   ]
+  },
+  {
+   "name": "a note kind that isn't one",
+   "source": "hand-written",
+   "payload": {
+    "model": "typesafe/jev-1.13",
+    "answer": "Order change",
+    "sure": 0.9,
+    "sureAt": 0.8,
+    "confident": true,
+    "to": "orders",
+    "chances": {
+     "Order change": 0.9
+    },
+    "ms": 170,
+    "cost": 1.7e-05,
+    "notes": [
+     {
+      "id": "urgency",
+      "question": "How urgent?",
+      "kind": "stars",
+      "answer": "3",
+      "sure": 0.8
+     }
+    ]
+   },
+   "paths": [
+    "notes[0].kind"
+   ]
+  }
+ ]
+}

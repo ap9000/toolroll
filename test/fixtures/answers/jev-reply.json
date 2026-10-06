@@ -1,0 +1,98 @@
+{
+ "about": "Jev replies replayed by src/contracts/sort-answer.test.ts through readJevReply: the Decisions API fields flow-sort.ts reads (answers.route's choice, confidence and probabilities; each note's score or noul and confidence; model; usage.cost), with the extra keys an outside service adds. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "a choice with every chance and two notes",
+   "source": "src/flow-sort.ts readJevAnswers",
+   "payload": {
+    "id": "dec_1",
+    "model": "typesafe/jev-1.13",
+    "answers": {
+     "route": {
+      "choice": "invoice-problem",
+      "confidence": 0.94,
+      "probabilities": {
+       "invoice-problem": 0.94,
+       "order-change": 0.04,
+       "delivery-problem": 0.02
+      }
+     },
+     "note_urgency": {
+      "score": 2,
+      "confidence": 0.8
+     },
+     "note_refund": {
+      "noul": 0.9
+     }
+    },
+    "usage": {
+     "cost": 1.7e-05,
+     "prompt_tokens": 812
+    }
+   }
+  },
+  {
+   "name": "a bare choice",
+   "source": "src/flow-sort.ts readJevAnswers (everything else optional)",
+   "payload": {
+    "answers": {
+     "route": {
+      "choice": "order-change"
+     }
+    }
+   }
+  },
+  {
+   "name": "a confidence as text",
+   "source": "hand-written",
+   "payload": {
+    "answers": {
+     "route": {
+      "choice": "x",
+      "confidence": "high"
+     }
+    }
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "no answers",
+   "source": "src/flow-sort.ts",
+   "payload": {
+    "model": "typesafe/jev-1.13"
+   },
+   "paths": [
+    "answers"
+   ]
+  },
+  {
+   "name": "no route",
+   "source": "src/flow-sort.ts",
+   "payload": {
+    "answers": {
+     "note_refund": {
+      "noul": 0.2
+     }
+    }
+   },
+   "paths": [
+    "answers.route"
+   ]
+  },
+  {
+   "name": "a choice that isn't text",
+   "source": "src/flow-sort.ts",
+   "payload": {
+    "answers": {
+     "route": {
+      "choice": 3
+     }
+    }
+   },
+   "paths": [
+    "answers.route.choice"
+   ]
+  }
+ ]
+}

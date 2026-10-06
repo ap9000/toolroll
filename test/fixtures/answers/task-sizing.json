@@ -1,0 +1,94 @@
+{
+ "about": "Task sizing answers replayed by src/contracts/task-sizing.test.ts. An answer is never saved as it is (it becomes the task's sizing), so every sample is a classifier reply as the Claude sizer and Jev sizer produce it. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "valid": [
+  {
+   "name": "claude structured output",
+   "source": "src/task-sizing.test.ts (claudeSizer)",
+   "payload": {
+    "size": "small",
+    "risky": false,
+    "reason": "one-line copy change"
+   }
+  },
+  {
+   "name": "jev answer as read",
+   "source": "src/task-sizing.ts jevSizer",
+   "payload": {
+    "size": "medium",
+    "risky": true,
+    "reason": "Jev is 82% sure"
+   }
+  },
+  {
+   "name": "jev answer without a confidence",
+   "source": "src/task-sizing.ts jevSizer",
+   "payload": {
+    "size": "large",
+    "risky": false,
+    "reason": ""
+   }
+  },
+  {
+   "name": "reason at its limit",
+   "source": "TEXT_LIMITS.sizingReason",
+   "payload": {
+    "size": "large",
+    "risky": true,
+    "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   }
+  },
+  {
+   "name": "no reason",
+   "source": "src/task-sizing.test.ts (the old reader defaulted it)",
+   "payload": {
+    "size": "small",
+    "risky": false
+   }
+  },
+  {
+   "name": "reason over its limit",
+   "source": "TEXT_LIMITS.sizingReason",
+   "payload": {
+    "size": "small",
+    "risky": false,
+    "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   }
+  },
+  {
+   "name": "an unknown key",
+   "source": "hand-written",
+   "payload": {
+    "size": "small",
+    "risky": false,
+    "reason": "x",
+    "confidence": 0.9
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "a size that isn't one",
+   "source": "src/task-sizing.test.ts",
+   "payload": {
+    "size": "huge",
+    "risky": false,
+    "reason": "x"
+   },
+   "paths": [
+    "size"
+   ]
+  },
+  {
+   "name": "risky as a word",
+   "source": "hand-written",
+   "payload": {
+    "size": "small",
+    "risky": "no",
+    "reason": "x"
+   },
+   "paths": [
+    "risky"
+   ]
+  }
+ ]
+}

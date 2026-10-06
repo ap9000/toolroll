@@ -24,6 +24,8 @@ import { strictJsonParse } from "./converse.js";
 import { scanForSecrets } from "./evidence.js";
 import { run, type ExecResult } from "./exec.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
+import type { ContractResult } from "./contracts/contract.js";
+import { readTurnAnswer, TURN_MODEL_SCHEMA, type TurnAction, type TurnAnswer } from "./contracts/teammate-turn.js";
 import { LIMITS } from "./decision.js";
 import { overruns, TEXT_LIMITS, type Overrun } from "./text-limits.js";
 
@@ -121,33 +123,17 @@ export const TEAMMATE_TEMPLATES: readonly { id: string; label: string; about: st
   },
 ];
 
-/** What a teammate may do on one turn. A decision zone: approve, send back, or hand it to a person. A work zone: pick where it goes, ask its person, or say it can't. */
-export type TurnAction = "approve" | "send_back" | "hand_off" | "route" | "ask" | "cant" | "use_tool";
-/** v94: "use_tool" asks for one tool call (`tool`: its name, `input`: a JSON object as text); the turn goes on with its answer. */
-export type TurnAnswer = { action: TurnAction; answer: string; text: string; note: string; question: string; options: string[]; reason: string; tool: string; input: string;
-  /** v95: one short fact worth keeping for later cards ("": none). */
-  remember: string };
+export type { TurnAction, TurnAnswer } from "./contracts/teammate-turn.js";
 /** Each field's limit, in characters: stated in the prompt before it answers (turnPrompt), and an answer over one is
  * asked once to shorten (teammateTurn); one still over is kept whole, never cut. "text" is what the next zones read;
- * "note" is a decision or send-back note. */
-export const TURN_LIMITS = { answer: 60, text: TEXT_LIMITS.stageOutput, note: LIMITS.note, question: 600, reason: 400, remember: 300 } as const;
+ * "note" is a decision or send-back note. Not in the turn's schema (src/contracts/teammate-turn.ts): the CLI would
+ * refuse an answer a few characters over one whole. */
+export const TURN_LIMITS = { answer: TEXT_LIMITS.teammateAnswer, text: TEXT_LIMITS.stageOutput, note: LIMITS.note, question: TEXT_LIMITS.teammateQuestion, reason: TEXT_LIMITS.teammateReason, remember: TEXT_LIMITS.teammateRemember } as const;
 
 /** The fields of an answer over their limits. */
 export function turnOverruns(answer: TurnAnswer): Overrun[] {
   return overruns({ answer: answer.answer, text: answer.text, note: answer.note, question: answer.question, reason: answer.reason, remember: answer.remember }, TURN_LIMITS);
 }
-
-/** The shape Claude answers in: one flat object (a root union is refused). No length limits here: an answer
- * a few characters over one is refused whole by the CLI, so the limits are TURN_LIMITS, checked after. */
-export const TURN_SCHEMA = {
-  type: "object", additionalProperties: false,
-  required: ["action", "answer", "text", "note", "question", "options", "reason", "tool", "input", "remember"],
-  properties: {
-    action: { type: "string", enum: ["approve", "send_back", "hand_off", "route", "ask", "cant", "use_tool"] },
-    answer: { type: "string" }, text: { type: "string" }, note: { type: "string" }, question: { type: "string" },
-    options: { type: "array", items: { type: "string" } }, reason: { type: "string" }, tool: { type: "string" }, input: { type: "string" }, remember: { type: "string" },
-  },
-} as const;
 
 /** Everything one turn is told: the zone, the card as data, and what its people said. */
 export type TurnContext = {
@@ -230,25 +216,33 @@ export function turnPrompt(context: TurnContext): string {
   ].join("\n");
 }
 
-/** A turn's answer, checked against what this zone allows; null when it isn't one. */
-export function readTurn(value: unknown, context: Pick<TurnContext, "kind" | "canSendBack" | "answers" | "tools">): TurnAnswer | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const raw = value as Record<string, unknown>;
-  // Whole: a field over its limit is asked to shorten (turnOverruns), never cut here.
-  const text = (key: string) => typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
-  const action = raw["action"];
+/** How many options an ask offers, and the longest tool name and input a tool call may give. */
+const ASK_OPTIONS = 4, TOOL_NAME_CHARS = 140, TOOL_INPUT_CHARS = 8000;
+
+/**
+ * A turn's answer, read through its contract (src/contracts/teammate-turn.ts) and then checked against what this zone
+ * allows, each refusal naming its path (`action: "route" isn't one this zone allows`). Text is trimmed and kept whole
+ * (a field over its limit is asked to shorten, turnOverruns); blank options are dropped, and an ask offers at most 4,
+ * each cut to an answer's length, and a tool name is cut to 140, as they always were.
+ */
+export function readTurn(value: unknown, context: Pick<TurnContext, "kind" | "canSendBack" | "answers" | "tools">): ContractResult<TurnAnswer> {
+  const read = readTurnAnswer(value);
+  if (!read.ok) return read;
+  const raw = read.value;
+  const answer: TurnAnswer = { action: raw.action, answer: raw.answer.trim(), text: raw.text.trim(), note: raw.note.trim(), question: raw.question.trim(),
+    options: raw.options.filter(one => one.trim() !== "").map(one => one.trim().slice(0, TURN_LIMITS.answer)).slice(0, ASK_OPTIONS), reason: raw.reason.trim(),
+    tool: raw.tool.trim().slice(0, TOOL_NAME_CHARS), input: raw.input.trim(), remember: raw.remember.trim() };
   const allowed: TurnAction[] = [...(context.kind === "decide" ? ["approve", "hand_off", ...(context.canSendBack ? ["send_back" as const] : [])] as TurnAction[] : ["route", "ask", "cant"] as TurnAction[]),
     ...((context.tools ?? []).length > 0 ? ["use_tool" as const] : [])];
-  if (typeof action !== "string" || !allowed.includes(action as TurnAction)) return null;
-  const answer: TurnAnswer = { action: action as TurnAction, answer: text("answer"), text: text("text"), note: text("note"), question: text("question"),
-    options: Array.isArray(raw["options"]) ? raw["options"].filter((one): one is string => typeof one === "string" && one.trim() !== "").map(one => one.trim().slice(0, TURN_LIMITS.answer)).slice(0, 4) : [], reason: text("reason"),
-    tool: text("tool").slice(0, 140), input: typeof raw["input"] === "string" ? raw["input"].trim() : "", remember: text("remember") };
+  const refuse = (path: string, what: string): ContractResult<TurnAnswer> => ({ ok: false, issues: [{ path, kind: "bad-value", line: `${path}: ${what}` }] });
+  if (!allowed.includes(answer.action)) return refuse("action", `"${answer.action}" isn't one this zone allows (${allowed.map(one => `"${one}"`).join(", ")})`);
   // A tool call is checked against the teammate's rules where it's carried out; here only that it names one and fits.
-  if (answer.action === "use_tool" && (answer.tool === "" || answer.input.length > 8000)) return null;
-  if (answer.action === "route" && !context.answers.some(one => one.toLowerCase() === answer.answer.toLowerCase())) return null;
-  if (answer.action === "send_back" && answer.note === "") return null;
-  if (answer.action === "ask" && answer.question === "") return null;
-  return answer;
+  if (answer.action === "use_tool" && answer.tool === "") return refuse("tool", "required for use_tool");
+  if (answer.action === "use_tool" && answer.input.length > TOOL_INPUT_CHARS) return refuse("input", `at most ${TOOL_INPUT_CHARS.toLocaleString("en-US")} characters`);
+  if (answer.action === "route" && !context.answers.some(one => one.toLowerCase() === answer.answer.toLowerCase())) return refuse("answer", `"${answer.answer}" isn't one of this zone's answers`);
+  if (answer.action === "send_back" && answer.note === "") return refuse("note", "required for send_back");
+  if (answer.action === "ask" && answer.question === "") return refuse("question", "required for ask");
+  return { ok: true, value: answer };
 }
 
 export type TurnRequest = { model: string; prompt: string; timeoutMs: number };
@@ -261,14 +255,14 @@ export const TURN_TIMEOUT_MS = 180_000;
 
 type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
 
-/** The production runner: Claude through this computer's sign-in, answering in TURN_SCHEMA, with no tools, no MCP servers and no repository. */
+/** The production runner: Claude through this computer's sign-in, answering in the turn schema (TURN_MODEL_SCHEMA), with no tools, no MCP servers and no repository. */
 export function claudeTurnRunner(runner: CommandRunner = run): TurnRunner {
   return async request => {
     const dir = mkdtempSync(join(tmpdir(), "standing-orders-teammate-"));
     const started = Date.now();
     try {
       const result = await runner("claude", [
-        "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
+        "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_MODEL_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
         "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
         ...(request.model === "default" ? [] : ["--model", request.model]),
       ], { cwd: dir, stdin: request.prompt, timeoutMs: request.timeoutMs, maxBuffer: 512 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true });

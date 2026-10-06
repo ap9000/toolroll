@@ -51,7 +51,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
 | 6 ✅ | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
-| 7 | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
+| 7 ✅ | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
 
 ### Wave 2 — shared context passed between steps (P1)
 
@@ -124,3 +124,20 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   every read and every recorded adjudication is unchanged. Tightened, on purpose: a newer version of any of the three
   is refused, version 1 handoffs and version 2 proofs are strict about unknown keys, and a sealed receipt with a field
   its version does not define is refused by `verificationEvidence` (before, only process recovery refused it).
+- **7. Small structured answers** (2026-10-05; compatibility revision 2026-10-06). One schema each in
+  `src/contracts/`: `task-sizing.ts`, `review-findings.ts`, `decision.ts`, `teammate-turn.ts` and `sort-answer.ts`.
+  Types and model-facing JSON Schemas derive from them; callers use their readers and errors name the field path.
+  Claude sizing, teammate turns and the review channel's findings use the generated schemas. Jev's Decisions API
+  takes questions rather than JSON Schema. `DECISION_MODEL_SCHEMA` is exported for the separate scout migration;
+  `scout-report.ts` and `scout.test.ts` remain unchanged from before item 7.
+  Compatibility follows review comment 843: unknown keys are ignored, decisions keep their unversioned format
+  (including ignoring a supplied `version`), and partial teammate turns default absent or non-text fields to ""
+  and filter non-string options. Sizing reasons default to "" and are clipped after whitespace collapses; findings
+  are limited after controls and whitespace collapse. Jev keeps its old defaults for non-numeric confidence/chance,
+  skips non-numeric notes, defaults non-string model and non-numeric cost, and ignores unrelated answer values.
+  Required choices, decision approval terms and zone action checks remain enforced. Teammate limits still use their
+  one shorten turn; sizing and findings schemas do not promise one. These are compatibility exceptions to the strict
+  object and new envelope ground rules, as requested in comment 843, not new acceptance restrictions.
+  The contract harness replays `test/fixtures/answers/`, including older partial turns. These are synthetic samples
+  from the writers and tests, not database exports: the installed database was denied to both builds. Read-only
+  replay of actual saved findings and decisions remains an evidence gap.

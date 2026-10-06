@@ -1,4 +1,5 @@
 import {chatSchema,chatTables} from "./chat-delivery-state.js";
+import type { DecisionOption } from "./contracts/decision.js";
 import { SLACK_SCHEMA, SLACK_TABLES } from "./slack-state.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
@@ -1838,13 +1839,8 @@ export type PushPair = {
   acceptedAt: string | null;
 };
 
-/** One option of a decision. `reversible` is a field so a scheduler can refuse to auto-apply. */
-export type DecisionOption = {
-  id: string;
-  label: string;
-  consequence: string;
-  reversible: boolean;
-};
+/** One option of a decision (src/contracts/decision.ts). `reversible` is a field so a scheduler can refuse to auto-apply. */
+export type { DecisionOption };
 
 /** The judgement call an agent refused to guess at (§7). Identity = its run. */
 export type Decision = {

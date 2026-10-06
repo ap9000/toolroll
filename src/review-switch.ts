@@ -2,11 +2,11 @@
  * build gets (build-review.ts runs it): tables, and the read-only views every
  * surface shows. No schema version bump. Kept free of heavy imports so the
  * status readers can use it without an import cycle. */
+import type { BuildFinding } from "./contracts/review-findings.js";
 import type { Store } from "./store.js";
 
-export type FindingSeverity = "HIGH" | "MEDIUM" | "LOW";
-/** One automatic-review finding: how bad, where, and how it fails. */
-export type BuildFinding = { severity: FindingSeverity; file: string; line: number; scenario: string };
+/** One automatic-review finding: how bad, where, and how it fails (src/contracts/review-findings.ts). */
+export type { BuildFinding, FindingSeverity } from "./contracts/review-findings.js";
 
 export const REVIEW_SCHEMA = `
 -- A project's explicit review switch. No row: on while the project is under a hands-off mode, off otherwise.

@@ -31,7 +31,7 @@ import { runCheckLevel } from "./check-levels.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { parseBuildFindings, REVIEW_PATCH_NAME } from "./reviewer.js";
-import type { BuildFinding } from "./review-switch.js";
+import { FINDINGS_VERSION, type BuildFinding, type BuildFindings } from "./contracts/review-findings.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { TELEGRAM_TOKEN_ENVS } from "./names.js";
 import { CLAUDE_LIMITS } from "./scope.js";
@@ -90,7 +90,7 @@ function queueLocked(store: Store, repo: string, runId: number, root: string, no
 
 function settle(store: Store, runId: number, state: "reviewed" | "not-reviewed", fields: { findings?: BuildFinding[]; reason?: string; sentBackAs?: string | null }, now: Date): void {
   store.handle.prepare("UPDATE build_review SET state = ?, findings_json = ?, reason = ?, sent_back_as = ?, finished_at = ? WHERE run = ? AND state = 'pending'")
-    .run(state, fields.findings === undefined ? null : JSON.stringify({ version: 1, findings: fields.findings }), fields.reason ?? null,
+    .run(state, fields.findings === undefined ? null : JSON.stringify({ version: FINDINGS_VERSION, findings: fields.findings } satisfies BuildFindings), fields.reason ?? null,
       fields.sentBackAs ?? null, now.toISOString(), runId);
   store.bumpWake();
 }
