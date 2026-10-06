@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.36 — 2026-10-06
 
 - **Flows have one contract.** Every kind of zone, step, route, answer,
   option, trigger and the flow file is described once
@@ -22,6 +22,20 @@
   file's zones keep only the words their kind uses when exported, and a file
   or drawing made by a newer Toolroll is refused as such. Messages for flows
   and triggers changed from "Zone Build: …" sentences to path-named lines.
+
+- **Builder handoffs and proofs have one contract.** The handoff a builder
+  leaves, its proof and the verification receipt are versioned schemas. Fifteen
+  real past runs replay with identical verdicts, receipt bytes and digests.
+- **One compact review packet.** `toolroll task review <id> --brief` (or
+  `--json`) shows a build's conclusion, changed files, check result, review
+  findings by severity, screenshot paths and what to do next, in about 40
+  lines and without logs or diffs.
+- **PostHog connects in one short step.** Its sign-in now uses PostHog's own
+  MCP permission preset instead of listing every permission, which showed a
+  75-group permission screen. Sign-in returns are now logged.
+- **Tests can't mistake a real process for a fake one.** Fake process IDs in
+  tests sit above every platform's limit, and a guard refuses new low ones (a
+  Brave tab and a GitHub runner process had made tests fail at random).
 
 ## 0.9.35 — 2026-10-05
 
