@@ -71,7 +71,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 |---|---|---|
 | 13 ✅ | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
 | 14 ✅ | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
-| 15 | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
+| 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
 | 16 | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
 | 17 | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
 
@@ -314,3 +314,20 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   are parsed as before; no CLI input moved to a schema here (session and assignment inputs already have theirs). The
   installed database was denied to this build, so read-only replay of real saved state remains an evidence gap. No
   tightening.
+- **15. Trigger payloads** (2026-10-06). `src/contracts/trigger-payloads.ts` holds one non-strict schema each for
+  GitHub's issues and pull requests, issue events, workflow runs and signed webhook events, Linear's GraphQL answer,
+  issue and signed webhook event, a plain webhook's JSON (any JSON, kept as sent for its title and body paths), a
+  mailbox's normalized message (typed against `InboundMail`) and a shared form's fields (each field's first value).
+  Only the fields Toolroll reads are typed; unknown keys are ignored and a field of the wrong type reads as missing,
+  as the hand readers' `text()` and `record()` did, so no reader refuses. `Number()` coercion (`number`,
+  `webhookTimestamp`, the form's `t`), presence checks (`pull_request`, `updatedFrom.stateId`), fallbacks, clipping
+  and dynamic webhook paths run after parsing, as before. `flow-triggers.ts` reads every poll, delivery, message and
+  form through them; JSON, signature and age checks keep their order, so every delivery gets the same 200, 202,
+  400, 401, 404, 413 or 429 and plain reason as in 0.9.41, and a poll's unreadable answer still backs off. The
+  focused observation request is `src/contracts/observation-request.ts` (`versioned(1)`, strict, as it always
+  refused unknown keys); `parseObservationCases` reads through it, keeps its 16 KB guard and its three plain
+  refusals, and still treats the same case written in another key order as distinct. Compared with the 0.9.41
+  readers over generated odd payloads (deliveries, polls, forms, items, observation requests): no differences.
+  Read-only replay of real saved data remains an evidence gap: the runner was denied the installed database and
+  evidence folder, and raw deliveries are not kept. Loosened, at the operator's request: an observation request
+  without `version` is read as version 1, where it was refused. Nothing is tightened.

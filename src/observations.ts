@@ -8,6 +8,7 @@ import type { Runner } from "./builder.js";
 import type { Store } from "./store.js";
 import { canonicalAcceptance } from "./scope.js";
 import { readVerifiedArtifact, scanForSecrets, storeEvidence } from "./evidence.js";
+import { readObservationRequest, type ObservationCase } from "./contracts/observation-request.js";
 
 export const OBSERVATION_MAILBOX = "STANDING-ORDERS-OBSERVATIONS.json";
 export const OBSERVATION_CAPTURE = "machine focused observations v1";
@@ -31,7 +32,7 @@ export function focusedTestCommandSupported(command: string): boolean {
   return parts.some(c => /^npm (?:test|run test)(?: -- (?:--run|--reporter=\w+|--no-file-parallelism)(?: (?:--run|--reporter=\w+|--no-file-parallelism))*)?$/.test(c));
 }
 
-export type ObservationCase = { criterion: string; at: "base" | "head"; testPath: string; testName: string };
+export type { ObservationCase };
 
 export function originalTaskBase(store: Store, taskId: string): string | null {
   const lineage = store.repairLineageOf(taskId);
@@ -67,17 +68,18 @@ export function observationBrief(store: Store, root: string, taskRef: number): O
 
 export function parseObservationCases(raw: string, ids: readonly string[]): ObservationCase[] {
   if (Buffer.byteLength(raw) > 16 * 1024) throw Error("The observation request is too large.");
-  const parsed = JSON.parse(raw);
-  if (parsed?.version !== 1 || !Array.isArray(parsed.observations) || parsed.observations.length < 1 || parsed.observations.length > 4 ||
-      Object.keys(parsed).some(k => k !== "version" && k !== "observations")) throw Error("Use one to four focused test observations.");
-  const cases = parsed.observations as ObservationCase[];
-  for (const item of cases) {
-    if (!item || Object.keys(item).some(k => !["criterion", "at", "testPath", "testName"].includes(k)) || !ids.includes(item.criterion) ||
-        !["base", "head"].includes(item.at) || !pathOkay(item.testPath) || !/\.(test|spec)\.[cm]?[jt]sx?$/.test(item.testPath) ||
-        typeof item.testName !== "string" || item.testName.trim() === "" || item.testName.length > 500 || /[\u0000-\u001f\u007f]/.test(item.testName)) {
-      throw Error("An observation must name a requested criterion, base/head, one test file and one test name. Shell commands are not accepted.");
-    }
+  const parsed: unknown = JSON.parse(raw);
+  const read = readObservationRequest(parsed);
+  // A problem inside one observation is that observation's; anything else is the request's shape.
+  if (!read.ok && read.issues.some(issue => !/^observations\[\d+\]/.test(issue.path))) throw Error("Use one to four focused test observations.");
+  const bad = () => Error("An observation must name a requested criterion, base/head, one test file and one test name. Shell commands are not accepted.");
+  if (!read.ok) throw bad();
+  for (const item of read.value.observations) {
+    if (!ids.includes(item.criterion) || !pathOkay(item.testPath) || !/\.(test|spec)\.[cm]?[jt]sx?$/.test(item.testPath) ||
+        item.testName.trim() === "" || item.testName.length > 500 || /[\u0000-\u001f\u007f]/.test(item.testName)) throw bad();
   }
+  // The cases as written: their key order is the receipt's, and two written in different orders are distinct, as before.
+  const cases = (parsed as { observations: ObservationCase[] }).observations;
   if (new Set(cases.map(c => JSON.stringify(c))).size !== cases.length || ids.some(id => !cases.some(c => c.criterion === id))) throw Error("Every requested criterion needs a distinct observation.");
   return cases;
 }
