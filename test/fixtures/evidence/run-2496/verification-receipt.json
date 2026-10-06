@@ -1,0 +1,33 @@
+{
+ "version": 1,
+ "run": 2496,
+ "head": "1e3e80ef5c121a669f7092497e19f9fad5f8cd50",
+ "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+ "scopeDigest": "6b8c06c78e07e5e538b8d3647a2375f5",
+ "command": {
+  "id": 17,
+  "repo": "/Users/owner/Developer/standing-orders-release-verification",
+  "command": "if [ -f scripts/release-check.mjs ]; then node scripts/release-check.mjs; else npm run typecheck && npm run build || exit 1; d=$(mktemp -d); (npm test -- --run --reporter=dot >\"$d/unit.log\" 2>&1; echo $? >\"$d/unit.code\") & (node scripts/flows-e2e.mjs >\"$d/flows.log\" 2>&1; echo $? >\"$d/flows.code\") & (node scripts/e2e-parallel.mjs scripts/app-e2e.mjs --skip-build >\"$d/app.log\" 2>&1; echo $? >\"$d/app.code\") & wait; fail=0; for s in unit flows app; do echo \"== $s\"; cat \"$d/$s.log\"; done; echo \"== summary\"; for s in unit flows app; do c=$(cat \"$d/$s.code\"); echo \"$s: exit $c\"; grep -E \"FAIL|Test Files|passed, \" \"$d/$s.log\" | tail -5; [ \"$c\" = 0 ] || fail=1; done; exit $fail; fi",
+  "timeoutMs": 3600000,
+  "digest": "c6b51fc0dd1053f3",
+  "recoverySetupDigest": null,
+  "approvedBy": "alex",
+  "approvedAt": "2026-09-30T01:20:00.235Z",
+  "revokedAt": null,
+  "revokedBy": null
+ },
+ "result": {
+  "configured": true,
+  "ran": true,
+  "exitCode": 0
+ },
+ "log": {
+  "artifactId": 5934,
+  "sha256": "ccd96af67fb03e3bbfb3a8d41ea1ea522664aa7a6bf3e0749a943695b7a1691e",
+  "bytesStored": 25394,
+  "bytesOriginal": 187389,
+  "truncated": true,
+  "redacted": false,
+  "captureStatus": "ok"
+ }
+}

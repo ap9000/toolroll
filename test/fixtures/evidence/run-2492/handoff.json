@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "taskId": "stable-identity",
+  "runId": 2492,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "5631928ade71e26b4eb2bbd60ad5db5a",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "01c9e480-135f-427a-984b-af1e65af490f",
+  "branch": "toolroll/stable-identity",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-stable-identity-6f6477f2",
+  "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+  "head": "35e0f20b93eaba7970dd97d0424c5666654ce7a9",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Project identity no longer hashes st.dev (path, real git common dir, inode, birth time); every caller goes through learningIdentity. Stale knowledge never fails a build: it runs without it, the brief says it was not applied, and an approver applies it forward from the Knowledge page or toolroll knowledge apply as a new revision, recorded in an append-only project_identity_carry table. Rows under the old formula with the current st.dev carry over silently; a repo recreated at the same path still asks.",
+  "changes": [
+    "project-learning.ts: identityOf/legacyIdentityOf, carryProject, reconcileIdentity, acceptedIdentities; learning checks accept carried identities, writes use the current one.",
+    "project-knowledge.ts: stale knowledge is shown for review only, never applied; applySavedKnowledge (refuses the lead); snapshots of stale builds are stored under the current identity.",
+    "project-skills.ts, coding-handoff.ts, coding-context.ts accept carried identities; a skills freeze proceeds without skills saved under an un-carried identity.",
+    "Console: one notice, saved knowledge in a disclosure, Apply saved knowledge button (action=apply, CSRF, approver). CLI: knowledge apply in knowledge-cli.ts, operate.ts and surface.ts (operator audience).",
+    "Chat: conversationKnowledge returns the stale notice with the Knowledge page path and the CLI command instead of throwing."
+  ],
+  "verification": [
+    "npm run typecheck passes.",
+    "npx vitest run on project-learning, project-knowledge, project-skills, coding-context, project-delete, operate and pull-request-flow test files: all pass."
+  ],
+  "followUps": [
+    "Chat gap: chat cannot apply stale knowledge itself; it points to the Knowledge page and the CLI command.",
+    "Skills saved under an un-carried identity still raise an error on the Skills page; applying knowledge records the carry, which clears it.",
+    "verifyCodingContext has no store, so it accepts only the current or same-volume legacy identity, not approver carries.",
+    "The shared node_modules was unreadable from this worktree, so I ran a private npm install here (package files unchanged).",
+    "No desktop or phone screenshots were taken of the new Knowledge notice. The HTTP test checks the markup only.",
+    "The stuck install recovers only after this build is deployed."
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T19:00:56.690Z",
+    "currentAsOf": "35e0f20b93eaba7970dd97d0424c5666654ce7a9"
+  }
+}

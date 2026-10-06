@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "taskId": "cleanup",
+  "runId": 2447,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "51fb00a5b7f12824b71d87cbbbe1e042",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "94ced6f8-10ee-47f8-90bd-7ef324591aac",
+  "branch": "toolroll/cleanup",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-cleanup-0b6e6e93",
+  "base": "0a7824829e250a3aaa6ba70b90dba0cd8e80624f",
+  "head": "80456c7dcec03b6a9ad40c81fce47c9e8d99b366",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Toolroll now cleans up after itself. Suites run in their own process group and temp root, and both are removed on pass, fail, timeout or interrupt. The worker runs a daily storage sweep claimed in SQLite. It removes stale test temp folders and stops orphaned run processes, revalidating each before signalling. It also removes finished checkouts, staged runtimes beyond current/previous/newest, and dependency installs unused for 7 days. Spotlight markers are added. toolroll storage and Settings > Storage show the last sweep.",
+  "changes": [
+    "New: scripts/suite-lifecycle.mjs, src/storage-sweep.ts, src/orphan-sweep.ts, src/staged-runtimes.ts, src/never-index.ts; storage_sweep table added without a version bump (CREATE TABLE IF NOT EXISTS)",
+    "Release-check checkouts now go once complete unless deployed now or the project's newest complete gate with no deploy since, for at most a week; the old 7-day per-release keep is gone",
+    "deploy-browser prunes staged runtimes through the shared module: current, previous and newest only (it kept the 3 newest before); with no runtime in use it removes none",
+    "Spotlight markers go in the pool and project folders, not inside checkouts, so builds can't commit them; also deps root, linked node_modules, staged-upgrades and temp roots"
+  ],
+  "verification": [
+    "npm run typecheck passed; 14 focused test files, 160 tests passed, incl. a subprocess suite test (pass/fail/timeout/SIGINT) and a real Vitest run interrupted mid-test",
+    "Headless Storage journey on the built candidate at 1280 and 390 wide (empty/normal/long/failure): no overflow, Details opens by keyboard, 44px tap target on phone, no page errors",
+    "Full release verifier not run here (left to the machine gate)"
+  ],
+  "followUps": [
+    "Proof/canary scripts that keep their output on purpose (crash/pilot/handoff canaries, screenshot proofs) still leave temp folders; the daily sweep removes them after a day",
+    "Unit tests and e2e workers set TOOLROLL_STORAGE_SWEEP=off so a test never sweeps the host; production workers sweep by default",
+    "Orphan detection needs lsof on macOS or /proc on Linux; if it can't read them, it stops nothing and the sweep records the failure and retries in an hour"
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T00:33:21.327Z",
+    "currentAsOf": "80456c7dcec03b6a9ad40c81fce47c9e8d99b366"
+  }
+}

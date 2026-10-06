@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "taskId": "release-0934",
+  "runId": 2510,
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "route": {
+    "digest": "d654a15d0e53ca2b51cfc380494c04aa",
+    "phase": "build",
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "chosen": "recommended"
+  },
+  "sessionId": null,
+  "branch": "toolroll/release-0934",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders-release-verification/toolroll-release-0934-a7357200",
+  "base": "138aa9c6a66398adf81ecfbca0a837064e1c2b6c",
+  "head": "33189100290769d00f9b178ce96d3e13cb0f9a75",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Prepared candidate 6f99e507a4d7794a8dd1e7fb5bccfda3a4fca719 was checked out by the machine; no agent ran. The sealed diff spans this task's base to that candidate.",
+  "changes": [
+    "CHANGELOG.md",
+    "docs/plans/zod-revamp.md",
+    "package-lock.json",
+    "package.json",
+    "src/browser-crew.ts",
+    "src/browser-workspace.ts",
+    "src/browser/app.tsx",
+    "src/browser/workspace.css"
+  ],
+  "verification": [],
+  "followUps": [],
+  "freshness": {
+    "stampedAt": "2026-10-05T22:46:35.842Z",
+    "currentAsOf": "33189100290769d00f9b178ce96d3e13cb0f9a75"
+  }
+}

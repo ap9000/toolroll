@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "taskId": "ui-inspiration-with-reasoning",
+  "runId": 2500,
+  "provider": "claude",
+  "model": "opus",
+  "route": {
+    "digest": "cb93bcb8a13b0d6a59848b8c99e3169d",
+    "phase": "build",
+    "provider": "claude",
+    "model": "opus",
+    "chosen": "recommended"
+  },
+  "sessionId": "eaaf7624-262c-493f-9096-56ae535e876b",
+  "branch": "toolroll/ui-inspiration-with-reasoning",
+  "worktree": "/Users/owner/.config/standing-orders/worktrees/standing-orders/toolroll-ui-inspiration-with-reasoning-9d0bbc6f",
+  "base": "6cfacfbb4fe1184c4f6446357a24cedfc642bd2c",
+  "head": "7b53c8ae6087877ca6a168d1e58e7679f8be1ad0",
+  "outcome": "built",
+  "committed": true,
+  "decisionsIncorporated": [],
+  "conclusion": "Every Crew row now shows a muted relative age (now, 4m, 2h, 3d) at the right of its title line, as a <time> with the exact minute on hover, from WorkIndexItem.updatedAt. Order, badges, actions, Finished disclosure and empty state unchanged. Typecheck and focused tests pass; desk/phone light/dark evidence shows no overflow or overlap.",
+  "changes": [
+    "src/browser-workspace.ts, src/browser-crew.ts: BrowserCrewItem.updatedAt carried from the work index (initial render and live team refresh).",
+    "src/when-html.ts: shortAge() formatter; invalid stamps render nothing, future stamps read now.",
+    "src/browser/app.tsx: CrewAge <time> after the headline badge; badge gets so-work-badge class.",
+    "src/browser/workspace.css: heading becomes a grid; age is muted 12px Geist Mono in a 3ch right-aligned slot; removed dead .so-work-heading .ui-badge rule."
+  ],
+  "verification": [
+    "npm run typecheck: pass.",
+    "npx vitest run src/when-html.test.ts src/workspace-refresh.test.ts: 12 passed (new: shortAge marks; crew updatedAt present and moves on cancel).",
+    "npx vitest run overlay-motion, console-feel, serve.chat tests (reference Crew markup/CSS): 67 passed.",
+    "Headless Playwright on demo data at 1440x900, 1100x800, 390x844, light/dark, empty: no overflow, no title/age overlap, age on one line, phone rows >=51px."
+  ],
+  "followUps": [
+    "Interrupted attempt #2464 left no diff in this worktree; work was done fresh.",
+    "home-view ago() was not moved: it words ages differently (3 min ago); shortAge is a new shared helper instead.",
+    "Ages recount on each workspace refresh only; no ticking timer, as recommended.",
+    "Before shots come from the base build; long-title close-ups exist only for after. Capture script: evidence/crew-age/capture.mjs.",
+    "Not checked against the installed live runtime; evidence uses the built candidate with the synthetic demo sandbox."
+  ],
+  "freshness": {
+    "stampedAt": "2026-10-05T20:17:36.477Z",
+    "currentAsOf": "7b53c8ae6087877ca6a168d1e58e7679f8be1ad0"
+  }
+}
