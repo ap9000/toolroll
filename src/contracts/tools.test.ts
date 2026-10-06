@@ -113,7 +113,7 @@ function gatewayToolsList(): { name: string; inputSchema: Json }[] {
 
 describe("the lead and gateway tool registries", () => {
   it("cover every tool the model and tools/list are shown, each with an input and an output schema", () => {
-    expect(NAMES.lead).toHaveLength(51);
+    expect(NAMES.lead).toHaveLength(52);
     expect(MATE_TOOL_SCHEMAS.map(one => one.name)).toEqual(NAMES.lead);
     expect(Object.keys(LEAD_TOOL_OUTPUTS)).toEqual(NAMES.lead);
     expect(NAMES.gateway).toHaveLength(25);
