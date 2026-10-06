@@ -1081,9 +1081,9 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
 await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; their reply moves it on (a stranger's doesn't), one nobody answers gets a nudge in the same thread, and a stalled decision reminds its owner and moves on", ["Email inbox: a real email becomes a card, Claude drafts a reply, the owner approves it, and it arrives in the sender's thread"], async () => {
   const mail = await mailServer();
   try {
-    // The mailbox is read for replies about once a minute (flow-replies.ts): two minutes leave both replies a full read
-    // inside the wait, and Sam's card still runs out of time.
-    const WAIT = 2;
+    // The mailbox is read for replies only about once a minute (flow-replies.ts): three minutes keep a reply that lands
+    // just after a read safely inside the wait.
+    const WAIT = 3;
     const at = (id, title, kind, x, y, rest) => ({ id, title, kind, zone: zone(x, y), ...none, next: null, onFail: null, ...rest });
     // A decision that stalls: after a minute its owner is reminded and it's anyone's to decide.
     const decisions = await newFlow("Decisions", [
