@@ -35,6 +35,7 @@ import { TeamLeads } from "./team-leads.js";
 import { chatResultHref } from "./chat-controls.js";
 import { resultImageFileName, safeResultImageCaption, verifyResultImage } from "./chat-evidence.js";
 import type { TelegramTransport, TelegramUpload } from "./telegram.js";
+import { telegramButton, type TelegramCallbackButton, type TelegramUpdate } from "./contracts/telegram-callback.js";
 
 /** How long one claimed turn may go without a heartbeat before another poller may take it over. */
 export const CONVERSATION_CLAIM_MS = 2 * 60_000;
@@ -141,15 +142,15 @@ function keyboardWith(callbacks: CallbackKeyboard | null, link: InlineButton[] |
  * option's place, nothing more; a tap re-proves that the question is still open and is the tapper's own. */
 export function askKeyboard(ask: MateAsk): CallbackKeyboard {
   const rows: CallbackKeyboard = [];
-  for (let at = 0; at < ask.options.length; at += 2) rows.push(ask.options.slice(at, at + 2).map((label, offset) => ({ text: label.slice(0, 60), callback_data: `ask:${ask.turn}:${at + offset}` })));
-  rows.push([{ text: MATE_ASK_OTHER, callback_data: `ask:${ask.turn}:x` }]);
+  for (let at = 0; at < ask.options.length; at += 2) rows.push(ask.options.slice(at, at + 2).map((label, offset) => telegramButton(label.slice(0, 60), `ask:${ask.turn}:${at + offset}`)));
+  rows.push([telegramButton(MATE_ASK_OTHER, `ask:${ask.turn}:x`)]);
   return rows;
 }
 
-export type InlineButton = { text: string; callback_data: string } | { text: string; url: string };
+export type InlineButton = TelegramCallbackButton | { text: string; url: string };
 type Keyboard = InlineButton[][];
 /** What a part persists: callback tokens only. A url is minted at send time, never stored. */
-type CallbackKeyboard = { text: string; callback_data: string }[][];
+type CallbackKeyboard = TelegramCallbackButton[][];
 
 /** Mint the card's tokens before the send, so a tap can never name a token that does not exist. */
 export function mintCardTokens(store: Store, binding: TelegramBinding, proposal: number, now: Date, messageId?: string, chatId = binding.chatId): { keyboard: CallbackKeyboard; tokens: string[] } {
@@ -158,7 +159,7 @@ export function mintCardTokens(store: Store, binding: TelegramBinding, proposal:
   for (const [token, phase] of [[confirm, "confirm"], [dismiss, "dismiss"]] as const) {
     store.createTelegramProposalAction({ token, binding: binding.id, proposal, phase, chatId, ttlMs: CARD_TTL_MS, ...(messageId === undefined ? {} : { messageId }) }, now);
   }
-  return { keyboard: [[{ text: "Confirm", callback_data: confirm }, { text: "Dismiss", callback_data: dismiss }]], tokens: [confirm, dismiss] };
+  return { keyboard: [[telegramButton("Confirm", confirm), telegramButton("Dismiss", dismiss)]], tokens: [confirm, dismiss] };
 }
 
 export type CardEffect =
@@ -178,7 +179,7 @@ export function applyProposalTap(
   store: Store,
   binding: TelegramBinding,
   token: string,
-  message: { message_id: number; chat?: { id: number } },
+  message: NonNullable<NonNullable<TelegramUpdate["callback_query"]>["message"]>,
   repos: readonly string[] | null,
   options: TelegramConversationOptions,
   now: Date,
@@ -297,15 +298,15 @@ export function applyProposalTap(
     if (challenged) {
       ack("confirm it");
       edit(`${body}\n\nThis records that you handled this exact result. Confirm?`, [
-        [{ text: `✓ Yes, ${CHAT_ACTIONS[sharedAction!.operation].label.toLowerCase()}`, callback_data: yes }],
-        [{ text: "Cancel", callback_data: cancel }],
+        [telegramButton(`✓ Yes, ${CHAT_ACTIONS[sharedAction!.operation].label.toLowerCase()}`, yes)],
+        [telegramButton("Cancel", cancel)],
       ]);
       return;
     }
     ack("irreversible — confirm it");
     edit(`⚠ This answer is IRREVERSIBLE.\n\n${body}\n\nConfirm?`, [
-      [{ text: "⚠ Yes, answer it", callback_data: yes }],
-      [{ text: "Cancel", callback_data: cancel }],
+      [telegramButton("⚠ Yes, answer it", yes)],
+      [telegramButton("Cancel", cancel)],
     ]);
   };
   if (action.phase === "confirm" && (irreversible || challenged)) {

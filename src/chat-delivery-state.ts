@@ -1,6 +1,9 @@
 /** Durable private-chat receipts. Each transport has its own tables and lease. */
 import { createHash, randomBytes } from "node:crypto";
 import { MATE_ASK_TTL_MS, type Store } from "./store.js";
+import { readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatEventBody } from "./contracts/chat-content.js";
+
+export { savedChatPart, type ChatContent, type ChatEventBody };
 
 const CHAT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_binding (
@@ -181,35 +184,6 @@ export type ChatPart = {
   created: string;
 };
 export type ChatRoom = { id: number; installation: string; chat: string; kind: "group" | "private"; conversation: string; boundBy: string; binding: number; cursor: number };
-export type ChatContent = {
-  text: string;
-  /** Where the part is sent when not the binding's own DM: a room's channel. */
-  channel?: string;
-  proposal?: number;
-  image?: { taskId: string; run: number; artifact: number; sha256: string };
-  /** A screenshot sent with a result (result-shots.ts): it follows that result's message part, in its thread when
-   * the app allows; a refused upload becomes one plain line, and one removed by retention goes quietly. */
-  shot?: { follows: number | null };
-  task?: string;
-  run?: number;
-  edit?: string;
-  phase?: "armed";
-  link?: { label: string; path: string };
-  /** More link buttons after `link`: [Look first] beside [Merge] or [Accept and finish]. */
-  also?: Array<{ label: string; path: string }>;
-  /** A flow decision's buttons ride this part (v88): minted when it is planned. */
-  flow?: { card: number; entry: number; actions: Array<"approve" | "edit" | "send-back"> };
-  /** A flow's "Person chooses" buttons ride this part: minted when it is planned. */
-  choose?: { card: number; entry: number; options: Array<{ choice: number; label: string }> };
-  /** "Use this as your note?" Yes / No about the person's message `held` (an event id), for one choice's visit. */
-  note?: { card: number; entry: number; held: string };
-  /** A teammate's question's buttons ride this part (v93): each option, then one to answer in words (choice null). */
-  question?: { id: number; choices: Array<{ choice: string | null; label: string }> };
-  /** The lead's question to its owner rides this part: its options, then "Something else". */
-  ask?: { turn: number; options: string[] };
-  /** The lead's own reply, already shaped (reply-shape.ts): the channel renders its bold anchors and labelled links in its own format. */
-  voice?: true;
-};
 export const chatHash = (text: string): string =>
   createHash("sha256").update(text).digest("hex");
 
@@ -417,7 +391,8 @@ export class ChatState {
       return this.bindingFor(identity.installation, member);
     });
   }
-  enqueue(event: Omit<ChatEvent, "session" | "state" | "next_at">): boolean {
+  /** Save a received event with its body (contracts/chat-content.ts), versioned. */
+  enqueue(event: Omit<ChatEvent, "session" | "state" | "next_at" | "payload"> & { payload: ChatEventBody }): boolean {
     return (
       Number(
         this.prepare(
@@ -431,7 +406,7 @@ export class ChatState {
           event.member,
           event.ts,
           event.thread,
-          event.payload,
+          savedChatEventBody(event.payload),
           event.created,
         ).changes,
       ) === 1
@@ -474,7 +449,7 @@ export class ChatState {
       for (const [ordinal, part] of parts.entries()) {
         const inserted = this.prepare(
           "INSERT OR IGNORE INTO chat_part(event,ordinal,payload,created) VALUES(?,?,?,?)",
-        ).run(event, ordinal, JSON.stringify(part), now.toISOString());
+        ).run(event, ordinal, savedChatPart(part), now.toISOString());
         if (Number(inserted.changes) && part.proposal)
           this.tokens(
             Number(inserted.lastInsertRowid),
@@ -561,11 +536,18 @@ export const chatSchema = (channel: "slack" | "discord" | "teams"): string =>
   (CHAT_SCHEMA + CHAT_ROOM_SCHEMA + CHAT_FLOW_SCHEMA + CHAT_FLOW_CHOICE_SCHEMA + CHAT_QUESTION_SCHEMA + CHAT_ASK_SCHEMA).replaceAll("chat_", `${channel}_`);
 export const chatTables = (channel: "slack" | "discord" | "teams"): string[] =>
   CHAT_TABLES.map((name) => name.replace("chat_", `${channel}_`));
+/** A saved part's content. One that can't be read is a delivery problem that names the field, never a guess. */
+export function partContent(payload: string): ChatContent {
+  const read = readChatPart(payload);
+  if (!read.ok) throw new ChatDeliveryError(`This saved message can't be read: ${read.issues.map(issue => issue.line).join("; ")}`, 0, false, true);
+  return read.value;
+}
 export class ChatDeliveryError extends Error {
   constructor(
     readonly code: string,
     readonly retryMs = 5000,
     readonly uncertain = false,
+    readonly permanent = false,
   ) {
     super(code);
   }

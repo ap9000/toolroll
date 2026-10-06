@@ -113,7 +113,7 @@ export function replyInChannel(store: Store, source: NonNullable<FlowCardSource[
   const id = chatHash(`${source.app}:flow-reply:${visit.card}:${visit.entry}`);
   store.transact(() => {
     if (state.enqueue({ id, installation: grant.installation, binding: grant.id, kind: "message", channel: source.conversation, member: grant.member,
-      ts: source.thread, thread: source.thread, payload: "{}", created: now.toISOString() })) state.plan(id, [{ text: text.slice(0, 3500), channel: source.conversation }], now);
+      ts: source.thread, thread: source.thread, payload: {}, created: now.toISOString() })) state.plan(id, [{ text: text.slice(0, 3500), channel: source.conversation }], now);
   });
   return { ok: true };
 }

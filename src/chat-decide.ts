@@ -10,6 +10,8 @@
  *
  * Channel-agnostic: Telegram renders these today, and Slack, Discord and Teams reach the same acts through the same
  * tokens (the `channel` column). Every act runs through the door the console uses. */
+import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
+import type { ContractResult } from "./contracts/contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { acceptAndCompleteAsOperator, assignmentOf, owedAcceptance } from "./assignment.js";
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
@@ -27,7 +29,7 @@ import type { Store } from "./store.js";
 import { phoneText } from "./telegram-status.js";
 
 /** The tokens live in chat_decide_action and the open "What should change?" in chat_decide_prompt (store.ts). */
-export type DecideAct = "accept" | "changes" | "retry" | "approve" | "not-now" | "merge";
+export type DecideAct = (typeof DECIDE_ACTS)[number];
 export type DecideTarget =
   | { kind: "result"; taskId: string; run: number }
   | { kind: "failed"; taskId: string }
@@ -251,14 +253,15 @@ export function offerFingerprint(offer: DecideOffer): string {
 
 // ---- tokens ------------------------------------------------------------------------------------
 
-type ActionRow = { token: string; channel: string; binding: number; chat: string; message: string | null; act: DecideAct; phase: "offer" | "yes" | "cancel";
-  taskId: string; run: number | null; digest: string; expiresAt: string; consumedAt: string | null };
+/** A saved button (contracts/chat-callback-rows.ts), by the names this module uses. */
+type ActionRow = Pick<DecideActionRow, "token" | "channel" | "binding" | "chat" | "message" | "act" | "phase" | "run" | "digest">
+  & { taskId: DecideActionRow["task_id"]; expiresAt: DecideActionRow["expires_at"]; consumedAt: DecideActionRow["consumed_at"] };
 
-function readAction(row: Record<string, unknown>): ActionRow {
-  return { token: String(row["token"]), channel: String(row["channel"]), binding: Number(row["binding"]), chat: String(row["chat"]),
-    message: row["message"] == null ? null : String(row["message"]), act: String(row["act"]) as DecideAct, phase: String(row["phase"]) as ActionRow["phase"],
-    taskId: String(row["task_id"]), run: row["run"] == null ? null : Number(row["run"]), digest: String(row["digest"]),
-    expiresAt: String(row["expires_at"]), consumedAt: row["consumed_at"] == null ? null : String(row["consumed_at"]) };
+function readAction(raw: unknown): ContractResult<ActionRow> {
+  const read = readDecideActionRow(raw);
+  if (!read.ok) return read;
+  const { task_id: taskId, expires_at: expiresAt, consumed_at: consumedAt, created_at: _created, ...row } = read.value;
+  return { ok: true, value: { ...row, taskId, expiresAt, consumedAt } };
 }
 
 function mint(store: Store, seat: DecideSeat, message: string | null, spec: ActSpec, taskId: string, phase: ActionRow["phase"], now: Date): string {
@@ -395,7 +398,10 @@ function cardBody(shown: string): string {
 export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: string; message: string; shown: string; repos: readonly string[]; root?: string; now: Date }): DecideTapOutcome | null {
   const raw = input.token.startsWith("d:") ? store.handle.prepare("SELECT * FROM chat_decide_action WHERE token = ?").get(input.token) : undefined;
   if (raw === undefined) return null;
-  const row = readAction(raw as Record<string, unknown>);
+  const read = readAction(raw);
+  // A saved button that can't be read acts on nothing, and says why.
+  if (!read.ok) return { ack: `That button can't be read (${read.issues.map(issue => issue.line).join("; ")}). Nothing was done.`, ignored: true };
+  const row = read.value;
   const { now } = input;
   if (row.channel !== seat.channel || row.binding !== seat.binding || row.chat !== seat.chat || (row.message !== null && row.message !== input.message)) return { ack: "That button isn't for this chat.", ignored: true };
   if (row.consumedAt !== null) return { ack: "That button was already used or has expired." };

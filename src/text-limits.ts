@@ -244,6 +244,8 @@ export const TEXT_LIMITS = {
   memoryEffect: 300,
   memoryMistake: 300,
   memoryInstruction: 240,
+  /** A Telegram button's callback_data, in UTF-8 bytes: Telegram refuses a button with more. */
+  telegramCallbackDataBytes: 64,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

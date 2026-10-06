@@ -62,7 +62,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 8 | **Flow stage outputs and card state** (`{{stage.x}}`, choose/send payloads, attached long output) | `flow-engine.ts`, `flow-send.ts`, `flow-steps.ts` |
 | 9 ✅ | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
 | 10 ✅ | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
-| 11 | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
+| 11 ✅ | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
 | 12 | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
 
 ### Wave 3 — inputs from outside (P2)
@@ -224,3 +224,26 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   route from a newer Toolroll says so. The replay recognizes both historical routine `digest_version: 1` encodings:
   fields-only approvals with migration-pinned profiles and restated digests that bind the saved profile without a
   version bump. Working and approved digests are checked independently; genuine mismatches remain visible.
+- **11. Chat actions and channel callbacks** (2026-10-06). `src/contracts/chat-actions.ts` holds one strict schema per
+  chat action's data (all 45 in `CHAT_ACTIONS`) and the saved proposal's action, `version: 1`; `CHAT_ACTION_FIELDS`,
+  `SharedAction` and the request check in `prepareSharedAction` are derived from them, and `sharedActionPayload` reads
+  through `readSharedAction`. A drawing, trigger or script inside a request is still read by its own contract (item 3).
+  `src/contracts/chat-content.ts` is what Slack, Discord and Teams keep between steps: each event kind's body and a
+  planned message part (`ChatContent`), both saved with `version`. `chat-callback-rows.ts` reads a proposal card's and a
+  decide button's saved row; `telegram-callback.ts` is the Telegram update (Telegram's, unknown fields ignored) and the
+  data a Toolroll button carries, within the new `TEXT_LIMITS.telegramCallbackDataBytes` (64): every keyboard is built
+  with `telegramButton`, which refuses data Telegram would. `slack-callback.ts`, `discord-callback.ts` and
+  `teams-callback.ts` read each app's tap (the app's envelope loosely, Toolroll's button data strictly; Teams reads
+  `value.so` and ignores extra submit keys as before). The propose_action
+  JSON Schema in `mate-tools.ts` is left to item 5, which imports these. Kept: every saved proposal, part, event body,
+  inbox update, button row and app tap in `test/fixtures/chat/` reads as 0.9.36 read it — the same fields and the same
+  request bytes, so a saved proposal's stamp still matches — and unversioned rows are never rewritten; authentication,
+  pairing, exact chat and message binding, one-use tokens and stale replies are unchanged. Action requests retain
+  ignored values, null optionals and branch-specific defaults, including `watching !== false`; an unversioned
+  proposal's request is kept byte for byte and checked again only when preparing confirmation, as before.
+  Tightened, on purpose: a newer `version` of any of these is refused plainly; a button tap from the paired person whose data Toolroll didn't
+  make (or can't read) is answered with the path-named reason and does nothing, where Slack, Discord and Teams dropped
+  it silently and Telegram called it stale; a Telegram update that doesn't match the schema is passed over with a
+  named problem instead of being half-read. Schema-invalid pushed JSON updates are logged and acknowledged with
+  HTTP 200, so Telegram does not resend them. Unreadable saved message parts keep their field-path problem and
+  payload, with delivery stopped instead of scheduled for another retry.

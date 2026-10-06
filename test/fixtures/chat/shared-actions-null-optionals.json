@@ -1,0 +1,17 @@
+{
+  "about": "Synthetic unversioned proposal shapes accepted by the 0.9.36 reader. That writer retained ignored teammate_tools and teammate_routine fields in request; ids, names and stamps here are synthetic, with no personal data.",
+  "samples": [
+    {
+      "name": "v0 teammate_tools grant retains null rule optionals",
+      "payload": {"operation":"teammate_tools","request":{"teammate":3,"tool":"shop","change":"grant","action":null,"use":null,"limitField":null,"limitOver":null,"undoWith":null},"repo":"/work/sample-app","title":"Let Maya use shop","terms":["list_orders: does it"],"stamp":"cccc000000000000000000000000000000000000000000000000000000000000","state":{"rules":""}}
+    },
+    {
+      "name": "v0 teammate_tools rule retains a numeric string limit and null undo",
+      "payload": {"operation":"teammate_tools","request":{"teammate":3,"tool":"shop","change":"rule","action":"refund_order","use":"free","limitField":"amount","limitOver":"100","undoWith":null},"repo":"/work/sample-app","title":"Maya: refund_order — does it up to amount 100","terms":["shop → refund_order: does it up to amount 100.","Was: asks you first."],"stamp":"dddd000000000000000000000000000000000000000000000000000000000000","state":{"rules":"{\"refund_order\":{\"use\":\"ask\"}}"}}
+    },
+    {
+      "name": "v0 teammate_routine removal retains ignored non-string fields",
+      "payload": {"operation":"teammate_routine","request":{"teammate":3,"change":"remove","routine":2,"schedule":null,"text":false},"repo":"/work/sample-app","title":"Stop Maya's routine","terms":["Every day at 09:00: Check the inbox."],"stamp":"eeee000000000000000000000000000000000000000000000000000000000000","state":{"routine":2}}
+    }
+  ]
+}
