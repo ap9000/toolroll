@@ -1,20 +1,21 @@
 /** Central shared-conversation execution. Queue delivery is independent from
  * task completion; idle passes never call a model. */
 import { createHash, randomUUID } from 'node:crypto';
-import type { Store, ChatConfig, SubscriptionChatProviderId } from './store.js';
+import type { Store, SubscriptionChatProviderId } from './store.js';
 import { deliverTeamUpdates, startTeamUpdates } from './team-updates.js';
 import type { WorkspaceRevision } from './workspace-revision.js';
 import { workIndexPage } from './work-index.js';
 import { TeamLeads, type TeamClaim } from './team-leads.js';
 import type { TeamActor, TeamChatAuthorization, TeamExecute, TeamResponse, TeamSnapshot } from './team-contract.js';
-import { ceilingDigestOf, verifyApproverStanding } from './principal.js';
+import { verifyApproverStanding } from './principal.js';
 import { credentialKeyOf, isDirectChatProvider, priceForConfig, subscriptionCredentialKey, mateWorstCaseForPrice } from './converse.js';
 import { runMateTurn, type MateTurnInput } from './mate.js';
+import { teamChatAuthorization, type TeamChatProviderResolver } from './team-chat-authorization.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
 
 export type TeamRuntimeOptions = {
   store: Store; repos: () => readonly string[]; evidenceRoot: string;
-  provider: () => { config: ChatConfig; key: string | null } | null;
+  provider: TeamChatProviderResolver;
   subscriptionRunner?: MateTurnInput['subscriptionRunner']; fetcher?: typeof fetch;
   clock?: () => Date; capacity?: number; workspaceRevision?: WorkspaceRevision;
 };
@@ -32,25 +33,8 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
   const pages = new Map<string,{revision:string;expires:number;page:ReturnType<typeof workIndexPage>}>();
   let timer: ReturnType<typeof setInterval> | null = null, closed = false, passing = false, lastDelivery = 0;
 
-  function authorization(actor: TeamActor, snapshot: Pick<TeamSnapshot,'selected'>): TeamChatAuthorization {
-    const live = options.provider(), config = live?.config, conversation = snapshot.selected;
-    const empty: TeamChatAuthorization = { enabled: false, provider: config?.provider ?? null, model: config?.model ?? null,
-      dailyTurns: config?.dailyTurns ?? 0, weeklyCeilingUsd: null, conversationCeilingUsd: null, termsDigest: '' };
-    if (!conversation) return empty;
-    if (!live || !config) return { ...empty, waitingReason: 'Choose a chat provider in Settings.' };
-    const direct = isDirectChatProvider(config.provider);
-    if (direct && (live.key === null || priceForConfig(config) === null)) return { ...empty, waitingReason: 'The configured chat connection is unavailable. Open Settings.' };
-    const credential = direct ? credentialKeyOf(config.provider as Parameters<typeof credentialKeyOf>[0], live.key!) : subscriptionCredentialKey(config.provider as SubscriptionChatProviderId);
-    const session = store.teamMateSession(actor.name, conversation.threadId);
-    const ceiling = direct ? (session ? session.ceilingMicrousd / 1_000_000 : Math.min(5, config.weeklyCeilingMicrousd / 1_000_000)) : null;
-    const termsDigest = hash({ version: 1, actor: actor.name, generation: actor.generation, conversation: conversation.id,
-      projects: conversation.projects, credential, provider: config.provider, model: config.model,
-      daily: config.dailyTurns, weekly: config.weeklyCeilingMicrousd, priceIn: config.priceInMicrousd, priceOut: config.priceOutMicrousd, ceiling });
-    const enabled = session !== null && session.approverGeneration === actor.generation && session.endedAt === null
-      && session.credentialKey === credential && session.ceilingDigest === ceilingDigestOf(conversation.projects) && session.termsDigest === termsDigest;
-    return { enabled, provider: config.provider, model: config.model, dailyTurns: config.dailyTurns,
-      weeklyCeilingUsd: direct ? config.weeklyCeilingMicrousd / 1_000_000 : null, conversationCeilingUsd: ceiling, termsDigest };
-  }
+  const authorization = (actor: TeamActor, snapshot: Pick<TeamSnapshot, 'selected'>): TeamChatAuthorization =>
+    teamChatAuthorization(store, actor, snapshot.selected, options.provider());
 
   function admission(actor:TeamActor,id:string) {
     const conversation=domain.access(actor,id,'contributor').conversation;

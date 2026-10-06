@@ -336,7 +336,10 @@ export async function runMateCli(input: MateCliInput): Promise<MateCliResult> {
         emit({ ok: done, act: "dismiss", proposal: proposal.id });
         say(done ? `dismissed ${act[2]}` : "that proposal was already acted on");
       } else {
-        const outcome = confirmMateProposal(store, who, proposal.id, now, { confirm: act[3] !== undefined, via: "cli", ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }) });
+        const outcome = confirmMateProposal(store, who, proposal.id, now, { confirm: act[3] !== undefined, via: "cli", chatProvider: () => {
+          const current = store.getChatConfig();
+          return current === null ? null : { config: current, key: isDirectChatProvider(current.provider) ? keyFor(current as ChatConfig & { provider: DirectChatProviderId }, input.databaseFile, env) : null };
+        }, ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }) });
         emit({ ok: outcome.ok, act: "confirm", proposal: proposal.id, ...(outcome.ok ? { said: outcome.said, taskId: outcome.taskId } : { reason: outcome.reason, said: outcome.said }) });
         say(outcome.ok ? outcome.said : outcome.reason === "needs-confirm" ? `${outcome.said}: confirm ${act[2]} yes` : `refused: ${outcome.said}`);
         if (outcome.ok && outcome.kind === "scope" && outcome.taskId !== null) say(`approve it with your password: toolroll task approve ${outcome.taskId}`);

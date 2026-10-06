@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
+import { subscriptionCredentialKey } from './converse.js';
+import { teamChatAuthorization, subscriptionTeamChatProvider } from './team-chat-authorization.js';
+import { PROPOSAL_CHAT_REASON } from './mate-doors.js';
 import { TeamLeads } from "./team-leads.js";
 import { ceilingDigestOf } from "./principal.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
@@ -46,7 +49,7 @@ describe("Telegram team chats", () => {
     expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: BOT, chatId: String(ids.chat), userId: String(ids.user), updateId: ids.user }, T0).ok).toBe(true);
   };
   const actor = (name: string) => ({ name, generation: store.accountOf(name)!.generation });
-  const consent = (name: string) => store.mintTeamMateSession({ approver: name, approverGeneration: actor(name).generation, thread, credentialKey: "fixture", ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([REPO]), termsDigest: "t".repeat(64) }, T0);
+  const consent = (name: string) => store.mintTeamMateSession({ approver: name, approverGeneration: actor(name).generation, thread, credentialKey: subscriptionCredentialKey('claude-subscription'), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([REPO]), termsDigest: teamChatAuthorization(store, actor(name), domain.access(actor(name), conversation).conversation, subscriptionTeamChatProvider(store)).termsDigest }, T0);
   const pass = (script: ReturnType<typeof scripted>, extra: Partial<Parameters<typeof bridgePass>[1]> = {}) => bridgePass(store, { botId: BOT, transport: script.transport, clock: () => T0, readProjects: async () => [REPO], conversation: { evidenceRoot: dir, phoneOrigin: () => "https://console.example" }, ...extra });
   const queued = () => store.handle.prepare("SELECT q.author, q.request_id, q.status, m.text FROM team_message q JOIN mate_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
 
@@ -54,7 +57,7 @@ describe("Telegram team chats", () => {
     const session = store.teamMateSession("alex", thread)?.id ?? consent("alex");
     store.createTask({ id: "target", title: "Launch page" }, T0);
     store.placeTask(store.lookupRef("target")!.id, REPO);
-    const opened = store.openMateTurn({ approver: "alex", session, thread, credentialKey: "fixture", reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
+    const opened = store.openMateTurn({ approver: "alex", session, thread, credentialKey: subscriptionCredentialKey('claude-subscription'), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
     if (!opened.ok) throw new Error(opened.reason);
     const started = store.startMateTurn(opened.id, T0);
     if (!started.ok) throw new Error("start");
@@ -318,6 +321,24 @@ describe("Telegram team chats", () => {
     script.updates.push([groupTap(2, SAM.user, card.token, card.messageId)]);
     expect(await pass(script, { readProjects: async () => [REPO, "/test/unrelated-project"] })).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
     expect(store.getMateProposal(proposal)).toMatchObject({ state: "confirmed", resolvedBy: "sam", outcome: { ok: true, via: "telegram" } });
+  });
+
+  test('changed provider terms refuse a Telegram confirmation with the enable-chat reason and preserve the proposal', async () => {
+    const script = scripted();
+    consent('sam');
+    script.updates.push([textUpdate(1, group, ALEX.user, '/team 1')]);
+    await pass(script);
+    const proposal = replyWithCard();
+    await pass(script);
+    const card = sentCard(script), before = store.getMateProposal(proposal);
+    store.setChatConfig({ ...store.getChatConfig()!, dailyTurns: 51 }, 'alex', T0);
+    script.updates.push([groupTap(2, SAM.user, card.token, card.messageId)]);
+    const refused = await pass(script);
+    expect(refused).toMatchObject({ ok: true });
+    expect(refused.ok && (refused.report.chatConfirmed ?? 0)).toBe(0);
+    expect(script.calls.filter(call => call.method === 'editMessageText').at(-1)?.params['text']).toContain(PROPOSAL_CHAT_REASON);
+    expect(store.getMateProposal(proposal)).toEqual(before);
+    expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
   });
 
   test("a removed group member sees no card details and cannot consume the shared confirmation", async () => {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.40 — 2026-10-06
+
+- **Confirming a proposal checks the same things the card does, everywhere.**
+  The console, a direct request, Telegram and the CLI all ask one check: you
+  can act on this chat (with the current provider, model and price), and no
+  reply is still running. If the terms changed, the card says to turn chat on
+  again and every other way of confirming refuses too, with the same reason.
+  A teammate reply that stalls before it starts stops blocking confirms after
+  a short limit instead of until a restart.
+
 ## 0.9.39 — 2026-10-06
 
 - **Chat is the conversation.** The Chat tab is your conversation with the
