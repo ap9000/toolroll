@@ -56,7 +56,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { admissionWords, appLanes, DEMAND, laneWords, MAX_GROUPS, memoryWords, openGate, watchMemory } from "./check-memory.mjs";
+import { admissionWords, appLanes, DEMAND, laneWords, MAX_GROUPS, memoryWords, openGate, readSample, watchMemory } from "./check-memory.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
 
 const args = process.argv.slice(2);
@@ -314,7 +314,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (journeyRuns.length === 0 || held) return [];
     // The most browser groups at once, shared out; each group still starts only when the gate has room for it.
     const slots = MAX_GROUPS;
-    const { shares, app } = releaseLaneShares(journeyRuns.map(each => each.label), gate.sample());
+    const { shares, app } = releaseLaneShares(journeyRuns.map(each => each.label), readSample(gate.sample));
     if (app !== null) console.log(`app: ${laneWords(app)}`);
     const env = { TOOLROLL_CHECK_GATE: gate.dir };
     const start = (each, at) => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--at-once", String(shares[at]), "--output", join("evidence", `release-${process.pid}`, each.label)], dir, env);

@@ -36,7 +36,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet, stopLeftovers } from "./e2e-kit.mjs";
-import { admissionWords, appLanes, browserSlots, DEMAND, laneWords, limiter, memoryWords, openGate, treeBytes, watchMemory } from "./check-memory.mjs";
+import { admissionWords, appLanes, browserSlots, DEMAND, laneWords, limiter, memoryWords, openGate, readSample, treeBytes, watchMemory } from "./check-memory.mjs";
 import { runSuite } from "./suite-lifecycle.mjs";
 
 const [script, ...given] = process.argv.slice(2);
@@ -66,18 +66,19 @@ const minutes = ms => Math.round(ms / 6000) / 10;
 const width = Math.max(...groups.map(one => one.name.length)) + "-retry".length;
 let gate;
 try { gate = openGate({ log: line => console.log(line) }); } catch (error) { console.error(error.message); process.exit(2); }
-const machine = gate.sample(), available = machine.available;
+// Memory that can't be read means one lane (appLanes), or one group at a time elsewhere; never a stop.
+const machine = readSample(gate.sample), available = Number.isFinite(machine?.available) ? machine.available : null;
 const app = name === "app" && journeys !== "real";
 const laneOptions = { baseline: atOnce ?? 1, max: Math.min(groups.length, atOnce ?? 6) };
 let choice;
 try { choice = app ? appLanes(machine, laneOptions) : null; } catch (error) { gate.close(); console.error(error.message); process.exit(2); }
-const limit = Math.min(groups.length, choice?.count ?? atOnce ?? browserSlots(available));
+const limit = Math.min(groups.length, choice?.count ?? atOnce ?? (available === null ? 1 : browserSlots(available)));
 let said = choice === null ? null : laneWords(choice);
 if (said !== null) console.log(`${name}: ${said}`);
 const memory = watchMemory();
 // The limit is the most at once; the gate decides, at each start, whether there is room for one more.
 const slot = limiter(limit, { room: () => true });
-console.log(`Running ${groups.length} groups, at most ${limit} at once (${(available / 1024 ** 3).toFixed(1)} GB available, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
+console.log(`Running ${groups.length} groups, at most ${limit} at once (${available === null ? "couldn't read memory" : `${(available / 1024 ** 3).toFixed(1)} GB available`}, about 400 MB each): ${groups.map(one => one.name).join(", ")}`);
 
 // Recheck after waiting for a gate, including retries. If pressure rises, drain to one lane before starting more;
 // running journeys finish normally. This predicate executes inside admission's lock, so queued starts cannot race.

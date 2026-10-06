@@ -121,7 +121,7 @@ describe("e2e-parallel.mjs", () => {
   test.each([{ pressure: 1, lanes: 3 }, { pressure: 2, lanes: 1 }, { pressure: null, lanes: 1 }])("app runner chooses $lanes lanes at pressure $pressure and saves wall time and memory", ({ pressure, lanes }) => {
     const { code, stdout, runs } = runParallel({}, ["--journeys", "scripted"], { platform: "darwin", pressure, available: 32 * GB, swapTotal: 100, swapUsed: 99, providers: 40 }, true);
     expect(code).toBe(0);
-    expect(stdout).toContain(`app: ${lanes} lane${lanes === 1 ? "" : "s"}: memory ${pressure === 1 ? "normal" : `pressure ${pressure === 2 ? "warn" : "unknown"}`}`);
+    expect(stdout).toContain(`app: ${lanes} lane${lanes === 1 ? "" : "s"}: ${pressure === 1 ? "memory normal" : pressure === 2 ? "memory pressure warn" : "couldn't read memory"}`);
     const metrics = JSON.parse(readFileSync(join(dir!, "out", "lanes.json"), "utf8"));
     expect(metrics).toMatchObject({ lanes, admission: { most: lanes, providers: 0 } });
     expect(metrics.wallMs).toBeGreaterThan(0);
