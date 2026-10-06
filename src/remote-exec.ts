@@ -14,16 +14,12 @@ import { envelopeJson } from './envelope.js';
 import { COMMAND_GUIDE } from './surface.js';
 import { centralProfile, UsageError, type TeamCliOptions } from './team-cli.js';
 import { CLI_FILES_BYTES, CLI_WAIT_SECONDS, type CliRequest } from './cli-http.js';
+import { contractRow, fileArguments, localOnlyFlag, STEP_UP_MESSAGE, type RemoteCommand, type RemoteCommandLookup } from './remote-command.js';
 
-export type RemoteMode = 'yes' | 'no' | 'step-up';
-export const STEP_UP_MESSAGE = 'approve in the console or chat';
+export { contractRow, STEP_UP_MESSAGE, type RemoteMode } from './remote-command.js';
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
 /** Team commands own their own central path (team-cli.ts). */
 const TEAM_COMMANDS = new Set(['connect', 'lead', 'conversation', 'chat', 'brief']);
-/** Flags whose value names a file the command reads; its contents travel inline, keyed by the argument as typed. */
-const FILE_FLAGS = new Set(['--steps', '--file']);
-/** Local secrets and local paths never travel: the server knows who you are from your token alone. */
-const LOCAL_ONLY_FLAGS = new Set(['--token', '--token-file', '--token-env', '--db']);
 const RESPONSE_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = (CLI_WAIT_SECONDS + 35) * 1_000;
 
@@ -33,23 +29,8 @@ export type RemoteExecOptions = TeamCliOptions & {
   stdout?: (chunk: string) => void;
   stderr?: (chunk: string) => void;
   /** Injected by tests: the contract row lookup (default: COMMAND_GUIDE's `remote` field). */
-  modeOf?: (argv: readonly string[]) => { invocation: string; mode: RemoteMode; mutation: string } | null;
+  modeOf?: RemoteCommandLookup;
 };
-
-/** The longest declared invocation the leading words of argv name, with its remote mode. A row without one runs here. */
-export function contractRow(argv: readonly string[]): { invocation: string; mode: RemoteMode; mutation: string } | null {
-  const words: string[] = [];
-  for (const one of argv) { if (one.startsWith('-')) break; words.push(one); }
-  let best: { invocation: string; mode: RemoteMode; mutation: string } | null = null;
-  for (const row of COMMAND_GUIDE) {
-    const parts = row.invocation.split(' ');
-    if (parts.length > words.length || !parts.every((part, index) => words[index] === part)) continue;
-    if (best !== null && best.invocation.split(' ').length >= parts.length) continue;
-    const remote = (row as { remote?: unknown }).remote;
-    best = { invocation: row.invocation, mode: remote === 'yes' || remote === 'step-up' ? remote : 'no', mutation: row.mutation };
-  }
-  return best;
-}
 
 type Answer = { exitCode: number; stdout: string; stderr: string };
 type Outcome = { kind: 'answer'; answer: Answer } | { kind: 'refused'; status: number; code: string; message: string } | { kind: 'unconfirmed' };
@@ -91,17 +72,17 @@ async function post(origin: string, token: string, request: CliRequest, options:
 }
 
 /** The declared file arguments' contents, keyed by the argument exactly as typed. argv is never rewritten. */
-function inlineFiles(argv: readonly string[], cwd: string): Record<string, string> {
+function inlineFiles(argv: readonly string[], row: RemoteCommand, cwd: string): Record<string, string> {
+  const paths = fileArguments(argv, row);
+  if ('problem' in paths) throw new UsageError(paths.problem);
   const files: Record<string, string> = Object.create(null) as Record<string, string>;
   let size = 0;
-  for (let index = 0; index < argv.length - 1; index++) {
-    const flag = argv[index]!, value = argv[index + 1]!;
-    if (!FILE_FLAGS.has(flag) || value.startsWith('-') || Object.hasOwn(files, value)) continue;
+  for (const value of paths) {
+    if (Object.hasOwn(files, value)) continue;
     const path = resolve(cwd, value);
     let isFile = false;
     try { isFile = statSync(path).isFile(); } catch { isFile = false; }
-    // `--steps` always names a file; `--file` is also a plain switch for some commands, so only an existing file travels.
-    if (!isFile) { if (flag === '--steps') throw new UsageError(`${value} is not a readable file.`); continue; }
+    if (!isFile) throw new UsageError(`${value} is not a readable file.`);
     let content: string;
     try { content = new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path)); }
     catch { throw new UsageError(`${value} must be a readable UTF-8 file.`); }
@@ -150,15 +131,15 @@ export async function maybeRunRemoteCommand(argv: readonly string[], options: Re
     if (!explicit) return null;
     return refuse('usage', 'This profile has no API token. Connect again with your so_ token (toolroll connect <origin> --token-stdin).', EXIT.usage);
   }
-  if (mode === 'no') {
+  if (row === null || mode === 'no') {
     return refuse('usage', `${command} runs only on this computer. Drop --profile to run it here.`, EXIT.usage);
   }
   if (mode === 'step-up') return refuse('step-up', STEP_UP_MESSAGE, EXIT.refused);
   const sent = explicit ? argv.filter((_one, index) => index !== profileAt && index !== profileAt + 1) : [...argv];
-  const local = sent.find(one => LOCAL_ONLY_FLAGS.has(one));
+  const local = localOnlyFlag(sent);
   if (local !== undefined) return refuse('usage', `${local} is not sent to the server: your saved API token already says who you are. Use --local to run it here.`, EXIT.usage);
   let files: Record<string, string>;
-  try { files = inlineFiles(sent, options.cwd ?? process.cwd()); }
+  try { files = inlineFiles(sent, row, options.cwd ?? process.cwd()); }
   catch (error) { return refuse('usage', error instanceof UsageError ? error.message : 'A file could not be read.', EXIT.usage); }
 
   const deliver = (outcome: Outcome): number => {

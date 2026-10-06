@@ -9,11 +9,10 @@ const TOKEN = `so_abcdefabcdef_${'y'.repeat(43)}`;
 let dir: string, profileFile: string, sent: { url: string; init: RequestInit }[], out: string[], err: string[];
 let reply: () => Response;
 
-const MODES: Record<string, RemoteMode> = { status: 'yes', 'task add': 'yes', 'task show': 'yes', 'task wait': 'yes', 'task approve': 'step-up', 'repos add': 'no' };
+const MODES: Record<string, RemoteMode> = { status: 'yes', 'task add': 'yes', 'task show': 'yes', 'task wait': 'yes', 'task approve': 'step-up', 'repos add': 'no', 'flows create': 'yes', 'flows script save': 'yes' };
 const modeOf = (argv: readonly string[]) => {
-  const words = argv.filter(one => !one.startsWith('-'));
-  const invocation = [words.slice(0, 2).join(' '), words[0] ?? ''].find(one => one in MODES);
-  return invocation === undefined ? null : { invocation, mode: MODES[invocation]!, mutation: invocation === 'task add' ? 'keyed' : 'none' };
+  const row = contractRow(argv);
+  return row === null ? null : { ...row, mode: MODES[row.invocation] ?? 'no' as const };
 };
 function saveProfile(token: string): void {
   mkdirSync(join(dir, 'remote'), { recursive: true, mode: 0o700 });
@@ -68,7 +67,13 @@ test('approvals are refused locally with the console/chat message; local credent
   expect(err.join('')).toBe(`${STEP_UP_MESSAGE}\n`);
   expect(await maybeRunRemoteCommand(['task', 'approve', 'T-1', '--json'], options())).toBe(3);
   expect(JSON.parse(out.join(''))).toMatchObject({ ok: false, command: 'task approve', reason: 'step-up', message: STEP_UP_MESSAGE });
-  for (const flag of ['--token', '--token-file', '--db']) expect(await maybeRunRemoteCommand(['task', 'add', 'x', flag, 'v'], options())).toBe(2);
+  for (const flag of ['--token', '--token-file', '--token-env', '--db']) {
+    for (const args of [[flag, 'private-value'], [`${flag}=private-value`]]) {
+      expect(await maybeRunRemoteCommand(['task', 'add', 'x', ...args], options())).toBe(2);
+      expect(err.at(-1)).toContain(flag);
+      expect(err.at(-1)).not.toContain('private-value');
+    }
+  }
   expect(sent).toHaveLength(0);
 });
 
@@ -81,6 +86,54 @@ test('--steps contents are inlined under the argument as typed, capped at 256 Ki
   expect(await maybeRunRemoteCommand(['task', 'add', 'x', '--steps', 'big.txt'], options())).toBe(2);
   expect(await maybeRunRemoteCommand(['task', 'add', 'x', '--steps', 'missing.txt'], options())).toBe(2);
   expect(sent).toHaveLength(1);
+});
+
+test.each([
+  ['flows', 'create', '--steps', 'my plan=a.txt'],
+  ['flows', 'create', '--steps=my plan=a.txt'],
+  ['flows', 'script', 'save', '--file', 'my plan=a.txt'],
+  ['flows', 'script', 'save', '--file=my plan=a.txt'],
+].map(argv => ({ argv })))('inlines UTF-8 file contents without changing $argv', async ({ argv }) => {
+  saveProfile(TOKEN);
+  writeFileSync(join(dir, 'my plan=a.txt'), 'é\n一\n');
+  expect(await maybeRunRemoteCommand(argv, options())).toBe(0);
+  expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv, files: { 'my plan=a.txt': 'é\n一\n' } });
+});
+
+test('missing, non-file, invalid UTF-8 and empty file references are not sent in either form', async () => {
+  saveProfile(TOKEN);
+  writeFileSync(join(dir, 'invalid.txt'), Buffer.from([0xff]));
+  for (const flag of ['--steps', '--file']) {
+    for (const value of ['missing.txt', 'remote', 'invalid.txt', '']) {
+      for (const args of [[flag, value], [`${flag}=${value}`]]) {
+        expect(await maybeRunRemoteCommand(['flows', 'script', 'save', ...args], options()), args.join(' ')).toBe(2);
+      }
+    }
+  }
+  expect(sent).toHaveLength(0);
+});
+
+test('file limits sum UTF-8 bytes across both forms and count repeated paths once', async () => {
+  saveProfile(TOKEN);
+  writeFileSync(join(dir, 'one.txt'), 'é'.repeat(CLI_FILES_BYTES / 4));
+  writeFileSync(join(dir, 'two.txt'), 'x'.repeat(CLI_FILES_BYTES / 2));
+  const argv = ['flows', 'script', 'save', '--steps=one.txt', '--file', 'two.txt', '--steps', 'one.txt'];
+  expect(await maybeRunRemoteCommand(argv, options())).toBe(0);
+  const files = JSON.parse(String(sent[0]!.init.body)).files as Record<string, string>;
+  expect(Object.keys(files)).toEqual(['one.txt', 'two.txt']);
+  expect(Object.values(files).reduce((bytes, value) => bytes + Buffer.byteLength(value), 0)).toBe(CLI_FILES_BYTES);
+  writeFileSync(join(dir, 'two.txt'), 'x'.repeat(CLI_FILES_BYTES / 2 + 1));
+  expect(await maybeRunRemoteCommand(argv, options())).toBe(2);
+  expect(sent).toHaveLength(1);
+});
+
+test('a declared --file switch never reads the adjacent positional file', async () => {
+  saveProfile(TOKEN);
+  writeFileSync(join(dir, 'plan.txt'), 'do not inline');
+  const argv = ['template', 'apply', '--file', 'plan.txt'];
+  const modeOf: NonNullable<RemoteExecOptions['modeOf']> = () => ({ invocation: 'template apply', mode: 'yes', mutation: 'unkeyed', flags: [{ name: 'file', takesValue: false }] });
+  expect(await maybeRunRemoteCommand(argv, options({ modeOf }))).toBe(0);
+  expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv, files: {} });
 });
 
 test('401, unreachable, redirected or malformed answers are reported once, never retried', async () => {
@@ -113,5 +166,8 @@ test('task wait polls in slices of at most 25 seconds and prints the settled ans
 
 test('the contract decides: rows without a remote mark run here', () => {
   expect(contractRow(['task', 'show', 'T-1'])?.invocation).toBe('task show');
+  expect(contractRow(['repos', 'add', '/repo/a'])?.invocation).toBe('repos add');
+  expect(contractRow(['flows', 'script', 'save', '--file=plan.txt'])?.invocation).toBe('flows script save');
+  expect(contractRow(['serve'])?.mode).toBe('no');
   expect(contractRow(['nonsense'])).toBeNull();
 });

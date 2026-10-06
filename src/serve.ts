@@ -67,7 +67,7 @@ import { learningHtml } from "./workspace-ui.js";
 import { acceptWithChecksOf, resultActsOf, type ResultActFacts } from "./result-acts.js";
 import { createSessionEndpoint } from './session-server.js';
 import { handleTeamHttp } from './team-http.js';
-import { handleCliHttp, type RunOperateAs } from './cli-http.js';
+import { handleCliHttp, type CliHttpOptions, type RunOperateAs } from './cli-http.js';
 import { teamWorkspaceHtml } from './team-ui.js';
 import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import { createTeamRuntime } from './team-runtime.js';
@@ -387,6 +387,8 @@ export type ServeOptions = {
   publicUrl?: string;
   /** Tests: the shared command boundary `POST /api/cli` runs (default: operate.ts's runOperateAs). */
   cliRunner?: RunOperateAs;
+  /** Tests: remote command metadata until the shared contract declares it. */
+  cliModeOf?: CliHttpOptions['modeOf'];
   /** Where repos.json lives — every enrollment locks exactly this file. */
   registryPath?: string;
   /** This console fronts an `up` process: onboarding copy says how to watch. */
@@ -1096,6 +1098,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: account.projects === null ? null : [...account.projects] };
     },
     run: async () => options.cliRunner ?? ((await import("./operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
+    modeOf: options.cliModeOf,
     store,
   });
   const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo) });

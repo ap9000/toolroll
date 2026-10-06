@@ -54,7 +54,7 @@ test("two people: attribution, project limits, refused approvals, revocation, an
   const seen: { argv: string[]; principal: Principal; source: string | undefined }[] = [];
   const seam = real ?? stubRunOperateAs(databaseFile);
   const cliRunner: RunOperateAs = async (argv, opts) => { seen.push({ argv, principal: opts.principal, source: opts.source }); return seam(argv, opts); };
-  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), configDir: dir, cliRunner });
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), configDir: dir, cliRunner, cliModeOf: modeOf });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
@@ -114,6 +114,11 @@ test("two people: attribution, project limits, refused approvals, revocation, an
     const asked = seen.length;
     const approve = await asBob(["task", "approve", "bob-a"]);
     expect(approve).toMatchObject({ code: 3, stderr: `${STEP_UP_MESSAGE}\n` });
+    expect(seen).toHaveLength(asked);
+    // Bypassing the client cannot bypass the server's approval refusal either.
+    const forged = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bobToken.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv: ["task", "approve", "bob-a"] }) });
+    expect(forged.status).toBe(403);
+    expect(await forged.json()).toEqual({ ok: false, code: "step-up", message: STEP_UP_MESSAGE });
     expect(seen).toHaveLength(asked);
 
     // Local and remote --json envelopes match byte for byte apart from timestamps (Alice sees everything).

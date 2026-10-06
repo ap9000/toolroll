@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from './store.js';
+import { contractRow, fileArguments, localOnlyFlag, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
 
 /**
  * `POST /api/cli` (remote CLI, Phase 1): a teammate's laptop sends the argv it would have run locally, and the central
  * server runs that same command as that person. There is no per-resource API here and no second policy: the transport
- * authenticates one API token, carries who it names, and hands the argv to the shared command boundary
- * (`runOperateAs`), which owns scope, project grants, step-up refusals and attribution.
+ * authenticates one API token, checks the shared command contract and transport arguments, and hands the argv to
+ * `runOperateAs`, which owns scope, project grants and attribution.
  *
  * Only `Authorization: Bearer so_…` is accepted — never a password, cookie or the owner's saved login — and a request
  * carrying a browser Origin is refused, so a page can never drive it.
@@ -32,6 +33,8 @@ export type CliHttpOptions = {
   authenticate: (request: IncomingMessage) => Principal | null;
   /** The shared command boundary; null when this server cannot run remote commands. */
   run: () => Promise<RunOperateAs | null>;
+  /** Tests: command policy while the parallel command contract is not yet available. Defaults to COMMAND_GUIDE. */
+  modeOf?: RemoteCommandLookup | undefined;
   store: Store;
 };
 
@@ -52,7 +55,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
 }
 
-/** The request's own shape, or why not. Nothing here reads a path: a file key is only the argument it stands for. */
+/** Decode the request's shape and byte limits. The endpoint checks file references against its command policy. */
 export function cliRequest(value: unknown): CliRequest | { problem: string; tooLarge?: true } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { problem: 'Send {argv, files}.' };
   const row = value as Record<string, unknown>;
@@ -66,8 +69,7 @@ export function cliRequest(value: unknown): CliRequest | { problem: string; tooL
   let size = 0;
   const kept: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [key, content] of entries) {
-    // A file stands for one argument the person actually typed; argv itself is never rewritten.
-    if (typeof content !== 'string' || !argv.includes(key) || key.startsWith('-')) return { problem: 'Each file must name one of the command\'s arguments.' };
+    if (typeof content !== 'string' || key === '' || key.includes('\0')) return { problem: 'files must map file paths to text contents.' };
     size += Buffer.byteLength(content);
     if (size > CLI_FILES_BYTES) return { problem: 'Files are limited to 256 KiB in total.', tooLarge: true };
     kept[key] = content;
@@ -109,6 +111,16 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   catch (error) { return reject(error instanceof Error && error.message === 'too-large' ? 413 : 400, 'invalid-body', 'Send a valid JSON request; files are limited to 256 KiB in total.'); }
   const parsed = cliRequest(value);
   if ('problem' in parsed) return reject(parsed.tooLarge ? 413 : 400, 'invalid-request', parsed.problem);
+  const row = (options.modeOf ?? contractRow)(parsed.argv);
+  if (row?.mode === 'step-up') return reject(403, 'step-up', STEP_UP_MESSAGE);
+  if (row?.mode !== 'yes') return reject(403, 'remote-refused', 'This command cannot run remotely.');
+  const local = localOnlyFlag(parsed.argv);
+  if (local !== undefined) return reject(403, 'local-only-flag', `${local} cannot be used remotely. Sign in with your saved API token.`);
+  const paths = fileArguments(parsed.argv, row);
+  if ('problem' in paths) return reject(403, 'missing-file', paths.problem);
+  const missing = paths.find(path => !Object.hasOwn(parsed.files, path));
+  if (missing !== undefined) return reject(403, 'missing-file', `Send the contents of ${missing} in files; remote commands cannot read a server file.`);
+  if (Object.keys(parsed.files).some(path => !paths.includes(path))) return reject(400, 'invalid-request', 'Each file must name a --steps or value-taking --file argument.');
   if (!longPollBounded(parsed.argv)) return reject(400, 'wait-too-long', `A remote task wait holds the server for at most ${CLI_WAIT_SECONDS} seconds; give --timeout ${CLI_WAIT_SECONDS} or less.`);
   let run: RunOperateAs | null;
   try { run = await options.run(); } catch { run = null; }

@@ -2,17 +2,21 @@ import { afterEach, beforeEach, expect, test } from 'vitest';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import { handleCliHttp, cliRequest, CLI_FILES_BYTES, type Principal, type RunOperateAs } from './cli-http.js';
 import type { Store } from './store.js';
+import { contractRow, STEP_UP_MESSAGE, type RemoteCommandLookup, type RemoteMode } from './remote-command.js';
 
 const BOB: Principal = { kind: 'person', account: 'bob', generation: 3, scope: 'act', tokenId: 'abcdefabcdef', projects: ['/repo/a'] };
 const TOKEN = `so_abcdefabcdef_${'x'.repeat(43)}`;
 const store = {} as Store;
 let server: Server, base: string, calls: { argv: string[]; opts: Parameters<RunOperateAs>[1] }[], principal: Principal | null, runner: RunOperateAs | null;
+let modeOf: RemoteCommandLookup | undefined, resolutions: number;
+const MODES: Record<string, RemoteMode> = { status: 'yes', 'task add': 'yes', 'task wait': 'yes', 'task approve': 'step-up', 'repos add': 'no', 'flows create': 'yes', 'flows script save': 'yes' };
 
 beforeEach(async () => {
-  calls = []; principal = BOB;
+  calls = []; principal = BOB; resolutions = 0;
+  modeOf = argv => { const row = contractRow(argv); return row === null ? null : { ...row, mode: MODES[row.invocation] ?? 'no' }; };
   runner = async (argv, opts) => { calls.push({ argv, opts }); opts.write('line one'); opts.write('{"ok":true}'); return 3; };
   server = createServer((request, response) => {
-    void handleCliHttp(request, response, { authenticate: () => principal, run: async () => runner, store }).then(handled => { if (!handled) { response.writeHead(404); response.end(); } });
+    void handleCliHttp(request, response, { authenticate: () => principal, run: async () => { resolutions++; return runner; }, modeOf, store }).then(handled => { if (!handled) { response.writeHead(404); response.end(); } });
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -23,6 +27,39 @@ afterEach(async () => { await new Promise<void>(resolve => server.close(() => re
 
 const post = (body: unknown, headers: Record<string, string> = {}, path = '/api/cli') => fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
 
+test.each([
+  { argv: ['task', 'approve', 'T-1'], code: 'step-up', message: STEP_UP_MESSAGE },
+  { argv: ['repos', 'add', '/repo/a'], code: 'remote-refused', message: 'This command cannot run remotely.' },
+  { argv: ['not-a-command'], code: 'remote-refused', message: 'This command cannot run remotely.' },
+])('the endpoint refuses $argv before resolving the runner', async ({ argv, code, message }) => {
+  const response = await post({ argv });
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({ ok: false, code, message });
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
+});
+
+test('the endpoint defaults to the shared guide and refuses rows without remote permission', async () => {
+  modeOf = undefined;
+  const response = await post({ argv: ['serve'] });
+  expect(response.status).toBe(403);
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
+});
+
+test.each(['--token', '--token-file', '--token-env', '--db'].flatMap(flag => [
+  { flag, args: [flag, 'private-value'] }, { flag, args: [`${flag}=private-value`] },
+]))('the endpoint refuses local-only $args without echoing its value', async ({ flag, args }) => {
+  const response = await post({ argv: ['task', 'add', 'Fix it', ...args] });
+  expect(response.status).toBe(403);
+  const failure = await response.json();
+  expect(failure).toMatchObject({ ok: false, code: 'local-only-flag' });
+  expect(failure.message).toContain(flag);
+  expect(JSON.stringify(failure)).not.toContain('private-value');
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
+});
+
 test('runs the argv once as the token\'s person and returns exit code and exact output', async () => {
   const response = await post({ argv: ['task', 'add', 'Fix it', '--steps', 'plan.txt'], files: { 'plan.txt': 'one\ntwo\n' } });
   expect(response.status).toBe(200);
@@ -31,6 +68,55 @@ test('runs the argv once as the token\'s person and returns exit code and exact 
   expect(calls).toHaveLength(1);
   expect(calls[0]!.argv).toEqual(['task', 'add', 'Fix it', '--steps', 'plan.txt']);
   expect(calls[0]!.opts).toMatchObject({ principal: BOB, store, source: 'api', files: { 'plan.txt': 'one\ntwo\n' } });
+});
+
+test.each([
+  ['flows', 'create', '--steps', 'plan.txt'],
+  ['flows', 'create', '--steps=plan.txt'],
+  ['flows', 'script', 'save', '--file', 'plan.txt'],
+  ['flows', 'script', 'save', '--file=plan.txt'],
+].map(argv => ({ argv })))('the endpoint requires inline contents for $argv', async ({ argv }) => {
+  const response = await post({ argv });
+  expect(response.status).toBe(403);
+  expect(await response.json()).toMatchObject({ code: 'missing-file', message: expect.stringContaining('plan.txt') });
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
+  const accepted = await post({ argv, files: { 'plan.txt': '' } });
+  expect(accepted.status).toBe(200);
+  expect(calls[0]?.argv).toEqual(argv);
+  expect(calls[0]?.opts.files).toEqual({ 'plan.txt': '' });
+});
+
+test('every file reference must be inlined, and file keys cannot name ordinary arguments', async () => {
+  const argv = ['flows', 'create', '--steps=first.txt', '--steps', 'second.txt'];
+  expect((await post({ argv, files: { 'first.txt': 'first' } })).status).toBe(403);
+  for (const argv of [['task', 'add', 'plan.txt'], ['flows', 'create', '--name=plan.txt'], ['flows', 'create', '--name', 'plan.txt']]) {
+    expect((await post({ argv, files: { 'plan.txt': 'unreferenced' } })).status).toBe(400);
+  }
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
+  const files = { 'first.txt': '一\n', 'second.txt': 'two\n' };
+  expect((await post({ argv, files })).status).toBe(200);
+  expect(calls[0]?.argv).toEqual(argv);
+  expect(calls[0]?.opts.files).toEqual(files);
+});
+
+test('a declared --file switch does not turn a positional argument into a file reference', async () => {
+  modeOf = () => ({ invocation: 'template apply', mode: 'yes', mutation: 'unkeyed', flags: [{ name: 'file', takesValue: false }] });
+  const argv = ['template', 'apply', '--file', 'plan.txt'];
+  expect((await post({ argv, files: { 'plan.txt': 'unreferenced' } })).status).toBe(400);
+  expect(resolutions).toBe(0);
+  expect((await post({ argv })).status).toBe(200);
+  expect(calls[0]?.argv).toEqual(argv);
+  expect(calls[0]?.opts.files).toEqual({});
+});
+
+test('empty or missing file paths are refused before resolving the runner', async () => {
+  for (const args of [['--steps'], ['--steps='], ['--steps', '--json'], ['--file'], ['--file=']]) {
+    expect((await post({ argv: ['flows', 'script', 'save', ...args] })).status).toBe(403);
+  }
+  expect(resolutions).toBe(0);
+  expect(calls).toHaveLength(0);
 });
 
 test('refuses browsers, cookies, passwords, duplicate or missing credentials and URL data without running anything', async () => {
@@ -63,7 +149,7 @@ test('only JSON {argv, files} within the 256 KiB file cap; files name real argum
   expect((await fetch(`${base}/api/cli`, { headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(405);
   expect(calls).toHaveLength(0);
   expect((await post({ argv: ['task', 'wait', 'T-1', '--timeout', '25'] })).status).toBe(200);
-  expect(cliRequest({ argv: ['x', 'a.txt'], files: { 'a.txt': 'ok' } })).toEqual({ argv: ['x', 'a.txt'], files: { 'a.txt': 'ok' } });
+  expect(cliRequest({ argv: ['flows', 'create', '--steps=a.txt'], files: { 'a.txt': 'ok' } })).toEqual({ argv: ['flows', 'create', '--steps=a.txt'], files: { 'a.txt': 'ok' } });
 });
 
 test('a server without the command boundary says so; a crash is reported as unconfirmed, never retried', async () => {
