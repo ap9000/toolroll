@@ -380,9 +380,7 @@
           }
         ]
       }
-    }
-  ],
-  "invalid": [
+    },
     {
       "name": "version 1 with a key it does not define",
       "payload": {
@@ -391,13 +389,10 @@
         "summary": "s",
         "report": "r",
         "notes": "x"
-      },
-      "paths": [
-        "payload"
-      ]
+      }
     },
     {
-      "name": "a follow-up with a misnamed field",
+      "name": "version 1 follow-up with an extra field",
       "payload": {
         "version": 1,
         "title": "t",
@@ -410,11 +405,34 @@
             "to": "x"
           }
         ]
-      },
-      "paths": [
-        "followUps[0]"
-      ]
+      }
     },
+    {
+      "name": "version 1 report with null lists",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": null,
+        "items": null,
+        "images": null
+      }
+    },
+    {
+      "name": "version null report with null lists",
+      "payload": {
+        "version": null,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": null,
+        "items": null,
+        "images": null
+      }
+    }
+  ],
+  "invalid": [
     {
       "name": "a newer version",
       "payload": {

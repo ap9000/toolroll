@@ -21,6 +21,26 @@ const reader = (stored: boolean) => (input: unknown): SampleVerdict => {
 const report = (payload: Record<string, unknown>) => parseReport(JSON.stringify({ version: 1, title: "t", summary: "s", report: "r", ...payload }));
 
 describe("the scout report contract", () => {
+  it.each([false, true].flatMap(stored => [undefined, 1, null].map(version => ({ stored, version }))))(
+    "reads extra keys and null lists like an unversioned report (version: $version, stored: $stored)", ({ stored, version }) => {
+    const expected = {
+      title: "t", summary: "s", report: "r",
+      followUps: [{ title: "Follow up", goal: "Check the finding." }],
+      items: [{ title: "Finding", why: "It matters.", url: "https://example.com/", image: "home.png" }],
+      images: [{ file: "home.png", caption: "Home page", url: "https://example.com/", sha256: "a".repeat(64), artifact: 1 }],
+    };
+    const payload = {
+      ...expected, version, notes: "scratch",
+      followUps: expected.followUps.map(one => ({ ...one, extra: true })),
+      items: expected.items.map(one => ({ ...one, extra: true })),
+      images: expected.images.map(one => ({ ...one, extra: true })),
+    };
+    expect(parseReport(JSON.stringify(payload), { stored })).toEqual({ ok: true, report: expected });
+    expect(parseReport(JSON.stringify({ ...payload, followUps: null, items: null, images: null }), { stored })).toEqual({
+      ok: true, report: { ...expected, followUps: [], items: [], images: [] },
+    });
+  });
+
   it("holds for what a scout writes: the round trip loses nothing, current and older reports parse, malformed ones are refused by path", () => {
     expect(saved.stored.length + saved.written.length).toBeGreaterThanOrEqual(10);
     assertContract({
@@ -35,7 +55,7 @@ describe("the scout report contract", () => {
     assertContract({
       schema: storedReportSchema,
       read: reader(true),
-      valid: saved.stored.map(one => ({ name: `${one.release}: ${one.name}`, input: one.payload })),
+      valid: [...saved.stored, ...saved.written].map(one => ({ name: one.name, input: one.payload })),
       invalid: saved.invalid.filter(one => !one.name.startsWith("too many")).map(one => ({ name: one.name, input: one.payload, paths: one.paths })),
     });
     // The report kept whole after its shorten turn is over today's limit when written, and whole when read back.
@@ -68,9 +88,9 @@ describe("the scout report contract", () => {
     expect(properties["decision"]).toMatchObject({ required: ["urgency", "recap", "question", "options", "recommendation"], additionalProperties: false });
   });
 
-  it("keeps the reason codes the runner relies on, and every message names its path", () => {
+  it.each([undefined, 1, null])("keeps reason codes and field paths for version %s", version => {
     const lines = (payload: Record<string, unknown>) => {
-      const parsed = report(payload);
+      const parsed = report({ version, notes: "scratch", ...payload });
       return parsed.ok ? [] : parsed.problems.map(problem => [problem.reason, problem.message]);
     };
     expect(lines({ title: "x".repeat(REPORT_LIMITS.title + 1) })).toEqual([["title-too-long", "title: over 200 bytes"]]);
@@ -78,8 +98,13 @@ describe("the scout report contract", () => {
     expect(lines({ items: [{ title: "t", why: "w", url: "file:///etc/passwd" }] })).toEqual([["items[0].url-not-a-link", "items[0].url: must be an http or https address"]]);
     expect(lines({ followUps: [{ title: "t", onFail: "x" }] })).toEqual([
       ["missing-followUps[0].goal", "followUps[0].goal: required"],
-      ["followUps[0]-unknown-key", "followUps[0]: unknown key 'onFail'"],
     ]);
+    expect(lines({ items: [{ title: "t", why: "w", url: "https://example.com/", image: "home.png" }], images: null })).toEqual([
+      ["bad-items[0].image", "items[0].image: must name one of images by its file"],
+    ]);
+    expect(lines({ items: [null] })).toEqual([["missing-items[0]", "items[0]: required"]]);
+    expect(lines({ items: "none" })).toEqual([["bad-items", "items: must be an array (got a string)"]]);
+    expect(lines({ version: "1" })).toEqual([["bad-version", 'version: unknown version "1" (this Toolroll reads 1 and 0)']]);
     expect(lines({ version: 3 })).toEqual([["newer-version", "version: made by a newer Toolroll (version 3; this one reads up to 1)"]]);
   });
 

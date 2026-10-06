@@ -123,11 +123,12 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   Blank text, byte limits, controls, one-line fields, a one-paragraph summary, safe links, a screenshot named twice and
   an item naming one the report lacks run after parsing; every refusal, and the one shorten turn, names its path
   (`items[0].url: must be an http or https address`). The question branch mirrors the fields `parseDecision` reads,
-  which stays its validator until item 7. Kept: unversioned reports (every one through 0.9.36, written or stored) read
-  as before, unknown keys ignored and null lists read as none; reports are now stored as `version: 1`, which older
-  releases read too. Replayed from `test/fixtures/scout-reports/`, reconstructed per release from git history (the
-  saved evidence was not readable from the build). Tightened, on purpose: a newer `version` is refused, and a
-  `version: 1` report is strict about unknown keys.
+  which stays its validator until item 7. Kept: unversioned reports (every one through 0.9.36, written or stored),
+  `version: null` and `version: 1` read alike: unknown keys in the report and its follow-ups, items and images are
+  ignored, and null lists read as none before the strict schema check. This preserves the old parser's acceptance
+  and reason codes. Reports are now stored as `version: 1`, which older releases read too. Replayed from
+  `test/fixtures/scout-reports/`, reconstructed per release from git history (the saved evidence was not readable
+  from the build). Tightened, on purpose: a newer `version` is refused.
 - **6. Builder handoff and proof** (2026-10-05). `src/contracts/handoff.ts`, `src/contracts/proof.ts` and
   `src/contracts/verification-receipt.ts` are the one schema each for `handoff.json`, the builder's proof and the
   verification receipt; `HandoffArtifact`, `ParsedProof` and `VerifyCommandFacts` are derived from them, and

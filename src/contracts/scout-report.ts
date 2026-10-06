@@ -151,12 +151,11 @@ const ENTRY_FIELDS = {
 } as const;
 
 /**
- * A report written or stored before reports carried `version` (every report through 0.9.36), as version 1. The old
- * parser read only the fields it knew, in the report and in each follow-up, item and image, and ignored any others;
- * it read a null list as none. This keeps exactly that, so every report that read then reads now. Values themselves
- * are never rewritten, and anything that is not an object is left for the schema to refuse by path.
+ * Known reports keep the old parser's field-picking, whether unversioned (including `version: null`) or version 1:
+ * unknown fields in the report, follow-ups, items and images are ignored, and a null list means none. Known field
+ * values are never rewritten, and anything that is not an object is left for the schema to refuse by path.
  */
-export function upgradeUnversionedReport(body: Record<string, unknown>): Record<string, unknown> {
+function normalizeReportV1(body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { version: REPORT_VERSION, ...pick(body, [...Object.keys(REPORT_TEXT_FIELDS), "followUps", "items", "images"]) };
   for (const list of ["followUps", "items", "images"] as const) {
     if (out[list] === null) delete out[list];
@@ -165,16 +164,18 @@ export function upgradeUnversionedReport(body: Record<string, unknown>): Record<
   return out;
 }
 
-export const REPORT_UPGRADES = { 0: upgradeUnversionedReport } as const;
+export const REPORT_UPGRADES = { 0: normalizeReportV1 } as const;
 
-/** The payload as version 1, upgraded when it was written unversioned; null for anything that is not an object. */
+/** Normalize current and unversioned reports; leave other versions for readVersioned to check. */
 export function reportPayloadBody(input: unknown): Record<string, unknown> | null {
   if (!isRecord(input)) return null;
-  return Object.prototype.hasOwnProperty.call(input, "version") ? input : upgradeUnversionedReport(input);
+  return !Object.prototype.hasOwnProperty.call(input, "version") || input["version"] === null || input["version"] === REPORT_VERSION
+    ? normalizeReportV1(input)
+    : input;
 }
 
-/** Read a report: version 1 as itself, an unversioned one upgraded, a newer one refused plainly. `stored`: one kept as
- * evidence, read without the length limits. */
+/** Read current and unversioned reports with the same field-picking, then the strict schema; refuse newer versions
+ * plainly. `stored`: one kept as evidence, read without the length limits. */
 export function readReportPayload(input: unknown, options: { stored?: boolean } = {}): ContractResult<ScoutReportPayload> {
-  return readVersioned(options.stored === true ? storedReportSchema : scoutReportSchema, input, REPORT_UPGRADES);
+  return readVersioned(options.stored === true ? storedReportSchema : scoutReportSchema, reportPayloadBody(input) ?? input, REPORT_UPGRADES);
 }

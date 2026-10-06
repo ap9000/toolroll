@@ -514,9 +514,14 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: JSON.stringify(result) };
   };
 
-  test("a Claude scout returns its report as structured output and the run succeeds", async () => {
+  test("a Claude scout's version 1 structured report succeeds with extra keys and null lists", async () => {
     const { runnerToken } = await setup();
-    const reported = await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }));
+    const report = {
+      ...FOUND, version: 1, notes: "scratch",
+      followUps: FOUND.followUps.map(one => ({ ...one, notes: "scratch" })),
+      items: null, images: null,
+    };
+    const reported = await tick(runnerToken, planModeAgent({ kind: "report", report }));
     expect(reported).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
     // Read-only by permission (dontAsk, no edit tools allowed); the report schema rides beside it.
@@ -528,11 +533,13 @@ describe("scout tasks, against real git", () => {
     expect(schema.properties.report.required).toEqual(["version", "title", "summary", "report"]);
     expect(schema.properties.decision.required).toEqual(["urgency", "recap", "question", "options", "recommendation"]);
     expect(prompts.at(-1)).toContain("final structured");
+    expect(prompts).toHaveLength(1);
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
     expect(store.getTask("flaky")?.state).toBe("done");
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
-    expect(view !== null && view.ok && view.report.title).toBe(FOUND.title);
+    expect(view !== null && view.ok && view.report).toEqual({ ...FOUND, items: [], images: [] });
+    expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(false);
     store.close();
   });
 
@@ -1040,7 +1047,9 @@ describe("scout tasks, against real git", () => {
     expect(await tick(runnerToken, planModeAgent({ kind: "report", report: bad }))).toBe(EXIT.failed);
     const store = openStore(db);
     expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(true);
-    expect(store.listNotifications("all").find(one => one.kind === "malformed-report")?.body).toContain("payload: unknown key 'notes'; items[0].url: must be an http or https address");
+    const notice = store.listNotifications("all").find(one => one.kind === "malformed-report")?.body;
+    expect(notice).toContain("items[0].url: must be an http or https address");
+    expect(notice).not.toContain("unknown key");
     store.close();
   });
 
