@@ -329,8 +329,8 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   refusals, and still treats the same case written in another key order as distinct. Compared with the 0.9.41
   readers over generated odd payloads (deliveries, polls, forms, items, observation requests): no differences.
   Read-only replay of real saved data remains an evidence gap: the runner was denied the installed database and
-  evidence folder, and raw deliveries are not kept. Loosened, at the operator's request: an observation request
-  without `version` is read as version 1, where it was refused. Nothing is tightened.
+  evidence folder, and raw deliveries are not kept. An observation request without `version`, or with version 0,
+  is still refused, as in 0.9.41. Nothing is loosened or tightened.
 - **16. Integration metadata** (2026-10-06). `src/contracts/integration-metadata.ts` holds one schema each for a
   service's protected-resource metadata, its authorization-server metadata, its registration answer and its token
   answers (a code's and a refresh's), and for a project tool spec; `ToolSpec` and `ToolSecret` are derived, and the

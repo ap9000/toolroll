@@ -208,9 +208,10 @@ describe("a focused observation request", () => {
   const CASE = "An observation must name a requested criterion, base/head, one test file and one test name. Shell commands are not accepted.";
   const COVER = "Every requested criterion needs a distinct observation.";
 
-  it("reads version 1, and a request without a version as version 1", () => {
+  it("reads version 1 only; a request without a version, or with version 0, is refused as before", () => {
     expect(parse({ version: 1, observations: [one] })).toEqual([one]);
-    expect(parse({ observations: [one] })).toEqual([one]);
+    expect(parse({ observations: [one] })).toBe(SHAPE);
+    expect(parse({ version: 0, observations: [one] })).toBe(SHAPE);
   });
 
   it("refuses with the same three plain reasons as before", () => {

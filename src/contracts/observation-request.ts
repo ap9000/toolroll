@@ -3,7 +3,8 @@
  * four focused test runs, each naming a criterion, base or head, one test file and one test name.
  *
  * Toolroll defines this request, so it is strict: an unknown key, at the top or in an observation, is refused, as it
- * always was. A request without `version` reads as version 1; a newer one is refused. What JSON Schema can't say —
+ * always was. It must say `version: 1`, as it always had to: a request without `version`, or with any other version, is
+ * refused. What JSON Schema can't say —
  * a criterion the brief asked about, a normalized test path, a usable test name, one distinct observation per
  * criterion — is checked after parsing.
  */
@@ -25,7 +26,7 @@ export const observationRequestSchema = versioned(1, {
 export type ObservationCase = z.infer<typeof observationCaseSchema>;
 export type ObservationRequest = z.infer<typeof observationRequestSchema>;
 
-/** A parsed request (JSON already read). A request written without `version` is read as version 1. */
+/** A parsed request (JSON already read). Only version 1 is read; there is no earlier version to upgrade. */
 export function readObservationRequest(input: unknown): ContractResult<ObservationRequest> {
-  return readVersioned(observationRequestSchema, input, { 0: body => ({ ...body, version: 1 }) });
+  return readVersioned(observationRequestSchema, input);
 }
