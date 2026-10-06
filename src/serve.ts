@@ -264,7 +264,7 @@ import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, listGithubRepos, i
 import { verifiedAuthor, LEAD_THREAD, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, MATE_ASK_OTHER, type MateAsk, type MateThreadScope } from "./store.js";
 import { RESULT_SHOT_CHOICES } from "./result-shots.js";
 import { digestTimes } from "./digest-times.js";
-import type { MateProgress } from "./mate-progress.js";
+import type { MateLiveStep, MateProgress } from "./mate-progress.js";
 import { updateRepos, removeRepos } from "./repos.js";
 import { admitProject, releaseProject } from "./project-admission.js";
 import { run as execRun } from "./exec.js";
@@ -4735,19 +4735,29 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Live replies (chat streaming): per thread, the turn being answered —
    * each step's tools in plain words and its text as it is written. Memory
    * only and display only; the saved turn stays the record. */
-  type LiveTurn = { steps: { tools: string[]; text: string }[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
+  type LiveTurn = { steps: MateLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
   const liveTurns = new Map<number, LiveTurn>();
   function beginLiveTurn(thread: number): (event: MateProgress) => void {
     const previous = liveTurns.get(thread);
     if (previous?.expiry) clearTimeout(previous.expiry);
     const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set() };
     liveTurns.set(thread, live);
-    const current = () => live.steps.at(-1) ?? (live.steps.push({ tools: [], text: "" }), live.steps.at(-1)!);
+    const current = () => live.steps.at(-1) ?? (live.steps.push({ tools: [], toolCalls: [], text: "" }), live.steps.at(-1)!);
     return event => {
       if (live.done) return;
-      if (event.kind === "step") live.steps.push({ tools: [], text: "" });
-      else if (event.kind === "tool") current().tools.push(event.label);
-      else if (event.kind === "text") current().text = event.text;
+      if (event.kind === "step") live.steps.push({ tools: [], toolCalls: [], text: "" });
+      else if (event.kind === "tool") {
+        current().tools.push(event.label);
+        current().toolCalls.push({ id: event.id, label: event.label, state: "running" });
+      } else if (event.kind === "tool-result") {
+        for (const step of live.steps) {
+          const index = step.toolCalls.findIndex(tool => tool.id === event.id);
+          if (index !== -1) {
+            step.toolCalls[index] = { ...step.toolCalls[index]!, ...event.outcome };
+            break;
+          }
+        }
+      } else if (event.kind === "text") current().text = event.text;
       for (const listener of live.listeners) listener();
     };
   }

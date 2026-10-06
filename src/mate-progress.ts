@@ -5,8 +5,14 @@
 export type MateProgress =
   | { kind: "started"; turn: number }
   | { kind: "step"; turn: number; step: number }
-  | { kind: "tool"; turn: number; step: number; label: string }
+  | { kind: "tool"; turn: number; step: number; id: string; label: string }
+  | { kind: "tool-result"; turn: number; step: number; id: string; outcome: MateToolOutcome }
   | { kind: "text"; turn: number; step: number; text: string };
+
+export type MateToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
+export type MateLiveTool = { id: string; label: string } & ({ state: "running" } | MateToolOutcome);
+/** Keep tools as labels for older clients; toolCalls adds per-call outcomes. */
+export type MateLiveStep = { tools: string[]; toolCalls: MateLiveTool[]; text: string };
 
 /** Plain words for each tool the lead uses, as the person watching reads them. */
 const TOOL_LABELS: Record<string, string> = {

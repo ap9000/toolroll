@@ -520,9 +520,15 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 
 /* The live reply (chat streaming): what the lead is doing, then its words. */
 .so-live-steps { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--so-muted); }
-.so-live-steps li { display: flex; align-items: center; gap: 8px; }
-.so-live-steps li::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--so-line); }
-.so-live-steps li[data-done="true"]::before { background: var(--so-success); }
+.so-live-steps li { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; }
+.so-live-steps li > div { min-width: 0; }
+.so-live-steps li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--so-line); }
+.so-live-steps li[data-state="running"]::before { background: var(--so-live); }
+.so-live-steps li[data-state="succeeded"]::before { background: var(--so-success); }
+.so-live-steps li[data-state="failed"]::before { background: var(--so-danger); }
+.so-live-steps li[data-state="failed"] .so-tool-status, .so-tool-reason { color: var(--so-danger); }
+.so-tool-status { white-space: nowrap; }
+.so-tool-reason { margin: 2px 0 0; white-space: pre-wrap; }
 .so-live-text { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .so-live-caret { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; border-radius: 1px; background: var(--so-accent); animation: so-caret 1s steps(2, start) infinite; }
 @keyframes so-caret { to { visibility: hidden; } }

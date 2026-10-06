@@ -597,8 +597,12 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
         const changed = guard(await revalidated());
         if (changed !== null) return changed;
       }
-      progress({ kind: "tool", turn: turnId, step: steps, label: mateToolLabel(call.name) });
+      // Position within this turn is unique even if a provider reuses call ids.
+      const progressId = `${turnId}:${steps}:${index}`;
+      progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: mateToolLabel(call.name) });
       const outcome = executeMateTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
+      progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId,
+        outcome: outcome.ok ? { state: "succeeded" } : { state: "failed", reason: outcome.message } });
       if (READ_TOOLS.has(call.name)) reads++;
       if (call.name === "show_control" && outcome.ok) shownControl = true;
       // Opt-in, local diagnostics for end-to-end runs: what the lead asked of each tool and what came back (its start), keys

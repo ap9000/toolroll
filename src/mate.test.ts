@@ -287,7 +287,10 @@ describe("the mate's turn", () => {
       step++;
       if (step === 1) {
         request.onText?.("Let me look.");
-        return { ok: true, answer: { text: "Let me look.", calls: [{ id: "r1", name: "recap", args: {} }], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
+        return { ok: true, answer: { text: "Let me look.", calls: [
+          { id: "r1", name: "recap", args: {} },
+          { id: "r1", name: "get_flows", args: { flow: 999 } },
+        ], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
       }
       request.onText?.("One decision");
       request.onText?.("sk-ant-api03-" + "A".repeat(90));
@@ -297,9 +300,14 @@ describe("the mate's turn", () => {
     const outcome = await runMateTurn({ store, who, session: live, thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock, onProgress: event => events.push(event) });
     expect(outcome).toMatchObject({ ok: true, reply: "One decision needs you." });
     if (!outcome.ok) throw new Error("unreachable");
-    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
-      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "step:2", "text:2:One decision", "text:2:One decision needs you.",
+    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
+      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", "tool:Reading the flows", "result:failed", "step:2", "text:2:One decision", "text:2:One decision needs you.",
     ]);
+    const starts = events.filter(event => event.kind === "tool");
+    const results = events.filter(event => event.kind === "tool-result");
+    expect(new Set(starts.map(event => event.id)).size).toBe(2);
+    expect(results.map(event => event.id)).toEqual(starts.map(event => event.id));
+    expect(results[1]).toMatchObject({ step: 1, outcome: { state: "failed", reason: "No such flow in your projects." } });
     expect(events.every(event => event.turn === outcome.turn)).toBe(true);
   });
 
