@@ -9,6 +9,7 @@ import { openStore } from './store.js';
 import { CodingWorkspace } from './coding-workspace.js';
 import { installUpdateGate, freezeUpdateGate, removeUpdateGate, updateGateOwned } from './desktop-update-gate.js';
 import { loadCodingDeploymentRuntime, observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment } from '../scripts/deploy-coding.mjs';
+import { fakePid } from '../test/fake-pid.js';
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'so-browser-coding-update-'));
@@ -45,7 +46,8 @@ test('browser deployment uses installed SQLite backup for WAL history and refuse
     const session = { id: 'retained-session', owner: 'alex', generation: 1, repo: f.root, status: 'ready', nativeThreadId: 'native-saved', turnId: null };
     db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(session.id, session.owner, session.generation, session.repo, JSON.stringify(session));
     db.prepare('INSERT INTO coding_item(session,id,payload) VALUES(?,?,?)').run(session.id, 'reply', JSON.stringify({ text: 'Keep this committed WAL reply.' }));
-    db.prepare('INSERT INTO coding_custody(singleton,payload) VALUES(1,?)').run(JSON.stringify({ pid: 12345, group: true, descendants: [{ pid: 12346, group: false }], observationUnknown: false }));
+    const agentPid = fakePid(1), toolPid = fakePid(2);
+    db.prepare('INSERT INTO coding_custody(singleton,payload) VALUES(1,?)').run(JSON.stringify({ pid: agentPid, group: true, descendants: [{ pid: toolPid, group: false }], observationUnknown: false }));
     installUpdateGate(f.store.raw(), f.record.id);
     expect(() => assertCodingDeploymentStopped(coding, f.database, f.store.raw())).toThrow('not verified agent and tool shutdown');
     await backupCodingDeployment(coding, f.database, f.stage, f.record);
@@ -54,7 +56,7 @@ test('browser deployment uses installed SQLite backup for WAL history and refuse
     const copied = new DatabaseSync(f.record.codingBackupPath!, { readOnly: true });
     try {
       expect(copied.prepare('SELECT payload FROM coding_item').get()?.payload).toContain('committed WAL reply');
-      expect(copied.prepare('SELECT payload FROM coding_custody').get()?.payload).toContain('12346');
+      expect(copied.prepare('SELECT payload FROM coding_custody').get()?.payload).toContain(String(toolPid));
       expect(copied.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_coding_update_*'").get()?.n).toBe(0);
     } finally { copied.close(); }
     expect(statSync(f.record.codingBackupPath!).mode & 0o777).toBe(0o600);
@@ -339,34 +341,36 @@ test('refused snapshot authority releases the read transaction without creating 
 test('a deploy over a runtime killed before its close releases the stale owner once its processes are proved gone, and ledgers it', async () => {
   // Oct 2: 0.9.11 was booted out, every old pid was gone, and the catalog still named its `cli.js up` child.
   const f = fixture();
+  const sibling = fakePid(2), service = fakePid(3), agent = fakePid(4), stranger = fakePid(5);
   const candidate = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
   const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
   await workspace.close();
   const db = new DatabaseSync(file);
   try {
-    db.prepare('UPDATE coding_owner SET token=?,pid=999993,native_pid=999994,clean=0').run(randomUUID());
+    db.prepare('UPDATE coding_owner SET token=?,pid=?,native_pid=?,clean=0').run(randomUUID(), service, agent);
     db.close();
     const orders = f.store.raw();
     expect(() => assertCodingDeploymentStopped(candidate, f.database, orders, f.record)).toThrow('not verified agent and tool shutdown');
     // Not a process this deploy stopped: never released.
-    expect(() => releaseStaleCodingDeployment(candidate, f.database, orders, [999995], f.record)).toThrow('not one this update stopped');
-    expect(releaseStaleCodingDeployment(candidate, f.database, orders, [999992, 999993], f.record)).toEqual({ pid: 999993, nativePid: 999994 });
-    expect(f.record).toMatchObject({ codingOwnerReleased: { pid: 999993, nativePid: 999994 }, codingOwnerReleasedAt: expect.any(String) });
+    expect(() => releaseStaleCodingDeployment(candidate, f.database, orders, [stranger], f.record)).toThrow('not one this update stopped');
+    expect(releaseStaleCodingDeployment(candidate, f.database, orders, [sibling, service], f.record)).toEqual({ pid: service, nativePid: agent });
+    expect(f.record).toMatchObject({ codingOwnerReleased: { pid: service, nativePid: agent }, codingOwnerReleasedAt: expect.any(String) });
     // The release time is kept so a restored ledger can date it the same.
     const releasedAt = (f.record as { codingOwnerReleasedAt?: string }).codingOwnerReleasedAt;
     expect(orders.prepare("SELECT at FROM action_ledger WHERE action='coding owner released'").get()).toEqual({ at: releasedAt });
     assertCodingDeploymentStopped(candidate, f.database, orders, f.record);
     expect(orders.prepare("SELECT actor,action,outcome FROM action_ledger WHERE action='coding owner released'").all()).toEqual([{ actor: 'deploy', action: 'coding owner released', outcome: 'released' }]);
     // Already released by an ordinary stop: nothing to do, nothing ledgered twice.
-    expect(releaseStaleCodingDeployment(candidate, f.database, orders, [999993], f.record)).toBeNull();
+    expect(releaseStaleCodingDeployment(candidate, f.database, orders, [service], f.record)).toBeNull();
     // A candidate without the release keeps the ordinary refusal.
-    expect(releaseStaleCodingDeployment({}, f.database, orders, [999993], f.record)).toBeNull();
+    expect(releaseStaleCodingDeployment({}, f.database, orders, [service], f.record)).toBeNull();
   } finally { if (db.isOpen) db.close(); f.close(); }
 });
 
 test('a stale owner whose agent or session still lives is never released by a deploy', async () => {
   const f = fixture();
+  const service = fakePid(3);
   const candidate = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
   const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
@@ -376,13 +380,13 @@ test('a stale owner whose agent or session still lives is never released by a de
   try {
     const db = new DatabaseSync(file);
     try {
-      db.prepare('UPDATE coding_owner SET token=?,pid=999993,native_pid=?,clean=0').run(randomUUID(), agent.pid!);
-      expect(() => releaseStaleCodingDeployment(candidate, f.database, f.store.raw(), [999993], f.record)).toThrow(/agent process \d+ is still running/);
+      db.prepare('UPDATE coding_owner SET token=?,pid=?,native_pid=?,clean=0').run(randomUUID(), service, agent.pid!);
+      expect(() => releaseStaleCodingDeployment(candidate, f.database, f.store.raw(), [service], f.record)).toThrow(/agent process \d+ is still running/);
       db.prepare('UPDATE coding_owner SET native_pid=NULL').run();
       const session = { id: 'live', owner: 'alex', generation: 1, repo: f.root, status: 'working', turnId: 'turn-1' };
       db.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)').run(session.id, session.owner, session.generation, session.repo, JSON.stringify(session));
-      expect(() => releaseStaleCodingDeployment(candidate, f.database, f.store.raw(), [999993], f.record)).toThrow('1 coding session(s)');
-      expect(db.prepare('SELECT pid FROM coding_owner').get()?.pid).toBe(999993);
+      expect(() => releaseStaleCodingDeployment(candidate, f.database, f.store.raw(), [service], f.record)).toThrow('1 coding session(s)');
+      expect(db.prepare('SELECT pid FROM coding_owner').get()?.pid).toBe(service);
     } finally { db.close(); }
   } finally { agent.kill(); f.close(); }
 });

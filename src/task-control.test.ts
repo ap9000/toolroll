@@ -21,6 +21,7 @@ import { diagnoseTaskDispatch } from "./dispatch.js";
 import { taskReadinessBlocker } from "./dispatch.js";
 import { workIndexPage } from "./work-index.js";
 import { repairStaleStatuses } from "./lead-status.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const T0 = new Date("2026-09-12T08:00:00.000Z");
 vi.mock("node:child_process", { spy: true });
@@ -94,7 +95,7 @@ describe("safe task stop and resume (v52)", () => {
   afterEach(() => store.close());
 
   test.each([false, true])("quiescence trusts recorded process and group exits while approver settlement keeps its group probe (group=%s)", group => {
-    const a = runningAttempt(store, "t-exit-reused"), pid = 4682;
+    const a = runningAttempt(store, "t-exit-reused"), pid = fakePid(1);
     store.recordRunProcess(a.runId, pid, T0, group);
     const before = store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)!;
     const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
@@ -121,7 +122,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("an exited group whose PGID is reused before run end does not block quiescence", () => {
-    const a = runningAttempt(store, "t-group-exit-before-finish"), pid = 21417;
+    const a = runningAttempt(store, "t-group-exit-before-finish"), pid = fakePid(2);
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "darwin" });
     const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
@@ -144,7 +145,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a PID reused after its recorded exit but before run end cannot delay automatic settlement", () => {
-    const a = runningAttempt(store, "t-exit-before-finish"), pid = 21417;
+    const a = runningAttempt(store, "t-exit-before-finish"), pid = fakePid(2);
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "darwin" });
     const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
@@ -168,7 +169,7 @@ describe("safe task stop and resume (v52)", () => {
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "darwin" });
     const a = runningAttempt(store, "t-exit-unknown");
-    store.recordRunProcess(a.runId, 4682, T0, true);
+    store.recordRunProcess(a.runId, fakePid(1), T0, true);
     const before = store.raw().prepare("SELECT * FROM run_process WHERE run=?").all(a.runId);
     const kill = vi.spyOn(process, "kill").mockImplementation(target => {
       if (state === "live" || (state === "orphan-group" && target < 0)) return true;
@@ -191,7 +192,7 @@ describe("safe task stop and resume (v52)", () => {
       [hostname(), later(2000).toISOString(), null, null],
       [hostname(), T0.toISOString(), "unknown-native", "owned-object"],
       [hostname(), T0.toISOString(), "unknown-native", null],
-    ]) store.raw().prepare("INSERT INTO run_process(run,pid,host,process_group,observed_at,containment,container) VALUES(?,4682,?,0,?,?,?)")
+    ]) store.raw().prepare(`INSERT INTO run_process(run,pid,host,process_group,observed_at,containment,container) VALUES(?,${fakePid(1)},?,0,?,?,?)`)
       .run(a.runId, host!, observed!, backend!, container!);
     const before = store.raw().prepare("SELECT * FROM run_process WHERE run=?").all(a.runId);
     const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
@@ -206,7 +207,7 @@ describe("safe task stop and resume (v52)", () => {
     const a = runningAttempt(store, "t-reused");
     store.finishRun(a.runId, { outcome: "failed", reason: "interrupted", now: later(1_000) });
     store.raw().prepare("INSERT INTO run_process(run,pid,host,process_group,observed_at) VALUES(?,?,?,?,?)")
-      .run(a.runId, 87803, hostname(), group ? 1 : 0, T0.toISOString());
+      .run(a.runId, fakePid(3), hostname(), group ? 1 : 0, T0.toISOString());
     const rows = () => store.raw().prepare("SELECT * FROM run_process WHERE run = ?").all(a.runId);
     const before = rows();
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -439,7 +440,7 @@ describe("safe task stop and resume (v52)", () => {
     expect(resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web" }, later(2_000))).toMatchObject({ ok: false, reason: "stopping" });
     finalizeInterruptedFenced(store, { leaseId: a.leaseId, runId: a.runId, taskId: "t-resume", stopRun: a.runId, now: later(3_000) });
     // The workspace still held by a live process is a concrete gate.
-    expect(resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web", occupied: () => ({ held: true, by: 4242 }) }, later(4_000))).toMatchObject({ ok: false, reason: "occupied" });
+    expect(resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web", occupied: () => ({ held: true, by: fakePid(1) }) }, later(4_000))).toMatchObject({ ok: false, reason: "occupied" });
     // Quiescent: resumed, exactly this stop's hold lifted, nothing else touched.
     const resumed = resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web", occupied: () => ({ held: false }) }, later(5_000));
     expect(resumed).toMatchObject({ ok: true });
@@ -557,7 +558,7 @@ describe("a finished run's processes settle by themselves", () => {
     const runId = store.startRun({ taskRef, leaseId: `l-${taskId}`, runner: "runner-a", branch: `standing-orders/${taskId}`, worktree: `/pool/${taskId}`, now: T0, ...presented(store, taskRef) });
     store.stampRun(runId, { scopeDigest: store.getScope(taskId)!.digest, baseRevision: "1".repeat(40) });
     store.recordOutcomeFacts(runId, { headRevision: "a".repeat(40), handoff: "Done." });
-    store.recordRunProcess(runId, 4682, T0, true);
+    store.recordRunProcess(runId, fakePid(1), T0, true);
     store.finishRun(runId, { outcome: "built", committed: true, now: later(1_000) });
     store.setTaskState(taskId, "done", later(1_000));
     return runId;
@@ -583,7 +584,7 @@ describe("a finished run's processes settle by themselves", () => {
   });
 
   test("a run that can't be proven yet is passed over; newer runs behind it still settle", () => {
-    const alive = 4682;
+    const alive = fakePid(1);
     const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number) => {
       if (Math.abs(pid) === alive) return true;
       throw Object.assign(new Error("gone"), { code: "ESRCH" });
@@ -592,7 +593,7 @@ describe("a finished run's processes settle by themselves", () => {
       const stuck = finishedWithLiveProcess("t-still-alive");
       const newer = ["t-gone-1", "t-gone-2", "t-gone-3"].map(id => {
         const runId = finishedWithLiveProcess(id);
-        store.raw().prepare("UPDATE run_process SET pid = ? WHERE run = ?").run(9_000 + runId, runId);
+        store.raw().prepare("UPDATE run_process SET pid = ? WHERE run = ?").run(fakePid(100 + runId), runId);
         return runId;
       });
       // One run a batch: the unprovable oldest must not hold the rest back.

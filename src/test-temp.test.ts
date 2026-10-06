@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import tempRoot from "../test/temp-root.js";
+import { fakePid } from "../test/fake-pid.js";
 import { isTestTemp, OWNER_FILE, removeStaleTestTemp, tempOwner, testTempFolders } from "./test-temp.js";
 import { execFileSync } from "node:child_process";
 
@@ -98,12 +99,13 @@ test("a stale-looking root whose owner still runs stays; a pass removes at most 
     utimesSync(join(root, name), old, old);
     return join(root, name);
   };
-  const running = folder("so-e2e-tmp-running", 4242);
-  const gone = folder("so-e2e-tmp-gone", 4343);
+  const runningOwner = fakePid(1), goneOwner = fakePid(2);
+  const running = folder("so-e2e-tmp-running", runningOwner);
+  const gone = folder("so-e2e-tmp-gone", goneOwner);
   const plain = [folder("so-a"), folder("so-b"), folder("so-c")];
-  expect(tempOwner(running)).toEqual({ pid: 4242, startedAt: old.getTime() });
+  expect(tempOwner(running)).toEqual({ pid: runningOwner, startedAt: old.getTime() });
   expect(tempOwner(plain[0]!)).toBeNull();
-  const ownerAlive = (owner: { pid: number }) => owner.pid === 4242;
+  const ownerAlive = (owner: { pid: number }) => owner.pid === runningOwner;
   const first = removeStaleTestTemp([root], now, { ownerAlive, max: 2 });
   expect(first.more).toBe(true);
   expect(first.removed).toHaveLength(2);

@@ -15,6 +15,7 @@ import { launchdPlist } from "./daemon.js";
 import { installUpdateGate, removeUpdateGate, updateAdmissionPaused, freezeUpdateGate, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { CodingWorkspace } from "./coding-workspace.js";
 import { fixture, armFixture, codingFixture } from "../test/desktop-update-kit.js";
+import { fakePid } from "../test/fake-pid.js";
 
 vi.mock("node:child_process", { spy: true });
 
@@ -53,38 +54,38 @@ test('coding sessions drain before update, new submissions wait, and SQLite back
 });
 
 test('an apparently stopped service cannot update until coding process cleanup is verified', async () => {
-  const f = fixture(), coding = codingFixture(f);
+  const f = fixture(), coding = codingFixture(f), agent = fakePid(1);
   try {
-    coding.db.prepare('UPDATE coding_owner SET clean=0,native_pid=2147483647').run();
+    coding.db.prepare('UPDATE coding_owner SET clean=0,native_pid=?').run(agent);
     await f.prepare();
     await runDesktopUpdate(f.state, f.hooks);
     expect(f.calls).not.toContain('swap');
     expect(readUpdateJournal(f.state)?.error).toContain('coding server has not verified');
-    expect(coding.db.prepare('SELECT clean,native_pid FROM coding_owner').get()).toMatchObject({ clean: 0, native_pid: 2147483647 });
+    expect(coding.db.prepare('SELECT clean,native_pid FROM coding_owner').get()).toMatchObject({ clean: 0, native_pid: agent });
     expect(coding.db.prepare('SELECT payload FROM coding_item').get()?.payload).toContain('committed WAL transcript');
   } finally { await coding.close(); f.close(); }
 });
 
 test('an update over an app killed before releasing the coding workspace releases its record once the service processes are gone, and completes', async () => {
-  // Fake pids above macOS's 99999 limit: a real process can never hold them (4243 was a Brave tab after a restart).
   // Oct 2: a stopped 0.9.11 left its owner record naming its dead controller, and every swap refused.
   const f = fixture(), coding = codingFixture(f); let closed = false;
+  const supervisor = fakePid(1), controller = fakePid(2), agent = fakePid(3), tool = fakePid(4);
   try {
     await coding.close(); closed = true;
     const db = new DatabaseSync(coding.file);
     try {
-      db.prepare('UPDATE coding_owner SET token=?,pid=999982,native_pid=999991,clean=0').run(randomUUID());
-      db.prepare('UPDATE coding_custody SET payload=?').run(JSON.stringify({ pid: 999991, group: true, descendants: [{ pid: 999992, group: false }], observationUnknown: false, host: hostname() }));
+      db.prepare('UPDATE coding_owner SET token=?,pid=?,native_pid=?,clean=0').run(randomUUID(), controller, agent);
+      db.prepare('UPDATE coding_custody SET payload=?').run(JSON.stringify({ pid: agent, group: true, descendants: [{ pid: tool, group: false }], observationUnknown: false, host: hostname() }));
     } finally { db.close(); }
-    writeFileSync(join(f.state, 'controller-supervisor.json'), JSON.stringify({ version: 1, supervisorPid: 999981, controllerPid: 999982, phase: 'running' }));
+    writeFileSync(join(f.state, 'controller-supervisor.json'), JSON.stringify({ version: 1, supervisorPid: supervisor, controllerPid: controller, phase: 'running' }));
     await f.prepare();
-    const alive = new Set([999981, 999982]);
+    const alive = new Set([supervisor, controller]);
     await runDesktopUpdate(f.state, { ...f.hooks, processAlive: pid => alive.has(pid),
       service: async (action, app, journal) => { if (action === 'stop') alive.clear(); await f.hooks.service!(action, app, journal); } });
     const done = readUpdateJournal(f.state)!;
     expect(done.phase, done.error).toBe('complete');
-    expect(done.stoppedPids).toEqual([999981, 999982]);
-    expect(done.codingOwnerReleased).toEqual({ pid: 999982, nativePid: 999991 });
+    expect(done.stoppedPids).toEqual([supervisor, controller]);
+    expect(done.codingOwnerReleased).toEqual({ pid: controller, nativePid: agent });
     const after = new DatabaseSync(coding.file, { readOnly: true });
     try { expect(after.prepare('SELECT token,pid,native_pid,clean FROM coding_owner').get()).toEqual({ token: '', pid: 0, native_pid: null, clean: 1 }); } finally { after.close(); }
     const orders = f.db();
@@ -282,7 +283,7 @@ test('desktop swap rechecks native shutdown after asynchronous signature verific
     await f.prepare(); await coding.close(); closed = true;
     await runDesktopUpdate(f.state, { ...f.hooks, verify: async () => {
       await Promise.resolve();
-      const db = new DatabaseSync(coding.file); try { db.prepare('UPDATE coding_owner SET clean=0,native_pid=2147483647').run(); } finally { db.close(); }
+      const db = new DatabaseSync(coding.file); try { db.prepare('UPDATE coding_owner SET clean=0,native_pid=?').run(fakePid(1)); } finally { db.close(); }
     } });
     expect(f.calls).not.toContain('swap');
     expect(readUpdateJournal(f.state)?.error).toContain('coding server has not verified');
@@ -314,7 +315,7 @@ test.each(['install', 'restore'] as const)('desktop final %s stop cannot release
         stops++;
         if (!closed) { await coding.close(); closed = true; }
         if (stops === (direction === 'install' ? 2 : 3)) {
-          const db = new DatabaseSync(coding.file); try { db.prepare('UPDATE coding_owner SET clean=0,native_pid=2147483647').run(); } finally { db.close(); }
+          const db = new DatabaseSync(coding.file); try { db.prepare('UPDATE coding_owner SET clean=0,native_pid=?').run(fakePid(1)); } finally { db.close(); }
         }
       },
       healthy: async app => direction === 'install' || app.buildId === j.old.buildId,

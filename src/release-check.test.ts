@@ -5,6 +5,7 @@ import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { definesSchema, journeyGroups, journeyShares, journeysFor, planFor, shareSlots, versionOnly } from "../scripts/release-check.mjs";
 import { atLeast, completionProblems, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
+import { fakePid } from "../test/fake-pid.js";
 import { DEMAND, GROUP_BYTES, admissionWords, admit, browserSlots, limiter, memoryPressure, memoryWords, openGate, parseMeminfo, parseMeminfoSwap, parseSwapUsage, parseVmStat, providerCap, sampleMachine, watchMemory } from "../scripts/check-memory.mjs";
 
 const MB = 1024 * 1024, GB = 1024 * MB;
@@ -452,15 +453,16 @@ describe("checks fit memory", () => {
     }
   });
 
+  const RUNNER_A = fakePid(1), RUNNER_B = fakePid(2), FLOWS_RUNNER = fakePid(3), APP_RUNNER = fakePid(4), DEAD_RUNNER = fakePid(5);
   /** A gate on fake readings that the test changes as it goes; `owner` stands for a runner process. */
   const gateOn = (dir: string, machine: { platform: string; pressure: number | null; available: number; swapUsed: number | null; swapTotal: number | null; providers: number | null }, owner: number, env: Record<string, string> = {}, lines: string[] = []) =>
-    openGate({ dir, env, total: 64 * GB, sample: () => ({ ...machine }), everyMs: 5, sayEveryMs: 60_000, owner, alive: pid => pid !== 4_000_000, log: line => lines.push(line) });
+    openGate({ dir, env, total: 64 * GB, sample: () => ({ ...machine }), everyMs: 5, sayEveryMs: 60_000, owner, alive: pid => pid !== DEAD_RUNNER, log: line => lines.push(line) });
   const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
 
   test.each([{ count: 4, env: {}, from: "64.0 GB memory, default maximum 4" }, { count: 6, env: { TOOLROLL_CHECK_PROVIDERS: "6" }, from: "TOOLROLL_CHECK_PROVIDERS" }])("an idle machine starts $count groups together without waiting (cap from $from)", async ({ count, env, from }) => {
     const at = mkdtempSync(join(tmpdir(), "so-gate-"));
     try {
-      const gate = gateOn(at, IDLE, 101, env);
+      const gate = gateOn(at, IDLE, RUNNER_A, env);
       let running = 0, most = 0;
       const ready = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
       const runs = Array.from({ length: count }, (_, n) => gate.hold(`app g${n}`, DEMAND.group, async () => { running++; most = Math.max(most, running); if (running === count) ready.resolve(); await finish.promise; running--; }));
@@ -469,7 +471,7 @@ describe("checks fit memory", () => {
       await Promise.all(runs);
       expect(most).toBe(count);
       expect(gate.facts()).toMatchObject({ starts: count, most: count, waits: 0, providers: count, others: 0, lowest: 32 * GB, highestSwap: 0 });
-      expect(admissionWords(gate.facts(101), "groups")).toBe(`admission: ran up to ${count} groups at a time: lowest 32.0 GB free, swap up to 0% used; up to ${count} provider turns of ours, 0 other sessions (cap ${count}, from ${from}); nothing waited for room`);
+      expect(admissionWords(gate.facts(RUNNER_A), "groups")).toBe(`admission: ran up to ${count} groups at a time: lowest 32.0 GB free, swap up to 0% used; up to ${count} provider turns of ours, 0 other sessions (cap ${count}, from ${from}); nothing waited for room`);
       gate.close();
     } finally { rmSync(at, { recursive: true, force: true }); }
   });
@@ -480,7 +482,7 @@ describe("checks fit memory", () => {
     const lines: string[] = [];
     const log = (line: string) => { lines.push(line); if (lines.length === 2) waiting.resolve(); };
     const options = { dir: at, env: {}, total: 64 * GB, sample: () => IDLE, everyMs: 1, alive: () => true, log };
-    const flows = openGate({ ...options, owner: 101 }), app = openGate({ ...options, owner: 102 });
+    const flows = openGate({ ...options, owner: RUNNER_A }), app = openGate({ ...options, owner: RUNNER_B });
     try {
       let running = 0, most = 0;
       const runs = Array.from({ length: 6 }, (_, n) => (n % 2 === 0 ? flows : app).hold(`group ${n}`, DEMAND.group, async () => {
@@ -536,9 +538,9 @@ describe("checks fit memory", () => {
     try {
       const machine = { ...IDLE };
       const lines: string[] = [];
-      const flows = gateOn(at, machine, 201, { TOOLROLL_CHECK_PROVIDERS: "2" }, lines);
+      const flows = gateOn(at, machine, FLOWS_RUNNER, { TOOLROLL_CHECK_PROVIDERS: "2" }, lines);
       // The second opener takes the cap the first chose, whatever its own environment says.
-      const app = gateOn(at, machine, 202, { TOOLROLL_CHECK_PROVIDERS: "9" }, lines);
+      const app = gateOn(at, machine, APP_RUNNER, { TOOLROLL_CHECK_PROVIDERS: "9" }, lines);
       expect(app.cap).toBe(2);
       let running = 0, most = 0;
       const group = (gate: typeof flows, label: string) => gate.hold(label, DEMAND.group, async () => { running++; most = Math.max(most, running); await pause(40); running--; });
@@ -551,9 +553,9 @@ describe("checks fit memory", () => {
       expect(admissionWords(facts)).toMatch(/; up to 2 provider turns of ours, 0 other sessions \(cap 2, from TOOLROLL_CHECK_PROVIDERS\); [3-5] starts waited [0-9.]+ s in all for room \(longest: .+, 2 provider turns of ours and 0 other sessions running, at the cap of 2\)$/);
 
       // A runner killed outright left its lease behind: it is dropped, not held forever.
-      writeFileSync(join(at, "leases", "4000000-1-dead.json"), JSON.stringify({ owner: 4_000_000, label: "app gone", bytes: GB, providers: 2, at: 0 }));
+      writeFileSync(join(at, "leases", `${DEAD_RUNNER}-1-dead.json`), JSON.stringify({ owner: DEAD_RUNNER, label: "app gone", bytes: GB, providers: 2, at: 0 }));
       await flows.hold("flows c", DEMAND.group, async () => undefined);
-      expect(existsSync(join(at, "leases", "4000000-1-dead.json"))).toBe(false);
+      expect(existsSync(join(at, "leases", `${DEAD_RUNNER}-1-dead.json`))).toBe(false);
       // A start whose body throws still lets go of its lease.
       await expect(app.hold("app d", DEMAND.group, async () => { throw new Error("crashed"); })).rejects.toThrow("crashed");
       expect(readdirSync(join(at, "leases"))).toEqual([]);
