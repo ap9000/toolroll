@@ -57,7 +57,11 @@ function got(input: unknown): string {
  * `ifFails`, `to` for `goesTo`), tried in order against the keys allowed at that place. Without one that fits, a key
  * spelled close to an allowed one (a case or a letter or two off) is suggested.
  */
-export type ContractOptions = { aliases?: Readonly<Record<string, readonly string[]>> };
+export type ContractOptions = {
+  aliases?: Readonly<Record<string, readonly string[]>>;
+  /** Report explicit null as a wrong value; omitted keeps the historical wording for existing contracts. */
+  distinguishNull?: boolean;
+};
 
 type Node = { _zod: { def: Def } };
 
@@ -146,9 +150,10 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
     }
     case "invalid_type": {
       const missing = "input" in issue ? issue.input === undefined : / received undefined$/.test(issue.message);
-      // Keep required-null wording for required fields; an optional field given null has the wrong type.
+      // Keep required-null wording for required fields; an optional field given null has the wrong type, and so does
+      // any null when the caller distinguishes null from missing.
       const optional = where.schema !== undefined && nodeAt(where.schema as unknown as Node, where.input, issue.path)?.optional === true;
-      if (missing || (!optional && "input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
+      if (missing || (!optional && !where.options?.distinguishNull && "input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
       const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "int" ? "an integer" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
       return [one("wrong-type", `must be ${expected}${"input" in issue ? ` (got ${got(issue.input)})` : ""}`)];
     }
@@ -169,8 +174,9 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
       if (typeof by === "string" && Array.isArray(options)) {
         const given = "input" in issue && isRecord(issue.input) ? issue.input[by] : undefined;
         const path = at === "payload" || issue.path.at(-1) === by ? at : `${at}.${by}`;
-        const line = given === undefined || given === null ? "required" : `must be one of ${options.map(value => JSON.stringify(value)).join(", ")}`;
-        return [{ path, kind: given === undefined || given === null ? "required" : "bad-value", line: `${path}: ${line}` }];
+        const missing = given === undefined || (given === null && !where.options?.distinguishNull);
+        const line = missing ? "required" : `must be one of ${options.map(value => JSON.stringify(value)).join(", ")}`;
+        return [{ path, kind: missing ? "required" : "bad-value", line: `${path}: ${line}` }];
       }
       return [one("invalid", "does not match any allowed shape")];
     }

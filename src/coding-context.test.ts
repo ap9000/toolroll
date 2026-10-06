@@ -8,6 +8,7 @@ import { addApprover } from './scope.js';
 import { changeKnowledge, knowledgeView } from './project-knowledge.js';
 import { changeSkills, importSkill, skillsView } from './project-skills.js';
 import { prepareCodingContext, verifyCodingContext } from './coding-context.js';
+import { codingSessionDocument, parseCodingSessionDocument } from './contracts/coding-workspace.js';
 
 let root: string, repo: string, store: Store, base: string;
 const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -120,4 +121,18 @@ test('empty managed context adds no prompt material, creates no skill directory 
   expect(context.text).toBe(''); expect(context.metadata.directory).toBeNull(); expect(context.metadata.files).toEqual([]);
   expect(context.metadata.baseRevision).toBe(base); expect(context.metadata.knowledge.revision).toBe(0);
   expect(() => verifyCodingContext(context, repo, base)).not.toThrow();
+});
+
+test('a capture saved in a session before the versioned record still verifies after reading, and a tampered one still fails', () => {
+  knowledge('instructions', { instructions: 'Use concise labels.' }); knowledge('save', { title: 'Mobile labels', path: 'mobile.md' }); skill();
+  const { version, ...unversioned } = prepare();
+  expect(version).toBe(1);
+  const session = { id: 'a'.repeat(32), owner: 'alex', generation: 1, repo, title: 'Labels', provider: 'codex', model: null, branch: `toolroll/code-${'a'.repeat(32)}`, base, worktree: join(root, 'worktree'), nativeThreadId: 'thread', turnId: null, status: 'interrupted', error: null, createdAt: '2026-10-04T18:00:00.000Z', updatedAt: '2026-10-04T18:05:00.000Z', initialRequest: { requestId: 'initial-request-0001', prompt: 'Improve mobile labels' } };
+  const read = parseCodingSessionDocument(JSON.stringify({ ...session, context: unversioned }));
+  expect(read.context).toEqual(unversioned);
+  expect(() => verifyCodingContext(read.context!, repo, base)).not.toThrow();
+  const resaved = parseCodingSessionDocument(codingSessionDocument(read));
+  expect(() => verifyCodingContext(resaved.context!, repo, base)).not.toThrow();
+  const tampered = parseCodingSessionDocument(JSON.stringify({ ...session, context: { ...unversioned, metadata: { ...unversioned.metadata, baseRevision: base, directory: join(root, 'elsewhere') } } }));
+  expect(() => verifyCodingContext(tampered.context!, repo, base)).toThrow(/could not be verified/);
 });

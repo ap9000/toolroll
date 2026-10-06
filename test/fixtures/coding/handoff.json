@@ -1,0 +1,14 @@
+{
+  "handoff": {
+    "id": "16fa380ba1c5fb2d15237633f2adad71",
+    "payload": "{\"sessionId\":\"4f42cd3876f6f7dcaff2a1f00a8f5161\",\"repo\":\"/private/tmp/toolroll-coding-fixture/project\",\"base\":\"ea32c62c8583c0c4d78934a9c281339a6cc3e62f\",\"candidate\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"title\":\"Shorten the mobile labels\",\"originalPrompt\":\"Make the mobile labels shorter.\",\"changedPaths\":[\"mobile.md\",\"src/labels.ts\"],\"version\":1,\"identity\":\"0c4675e1e620edb42cad6c204898605b137491c375a6e6d98f74e6fc61b2419a\",\"actor\":\"operator\",\"generation\":1,\"goal\":\"Mobile labels are short enough for phones.\",\"acceptance\":[{\"id\":\"c1\",\"statement\":\"Mobile labels fit on one line\",\"how\":null,\"evidence\":[\"check\"]},{\"id\":\"c2\",\"statement\":\"The welcome screen shows the short label\",\"how\":\"Open it at phone width\",\"evidence\":[\"check\",\"screenshot\"]}],\"outOfScope\":\"Verify the saved candidate only. Further code changes need a new review task.\",\"id\":\"16fa380ba1c5fb2d15237633f2adad71\",\"taskId\":\"coding-review-16fa380ba1c5fb2d15237633f2adad71\",\"branch\":\"toolroll/coding-review-16fa380ba1c5fb2d15237633f2adad71\"}",
+    "sha": "7ae1d57d93be544dc03f7d36569446702f39919a420f1250a4f3cabfd9d8c057",
+    "created_at": "2026-10-04T18:20:00.000Z"
+  },
+  "scope": {
+    "id": "16fa380ba1c5fb2d15237633f2adad71",
+    "payload": "{\"version\":1,\"id\":\"16fa380ba1c5fb2d15237633f2adad71\",\"receiptSha256\":\"7ae1d57d93be544dc03f7d36569446702f39919a420f1250a4f3cabfd9d8c057\",\"scopeDigest\":\"dddddddddddddddddddddddddddddddd\"}",
+    "sha": "72807271a719af8760040f78916ac13dcb3be33c498cedf5f9f30dc57b1a60d9"
+  },
+  "scopeDigest": "dddddddddddddddddddddddddddddddd"
+}

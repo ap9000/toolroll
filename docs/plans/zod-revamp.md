@@ -63,7 +63,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 9 ✅ | **Lead context bundle** and **project knowledge / memory / skills** payloads, with size budgets in the schema | `lead-context.ts`, `project-knowledge.ts`, `project-memory.ts`, `project-skills.ts`, `memory-pass.ts` |
 | 10 ✅ | **Scope, acceptance criteria and sealed routes** | `scope.ts`, `phase-routing.ts`, `policy.ts` |
 | 11 ✅ | **Chat actions and channel callbacks** (Telegram/Slack/Discord/Teams button data, decide-in-chat) | `chat-actions.ts`, `telegram*.ts`, `chat-delivery*.ts` |
-| 12 | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
+| 12 ✅ | **Coding handoff and context** (desktop coding sessions) | `coding-handoff.ts`, `coding-context.ts`, `coding-workspace.ts` |
 
 ### Wave 3 — inputs from outside (P2)
 
@@ -247,3 +247,18 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   named problem instead of being half-read. Schema-invalid pushed JSON updates are logged and acknowledged with
   HTTP 200, so Telegram does not resend them. Unreadable saved message parts keep their field-path problem and
   payload, with delivery stopped instead of scheduled for another retry.
+- **12. Coding handoff and context** (2026-10-05). `src/contracts/coding-handoff.ts`, `src/contracts/coding-context.ts`
+  and `src/contracts/coding-workspace.ts` are the one schema each for the coding handoff receipt, the managed context
+  capture and the workspace record (`coding_session.document`); `CodingHandoffReceipt`, `CodingHandoffPreview`,
+  `CodingContext`, `CodingContextMetadata`, `CodingSession` and `CodingStatus` are derived from them, and the receipt
+  reuses the plan's acceptance criterion schema. The receipt's saved hash is checked before parsing; its identity,
+  branch and scope seal, the context's digest, project identity and skill files, and session ownership run after, as
+  before. Receipt and context metadata keys keep their written order, so parsed values hash, seal and digest to the
+  saved bytes. Unversioned sessions retain the old cast's fields exactly, including partial rows, nulls and unknown
+  nested keys. A normal save writes version 1 only when the entire record fits without losing fields; other legacy
+  records stay unversioned. Reads alone do not rewrite saved bytes. Replayed from `test/fixtures/coding/` through
+  restart, context verification and the receipt and seal checks, with the original partial deployment and desktop
+  update fixtures retained. Tightened, on purpose: a newer version of any of the three is refused plainly, and version
+  1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
+  path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
+  null as a wrong value, not as a missing field.

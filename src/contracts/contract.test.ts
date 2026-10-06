@@ -82,11 +82,21 @@ describe("unknown keys and unions", () => {
     expect(read({ steps: [{ kind: "task", title: "t", colour: "red" }] })).toEqual(["steps[0]: unknown key 'colour'"]);
   });
 
-  it("names a discriminated union's choices, and reads a null or missing discriminator or value as required", () => {
-    expect(read({ steps: [{ kind: "teleport", title: "t" }, { title: "t" }, { kind: "task", title: null }] })).toEqual([
+  it("names a discriminated union's choices and distinguishes null from a missing value", () => {
+    const input = { steps: [{ kind: "teleport", title: "t" }, { title: "t" }, { kind: "task", title: null }, { kind: null, title: "t" }, { kind: "task" }] };
+    expect(read(input)).toEqual([
       "steps[0].kind: must be one of \"task\", \"sort\"",
       "steps[1].kind: required",
       "steps[2].title: required",
+      "steps[3].kind: required",
+      "steps[4].title: required",
+    ]);
+    expect(read(input, { distinguishNull: true })).toEqual([
+      "steps[0].kind: must be one of \"task\", \"sort\"",
+      "steps[1].kind: required",
+      "steps[2].title: must be a string (got null)",
+      "steps[3].kind: must be one of \"task\", \"sort\"",
+      "steps[4].title: required",
     ]);
   });
 });
