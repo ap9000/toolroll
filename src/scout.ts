@@ -22,7 +22,8 @@ import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
-import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
+import { scoutHandbackSchema } from "./contracts/scout-report.js";
+import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, REPORT_VERSION, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
 import { TOKEN_ENVS as TELEGRAM_TOKEN_ENVS } from "./telegram.js";
 import {
   evidenceRoot,
@@ -254,6 +255,7 @@ function scoutBrief(
           `\`${reportFile}\`:`,
         ]),
     "{",
+    `  "version": ${REPORT_VERSION},`,
     '  "title": "one line",',
     '  "summary": "one paragraph the operator reads first",',
     '  "report": "the report as markdown: what you found, the evidence, the risks",',
@@ -593,7 +595,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
       ok: false,
       kind: "malformed",
       reason: "malformed-report",
-      message: `the scout concluded, but the payload is not a report: ${parsed.problems.map(problem => problem.reason).join(", ")}`,
+      message: `the scout concluded, but the payload is not a report: ${parsed.problems.map(problem => problem.message).join("; ")}`,
       problems: parsed.problems,
     };
   }
@@ -656,7 +658,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     // the deliverable, and a task whose deliverable does not exist is not
     // done.
     try {
-      const content = Buffer.from(JSON.stringify(report, null, 2), "utf8");
+      const content = Buffer.from(JSON.stringify({ version: REPORT_VERSION, ...report }, null, 2), "utf8");
       const key = writeEvidenceFile(root, request.runId, "report.json", content);
       return {
         ok: true,
@@ -735,8 +737,8 @@ export function readReportImage(folder: string, file: string): { ok: true; bytes
 
 /** What Claude's structured output handed back, or null when the turn
  * returned none. Only the schema-validated field counts — a prose result is
- * never a handback, even when it is JSON. The body goes to `parseReport` or
- * `parseDecision` re-serialized, so every cap still applies. */
+ * never a handback, even when it is JSON. Its shape is `scoutHandbackSchema`; the branch goes to `parseReport` or
+ * `parseDecision` re-serialized, so every cap and rule still applies and each refusal names its path in the branch. */
 type Handback =
   | { kind: "report" | "question"; raw: string }
   | { kind: "invalid"; problems: ReportProblem[] };
@@ -747,17 +749,18 @@ function structuredHandback(structuredOutput: string | null): Handback | null {
   try {
     value = JSON.parse(structuredOutput);
   } catch {
-    return { kind: "invalid", problems: [{ reason: "structured-not-json", message: "the structured output is not JSON" }] };
+    return { kind: "invalid", problems: [{ reason: "structured-not-json", message: "payload: the structured output is not JSON" }] };
   }
   const body = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  const kind = body["kind"];
-  const inner = kind === "report" ? body["report"] : kind === "question" ? body["decision"] : undefined;
-  if (kind !== "report" && kind !== "question") {
-    return { kind: "invalid", problems: [{ reason: "structured-kind", message: 'the structured output must say kind "report" or "question"' }] };
+  const read = scoutHandbackSchema.shape.kind.safeParse(body["kind"]);
+  if (!read.success) {
+    return { kind: "invalid", problems: [{ reason: "structured-kind", message: `kind: must be ${scoutHandbackSchema.shape.kind.options.map(one => JSON.stringify(one)).join(" or ")}` }] };
   }
+  const kind = read.data;
+  const inner = kind === "report" ? body["report"] : body["decision"];
   if (inner === undefined || inner === null) {
     const field = kind === "report" ? "report" : "decision";
-    return { kind: "invalid", problems: [{ reason: `structured-missing-${field}`, message: `kind "${kind}" needs its ${field}` }] };
+    return { kind: "invalid", problems: [{ reason: `structured-missing-${field}`, message: `${field}: required for kind "${kind}"` }] };
   }
   return { kind, raw: JSON.stringify(inner) };
 }

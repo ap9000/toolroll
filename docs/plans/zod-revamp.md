@@ -48,7 +48,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 1 ✅ | **Foundation**: add `zod`, `src/contracts/` home, shared helpers (`limited()`, `versioned()`, path-named errors, `toModelSchema()`), the contract-test harness | — | everything else builds on it |
 | 2 ✅ | **Plan payload** (goal, outOfScope, touches, acceptance, plan document sections, amendment) and the planner's `--json-schema` | `plan.ts` (`parsePlan`, `PLAN_LIMITS`), `planner.ts` | 0.9.30 outage; repair turns |
 | 3 ✅ | **Flow definitions and step inputs** (every zone kind, routes/answers/options, triggers) for `flows create/edit`, gallery templates, the lead's `propose_flow` | `flows.ts` (13 parsers), `flow-triggers.ts`, `flow-gallery.ts` | wrong-field-name failures; flows are authored by people, the lead and templates |
-| 4 | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
+| 4 ✅ | **Scout report** (summary, items, follow-ups, questions) | `scout-report.ts`, `SCOUT_OUTPUT_JSON_SCHEMA` in `scout.ts` | structured output contract with a model |
 | 5 | **Lead tool inputs and outputs** (49 mate tools) and the **MCP gateway** tools | `mate-tools.ts`, `mcp.ts` | the lead's every action; one schema per tool feeds both the model and the check |
 | 6 ✅ | **Builder handoff and proof** (`handoff.json`, proof criteria, verification receipt) | `builder.ts`, `proof.ts`, `verification-evidence.ts` | decides whether a result is verified |
 | 7 | **Small structured answers**: task sizing, reviewer findings, decision questions and options, teammate decisions, classifier/sort answers | `task-sizing.ts`, `reviewer.ts`, `decision.ts`, `teammates.ts`, `flow-engine.ts` sort | many small model contracts, each a drift risk |
@@ -115,6 +115,19 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   zone, trigger setting or `propose_flow` argument's kind doesn't take is refused by name (a sort's `ifFails`, a wait's
   `remindAfter`); a drawing or file with a newer `version` is refused plainly; flow and trigger refusals are path-named
   lines.
+- **4. Scout report** (2026-10-05). `src/contracts/scout-report.ts` is the one report schema: `parseReport` reads it
+  (and, as `storedReportSchema`, every report kept as evidence, without the length limits), and a Claude scout gets it
+  as the report branch of `SCOUT_OUTPUT_JSON_SCHEMA` (`toModelSchema(scoutHandbackSchema)`); `REPORT_SHAPE`,
+  `DECISION_SHAPE` and the hand-written parser and types are gone (`ParsedReport`, `ReportItem` and `ReportImage` are
+  derived), and `REPORT_LIMITS` reads its byte limits from `TEXT_LIMITS` (`reportSummary` and the new `report*Bytes`).
+  Blank text, byte limits, controls, one-line fields, a one-paragraph summary, safe links, a screenshot named twice and
+  an item naming one the report lacks run after parsing; every refusal, and the one shorten turn, names its path
+  (`items[0].url: must be an http or https address`). The question branch mirrors the fields `parseDecision` reads,
+  which stays its validator until item 7. Kept: unversioned reports (every one through 0.9.36, written or stored) read
+  as before, unknown keys ignored and null lists read as none; reports are now stored as `version: 1`, which older
+  releases read too. Replayed from `test/fixtures/scout-reports/`, reconstructed per release from git history (the
+  saved evidence was not readable from the build). Tightened, on purpose: a newer `version` is refused, and a
+  `version: 1` report is strict about unknown keys.
 - **6. Builder handoff and proof** (2026-10-05). `src/contracts/handoff.ts`, `src/contracts/proof.ts` and
   `src/contracts/verification-receipt.ts` are the one schema each for `handoff.json`, the builder's proof and the
   verification receipt; `HandoffArtifact`, `ParsedProof` and `VerifyCommandFacts` are derived from them, and
