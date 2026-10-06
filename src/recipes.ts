@@ -5,11 +5,13 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Store } from "./store.js";
 import { TEMPLATES } from "./templates.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
-import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
+import { parseAcceptanceCriteria } from "./scope.js";
 import { validateTaskText, fileTaskProposal, fileRoutineProposal } from "./proposal.js";
 import { parseSchedule, firstFireAt, describeSchedule, validateRoutineTerms } from "./routine.js";
 import { applyModeToNewFiling } from "./plan-auto.js";
 import { canonicalProject } from "./project.js";
+import type { ContractIssue } from "./contracts/contract.js";
+import { RECIPE_FORMAT, RECIPE_LIMITS, readRecipeDocument, type RecipeDocument, type RecipeInput } from "./contracts/recipes.js";
 import { resolve } from "node:path";
 
 export const RECIPE_SCHEMA = `
@@ -38,87 +40,105 @@ CREATE INDEX IF NOT EXISTS workflow_preview_source ON workflow_preview(repo, sou
 WHERE task_id IS NOT NULL OR routine_id IS NOT NULL;
 `;
 
-type RecipeFields = {
-  format: "standing-orders-recipe";
-  name: string;
-  description: string;
-  goal: string;
-  outOfScope: string | null;
-  touches: string[];
-  acceptance: AcceptanceCriterion[];
-  planning: "auto" | "required" | "skip";
-  deliverable: "branch" | "report";
-  schedule: string | null;
-  costCeilingUsd: number | null;
-};
-export type RecipeInput = { key: string; label: string; defaultValue: string | null };
-export type RecipeDocument = RecipeFields & ({ version: 1; inputs?: never } | { version: 2; inputs: RecipeInput[] });
-export const RECIPE_INPUT_LIMIT = 8;
+export type { RecipeDocument, RecipeInput } from "./contracts/recipes.js";
+export const RECIPE_INPUT_LIMIT = RECIPE_LIMITS.inputs;
 export type RecipeAnswers = ReadonlyMap<string, string>;
 export type Recipe = { id: string; revision: number; repo: string | null; document: RecipeDocument; digest: string; author: string };
 export type WorkflowPreview = { token: string; actor: string; repo: string; document: RecipeDocument; digest: string; source: string; expiresAt: string; taskId: string | null; routineId: number | null; savedId: string | null; savedRevision: number | null };
 export class RecipeError extends Error {
   constructor(message: string, public readonly status = 400) { super(message); }
 }
-const keys = ["format", "version", "name", "description", "goal", "outOfScope", "touches", "acceptance", "planning", "deliverable", "schedule", "costCeilingUsd"];
 const honest = (text: string) => !hasForbiddenControls(text) && !hasDisguisedText(text);
 const recipeProject = (repo: string) => canonicalProject(repo) ?? resolve(repo);
+
+/** What a refusal at each top-level field tells the person, after the path-named line. */
+const FIELD_ADVICE: Record<string, string> = {
+  name: "Name, goal, exclusions, and allowed paths must be readable text.", description: "Name, goal, exclusions, and allowed paths must be readable text.",
+  goal: "Name, goal, exclusions, and allowed paths must be readable text.", outOfScope: "Name, goal, exclusions, and allowed paths must be readable text.",
+  touches: "Name, goal, exclusions, and allowed paths must be readable text.",
+  planning: "Choose a supported planning and result type.", deliverable: "Choose a supported planning and result type.",
+  schedule: "Choose a valid schedule.", costCeilingUsd: "The weekly budget must be a positive dollar amount.",
+};
+const FIELDS_MISMATCH = "Recipe fields do not match this version. Recipes contain work definitions, not permissions, credentials, or agent settings.";
+
+/** The one refusal a recipe structure gets: its first path-named line, with the advice for that field. */
+function structureError(issues: readonly ContractIssue[]): RecipeError {
+  const top = issues.find(one => one.kind === "unknown-key" && one.path === "payload") ?? issues.find(one => one.kind === "required" && !/[.[]/.test(one.path));
+  if (top !== undefined) return new RecipeError(`${top.line}. ${FIELDS_MISMATCH}`);
+  const first = issues[0]!;
+  const field = first.path.split(/[.[]/)[0]!;
+  if (field === "acceptance") {
+    if (issues.some(one => one.path.startsWith("acceptance") && one.kind === "unknown-key")) {
+      return new RecipeError(`${issues.find(one => one.path.startsWith("acceptance") && one.kind === "unknown-key")!.line}. Success checks have unsupported fields.`);
+    }
+    return new RecipeError(issues.filter(one => one.path.startsWith("acceptance")).map(one => one.line).join("; "));
+  }
+  if (field === "inputs") {
+    const advice = first.path === "inputs" ? "Add between 1 and 8 questions, or remove the empty questions to save a fixed recipe."
+      : /\.key$/.test(first.path) ? "Give each question a unique key: lowercase letters, numbers, or underscores, starting with a letter (up to 32 characters)."
+      : /\.label$/.test(first.path) ? "Give each question a readable label of up to 80 characters."
+      : /\.defaultValue$/.test(first.path) && first.kind !== "required" ? "Default answers must be plain text up to 500 characters, without input placeholders."
+      : "Questions contain only a key, label, and optional default answer.";
+    return new RecipeError(`${first.line}. ${advice}`);
+  }
+  // Zod states `positive` as an exclusive minimum ("at least 0"); the advice says it plainly.
+  if (field === "costCeilingUsd" && first.kind === "bad-value") return new RecipeError(`costCeilingUsd: ${FIELD_ADVICE[field]}`);
+  return new RecipeError(`${first.line}. ${FIELD_ADVICE[field] ?? FIELDS_MISMATCH}`);
+}
 
 /** Reject unknown fields, including approval/provider settings, on import. */
 export function parseRecipe(input: unknown): RecipeDocument {
   if (typeof input !== "object" || input === null || Array.isArray(input)) throw new RecipeError("Choose a recipe document.");
-  if (Buffer.byteLength(JSON.stringify(input), "utf8") > 32_768) throw new RecipeError("A recipe must be at most 32 KB.");
+  if (Buffer.byteLength(JSON.stringify(input), "utf8") > RECIPE_LIMITS.documentBytes) throw new RecipeError("A recipe must be at most 32 KB.");
   const raw = input as Record<string, unknown>;
-  if (raw.format !== "standing-orders-recipe" || (raw.version !== 1 && raw.version !== 2)) throw new RecipeError("This recipe format/version is not supported.");
-  const expected = raw.version === 2 ? [...keys, "inputs"] : keys;
-  if (Object.keys(raw).some(key => !expected.includes(key)) || expected.some(key => !Object.hasOwn(raw, key))) throw new RecipeError("Recipe fields do not match this version. Recipes contain work definitions, not permissions, credentials, or agent settings.");
-  if (typeof raw.name !== "string" || typeof raw.description !== "string" || typeof raw.goal !== "string" || (raw.outOfScope !== null && typeof raw.outOfScope !== "string") || !Array.isArray(raw.touches) || raw.touches.some(path => typeof path !== "string")) throw new RecipeError("Name, goal, exclusions, and allowed paths must be readable text.");
-  if (raw.description.length > 400 || !honest(raw.description)) throw new RecipeError("Keep the description within 400 characters, without hidden text.");
-  const bad = validateTaskText({ title: raw.name, goal: raw.goal, outOfScope: raw.outOfScope, touches: raw.touches as string[] });
+  if (raw.format !== RECIPE_FORMAT) throw new RecipeError("format: This recipe format/version is not supported.");
+  if (raw.version !== 1 && raw.version !== 2) {
+    const newer = typeof raw.version === "number" && Number.isInteger(raw.version) && raw.version > 2;
+    throw new RecipeError(`version: ${newer ? `made by a newer Toolroll (version ${raw.version}). ` : ""}This recipe format/version is not supported.`);
+  }
+  const read = readRecipeDocument(raw);
+  if (!read.ok) throw structureError(read.issues);
+  const doc = read.value;
+  if (doc.description.length > RECIPE_LIMITS.description || !honest(doc.description)) throw new RecipeError("description: Keep the description within 400 characters, without hidden text.");
+  const bad = validateTaskText({ title: doc.name, goal: doc.goal, outOfScope: doc.outOfScope, touches: doc.touches });
   if (bad !== null) throw new RecipeError(bad.message);
-  if (!["auto", "required", "skip"].includes(String(raw.planning)) || !["branch", "report"].includes(String(raw.deliverable))) throw new RecipeError("Choose a supported planning and result type.");
-  if (raw.schedule !== null && (typeof raw.schedule !== "string" || parseSchedule(raw.schedule) === null)) throw new RecipeError("Choose a valid schedule.");
-  if (raw.costCeilingUsd !== null && (typeof raw.costCeilingUsd !== "number" || !Number.isFinite(raw.costCeilingUsd) || raw.costCeilingUsd <= 0)) throw new RecipeError("The weekly budget must be a positive dollar amount.");
-  if (raw.schedule === null && raw.costCeilingUsd !== null) throw new RecipeError("A weekly budget applies to a repeating workflow. One-time work uses the project's task budget.");
-  if (raw.deliverable === "report" && raw.schedule !== null) throw new RecipeError("Report recipes run once. Repeating workflows currently produce code changes.");
-  if (raw.schedule !== null && raw.planning === "required") throw new RecipeError("Plan-first recipes run once. Repeating workflows reuse their approved scope; choose direct execution or run once.");
-  if (!Array.isArray(raw.acceptance) || raw.acceptance.some(one => typeof one !== "object" || one === null || Object.keys(one).some(key => !["id", "statement", "how", "evidence"].includes(key)))) throw new RecipeError("Success checks have unsupported fields.");
+  if (doc.schedule !== null && parseSchedule(doc.schedule) === null) throw new RecipeError("schedule: Choose a valid schedule.");
+  if (doc.schedule === null && doc.costCeilingUsd !== null) throw new RecipeError("costCeilingUsd: A weekly budget applies to a repeating workflow. One-time work uses the project's task budget.");
+  if (doc.deliverable === "report" && doc.schedule !== null) throw new RecipeError("deliverable: Report recipes run once. Repeating workflows currently produce code changes.");
+  if (doc.schedule !== null && doc.planning === "required") throw new RecipeError("planning: Plan-first recipes run once. Repeating workflows reuse their approved scope; choose direct execution or run once.");
   const parsed = parseAcceptanceCriteria(raw.acceptance);
-  if (parsed.problems.length > 0 || parsed.criteria.length === 0) throw new RecipeError(parsed.problems.map(one => one.message).join("; ") || "Add at least one success check.");
-  const fields: RecipeFields = { format: "standing-orders-recipe", name: raw.name.trim(), description: raw.description.trim(), goal: raw.goal.trim(), outOfScope: raw.outOfScope?.trim() || null,
-    touches: [...raw.touches as string[]], acceptance: parsed.criteria, planning: raw.planning as RecipeDocument["planning"], deliverable: raw.deliverable as RecipeDocument["deliverable"], schedule: raw.schedule as string | null, costCeilingUsd: raw.costCeilingUsd as number | null };
-  const document: RecipeDocument = raw.version === 1 ? { ...fields, version: 1 } : { ...fields, version: 2, inputs: parseRecipeInputs(raw.inputs) };
+  if (parsed.problems.length > 0 || parsed.criteria.length === 0) throw new RecipeError(parsed.problems.map(one => one.message).join("; ") || "acceptance: Add at least one success check.");
+  const fields = { format: RECIPE_FORMAT, name: doc.name.trim(), description: doc.description.trim(), goal: doc.goal.trim(), outOfScope: doc.outOfScope?.trim() || null,
+    touches: [...doc.touches], acceptance: parsed.criteria, planning: doc.planning, deliverable: doc.deliverable, schedule: doc.schedule, costCeilingUsd: doc.costCeilingUsd } as const;
   // Keep v1's canonical key order stable: existing immutable digests must survive.
-  const ordered: RecipeDocument = { format: document.format, version: document.version, name: document.name, description: document.description, goal: document.goal,
-    outOfScope: document.outOfScope, touches: document.touches, acceptance: document.acceptance, planning: document.planning, deliverable: document.deliverable,
-    schedule: document.schedule, costCeilingUsd: document.costCeilingUsd, ...(document.version === 2 ? { inputs: document.inputs } : {}) } as RecipeDocument;
+  const ordered: RecipeDocument = { format: fields.format, version: doc.version, name: fields.name, description: fields.description, goal: fields.goal,
+    outOfScope: fields.outOfScope, touches: fields.touches, acceptance: fields.acceptance, planning: fields.planning, deliverable: fields.deliverable,
+    schedule: fields.schedule, costCeilingUsd: fields.costCeilingUsd, ...(doc.version === 2 ? { inputs: parseRecipeInputs(doc.inputs) } : {}) } as RecipeDocument;
   if (ordered.version === 2) validateInputReferences(ordered);
-  if (document.schedule !== null) {
-    const problems = validateRoutineTerms({ repo: "/recipe-preview", ...document, requirements: [], schedule: document.schedule, singleFlight: true });
+  if (ordered.schedule !== null) {
+    const problems = validateRoutineTerms({ repo: "/recipe-preview", ...ordered, requirements: [], schedule: ordered.schedule, singleFlight: true });
     if (problems.length) throw new RecipeError(problems.map(one => `${one.field}: ${one.problem}`).join("; "));
   }
   return ordered;
 }
 export function importRecipe(text: string): RecipeDocument {
-  if (Buffer.byteLength(text, "utf8") > 32_768) throw new RecipeError("A recipe must be at most 32 KB.");
+  if (Buffer.byteLength(text, "utf8") > RECIPE_LIMITS.documentBytes) throw new RecipeError("A recipe must be at most 32 KB.");
   let value: unknown; try { value = JSON.parse(text); } catch { throw new RecipeError("That is not valid recipe JSON."); }
   return parseRecipe(value);
 }
 export const recipeDigest = (document: RecipeDocument): string => createHash("sha256").update(JSON.stringify(document)).digest("hex");
 export const exportRecipe = (document: RecipeDocument): string => JSON.stringify(parseRecipe(document), null, 2) + "\n";
 
-/** Inputs are literal work text, never a program, path grant, or shell fragment. */
-function parseRecipeInputs(raw: unknown): RecipeInput[] {
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > RECIPE_INPUT_LIMIT) throw new RecipeError("Add between 1 and 8 questions, or remove the empty questions to save a fixed recipe.");
+/** Inputs are literal work text, never a program, path grant, or shell fragment. Their shape is already read. */
+function parseRecipeInputs(inputs: readonly RecipeInput[]): RecipeInput[] {
   const seen = new Set<string>();
-  return raw.map(input => {
-    if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["key", "label", "defaultValue"].includes(key))) throw new RecipeError("Questions contain only a key, label, and optional default answer.");
-    const { key, label, defaultValue } = input as Record<string, unknown>;
-    if (typeof key !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(key) || ["constructor", "prototype"].includes(key) || seen.has(key)) throw new RecipeError("Give each question a unique key: lowercase letters, numbers, or underscores, starting with a letter (up to 32 characters).");
-    if (typeof label !== "string" || !label.trim() || label.length > 80 || !honest(label)) throw new RecipeError("Give each question a readable label of up to 80 characters.");
-    if (defaultValue !== null && (typeof defaultValue !== "string" || defaultValue.length > 500 || !honest(defaultValue) || /\{\{|\}\}/.test(defaultValue))) throw new RecipeError("Default answers must be plain text up to 500 characters, without input placeholders.");
+  return inputs.map(({ key, label, defaultValue }, index) => {
+    const at = `inputs[${index}]`;
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(key) || ["constructor", "prototype"].includes(key) || seen.has(key)) throw new RecipeError(`${at}.key: Give each question a unique key: lowercase letters, numbers, or underscores, starting with a letter (up to 32 characters).`);
+    if (!label.trim() || label.length > RECIPE_LIMITS.label || !honest(label)) throw new RecipeError(`${at}.label: Give each question a readable label of up to 80 characters.`);
+    if (defaultValue !== null && (defaultValue.length > RECIPE_LIMITS.answer || !honest(defaultValue) || /\{\{|\}\}/.test(defaultValue))) throw new RecipeError(`${at}.defaultValue: Default answers must be plain text up to 500 characters, without input placeholders.`);
     seen.add(key);
-    return { key, label: label.trim(), defaultValue: typeof defaultValue === "string" ? defaultValue.trim() || null : null };
+    return { key, label: label.trim(), defaultValue: defaultValue === null ? null : defaultValue.trim() || null };
   });
 }
 const inputToken = /\{\{\s*([a-z][a-z0-9_]{0,31})\s*\}\}/g;
