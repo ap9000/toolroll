@@ -677,19 +677,32 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const claim = domain.claimNext('fixture', T0)!;
     const running = openTurn();
     expect(domain.bindTurn(claim, running.id)).toBe(true);
+    const own = store.draftMateProposal({ thread, turn: running.id, kind: 'hold', payload: { task: 'b', reason: 'Its own turn.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
     snapshot = await read();
     expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Available when the current reply finishes.' });
-    expect(await review()).toContain('Available when the current turn finishes.');
+    expect(await review()).toContain('Available when the current reply finishes.');
+    const decide = (id: number, verb: 'confirm' | 'dismiss', token = csrf) => fetch(url(`/chat/proposal/${id}/${verb}`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf: token }), redirect: 'manual' });
+    const holdOf = (task: string) => store.handle.prepare('SELECT reason FROM hold WHERE task_ref=?').get(store.lookupRef(task)!.id);
+    // A direct POST mid-turn gets the card's words and changes nothing; dismissing stays available.
+    let refused = await decide(held, 'confirm');
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ ok: false, said: snapshot.proposals![0]!.card!.note, taskId: null });
+    expect(store.getMateProposal(held)?.state).toBe('pending');
+    expect(holdOf('a')).toBeUndefined();
+    expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: true });
+    // The proposal's own turn has finished while its message row still says running: not a live turn.
     store.finalizeMateTurn(running.id, running.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'The plan is saved.', activity: '' } }, T0);
+    expect(store.handle.prepare('SELECT status FROM team_message WHERE turn_id=?').get(running.id)).toMatchObject({ status: 'running' });
+    expect((await read()).proposals!.find(one => one.id === own)!.card).toMatchObject({ primary: { kind: 'confirm' }, dismissable: true });
+    expect(await (await decide(own, 'confirm')).json()).toMatchObject({ ok: true });
+    expect(holdOf('b')).toMatchObject({ reason: 'Its own turn.' });
     domain.finish(claim, { status: 'answered', turnId: running.id }, T0);
 
-    const decide = (id: number, verb: 'confirm' | 'dismiss', token = csrf) => fetch(url(`/chat/proposal/${id}/${verb}`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf: token }), redirect: 'manual' });
     expect((await decide(held, 'confirm', 'wrong')).status).toBe(403);
     expect((await read()).proposals![0]!.state).toBe('pending');
     expect(await (await decide(held, 'confirm')).json()).toMatchObject({ ok: true });
-    expect(store.handle.prepare('SELECT reason FROM hold WHERE task_ref=?').get(store.lookupRef('a')!.id)).toMatchObject({ reason: 'Wait for the audit.' });
+    expect(holdOf('a')).toMatchObject({ reason: 'Wait for the audit.' });
     expect((await read()).proposals![0]!.card).toMatchObject({ state: 'confirmed', primary: null, dismissable: false });
-    expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: true });
     expect((await read()).proposals![1]!.card).toMatchObject({ state: 'dismissed', primary: null, dismissable: false, note: 'Dismissed.' });
     expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: false });
 
@@ -697,6 +710,12 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     snapshot = await read();
     expect(snapshot.proposals![2]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Enable chat in this conversation before acting on a proposal.' });
     expect(await (await fetch(url(snapshot.proposals![2]!.href), { headers: { cookie } })).text()).toContain(snapshot.proposals![2]!.card!.note!);
+    // Without chat authorization a direct POST is refused with the same words.
+    refused = await decide(unauthorized, 'confirm');
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ ok: false, said: snapshot.proposals![2]!.card!.note, taskId: null });
+    expect(store.getMateProposal(unauthorized)?.state).toBe('pending');
+    expect(holdOf('b')).toMatchObject({ reason: 'Its own turn.' });
   });
 
   test('React workspace reads the saved conversation and receipt without replaying work', async () => {
@@ -1429,6 +1448,47 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const turn = store.recentMateTurns("alex", 1)[0];
     expect(turn).toMatchObject({ state: "answered", reservedMicrousd: 0, settledMicrousd: 0, tokensIn: 21, tokensOut: 5 });
     expect(store.raw().prepare("SELECT provider, reserved_microusd, settled_microusd FROM chat_turn WHERE mate_turn = ?").get(turn?.id)).toEqual({ provider: "codex-subscription", reserved_microusd: 0, settled_microusd: 0 });
+  });
+
+  test("lead chat: a direct confirm POST is refused mid-turn and without chat enabled, with the card's words, then confirms", async () => {
+    const cookie = await login();
+    const csrf = await mint(cookie);
+    script.push(
+      () => answer([{ type: "tool_use", id: "c1", name: "propose_next", input: { task: "b" } }]),
+      () => answer([{ type: "text", text: "I propose moving b to the front." }]),
+    );
+    await post(cookie, "/chat", { csrf, message: "what next?" });
+    await settle();
+    const proposal = store.getMateProposal(1)!;
+    expect(proposal.state).toBe("pending");
+    const confirm = () => fetch(url("/chat/proposal/1/confirm"), { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf }), redirect: "manual" });
+    const before = store.queuePosition("b")?.position;
+    // A live turn in the same thread: the card waits and the door says why.
+    const session = store.activeMateSession("alex")!;
+    const opened = store.openMateTurn({ approver: "alex", session: session.id, thread: proposal.thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
+    if (!opened.ok) throw Error(opened.reason);
+    const started = store.startMateTurn(opened.id, T0);
+    if (!started.ok) throw Error("start");
+    expect(await page(cookie)).toContain("Available when the current reply finishes.");
+    let refused = await confirm();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ ok: false, said: "Available when the current reply finishes.", taskId: null });
+    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.queuePosition("b")?.position).toBe(before);
+    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, T0);
+    // Chat turned off: refused with the same plain reason, nothing moves.
+    store.endMateSession(session.id, "alex", T0);
+    refused = await confirm();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ ok: false, said: "Enable chat in this conversation before acting on a proposal.", taskId: null });
+    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.queuePosition("b")?.position).toBe(before);
+    // Enabled again, with no live turn: the same POST confirms, once.
+    store.mintMateSession({ approver: "alex", approverGeneration: session.approverGeneration, credentialKey: session.credentialKey, ceilingMicrousd: session.ceilingMicrousd, ceilingDigest: session.ceilingDigest, termsDigest: session.termsDigest }, T0);
+    expect(await (await confirm()).json()).toMatchObject({ ok: true });
+    expect(store.getMateProposal(1)).toMatchObject({ state: "confirmed", resolvedBy: "alex" });
+    expect(store.queuePosition("b")?.position).toBe(1);
+    expect(await (await confirm()).json()).toMatchObject({ ok: false });
   });
 
   test("a turn: the model reads and proposes, the card confirms through the door, a stale card refuses", async () => {

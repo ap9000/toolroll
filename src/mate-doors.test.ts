@@ -3,7 +3,7 @@ import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { credentialKeyOf } from "./converse.js";
-import { confirmMateProposal, dismissMateProposal } from "./mate-doors.js";
+import { confirmMateProposal, dismissMateProposal, proposalActGate, PROPOSAL_WAIT_REASON } from "./mate-doors.js";
 import { executeMateTool } from "./mate-tools.js";
 import { approve, approvalOf, hashToken, propose } from "./scope.js";
 import { register } from "./runner.js";
@@ -177,6 +177,21 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
       expect(confirmMateProposal(store, who, id, clock(), { via: "web" }).ok).toBe(false);
       expect(signal).toHaveBeenCalledTimes(1);
     } finally { failing.mockRestore(); service.mockRestore(); }
+  });
+
+  test("every surface meets the card's gate: a live turn in the thread refuses with the card's words until it finishes", () => {
+    session();
+    const id = pending("steer", { task: "a", taskTitle: "task a", note: "Start with the mobile flow." });
+    const live = store.activeMateSession("alex")!;
+    const opened = store.openMateTurn({ approver: "alex", session: live.id, thread: store.getMateProposal(id)!.thread, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+    if (!opened.ok) throw new Error(opened.reason);
+    const started = store.startMateTurn(opened.id, clock());
+    if (!started.ok) throw new Error("start");
+    expect(proposalActGate(store, who, store.getMateProposal(id)!.thread)).toEqual({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
+    for (const via of ["cli", "telegram"] as const) expect(confirmMateProposal(store, who, id, clock(), { via })).toMatchObject({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
+    expect(store.getMateProposal(id)?.state).toBe("pending");
+    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
+    expect(confirmMateProposal(store, who, id, clock(), { via: "telegram" })).toMatchObject({ ok: true });
   });
 
   test("an explicitly ended conversation refuses an old card although the principal still stands", () => {
