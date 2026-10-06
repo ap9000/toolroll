@@ -3,13 +3,10 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { hostname, release } from "node:os";
 import { join } from "node:path";
+import { darwinNativeCensusSchema, darwinProcessIdentitySchema, kernelIdInRange, type DarwinProcessIdentity } from "./contracts/native-census.js";
 
 export type PreparedDarwinProcessCensus = { sourcePath: string; executablePath: string; sourceSha256: string; executableSha256: string };
-export type DarwinProcessIdentity = {
-  pid: number; ppid: number | null; uid: number | null; birthMs: number | null;
-  uniqueId: string | null; parentUniqueId: string | null; traced: boolean | null;
-  executable: string | null; originalParentVersion: number | null; pidVersion?: number;
-};
+export type { DarwinProcessIdentity } from "./contracts/native-census.js";
 export type DarwinManagedService = { domain: string; label: string; pid: number; uniqueId: string; beforeUniqueId: string; afterUniqueId: string; identityBound: boolean };
 export type DarwinPidDomain = { pid: number; domain: string; readable: boolean; identityBound: boolean; uniqueId: string | null; type: string | null; handle: number | null; originator: string | null; creatorPid: number | null };
 export type DarwinProcessRecoverySnapshot = {
@@ -201,18 +198,20 @@ const nullable = <T>(value: unknown, test: (v: unknown) => v is T): value is T |
 const safeText = (value: unknown): value is string => typeof value === "string" && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value);
 /** Strict parser also strips every field not in the facts contract. */
 export function parseDarwinNativeSnapshot(text: string): NativeSnapshot {
-  const v = JSON.parse(text) as Record<string, unknown>;
-  if (!v || v.schema !== 1 || !nullable(v.bootId, (x): x is string => typeof x === "string" && /^[a-fA-F0-9-]{36}$/.test(x)) || !isInt(v.collectorPid, 2) || typeof v.complete !== "boolean" || !Array.isArray(v.processes) || v.processes.length > 100_000 || !Array.isArray(v.errors) || !v.errors.every(x => ["kernel-process-table-unreadable", "process-membership-unreadable", "process-identity-unreadable", "boot-identity-unreadable", "coalition-counters-unreadable", "coalition-counters-changed", "coalition-count-mismatch", "anchor-identity-unreadable"].includes(x))) throw new Error("malformed-native-census");
+  const read = darwinNativeCensusSchema.safeParse(JSON.parse(text));
+  if (!read.success) throw new Error("malformed-native-census");
+  const v = read.data;
   const pids = new Set<number>(), ids = new Set<string>();
   const processes: DarwinProcessIdentity[] = v.processes.map((r: unknown) => {
-    if (!r || typeof r !== "object") throw new Error("malformed-process-identity");
-    const p = r as Record<string, unknown>;
-    if (!isInt(p.pid, 1) || pids.has(p.pid) || !nullable(p.ppid, isInt) || !nullable(p.uid, isInt) || !nullable(p.birthMs, (n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0) || !nullable(p.uniqueId, isId) || p.uniqueId === "0" || (p.uniqueId !== null && ids.has(p.uniqueId)) || !nullable(p.parentUniqueId, isId) || (p.traced !== null && typeof p.traced !== "boolean") || !nullable(p.executable, safeText) || !nullable(p.originalParentVersion, (n): n is number => isInt(n) && n <= 0xffffffff) || (p.pidVersion !== undefined && (!isInt(p.pidVersion) || p.pidVersion > 0xffffffff))) throw new Error("malformed-process-identity");
+    const row = darwinProcessIdentitySchema.safeParse(r);
+    if (!row.success) throw new Error("malformed-process-identity");
+    const p = row.data;
+    if (pids.has(p.pid) || (p.uniqueId !== null && !kernelIdInRange(p.uniqueId)) || p.uniqueId === "0" || (p.uniqueId !== null && ids.has(p.uniqueId)) || (p.parentUniqueId !== null && !kernelIdInRange(p.parentUniqueId))) throw new Error("malformed-process-identity");
     pids.add(p.pid); if (p.uniqueId !== null) ids.add(p.uniqueId);
     return { pid: p.pid, ppid: p.ppid, uid: p.uid, birthMs: p.birthMs, uniqueId: p.uniqueId, parentUniqueId: p.parentUniqueId, traced: p.traced, executable: p.executable, originalParentVersion: p.originalParentVersion, ...(p.pidVersion === undefined ? {} : { pidVersion: p.pidVersion }) };
   });
   if (v.complete && (v.bootId === null || v.errors.length || !pids.has(1) || !pids.has(v.collectorPid) || processes.some(p => p.uniqueId === null))) throw new Error("incomplete-native-census");
-  return { schema: 1, bootId: v.bootId, collectorPid: v.collectorPid, complete: v.complete, processes, errors: v.errors as string[] };
+  return { schema: 1, bootId: v.bootId, collectorPid: v.collectorPid, complete: v.complete, processes, errors: v.errors };
 }
 /** PID reuse, orphan exec, tracing, UID and birth changes all invalidate a seal. */
 export function changedDarwinProcessIdentities(before: DarwinProcessIdentity[], after: DarwinProcessIdentity[]): number[] {

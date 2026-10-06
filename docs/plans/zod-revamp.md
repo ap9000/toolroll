@@ -80,7 +80,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | # | Contract | Where today |
 |---|---|---|
 | 18 | **JSON columns in the store** (46 `JSON.parse` sites) — parse on read with versioned schemas | `store.ts` |
-| 19 | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
+| 19 ✅ | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
 | 20 | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
 
 ## How each item ships
@@ -282,3 +282,26 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+- **19. Journals and recovery state** (2026-10-06). `src/contracts/update-journal.ts` holds the desktop app's update
+  journal (`desktop-update.json`, `receipt.json`) and `toolroll update`'s (`toolroll-update.json`, `.last.json`, a
+  stage's `update.json`), with the small records beside them (restore and stop requests, the updater's starting mark,
+  the guardian's `recovery.json` as Update status reads it, the supervisor's pids, a stage's start time);
+  `src/contracts/coding-activity.ts` the coding workspace's items, approval requests, RPC ids and custody witness; and
+  `src/contracts/native-census.ts` the macOS process census. `UpdateJournal`, `RuntimeUpdateJournal`, `CodingItem`,
+  `CodingQuestion`, `CodingRequest` and `DarwinProcessIdentity` are derived from them. Journals stay `version: 1`; a
+  reader returns the saved object itself, so a journal saved again keeps its bytes, key order and keys a newer release
+  added (a rolled-back runtime reads its successor's journal, so unknown keys are ignored, not refused). Paths,
+  ownership, identities and hashes still run after parsing with their old words; a structural refusal gives the
+  refusal the old reader gave for that field, followed by the path-named lines. Every catch that keeps a bad journal
+  from stopping startup or status is unchanged. Coding rows keep their bytes and carry no version (steering note): a
+  row that is not JSON fails as before, and one that does not match its schema is read as saved and logged. The
+  census keeps its reason codes and rebuilds each identity in its sealed key order, so snapshot, receipt and
+  certificate digests are unchanged. Replayed old against new readers over 1,543 generated cases (saved, legacy,
+  partial, null, wrong-typed, unknown-key and newer-version variants): no value, key-order or digest differences and
+  nothing newly accepted. Real saved state could not be replayed: the database, coding catalog, `staged-upgrades/`
+  and `process-recovery/` were denied to the build (an evidence gap). Tightened, on purpose: a newer journal version
+  is refused plainly; a version 1 journal with a wrong-typed or null field the old reader never looked at (for
+  example `detail`, `steps`, `waiting`) is refused as invalid; a null `backupPath` is refused; a recovery
+  record field of the wrong type reads as absent; a custody witness is not taken as proof unless it has its host,
+  descendants and observation flag. Left as is: the reviewed provenance profile and audit files, which are
+  hash-pinned before they are parsed.
