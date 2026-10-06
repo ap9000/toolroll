@@ -17,7 +17,9 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
 import { mateTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type MateProposal, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
-import { ceilingDigestOf, isVerifiedApprover, reproveApprover } from "./principal.js";
+import { isVerifiedApprover, reproveApprover } from "./principal.js";
+import { TURN_WALL_CLOCK_MS } from './converse.js';
+import { teamChatAuthorization, subscriptionTeamChatProvider, type TeamChatProviderResolver } from './team-chat-authorization.js';
 import { readProjectAccess } from "./project-access.js";
 import { TeamLeads } from './team-leads.js';
 import { fileTaskProposal } from "./proposal.js";
@@ -56,6 +58,8 @@ export type DoorRefusal =
   | "refused";
 
 export type DoorOptions = {
+  /** Resolved inside the transaction. Without it, only current subscription terms are available. */
+  chatProvider?: TeamChatProviderResolver;
   evidenceRoot?: string;
   /** Only the secure human review endpoint supplies this; never saved or model-authored. */
   actionReview?: SharedActionOptions["review"];
@@ -133,29 +137,34 @@ export const PROPOSAL_CONTRIBUTOR_REASON = "An authorized contributor can act on
 export const PROPOSAL_CHAT_REASON = "Enable chat in this conversation before acting on a proposal.";
 export const PROPOSAL_WAIT_REASON = "Available when the current reply finishes.";
 
+/** Unbound claims get the same wall-clock allowance as a provider turn. */
+export const TEAM_UNBOUND_CLAIM_MS = TURN_WALL_CLOCK_MS;
+
 export type ProposalGate = { ok: true } | { ok: false; reason: Extract<DoorRefusal, "not-yours" | "session-ended" | "turn-running">; said: string };
 
 /**
  * Whether `who` may act on a card in `thread` right now: the one gate the
- * cards and the confirm door share. Worked out from saved state only, so
+ * cards and the confirm door share. Re-proved from saved state and live provider facts, so
  * every caller (console, CLI, Telegram) reaches the same answer: the thread
  * is theirs (or they contribute to its team conversation), chat is enabled
  * for it under their current generation, and no turn in that thread is
  * live. A team message still marked running after its turn finished is not
  * live; the delivery sweep settles it.
  */
-export function proposalActGate(store: Store, who: { name: string; generation: number }, thread: number): ProposalGate {
+export function proposalActGate(store: Store, who: { name: string; generation: number }, thread: number, now: Date, provider: TeamChatProviderResolver = () => subscriptionTeamChatProvider(store)): ProposalGate {
   const row = store.getMateThread(thread);
-  const shared = row === null ? undefined : store.handle.prepare("SELECT projects_json FROM team_conversation WHERE thread=?").get(thread);
+  const shared = row === null ? undefined : store.handle.prepare("SELECT id,projects_json FROM team_conversation WHERE thread=?").get(thread);
   if (row === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread) : row.approver !== who.name)) return { ok: false, reason: "not-yours", said: PROPOSAL_CONTRIBUTOR_REASON };
   const session = shared ? store.teamMateSession(who.name, thread) : store.activeMateSession(who.name);
-  const projects = shared ? [...(readProjectAccess(shared["projects_json"]) ?? [])] : null;
-  if (session === null || session.approverGeneration !== who.generation || (projects !== null && session.ceilingDigest !== ceilingDigestOf(projects))) {
+  const authorized = shared
+    ? teamChatAuthorization(store, who, { id: String(shared['id']), threadId: thread, projects: [...(readProjectAccess(shared['projects_json']) ?? [])] }, provider()).enabled
+    : session !== null && session.endedAt === null && session.approverGeneration === who.generation;
+  if (!authorized) {
     return { ok: false, reason: "session-ended", said: PROPOSAL_CHAT_REASON };
   }
   const live = store.handle.prepare(`SELECT 1 FROM mate_turn WHERE thread=? AND state IN ('queued','running')
     UNION ALL SELECT 1 FROM team_message q JOIN team_conversation c ON c.id=q.conversation LEFT JOIN mate_turn t ON t.id=q.turn_id
-      WHERE c.thread=? AND q.status='running' AND (t.id IS NULL OR t.state IN ('queued','running')) LIMIT 1`).get(thread, thread);
+      WHERE c.thread=? AND q.status='running' AND ((q.turn_id IS NULL AND q.claimed_at>?) OR t.state IN ('queued','running')) LIMIT 1`).get(thread, thread, new Date(now.getTime() - TEAM_UNBOUND_CLAIM_MS).toISOString());
   return live === undefined ? { ok: true } : { ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON };
 }
 
@@ -171,7 +180,7 @@ export function confirmMateProposal(store: Store, who: VerifiedApprover, proposa
     const shared = thread !== null && store.handle.prepare("SELECT id,lead FROM team_conversation WHERE thread=?").get(thread.id);
     if (thread === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread.id) : thread.approver !== who.name)) return { ok: false, kind: null, reason: "not-yours", said: "no such proposal" } as const;
     // The card's own gate: chat enabled for this thread and no live turn in it.
-    const gate = proposalActGate(store, who, thread.id);
+    const gate = proposalActGate(store, who, thread.id, now, options.chatProvider);
     if (!gate.ok) return { ok: false, kind: proposal.kind, reason: gate.reason, said: gate.said } as const;
     const session = (shared ? store.teamMateSession(who.name, thread.id) : store.activeMateSession(who.name))!;
     if (proposal.ceilingDigest !== who.ceilingDigest || session.ceilingDigest !== who.ceilingDigest) {

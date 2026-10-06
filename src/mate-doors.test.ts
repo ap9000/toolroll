@@ -2,8 +2,10 @@ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
-import { credentialKeyOf } from "./converse.js";
-import { confirmMateProposal, dismissMateProposal, proposalActGate, PROPOSAL_WAIT_REASON } from "./mate-doors.js";
+import { credentialKeyOf, subscriptionCredentialKey } from "./converse.js";
+import { confirmMateProposal, dismissMateProposal, proposalActGate, PROPOSAL_CHAT_REASON, PROPOSAL_WAIT_REASON, TEAM_UNBOUND_CLAIM_MS } from "./mate-doors.js";
+import { TeamLeads } from './team-leads.js';
+import { teamChatAuthorization, subscriptionTeamChatProvider } from './team-chat-authorization.js';
 import { executeMateTool } from "./mate-tools.js";
 import { approve, approvalOf, hashToken, propose } from "./scope.js";
 import { register } from "./runner.js";
@@ -187,11 +189,75 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     if (!opened.ok) throw new Error(opened.reason);
     const started = store.startMateTurn(opened.id, clock());
     if (!started.ok) throw new Error("start");
-    expect(proposalActGate(store, who, store.getMateProposal(id)!.thread)).toEqual({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
+    expect(proposalActGate(store, who, store.getMateProposal(id)!.thread, clock())).toEqual({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
     for (const via of ["cli", "telegram"] as const) expect(confirmMateProposal(store, who, id, clock(), { via })).toMatchObject({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
     expect(store.getMateProposal(id)?.state).toBe("pending");
     store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
     expect(confirmMateProposal(store, who, id, clock(), { via: "telegram" })).toMatchObject({ ok: true });
+  });
+
+  const teamProposal = () => {
+    store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', clock());
+    const domain = new TeamLeads(store, () => [REPO]);
+    const lead = domain.execute(who, { operation: 'create-lead', args: { name: 'Launch lead', projects: [REPO] } }, clock());
+    const leadId = (lead.result as { leadId: string }).leadId;
+    const created = domain.execute(who, { operation: 'create-conversation', args: { leadId, title: 'Launch', visibility: 'team', projects: [REPO] } }, clock());
+    const conversation = created.snapshot!.selected!;
+    const terms = teamChatAuthorization(store, who, conversation, subscriptionTeamChatProvider(store));
+    const credentialKey = subscriptionCredentialKey('claude-subscription');
+    const session = store.mintTeamMateSession({ approver: who.name, approverGeneration: who.generation, thread: conversation.threadId, credentialKey, ceilingMicrousd: 0, ceilingDigest: who.ceilingDigest, termsDigest: terms.termsDigest }, clock());
+    const open = () => {
+      const turn = store.openMateTurn({ approver: who.name, session, thread: conversation.threadId, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, clock());
+      if (!turn.ok) throw Error(turn.reason);
+      return turn.id;
+    };
+    const turn = open(), started = store.startMateTurn(turn, clock());
+    if (!started.ok) throw Error('start');
+    const proposal = store.draftMateProposal({ thread: conversation.threadId, turn, kind: 'hold', payload: { task: 'a', reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: who.ceilingDigest }, clock());
+    store.finalizeMateTurn(turn, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
+    return { domain, conversation, proposal, open };
+  };
+
+  test('changed team provider terms refuse every confirmation surface without changing the proposal or action', () => {
+    const { proposal, conversation } = teamProposal();
+    const config = store.getChatConfig()!;
+    expect(proposalActGate(store, who, conversation.threadId, clock())).toEqual({ ok: true });
+    store.setChatConfig({ ...config, dailyTurns: config.dailyTurns + 1 }, 'alex', clock());
+    expect(proposalActGate(store, who, conversation.threadId, clock())).toEqual({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
+    const before = store.getMateProposal(proposal);
+    for (const via of ['web', 'cli', 'telegram', 'slack', 'discord', 'teams'] as const) {
+      expect(confirmMateProposal(store, who, proposal, clock(), { via })).toMatchObject({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
+      expect(store.getMateProposal(proposal)).toEqual(before);
+      expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
+    }
+    store.setChatConfig(config, 'alex', clock());
+    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
+    expect(store.getMateProposal(proposal)?.state).toBe('confirmed');
+  });
+
+  test('an unbound team claim blocks only before its deadline; bound queued and running turns still block after it', () => {
+    const { domain, conversation, proposal, open } = teamProposal();
+    domain.execute(who, { operation: 'send', args: { conversationId: conversation.id, text: 'Check the launch plan.', requestId: 'unbound' } }, clock());
+    const claim = domain.claimNext('fixture', clock())!;
+    const before = store.getMateProposal(proposal);
+    const gate = () => proposalActGate(store, who, conversation.threadId, clock());
+    clockAt += TEAM_UNBOUND_CLAIM_MS - 1;
+    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
+    expect(store.getMateProposal(proposal)).toEqual(before);
+    clockAt += 1;
+    expect(gate()).toEqual({ ok: true });
+    clockAt += 1;
+    expect(gate()).toEqual({ ok: true });
+    const bound = open();
+    expect(domain.bindTurn(claim, bound)).toBe(true);
+    expect(gate()).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
+    const started = store.startMateTurn(bound, clock());
+    if (!started.ok) throw Error('start');
+    clockAt += TEAM_UNBOUND_CLAIM_MS * 2;
+    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'telegram' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
+    store.finalizeMateTurn(bound, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
+    expect(store.handle.prepare('SELECT status FROM team_message WHERE message=?').get(claim.messageId)).toMatchObject({ status: 'running' });
+    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
   });
 
   test("an explicitly ended conversation refuses an old card although the principal still stands", () => {

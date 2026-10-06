@@ -667,6 +667,21 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const cli = await (await fetch(url(`/api/team?conversation=${conversationId}`), { headers: { authorization: `Bearer alex:${approverToken}` } })).json() as TeamResponse;
     expect(cli.snapshot!.proposals![0]).toEqual({ id: held, turnId: turn.id, title: 'Review hold', state: 'pending', href: snapshot.proposals![0]!.href });
 
+    // Provider terms changed after rendering: inline, Review and direct POST agree.
+    const config = store.getChatConfig()!;
+    store.setChatConfig({ ...config, dailyTurns: config.dailyTurns + 1 }, 'alex', T0);
+    snapshot = await read();
+    expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Enable chat in this conversation before acting on a proposal.' });
+    expect(await review()).toContain(snapshot.proposals![0]!.card!.note!);
+    expect(await review()).not.toContain(`action="/chat/proposal/${held}/confirm"`);
+    const before = store.getMateProposal(held);
+    const stale = await fetch(url(`/chat/proposal/${held}/confirm`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf }), redirect: 'manual' });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ ok: false, said: snapshot.proposals![0]!.card!.note, taskId: null });
+    expect(store.getMateProposal(held)).toEqual(before);
+    expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
+    store.setChatConfig(config, 'alex', T0);
+
     store.handle.prepare("UPDATE team_participant SET role='viewer' WHERE conversation=? AND account='alex'").run(conversationId);
     snapshot = await read();
     expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'An authorized contributor can act on this proposal.' });

@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { TURN_WALL_CLOCK_MS } from "./converse.js";
+import { credentialKeyOf, TURN_WALL_CLOCK_MS } from "./converse.js";
+import { proposalActGate, PROPOSAL_CHAT_REASON } from './mate-doors.js';
 import { MATE_ABORT_GRACE_MS } from "./mate.js";
 import { fileTaskProposal } from "./proposal.js";
 import { mateTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
@@ -33,6 +34,41 @@ describe("a shared conversation's turn that never finishes", () => {
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test.each(['ended', 'generation', 'credential', 'ceiling', 'terms', 'daily', 'model', 'weekly', 'price', 'rotated-key', 'missing-key', 'missing-provider'])(
+    'runtime and door reject the same stale team grant: %s', async change => {
+      let live: { config: ChatConfig; key: string | null } | null = { config: { provider: 'anthropic-api', model: 'claude-sonnet-5', dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, priceInMicrousd: 3, priceOutMicrousd: 15 }, key: 'test-key' };
+      const provider = () => live;
+      const runtime = createTeamRuntime({ store, repos: () => [REPO], evidenceRoot: dir, provider, clock: () => T0 });
+      const actor = { name: 'alex', generation: store.accountOf('alex')!.generation };
+      const lead = await runtime.execute(actor, { operation: 'create-lead', args: { name: 'Launch lead', projects: [REPO] } });
+      const leadId = (lead.result as { leadId: string }).leadId;
+      const created = await runtime.execute(actor, { operation: 'create-conversation', args: { leadId, title: 'Launch', visibility: 'team', projects: [REPO] } });
+      const conversation = created.snapshot!.selected!;
+      const terms = created.snapshot!.chatAuthorization!;
+      expect(await runtime.execute(actor, { operation: 'authorize', args: { conversationId: conversation.id, termsDigest: terms.termsDigest } })).toMatchObject({ ok: true });
+      const grant = () => runtime.execute(actor, { operation: 'show', args: { conversationId: conversation.id } });
+      expect((await grant()).snapshot!.chatAuthorization!.enabled).toBe(true);
+      expect(proposalActGate(store, actor, conversation.threadId, T0, provider)).toEqual({ ok: true });
+      // No live credential resolver means direct grants fail closed.
+      expect(proposalActGate(store, actor, conversation.threadId, T0)).toMatchObject({ ok: false, said: PROPOSAL_CHAT_REASON });
+      const session = store.teamMateSession(actor.name, conversation.threadId)!;
+      if (change === 'ended') store.handle.prepare('UPDATE mate_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
+      if (change === 'generation') store.handle.prepare('UPDATE mate_session SET approver_generation=approver_generation+1 WHERE id=?').run(session.id);
+      if (change === 'credential') store.handle.prepare('UPDATE mate_session SET credential_key=? WHERE id=?').run(credentialKeyOf('anthropic-api', 'other-key'), session.id);
+      if (change === 'ceiling') store.handle.prepare('UPDATE mate_session SET ceiling_digest=? WHERE id=?').run('different-projects', session.id);
+      if (change === 'terms') store.handle.prepare('UPDATE mate_session SET terms_digest=? WHERE id=?').run('old-terms', session.id);
+      if (change === 'daily') live.config.dailyTurns++;
+      if (change === 'model') live.config.model = 'different-model';
+      if (change === 'weekly') live.config.weeklyCeilingMicrousd++;
+      if (change === 'price') live.config.priceOutMicrousd++;
+      if (change === 'rotated-key') live.key = 'rotated-key';
+      if (change === 'missing-key') live.key = null;
+      if (change === 'missing-provider') live = null;
+      expect((await grant()).snapshot!.chatAuthorization!.enabled).toBe(false);
+      expect(proposalActGate(store, actor, conversation.threadId, T0, provider)).toEqual({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
+      await runtime.close();
+    });
 
   test("ends at its deadline with the notice and its proposal, ends its provider run, and the queued next message is answered", async () => {
     const signals: AbortSignal[] = [];

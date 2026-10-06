@@ -67,6 +67,7 @@ import { acceptWithChecksOf, resultActsOf, type ResultActFacts } from "./result-
 import { createSessionEndpoint } from './session-server.js';
 import { handleTeamHttp } from './team-http.js';
 import { teamWorkspaceHtml } from './team-ui.js';
+import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import { createTeamRuntime } from './team-runtime.js';
 import type { TeamResponse, TeamSnapshot } from './team-contract.js';
 import { prepareWorkspaceRevision, WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -355,7 +356,7 @@ import { verifyApproverByPassword, verifyApproverStanding, type VerifiedApprover
 import { runMateTurn, MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { replyHtmlInline, shapeReply } from "./reply-shape.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
-import { confirmCoordinatorProposal, confirmMateProposal, dismissCoordinatorProposal, dismissMateProposal, proposalActGate, PROPOSAL_CHAT_REASON, PROPOSAL_WAIT_REASON } from "./mate-doors.js";
+import { confirmCoordinatorProposal, confirmMateProposal, dismissCoordinatorProposal, dismissMateProposal, proposalActGate, PROPOSAL_WAIT_REASON } from "./mate-doors.js";
 import { envValue } from "./names.js";
 import { cachedRelease, isNewer, runnerVersions, setUpdateChecks, updateChecksOff, type Release } from "./releases.js";
 import { installMethod, type InstallMethod } from "./install-method.js";
@@ -1032,9 +1033,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const connectVisits = new Map<string, ConnectVisit>();
   /** Flows open in a browser (v88): who's here, and a nudge when one changes. */
   const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow));
+  const teamChatProvider: TeamChatProviderResolver = () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; };
   const team = createTeamRuntime({ store, repos: codingProjects, evidenceRoot, clock, workspaceRevision,
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
-    provider: () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; },
+    provider: teamChatProvider,
     ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
   });
   // Only browser sessions receive HTML cards. The CLI keeps its summary contract.
@@ -1045,7 +1047,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const proposal = store.getMateProposal(summary.id);
       if (!proposal || proposal.thread !== snapshot.selected!.threadId) return summary;
       const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
-      return { ...summary, card: teamProposalCardParts(store, actor, proposal, snapshot, csrf, decision).card };
+      return { ...summary, card: teamProposalCardParts(store, actor, proposal, snapshot, csrf, decision, clock(), teamChatProvider).card };
     }) } };
   };
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
@@ -3862,7 +3864,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (!selected || !proposal || proposal.thread !== selected.threadId) return refuse(response, who, 404, 'This proposal is unavailable.', '/chat');
           const back = '/chat?conversation=' + encodeURIComponent(selected.id);
           const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
-          const card = teamProposalCardParts(store, { name: who.name, generation: who.session.generation }, proposal, reply.snapshot, who.session.csrf, decision).html;
+          const card = teamProposalCardParts(store, { name: who.name, generation: who.session.generation }, proposal, reply.snapshot, who.session.csrf, decision, clock(), teamChatProvider).html;
           return sendScreen(response, 200, screen('Review action', `<p><a href="${escape(back)}">Back to conversation</a></p>` + card, { chrome: chromeFor(null, 'chat', undefined, 'all') }));
         }
         if (reply.snapshot.leads.length > 0 || url.searchParams.has('conversation') || url.searchParams.get('team') === '1') {
@@ -9454,7 +9456,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (!dismissed) noteMate(who.session.csrf, null, "that proposal was already acted on");
         return redirect(response, chatReturnWithLatest(back));
       }
-      const outcome = confirmMateProposal(store, principal, id, now, { confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, held: options.attended?.coordinator, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+      const outcome = confirmMateProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, held: options.attended?.coordinator, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
       if (cardJson) {
         if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
         return cardAnswer(200, true, outcome.said, outcome.taskId);
@@ -18827,10 +18829,9 @@ function mateProposalCardParts(proposal: MateProposal, csrf: string, inert: bool
 }
 
 /** Review and inline team cards share the same server-decided controls and reasons. */
-function teamProposalCardParts(store: Store, actor: { name: string; generation: number }, proposal: MateProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null): { html: string; card: BrowserActionCard } {
-  // The door's own gate, plus the live provider terms only the runtime can see.
-  const gate = proposalActGate(store, actor, proposal.thread);
-  const reason = !gate.ok ? gate.said : snapshot.chatAuthorization?.enabled !== true ? PROPOSAL_CHAT_REASON : null;
+function teamProposalCardParts(store: Store, actor: { name: string; generation: number }, proposal: MateProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null, now: Date, provider: TeamChatProviderResolver): { html: string; card: BrowserActionCard } {
+  const gate = proposalActGate(store, actor, proposal.thread, now, provider);
+  const reason = !gate.ok ? gate.said : null;
   const back = '/chat?conversation=' + encodeURIComponent(snapshot.selected!.id);
   const parts = mateProposalCardParts(proposal, csrf, reason !== null, decision, back);
   if (reason !== null && reason !== PROPOSAL_WAIT_REASON && proposal.state === 'pending') {
