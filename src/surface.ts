@@ -22,40 +22,10 @@ import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
 
 import { SESSION_DESCRIPTORS, type SessionDescriptor } from './session-contract.js';
 import { sessionCliFlags } from './session-cli.js';
+import { commandEntries, type CommandFlag, type CommandRow } from './contracts/cli.js';
 
-export type CommandFlag = {
-  readonly name: string;
-  readonly takesValue: boolean;
-  readonly meaning: string;
-};
-
-export type CommandRow = {
-  /** What you type after `toolroll` (subcommands included). */
-  readonly invocation: string;
-  /** The `command` field the envelope answers with, where it differs
-   * from the invocation (the no-verb report answers as "scan"). */
-  readonly envelopeCommand?: string;
-  readonly synopsis: string;
-  /** Who this act belongs to. "operator" rows are ceremonies or
-   * infrastructure: an agent must not invoke them even when credentials
-   * are within reach — the credential IS the person. The operator() helper
-   * omits flag detail on purpose; an explicit row may document flags when
-   * its command contract requires them. A schema is never permission. */
-  readonly audience: "agent" | "operator";
-  readonly agentMayInvoke: boolean;
-  /** Truthful retry semantics, not a boolean:
-   *  keyed — takes --key; same key returns the first answer.
-   *  identity-idempotent — repeating it converges (same lease, same
-   *    path, same managed file); no key needed.
-   *  unkeyed — a mutation without replay protection: do not blind-retry.
-   *  none — a read. */
-  readonly mutation: "keyed" | "identity-idempotent" | "unkeyed" | "none";
-  readonly positionals?: readonly { name: string; required: boolean; meaning: string }[];
-  readonly flags?: readonly CommandFlag[];
-  readonly notableReasons?: readonly string[];
-  /** Session schemas are executable input contracts, not a grant of authority. */
-  readonly inputSchema?: SessionDescriptor['inputSchema'];
-};
+/** A guide row and its flags are derived from their schemas in src/contracts/cli.ts. */
+export type { CommandFlag, CommandRow };
 
 /** The guide's limits, stated machine-readably in every dump. */
 export const SURFACE_NOTES = {
@@ -87,7 +57,7 @@ const operatorRead = (invocation: string, synopsis: string): CommandRow => ({
   mutation: "none",
 });
 
-export const COMMAND_GUIDE: readonly CommandRow[] = [
+const GUIDE_ROWS: readonly CommandRow[] = [
   // ---- reports (reads) ----
   {
     invocation: "",
@@ -458,3 +428,9 @@ export const COMMAND_GUIDE: readonly CommandRow[] = [
   operator("onboard", "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff"),
   operator("daemon", "install the loop under the OS service manager"),
 ];
+
+/** Every declared command, in guide order, paired with the schema of its `--json` answer (src/contracts/cli.ts). */
+export const COMMAND_ENTRIES = commandEntries(GUIDE_ROWS);
+
+/** The guide `contract --commands` dumps: each declared command's row, projected from COMMAND_ENTRIES. */
+export const COMMAND_GUIDE: readonly CommandRow[] = COMMAND_ENTRIES.map(entry => entry.guide);
