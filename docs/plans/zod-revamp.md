@@ -70,7 +70,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | # | Contract | Where today |
 |---|---|---|
 | 13 | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
-| 14 | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
+| 14 ✅ | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
 | 15 | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
 | 16 | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
 | 17 | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
@@ -282,3 +282,22 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+- **14. CLI JSON input and output** (2026-10-06). `src/contracts/cli.ts` holds the one `--json` envelope schema
+  (`envelopeVersion` 1, `ok`, `command`, and a refusal's `reason` and `message`), one answer schema for each of the
+  215 commands the guide declares, and the guide row's schema (`CommandRow` and `CommandFlag` are derived from it).
+  `surface.ts` pairs every row, in order, with its answer's schema (`COMMAND_ENTRIES`), and `COMMAND_GUIDE`, which
+  `contract --commands --json` dumps, is projected from those entries. 25 answers name their top-level fields:
+  `contract`, the no-verb `scan`, `status`, `integrations`, `ready`, `task add/list/show/hold/unhold/wait`, `flows
+  list/show`, `skills list`, `grants`, `gaps`, `reap`, `cap list`, `outbox deliver`, and the runner, routine,
+  incident, outbox, approver and coordinator lists; the other 190 (sessions, knowledge, memory, models, the other flows, task and assignment
+  verbs, and the operator ceremonies) are held to the envelope under their own `command` name, with their fields
+  left for later. Every envelope `cli.ts` and `operate.ts` write is checked before the unchanged `envelopeJson`; a
+  disagreement is logged on stderr and the answer is written as it was, never refused. Answers are loose objects, so
+  a key a newer Toolroll adds is ignored. Kept: flag parsing, exit codes, `-o` and every answer's bytes;
+  `test/fixtures/cli/envelopes.txt`, recorded before the change, replays 22 answers (contract, scan, task, status,
+  ready, integrations, flows and lists, refusals and usage slips included) byte for byte. Not covered: the envelopes
+  the flows, knowledge, memory, models, session, team, project, task-outcome, assignment-adapter and onboarding
+  modules write go straight to `envelopeJson` and are not checked at runtime (outside this item's files). Input flags
+  are parsed as before; no CLI input moved to a schema here (session and assignment inputs already have theirs). The
+  installed database was denied to this build, so read-only replay of real saved state remains an evidence gap. No
+  tightening.
