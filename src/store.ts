@@ -408,6 +408,42 @@ CREATE TABLE IF NOT EXISTS telegram_flow_choice (
 CREATE INDEX IF NOT EXISTS telegram_flow_choice_visit ON telegram_flow_choice (card, entry);
 `;
 
+/** An owner's lasting choice to approve plans and merges from their paired chat (chat-approval.ts), for all their
+ * projects (scope '*') or one (its path), with the limits they agreed to. Off unless a row says on; a project's own row
+ * outranks the all-projects one. `generation` is the account's at the change: a reset password ends it. */
+export const CHAT_APPROVAL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_approval_setting (
+  approver             TEXT NOT NULL,
+  scope                TEXT NOT NULL,
+  enabled              INTEGER NOT NULL CHECK (enabled IN (0,1)),
+  full_access          INTEGER NOT NULL DEFAULT 0 CHECK (full_access IN (0,1)),
+  attempt_cap_microusd INTEGER CHECK (attempt_cap_microusd IS NULL OR attempt_cap_microusd >= 0),
+  generation           INTEGER NOT NULL,
+  digest               TEXT NOT NULL,
+  updated_by           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  PRIMARY KEY (approver, scope)
+);
+`;
+
+/** The second tap on a flow decision in Telegram (telegram-flow.ts): Approve arms Yes and Cancel, bound to the binding,
+ * chat, message and exact visit of the card; Yes decides it once. */
+export const TELEGRAM_FLOW_CONFIRM_SCHEMA = `
+CREATE TABLE IF NOT EXISTS telegram_flow_confirm (
+  token       TEXT PRIMARY KEY,
+  binding     INTEGER NOT NULL,
+  chat_id     TEXT NOT NULL,
+  message_id  TEXT NOT NULL,
+  card        INTEGER NOT NULL,
+  entry       INTEGER NOT NULL,
+  phase       TEXT NOT NULL CHECK (phase IN ('yes','cancel')),
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS telegram_flow_confirm_visit ON telegram_flow_confirm (card, entry);
+`;
+
 export const CHAT_DECIDE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_decide_action (
   token       TEXT PRIMARY KEY,
@@ -5293,6 +5329,9 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MATE_ASK_SCHEMA);
   // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
   db.exec(CHAT_DECIDE_SCHEMA);
+  // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
+  db.exec(CHAT_APPROVAL_SCHEMA);
+  db.exec(TELEGRAM_FLOW_CONFIRM_SCHEMA);
   // A flow's "Send to me" and "Person chooses" zones (no version bump: additive only).
   db.exec(FLOW_SEND_SCHEMA);
   db.exec(SPEND_SCHEMA);
@@ -10668,7 +10707,7 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode"; modeDigest: string }, approverKind?: ApproverKind): boolean {
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat"; modeDigest: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
@@ -10745,7 +10784,7 @@ export class Store {
           // (setup review): the approval is what was stale, and it is new.
           const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
           if (ref !== undefined) {
-            if (basis === undefined) this.noteTaskAct(Number(ref["id"]), "approved", now);
+            if (basis === undefined || basis.kind === "chat") this.noteTaskAct(Number(ref["id"]), "approved", now);
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
             this.db
               .prepare("UPDATE notification SET resolved_at = ? WHERE dedupe_key LIKE ? AND resolved_at IS NULL")
@@ -10761,7 +10800,9 @@ export class Store {
                   subject: "Scope approved",
                   body: basis === undefined
                     ? `Approved by ${currentActor()?.lead === true ? "the lead" : lifecycleWords(by, 40)}. A connected worker can take it next.`
-                    : "Approved automatically under the operating mode. A connected worker can take it next.",
+                    : basis.kind === "chat"
+                      ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
+                      : "Approved automatically under the operating mode. A connected worker can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -22347,6 +22388,7 @@ export class Store {
     const stamp = now.toISOString();
     this.db.prepare("UPDATE telegram_flow_action SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
     this.db.prepare("UPDATE telegram_flow_prompt SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
+    this.db.prepare("UPDATE telegram_flow_confirm SET consumed_at = ? WHERE card = ? AND entry = ? AND consumed_at IS NULL").run(stamp, card, entry);
   }
 
   recordTelegramFlowPrompt(prompt: TelegramFlowPrompt, now: Date, hours = 24): void {
@@ -29421,7 +29463,7 @@ function readScope(row: Record<string, unknown>): Scope {
     approvalBasis:
       row["approval_basis"] === null || row["approval_basis"] === undefined
         ? null
-        : (String(row["approval_basis"]) as "password" | "mode"),
+        : (String(row["approval_basis"]) as "password" | "mode" | "chat"),
     modeDigest: row["mode_digest"] === null || row["mode_digest"] === undefined ? null : String(row["mode_digest"]),
     approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
     approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),

@@ -324,6 +324,7 @@ import { readPulls } from "./pulls.js";
 import { startMaintenance } from "./maintenance.js";
 import { livePin, modelWatchPass } from "./model-catalog.js";
 import { runModelsCommand } from "./models-cli.js";
+import { ALL_PROJECTS, chatApprovalSettings, chatApprovalWords, setChatApproval } from "./chat-approval.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { beads } from "./beads.js";
 import { githubIssues } from "./issues.js";
@@ -656,6 +657,8 @@ Flows — processes cards move through; the console's rules
   toolroll flows script save --repo <path> --name <name> (--file <path in project> | --body <file>)
       --about "<one line>" [--language shell|python|node] [--timeout-minutes <n>]
   toolroll flows card add <id> --title <t> [--description <d>] [--zone <zone>]
+  toolroll flows card approve <id> <card> [--option <words|number>]
+  toolroll flows card send-back <id> <card> --note <text>
   toolroll flows archive <id>
       writes take --as <you> --token <t> (or the remembered login); create,
       edit, archive and trigger add preview until --yes
@@ -836,7 +839,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
   "choose", "note", "max-open-decisions", "max-held-sessions", "name", "days", "publication", "auto-approve", "review-auto", "entries", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
-  "say", "ceiling-usd",
+  "say", "ceiling-usd", "cap-usd",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
   // v102: project rules.
   "not-requester", "protect", "protect-paths",
@@ -855,7 +858,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   // onboard: the starter flows to switch on.
   "starter",
   // flows: templates, steps, scripts and cards.
-  "template", "steps", "about", "language", "timeout-minutes", "body", "description", "zone",
+  "template", "steps", "about", "language", "timeout-minutes", "body", "description", "zone", "option",
   "token-env", "after", "repair-max-attempts", "consumer", "batch", "feedback", "source", "view", "cursor", "why", "supersedes", "decision", "sessions", "timeout",
   // pings follow responsibility: replacements.
   "replaced-by", "replaces",
@@ -868,7 +871,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
-  "self-heal", "plan-auto", "chat-approve", "repair-auto", "review-retry-auto", "no-local",
+  "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // v105: the full export.
   "zip",
@@ -1358,6 +1361,8 @@ async function dispatch(
       return proposalsCommand(positional, flags, context);
     case "mode":
       return modeCommand(positional, flags, context);
+    case "chat-approval":
+      return chatApprovalCommand(positional, flags, context);
     case "people":
       return peopleCommand(positional, flags, context);
     case "keys":
@@ -6435,6 +6440,46 @@ async function peopleCommand(
 }
 
 const MODE_ACTIONS = ["set", "show", "revoke"] as const;
+
+/** `chat-approval show | on | off [--repo <path>]`: the person's lasting choice to approve plans and merges from their
+ * paired chat (chat-approval.ts), for all their projects or one. On (or wider limits) previews until --yes and takes
+ * the password, like Settings; off is one step. Either way a ledger line. */
+async function chatApprovalCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const action = positional[0] ?? "show";
+  const command = `chat-approval ${action}`;
+  if (!["show", "on", "off"].includes(action)) return fail(write, json, "chat-approval", "usage", "Use chat-approval show | on | off [--repo <path>] [--full-access] [--cap-usd <n>] [--yes].", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "unauthenticated", "Approving from chat is your own setting: pass --as <you> --token <your password> (or sign in once with toolroll up).", EXIT.refused);
+  const authed = authenticateApprover(store, acting.name, acting.token);
+  if (!authed.ok) return fail(write, json, command, "unauthenticated", "That name and password aren't an approver's. Nothing was changed.", EXIT.refused);
+  const given = text(flags, "repo");
+  const scope = given === undefined ? ALL_PROJECTS : canonicalProject(given) ?? resolve(given);
+  if (scope !== ALL_PROJECTS && !store.accountCanAccess(acting.name, scope)) return fail(write, json, command, "unknown-project", "That isn't one of your projects.", EXIT.refused);
+  const where = scope === ALL_PROJECTS ? "all your projects" : projectName(scope);
+  if (action === "show") {
+    const rows = chatApprovalSettings(store, acting.name).map(one => ({ scope: one.scope === ALL_PROJECTS ? "all" : one.scope, enabled: one.enabled, fullAccess: one.fullAccess, capMicrousd: one.capMicrousd, updatedAt: one.updatedAt }));
+    return succeed(write, json, command, { settings: rows }, () => rows.length === 0 ? ["Approving from chat is off everywhere. Turn it on: toolroll chat-approval on [--repo <path>]"]
+      : rows.map(one => `${one.scope === "all" ? "All projects" : projectName(one.scope)}: ${one.enabled ? `on · ${chatApprovalWords(one)}` : "off"}`));
+  }
+  const now = clock();
+  if (action === "off") {
+    const saved = setChatApproval(store, { approver: acting.name, scope, enabled: false, via: "the command line" }, now);
+    return saved.ok ? succeed(write, json, command, { applied: true, scope: scope === ALL_PROJECTS ? "all" : scope }, () => [saved.said]) : fail(write, json, command, "refused", saved.message, EXIT.refused);
+  }
+  const usd = text(flags, "cap-usd");
+  const cap = usd === undefined ? null : Number(usd);
+  if (cap !== null && !(Number.isFinite(cap) && cap >= 0 && cap <= 10_000)) return fail(write, json, command, "usage", "Give --cap-usd in dollars, like 5.", EXIT.usage);
+  const limits = { fullAccess: flag(flags, "full-access"), capMicrousd: cap === null ? null : Math.round(cap * 1_000_000) };
+  const terms = [
+    `Your own taps in your paired chat approve plans and merges in ${where}, until you turn it off: it doesn't expire.`,
+    `Limits: ${chatApprovalWords(limits)}.`,
+    "Plans written for you, protected paths, two-person rules and your organisation's policy still open in Toolroll.",
+  ];
+  if (!flag(flags, "yes")) return succeed(write, json, command, { applied: false, scope: scope === ALL_PROJECTS ? "all" : scope, terms }, () => [`Turn on approving from chat for ${where}`, ...terms.map(one => `  ${one}`), "", "Nothing has changed. Add --yes to make this change."]);
+  const saved = setChatApproval(store, { approver: acting.name, scope, enabled: true, limits, via: "the command line" }, now);
+  return saved.ok ? succeed(write, json, command, { applied: true, scope: scope === ALL_PROJECTS ? "all" : scope, terms }, () => [saved.said]) : fail(write, json, command, "refused", saved.message, EXIT.refused);
+}
 
 async function modeCommand(
   positional: readonly string[],

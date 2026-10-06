@@ -53,7 +53,9 @@ import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommand
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
 import { parseContract, toModelSchema, type ContractResult } from "./contracts/contract.js";
 import { LEAD_TOOL_INPUTS, LEAD_TOOL_READ_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
-import { flowDefinitionOf } from "./flow-engine.js";
+import { flowCardHref, flowDefinitionOf } from "./flow-engine.js";
+import { planInChat } from "./chat-decide.js";
+import { flowDecisionAt } from "./telegram-flow.js";
 import { flowPersonOf } from "./flow-send.js";
 import { flowInsights } from "./flow-insights.js";
 import { describeTrigger, FLOW_TRIGGER_KINDS, triggerConfigOf } from "./flow-triggers.js";
@@ -540,6 +542,39 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       }
       const id = ctx.draft("control", { control, task: task ?? "", taskTitle: task === null ? "" : ctx.store.getTask(task)?.title ?? task, ...(project === null ? {} : { project }), ...(run === undefined ? {} : { run }) });
       return id === null ? tooMany() : { ok: true, body: { card: id, label: entry.label, action: "open existing control; nothing changed" } };
+    },
+  },
+  offer_approval: {
+    description: "When the owner asks to approve one thing (a plan waiting on them, or a flow card waiting at a Person decides step), send that item's own Approve and Send back buttons to their paired chat right away. Their tap there is the approval (two taps, as on any decision card); you never approve. Give task for a plan, or card for a flow card (its number from get_flows). When it can't be approved in chat, the answer says why: say that in one line and open show_control approval (a plan) or the flow, never that you can't approve.",
+    handle: (ctx, args) => {
+      const pairedHere = ctx.channel === "telegram";
+      const paired = ctx.store.handle.prepare("SELECT 1 FROM telegram_binding WHERE approver = ? AND approver_generation = ? AND revoked_at IS NULL LIMIT 1")
+        .get(ctx.who.name, ctx.store.accountOf(ctx.who.name)?.generation ?? -1) !== undefined;
+      const stamp = ctx.now.getTime();
+      if (args["card"] !== undefined) {
+        const cardId = Number(args["card"]);
+        const card = Number.isSafeInteger(cardId) ? ctx.store.getFlowCard(cardId) : null;
+        const flow = card === null ? null : ctx.store.getFlow(card.flow);
+        if (card === null || flow === null || !ctx.who.repos.includes(flow.repo)) return { ok: false, message: "not-found: no such flow card in your projects" };
+        const waiting = flowDecisionAt(ctx.store, card.id, card.entry);
+        const href = flowCardHref(flow.id, card.id);
+        if (waiting === null) return { ok: true, body: { offered: false, why: card.state === "active" ? "That card isn't waiting for a decision now." : "That card isn't waiting any more.", open: href } };
+        const decider = deciderOf(waiting.stage, waiting.flow);
+        if (decider !== null && decider !== ctx.who.name) return { ok: true, body: { offered: false, why: `Only ${decider} decides here.`, open: href } };
+        if (!pairedHere || !paired) return { ok: true, body: { offered: false, why: pairedHere ? "Your chat isn't paired for decisions." : "Buttons go to your paired chat; here, approve it on the card.", open: href } };
+        ctx.store.enqueueNotification({ dedupeKey: `flow-decide:${card.id}:${card.entry}:ask:${stamp}`, kind: "flow-decision", pushClass: "attention", recipient: ctx.who.name,
+          subject: `${flow.name}: ${card.title} needs your decision`.slice(0, 200), body: `${waiting.stage.title}: approve it, or send it back with a note.`, link: href, source: { project: flow.repo } }, ctx.now);
+        return { ok: true, body: { offered: true, item: `flow card ${card.id}`, shown: "Approve and Send back buttons follow your reply in this chat; the owner's tap decides it" } };
+      }
+      const task = taskIdOf(args);
+      if (task === null || admittedRef(ctx, task) === null) return notFound();
+      const current = ctx.store.taskFamilyOf(task, ctx.who.repos, false)?.current.id ?? task;
+      const plan = planInChat(ctx.store, current, ctx.who.name, ctx.now, ctx.evidenceRoot);
+      if (!plan.ok) return { ok: true, body: { offered: false, task: current, why: plan.why, control: "approval" } };
+      if (!pairedHere || !paired) return { ok: true, body: { offered: false, task: current, why: pairedHere ? "Your chat isn't paired for decisions." : "Buttons go to your paired chat; here, approve it on its card.", control: "approval" } };
+      ctx.store.enqueueNotification({ dedupeKey: `plan-ready:${current}:ask:${stamp}`, kind: "plan-ready", recipient: ctx.who.name, subject: `${current}: plan ready for review`,
+        body: "Approve it here, or open it to edit first.", source: { taskRef: ctx.store.lookupRef(current)!.id } }, ctx.now);
+      return { ok: true, body: { offered: true, item: `plan for ${current}`, task: current, shown: "Approve & start follows your reply in this chat; the owner's two taps approve it" } };
     },
   },
   get_result: {

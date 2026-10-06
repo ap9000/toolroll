@@ -268,9 +268,9 @@ describe("decide-in-chat cards", () => {
     expect(restored.text).toBe(card.text);
     await tapIn(BOB, restored.token(/^Approve & start$/), card.messageId);
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
-    expect(seen("Plan approval", "approved", script.current(BOB, card.messageId)).text).toBe(`${card.text}\n\n✓ Approved under your chat approval mode. Work starts when a worker is free.`);
+    expect(seen("Plan approval", "approved", script.current(BOB, card.messageId)).text).toBe(`${card.text}\n\n✓ Approved. Work starts when a worker is free.`);
     const scope = store.getScope("plan-5")!;
-    expect(scope).toMatchObject({ approvedBy: "bob", approvedDigest: scope.digest, approvalBasis: "mode" });
+    expect(scope).toMatchObject({ approvedBy: "bob", approvedDigest: scope.digest, approvalBasis: "chat" });
     const binding = store.liveTelegramBindingFor(BOT, String(BOB))!;
     expect(store.handle.prepare("SELECT actor, task_id, action, outcome, detail FROM action_ledger WHERE action = 'plan approved in chat'").all())
       .toEqual([{ actor: "bob", task_id: "plan-5", action: "plan approved in chat", outcome: "approved", detail: `via telegram · chat binding #${binding.id} · mode ${store.activeMode(REPO, now)!.digest}` }]);
@@ -293,8 +293,8 @@ describe("decide-in-chat cards", () => {
     expect(script.current(BOB, card.messageId).text).toBe(card.text);
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Approve & start$/), card.messageId, old);
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId, `${old}\n\nApprove and start "Refuse over-limit payouts"?`);
-    expect(script.current(BOB, card.messageId).text).toBe(`${old}\n\n✓ Approved under your chat approval mode. Work starts when a worker is free.`);
-    expect(store.getScope("plan-6")).toMatchObject({ approvedBy: "bob", approvalBasis: "mode" });
+    expect(script.current(BOB, card.messageId).text).toBe(`${old}\n\n✓ Approved. Work starts when a worker is free.`);
+    expect(store.getScope("plan-6")).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
   });
 
   test("a result: sent, armed, accepted and finished as the operator", async () => {
@@ -441,7 +441,13 @@ describe("flow cards", () => {
     // The first card's buttons are spent; the fresh card's Approve decides.
     await tapIn(ALEX, sent.token(/Approve$/), sent.messageId);
     expect(store.getFlowCard(card)!.stage).toBe("check");
+    // Two taps, as a plan's: Approve asks, and only the Yes decides.
     await tapIn(ALEX, fresh.token(/Approve$/), fresh.messageId);
+    const armed = seen("Flow approval", "armed", script.current(ALEX, fresh.messageId));
+    expect(armed.text).toBe(`${fresh.text}\n\nApprove “Refund for order 42?”? It moves to Post it.`);
+    expect(armed.labels).toEqual(["Yes", "Cancel"]);
+    expect(store.getFlowCard(card)!.stage).toBe("check");
+    await tapIn(ALEX, armed.token(/^Yes$/), fresh.messageId);
     expect(seen("Flow approval", "approved", script.current(ALEX, fresh.messageId)).text).toBe(`${fresh.text}\n\n✅ Approved. Moved to Post it.`);
     expect(store.getFlowCard(card)).toMatchObject({ stage: "post", outputs: { draft: "Hi Sam, we refunded order 42 today. Expect it within 5 working days." } });
     expect(store.flowEvents(card).at(-1)).toMatchObject({ toStage: "post", outcome: "approved", actor: "alex" });
@@ -499,5 +505,183 @@ describe("flow cards", () => {
     expect(store.flowEvents(card).at(-1)).toMatchObject({ toStage: "ship", actor: "alex", note: "Chose “Ship it” in Telegram" });
     expect(store.actionLedger({ repos: [REPO] }).filter(one => one.action === "flow choice"))
       .toEqual([expect.objectContaining({ actor: "alex", outcome: "chosen", detail: `Fixes · card ${card} · What next?: “Ship it” · via Telegram` })]);
+  });
+});
+
+describe("approving anywhere the owner has authority", () => {
+  const DAY = 86_400_000;
+  const supportFlow = () => {
+    const flow = store.createFlow({ repo: REPO, name: "Publish", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
+      { title: "Inbox", kind: "inbox" },
+      { id: "draft", title: "Write it", kind: "draft", instructions: "Write {{card.title}}" },
+      { id: "check", title: "Publish to toolroll.dev?", kind: "approval", decider: "owner", ifFails: "Write it" },
+      { id: "post", title: "Published", kind: "inbox" },
+    ], null)) }, now);
+    return { flow, card: (title: string) => {
+      const card = store.addFlowCard({ flow, title, description: null, stage: "check", by: "alex" }, now);
+      store.updateFlowCard(card, { outputs: { draft: `Notes for ${title}.` } }, now);
+      return card;
+    } };
+  };
+  const plan = (id: string, extra: Partial<Parameters<typeof propose>[1]> = {}) => {
+    const ref = placed(id, "Refuse over-limit payouts");
+    propose(store, { taskId: id, goal: "Refuse over-limit payouts.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+      acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now, ...extra });
+    store.enqueueNotification({ dedupeKey: `plan-ready:${id}`, kind: "plan-ready", subject: `${id}: plan ready for review`, body: "Review it.", source: { taskRef: ref } }, now);
+    return ref;
+  };
+  const flowLedger = () => store.handle.prepare("SELECT actor, repo, action, outcome, detail FROM action_ledger WHERE action = 'flow decision' ORDER BY id").all();
+  const events = (card: number) => store.flowEvents(card).filter(one => one.outcome !== "created").map(({ fromStage, toStage, outcome, actor, note }) => ({ fromStage, toStage, outcome, actor, note }));
+
+  test("under the lasting setting a plan approves in two taps eight days on, sealed as the owner's yes, and stands a month later like a console approval", async () => {
+    const { setChatApproval } = await import("./chat-approval.js");
+    expect(setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, limits: { fullAccess: false, capMicrousd: 5_000_000 }, via: "test" }, now).ok).toBe(true);
+    now = new Date(T0.getTime() + 8 * DAY);
+    const ref = plan("plan-30");
+    await pass();
+    const card = script.cardWith(BOB, /^Approve & start$/);
+    await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
+    expect(store.getScope("plan-30")!.approvedDigest).toBeNull();
+    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+    const chat = store.getScope("plan-30")!;
+    expect(chat).toMatchObject({ approvedBy: "bob", approvedDigest: chat.digest, approvalBasis: "chat" });
+    const setting = store.handle.prepare("SELECT digest FROM chat_approval_setting WHERE approver = 'bob'").get() as { digest: string };
+    const binding = store.liveTelegramBindingFor(BOT, String(BOB))!;
+    expect(store.handle.prepare("SELECT actor, repo, task_id, action, outcome, detail FROM action_ledger WHERE action = 'plan approved in chat'").all())
+      .toEqual([{ actor: "bob", repo: REPO, task_id: "plan-30", action: "plan approved in chat", outcome: "approved", detail: `via telegram · chat binding #${binding.id} · setting ${setting.digest}` }]);
+    // The same plan approved on the console: the same seal, and the same answer when it is checked again later.
+    const consoleRef = placed("plan-31", "Refuse over-limit payouts");
+    propose(store, { taskId: "plan-31", goal: "Refuse over-limit payouts.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+      acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "plan-31", "alex", now, store.getScope("plan-31")!.digest, alexToken).ok).toBe(true);
+    // Turning the setting off, and a month passing, leave both approvals standing.
+    setChatApproval(store, { approver: "bob", scope: REPO, enabled: false, via: "test" }, now);
+    const later = new Date(now.getTime() + 30 * DAY);
+    for (const [id, one] of [["plan-30", ref], ["plan-31", consoleRef]] as const) {
+      expect(store.scopeSealed(id), id).toBe(true);
+      expect(store.modeApprovalLive(one, later), id).toBe(true);
+    }
+  });
+
+  test("a plan that asks for full access keeps its console link under the setting; taps from an unpaired chat do nothing", async () => {
+    const { setChatApproval } = await import("./chat-approval.js");
+    setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, limits: { fullAccess: false, capMicrousd: null }, via: "test" }, now);
+    plan("plan-32", { posture: "escalated" });
+    await pass();
+    const pushed = [...script.inChat(BOB)].reverse().find(call => call.method === "sendMessage" && String(call.params["text"]).includes("plan ready"))!;
+    expect(script.buttons(pushed).map(one => [one.text, one.url])).toEqual([["Review & start", `${ORIGIN}/chat?task=plan-32#task-chat-action`]]);
+
+    now = new Date(now.getTime() + 3 * 60_000);
+    plan("plan-33");
+    await pass();
+    const card = script.cardWith(BOB, /^Approve & start$/);
+    // A stranger taps bob's plan button from their own chat: answered, and nothing changes.
+    script.updates.push([{ update_id: nextUpdate++, callback_query: { id: `cb-${nextUpdate}`, data: card.token(/^Approve & start$/), from: { id: 9191 }, message: { message_id: card.messageId, chat: { id: 9191 }, text: card.text } } }]);
+    await pass();
+    expect(script.acks().at(-1)).toBe("These buttons work only for the person they were sent to. Nothing was done.");
+    expect(store.getScope("plan-33")!.approvedDigest).toBeNull();
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
+  });
+
+  test("a flow approval decided in Telegram and one decided on the console: the same flow events and ledger line but for where; an unpaired tap does nothing", async () => {
+    const { decideFlowCard } = await import("./flow-engine.js");
+    const { card: cardIn } = supportFlow();
+    const phone = cardIn("Release notes"), desk = cardIn("Pricing page");
+    advanceFlows(store, REPO, now, { evidenceRoot: dir });
+    await pass();
+    const sent = script.cardWith(ALEX, /Approve$/);
+    // Someone not paired taps alex's Approve: nothing happens.
+    script.updates.push([{ update_id: nextUpdate++, callback_query: { id: `cb-${nextUpdate}`, data: sent.token(/Approve$/), from: { id: 9191 }, message: { message_id: sent.messageId, chat: { id: 9191 }, text: sent.text } } }]);
+    await pass();
+    expect(store.getFlowCard(phone)!.stage).toBe("check");
+    const first = sent.text.includes("Release notes") ? phone : desk;
+    const second = first === phone ? desk : phone;
+    await tapIn(ALEX, sent.token(/Approve$/), sent.messageId);
+    await tapIn(ALEX, script.current(ALEX, sent.messageId).token(/^Yes$/), sent.messageId);
+    expect(decideFlowCard(store, { card: second, decision: "approve", note: null, actor: "alex", repos: [REPO], where: "the console" }, now)).toMatchObject({ ok: true });
+    expect(events(first)).toEqual(events(second));
+    expect(events(first)).toEqual([{ fromStage: "check", toStage: "post", outcome: "approved", actor: "alex", note: null }]);
+    const [viaPhone, viaDesk] = flowLedger() as Array<Record<string, string>>;
+    const same = (row: Record<string, string>) => ({ ...row, detail: row["detail"]!.replace(/ · card \d+ · /, " · card N · ").replace(/ · via .*$/, "") });
+    expect(same(viaPhone!)).toEqual(same(viaDesk!));
+    expect([viaPhone!["detail"]!.endsWith("via Telegram"), viaDesk!["detail"]!.endsWith("via the console")]).toEqual([true, true]);
+  });
+
+  test("an expired flow card says where the card is now and links it in Flows while it waits; a moved one links nothing", async () => {
+    const { flow, card: cardIn } = supportFlow();
+    const card = cardIn("Release notes");
+    advanceFlows(store, REPO, now, { evidenceRoot: dir });
+    await pass();
+    const sent = script.cardWith(ALEX, /Approve$/);
+    now = new Date(now.getTime() + 8 * DAY);
+    await tapIn(ALEX, sent.token(/Approve$/), sent.messageId);
+    const old = script.current(ALEX, sent.messageId);
+    expect(old.text).toBe(`${sent.text}\n\nThese buttons were already used, or are too old. It's waiting for alex in Publish to toolroll.dev? (Publish).`);
+    expect(old.rows.flat().map(one => [one.text, one.url])).toEqual([["Open it in Flows", `${ORIGIN}/flows/${flow}?card=${card}`]]);
+    expect(store.getFlowCard(card)!.stage).toBe("check");
+    // Moved on elsewhere: the old message names where it went, with nothing to tap.
+    store.moveFlowCard(card, { to: "post", outcome: "moved", actor: "alex", expectEntry: 1 }, now);
+    await tapIn(ALEX, sent.token(/Edit$/), sent.messageId, sent.text);
+    expect(script.current(ALEX, sent.messageId).text).toBe(`${sent.text}\n\nThese buttons were already used, or are too old. It moved on to Published (Publish).`);
+    expect(script.current(ALEX, sent.messageId).rows.flat()).toEqual([]);
+  });
+
+  test("an expired plan card links the plan where it still waits; once cancelled it says so and links nothing", async () => {
+    const { setChatApproval } = await import("./chat-approval.js");
+    setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, via: "test" }, now);
+    plan("plan-34");
+    await pass();
+    const card = script.cardWith(BOB, /^Approve & start$/);
+    now = new Date(now.getTime() + 8 * DAY);
+    await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
+    expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nThat button expired. Nothing was done. "Refuse over-limit payouts" waits for your approval.`);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Review & start ↗"]);
+    expect(store.getScope("plan-34")!.approvedDigest).toBeNull();
+    now = new Date(now.getTime() + 60_000);
+    plan("plan-35");
+    await pass();
+    const next = script.cardWith(BOB, /^Approve & start$/);
+    store.setTaskState("plan-35", "cancelled", now);
+    await tapIn(BOB, next.token(/^Approve & start$/), next.messageId);
+    expect(script.current(BOB, next.messageId).text).toContain(`"Refuse over-limit payouts" was cancelled.`);
+    expect(script.current(BOB, next.messageId).rows.flat()).toEqual([]);
+  });
+
+  test("asked to approve, the lead sends the plan's and the flow card's own buttons; the owner's taps decide, never the lead", async () => {
+    const { MATE_TOOLS } = await import("./mate-tools.js");
+    const offer = MATE_TOOLS.find(one => one.name === "offer_approval")!;
+    const principal = verifyApproverStanding(store, "bob", store.accountOf("bob")!.generation, [REPO]);
+    if (!principal.ok) throw new Error("principal");
+    const ctx = { store, who: principal.who, now, draft: () => null, step: 1, readDecisions: new Map(), evidenceRoot: dir, channel: "telegram" as const };
+    placed("plan-36", "Refuse over-limit payouts");
+    propose(store, { taskId: "plan-36", goal: "Refuse over-limit payouts.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+      acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now });
+    // Not turned on: the lead hears why, and nothing is sent.
+    expect(offer.handle(ctx as never, { task: "plan-36" })).toEqual({ ok: true, body: { offered: false, task: "plan-36", why: "Approving from chat isn't turned on for this project.", control: "approval" } });
+    const { setChatApproval } = await import("./chat-approval.js");
+    setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, via: "test" }, now);
+    expect(offer.handle(ctx as never, { task: "plan-36" })).toMatchObject({ ok: true, body: { offered: true, task: "plan-36" } });
+    expect(store.getScope("plan-36")!.approvedDigest).toBeNull();
+    await pass();
+    const card = script.cardWith(BOB, /^Approve & start$/);
+    await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
+    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+    expect(store.getScope("plan-36")).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
+
+    // A flow card whose decider is alex: bob's lead says only alex decides; alex's sends alex the buttons.
+    const { card: cardIn } = supportFlow();
+    const flowCard = cardIn("Release notes");
+    expect(offer.handle(ctx as never, { card: flowCard })).toMatchObject({ ok: true, body: { offered: false, why: "Only alex decides here." } });
+    const alexWho = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [REPO]);
+    if (!alexWho.ok) throw new Error("principal");
+    expect(offer.handle({ ...ctx, who: alexWho.who } as never, { card: flowCard })).toMatchObject({ ok: true, body: { offered: true } });
+    now = new Date(now.getTime() + 3 * 60_000);
+    await pass();
+    const sent = script.cardWith(ALEX, /Approve$/);
+    expect(sent.text).toContain("Approve “Release notes”");
+    await tapIn(ALEX, sent.token(/Approve$/), sent.messageId);
+    expect(store.getFlowCard(flowCard)!.stage).toBe("check");
+    await tapIn(ALEX, script.current(ALEX, sent.messageId).token(/^Yes$/), sent.messageId);
+    expect(store.getFlowCard(flowCard)!.stage).toBe("post");
   });
 });

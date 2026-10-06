@@ -160,6 +160,7 @@ import { MODELS_CSS, modelsHtml, modelsScript, type RoleView } from "./models-ui
 import { ASSISTANTS, modelChoices, detectPreparation, previewProjectInstructions, addProjectInstructions } from "./setup-guide.js";
 import { previewSetup, approveSetup, type SetupInputs } from "./control-setup.js";
 import { controlSetupHtml, setupPreviewHtml, connectionHtml, connectionWords, hiddenFields } from "./control-ui.js";
+import { ALL_PROJECTS as CHAT_APPROVAL_ALL, chatApprovalWords, setChatApproval } from "./chat-approval.js";
 import { composerSchedule, scheduleEditorHtml, scheduleEditorScript } from "./task-composer.js";
 import { listCoordinators } from "./coordinator.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses, type DispatchDiagnosis } from "./dispatch.js";
@@ -1914,7 +1915,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const ref = run === null ? null : store.refForId(run.taskRef);
       return { repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId, action: `${resource[1] === "d" ? "decision" : resource[1] === "i" ? "incident" : "run"} ${resource[3] ?? "view"}` };
     }
-    const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/routines/add", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke"]);
+    const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/routines/add", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off"]);
     const placed = ["/tasks/add", "/routines/add"].includes(url.pathname) ? body?.get("repo")?.trim() : null;
     return { repo: url.pathname.startsWith("/people/") ? null : placed ? canonicalProject(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
@@ -1936,6 +1937,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // settings remain outside this exact allowlist.
     if ((request.method === "GET" && path === "/settings/telegram") ||
       (request.method === "POST" && ["/settings/telegram/pair", "/settings/telegram/unpair", "/settings/telegram/retry"].includes(path))) return true;
+    // A person's own chat-approval setting; the route proves each project it names.
+    if (request.method === "POST" && ["/settings/chat-approval/confirm", "/settings/chat-approval/save", "/settings/chat-approval/off"].includes(path)) return true;
     // Coding routes require an instance operator, then prove saved ownership and project access.
     if (path === "/code" || path.startsWith("/code/")) return true;
     if((request.method==='GET'&&/^\/chat\/action\/[0-9]{1,15}$/.test(path))||(request.method==='POST'&&/^\/chat\/proposal\/[0-9]{1,15}\/(confirm|dismiss)$/.test(path))){
@@ -7339,7 +7342,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (decision === null) return answer(400, { ok: false, said: "Approve it or send it back." });
         const note = (body.get("note") ?? "").trim() || null;
         if (note !== null && note.length > LIMITS.note) return answer(400, { ok: false, said: `Keep the note to ${LIMITS.note.toLocaleString("en-US")} characters; this is ${note.length.toLocaleString("en-US")}.` });
-        const decided = decideFlowCard(store, { card: target.id, decision, note, actor: who.name, repos: projects, evidenceRoot, draft: body.get("draft") }, now);
+        const decided = decideFlowCard(store, { card: target.id, decision, note, actor: who.name, repos: projects, evidenceRoot, draft: body.get("draft"), where: "the console" }, now);
         return decided.ok ? settle(decided.said) : answer(409, { ok: false, said: decided.message });
       }
       if (verb === "choose") {
@@ -8137,6 +8140,46 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       store.retryTelegramReplies(who.name, now);
       return redirect(response, "/settings/telegram");
     }
+    // Approving from chat, as the person's lasting setting (chat-approval.ts): for all their projects or one. Turning it
+    // on or changing its limits is the mode's ceremony (the exact terms, a single-use nonce bound to them, the password
+    // typed again); turning it off is one step, csrf only. Every change is a ledger line.
+    if (url.pathname === "/settings/chat-approval/confirm" || url.pathname === "/settings/chat-approval/save" || url.pathname === "/settings/chat-approval/off") {
+      const body = readForm(posted, CONSOLE_FORMS.chatApproval);
+      if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver turns on approving from their own chat.", "/settings");
+      if ((["scope", "full-access", "cap-usd", "nonce", "digest", "token"] as const).some(key => body.getAll(key).length > 1)) return refuse(response, who, 400, "Submit one value for each field.", "/settings");
+      const given = (body.get("scope") ?? "all").trim();
+      const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : canonicalProject(given) ?? given;
+      if (scope !== CHAT_APPROVAL_ALL && !(visible(scope) && store.accountCanAccess(who.name, scope))) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
+      const where = scope === CHAT_APPROVAL_ALL ? "all your projects" : projectName(scope);
+      if (url.pathname.endsWith("/off")) {
+        const saved = setChatApproval(store, { approver: who.name, scope, enabled: false, via: "the console" }, now);
+        return saved.ok ? redirect(response, `/settings?said=${encodeURIComponent(saved.said)}`) : refuse(response, who, 400, saved.message, "/settings");
+      }
+      const usd = (body.get("cap-usd") ?? "").trim();
+      const cap = usd === "" ? null : Number(usd);
+      if (cap !== null && !(Number.isFinite(cap) && cap >= 0 && cap <= 10_000)) return refuse(response, who, 400, "Give the attempt limit in dollars, like 5.", "/settings");
+      const limits = { fullAccess: body.get("full-access") === "1", capMicrousd: cap === null ? null : Math.round(cap * 1_000_000) };
+      const digest = createHash("sha256").update(JSON.stringify({ scope, ...limits })).digest("hex");
+      if (url.pathname.endsWith("/confirm")) {
+        const nonce = mintApprovalNonce(who.name, "chat-approval", digest);
+        const html = `<h1 style="overflow-wrap:anywhere">Approve from chat in ${escape(where)}</h1>` +
+          `<form method="post" action="/settings/chat-approval/save" class="card approve-form">` +
+          hiddenFields({ csrf: who.session.csrf, nonce, digest, scope: scope === CHAT_APPROVAL_ALL ? "all" : scope, "full-access": limits.fullAccess ? "1" : "", "cap-usd": usd }) +
+          `<p>Your own taps in your paired chat approve plans and merges until you turn this off. It doesn't expire.</p>` +
+          `<p class="recap">Limits: ${escape(chatApprovalWords(limits))}.</p>` +
+          `<p class="recap">Plans written for you, protected paths, two-person rules and your organisation's policy still open in Toolroll.</p>` +
+          `<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>` +
+          `<div class="sticky-actions"><button type="submit">Turn on</button></div></form>` +
+          `<p class="meta"><a href="/settings">Back</a></p>`;
+        return sendScreen(response, 200, screen("Approve from chat", html, { chrome: chromeFor(projectOf(who, request) ?? null, "settings") }));
+      }
+      if (!consumeApprovalNonce(body.get("nonce") ?? "", who.name, "chat-approval", body.get("digest") ?? "") || body.get("digest") !== digest) return refuse(response, who, 409, "That form is stale. Read the terms again.", "/settings");
+      const proved = authenticateAccount(store, who.name, body.get("token") ?? "");
+      if (!proved.ok || proved.role !== "approver" || proved.generation !== who.session.generation) return refuse(response, who, 403, "Turning on approving from chat takes your password, typed again.", "/settings");
+      const saved = setChatApproval(store, { approver: who.name, scope, enabled: true, limits, via: "the console" }, now);
+      return saved.ok ? redirect(response, `/settings?said=${encodeURIComponent(saved.said)}`) : refuse(response, who, 400, saved.message, "/settings");
+    }
+
     if (url.pathname === "/settings/telegram/pair" || url.pathname === "/settings/telegram/unpair") {
       const body = readForm(posted, CONSOLE_FORMS.telegramPair);
       // The person's own pairing, under their password: a code minted for

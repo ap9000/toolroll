@@ -10,7 +10,8 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { envelopeJson } from './envelope.js';
-import { addCardToFlow, advanceFlows, crossProjectProblem, flowDefinitionOf } from './flow-engine.js';
+import { addCardToFlow, advanceFlows, crossProjectProblem, decideFlowCard, flowDefinitionOf } from './flow-engine.js';
+import { chooseFlowCard } from './flow-send.js';
 import { saveScript } from './flow-scripts.js';
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike } from './flow-share.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
@@ -54,6 +55,10 @@ export const FLOWS_DESCRIPTORS = [
     { name: 'title', takesValue: true, meaning: "the card's title" },
     { name: 'description', takesValue: true, meaning: 'its details' },
     { name: 'zone', takesValue: true, meaning: 'a zone id or name' }] },
+  { action: 'card approve', synopsis: "approve a card waiting at a Person decides step (or pick --option at a Person chooses step), as the console's Approve does", mutation: 'identity-idempotent', positionals: ['flow', 'card'], flags: [...write,
+    { name: 'option', takesValue: true, meaning: "at a Person chooses step: the option's words or its number" }] },
+  { action: 'card send-back', synopsis: "send a waiting card back with a note, as the console's Send back (or a reply at a Person chooses step) does", mutation: 'identity-idempotent', positionals: ['flow', 'card'], flags: [...write,
+    { name: 'note', takesValue: true, meaning: 'what should change' }] },
   { action: 'export', synopsis: 'write a flow as a *.toolroll-flow.json file: zones, paths, trigger settings and scripts; never secrets, webhook addresses, names or cards', mutation: 'none', positionals: ['flow'], flags: [...read,
     { name: 'out', takesValue: true, meaning: 'write the file here (default: print it)' }] },
   { action: 'import', synopsis: 'make a flow from a flow file or a gist/GitHub https address; previews in plain words until --yes; triggers arrive off and scripts wait for approval', mutation: 'unkeyed', positionals: ['file'], flags: [...write, yes, repo,
@@ -338,6 +343,34 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     settle(flow.repo);
     const card = store.getFlowCard(added.card);
     return ok({ applied: true, card: card === null ? { id: added.card } : cardOf(definition, card), said: added.said }, [`${added.said} Card #${added.card}.`]);
+  }
+
+  if (action === 'card approve' || action === 'card send-back') {
+    // The console's own doors (decideFlowCard, chooseFlowCard): the same decider, visit and project checks, and the same card history.
+    const approving = action === 'card approve';
+    const note = text('note')?.trim() ?? null;
+    if (args[1] === undefined || (!approving && (note === null || note === ''))) return fail('usage', approving ? 'Use flows card approve <flow> <card> [--option <words|number>].' : 'Use flows card send-back <flow> <card> --note "<what should change>".', EXIT.usage);
+    const card = /^[1-9][0-9]{0,9}$/.test(args[1]) ? store.getFlowCard(Number(args[1])) : null;
+    if (card === null || card.flow !== flow.id) return refuse(flow.repo, 'unknown-card', `Flow #${flow.id} has no card #${args[1]}. toolroll flows show ${flow.id} lists its cards.`);
+    const stage = definition.stages.find(one => one.id === card.stage);
+    let decided: { ok: true; said: string } | { ok: false; message: string };
+    if (stage?.kind === 'choose') {
+      if (approving) {
+        const given = text('option')?.trim() ?? '';
+        const options = stage.options ?? [];
+        const choice = /^[1-9]$/.test(given) && Number(given) <= options.length ? Number(given) - 1 : options.findIndex(one => one.label.toLowerCase() === given.toLowerCase());
+        if (given === '' || choice < 0) return refuse(flow.repo, 'choose-option', `${stage.title} asks for a choice: give --option with one of ${options.map((one, at) => `${at + 1} “${one.label}”`).join(', ')}.`, EXIT.usage);
+        decided = chooseFlowCard(store, { card: card.id, entry: card.entry, choice, label: options[choice]!.label, note: null, actor: who, where: 'the command line', repos: reachable, evidenceRoot: context.evidenceRoot }, now);
+      } else decided = chooseFlowCard(store, { card: card.id, entry: card.entry, choice: null, note, actor: who, where: 'the command line', repos: reachable, evidenceRoot: context.evidenceRoot }, now);
+    } else if (stage?.kind === 'approval') {
+      if (text('option') !== null) return fail('usage', '--option is for a Person chooses step; this card waits for a decision.', EXIT.usage);
+      decided = decideFlowCard(store, { card: card.id, decision: approving ? 'approve' : 'send-back', note, actor: who, repos: reachable, evidenceRoot: context.evidenceRoot, entry: card.entry, where: 'the command line' }, now);
+    } else return refuse(flow.repo, 'not-waiting', card.state === 'active' ? `Card #${card.id} isn't waiting for a decision; it's in ${stage?.title ?? card.stage}.` : `Card #${card.id} is ${card.state}; nothing is waiting on it.`);
+    if (!decided.ok) return refuse(flow.repo, 'refused', decided.message);
+    record(flow.repo, 'accepted', `flow #${flow.id} card #${card.id} · ${stage.title}`);
+    settle(flow.repo);
+    const after = store.getFlowCard(card.id);
+    return ok({ applied: true, card: after === null ? { id: card.id } : cardOf(definition, after), said: decided.said }, [decided.said]);
   }
 
   if (action === 'trigger add') {

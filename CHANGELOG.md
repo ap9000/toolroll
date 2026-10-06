@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.43 — 2026-10-06
+
+- **Approve from chat and the CLI.** A plan waiting on you and a flow's
+  approval or choose step get **Approve** and **Send back** buttons in your
+  paired Telegram chat, two taps each, recorded like a console decision. Ask
+  the lead to "approve X" and it answers with those buttons; your tap is
+  still the approval. `toolroll flows card approve <flow> <card>` and
+  `toolroll flows card send-back <flow> <card> --note …` do the same from the
+  terminal with your login.
+- **Chat approval can stay on.** `toolroll chat-approval on|off [--repo <p>]`
+  turns approving from chat on for one project or all of them, with your
+  password to turn it on; off is instant and off for all really is all. It no
+  longer lapses with a weekly mode. Plans that widen permissions, go over a
+  cap or touch protected paths still go to the console.
+- **Old cards point onward.** A card in a past conversation says where the
+  item went and links to it when you can open it.
+- Still to come: Slack, Discord and Teams buttons, a Settings screen for chat
+  approval, and sending a plan back from chat.
+
 ## 0.9.42 — 2026-10-06
 
 - **Zod revamp, waves 3 and 4.** What comes into Toolroll from outside and

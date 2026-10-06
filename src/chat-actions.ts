@@ -1454,7 +1454,7 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
         return chosen.ok ? { ok: true as const, said: chosen.said, card: card.id } : { ok: false as const, message: chosen.message };
       })()
     : (() => {
-        const decided = decideFlowCard(store, { card: card.id, decision: payload.operation === "flow_card_approve" ? "approve" : "send-back", note: typeof req["note"] === "string" ? req["note"] : null, actor, repos, ...(root === undefined ? {} : { evidenceRoot: root }) }, now);
+        const decided = decideFlowCard(store, { card: card.id, decision: payload.operation === "flow_card_approve" ? "approve" : "send-back", note: typeof req["note"] === "string" ? req["note"] : null, actor, repos, where: "Chat", ...(root === undefined ? {} : { evidenceRoot: root }) }, now);
         return decided.ok ? { ok: true as const, said: decided.said, card: card.id } : { ok: false as const, message: decided.message };
       })();
   if (!acted.ok) throw Error(acted.message);

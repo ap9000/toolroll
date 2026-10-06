@@ -16,6 +16,7 @@
     "propose_task_action": [{ "task": "t-42", "operation": "retry" }, { "task": "t-42", "operation": "stop", "run": 9 }, { "task": "t-42", "operation": "wait_for", "dependency": "t-41" }],
     "get_controls": [{}],
     "show_control": [{ "control": "task", "task": "t-42" }, { "control": "tools", "repo": "r1" }, { "control": "acceptance", "task": "t-42", "run": 7 }, { "control": "integrations" }],
+    "offer_approval": [{ "task": "t-42" }, { "card": 12 }],
     "get_result": [{ "task": "t-42" }, { "task": "t-42", "run": 7, "feedback_offset": 3 }],
     "get_diff": [{ "task": "t-42" }, { "task": "t-42", "run": 7, "file": "src/footer.tsx", "offset": 10000 }],
     "get_check_log": [{ "task": "t-42" }, { "task": "t-42", "run": 7, "search": "FAIL" }, { "task": "t-42", "offset": 0 }],

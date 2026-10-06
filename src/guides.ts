@@ -151,6 +151,8 @@ applies the console's rules exactly.
   \`flows trigger pause|resume|remove|check <id> <trigger>\`; \`flows script
   save --repo PATH --name <n> (--file <path in project> | --body <file>)
   --about "<line>"\`; \`flows card add <id> --title <t> [--zone <z>]\`;
+  \`flows card approve <id> <card>\` and \`flows card send-back <id> <card>
+  --note <text>\` only when the person asked for that decision;
   \`flows archive <id>\`.
 - create, edit, archive and trigger add answer with a preview
   (\`applied: false\`, \`terms\`) until \`--yes\`. Show the person the terms

@@ -128,6 +128,7 @@ describe("the machine envelope", () => {
       up: ["--for", "not-a-number", "--json"],
       onboard: ["--agent", "nope", "--json"],
       status: ["--json"],
+      "chat-approval": ["show", "--json"],
       ready: ["--json"],
       task: ["list", "--json"],
       ledger: ["verify", "--json"],

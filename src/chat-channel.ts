@@ -761,6 +761,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Shared read-only acceptance packet: exact result, criterion states, gate, reviewer findings, caveats and recorded human acceptance. Screenshot files use get_result_images; marking complete is a propose_action result_accept confirmed behind the phone's own yes/cancel challenge or on the signed-in console.",
     gap: "A physical-phone completion has not been exercised.",
   },
+  offer_approval: {
+    support: "direct",
+    how: "Pushes the plan's or flow card's own decision card to the owner's paired chat: Approve arms Yes and Cancel, and only the owner's Yes decides, through sealScopeApproval (as a chat-origin approval) or decideFlowCard. Outside the owner's chat-approval setting or a decision's rules it answers why, and the lead opens the console control.",
+    gap: "A flow card's Send back, Edit and a Person chooses step act from the pushed card; a plan's Send back stays in the console. Fixture proof only, no physical-phone rendering.",
+  },
   show_control: {
     support: "handoff",
     how: "The card names the control and the task, with one url button to that exact console control when a trusted https console-url is configured; the button opens the signed-in console and acts on nothing.",

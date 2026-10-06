@@ -2485,6 +2485,98 @@ $ contract --commands --json → 0
       ]
     },
     {
+      "invocation": "flows card approve",
+      "synopsis": "approve a card waiting at a Person decides step (or pick --option at a Person chooses step), as the console's Approve does",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "option",
+          "takesValue": true,
+          "meaning": "at a Person chooses step: the option's words or its number"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "card",
+          "required": true,
+          "meaning": "a card id from flows show"
+        }
+      ]
+    },
+    {
+      "invocation": "flows card send-back",
+      "synopsis": "send a waiting card back with a note, as the console's Send back (or a reply at a Person chooses step) does",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "note",
+          "takesValue": true,
+          "meaning": "what should change"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "card",
+          "required": true,
+          "meaning": "a card id from flows show"
+        }
+      ]
+    },
+    {
       "invocation": "flows export",
       "synopsis": "write a flow as a *.toolroll-flow.json file: zones, paths, trigger settings and scripts; never secrets, webhook addresses, names or cards",
       "audience": "agent",
@@ -5174,6 +5266,27 @@ $ contract --commands --json → 0
     {
       "invocation": "review off",
       "synopsis": "finished builds go straight to the person, unreviewed",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "chat-approval show",
+      "synopsis": "whether your own taps in your paired chat approve plans and merges: all projects and each project's own setting",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "chat-approval on",
+      "synopsis": "let your paired chat approve plans and merges in all your projects or one (--repo); lasting, with limits; previews until --yes",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "chat-approval off",
+      "synopsis": "stop approving from chat for all your projects or one (--repo); one step",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed"
