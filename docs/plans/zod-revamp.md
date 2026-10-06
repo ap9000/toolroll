@@ -72,7 +72,7 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 | 13 ✅ | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
 | 14 ✅ | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
 | 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
-| 16 | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
+| 16 ✅ | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
 | 17 | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
 
 ### Wave 4 — what we read back from disk and the database (P3)
@@ -331,3 +331,18 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   Read-only replay of real saved data remains an evidence gap: the runner was denied the installed database and
   evidence folder, and raw deliveries are not kept. Loosened, at the operator's request: an observation request
   without `version` is read as version 1, where it was refused. Nothing is tightened.
+- **16. Integration metadata** (2026-10-06). `src/contracts/integration-metadata.ts` holds one schema each for a
+  service's protected-resource metadata, its authorization-server metadata, its registration answer and its token
+  answers (a code's and a refresh's), and for a project tool spec; `ToolSpec` and `ToolSecret` are derived, and the
+  tool limits are named there (`TOOL_SPEC_LIMITS`; moving them into `TEXT_LIMITS` is left for a pass that may edit
+  `text-limits.ts`). A server's answers are read field by field, never strictly: unknown keys are ignored, a wrong-typed
+  field reads as absent and a list keeps its well-formed items, so endpoint fallbacks, https/loopback, S256, scope
+  filtering and clipping, expiry and every message run after reading as before. A token answer keeps whether it said
+  `scope` at all, so the granted scope (and the read-only grant research relies on) is unchanged: absent, a sign-in's
+  grant is what it asked for and a refresh keeps the one it had; present but not scope text, the grant is unknown.
+  `validateToolSpec` stays the adapter for every source and saved `project_tool` row (defaults, trimming, shorthand,
+  plain-word refusals, skip-on-bad-row) and returns its result through the schema. `mcp-connect.test.ts` passes
+  unchanged. Replayed a synthetic corpus through the old and new readers (516 specs, 306 saved rows, 132 discoveries,
+  44 registrations, 48 sign-ins, 432 refreshes): no differences but one. Changed, on purpose: a token answer of JSON
+  `null` used to crash finishing a sign-in; it now says the service couldn't be reached, as a non-JSON answer does.
+  The real database and tool-secret files could not be read from the build, so no saved data was replayed.
