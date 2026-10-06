@@ -9,6 +9,7 @@ import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { MATE_MAX_PROPOSALS_PER_TURN, MATE_TOOLS, executeMateTool, redactForMate } from "./mate-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
+import * as mateProgress from "./mate-progress.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
@@ -316,6 +317,53 @@ describe("the mate's turn", () => {
     const outcome=await turn('Read project knowledge',script.fetcher);
     expect(outcome).toMatchObject({ok:true,activity:expect.stringContaining('read 1'),proposals:0});
     expect(script.bodies[0]).toContain('get_project_knowledge');expect(script.bodies[0]).not.toContain('save_project_knowledge');
+  });
+
+  test.each([
+    ["get_brief", { repo: "r999" }, "Choose a project from list_repos.", "That project isn't available."],
+    ["get_project_context", { repo: "r999", query: "task status" }, "Choose an available project from list_repos.", "That project isn't available."],
+    ["get_task", { task: "missing" }, "not-found: no such task in your projects", "That task isn't available in your projects."],
+    ["get_decision", { decision: 999 }, "not-found: no such decision in your projects", "That decision isn't available in your projects."],
+  ])("a failed %s step reports a human reason while keeping retry instructions for the model", async (name, args, diagnostic, reason) => {
+    const events: mateProgress.MateProgress[] = [];
+    const script = scripted([answer([call(name, args)]), text("I couldn't read that.")]);
+    expect(await turn("Read it", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
+    expect(events.filter(event => event.kind === "tool-result")).toEqual([
+      expect.objectContaining({ outcome: { state: "failed", reason } }),
+    ]);
+    expect(script.bodies[1]).toContain(diagnostic);
+  });
+
+  test.each([
+    "Could not read [path] for [approver]. Call get_actions to try again.",
+    "The service refused sk-ant-api03-" + "A".repeat(90),
+  ])("an unrecognized failure never streams the model diagnostic: %s", async message => {
+    const tool = MATE_TOOLS.find(one => one.name === "get_actions")!;
+    const handle = vi.spyOn(tool, "handle").mockReturnValue({ ok: false, message });
+    const events: mateProgress.MateProgress[] = [];
+    const script = scripted([answer([call("get_actions")]), text("I couldn't check the actions.")]);
+    try {
+      await turn("Check the actions", script.fetcher, { onProgress: event => events.push(event) });
+      expect(events.filter(event => event.kind === "tool-result")).toEqual([
+        expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Checking available actions)." } }),
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(/\[path\]|\[approver\]|get_actions|sk-ant-api03-/);
+    } finally { handle.mockRestore(); }
+  });
+
+  test("a secret in a formatted failure reason is blocked before progress is emitted", async () => {
+    // Exercise the stream guard even if a future copy mapping introduces unsafe text.
+    const format = vi.spyOn(mateProgress, "mateToolFailureReason").mockReturnValue("Couldn't read sk-ant-api03-" + "A".repeat(90));
+    const events: mateProgress.MateProgress[] = [];
+    const script = scripted([answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
+    try {
+      expect(await turn("Read the flow", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
+      expect(format).toHaveBeenCalledWith("get_flows", "No such flow in your projects.");
+      expect(events.filter(event => event.kind === "tool-result")).toEqual([
+        expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Reading the flows)." } }),
+      ]);
+      expect(JSON.stringify(events)).not.toContain("sk-ant-api03-");
+    } finally { format.mockRestore(); }
   });
 
   test("a turn refuses a task proposed before get_capabilities ran in an earlier step, and drafts it once it has", async () => {

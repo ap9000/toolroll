@@ -57,6 +57,32 @@ export function mateToolLabel(name: string): string {
   return name.startsWith("propose_") ? "Preparing a card for you to confirm" : "Working";
 }
 
+/** Tool errors instruct the model how to retry. Only known, fixed copy belongs
+ * in the live UI; never echo arguments, redaction placeholders or exceptions. */
+const TOOL_FAILURE_REASONS = new Map<string, string>([
+  ["Choose a project from list_repos.", "That project isn't available."],
+  ["Choose an available project from list_repos.", "That project isn't available."],
+  ["repo must be one of the ids from list_repos", "That project isn't available."],
+  ["not-found: no such task in your projects", "That task isn't available in your projects."],
+  ["That task is not in your projects.", "That task isn't available in your projects."],
+  ["not-found: no such decision in your projects", "That decision isn't available in your projects."],
+  ["that decision is no longer open", "That decision is already closed."],
+  ["No such flow in your projects.", "No such flow in your projects."],
+  ["That action is outside your access.", "You don't have access to that action."],
+  ["Read the current task version before proposing this action.", "The task needs to be checked again before this action."],
+  ["That file is not in these changes. Call get_diff without file for the list.", "That file isn't in the saved changes."],
+  ["The saved changes could not be verified.", "The saved changes could not be verified."],
+  ["The saved check log could not be verified.", "The saved check log could not be verified."],
+  ["Saved results are unavailable here.", "Saved results are unavailable here."],
+  ["There is no finished result for that version yet.", "There is no finished result for that version yet."],
+  ["Task text cannot contain credentials.", "The task text contains a password or secret key."],
+  ["that tool refused — the plane could not answer it right now", "Toolroll couldn't finish that step right now."],
+]);
+
+export function mateToolFailureReason(name: string, message: string): string {
+  return TOOL_FAILURE_REASONS.get(message) ?? `That step didn't work (${mateToolLabel(name)}).`;
+}
+
 /** The `text` of a structured answer still being written, when the answer
  * opens with it (`{"text": "…`); null until then. Escapes are decoded, and
  * an escape cut off at the end is left for the next chunk. */

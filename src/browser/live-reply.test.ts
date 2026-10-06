@@ -80,3 +80,18 @@ test("empty progress has no tool status", async () => {
   expect(rows()).toHaveLength(0);
   expect(document.body.textContent).toContain("Thinking…");
 });
+
+test("running, done and failed steps render together with the full long reason", async () => {
+  const reason = "The saved changes could not be verified. The result is still available for you to inspect, but this step could not read its saved changes. Open the result to see which files and checks were saved before deciding what to do next.";
+  await emit([
+    step([call("pending", "running"), call("finished", "succeeded"), call("failed", "failed", reason)]),
+    { tools: [], text: "I am still checking the remaining work." },
+  ]);
+  expect(document.querySelector("ul[aria-label='Tool steps']")).not.toBeNull();
+  expect(rows().map(row => row.dataset.state)).toEqual(["running", "succeeded", "failed"]);
+  expect(rows().map(row => row.dataset.done)).toEqual(["false", "true", "false"]);
+  expect(rows().map(row => row.querySelector(".so-tool-status")!.textContent)).toEqual([" · Running", " · Done", " · Failed"]);
+  expect(document.querySelectorAll(".so-tool-reason")).toHaveLength(1);
+  expect(rows()[2]!.querySelector(".so-tool-reason")!.textContent).toBe(reason);
+  expect(document.querySelector(".so-live-text")!.textContent).toBe("I am still checking the remaining work.");
+});

@@ -16,7 +16,7 @@
  */
 import type { CommitmentChannel } from "./lead-commitments.js";
 import { Buffer } from "node:buffer";
-import { mateToolLabel, type MateProgress } from "./mate-progress.js";
+import { mateToolFailureReason, mateToolLabel, type MateProgress, type MateToolOutcome } from "./mate-progress.js";
 import { createHash } from "node:crypto";
 import type { ChatConfig, DirectChatProviderId, MateProposalKind, MateSession, MateThread, MateTurnEvidence, Store, SubscriptionChatProviderId } from "./store.js";
 import { mateTimeoutNotice } from "./store.js";
@@ -601,8 +601,13 @@ export async function runMateTurn(input: MateTurnInput): Promise<MateTurnOutcome
       const progressId = `${turnId}:${steps}:${index}`;
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: mateToolLabel(call.name) });
       const outcome = executeMateTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
-      progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId,
-        outcome: outcome.ok ? { state: "succeeded" } : { state: "failed", reason: outcome.message } });
+      let displayOutcome: MateToolOutcome = { state: "succeeded" };
+      if (!outcome.ok) {
+        const reason = mateToolFailureReason(call.name, outcome.message);
+        displayOutcome = { state: "failed", reason: scanForSecrets(reason).length === 0
+          ? reason : `That step didn't work (${mateToolLabel(call.name)}).` };
+      }
+      progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId, outcome: displayOutcome });
       if (READ_TOOLS.has(call.name)) reads++;
       if (call.name === "show_control" && outcome.ok) shownControl = true;
       // Opt-in, local diagnostics for end-to-end runs: what the lead asked of each tool and what came back (its start), keys
