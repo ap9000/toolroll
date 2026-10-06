@@ -172,6 +172,12 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-conversation-settings { margin: 9px 2px 0; font-size: 11px; }
 .so-conversation-settings > summary { padding: 2px 0; font-size: 11px; }
 .so-catch-up { margin-bottom: 26px; }
+/* A thread a change in reachable projects replaced: read only, above one quiet line. */
+.so-thread-divider { display: flex; align-items: center; gap: 10px; margin: 6px 0 22px; color: var(--so-muted); font-size: 12px; line-height: 1.4; text-align: center; }
+.so-thread-divider::before, .so-thread-divider::after { content: ""; flex: 1; min-width: 16px; border-top: 1px solid var(--so-line); }
+/* The Chat landing's Work panel: Home, the Crew one tab away. */
+.so-work-tabs { padding: 14px 16px 0; }
+.so-work-home { padding: 16px 16px 20px; }
 
 .so-supporting-panel { min-width: 0; min-height: 0; overflow: auto; background: var(--so-paper); border-radius: var(--so-sheet-radius); box-shadow: var(--so-sheet-shadow); }
 .so-work-panel-header { display: none; }
@@ -668,6 +674,10 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
   .so-message-cards { margin-top: 10px; }
   .so-catch-up { margin-bottom: var(--so-phone-block); }
   .so-crew { padding: var(--so-phone-gap) var(--so-phone-gutter) 20px; }
+  .so-work-tabs { padding: var(--so-phone-gap) var(--so-phone-gutter) 0; }
+  .so-work-tabs .so-ask-tabs { display: flex; }
+  .so-work-tabs .so-ask-tabs button { flex: 1; min-height: 40px; }
+  .so-work-home { padding: var(--so-phone-gap) var(--so-phone-gutter) 20px; }
   .so-section-heading { margin-bottom: 6px; }
   .so-work-row { padding: 6px 0; }
   .so-work-heading { gap: 8px; }

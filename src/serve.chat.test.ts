@@ -1582,6 +1582,51 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(settings).toContain('<p class="meta" id="chat-settings"><a href="/settings/lead">Lead settings</a>');
   });
 
+  test("a change in reachable projects starts a new thread as before; the old one stays readable above a divider and never reaches the model", async () => {
+    store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
+    const cookie = await login();
+    const workspaceOf = (html: string) => JSON.parse(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]!) as import("./browser-workspace.js").BrowserWorkspace;
+    const counts = () => store.raw().prepare("SELECT (SELECT COUNT(*) FROM mate_session) AS sessions, (SELECT COUNT(*) FROM mate_thread) AS threads").get();
+    const csrf = csrfFrom(await page(cookie));
+    subscriptionAnswers.push({ text: "The old route was through the payments project.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await post(cookie, "/chat", { csrf, message: "Remember the payments route" })).status).toBe(303);
+    await settle();
+    let html = await page(cookie);
+    expect(workspaceOf(html).conversation?.previous ?? null).toBeNull();
+    expect(html).not.toContain("data-thread-divider");
+    // The projects this lead could reach changed under the live conversation.
+    const old = store.activeMateSession("alex")!;
+    store.raw().prepare("UPDATE mate_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), old.id);
+    store.raw().prepare("UPDATE mate_thread SET ceiling_digest = ? WHERE approver = 'alex' AND closed_at IS NULL").run("f".repeat(64));
+    const before = counts() as { sessions: number; threads: number };
+    html = await page(cookie);
+    // Exactly what a GET did before: one new session and one new thread, no more.
+    expect(counts()).toEqual({ sessions: before.sessions + 1, threads: before.threads + 1 });
+    const workspace = workspaceOf(html);
+    expect(workspace.conversation?.messages).toEqual([]);
+    expect(workspace.conversation?.previous?.messages.map(one => one.text)).toEqual(["Remember the payments route", "The old route was through the payments project."]);
+    expect(html).toContain('<p class="chat-previous-divider" role="separator" data-thread-divider>New conversation — the projects I can reach changed</p>');
+    // Reading again, or refreshing the workspace, writes nothing more.
+    const after = counts();
+    await page(cookie);
+    const refreshed = await (await fetch(url("/chat?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(refreshed.conversation?.previous?.messages).toHaveLength(2);
+    expect(counts()).toEqual(after);
+    // The new thread's model input carries none of the old thread's words.
+    const fresh = csrfFrom(html);
+    subscriptionAnswers.push({ text: "Starting fresh.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await post(cookie, "/chat", { csrf: fresh, message: "What can you reach now?" })).status).toBe(303);
+    await settle();
+    expect(subscriptionRequests).toHaveLength(2);
+    const input = JSON.stringify(subscriptionRequests[1]);
+    expect(input).toContain("What can you reach now?");
+    expect(input).not.toContain("payments route");
+    expect(input).not.toContain("The old route was through the payments project.");
+    // Ending the conversation forgets the current thread; the replaced one is not shown after it.
+    expect((await post(cookie, "/chat/mate/end", { csrf: fresh })).status).toBe(303);
+    expect(workspaceOf(await page(cookie)).conversation?.previous ?? null).toBeNull();
+  });
+
   test("UI polish 2026-09-13: a membership never shows a dollar figure as a charge on the chat page", async () => {
     store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
     const cookie = await login();

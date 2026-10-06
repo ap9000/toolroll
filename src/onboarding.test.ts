@@ -221,9 +221,9 @@ test("Settings → Lead: one line, the full form under Advanced, and a lead turn
   expect(store.getChatConfig()?.provider).toBe("claude-subscription");
 }, 15_000);
 
-test("after the first Ready result, Chat offers the phone once, until put away", async () => {
+test("after the first Ready result, Chat offers the phone once, until put away; the setup itself stays in Settings → Chat apps", async () => {
   signedIn = "claude";
-  await start({ leadByDefault: true, tailnetNames: async () => ["mac.tail1234.ts.net", "mac"] });
+  await start({ leadByDefault: true, tailnetNames: async () => ["mac.tail1234.ts.net", "mac"], telegramTokenFile: join(dir, "telegram-token") });
   await until(() => store.getChatConfig() !== null);
   const cookie = await signIn();
   expect((await workspace(cookie)).phone).toBeUndefined();
@@ -240,4 +240,9 @@ test("after the first Ready result, Chat offers the phone once, until put away",
   const put = await fetch(`${base}/onboarding/phone/dismiss`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, quiet: "1" }) });
   expect(put.status).toBe(204);
   expect((await workspace(cookie)).phone).toBeUndefined();
+  // Putting chat's line away leaves the setup in Settings, in both the page and its fallback.
+  const settings = await workspace(cookie, "/settings");
+  expect(settings.view?.kind === "settings" ? settings.view.phone?.chatApps.map(one => one.label) : null).toEqual(["Telegram", "Slack", "Discord", "Teams"]);
+  const fallback = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+  expect(fallback).toContain('data-phone-card><h2 id="phone-card-title">Use it from your phone</h2>');
 });

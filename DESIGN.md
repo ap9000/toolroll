@@ -396,6 +396,12 @@ Both families are self-hosted as latin woff2 at weights 400, 500 and 600 from `/
 - *Docked Ask panel:* on a task, result or project page with its own conversation, the columns are 204px | 1fr | `minmax(340px, 400px)`. A Chat / Crew segmented control sits over the right sheet.
 - *Single:* on full-width pages (Tasks at `/work`, the board, queue, workbench, code and flows) the columns are 216px | 1fr and **the Crew sheet is absent, because the list already is the crew.**
 
+**The Chat landing (`/chat`).** The conversation is the page. The main sheet holds only the thread and, pinned below it outside the scroll, the composer. The thread fills the sheet; an empty one says "What would you like to work on?" and offers the starter kits on one line, nothing more. Home (Now, the four counts, plan use, Catch up) sits in the right sheet, the Work panel, under a Home / Crew segmented control with Home first; the Crew is one tap away. A phone reaches the same panel from the header's **Work** button (**Open work** while a task or result is open). Home and the Crew keep every link they had; neither ever renders inside the conversation. Only the landing swaps Crew for Work: task, project and team chats keep the Crew sheet as before. At a desk with a mouse the composer takes focus when the page opens (unless a `#section` link or another control already has it); a touch screen waits for a tap, so no keyboard covers the thread.
+
+**A replaced thread.** When the projects the lead can reach change, a new lead thread starts (mate arc ruling 9). The previous thread's words stay readable above one quiet centred divider, "New conversation — the projects I can reach changed", with hairlines either side. Its cards keep their outcome and lose their buttons; only the thread below the divider can be answered or acted on. Ending the conversation forgets its words, so nothing is shown after an end.
+
+**The phone setup.** "Use it from your phone" (pair a chat app, or this console over Tailscale) lives in Settings → Chat apps under the tiles. After the first Ready result Chat shows one dismissible line in the notice gutter, "Use it from your phone too · Set up", linking there, until it is put away or Telegram is paired.
+
 **Compact desk (901 to 1150px).** The sidebar narrows to 184px (172px in detail, 178px docked) and the Crew sheet to 286px. Gutters tighten to 17 to 22px.
 
 **Phones (900px and below).** The frame dissolves. The layout becomes a single flex column with no padding, the background turns paper, and the sheet fills the screen with no inset, radius or shadow. The sidebar is replaced by a menu button that opens it as a left drawer (at most 300px, on frame grey). Crew and the Ask panel become a second full-screen view, reached from a header button and returned from with a back button. The header grows to 60px (52px at 760px and below) and clears the status bar with `env(safe-area-inset-top)`. The composer clears the home indicator. Controls, nav rows, summaries and standalone links become 44px tall. Inputs are set at 16px so iOS does not zoom.
@@ -505,7 +511,7 @@ There is one result page per builder result, titled with the task (`/review?resu
 - **Slash menu:** it floats 6px above the composer on paper with 10px corners and the overlay shadow. Items are 36px tall (44px on phones), with the command in Geist Mono 12.5px / 500 and a muted hint.
 
 ### Composer
-A paper box with a control-line border and 12px corners, a hairline-faint 1px shadow, and 10px padding. On focus the border turns accent with a 3px wash halo. The textarea inside is borderless at 14px / 1.6 (16px on phones) and grows from 52px to 180px. The send button and a muted, tabular character count sit on one line below it.
+Pinned below the thread, outside its scroll, so it never moves with the messages. A paper box with a control-line border and 12px corners, a hairline-faint 1px shadow, and 10px padding. On focus the border turns accent with a 3px wash halo. The textarea inside is borderless at 14px / 1.6 (16px on phones) and grows from 52px to 180px. The send button and a muted, tabular character count sit on one line below it.
 
 ## Do's and Don'ts
 

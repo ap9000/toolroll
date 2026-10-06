@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { BrowserCrewItem, BrowserWorkspace } from "../browser-workspace.js";
+import type { BrowserCrewItem, BrowserMessage, BrowserWorkspace } from "../browser-workspace.js";
 import {
   Alert, Artifact, ArtifactContent, Badge, Button, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
@@ -18,7 +18,7 @@ import { browserCrewFromIndex } from "../browser-crew.js";
 import type { TeamSnapshot } from "../team-contract.js";
 import { GuardedHtml, notifyWorkspaceRendered, regionIsEditing } from "./guarded-html.js";
 import { ActionCards, CHAT_COMMANDS } from "./chat-cards.js";
-import { FirstRequest, FirstRun, PhoneCard, withSuggestion } from "./first-run.js";
+import { FirstRequest, FirstRun, withSuggestion } from "./first-run.js";
 import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
@@ -275,6 +275,20 @@ export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; it
   </li>)}</ul>;
 }
 
+/** The Chat landing's Work panel (the phone's Work sheet): Home first, the Crew one tab away. */
+function WorkPanel({ workspace, home }: { workspace: BrowserWorkspace; home: NonNullable<BrowserWorkspace["home"]> }) {
+  const [tab, setTab] = useState<"home" | "crew">("home");
+  const tabs = useId();
+  return <>
+    <div className="so-work-tabs"><div role="tablist" aria-label="Work" className="so-ask-tabs">
+      <button type="button" role="tab" id={`${tabs}-home`} aria-controls={`${tabs}-home-panel`} aria-selected={tab === "home"} onClick={() => setTab("home")}>Home</button>
+      <button type="button" role="tab" id={`${tabs}-crew`} aria-controls={`${tabs}-crew-panel`} aria-selected={tab === "crew"} onClick={() => setTab("crew")}>Crew</button>
+    </div></div>
+    <div role="tabpanel" id={`${tabs}-home-panel`} aria-labelledby={`${tabs}-home`} className="so-work-home" data-view="home" hidden={tab !== "home"}><Home home={home} compact /></div>
+    <div role="tabpanel" id={`${tabs}-crew-panel`} aria-labelledby={`${tabs}-crew`} hidden={tab !== "crew"}><Crew workspace={workspace} /></div>
+  </>;
+}
+
 /** Active work leads; finished work waits behind one disclosure. */
 function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   const isFinished = (item: BrowserWorkspace["crew"][number]) => item.tone === "done" || item.state === "cancelled";
@@ -403,6 +417,20 @@ const DOCKED_SUGGESTIONS: Record<string, { title: string; hint: string; placehol
     suggestions: ["What needs my attention here?", "What should we build next?", "File a task: "] },
 };
 
+/** The words a thread replaced by a change in reachable projects (mate arc ruling 9) sit above this line. */
+export const REPLACED_THREAD_DIVIDER = "New conversation — the projects I can reach changed";
+
+function ThreadMessage({ message, workspace, onChanged }: { message: BrowserMessage; workspace: BrowserWorkspace; onChanged: () => void }) {
+  return <Message from={message.role === "operator" ? "user" : "assistant"} data-message-id={message.id}>
+    <div className="so-message-label">{message.role === "operator" ? "You" : workspace.leadName ?? "Lead"}</div>
+    <MessageContent><GuardedHtml html={message.html} />{message.activity && <Disclosure summary="Activity"><p className="so-activity-copy">{message.activity}</p></Disclosure>}
+      {message.cards !== undefined && message.cards.length > 0
+        ? <ActionCards cards={message.cards} csrf={workspace.csrf} onChanged={onChanged} />
+        : message.cardsHtml && <GuardedHtml html={message.cardsHtml} className="so-message-cards" />}
+    </MessageContent>
+  </Message>;
+}
+
 function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof useWorkspace>; docked?: string | null }) {
   const { workspace, draft, notice, storageAvailable, sending, stale, offline } = controller;
   const chat = workspace.conversation!;
@@ -428,28 +456,34 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
   // A phone starts the box at one line (Send sits beside it); a desk keeps its two.
   useLayoutEffect(() => { const el = box.current; if (el) { const phone = matchMedia("(max-width: 760px)").matches; el.style.height = phone ? "0px" : "auto"; el.style.height = `${Math.min(180, Math.max(phone ? 44 : 48, el.scrollHeight))}px`; } }, [draft.text]);
   const delivery = offline ? "Offline. Your draft stays in this tab." : sending ? "Sending…" : notice;
+  // A desk opens ready to type; a phone waits for a tap (no keyboard over the thread), and nothing steals focus later.
+  useEffect(() => {
+    if (dock || window.location.hash !== "" || !matchMedia("(pointer: fine) and (min-width: 761px)").matches) return;
+    if (document.activeElement !== null && document.activeElement !== document.body) return;
+    box.current?.focus({ preventScroll: true });
+  }, []);
+  const previous = !dock ? chat.previous?.messages ?? [] : [];
   return <div className="so-lead-chat" data-workspace-chat>
     <Conversation className="so-conversation"><ConversationContent className="so-conversation-content">
       {!dock && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}
-      {!dock && (workspace.home ? <div className="so-catch-up" data-view="home"><Home home={workspace.home} /></div> : workspace.catchUpHtml && <GuardedHtml html={workspace.catchUpHtml} className="so-catch-up" />)}
-      {chat.messages.length === 0 && (!dock && workspace.firstRun ? null : dock
+      {/* The landing's Home lives in the Work panel; other conversations keep their brief here. */}
+      {!dock && !workspace.home && workspace.catchUpHtml && <GuardedHtml html={workspace.catchUpHtml} className="so-catch-up" />}
+      {previous.length > 0 && <>
+        <section className="so-previous-thread" aria-label="Earlier conversation" data-previous-thread>
+          {previous.map(message => <ThreadMessage key={message.id} message={message} workspace={workspace} onChanged={() => { void controller.check(); }} />)}
+        </section>
+        <p className="so-thread-divider" role="separator" data-thread-divider><span>{REPLACED_THREAD_DIVIDER}</span></p>
+      </>}
+      {chat.messages.length === 0 && previous.length === 0 && (!dock && workspace.firstRun ? null : dock
         ? <div className="so-docked-empty"><p className="so-docked-empty-title">{dock.title}</p><p className="so-docked-empty-hint">{dock.hint}</p>
             <div className="so-suggestions">{dock.suggestions.map(one => <button key={one} type="button" className="so-suggestion" onClick={() => { controller.edit(one); box.current?.focus(); }}>{one.trim().replace(/:$/, "…")}</button>)}</div></div>
-        : <><ConversationEmptyState title="What would you like to work on?" description="Plan the work with your lead. Your crew’s tasks and results stay beside the conversation." />
+        : <><ConversationEmptyState title="What would you like to work on?" />
             {/* v99: or a working setup in one click — a teammate and the flow it works. */}
             <nav className="so-kit-links" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <a key={id} className="so-suggestion" href={`/kits/${id}`}>{label}</a>)}</nav></>)}
-      <div id="chat-thread" data-chat-region="thread">{chat.messages.map(message => <Message from={message.role === "operator" ? "user" : "assistant"} key={message.id} data-message-id={message.id}>
-        <div className="so-message-label">{message.role === "operator" ? "You" : workspace.leadName ?? "Lead"}</div>
-        <MessageContent><GuardedHtml html={message.html} />{message.activity && <Disclosure summary="Activity"><p className="so-activity-copy">{message.activity}</p></Disclosure>}
-          {message.cards !== undefined && message.cards.length > 0
-            ? <ActionCards cards={message.cards} csrf={workspace.csrf} onChanged={() => { void controller.check(); }} />
-            : message.cardsHtml && <GuardedHtml html={message.cardsHtml} className="so-message-cards" />}
-        </MessageContent>
-      </Message>)}</div>
+      <div id="chat-thread" data-chat-region="thread">{chat.messages.map(message => <ThreadMessage key={message.id} message={message} workspace={workspace} onChanged={() => { void controller.check(); }} />)}</div>
       {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Lead"} />}
     </ConversationContent><ConversationScrollButton /></Conversation>
     <div className="so-composer-area">
-      {!dock && workspace.phone && <PhoneCard phone={workspace.phone} csrf={workspace.csrf} />}
       {!dock && workspace.firstRun && chat.messages.length === 0 && !busy && <FirstRequest firstRun={workspace.firstRun} onDraft={text => { controller.edit(withSuggestion(draft.text, text)); box.current?.focus(); }} />}
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
         {stale ? <Button variant="secondary" size="sm" onClick={controller.reconnect}>Reconnect</Button> : !sending && !offline && <Button variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</Button>}
@@ -620,6 +654,11 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   // The demo notice scrolls away with a page; a chat keeps it above.
   const demo = workspace.demo;
   const pageScrolls = !workspace.team && !(workspace.conversation && !docked && taskView === null);
+  // The Chat landing keeps Home beside the conversation, not inside it.
+  const home = isChat && !hasWork && !docked && taskView === null && !workspace.team ? workspace.home ?? null : null;
+  // After the first Ready result: one line pointing to the phone setup in Settings, until put away.
+  const [phoneDismissed, setPhoneDismissed] = useState(false);
+  const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
   return <><Toaster /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
@@ -631,11 +670,11 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}
         <CommandMenu workspace={workspace} />
-        {isChat && <Button variant="secondary" size="sm" className="so-phone-work-button" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : "Crew"}</Button>}
+        {isChat && <Button variant="secondary" size="sm" className="so-phone-work-button" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : home !== null ? "Work" : "Crew"}</Button>}
         {docked && <Button variant="secondary" size="sm" className="so-phone-work-button" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</Button>}
         {taskView !== null && <Button variant="secondary" size="sm" className="so-phone-work-button" data-open-details onClick={() => setPhoneView("work")}>Task details</Button>}
       </header>
-      {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
+      {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
         {!pageScrolls && <DemoNotice demo={demo} />}
         {workspace.signIn?.map(item => <Alert key={item.provider} className="so-sign-in" data-sign-in={item.provider}>
           <p className="so-sign-in-title">{item.title}</p>
@@ -653,6 +692,18 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
           }}>
             <input type="hidden" name="csrf" value={workspace.csrf} /><input type="hidden" name="version" value={update.version} />
             <Button variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></Button>
+          </form>
+        </Alert>}
+        {phone !== null && <Alert className="so-update so-phone-notice" data-phone-notice>
+          <p><span>Use it from your phone too</span> · <a href="/settings#settings-chat-apps">Set up</a></p>
+          <form method="post" action={phone.dismissHref} onSubmit={event => {
+            // The same installation-wide put-away as before; the setup stays in Settings → Chat apps.
+            event.preventDefault();
+            setPhoneDismissed(true);
+            void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
+          }}>
+            <input type="hidden" name="csrf" value={workspace.csrf} />
+            <Button variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></Button>
           </form>
         </Alert>}
       </div>}
@@ -687,7 +738,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
           ? <Disclosure summary="Task details" className="so-result-task-details"><GuardedHtml key={workspace.focus.id} html={workspace.focus.html} className="so-task-context" /></Disclosure>
           : <GuardedHtml key={workspace.focus.id} html={workspace.focus.html} className="so-task-context" />)}
         {workspace.result && <Artifact data-workspace-result={workspace.result.runId}><ArtifactContent><GuardedHtml key={workspace.result.runId} html={workspace.result.html} immutable /></ArtifactContent></Artifact>}
-      </div> : <Crew workspace={workspace} />}
+      </div> : home !== null ? <WorkPanel workspace={workspace} home={home} /> : <Crew workspace={workspace} />}
     </aside>}
   </div></>;
 }
