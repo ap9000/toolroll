@@ -136,6 +136,63 @@ export const TEXT_LIMITS = {
   teammateQuestion: 600,
   teammateReason: 400,
   teammateRemember: 300,
+  /** The lead's tools and the MCP gateway (src/contracts/lead-tools.ts, gateway-tools.ts): a task's id as a tool names
+   * it, a task's title and one path it touches, and a project's path as the gateway names it (an assignment brief or
+   * project context, and the rest of the gateway). */
+  taskRef: 64,
+  taskTitle: 200,
+  taskTouch: 200,
+  projectPath: 4_096,
+  gatewayRepo: 800,
+  /** A project-context query, a check-log search, a memory search, a task search and a changed file's path. */
+  contextQuery: 1_000,
+  logSearch: 120,
+  memorySearch: 300,
+  taskSearch: 200,
+  diffPath: 300,
+  /** A hold's or cancel's reason, an answer's rationale and option, a worker's name, an agent change's reason, a
+   * provider and model name, how a task's checks were asked for, and an ISO time a recap counts from. */
+  proposalReason: 200,
+  answerRationale: 400,
+  answerOption: 64,
+  workerName: 60,
+  agentWhy: 400,
+  agentProvider: 20,
+  agentModel: 120,
+  checksWords: 80,
+  recapSince: 30,
+  /** A shared action's fields as the lead proposes them (propose_action). */
+  actionSample: 800,
+  actionContent: 12_000,
+  actionTitle: 120,
+  actionName: 40,
+  actionCommand: 400,
+  actionUrl: 500,
+  actionSecret: 64,
+  actionAbout: 240,
+  /** A teammate change (propose_teammate): a soul section's title, a routine's schedule, a tool, an action, a limit's
+   * field, a name, a soul file, a note, a choice and text. */
+  teammateSection: 60,
+  teammateSchedule: 80,
+  teammateTool: 40,
+  teammateAction: 64,
+  teammateName: 40,
+  teammateSoul: 12_000,
+  teammateNote: 300,
+  teammateChoice: 60,
+  teammateText: 2_000,
+  /** A project knowledge reference id, a promise and why it is released, what the lead remembers (its text, a
+   * decision's reason and source), a person's name, and a question to the owner with its options. */
+  knowledgeReference: 20,
+  promise: 240,
+  rememberText: 240,
+  rememberWhy: 2_000,
+  rememberSource: 200,
+  personName: 80,
+  ownerQuestion: 200,
+  ownerOption: 40,
+  /** A gateway filing's idempotency key. */
+  idempotencyKey: 64,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

@@ -63,12 +63,17 @@ type Node = { _zod: { def: Def } };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The keys an object schema allows at `path` in `input`, following arrays, wrappers and (by its discriminator) a union. */
-function keysAt(schema: Node, input: unknown, path: readonly PropertyKey[]): string[] | null {
+/** The schema at `path`, including whether that value may be omitted, following arrays, wrappers and unions. */
+function nodeAt(schema: Node, input: unknown, path: readonly PropertyKey[]): { def: Def; optional: boolean } | null {
   let node: Node | undefined = schema, value = input;
+  let optional = false;
   for (let at = 0; node !== undefined; ) {
     const def: Def = node._zod.def;
-    if (def.type === "optional" || def.type === "nullable" || def.type === "readonly") { node = def["innerType"] as Node; continue; }
+    if (def.type === "optional" || def.type === "nullable" || def.type === "readonly") {
+      if (def.type === "optional") optional = true;
+      node = def["innerType"] as Node;
+      continue;
+    }
     if (def.type === "lazy") { node = (def["getter"] as () => Node)(); continue; }
     if (def.type === "union") {
       const options = def["options"] as Node[];
@@ -83,8 +88,9 @@ function keysAt(schema: Node, input: unknown, path: readonly PropertyKey[]): str
       });
       continue;
     }
-    if (at === path.length) return def.type === "object" ? Object.keys(def["shape"] as Record<string, unknown>) : null;
+    if (at === path.length) return { def, optional };
     const part = path[at++];
+    optional = false;
     if (def.type === "array" && typeof part === "number") { node = def["element"] as Node; value = Array.isArray(value) ? value[part] : undefined; continue; }
     if (def.type === "object" && typeof part === "string") {
       const shape = def["shape"] as Record<string, Node>;
@@ -131,7 +137,8 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
   const one = (kind: ContractIssue["kind"], what: string): ContractIssue => ({ path: at, kind, line: `${at}: ${what}` });
   switch (issue.code) {
     case "unrecognized_keys": {
-      const known = where.schema === undefined ? null : keysAt(where.schema as unknown as Node, where.input, issue.path);
+      const def = where.schema === undefined ? undefined : nodeAt(where.schema as unknown as Node, where.input, issue.path)?.def;
+      const known = def?.type === "object" ? Object.keys(def["shape"] as Record<string, unknown>) : null;
       return issue.keys.map(key => {
         const meant = suggestion(key, known, where.options ?? {});
         return { path: at, kind: "unknown-key" as const, line: `${at}: unknown key '${key}'${meant === null ? "" : ` (did you mean ${meant}?)`}` };
@@ -139,9 +146,10 @@ function issuesOf(issue: z.core.$ZodIssue, where: Where = {}): ContractIssue[] {
     }
     case "invalid_type": {
       const missing = "input" in issue ? issue.input === undefined : / received undefined$/.test(issue.message);
-      // A null where a value belongs is a value left out.
-      if (missing || ("input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
-      const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
+      // Keep required-null wording for required fields; an optional field given null has the wrong type.
+      const optional = where.schema !== undefined && nodeAt(where.schema as unknown as Node, where.input, issue.path)?.optional === true;
+      if (missing || (!optional && "input" in issue && issue.input === null && issue.expected !== "null")) return [one("required", "required")];
+      const expected = issue.expected === "array" ? "an array" : issue.expected === "object" ? "an object" : issue.expected === "int" ? "an integer" : issue.expected === "null" ? "null" : `a ${issue.expected}`;
       return [one("wrong-type", `must be ${expected}${"input" in issue ? ` (got ${got(issue.input)})` : ""}`)];
     }
     case "too_big":

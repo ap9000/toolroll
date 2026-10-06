@@ -205,7 +205,7 @@ describe("the lead checks a capability before it claims it", () => {
     // The goal's limit is stated in the tool and taken whole; over it, the lead is told the length and asked to shorten.
     expect(MATE_TOOLS.find(one => one.name === "propose_task")!.inputSchema).toMatchObject({ properties: { goal: { maxLength: 8_000, description: expect.stringContaining("At most 8,000 characters") } } });
     expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_000) })).toMatchObject({ ok: true });
-    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_001) })).toEqual({ ok: false, message: "Goal is 8,001 characters; the limit is 8,000. Shorten it." });
+    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_001) })).toEqual({ ok: false, message: "goal: over 8,000 characters (it is 8,001): shorten it and call again" });
     expect(executeMateTool(turn(3), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
 
     // One read over every project covers each of them.

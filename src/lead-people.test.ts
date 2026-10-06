@@ -250,6 +250,9 @@ describe("the lead knows you and the people you work with", () => {
       // Open work only: the cancelled task is not listed.
       expect(sam["openTasks"]).toEqual([{ task: "login-page", title: "Fix the login page", state: "queued", repo: "r1" }]);
       expect(call(ctx, "get_person", { name: "sam" })["person"]).toMatchObject({ id: samId });
+      for (const id of ["invalid", null, 42, {}]) expect(call(ctx, "get_person", { id, name: "sam" })["person"]).toEqual(sam);
+      for (const name of ["", " ".repeat(81), null, 42, {}]) expect(call(ctx, "get_person", { id: samId, name })["person"]).toEqual(sam);
+      expect(executeMateTool(ctx, "get_person", { id: "invalid", name: null })).toEqual({ ok: false, message: "Give an id from your catch-up's people index or a name." });
       expect(executeMateTool(ctx, "get_person", { id: "p1" })).toMatchObject({ ok: false });
       expect(call(ctx, "get_person", { name: "Maya" })["person"]).toMatchObject({ id: `t${mate}`, kind: "AI teammate", name: "Maya", role: "Support", project: "r1", openTasks: [] });
       expect(executeMateTool(ctx, "get_person", { name: "Nobody" })).toMatchObject({ ok: false });
