@@ -1,306 +1,160 @@
 /**
- * The scout's terminal handoff (mate arc §10), parsed with the 422 rule:
- * fail closed, every problem reported at once, stable reasons, caps and
- * control-character rejection on every string. A report reaches the task
- * page, the ledger, the terminal, and — through mateView — the mate; and
- * each follow-up becomes a filing's title and goal at one tap, so it gets
- * the park discipline exactly as the plan does.
+ * The scout's terminal handoff (mate arc §10), read against the report contract (src/contracts/scout-report.ts) with
+ * the 422 rule: fail closed, every problem reported at once, each naming its path (`items[0].url: must be an http or
+ * https address`), stable reasons, caps and control-character rejection on every string. A report reaches the task
+ * page, the ledger, the terminal, and — through mateView — the mate; and each follow-up becomes a filing's title and
+ * goal at one tap, so it gets the park discipline exactly as the plan does.
  */
 
+import { contractProblemOf, type ContractIssue, type ContractProblem } from "./contracts/contract.js";
+import {
+  FOLLOW_UP_TEXT_FIELDS,
+  IMAGE_TEXT_FIELDS,
+  ITEM_TEXT_FIELDS,
+  readReportPayload,
+  REPORT_LIMITS,
+  REPORT_TEXT_FIELDS,
+  reportPayloadBody,
+  type ParsedReport,
+} from "./contracts/scout-report.js";
 import { hasForbiddenControls } from "./decision.js";
-import { TASK_TEXT_LIMITS } from "./task-text.js";
-import { TEXT_LIMITS } from "./text-limits.js";
+import { TEXT_LIMITS, type TextLimitKey } from "./text-limits.js";
 
-export type ReportProblem = { reason: string; message: string };
+export {
+  REPORT_IMAGE_FILE,
+  REPORT_LIMITS,
+  REPORT_VERSION,
+  SCOUT_OUTPUT_JSON_SCHEMA,
+  type ParsedReport,
+  type ReportImage,
+  type ReportItem,
+} from "./contracts/scout-report.js";
 
-export type ParsedReport = {
-  title: string;
-  summary: string;
-  /** The report document, markdown, rendered fenced-inert everywhere. */
-  report: string;
-  /** Proposed follow-ups: each files as a task in the same repository. */
-  followUps: { title: string; goal: string }[];
-  /** What the scout found, as a short list later steps can read: each cites its URL, and may show one of `images`. */
-  items: ReportItem[];
-  /** Screenshots the scout saved during the run. From the scout, `file` names a file in its output folder; once
-   * stored, the runner adds the bytes' sha256 and the evidence row that holds them. */
-  images: ReportImage[];
-};
-
-export type ReportItem = { title: string; why: string; url: string; image: string | null };
-export type ReportImage = { file: string; caption: string; url: string; sha256?: string; artifact?: number };
+export type ReportProblem = ContractProblem;
 
 export type ReportParseResult =
   | { ok: true; report: ParsedReport }
   | { ok: false; problems: ReportProblem[] };
 
-/** Caps are BYTES of UTF-8 (v4 review, finding 11): a 64 KiB report is
- * 64 KiB whatever script it is written in. They hold what a scout writes;
- * a stored report is read without them (parseReport's `stored`). */
-export const REPORT_LIMITS = {
-  payload: 96 * 1024,
-  title: 200,
-  summary: TEXT_LIMITS.reportSummary,
-  document: 64 * 1024,
-  followUps: 5,
-  followUpTitle: 200,
-  /** A follow-up files as a task: its goal is held to the task goal limit, in bytes of the same count. */
-  followUpGoal: TASK_TEXT_LIMITS.text,
-  items: 6,
-  itemTitle: 200,
-  itemWhy: 1_000,
-  url: 2_000,
-  images: 8,
-  caption: 300,
-} as const;
-
-/** A screenshot's name in the scout's output folder: one plain file name, PNG or JPEG, never a path. */
-export const REPORT_IMAGE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.(?:png|jpe?g)$/i;
-
-const REPORT_SHAPE = {
-  type: "object",
-  properties: {
-    title: { type: "string" },
-    summary: { type: "string" },
-    report: { type: "string" },
-    followUps: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: { title: { type: "string" }, goal: { type: "string" } },
-        required: ["title", "goal"],
-        additionalProperties: false,
-      },
-    },
-    items: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: { title: { type: "string" }, why: { type: "string" }, url: { type: "string" }, image: { type: "string" } },
-        required: ["title", "why", "url"],
-        additionalProperties: false,
-      },
-    },
-    images: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: { file: { type: "string" }, caption: { type: "string" }, url: { type: "string" } },
-        required: ["file", "caption", "url"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["title", "summary", "report"],
-  additionalProperties: false,
-} as const;
-
-/** The park mailbox's decision, the same fields `parseDecision` reads. */
-const DECISION_SHAPE = {
-  type: "object",
-  properties: {
-    urgency: { type: "string", enum: ["blocking"] },
-    recap: { type: "string" },
-    question: { type: "string" },
-    options: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          label: { type: "string" },
-          consequence: { type: "string" },
-          reversible: { type: "boolean" },
-        },
-        required: ["id", "label", "consequence", "reversible"],
-        additionalProperties: false,
-      },
-    },
-    recommendation: { type: "string" },
-  },
-  required: ["urgency", "recap", "question", "options", "recommendation"],
-  additionalProperties: false,
-} as const;
-
-/**
- * The scout's handback for Claude's `--json-schema` (run 2334's fix): plan
- * mode only lets a session write its own plan file, so a Claude scout
- * returns a report — or a question for the operator — as structured output
- * on the terminal result event. Shape only, never the validator: byte caps,
- * one-line titles and control characters stay `parseReport`'s and
- * `parseDecision`'s, applied to the re-serialized body.
- */
-export const SCOUT_OUTPUT_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    kind: { type: "string", enum: ["report", "question"] },
-    report: REPORT_SHAPE,
-    decision: DECISION_SHAPE,
-  },
-  required: ["kind"],
-  additionalProperties: false,
-} as const;
-
 function refuse(reason: string, message: string): ReportParseResult {
   return { ok: false, problems: [{ reason, message }] };
 }
 
-function describe(value: unknown): string {
-  if (value === undefined) return "nothing";
-  if (value === null) return "null";
-  if (typeof value === "string") return `a ${value.length}-char string`;
-  return `a ${Array.isArray(value) ? "array" : typeof value}`;
-}
-
-function prose(value: unknown, field: string, cap: number, problems: ReportProblem[]): string | null {
-  if (value === undefined || value === null || value === "" || (typeof value === "string" && value.trim() === "")) {
-    problems.push({ reason: `missing-${field}`, message: `${field} is required` });
-    return null;
-  }
-  if (typeof value !== "string") {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be a string (got ${describe(value)})` });
-    return null;
-  }
-  if (!readingStored && Buffer.byteLength(value, "utf8") > cap) {
-    problems.push({ reason: `${field}-too-long`, message: `${field} is over ${cap} bytes` });
-    return null;
-  }
-  if (hasForbiddenControls(value)) {
-    problems.push({ reason: `${field}-controls`, message: `${field} carries control characters that could become terminal escapes` });
-    return null;
-  }
-  return value;
-}
-
-/** True while a stored report is read: a limit is for writing, and reading never re-checks a text's length. */
-let readingStored = false;
-
 /** A report, checked. `stored`: one already kept as evidence, read without the length caps (a report written under
  * higher limits stays readable); every other check still holds. */
 export function parseReport(raw: string, options: { stored?: boolean } = {}): ReportParseResult {
-  readingStored = options.stored === true;
-  try { return parseReportBody(raw); } finally { readingStored = false; }
-}
-
-function parseReportBody(raw: string): ReportParseResult {
-  if (!readingStored && Buffer.byteLength(raw, "utf8") > REPORT_LIMITS.payload) {
-    return refuse("too-large", `the payload is over ${REPORT_LIMITS.payload} bytes`);
+  const stored = options.stored === true;
+  if (!stored && Buffer.byteLength(raw, "utf8") > REPORT_LIMITS.payload) {
+    return refuse("too-large", `payload: over ${REPORT_LIMITS.payload.toLocaleString("en-US")} bytes`);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    return refuse("not-json", `the payload is not JSON: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse("not-json", `payload: not JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return refuse("not-an-object", "the payload must be one JSON object");
-  }
-  const body = parsed as Record<string, unknown>;
-  const problems: ReportProblem[] = [];
+  const body = reportPayloadBody(parsed);
+  if (body === null) return refuse("not-an-object", "payload: must be one JSON object");
 
-  const title = prose(body["title"], "title", REPORT_LIMITS.title, problems);
-  const summary = prose(body["summary"], "summary", REPORT_LIMITS.summary, problems);
-  const document = prose(body["report"], "report", REPORT_LIMITS.document, problems);
-  if (title !== null && /[\n\r]/.test(title)) {
-    problems.push({ reason: "title-multiline", message: "title must be one line" });
-  }
-  // One paragraph: the summary is what the operator reads first, on a
-  // phone, in a digest line — a blank line inside it is a second paragraph.
-  if (summary !== null && /\n[ \t]*\n/.test(summary)) {
-    problems.push({ reason: "summary-paragraphs", message: "summary is one paragraph — no blank lines" });
-  }
+  const read = readReportPayload(parsed, { stored });
+  // Every report limit counts UTF-8 bytes, including those TEXT_LIMITS names without "Bytes" (a summary, a goal).
+  const issues = (read.ok ? [] : read.issues).map(issue => (issue.kind === "too-long" ? { ...issue, line: issue.line.replace(/ characters$/, " bytes") } : issue));
+  const contract = issues.map(contractProblemOf);
+  if (contract.some(problem => problem.reason === "newer-version" || problem.reason === "bad-version")) return { ok: false, problems: contract };
+  const problems = [...contract, ...reportRuleProblems(body, issues, stored)];
+  if (!read.ok || problems.length > 0) return { ok: false, problems };
 
-  const followUps: { title: string; goal: string }[] = [];
-  if (body["followUps"] !== undefined && body["followUps"] !== null) {
-    if (!Array.isArray(body["followUps"])) {
-      problems.push({ reason: "bad-followUps", message: `followUps must be an array (got ${describe(body["followUps"])})` });
-    } else if (body["followUps"].length > REPORT_LIMITS.followUps) {
-      problems.push({ reason: "followUps-too-many", message: `followUps lists ${body["followUps"].length} — cap is ${REPORT_LIMITS.followUps}` });
-    } else {
-      for (const [index, one] of body["followUps"].entries()) {
-        if (typeof one !== "object" || one === null || Array.isArray(one)) {
-          problems.push({ reason: `followUps[${index}]-shape`, message: `followUps[${index}] must be {title, goal}` });
-          continue;
-        }
-        const entry = one as Record<string, unknown>;
-        const followTitle = prose(entry["title"], `followUps[${index}].title`, REPORT_LIMITS.followUpTitle, problems);
-        const goal = prose(entry["goal"], `followUps[${index}].goal`, REPORT_LIMITS.followUpGoal, problems);
-        if (followTitle !== null && /[\n\r]/.test(followTitle)) {
-          problems.push({ reason: `followUps[${index}]-title-multiline`, message: `followUps[${index}].title must be one line` });
-        } else if (followTitle !== null && goal !== null) {
-          followUps.push({ title: followTitle, goal });
-        }
-      }
-    }
-  }
-
-  const images = listOf(body["images"], "images", REPORT_LIMITS.images, problems, (entry, at) => {
-    // Any one line here: the runner refuses an image that isn't a plain file name in its output folder, not the report.
-    const file = prose(entry["file"], `${at}.file`, REPORT_LIMITS.caption, problems);
-    const caption = prose(entry["caption"], `${at}.caption`, REPORT_LIMITS.caption, problems);
-    const url = link(entry["url"], `${at}.url`, problems);
-    if (file !== null && /[\n\r]/.test(file)) problems.push({ reason: `${at}-file-multiline`, message: `${at}.file must be one line` });
-    if (caption !== null && /[\n\r]/.test(caption)) problems.push({ reason: `${at}-caption-multiline`, message: `${at}.caption must be one line` });
-    const sha256 = entry["sha256"];
-    if (sha256 !== undefined && (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256))) problems.push({ reason: `${at}-sha256`, message: `${at}.sha256 must be a sha256 hex digest` });
-    const artifact = entry["artifact"];
-    if (artifact !== undefined && (typeof artifact !== "number" || !Number.isSafeInteger(artifact) || artifact <= 0)) problems.push({ reason: `${at}-artifact`, message: `${at}.artifact must be an evidence id` });
-    if (file === null || caption === null || url === null || /[\n\r]/.test(file) || /[\n\r]/.test(caption)) return null;
-    return { file, caption, url, ...(typeof sha256 === "string" ? { sha256 } : {}), ...(typeof artifact === "number" ? { artifact } : {}) };
-  });
-  const files = new Set<string>();
-  for (const one of images) {
-    if (files.has(one.file)) problems.push({ reason: "images-duplicate", message: `images names ${one.file} twice` });
-    files.add(one.file);
-  }
-  const items = listOf(body["items"], "items", REPORT_LIMITS.items, problems, (entry, at) => {
-    const itemTitle = prose(entry["title"], `${at}.title`, REPORT_LIMITS.itemTitle, problems);
-    const why = prose(entry["why"], `${at}.why`, REPORT_LIMITS.itemWhy, problems);
-    const url = link(entry["url"], `${at}.url`, problems);
-    const image = entry["image"] === undefined || entry["image"] === null || entry["image"] === "" ? null : entry["image"];
-    if (itemTitle !== null && /[\n\r]/.test(itemTitle)) problems.push({ reason: `${at}-title-multiline`, message: `${at}.title must be one line` });
-    if (image !== null && (typeof image !== "string" || !files.has(image))) problems.push({ reason: `${at}-image`, message: `${at}.image must name one of images by its file` });
-    if (itemTitle === null || why === null || url === null || /[\n\r]/.test(itemTitle) || (image !== null && (typeof image !== "string" || !files.has(image)))) return null;
-    return { title: itemTitle, why, url, image: image as string | null };
-  });
-
-  if (problems.length > 0) return { ok: false, problems };
-  return { ok: true, report: { title: title as string, summary: summary as string, report: document as string, followUps, items, images } };
+  const payload = read.value;
+  return {
+    ok: true,
+    report: {
+      title: payload.title,
+      summary: payload.summary,
+      report: payload.report,
+      followUps: (payload.followUps ?? []).map(one => ({ title: one.title, goal: one.goal })),
+      items: (payload.items ?? []).map(one => ({ title: one.title, why: one.why, url: one.url, image: one.image === undefined || one.image === null || one.image === "" ? null : one.image })),
+      images: (payload.images ?? []).map(one => ({
+        file: one.file,
+        caption: one.caption,
+        url: one.url,
+        ...(one.sha256 === undefined ? {} : { sha256: one.sha256 }),
+        ...(one.artifact === undefined ? {} : { artifact: one.artifact }),
+      })),
+    },
+  };
 }
 
-/** An optional capped list of objects, each read by `one`; problems are reported, never thrown. */
-function listOf<T>(value: unknown, field: string, cap: number, problems: ReportProblem[], one: (entry: Record<string, unknown>, at: string) => T | null): T[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    problems.push({ reason: `bad-${field}`, message: `${field} must be an array (got ${describe(value)})` });
-    return [];
+type TextRule = { limit: TextLimitKey; oneLine?: boolean; link?: boolean };
+
+/**
+ * The rules JSON Schema cannot state, in plain code with path-named errors: blank text, byte caps (on write only),
+ * control characters, one-line fields, a one-paragraph summary, safe links, a screenshot named twice and an item
+ * naming one the report doesn't have. A field the contract already refused (or one inside it) is skipped, so every
+ * problem is reported once and all at once.
+ */
+function reportRuleProblems(body: Record<string, unknown>, issues: readonly ContractIssue[], stored: boolean): ReportProblem[] {
+  const problems: ReportProblem[] = [];
+  // An unknown key is about its object, not the fields beside it.
+  const refused = issues.filter(issue => issue.kind !== "unknown-key").map(issue => issue.path);
+  const touched = (path: string) =>
+    refused.some(at => at === path || path.startsWith(`${at}.`) || path.startsWith(`${at}[`) || at.startsWith(`${path}.`) || at.startsWith(`${path}[`));
+  const say = (path: string, reason: string, what: string) => problems.push({ reason, message: `${path}: ${what}` });
+
+  /** One text field checked; true when it passed every rule. */
+  const text = (value: unknown, path: string, rule: TextRule): value is string => {
+    if (typeof value !== "string" || touched(path)) return false;
+    const limit = TEXT_LIMITS[rule.limit];
+    if (value.trim() === "") say(path, `missing-${path}`, "must not be empty");
+    else if (!stored && Buffer.byteLength(value, "utf8") > limit) say(path, `${path}-too-long`, `over ${limit.toLocaleString("en-US")} bytes`);
+    else if (hasForbiddenControls(value)) say(path, `${path}-controls`, "carries control characters that could become terminal escapes");
+    else if (rule.oneLine === true && /[\n\r]/.test(value)) say(path, `${path}-multiline`, "must be one line");
+    else if (rule.link === true && !isLink(value)) say(path, `${path}-not-a-link`, "must be an http or https address");
+    else return true;
+    return false;
+  };
+  const entries = (list: "followUps" | "items" | "images"): [Record<string, unknown>, string][] => {
+    const value = body[list];
+    if (!Array.isArray(value) || touched(list)) return [];
+    return value.flatMap((entry, index): [Record<string, unknown>, string][] =>
+      typeof entry === "object" && entry !== null && !Array.isArray(entry) ? [[entry as Record<string, unknown>, `${list}[${index}]`]] : []);
+  };
+  const fields = (entry: Record<string, unknown>, at: string, rules: Readonly<Record<string, TextRule>>) => {
+    for (const [field, rule] of Object.entries(rules)) text(entry[field], at === "" ? field : `${at}.${field}`, rule);
+  };
+
+  fields(body, "", REPORT_TEXT_FIELDS);
+  // One paragraph: the summary is what the operator reads first, on a phone, in a digest line — a blank line inside
+  // it is a second paragraph.
+  const summary = body["summary"];
+  if (typeof summary === "string" && !problems.some(problem => problem.message.startsWith("summary:")) && !touched("summary") && /\n[ \t]*\n/.test(summary)) {
+    say("summary", "summary-paragraphs", "one paragraph — no blank lines");
   }
-  if (value.length > cap) {
-    problems.push({ reason: `${field}-too-many`, message: `${field} lists ${value.length} — cap is ${cap}` });
-    return [];
+  for (const [entry, at] of entries("followUps")) fields(entry, at, FOLLOW_UP_TEXT_FIELDS);
+
+  const files = new Map<string, string>();
+  for (const [entry, at] of entries("images")) {
+    fields(entry, at, IMAGE_TEXT_FIELDS);
+    const file = entry["file"];
+    if (typeof file !== "string" || touched(`${at}.file`)) continue;
+    const first = files.get(file);
+    if (first !== undefined) say(`${at}.file`, "images-duplicate", `names ${file} again (also ${first})`);
+    else files.set(file, at);
   }
-  const kept: T[] = [];
-  for (const [index, entry] of value.entries()) {
-    const at = `${field}[${index}]`;
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      problems.push({ reason: `${at}-shape`, message: `${at} must be an object` });
-      continue;
+  // An item's picture is checked against the images as written: one naming a screenshot the report doesn't list is refused.
+  const imagesRefused = touched("images");
+  for (const [entry, at] of entries("items")) {
+    fields(entry, at, ITEM_TEXT_FIELDS);
+    const image = entry["image"];
+    if (typeof image === "string" && image !== "" && !touched(`${at}.image`) && !imagesRefused && !files.has(image)) {
+      say(`${at}.image`, `bad-${at}.image`, "must name one of images by its file");
     }
-    const read = one(entry as Record<string, unknown>, at);
-    if (read !== null) kept.push(read);
   }
-  return kept;
+  return problems;
 }
 
 /** A cited web address: http or https, one line, no credentials. */
-function link(value: unknown, field: string, problems: ReportProblem[]): string | null {
-  const text = prose(value, field, REPORT_LIMITS.url, problems);
-  if (text === null) return null;
+function isLink(text: string): boolean {
   let url: URL | null = null;
   try { url = new URL(text); } catch { url = null; }
-  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || /\s/.test(text) || url.username !== "" || url.password !== "") {
-    problems.push({ reason: `${field}-not-a-link`, message: `${field} must be an http or https address` });
-    return null;
-  }
-  return text;
+  return url !== null && (url.protocol === "http:" || url.protocol === "https:") && !/\s/.test(text) && url.username === "" && url.password === "";
 }

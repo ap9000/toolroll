@@ -80,6 +80,18 @@ export const TEXT_LIMITS = {
   flowScriptInline: 1_600,
   /** A research report's summary, in UTF-8 bytes. */
   reportSummary: 2_500,
+  /** A scout's whole report file (src/contracts/scout-report.ts), in UTF-8 bytes. */
+  reportPayloadBytes: 96 * 1024,
+  /** A report's document (markdown), in UTF-8 bytes. */
+  reportDocumentBytes: 64 * 1024,
+  /** A report's title, and a follow-up's or an item's title, in UTF-8 bytes. */
+  reportTitleBytes: 200,
+  /** Why an item fits, in UTF-8 bytes. */
+  reportWhyBytes: 1_000,
+  /** A web address a report cites, in UTF-8 bytes. */
+  reportUrlBytes: 2_000,
+  /** A screenshot's caption and its file name, in UTF-8 bytes. */
+  reportCaptionBytes: 300,
   /** What one flow step passes on to the steps after it. */
   stageOutput: 12_000,
   /** The planner's whole handoff file, in UTF-8 bytes. */

@@ -1,0 +1,791 @@
+{
+  "about": "Scout reports as each release stored them (evidence/<run>/report.json, re-serialized from the parsed report) and as a scout writes one now. Reconstructed per release from the writer in git history with synthetic, secret-free text: the build that made this corpus could not read saved evidence. Replace or extend with sanitized copies of real report.json files when available.",
+  "stored": [
+    {
+      "name": "v4 minimal report, no follow-ups",
+      "release": "0.9.13",
+      "payload": {
+        "title": "Login flakes on CI",
+        "summary": "The login test races the session cookie.",
+        "report": "## Findings\n\nThe test asserts before `Set-Cookie` arrives.\n\n## Evidence\n\n- `test/login.spec.ts:42` awaits navigation, not the cookie.",
+        "followUps": []
+      }
+    },
+    {
+      "name": "v4 report with follow-ups",
+      "release": "0.9.13",
+      "payload": {
+        "title": "Where the nightly export spends its time",
+        "summary": "Most of the 14 minutes is one unindexed query over events; the rest is gzip at level 9.",
+        "report": "## Findings\n\n1. `exportEvents` scans `events` without an index on `(project, at)`.\n2. Compression runs at level 9 for a 2% gain.\n\n## Risks\n\nAdding the index locks the table briefly on large projects.",
+        "followUps": [
+          {
+            "title": "Index events by project and time",
+            "goal": "The nightly export's events query uses an index on (project, at); export time on the fixture project drops below 5 minutes; a migration test covers the new index."
+          },
+          {
+            "title": "Compress exports at level 6",
+            "goal": "Exports use gzip level 6; the export test asserts the level and the archive still round-trips."
+          }
+        ]
+      }
+    },
+    {
+      "name": "0.9.20 report with fenced code and unicode",
+      "release": "0.9.20",
+      "payload": {
+        "title": "Ünïcode file names break the uploader",
+        "summary": "Names are normalised to NFD on macOS and compared as NFC on the server, so the same file uploads twice — e.g. “résumé.pdf”.",
+        "report": "## Findings\n\n```ts\nconst key = name.normalize(\"NFC\");\n```\n\nThe client never normalises; the server does. Café ≠ Café (NFD vs NFC).\n\n## Evidence\n\n— two uploads of `résumé.pdf` from one Mac produced rows 811 and 812.",
+        "followUps": [
+          {
+            "title": "Normalise upload names to NFC on the client",
+            "goal": "The uploader normalises every file name to NFC before hashing and upload; a test uploads an NFD name twice and gets one row."
+          }
+        ]
+      }
+    },
+    {
+      "name": "0.9.20 summary wrapped over two lines (one paragraph)",
+      "release": "0.9.20",
+      "payload": {
+        "title": "Dependency audit: two advisories, neither reachable",
+        "summary": "Two moderate advisories in transitive packages,\nneither reachable from our code paths.",
+        "report": "## Findings\n\n- `left-pad-ng` ReDoS: only reached from a dev script.\n- `yaml-lite` prototype pollution: we never parse untrusted YAML.",
+        "followUps": []
+      }
+    },
+    {
+      "name": "0.9.21 research with items and no screenshots",
+      "release": "0.9.21",
+      "payload": {
+        "title": "How three products group long settings",
+        "summary": "Linear, Notion and Apple each group long settings pages by task, not by feature; each pattern below fits our Settings page.",
+        "report": "## Findings\n\nGrouping by task keeps the page scannable on a phone.",
+        "followUps": [],
+        "items": [
+          {
+            "title": "Linear groups settings by what you are doing",
+            "why": "Task groups, not feature lists; fits us because our page mixes account and project settings; plugs in as three headed groups.",
+            "url": "https://linear.app/docs/account-preferences",
+            "image": null
+          },
+          {
+            "title": "Notion keeps the search box at the top",
+            "why": "A search box above every setting; plugs in as one search field over the groups.",
+            "url": "https://www.notion.so/help/settings",
+            "image": null
+          }
+        ],
+        "images": []
+      }
+    },
+    {
+      "name": "0.9.21 research with stored screenshots",
+      "release": "0.9.21",
+      "payload": {
+        "title": "Settings inspiration",
+        "summary": "Three products group long settings well; each pattern below fits our Settings page.",
+        "report": "## Findings\n\nSee the items and their screenshots.",
+        "followUps": [
+          {
+            "title": "Group Settings by task",
+            "goal": "The Settings page shows Account, Projects and Notifications groups, each with a heading; the settings journey passes at desktop and phone sizes."
+          }
+        ],
+        "items": [
+          {
+            "title": "Linear groups settings by what you are doing",
+            "why": "Task groups; plugs in as three headed groups.",
+            "url": "https://linear.app/docs/account-preferences",
+            "image": "linear.png"
+          },
+          {
+            "title": "Notion keeps the search box at the top",
+            "why": "Search above every setting.",
+            "url": "https://www.notion.so/help/settings",
+            "image": "notion.png"
+          },
+          {
+            "title": "Apple shows one primary action per row",
+            "why": "Rare controls move into disclosures.",
+            "url": "https://developer.apple.com/design/human-interface-guidelines/settings",
+            "image": null
+          }
+        ],
+        "images": [
+          {
+            "file": "extra.png",
+            "caption": "An overview page no item uses",
+            "url": "https://example.com/overview",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifact": 4101
+          },
+          {
+            "file": "linear.png",
+            "caption": "Linear's account preferences",
+            "url": "https://linear.app/docs/account-preferences",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "artifact": 4102
+          },
+          {
+            "file": "notion.png",
+            "caption": "Notion's settings with search",
+            "url": "https://www.notion.so/help/settings",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "artifact": 4103
+          }
+        ]
+      }
+    },
+    {
+      "name": "0.9.24 report redacted before storage, screenshot renamed and its link scrubbed",
+      "release": "0.9.24",
+      "payload": {
+        "title": "Why the staging deploy fails",
+        "summary": "The deploy script reads a token from a file the CI image no longer has.",
+        "report": "## Findings\n\nThe script exports the token inline:\n\n[redacted: generic-api-key detected on this line]\n\nso the CI image needs the file back or the secret store.",
+        "followUps": [
+          {
+            "title": "Read the deploy token from the secret store",
+            "goal": "The staging deploy reads its token from the CI secret store, never a file; the deploy dry run passes."
+          }
+        ],
+        "items": [
+          {
+            "title": "The CI log shows the missing file",
+            "why": "It is the first failing step.",
+            "url": "https://ci.example.com/runs/88?token=REDACTED",
+            "image": "screenshot-1.png"
+          }
+        ],
+        "images": [
+          {
+            "file": "screenshot-1.png",
+            "caption": "The failing CI step",
+            "url": "https://ci.example.com/runs/88?token=REDACTED",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "artifact": 5120
+          }
+        ]
+      }
+    },
+    {
+      "name": "0.9.25 research with JPEG screenshots and the most items",
+      "release": "0.9.25",
+      "payload": {
+        "title": "Empty states worth copying",
+        "summary": "Six products whose empty states name the next action in one line; two show a picture.",
+        "report": "## Findings\n\nEach item names the action and why it fits our task list.",
+        "followUps": [],
+        "items": [
+          {
+            "title": "Example 1",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/1",
+            "image": "empty-1.jpg"
+          },
+          {
+            "title": "Example 2",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/2",
+            "image": "empty-2.jpeg"
+          },
+          {
+            "title": "Example 3",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/3",
+            "image": null
+          },
+          {
+            "title": "Example 4",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/4",
+            "image": null
+          },
+          {
+            "title": "Example 5",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/5",
+            "image": null
+          },
+          {
+            "title": "Example 6",
+            "why": "Names the next action in one line.",
+            "url": "https://example.com/empty/6",
+            "image": null
+          }
+        ],
+        "images": [
+          {
+            "file": "empty-1.jpg",
+            "caption": "Example 1's empty list",
+            "url": "https://example.com/empty/1",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "artifact": 6001
+          },
+          {
+            "file": "empty-2.jpeg",
+            "caption": "Example 2's empty inbox",
+            "url": "https://example.com/empty/2",
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "artifact": 6002
+          }
+        ]
+      }
+    },
+    {
+      "name": "0.9.26 report with the most follow-ups",
+      "release": "0.9.26",
+      "payload": {
+        "title": "Five small fixes for the import page",
+        "summary": "The import page works but has five small rough edges; each is a follow-up.",
+        "report": "## Findings\n\n1. No progress for large files.\n2. Errors lose the row number.\n3. The cancel button is hidden on phones.\n4. Duplicate rows are imported twice.\n5. The sample file link is broken.",
+        "followUps": [
+          {
+            "title": "Import fix 1",
+            "goal": "Import page rough edge 1 is fixed and covered by the import journey."
+          },
+          {
+            "title": "Import fix 2",
+            "goal": "Import page rough edge 2 is fixed and covered by the import journey."
+          },
+          {
+            "title": "Import fix 3",
+            "goal": "Import page rough edge 3 is fixed and covered by the import journey."
+          },
+          {
+            "title": "Import fix 4",
+            "goal": "Import page rough edge 4 is fixed and covered by the import journey."
+          },
+          {
+            "title": "Import fix 5",
+            "goal": "Import page rough edge 5 is fixed and covered by the import journey."
+          }
+        ],
+        "items": [],
+        "images": []
+      }
+    },
+    {
+      "name": "0.9.27 CJK report near the byte limits",
+      "release": "0.9.27",
+      "payload": {
+        "title": "検索の遅延の原因",
+        "summary": "検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。検索が遅いのは全文索引が再構築されているためです。",
+        "report": "## 調査結果\n\n索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。索引の再構築が毎時実行されています。",
+        "followUps": [
+          {
+            "title": "索引の再構築を夜間だけにする",
+            "goal": "全文索引の再構築は夜間に一度だけ実行され、検索の応答時間が200ミリ秒未満になる。"
+          }
+        ],
+        "items": [],
+        "images": []
+      }
+    },
+    {
+      "name": "0.9.28 report kept whole after the shorten turn, summary over today's limit",
+      "release": "0.9.28",
+      "payload": {
+        "title": "Login flakes on CI",
+        "summary": "The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI. The login test reads the session cookie before the response sets it, so it fails about one run in twenty on CI.",
+        "report": "## Findings\n\nThe test asserts before the cookie arrives.",
+        "followUps": [],
+        "items": [],
+        "images": []
+      }
+    },
+    {
+      "name": "0.9.36 report with an item pointing at no picture",
+      "release": "0.9.36",
+      "payload": {
+        "title": "Onboarding drop-off",
+        "summary": "Most people leave at the workspace-name step; the field rejects spaces without saying why.",
+        "report": "## Findings\n\nThe validation message only appears after submit.",
+        "followUps": [
+          {
+            "title": "Explain the workspace-name rule as people type",
+            "goal": "The workspace-name field explains its rule inline while typing; the onboarding journey covers a name with spaces."
+          }
+        ],
+        "items": [
+          {
+            "title": "Stripe explains field rules inline",
+            "why": "Inline rules prevent the dead end; plugs in as a hint under the field.",
+            "url": "https://stripe.com/docs/payments",
+            "image": null
+          }
+        ],
+        "images": []
+      }
+    }
+  ],
+  "written": [
+    {
+      "name": "version 1 report as a Claude scout writes it now",
+      "payload": {
+        "version": 1,
+        "title": "Login flakes on CI",
+        "summary": "The login test races the session cookie.",
+        "report": "## Findings\n\nAwait the cookie.",
+        "followUps": [
+          {
+            "title": "Await the cookie",
+            "goal": "The login test waits for the session cookie before asserting; it passes 50 runs in a row on CI."
+          }
+        ],
+        "items": [
+          {
+            "title": "Playwright waits on a response",
+            "why": "waitForResponse makes the race explicit.",
+            "url": "https://playwright.dev/docs/api/class-page#page-wait-for-response",
+            "image": "docs.png"
+          }
+        ],
+        "images": [
+          {
+            "file": "docs.png",
+            "caption": "Playwright's waitForResponse docs",
+            "url": "https://playwright.dev/docs/api/class-page"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unversioned report file with null lists and a key the old parser ignored",
+      "payload": {
+        "title": "No change needed",
+        "summary": "The retry already covers this case.",
+        "report": "## Findings\n\nNothing to change.",
+        "followUps": null,
+        "items": null,
+        "images": null,
+        "notes": "scratch"
+      }
+    },
+    {
+      "name": "unversioned report whose item names no picture by an empty string",
+      "payload": {
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "One",
+            "why": "Because.",
+            "url": "https://example.com/",
+            "image": "",
+            "extra": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "version 1 with a key it does not define",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "notes": "x"
+      }
+    },
+    {
+      "name": "version 1 follow-up with an extra field",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": [
+          {
+            "title": "t",
+            "goal": "g",
+            "to": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version 1 report with null lists",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": null,
+        "items": null,
+        "images": null
+      }
+    },
+    {
+      "name": "version null report with null lists",
+      "payload": {
+        "version": null,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": null,
+        "items": null,
+        "images": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a newer version",
+      "payload": {
+        "version": 2,
+        "title": "t",
+        "summary": "s",
+        "report": "r"
+      },
+      "paths": [
+        "version"
+      ]
+    },
+    {
+      "name": "a version that is not a number",
+      "payload": {
+        "version": "1",
+        "title": "t",
+        "summary": "s",
+        "report": "r"
+      },
+      "paths": [
+        "version"
+      ]
+    },
+    {
+      "name": "no title",
+      "payload": {
+        "version": 1,
+        "summary": "s",
+        "report": "r"
+      },
+      "paths": [
+        "title"
+      ]
+    },
+    {
+      "name": "a blank summary",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "   ",
+        "report": "r"
+      },
+      "paths": [
+        "summary"
+      ]
+    },
+    {
+      "name": "a summary of two paragraphs",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "one.\n\ntwo.",
+        "report": "r"
+      },
+      "paths": [
+        "summary"
+      ]
+    },
+    {
+      "name": "a two-line follow-up title",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": [
+          {
+            "title": "a\nb",
+            "goal": "g"
+          }
+        ]
+      },
+      "paths": [
+        "followUps[0].title"
+      ]
+    },
+    {
+      "name": "follow-ups that are not a list",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": "none"
+      },
+      "paths": [
+        "followUps"
+      ]
+    },
+    {
+      "name": "a follow-up that is not an object",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "followUps": [
+          "x"
+        ]
+      },
+      "paths": [
+        "followUps[0]"
+      ]
+    },
+    {
+      "name": "too many items",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          },
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "items"
+      ]
+    },
+    {
+      "name": "an item citing a file URL",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "why": "w",
+            "url": "file:///etc/passwd"
+          }
+        ]
+      },
+      "paths": [
+        "items[0].url"
+      ]
+    },
+    {
+      "name": "an item citing a URL with credentials",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://user:pw@example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "items[0].url"
+      ]
+    },
+    {
+      "name": "an item naming a picture the report does not have",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "why": "w",
+            "url": "https://example.com/",
+            "image": "nowhere.png"
+          }
+        ]
+      },
+      "paths": [
+        "items[0].image"
+      ]
+    },
+    {
+      "name": "an item missing why",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "items[0].why"
+      ]
+    },
+    {
+      "name": "a screenshot named twice",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "images": [
+          {
+            "file": "a.png",
+            "caption": "c",
+            "url": "https://example.com/"
+          },
+          {
+            "file": "a.png",
+            "caption": "d",
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "images[1].file"
+      ]
+    },
+    {
+      "name": "a screenshot with a bad sha256",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "images": [
+          {
+            "file": "a.png",
+            "caption": "c",
+            "url": "https://example.com/",
+            "sha256": "xyz"
+          }
+        ]
+      },
+      "paths": [
+        "images[0].sha256"
+      ]
+    },
+    {
+      "name": "a screenshot with an evidence id of zero",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "images": [
+          {
+            "file": "a.png",
+            "caption": "c",
+            "url": "https://example.com/",
+            "artifact": 0
+          }
+        ]
+      },
+      "paths": [
+        "images[0].artifact"
+      ]
+    },
+    {
+      "name": "a two-line caption",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r",
+        "images": [
+          {
+            "file": "a.png",
+            "caption": "two\nlines",
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "images[0].caption"
+      ]
+    },
+    {
+      "name": "control characters in the report",
+      "payload": {
+        "version": 1,
+        "title": "t",
+        "summary": "s",
+        "report": "r\u001b[2J"
+      },
+      "paths": [
+        "report"
+      ]
+    },
+    {
+      "name": "an unversioned report with a wrong-typed body and several problems at once",
+      "payload": {
+        "title": 7,
+        "summary": "",
+        "report": "r",
+        "items": [
+          {
+            "title": "t",
+            "why": "w",
+            "url": "ftp://example.com/"
+          }
+        ]
+      },
+      "paths": [
+        "title",
+        "summary",
+        "items[0].url"
+      ]
+    },
+    {
+      "name": "not an object",
+      "payload": [
+        "a report"
+      ],
+      "paths": [
+        "payload"
+      ]
+    }
+  ]
+}
