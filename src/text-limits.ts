@@ -193,6 +193,53 @@ export const TEXT_LIMITS = {
   ownerOption: 40,
   /** A gateway filing's idempotency key. */
   idempotencyKey: 64,
+  /** The lead's catch-up bundle (src/contracts/lead-context.ts), in UTF-8 bytes, and the lines it clips: an open promise,
+   * a confirmed correction, the end of changed instructions a correction shows, and what an open proposal is about. */
+  leadContextBytes: 8_000,
+  leadPromise: 160,
+  leadCorrection: 300,
+  leadCorrectionInstructions: 240,
+  leadProposalAbout: 120,
+  /** Project knowledge (src/contracts/project-knowledge.ts), in UTF-8 bytes: the instructions (also the memory pass's
+   * budget for them), a reference's title, path and text, the context a run gets, the decision lines in it, and the
+   * repository excerpts added when at least the minimum is left. */
+  knowledgeInstructionsBytes: 4_000,
+  knowledgeTitleBytes: 120,
+  knowledgePathBytes: 300,
+  knowledgeReferenceBytes: 12_000,
+  knowledgeContextBytes: 24_000,
+  knowledgeDecisionsBytes: 1_500,
+  knowledgeRepositoryBytes: 6_000,
+  knowledgeRepositoryMinBytes: 3_000,
+  /** A project decision (src/contracts/project-memory.ts), in UTF-8 bytes: the choice, why, who decided, where it came
+   * from, and why it was retired. */
+  decisionClaimBytes: 240,
+  decisionWhyBytes: 2_000,
+  decisionByBytes: 80,
+  decisionSourceBytes: 200,
+  decisionRetireBytes: 500,
+  /** A skill package (src/contracts/project-skills.ts): its name, description, requirements and source in UTF-8 bytes,
+   * a file's path, SKILL.md, one file, the package and the enabled selection in bytes; a test's sample request and
+   * feedback in characters and bytes. */
+  skillNameBytes: 64,
+  skillDescriptionBytes: 1_024,
+  skillRequirementsBytes: 500,
+  skillSourceBytes: 500,
+  skillPath: 240,
+  skillBodyBytes: 24 * 1024,
+  skillFileBytes: 256 * 1024,
+  skillPackageBytes: 1024 * 1024,
+  skillSelectionBytes: 2 * 1024 * 1024,
+  skillSample: 800,
+  skillSampleBytes: 4_000,
+  skillFeedback: 500,
+  skillFeedbackBytes: 2_000,
+  /** The memory pass (src/contracts/memory-pass.ts): one session's trace, and in its verdict an effect, a mistake and
+   * the instruction it proposes. */
+  memoryTrace: 40_000,
+  memoryEffect: 300,
+  memoryMistake: 300,
+  memoryInstruction: 240,
 } as const;
 
 export type TextLimitKey = keyof typeof TEXT_LIMITS;

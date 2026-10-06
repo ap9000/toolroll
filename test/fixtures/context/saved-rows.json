@@ -1,0 +1,236 @@
+{
+  "note": "Rows written by the pre-revamp code (Toolroll 0.9.36) from synthetic data; checkout paths and the base commit are scrubbed, and each payload digest recomputed after scrubbing. Read-only: never regenerate.",
+  "knowledge": {
+    "current": [
+      {
+        "revision": 5,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"},{\"id\":\"bbf16029a9fb5478e408\",\"title\":\"Finance\",\"content\":\"Quarterly revenue uses accrual accounting.\",\"path\":null,\"sourceSha\":null,\"sourceRevision\":null}]}",
+        "sha": "15f4ba2ff30e87fd9dce1bf53b9ce585c60ec5d37f9cfe3e4a35d0a0ed78b952"
+      }
+    ],
+    "changes": [
+      {
+        "revision": 1,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[]}",
+        "sha": "79f0e663e48083aa6044014aa4649b3103854a8a7d6d7db1b9808954f0a51422"
+      },
+      {
+        "revision": 2,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"}]}",
+        "sha": "6c8da6294680da24921e9c4fa9470ae684ae52febeb44ac6d0496100602db896"
+      },
+      {
+        "revision": 3,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"},{\"id\":\"bbf16029a9fb5478e408\",\"title\":\"Finance\",\"content\":\"Quarterly revenue uses accrual accounting.\",\"path\":null,\"sourceSha\":null,\"sourceRevision\":null}]}",
+        "sha": "15f4ba2ff30e87fd9dce1bf53b9ce585c60ec5d37f9cfe3e4a35d0a0ed78b952"
+      },
+      {
+        "revision": 4,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"},{\"id\":\"bbf16029a9fb5478e408\",\"title\":\"Finance\",\"content\":\"Quarterly revenue uses accrual accounting.\",\"path\":null,\"sourceSha\":null,\"sourceRevision\":null},{\"id\":\"37951eab1ed75cd198cf\",\"title\":\"Old note\",\"content\":\"This note is removed later.\",\"path\":null,\"sourceSha\":null,\"sourceRevision\":null}]}",
+        "sha": "b3de64b7254edbb49632033c4545bf301f46613f0d00c98ece2af284445eb323"
+      },
+      {
+        "revision": 5,
+        "payload": "{\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"},{\"id\":\"bbf16029a9fb5478e408\",\"title\":\"Finance\",\"content\":\"Quarterly revenue uses accrual accounting.\",\"path\":null,\"sourceSha\":null,\"sourceRevision\":null}]}",
+        "sha": "15f4ba2ff30e87fd9dce1bf53b9ce585c60ec5d37f9cfe3e4a35d0a0ed78b952"
+      }
+    ],
+    "snapshots": [
+      {
+        "run": 1,
+        "identity": "unconfigured",
+        "payload": "{\"version\":1,\"revision\":0,\"instructions\":\"\",\"references\":[],\"omitted\":[],\"inheritedFrom\":null,\"repository\":{\"version\":1,\"readOnly\":true,\"query\":\"Unrelated chore Unrelated chore mobile.md\",\"mode\":\"search\",\"asOf\":\"2026-10-06T01:58:53.728Z\",\"checkout\":{\"repo\":\"/fixture/repo\",\"gitDir\":\"/fixture/repo/.git\",\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"baseRevision\":\"0123456789abcdef0123456789abcdef01234567\",\"sourceHash\":\"f51b5d8dcd23b3019e2d184372ec7281befe091560cb88afbbc547a4197dcff2\",\"source\":\"working-tree\"},\"index\":{\"engine\":\"text-search\",\"status\":\"missing\",\"generation\":null,\"extractor\":null},\"excerpts\":[{\"file\":\"mobile.md\",\"line\":1,\"endLine\":3,\"sha256\":\"95becf4c3859675fd428545ef7e98a015aba468ca750f79ccfd3a23c7d87b7e4\",\"text\":\"# Mobile design\\nUse short labels and comfortable tap targets.\\n\",\"reason\":\"Matching file and source text\",\"symbol\":null}],\"relationships\":[],\"omissions\":{\"files\":0,\"excerpts\":0,\"relationships\":0,\"sourceBytes\":0},\"warnings\":[\"Tracked files only. Static imports do not establish every runtime dependency or sufficient test coverage.\",\"No current repository index is available. Ordinary source search is being used; refresh context to restore relationship lookup.\"]}}",
+        "sha": "890430468b2cc8e084f3df8cc359c7b7414d18025fc8f5b2d6997883c584c4c4"
+      },
+      {
+        "run": 2,
+        "identity": "90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645",
+        "payload": "{\"version\":1,\"revision\":5,\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"}],\"omitted\":[{\"title\":\"Finance\",\"reason\":\"Not relevant to this task\"}],\"inheritedFrom\":null,\"decisions\":[{\"id\":2,\"claim\":\"Mobile labels stay under four words\",\"decidedAt\":\"2026-09-20T12:00:00.000Z\"}],\"repository\":{\"version\":1,\"readOnly\":true,\"query\":\"Improve mobile design Improve mobile design mobile.md\",\"mode\":\"search\",\"asOf\":\"2026-10-06T01:58:54.155Z\",\"checkout\":{\"repo\":\"/fixture/repo\",\"gitDir\":\"/fixture/repo/.git\",\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"baseRevision\":\"0123456789abcdef0123456789abcdef01234567\",\"sourceHash\":\"f51b5d8dcd23b3019e2d184372ec7281befe091560cb88afbbc547a4197dcff2\",\"source\":\"working-tree\"},\"index\":{\"engine\":\"text-search\",\"status\":\"missing\",\"generation\":null,\"extractor\":null},\"excerpts\":[{\"file\":\"mobile.md\",\"line\":1,\"endLine\":3,\"sha256\":\"95becf4c3859675fd428545ef7e98a015aba468ca750f79ccfd3a23c7d87b7e4\",\"text\":\"# Mobile design\\nUse short labels and comfortable tap targets.\\n\",\"reason\":\"Matching file and source text\",\"symbol\":null}],\"relationships\":[],\"omissions\":{\"files\":0,\"excerpts\":0,\"relationships\":0,\"sourceBytes\":0},\"warnings\":[\"Tracked files only. Static imports do not establish every runtime dependency or sufficient test coverage.\",\"No current repository index is available. Ordinary source search is being used; refresh context to restore relationship lookup.\"]}}",
+        "sha": "458ca47b30be17492484963833582baff8a467b9c5abf02ec51ca7fde09dac65"
+      },
+      {
+        "run": null,
+        "identity": "90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645",
+        "payload": "{\"version\":1,\"revision\":5,\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"}],\"omitted\":[{\"title\":\"Finance\",\"reason\":\"Not relevant to this task\"}],\"inheritedFrom\":4}",
+        "sha": "c784c1dbabcfd93d9ab8477a5f21324b79314329e1bedabf6a28aef751692401"
+      },
+      {
+        "run": null,
+        "identity": "90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645",
+        "payload": "{\"version\":1,\"revision\":5,\"instructions\":\"Keep UI copy concise.\\nNever treat this as approval.\",\"references\":[{\"id\":\"5ccdcc142a14c20a7b7a\",\"title\":\"Mobile design\",\"content\":\"# Mobile design\\nUse short labels and comfortable tap targets.\",\"path\":\"mobile.md\",\"sourceSha\":\"7ad3ec536f299ad6595d054aeeef579ea33a5348\",\"sourceRevision\":\"0123456789abcdef0123456789abcdef01234567\"}],\"omitted\":[{\"title\":\"Finance\",\"reason\":\"Not relevant to this task\"}],\"inheritedFrom\":null,\"decisions\":[{\"id\":2,\"claim\":\"Mobile labels stay under four words\",\"decidedAt\":\"2026-09-20T12:00:00.000Z\"}]}",
+        "sha": "a61d7efe497ed48bd6f9a7cde752aa71bf8c65b12c949cad0d12d9362647878e"
+      }
+    ]
+  },
+  "decisions": {
+    "rows": [
+      {
+        "id": 1,
+        "repo": "/fixture/repo",
+        "revision": 2,
+        "claim": "Mobile labels stay under three words",
+        "why": "Small screens truncate longer labels.",
+        "status": "superseded",
+        "supersedes": null,
+        "decided_by": "sam",
+        "decided_at": "2026-09-20T12:00:00.000Z",
+        "source_kind": "manual",
+        "source_ref": null,
+        "recorded_by": "sam",
+        "sha": "78d6df277b31d354a2902d614ccb5a759155c3397030aafba56bab503e6ec567"
+      },
+      {
+        "id": 2,
+        "repo": "/fixture/repo",
+        "revision": 1,
+        "claim": "Mobile labels stay under four words",
+        "why": "Three was too tight for some languages.",
+        "status": "active",
+        "supersedes": 1,
+        "decided_by": "Sam",
+        "decided_at": "2026-09-20T12:00:00.000Z",
+        "source_kind": "conversation",
+        "source_ref": "thread:7",
+        "recorded_by": "sam",
+        "sha": "ca660f46aa3c7e7042fad30550e8ab73a16436850e156fdd16a5cd3e0c93ae2f"
+      },
+      {
+        "id": 3,
+        "repo": "/fixture/repo",
+        "revision": 2,
+        "claim": "Finance pages use accrual totals",
+        "why": "Matches the ledger.",
+        "status": "retired",
+        "supersedes": null,
+        "decided_by": "sam",
+        "decided_at": "2026-09-20T12:00:00.000Z",
+        "source_kind": "manual",
+        "source_ref": null,
+        "recorded_by": "sam",
+        "sha": "37810097cad8dcd494ed0ae2a59cd80f558b12489483a436ccf9a56af7835fb5"
+      }
+    ],
+    "changes": [
+      {
+        "decision": 1,
+        "revision": 1,
+        "action": "record",
+        "payload": "{\"repo\":\"/fixture/repo\",\"revision\":1,\"claim\":\"Mobile labels stay under three words\",\"why\":\"Small screens truncate longer labels.\",\"status\":\"active\",\"supersedes\":null,\"decidedBy\":\"sam\",\"decidedAt\":\"2026-09-20T12:00:00.000Z\",\"sourceKind\":\"manual\",\"sourceRef\":null,\"recordedBy\":\"sam\"}",
+        "sha": "0c7f780074ed0a6ba49402a32d8a1d80c296036433cb229ba94d42c23527ddaf"
+      },
+      {
+        "decision": 2,
+        "revision": 1,
+        "action": "record",
+        "payload": "{\"repo\":\"/fixture/repo\",\"revision\":1,\"claim\":\"Mobile labels stay under four words\",\"why\":\"Three was too tight for some languages.\",\"status\":\"active\",\"supersedes\":1,\"decidedBy\":\"Sam\",\"decidedAt\":\"2026-09-20T12:00:00.000Z\",\"sourceKind\":\"conversation\",\"sourceRef\":\"thread:7\",\"recordedBy\":\"sam\"}",
+        "sha": "ca660f46aa3c7e7042fad30550e8ab73a16436850e156fdd16a5cd3e0c93ae2f"
+      },
+      {
+        "decision": 1,
+        "revision": 2,
+        "action": "superseded",
+        "payload": "{\"reason\":\"Replaced by decision 2.\"}",
+        "sha": "78d6df277b31d354a2902d614ccb5a759155c3397030aafba56bab503e6ec567"
+      },
+      {
+        "decision": 3,
+        "revision": 1,
+        "action": "record",
+        "payload": "{\"repo\":\"/fixture/repo\",\"revision\":1,\"claim\":\"Finance pages use accrual totals\",\"why\":\"Matches the ledger.\",\"status\":\"active\",\"supersedes\":null,\"decidedBy\":\"sam\",\"decidedAt\":\"2026-09-20T12:00:00.000Z\",\"sourceKind\":\"manual\",\"sourceRef\":null,\"recordedBy\":\"sam\"}",
+        "sha": "7aa824ba9f4feb3e59aee520add53138255f799742a6e1c12bbe86bf2465970e"
+      },
+      {
+        "decision": 3,
+        "revision": 2,
+        "action": "retired",
+        "payload": "{\"reason\":\"The ledger moved to cash totals.\"}",
+        "sha": "37810097cad8dcd494ed0ae2a59cd80f558b12489483a436ccf9a56af7835fb5"
+      }
+    ]
+  },
+  "skills": {
+    "packages": [
+      {
+        "sha": "4043ae50f98c8d0672982ad6fec27ddc1727deb4668b1c2b5b455e2d28e47a0d",
+        "payload": "{\"name\":\"release-notes\",\"description\":\"Draft release notes from merged work.\",\"source\":\"https://github.com/example/skills/tree/0123456789abcdef0123456789abcdef01234567/release-notes\",\"requirements\":\"Needs git\",\"warnings\":[\"Provider-specific settings are included as source text only. Tool grants, automatic hooks and agent settings are not applied.\",\"Dynamic shell substitutions are not evaluated by the skill manager.\",\"Includes scripts. Agents may run them only within their task permissions.\"],\"files\":[{\"path\":\"scripts/collect.sh\",\"base64\":\"ZWNobyBjb2xsZWN0Cg==\"},{\"path\":\"SKILL.md\",\"base64\":\"LS0tCm5hbWU6IHJlbGVhc2Utbm90ZXMKZGVzY3JpcHRpb246IERyYWZ0IHJlbGVhc2Ugbm90ZXMgZnJvbSBtZXJnZWQgd29yay4KY29tcGF0aWJpbGl0eTogTmVlZHMgZ2l0CmFsbG93ZWQtdG9vbHM6IEJhc2gKLS0tClN1bW1hcml6ZSBtZXJnZWQgd29yay4gIWBnaXQgbG9nYAo=\"}]}"
+      },
+      {
+        "sha": "e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd",
+        "payload": "{\"name\":\"copy-review\",\"description\":\"Review interface copy and suggest clearer labels.\",\"source\":\"Uploaded local folder\",\"requirements\":\"\",\"warnings\":[],\"files\":[{\"path\":\"references/style.md\",\"base64\":\"VXNlIHJlYWRhYmxlIGxhYmVscy4=\"},{\"path\":\"SKILL.md\",\"base64\":\"LS0tCm5hbWU6IGNvcHktcmV2aWV3CmRlc2NyaXB0aW9uOiB8CiAgUmV2aWV3IGludGVyZmFjZSBjb3B5IGFuZCBzdWdnZXN0IGNsZWFyZXIgbGFiZWxzLgotLS0KVXNlIHNob3J0IGJ1dHRvbiBsYWJlbHMuCg==\"}]}"
+      }
+    ],
+    "changes": [
+      {
+        "revision": 1,
+        "payload": "{\"copy-review\":{\"sha\":\"e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd\",\"enabled\":true}}",
+        "sha": "b3c0712206f43c7a2d0856f72db0a43cc6de19674f0d86d04110fe516bd6a2ac"
+      },
+      {
+        "revision": 2,
+        "payload": "{\"copy-review\":{\"sha\":\"e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd\",\"enabled\":true},\"release-notes\":{\"sha\":\"4043ae50f98c8d0672982ad6fec27ddc1727deb4668b1c2b5b455e2d28e47a0d\",\"enabled\":true}}",
+        "sha": "a802ec1f9ce3343f9578b349fbc5b165aba76ed146d42dd7dc4f29ef8c037b03"
+      },
+      {
+        "revision": 3,
+        "payload": "{\"copy-review\":{\"sha\":\"e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd\",\"enabled\":true},\"release-notes\":{\"sha\":\"4043ae50f98c8d0672982ad6fec27ddc1727deb4668b1c2b5b455e2d28e47a0d\",\"enabled\":false}}",
+        "sha": "fabcaac24e6a63f061e8af1c068e4e06b2909a7b79a676398cbef0cbdfc15d9a"
+      }
+    ],
+    "snapshots": [
+      {
+        "run": 1,
+        "payload": "{\"version\":1,\"revision\":3,\"identity\":\"90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645\",\"inheritedFrom\":null,\"test\":false,\"packageShas\":[\"e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd\"]}",
+        "sha": "358101b41399f9a25055d6e34326195f26004ca855ba677afd901592e1e1e9fb"
+      },
+      {
+        "run": 3,
+        "payload": "{\"version\":1,\"revision\":3,\"identity\":\"90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645\",\"inheritedFrom\":null,\"test\":false,\"packageShas\":[\"e273d782cf1d9180b35fbad31ef55d7658e8be1d4a8c205502c3d38596b2fdbd\"]}",
+        "sha": "358101b41399f9a25055d6e34326195f26004ca855ba677afd901592e1e1e9fb"
+      },
+      {
+        "run": null,
+        "payload": "{\"version\":1,\"revision\":0,\"identity\":\"90321f2d2a113a314cd9f4dbb463db85ba1b0d3fa1f5aaf2cd48020c3f86a645\",\"inheritedFrom\":null,\"test\":true,\"packageShas\":[\"4043ae50f98c8d0672982ad6fec27ddc1727deb4668b1c2b5b455e2d28e47a0d\"]}",
+        "sha": "928aa9188602ae621e2809a3a5039caeea6d25a8824a5c775e444f84561268f6"
+      },
+      {
+        "run": null,
+        "payload": "{\"version\":1,\"revision\":0,\"identity\":\"unconfigured\",\"inheritedFrom\":7,\"test\":false,\"packageShas\":[]}",
+        "sha": "dffe1a9a96586768d4d8f93d55e571549a2d66b939594b47d52ff73829f49334"
+      }
+    ]
+  },
+  "memory": {
+    "verdicts": [
+      {
+        "id": "claude:one",
+        "verdict": "{\"positive\":[{\"instruction\":\"IN-002\",\"effect\":\"Asked before merging\",\"quote\":\"Never treat this as approval, so I asked again\"}],\"negative\":[{\"instruction\":\"IN-001\",\"effect\":\"Made labels longer\",\"class\":\"harm\",\"quote\":\"I will make every label five words long\"}],\"gaps\":[{\"mistake\":\"Labels were too long for phones\",\"proposedInstruction\":\"Keep button labels to three words.\",\"domain\":\"project\",\"quote\":\"Labels were truncated on the phone again.\"},{\"mistake\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\",\"proposedInstruction\":\"Check labels on a phone.\",\"domain\":\"project\",\"quote\":\"Labels were truncated on the phone again.\",\"matchesGap\":\"abc123\"}]}"
+      },
+      {
+        "id": "codex:two",
+        "verdict": "{\"positive\":[{\"instruction\":\"IN-002\",\"effect\":\"Asked before merging\",\"quote\":\"Never treat this as approval, so I asked again\"}],\"negative\":[{\"instruction\":\"IN-001\",\"effect\":\"Made labels longer\",\"class\":\"harm\",\"quote\":\"I will make every label five words long\"}],\"gaps\":[{\"mistake\":\"Labels were too long for phones\",\"proposedInstruction\":\"Keep button labels to three words.\",\"domain\":\"project\",\"quote\":\"Labels were truncated on the phone again.\"},{\"mistake\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\",\"proposedInstruction\":\"Check labels on a phone.\",\"domain\":\"project\",\"quote\":\"Labels were truncated on the phone again.\",\"matchesGap\":\"abc123\"}]}"
+      }
+    ],
+    "proposals": [
+      {
+        "kind": "instruction-add",
+        "fingerprint": "add:labels",
+        "title": "Add: Keep button labels to three words.",
+        "rationale": "Mistake seen in 2 sessions: Labels were too long for phones",
+        "before_text": null,
+        "after_text": "Keep button labels to three words.",
+        "evidence": "[{\"session\":\"claude:one\",\"quote\":\"Labels were truncated on the phone again.\"},{\"session\":\"codex:two\",\"quote\":\"Labels were truncated on the phone again.\"}]",
+        "sessions": 2
+      },
+      {
+        "kind": "instruction-remove",
+        "fingerprint": "remove:f08e28c04f4e94d2",
+        "title": "Remove: Keep UI copy concise.",
+        "rationale": "Following this instruction caused harm in 2 sessions.",
+        "before_text": "Keep UI copy concise.",
+        "after_text": "",
+        "evidence": "[{\"session\":\"claude:one\",\"quote\":\"I will make every label five words long\"},{\"session\":\"codex:two\",\"quote\":\"I will make every label five words long\"}]",
+        "sessions": 2
+      }
+    ]
+  }
+}
