@@ -3,9 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { storeEvidence } from "./evidence.js";
+import { budgetedStatJson, parseNumstat, storeEvidence } from "./evidence.js";
 import { openStore, type Store, type VerifyCommand } from "./store.js";
-import { isVerificationReceipt, sealVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
+import { failedVerificationEvidence, isVerificationReceipt, sealVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
+import { readVerificationView } from "./contracts/verification-view.js";
 import { presented } from "../test/route-fixture.js";
 
 const T0 = new Date("2026-10-05T10:00:00Z"), T1 = new Date("2026-10-05T10:01:00Z");
@@ -67,5 +68,29 @@ describe("verification receipts read through their schema", () => {
   test("the writer refuses a receipt its own schema would refuse", () => {
     expect(() => sealVerificationReceipt(store, dir, runId, HEAD, { ...command, id: 1.5 }, { configured: true, ran: true, exitCode: 0 }, T1))
       .toThrow("The verification receipt does not match its contract: command.id: must be an integer (got a number)");
+  });
+
+  test("a legacy gate reads its log header and candidate inventory through their schemas; its view reads back as written", () => {
+    store.handle.prepare("DELETE FROM artifact WHERE run = ?").run(runId);
+    const header = (exit: number) => `=== Attempt summary ===\n- Project check · attempt 1: (exit ${exit})\n\n=== Project check · attempt 1 ===\n$ npm test\n(exit ${exit})\n\n--- stdout ---\nboom\n`;
+    const legacy = (log: string, stat: string) => {
+      store.handle.prepare("DELETE FROM artifact WHERE run = ?").run(runId);
+      storeEvidence(store, dir, runId, "check-log", `check-log-${++rewrites}.txt`, Buffer.from(log), "sh -c npm test", T1, { captureStatus: "ok" });
+      storeEvidence(store, dir, runId, "diff-stat", `terminal-diff-stat-${rewrites}.json`, Buffer.from(stat), "git diff --numstat -z", T1, { captureStatus: "ok" });
+      return verificationEvidence(store, dir, runId);
+    };
+    const stat = budgetedStatJson(parseNumstat("1\t0\tsrc/a.ts\u0000", BASE, HEAD)).toString("utf8");
+    const view = legacy(header(1), JSON.stringify({ ...JSON.parse(stat), extra: true }));
+    expect(view.ok && view.bytes !== null).toBe(true);
+    const bytes = (view as { bytes: string }).bytes;
+    expect(JSON.parse(bytes)).toMatchObject({ version: 1, source: "legacy machine log header", run: runId, head: HEAD, base: BASE, command, result: { configured: true, ran: true, exitCode: 1 } });
+    const read = readVerificationView(bytes);
+    expect(read.ok && JSON.stringify(read.value)).toBe(bytes);
+    expect(failedVerificationEvidence(store, dir, runId)).toEqual({ kind: "none" });
+    expect(legacy(header(0), JSON.stringify({ ...JSON.parse(stat), filesTruncated: true }))).toEqual({ ok: false, problem: "Legacy verification candidate endpoints do not match." });
+    expect(legacy(header(0), "not json")).toEqual({ ok: false, problem: "Legacy candidate inventory is unreadable." });
+    // Before the schema, a literal null inventory threw out of the gate; now it is the same refusal as any other mismatch.
+    expect(legacy(header(0), "null")).toEqual({ ok: false, problem: "Legacy verification candidate endpoints do not match." });
+    expect(legacy("$ npm test\nok\n", stat)).toEqual({ ok: false, problem: "The original log lacks an unambiguous machine gate receipt; historical output was not reconstructed." });
   });
 });

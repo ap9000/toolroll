@@ -45,6 +45,7 @@ import { readFlowSecrets } from "./flow-secrets.js";
 import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
+import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 
 export { FLOW_TRIGGER_KINDS };
 export type { ChatApp, FlowTriggerKind, TriggerConfig, TriggerInput };
@@ -723,7 +724,7 @@ async function fetchMail(store: Store, config: Extract<TriggerConfig, { kind: "e
   const read = await (io.mail ?? readThroughImap)(signed.access, config.folder, after, CARDS_PER_CHECK);
   if (!read.ok) return { ok: false, problem: read.said };
   const own = signed.address.toLowerCase();
-  const items: Found[] = read.mails.filter(mail => mailMatches(config, mail)).map(mail => {
+  const items: Found[] = read.mails.map(readInboundMail).filter(mail => mailMatches(config, mail)).map(mail => {
     const key = `mail:${read.at.validity}:${mail.uid}`, at = mailCursorText({ validity: read.at.validity, uid: mail.uid });
     const label = `Email from ${mail.from || "an unknown sender"}`.slice(0, 120);
     // Machines and this account itself never start cards: a flow that answers mail mustn't answer them.
@@ -742,39 +743,36 @@ async function fetchMail(store: Store, config: Extract<TriggerConfig, { kind: "e
   return { ok: true, items, cursor: mailCursorText(read.at), more: read.more, ...(said === undefined ? {} : { said }) };
 }
 
-const text = (value: unknown) => typeof value === "string" ? value : "";
-const record = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-
 /** A GitHub issue or pull request as a card, or why it is left out; null when it doesn't match. */
 export function githubItem(config: Extract<TriggerConfig, { kind: "github" }>, raw: unknown, what: "issue" | "pull"): Found | null {
-  const item = record(raw);
-  const number = Number(item["number"]);
+  const item = readGithubIssue(raw);
+  const number = Number(item.number);
   if (!Number.isSafeInteger(number)) return null;
-  if (what === "issue" && item["pull_request"] !== undefined) return null;
-  if (what === "pull" && item["draft"] === true) return null;
-  const labels = Array.isArray(item["labels"]) ? item["labels"].map(one => text(record(one)["name"]).toLowerCase()) : [];
+  if (what === "issue" && item.pull_request !== undefined) return null;
+  if (what === "pull" && item.draft === true) return null;
+  const labels = (item.labels ?? []).map(one => (one.name ?? "").toLowerCase());
   if (config.label !== null && !labels.includes(config.label.toLowerCase())) return null;
   const label = what === "issue" ? `GitHub issue #${number}` : `Pull request #${number}`;
-  const key = `${what}:${number}`, at = text(item["updated_at"]) || null;
-  if (config.from === "team" && !TEAM.has(text(item["author_association"]))) return { key, skip: "opened by someone without write access", label, at };
-  const login = text(record(item["user"])["login"]) || "someone";
-  const branches = what === "pull" ? ` (${text(record(item["head"])["ref"])} → ${text(record(item["base"])["ref"])})` : "";
-  return { key, at, title: text(item["title"]) || label,
-    description: `From ${what === "issue" ? "GitHub issue" : "pull request"} #${number} by @${login}${branches}:\n\n${text(item["body"])}`.trim().slice(0, 4000),
-    source: { kind: "github", label, url: text(item["html_url"]) || null } };
+  const key = `${what}:${number}`, at = item.updated_at || null;
+  if (config.from === "team" && !TEAM.has(item.author_association ?? "")) return { key, skip: "opened by someone without write access", label, at };
+  const login = item.user?.login || "someone";
+  const branches = what === "pull" ? ` (${item.head?.ref ?? ""} → ${item.base?.ref ?? ""})` : "";
+  return { key, at, title: item.title || label,
+    description: `From ${what === "issue" ? "GitHub issue" : "pull request"} #${number} by @${login}${branches}:\n\n${item.body ?? ""}`.trim().slice(0, 4000),
+    source: { kind: "github", label, url: item.html_url || null } };
 }
 
 /** A failed workflow run as a card: one card per failing commit on the watched branch. */
 export function githubRunItem(config: Extract<TriggerConfig, { kind: "github" }>, raw: unknown): Found | null {
-  const run = record(raw);
-  if (text(run["conclusion"]) !== "failure" || (config.branch !== null && text(run["head_branch"]) !== config.branch)) return null;
-  const sha = text(run["head_sha"]);
+  const run = readGithubRun(raw);
+  if (run.conclusion !== "failure" || (config.branch !== null && (run.head_branch ?? "") !== config.branch)) return null;
+  const sha = run.head_sha ?? "";
   if (sha === "") return null;
-  const name = text(run["name"]) || "Checks";
-  const commit = text(run["display_title"]);
-  return { key: `checks:${sha}`, at: text(run["created_at"]) || null, title: `Checks failed on ${config.branch}: ${name}`,
-    description: `From GitHub: “${name}” failed on ${config.branch} at ${sha.slice(0, 7)}${commit === "" ? "" : ` (${commit})`}.\nRun: ${text(run["html_url"])}`,
-    source: { kind: "github", label: `Failed check on ${config.branch}`, url: text(run["html_url"]) || null } };
+  const name = run.name || "Checks";
+  const commit = run.display_title ?? "";
+  return { key: `checks:${sha}`, at: run.created_at || null, title: `Checks failed on ${config.branch}: ${name}`,
+    description: `From GitHub: “${name}” failed on ${config.branch} at ${sha.slice(0, 7)}${commit === "" ? "" : ` (${commit})`}.\nRun: ${run.html_url ?? ""}`,
+    source: { kind: "github", label: `Failed check on ${config.branch}`, url: run.html_url || null } };
 }
 
 async function fetchGitHub(config: Extract<TriggerConfig, { kind: "github" }>, trigger: FlowTriggerRow, gh: Runner): Promise<Fetched> {
@@ -797,20 +795,19 @@ async function fetchGitHub(config: Extract<TriggerConfig, { kind: "github" }>, t
   try { body = JSON.parse(result.stdout); } catch { return { ok: false, problem: "GitHub's answer couldn't be read." }; }
   const created = Date.parse(trigger.createdAt);
   if (config.watch === "checks") {
-    const runs = (Array.isArray(record(body)["workflow_runs"]) ? record(body)["workflow_runs"] as unknown[] : []).filter(one => Date.parse(text(record(one)["created_at"])) > created);
+    const runs = (readGithubRunList(body).workflow_runs ?? []).filter(one => Date.parse(one.created_at ?? "") > created);
     const items = runs.reverse().map(one => githubRunItem(config, one)).filter((one): one is Found => one !== null);
     return { ok: true, items: unique(items), cursor: trigger.cursor };
   }
-  const list = Array.isArray(body) ? body : [];
   if (labelEvents) {
-    const labeled = list.filter(one => text(record(one)["event"]) === "labeled" && text(record(record(one)["label"])["name"]).toLowerCase() === config.label!.toLowerCase()
-      && Date.parse(text(record(one)["created_at"])) > Date.parse(since)).reverse();
-    const items = labeled.map(one => { const item = githubItem(config, record(one)["issue"], "issue"); return item === null ? null : { ...item, at: text(record(one)["created_at"]) || null }; }).filter((one): one is Found => one !== null);
-    return { ok: true, items: unique(items), cursor: labeled.map(one => text(record(one)["created_at"])).at(-1) ?? trigger.cursor };
+    const labeled = readGithubIssueEventList(body).filter(one => one.event === "labeled" && (one.label?.name ?? "").toLowerCase() === config.label!.toLowerCase()
+      && Date.parse(one.created_at ?? "") > Date.parse(since)).reverse();
+    const items = labeled.map(one => { const item = githubItem(config, one.issue, "issue"); return item === null ? null : { ...item, at: one.created_at || null }; }).filter((one): one is Found => one !== null);
+    return { ok: true, items: unique(items), cursor: labeled.map(one => one.created_at ?? "").at(-1) ?? trigger.cursor };
   }
   // New issues and pull requests: opened after the trigger was added, oldest first; the key keeps each to one card.
   const what = config.watch === "pulls" ? "pull" : "issue";
-  const items = list.filter(one => Date.parse(text(record(one)["created_at"])) > created).reverse().map(one => githubItem(config, one, what)).filter((one): one is Found => one !== null);
+  const items = readGithubIssueList(body).filter(one => Date.parse(one.created_at ?? "") > created).reverse().map(one => githubItem(config, one, what)).filter((one): one is Found => one !== null);
   return { ok: true, items, cursor: trigger.cursor };
 }
 
@@ -821,17 +818,16 @@ export const LINEAR_QUERY = "query FlowTrigger($filter: IssueFilter) { issues(fi
 
 /** A Linear issue as a card; null when it doesn't match the trigger. */
 export function linearItem(config: Extract<TriggerConfig, { kind: "linear" }>, raw: unknown): Found | null {
-  const issue = record(raw);
-  const identifier = text(issue["identifier"]);
+  const issue = readLinearIssue(raw);
+  const identifier = issue.identifier ?? "";
   if (identifier === "") return null;
-  const labelNodes = Array.isArray(issue["labels"]) ? issue["labels"] : Array.isArray(record(issue["labels"])["nodes"]) ? record(issue["labels"])["nodes"] as unknown[] : [];
-  const labels = labelNodes.map(one => text(record(one)["name"]).toLowerCase());
-  if (config.team !== null && text(record(issue["team"])["key"]).toUpperCase() !== config.team) return null;
-  if (config.state !== null && text(record(issue["state"])["name"]).toLowerCase() !== config.state.toLowerCase()) return null;
+  const labels = linearLabelNames(issue).map(one => one.toLowerCase());
+  if (config.team !== null && (issue.team?.key ?? "").toUpperCase() !== config.team) return null;
+  if (config.state !== null && (issue.state?.name ?? "").toLowerCase() !== config.state.toLowerCase()) return null;
   if (config.label !== null && !labels.includes(config.label.toLowerCase())) return null;
-  return { key: `linear:${identifier}`, at: text(issue["updatedAt"]) || null, title: text(issue["title"]) || identifier,
-    description: `From Linear ${identifier}:\n\n${text(issue["description"])}`.trim().slice(0, 4000),
-    source: { kind: "linear", label: `Linear ${identifier}`, url: text(issue["url"]) || null } };
+  return { key: `linear:${identifier}`, at: issue.updatedAt || null, title: issue.title || identifier,
+    description: `From Linear ${identifier}:\n\n${issue.description ?? ""}`.trim().slice(0, 4000),
+    source: { kind: "linear", label: `Linear ${identifier}`, url: issue.url || null } };
 }
 
 async function fetchLinear(config: Extract<TriggerConfig, { kind: "linear" }>, trigger: FlowTriggerRow, io: TriggerIo): Promise<Fetched> {
@@ -846,15 +842,15 @@ async function fetchLinear(config: Extract<TriggerConfig, { kind: "linear" }>, t
   try {
     response = await io.fetch(LINEAR_URL, { method: "POST", headers: { "content-type": "application/json", authorization: key }, body: JSON.stringify({ query: LINEAR_QUERY, variables: { filter } }), signal: AbortSignal.timeout(20_000) });
   } catch { return { ok: false, problem: "Couldn't reach Linear." }; }
-  let body: Record<string, unknown>;
-  try { body = record(await response.json()); } catch { return { ok: false, problem: `Linear answered ${response.status} and it couldn't be read.` }; }
-  const errors = Array.isArray(body["errors"]) ? body["errors"].map(one => text(record(one)["message"])) : [];
+  let raw: unknown;
+  try { raw = await response.json(); } catch { return { ok: false, problem: `Linear answered ${response.status} and it couldn't be read.` }; }
+  const body = readLinearAnswer(raw);
+  const errors = (body.errors ?? []).map(one => one.message ?? "");
   if (response.status === 401 || errors.some(one => /authenticat|api key/i.test(one))) return { ok: false, problem: "Linear didn't accept the key. Add a new one on this flow's Triggers panel." };
   if (!response.ok || errors.length > 0) return { ok: false, problem: `Linear said: ${(errors[0] ?? `status ${response.status}`).slice(0, 160)}` };
-  const nodes = record(record(record(body["data"])["issues"]))["nodes"];
-  const issues = (Array.isArray(nodes) ? nodes : []).sort((a, b) => text(record(a)["updatedAt"]).localeCompare(text(record(b)["updatedAt"])));
+  const issues = (body.data?.issues?.nodes ?? []).sort((a, b) => (a.updatedAt ?? "").localeCompare(b.updatedAt ?? ""));
   const items = issues.map(one => linearItem(config, one)).filter((one): one is Found => one !== null);
-  return { ok: true, items, cursor: issues.map(one => text(record(one)["updatedAt"])).filter(one => one !== "").at(-1) ?? trigger.cursor };
+  return { ok: true, items, cursor: issues.map(one => one.updatedAt ?? "").filter(one => one !== "").at(-1) ?? trigger.cursor };
 }
 
 // ------------------------------------------------------------ deliveries
@@ -883,34 +879,37 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     const secret = readHookSecret(dir, trigger.id);
     const signature = header(delivery, "x-hub-signature-256");
     if (secret === null || !sameHex(`sha256=${createHmac("sha256", secret).update(delivery.body).digest("hex")}`, signature)) return { status: 401, said: "Signature doesn't match." };
-    const event = header(delivery, "x-github-event"), body = record(payload), action = text(body["action"]);
-    const repository = text(record(body["repository"])["full_name"]);
+    const event = header(delivery, "x-github-event"), body = readGithubEvent(payload), action = body.action ?? "";
+    const repository = body.repository?.full_name ?? "";
     if (event === "ping") { note("GitHub connected."); return { status: 200, said: "Connected." }; }
     if (repository.toLowerCase() !== config.repo.toLowerCase()) return { status: 202, said: "Not this repository." };
     // A label trigger takes the moment its label is added (or an issue opened with it); a plain one takes new issues.
-    const labeledNow = action === "labeled" && config.label !== null && text(record(body["label"])["name"]).toLowerCase() === config.label.toLowerCase();
-    const found = config.watch === "issues" && event === "issues" && (action === "opened" || labeledNow) ? githubItem(config, body["issue"], "issue")
-      : config.watch === "pulls" && event === "pull_request" && ["opened", "ready_for_review", "labeled", "reopened"].includes(action) ? githubItem(config, body["pull_request"], "pull")
-      : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body["workflow_run"]) : null;
+    const labeledNow = action === "labeled" && config.label !== null && (body.label?.name ?? "").toLowerCase() === config.label.toLowerCase();
+    const found = config.watch === "issues" && event === "issues" && (action === "opened" || labeledNow) ? githubItem(config, body.issue, "issue")
+      : config.watch === "pulls" && event === "pull_request" && ["opened", "ready_for_review", "labeled", "reopened"].includes(action) ? githubItem(config, body.pull_request, "pull")
+      : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body.workflow_run) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "linear") {
     const secret = readHookSecret(dir, trigger.id);
     if (secret === null) return { status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." };
     if (!sameHex(createHmac("sha256", secret).update(delivery.body).digest("hex"), header(delivery, "linear-signature"))) return { status: 401, said: "Signature doesn't match." };
-    const body = record(payload), sent = Number(body["webhookTimestamp"]);
+    const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
     if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return { status: 401, said: "Too old." };
-    if (text(body["type"]) !== "Issue" || !["create", "update"].includes(text(body["action"]))) return { status: 202, said: "Ignored." };
+    if (body.type !== "Issue" || !["create", "update"].includes(body.action ?? "")) return { status: 202, said: "Ignored." };
     // A state trigger fires when the issue arrives in that state, not on every later edit there.
-    const moved = text(body["action"]) === "create" || record(body["updatedFrom"])["stateId"] !== undefined || config.state === null;
-    const found = moved ? linearItem(config, body["data"]) : null;
+    const moved = body.action === "create" || body.updatedFrom?.stateId !== undefined || config.state === null;
+    const found = moved ? linearItem(config, body.data) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "webhook") {
-    const pick = (path: string | null) => path === null ? null : path.split(".").reduce<unknown>((node, part) => record(node)[part], payload);
+    // Any JSON, kept as sent: the trigger's own paths are picked from it, and it is shown whole when they find no text.
+    const body = readWebhookPayload(payload);
+    const record = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const pick = (path: string | null) => path === null ? null : path.split(".").reduce<unknown>((node, part) => record(node)[part], body);
     const title = pick(config.titleField ?? "title") ?? pick("summary") ?? pick("message");
     const bodyText = pick(config.bodyField ?? "description") ?? pick("body") ?? pick("text");
     const id = header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || createHash("sha256").update(delivery.body).digest("hex");
     items = [{ key: `hook:${id.slice(0, 120)}`, at: null, title: typeof title === "string" && title.trim() !== "" ? title : config.title,
-      description: `From a webhook:\n\n${typeof bodyText === "string" ? bodyText : JSON.stringify(payload, null, 2)}`.slice(0, 4000),
+      description: `From a webhook:\n\n${typeof bodyText === "string" ? bodyText : JSON.stringify(body, null, 2)}`.slice(0, 4000),
       source: { kind: "webhook", label: "Webhook", url: null } }];
   }
   if (items.length === 0) return { status: 202, said: "Nothing for this flow." };
@@ -995,11 +994,12 @@ export function receiveFlowForm(store: Store, token: string, fields: URLSearchPa
   const again = `<p><a href="${esc(FORM_PATH + token)}">Send another</a></p>`;
   const thanks = formHtml(config.label, `<p>Thanks — it's been sent.</p>${again}`);
   // A filled trap, or a page posted faster than a person could, gets thanks and makes nothing.
-  const shown = Number(fields.get("t"));
-  if ((fields.get("website") ?? "") !== "" || !Number.isFinite(shown) || now.getTime() - shown < 2000 || now.getTime() - shown > 86_400_000) return { status: 200, html: thanks };
+  const form = readFormSubmission(fields, config.questions.length);
+  const shown = Number(form.t);
+  if ((form.website ?? "") !== "" || !Number.isFinite(shown) || now.getTime() - shown < 2000 || now.getTime() - shown > 86_400_000) return { status: 200, html: thanks };
   const recent = store.handle.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ? AND key LIKE 'form:%' AND at > ?").get(trigger.id, new Date(now.getTime() - 3_600_000).toISOString());
   if (Number(recent?.["n"] ?? 0) >= FORM_CARDS_PER_HOUR) return { status: 429, html: formHtml(config.label, `<p>Too many sent in the last hour. Try again later.</p>`) };
-  const answers = config.questions.map((_question, index) => (fields.get(`a${index}`) ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, index === 0 ? 200 : 3000));
+  const answers = form.answers.map((answer, index) => (answer ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, index === 0 ? 200 : 3000));
   if (answers[0] === "") return { status: 400, html: formHtml(config.label, `<p>Answer “${esc(config.questions[0]!)}” first.</p>${again}`) };
   const details = config.questions.slice(1).map((question, index) => answers[index + 1] === "" ? null : `${question}\n${answers[index + 1]}`).filter(one => one !== null).join("\n\n");
   const made = makeCard(store, trigger, config, { key: `form:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: answers[0]!, description: `From the “${config.label}” form:\n\n${details}`.trim(), source: { kind: "form", label: `Form: ${config.label}`, url: null } }, "Form", now);

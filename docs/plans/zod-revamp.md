@@ -69,19 +69,19 @@ Order is by risk: where a model or person hands Toolroll something and drift has
 
 | # | Contract | Where today |
 |---|---|---|
-| 13 | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
-| 14 | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
-| 15 | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
-| 16 | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
-| 17 | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
+| 13 ◐ partly done | **Console form bodies and JSON API** — every POST and `?json` route | `serve.ts` |
+| 14 ◐ partly done | **CLI JSON input/output** and the machine contract (`contract --commands --json`, `--json` envelopes) | `operate.ts`, `cli.ts`, `surface.ts` |
+| 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms | `flow-triggers.ts`, `observations.ts` |
+| 16 ✅ | **Integration metadata**: OAuth discovery/registration responses, project tool specs | `mcp-connect.ts`, `project-tools.ts` |
+| 17 ✅ | **Settings and config**: recipes, retention, storage sweep, model catalog, provider auth | `recipes.ts`, `retention.ts`, `storage.ts`, `model-catalog.ts`, `provider.ts` |
 
 ### Wave 4 — what we read back from disk and the database (P3)
 
 | # | Contract | Where today |
 |---|---|---|
-| 18 | **JSON columns in the store** (46 `JSON.parse` sites) — parse on read with versioned schemas | `store.ts` |
-| 19 | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
-| 20 | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
+| 18 ✅ | **JSON columns in the store** — 45 columns and one SQL projection | `store.ts` |
+| 19 ✅ | **Journals and recovery state** (desktop update, process recovery, staged releases, coding workspace) | `desktop-update.ts`, `toolroll-update.ts`, `process-recovery-*.ts`, `coding-workspace.ts` |
+| 20 ✅ | **Evidence files** (receipts, handoffs, check logs metadata) | `evidence.ts`, `verification-evidence.ts` |
 
 ## How each item ships
 
@@ -282,3 +282,145 @@ test passes, every caller uses the schema, and the full suite is green. Mark the
   1 records and captures are strict about unknown keys. An unreadable versioned session remains visible with its
   path-named error without disabling other sessions; its saved document is left intact. Coding contract errors report
   null as a wrong value, not as a missing field.
+- **13. Console form bodies and JSON API** — partly done (2026-10-06). `src/contracts/console-api.ts` holds one schema for every
+  URL-encoded body the console reads (`CONSOLE_FORMS`: sign-up, sign-in, invite, the shared guard, every `handlePost`
+  route and each task, attend and routine verb; families with one dispatch, such as `/code/*`, `/flows/*` and the
+  teammate pages, share one) and lists the POSTs that read no field (`BODILESS_POSTS`). Each handler reads its body
+  through `readForm`, whose view is typed by the schema's field list, so reading an undeclared field fails the
+  typecheck. Kept: a body reads exactly as `URLSearchParams` did — first value, every value in order, presence,
+  unknown and computed names (`question:<id>`, `param.<id>`) — with every default, trimming, clipping, conversion and
+  refusal still in the handler; the CSRF, nonce, digest, password and duplicate-field checks are unchanged and in the
+  same order. A body that disagrees is logged and still read. The three `?format=json` responses (ledger page, evidence
+  pack, flow view) are checked as sent by loose, unversioned schemas; their bytes are unchanged (no version key, so
+  sealed ledger entries and pack digests still match), and a mismatch is logged, never refused. Telegram's pushed
+  updates (item 11) and flow webhooks and public forms (item 15) stay with their items. No tightening. Replay of
+  real rows remains an evidence gap: the installed database was denied to this build, and form bodies are never stored.
+  Remains: the other JSON endpoints (`/code` state, log tail, audit export, flow chat) and the JSON carried inside
+  form fields (`answers`, `files`, `trigger`, `definition`) have no schema yet.
+- **14. CLI JSON input and output** — partly done (2026-10-06). `src/contracts/cli.ts` holds the one `--json` envelope schema
+  (`envelopeVersion` 1, `ok`, `command`, and a refusal's `reason` and `message`), one answer schema for each of the
+  215 commands the guide declares, and the guide row's schema (`CommandRow` and `CommandFlag` are derived from it).
+  `surface.ts` pairs every row, in order, with its answer's schema (`COMMAND_ENTRIES`), and `COMMAND_GUIDE`, which
+  `contract --commands --json` dumps, is projected from those entries. 25 answers name their top-level fields:
+  `contract`, the no-verb `scan`, `status`, `integrations`, `ready`, `task add/list/show/hold/unhold/wait`, `flows
+  list/show`, `skills list`, `grants`, `gaps`, `reap`, `cap list`, `outbox deliver`, and the runner, routine,
+  incident, outbox, approver and coordinator lists; the other 190 (sessions, knowledge, memory, models, the other flows, task and assignment
+  verbs, and the operator ceremonies) are held to the envelope under their own `command` name, with their fields
+  left for later. Every envelope `cli.ts` and `operate.ts` write is checked before the unchanged `envelopeJson`; a
+  disagreement is logged on stderr and the answer is written as it was, never refused. Answers are loose objects, so
+  a key a newer Toolroll adds is ignored. Kept: flag parsing, exit codes, `-o` and every answer's bytes;
+  `test/fixtures/cli/envelopes.txt`, recorded before the change, replays 22 answers (contract, scan, task, status,
+  ready, integrations, flows and lists, refusals and usage slips included) byte for byte. Not covered: the envelopes
+  the flows, knowledge, memory, models, session, team, project, task-outcome, assignment-adapter and onboarding
+  modules write go straight to `envelopeJson` and are not checked at runtime (outside this item's files). Input flags
+  are parsed as before; no CLI input moved to a schema here (session and assignment inputs already have theirs). The
+  installed database was denied to this build, so read-only replay of real saved state remains an evidence gap. No
+  tightening.
+  Remains: CLI input flags are not read through a schema, and 190 of the 215 commands still have no output schema of
+  their own (only the envelope is checked for them).
+- **15. Trigger payloads** (2026-10-06). `src/contracts/trigger-payloads.ts` holds one non-strict schema each for
+  GitHub's issues and pull requests, issue events, workflow runs and signed webhook events, Linear's GraphQL answer,
+  issue and signed webhook event, a plain webhook's JSON (any JSON, kept as sent for its title and body paths), a
+  mailbox's normalized message (typed against `InboundMail`) and a shared form's fields (each field's first value).
+  Only the fields Toolroll reads are typed; unknown keys are ignored and a field of the wrong type reads as missing,
+  as the hand readers' `text()` and `record()` did, so no reader refuses. `Number()` coercion (`number`,
+  `webhookTimestamp`, the form's `t`), presence checks (`pull_request`, `updatedFrom.stateId`), fallbacks, clipping
+  and dynamic webhook paths run after parsing, as before. `flow-triggers.ts` reads every poll, delivery, message and
+  form through them; JSON, signature and age checks keep their order, so every delivery gets the same 200, 202,
+  400, 401, 404, 413 or 429 and plain reason as in 0.9.41, and a poll's unreadable answer still backs off. The
+  focused observation request is `src/contracts/observation-request.ts` (`versioned(1)`, strict, as it always
+  refused unknown keys); `parseObservationCases` reads through it, keeps its 16 KB guard and its three plain
+  refusals, and still treats the same case written in another key order as distinct. Compared with the 0.9.41
+  readers over generated odd payloads (deliveries, polls, forms, items, observation requests): no differences.
+  Read-only replay of real saved data remains an evidence gap: the runner was denied the installed database and
+  evidence folder, and raw deliveries are not kept. An observation request without `version`, or with version 0,
+  is still refused, as in 0.9.41. Nothing is loosened or tightened.
+- **16. Integration metadata** (2026-10-06). `src/contracts/integration-metadata.ts` holds one schema each for a
+  service's protected-resource metadata, its authorization-server metadata, its registration answer and its token
+  answers (a code's and a refresh's), and for a project tool spec; `ToolSpec` and `ToolSecret` are derived, and the
+  tool limits are named there (`TOOL_SPEC_LIMITS`; moving them into `TEXT_LIMITS` is left for a pass that may edit
+  `text-limits.ts`). A server's answers are read field by field, never strictly: unknown keys are ignored, a wrong-typed
+  field reads as absent and a list keeps its well-formed items, so endpoint fallbacks, https/loopback, S256, scope
+  filtering and clipping, expiry and every message run after reading as before. A token answer keeps whether it said
+  `scope` at all, so the granted scope (and the read-only grant research relies on) is unchanged: absent, a sign-in's
+  grant is what it asked for and a refresh keeps the one it had; present but not scope text, the grant is unknown.
+  `validateToolSpec` stays the adapter for every source and saved `project_tool` row (defaults, trimming, shorthand,
+  plain-word refusals, skip-on-bad-row) and returns its result through the schema. `mcp-connect.test.ts` passes
+  unchanged. Replayed a synthetic corpus through the old and new readers (516 specs, 306 saved rows, 132 discoveries,
+  44 registrations, 48 sign-ins, 432 refreshes): no differences but one. Changed, on purpose: a token answer of JSON
+  `null` used to crash finishing a sign-in; it now says the service couldn't be reached, as a non-JSON answer does.
+  The real database and tool-secret files could not be read from the build, so no saved data was replayed.
+- **17. Settings and config** (2026-10-06). One schema each in `src/contracts/`: `recipes.ts` (both recipe versions, a
+  discriminated union on `version`, with the scope's saved criterion as a success check), `retention.ts` (kinds, a
+  period of 1–3650 days or forever, the full set, and a `retention_setting` row), `storage.ts` (the four checkout
+  cleanup values and their row), `model-catalog.ts` (the Codex CLI's model cache entries and npm's latest-version
+  answer, read loosely) and `provider.ts` (the agent spec: provider and model id). `RecipeDocument`, `RecipeInput`,
+  `RetentionKind`, `RetentionPeriods`, `CheckoutCleanup`, `ProviderId` and `AgentSpec` are derived. `parseRecipe`,
+  `parsePeriod`, `isRetentionKind`, `parseCleanup`, `codexCatalog`, the npm version check, `validModelId`,
+  `isProviderId` and `validateSpec` read through them; recipe text rules, schedules, budget/schedule combinations,
+  question keys and placeholders, period and cleanup aliases, display-name clipping and OpenRouter/Gemini needing a
+  model still run after parsing. Kept: what each accepted and returned before — recipes stay strict as they always
+  were, and keep their key order, so saved digests and exports are byte for byte the same; a damaged Codex cache
+  still reads as an empty list; a model that isn't a string is still read as its text. Refusals changed in wording
+  only: recipe refusals start with the field (`costCeilingUsd: …`, `inputs[0].key: …`, `payload: unknown key
+  'approvals'. …`), `validateSpec` names `provider` or `model` and no longer repeats the given provider, so a pasted
+  credential is never echoed. Nothing new is refused. Old and new readers gave zero differences over 3,662 recipe
+  documents, 10,449 period, kind and cleanup inputs, 191 spec and Codex cache samples, and the real Codex cache
+  (6 models). The installed database was refused to this build, so saved recipes, previews and setting rows were
+  not replayed — an evidence gap. Left for their owners: `store.ts` still reads the retention and cleanup rows
+  (item 18 can use `retentionRowSchema` and `checkoutCleanupRowSchema`); the `retention set` and `storage cleanup`
+  refusals live in `operate.ts` and `serve.ts` (items 13 and 14); recipe limits are named in `RECIPE_LIMITS` until
+  they can move into `TEXT_LIMITS`.
+- **18. JSON columns in the store** (2026-10-06). Every read of a JSON column in `store.ts` goes through
+  `src/contracts/store-json.ts`, importing the existing contracts where a shape has one; writes are unchanged. Replayed by
+  the lead against a copy of the live database: 49 read sites across 45 columns, 5,158 live rows plus 1,127 loose
+  variants, 0 differences and 0 new errors. Read as they are (pass-through): `mutation.result` and the 5 open-object
+  columns, and 17 list columns read as `z.array(z.unknown())` whose readers filter their items.
+
+- **19. Journals and recovery state** (2026-10-06). `src/contracts/update-journal.ts` holds the desktop app's update
+  journal (`desktop-update.json`, `receipt.json`) and `toolroll update`'s (`toolroll-update.json`, `.last.json`, a
+  stage's `update.json`), with the small records beside them (restore and stop requests, the updater's starting mark,
+  the guardian's `recovery.json` as Update status reads it, the supervisor's pids, a stage's start time);
+  `src/contracts/coding-activity.ts` the coding workspace's items, approval requests, RPC ids and custody witness; and
+  `src/contracts/native-census.ts` the macOS process census. `UpdateJournal`, `RuntimeUpdateJournal`, `CodingItem`,
+  `CodingQuestion`, `CodingRequest` and `DarwinProcessIdentity` are derived from them. Journals stay `version: 1`; a
+  reader returns the saved object itself, so a journal saved again keeps its bytes, key order and keys a newer release
+  added (a rolled-back runtime reads its successor's journal, so unknown keys are ignored, not refused). Paths,
+  ownership, identities and hashes still run after parsing with their old words; a structural refusal gives the
+  refusal the old reader gave for that field, followed by the path-named lines. Every catch that keeps a bad journal
+  from stopping startup or status is unchanged. Coding rows keep their bytes and carry no version (steering note): a
+  row that is not JSON fails as before, and one that does not match its schema is read as saved and logged. The
+  census keeps its reason codes and rebuilds each identity in its sealed key order, so snapshot, receipt and
+  certificate digests are unchanged. Compatibility revision (comment 855): unknown runtime kinds, schedules,
+  journal phases and step phases read as strings; null, missing and wrong-typed informational fields (`error`,
+  `finishedAt`, `notes`, `seen`, `actor`, `detail`, `checkedAt` and bundle `development`) pass through unchanged.
+  Catch values only permit the read; they never replace saved values. Writers still use known phases and schedules.
+  Synthetic contract regressions check object identity and identical serialized bytes for these legacy values;
+  update tests cover status, cancel, abandon, resume and rollback. The earlier 1,543-case generated replay did not
+  cover this regression and is not proof of full legacy compatibility. Real saved state remains unreplayed (zero
+  records): this revision must stay inside its worktree, and the installed database, coding catalog,
+  `staged-upgrades/` and `process-recovery/` are denied by policy. Tightened, on purpose: a newer journal version
+  is refused plainly; a version 1 journal with a malformed structural field (for example `steps` or `waiting`)
+  is refused as invalid; a null `backupPath` is refused; a recovery
+  record field of the wrong type reads as absent; a custody witness is not taken as proof unless it has its host,
+  descendants and observation flag. Left as is: the reviewed provenance profile and audit files, which are
+  hash-pinned before they are parsed.
+
+- **20. Evidence files** (2026-10-06). Every structured evidence read in `evidence.ts` and `verification-evidence.ts`
+  goes through one schema: handoffs, proofs (and their screenshot list), receipts and stored reports through items 4
+  and 6's contracts; the terminal diff-stat through `src/contracts/diff-stat.ts` (`DiffStat` and `DiffStatFile` are
+  derived; a legacy gate's endpoints and a saved assessment's file list are picks of it); and the gate view through
+  `src/contracts/verification-view.ts` (a sealed receipt, or the strict view of a legacy machine log header). A view
+  is returned as written once checked, so reused gates compare and re-seal the same bytes. Writers, key order,
+  digests and seals are unchanged. Kept: inventories ignore unknown keys and accept exactly what the old checks did.
+  Loosened: a literal `null` inventory is refused like any mismatch instead of throwing. Replayed base against
+  candidate over the 15 real runs in `test/fixtures/evidence/` and 337 receipt, legacy-header and inventory cases:
+  zero differences besides that one. The installed database and evidence folder were denied to this build, so a
+  replay of every installed evidence directory remains an evidence gap.
+
+## Follow-ups
+
+- **13 (rest):** schemas for the other console JSON endpoints — `/code` state, log tail, audit export, flow chat —
+  and for the JSON inside form fields: `answers`, `files`, `trigger`, `definition`.
+- **14 (rest):** CLI input flags through a schema, and per-command output schemas for the 190 of 215 commands that
+  are held only to the envelope.

@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore } from "./store.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import {
-  checkProvenance, findSigstoreVerifier, lastCompletedUpdate, launchRuntimeUpdate, machineSystem, prepareRuntimeUpdate, pruneRuntimes, readRuntimeUpdate, releaseNotes, requestRuntimeUpdateCancel, resumeRuntimeUpdate, runtimeUpdateStatus, markWhatsNewSeen,
+  abandonRuntimeUpdate, checkProvenance, findSigstoreVerifier, lastCompletedUpdate, launchRuntimeUpdate, machineSystem, prepareRuntimeUpdate, pruneRuntimes, readRuntimeUpdate, releaseNotes, requestRuntimeUpdateCancel, resumeRuntimeUpdate, runtimeUpdateStatus, markWhatsNewSeen,
   startRuntimeRollback, startRuntimeUpdate, PROVENANCE_ISSUER, PROVENANCE_REPOSITORY, PROVENANCE_WORKFLOW, UPDATE_JOB_LABEL, UPDATE_STEPS, type RuntimePhase, type UpdateSystem,
 } from "./toolroll-update.js";
 import { REGISTRY, setUpdateChecks } from "./releases.js";
@@ -43,6 +43,41 @@ test("c1: a scripted update runs verify, drain, backup, rehearse, switch, restar
     expect(runtimeUpdateStatus(f.stateDir).whatsNew).toEqual({ version: "0.7.0", notes: ["Updates from the console", "Faster chat"] });
     markWhatsNewSeen(f.stateDir);
     expect(runtimeUpdateStatus(f.stateDir).whatsNew).toBeNull();
+  } finally { f.close(); }
+});
+
+test("saved unknown phases and unchecked information keep status and recovery actions available", async () => {
+  const f = fixture();
+  try {
+    const prepared = prepareRuntimeUpdate({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: f.current, actor: "ada", version: "0.7.0", when: "now" }, f.system.now());
+    if ("refused" in prepared) throw Error(prepared.refused);
+    const info = { actor: null, detail: null, error: null, finishedAt: null, notes: { legacy: true }, seen: null };
+    const step = { phase: "future-step", at: prepared.startedAt, laterField: true };
+    const saved = { ...prepared, ...info, kind: "future-kind", when: "future-schedule", phase: "future-phase", steps: [step] };
+    const bytes = JSON.stringify(saved, null, 2);
+    const file = join(f.stateDir, "toolroll-update.json");
+    writeFileSync(file, bytes);
+    expect(readRuntimeUpdate(f.stateDir)).toEqual(saved);
+    expect(runtimeUpdateStatus(f.stateDir).journal).toEqual(saved);
+    expect(requestRuntimeUpdateCancel(f.stateDir, f.system.now())).toContain("past the point it can be cancelled (future-phase)");
+    abandonRuntimeUpdate(f.stateDir, prepared.id, "Job did not start", f.system.now());
+    const stale = await resumeRuntimeUpdate(f.stateDir, f.system, "a-different-update");
+    expect(stale).toMatchObject({ ok: true, phase: "future-phase", journal: saved });
+    const active = await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: f.current, actor: "ada", when: "now" }, f.system);
+    expect(active.message).toContain("already under way");
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+
+    // An unknown phase keeps the legacy resume fallback; the old step survives the new transitions.
+    writeFileSync(file, JSON.stringify({ ...saved, kind: "update" }));
+    const resumed = await resumeRuntimeUpdate(f.stateDir, f.system, prepared.id);
+    expect(resumed).toMatchObject({ ok: true, phase: "complete" });
+    expect(resumed.journal!.steps[0]).toEqual(step);
+    const completed = { ...resumed.journal!, ...info };
+    writeFileSync(file, JSON.stringify(completed));
+    writeFileSync(join(f.stateDir, "toolroll-update.last.json"), JSON.stringify(completed));
+    expect(lastCompletedUpdate(f.stateDir)).toEqual(completed);
+    const rollback = await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: resumed.journal!.to, actor: "ada", when: "now" }, f.system);
+    expect(rollback).toMatchObject({ ok: true, phase: "complete" });
   } finally { f.close(); }
 });
 

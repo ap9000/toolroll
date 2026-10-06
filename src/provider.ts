@@ -25,16 +25,14 @@ import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl } from "./ex
 import { scanForSecrets } from "./evidence.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
+import { agentSpecSchema, MODEL_ID, modelIdSchema, PROVIDER_ID_VALUES, providerIdSchema, type AgentSpec, type ProviderId } from "./contracts/provider.js";
 
-export type ProviderId = "claude" | "codex" | "openrouter" | "gemini";
-export const PROVIDER_IDS: readonly ProviderId[] = ["claude", "codex", "openrouter", "gemini"];
+export type { AgentSpec, ProviderId } from "./contracts/provider.js";
+export const PROVIDER_IDS: readonly ProviderId[] = PROVIDER_ID_VALUES;
 
 export function isProviderId(value: string): value is ProviderId {
-  return (PROVIDER_IDS as readonly string[]).includes(value);
+  return providerIdSchema.safeParse(value).success;
 }
-
-/** Which harness runs, on which model. model null = the harness's default. */
-export type AgentSpec = { provider: ProviderId; model: string | null };
 
 /** 'review' (v29) is the reviewer's artifact-only pass — plan-shaped in
  * every clamp: read, comment, never build. */
@@ -46,10 +44,11 @@ export type Phase = "plan" | "build" | "repair" | "review";
  * TOML-hostile characters — but NOT alphanumeric-only, which would refuse
  * real ids carrying `/ . : -` (Codex provider review, Q5).
  */
-export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+export { MODEL_ID };
 
 export function validModelId(model: string | null): boolean {
-  return model === null || MODEL_ID.test(model);
+  // Not a string reads as its text, as the regex always read it (an untyped row's `undefined` passes as "undefined").
+  return model === null || modelIdSchema.safeParse(String(model)).success;
 }
 
 /** The one semantic request every provider renders into its own argv. */
@@ -1149,17 +1148,18 @@ export function auditOf(provider: ProviderId): ProviderAudit {
  * across a 300-model catalog.
  */
 export function validateSpec(spec: AgentSpec): { ok: true } | { ok: false; problem: string } {
-  if (!isProviderId(spec.provider)) {
-    return { ok: false, problem: `unknown provider \`${String(spec.provider)}\` — one of ${PROVIDER_IDS.join(", ")}` };
-  }
-  if (!validModelId(spec.model)) {
-    return { ok: false, problem: "a model id is 1–128 characters of letters, digits, and . _ : / - (never leading with a dash)" };
+  // A refusal names the field, never the value: a pasted credential must not travel on in a problem.
+  const parsed = agentSpecSchema.safeParse({ provider: spec.provider, model: spec.model === null ? null : String(spec.model) });
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path[0];
+    if (field === "provider") return { ok: false, problem: `provider: unknown provider — one of ${PROVIDER_IDS.join(", ")}` };
+    return { ok: false, problem: "model: a model id is 1–128 characters of letters, digits, and . _ : / - (never leading with a dash)" };
   }
   if (spec.provider === "openrouter" && spec.model === null) {
-    return { ok: false, problem: "openrouter needs an explicit model — there is no default across its catalog" };
+    return { ok: false, problem: "model: openrouter needs an explicit model — there is no default across its catalog" };
   }
   if (spec.provider === "gemini" && spec.model === null) {
-    return { ok: false, problem: "gemini needs an explicit model — the harness default drifts with its releases" };
+    return { ok: false, problem: "model: gemini needs an explicit model — the harness default drifts with its releases" };
   }
   return { ok: true };
 }

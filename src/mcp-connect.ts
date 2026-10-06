@@ -17,6 +17,7 @@ import { basename } from "node:path";
 import { LOCAL_APPS, addToolTo, catalogTool, localAppOf, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
+import { SCOPE_TOKEN, readAuthorizationServer, readProtectedResource, readRegistration, readTokenResponse, type TokenResponse } from "./contracts/integration-metadata.js";
 
 /**
  * A one-click service. `reads` names what a research step may read there:
@@ -219,8 +220,7 @@ const renewTried = new Map<string, number>();
 
 type Fetch = typeof fetch;
 type Server = { authorize: string; token: string; register: string; scopes: string[]; resource: string | null };
-/** RFC 6749 scope tokens; and the most scope text a sign-in address carries (addresses stay well under 8 KB). */
-const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+/** The most scope text a sign-in address carries (addresses stay well under 8 KB). */
 const SCOPE_PARAM_LIMIT = 6_000;
 /** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). `kit` or `template` is the page it returns to. */
 export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number;
@@ -251,28 +251,31 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
     pointer = /resource_metadata="([^"]+)"/.exec(probe.headers.get("www-authenticate") ?? "")?.[1] ?? null;
     await probe.body?.cancel();
   } catch { pointer = null; }
-  const resource = (pointer !== null && https(pointer) ? await json(fetcher, pointer) : null)
+  const found = (pointer !== null && https(pointer) ? await json(fetcher, pointer) : null)
     ?? await json(fetcher, `${mcp.origin}/.well-known/oauth-protected-resource${mcp.pathname === "/" ? "" : mcp.pathname}`)
     ?? await json(fetcher, `${mcp.origin}/.well-known/oauth-protected-resource`);
-  const issuers = Array.isArray(resource?.["authorization_servers"]) ? (resource!["authorization_servers"] as unknown[]).filter(https) : [];
+  const resource = found === null ? {} : readProtectedResource(found);
+  const issuers = (resource.authorization_servers ?? []).filter(https);
   const issuer = new URL(issuers[0] ?? mcp.origin);
   const path = issuer.pathname === "/" ? "" : issuer.pathname.replace(/\/$/, "");
-  const meta = await json(fetcher, `${issuer.origin}/.well-known/oauth-authorization-server${path}`)
+  const answered = await json(fetcher, `${issuer.origin}/.well-known/oauth-authorization-server${path}`)
     ?? await json(fetcher, `${issuer.origin}/.well-known/oauth-authorization-server`)
     ?? (path === "" ? null : await json(fetcher, `${issuer.origin}${path}/.well-known/openid-configuration`))
     ?? await json(fetcher, `${issuer.origin}/.well-known/openid-configuration`);
-  if (meta === null || !https(meta["authorization_endpoint"]) || !https(meta["token_endpoint"]) || !https(meta["registration_endpoint"])) return null;
-  const methods = Array.isArray(meta["code_challenge_methods_supported"]) ? meta["code_challenge_methods_supported"] as unknown[] : ["S256"];
-  if (!methods.includes("S256")) return null;
+  if (answered === null) return null;
+  const meta = readAuthorizationServer(answered);
+  const { authorization_endpoint: authorize, token_endpoint: token, registration_endpoint: register } = meta;
+  if (!https(authorize) || !https(token) || !https(register)) return null;
+  if (!(meta.code_challenge_methods_supported ?? ["S256"]).includes("S256")) return null;
   // Ask for every scope the server lists for this resource: a token missing one the server itself requires is
   // refused after a successful sign-in (PostHog lists 155 and needs user:read, the 140th). Only well-formed scope
   // tokens, and at most what fits a sign-in address.
-  const listed = Array.isArray(resource?.["scopes_supported"]) ? (resource!["scopes_supported"] as unknown[]).filter((one): one is string => typeof one === "string" && SCOPE_TOKEN.test(one)) : [];
+  const listed = resource.scopes_supported ?? [];
   const scopes: string[] = [];
   for (const one of listed) { if (scopes.join(" ").length + one.length + 1 > SCOPE_PARAM_LIMIT) break; scopes.push(one); }
   // A token is for the resource the server names (Stripe's has no trailing slash), when it names one.
-  const named = resource?.["resource"];
-  return { authorize: meta["authorization_endpoint"] as string, token: meta["token_endpoint"] as string, register: meta["registration_endpoint"] as string, scopes, resource: https(named) ? named : null };
+  const named = resource.resource;
+  return { authorize, token, register, scopes, resource: https(named) ? named : null };
 }
 
 /**
@@ -292,10 +295,12 @@ export async function startConnect(input: { service: string; repo: string; by: s
       body: JSON.stringify({ client_name: "Toolroll", redirect_uris: [redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }) });
     // Figma's answer (Oct 2026): it registers only apps it has approved. Said before reading a body that may not be JSON.
     if (registered.status === 401 || registered.status === 403) return { ok: false, said: `${service.label} doesn't let other apps sign in this way yet.${INSTEAD[service.id] === undefined ? "" : ` ${INSTEAD[service.id]}`}` };
-    const body = await registered.json() as { client_id?: unknown; client_secret?: unknown };
-    if (!registered.ok || typeof body.client_id !== "string") return { ok: false, said: `${service.label} didn't let Toolroll register (HTTP ${registered.status}).` };
+    const body = readRegistration(await registered.json());
+    // A `null` answer that says it registered is no answer, as it always read.
+    if (registered.ok && body === null) return { ok: false, said: `${service.label} couldn't be reached.` };
+    if (!registered.ok || body?.client_id === undefined) return { ok: false, said: `${service.label} didn't let Toolroll register (HTTP ${registered.status}).` };
     clientId = body.client_id;
-    clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
+    clientSecret = body.client_secret ?? null;
   } catch {
     return { ok: false, said: `${service.label} couldn't be reached.` };
   }
@@ -328,10 +333,10 @@ export function connectedSpec(serviceId: string): ToolSpec | null {
     secrets: [ACCESS, REFRESH, CLIENT, CLIENT_SECRET, TOKEN_URL, EXPIRES, RESOURCE].map(name => ({ name, optional: name !== ACCESS })), about: `${service.label}: ${service.about} Connected by signing in.` };
 }
 
-const tokensFrom = (body: Record<string, unknown>, now: number) => ({
-  access: typeof body["access_token"] === "string" ? body["access_token"] : null,
-  refresh: typeof body["refresh_token"] === "string" ? body["refresh_token"] : null,
-  expires: typeof body["expires_in"] === "number" && body["expires_in"] > 0 ? new Date(now + body["expires_in"] * 1000).toISOString() : null,
+const tokensFrom = (body: TokenResponse, now: number) => ({
+  access: body.access_token ?? null,
+  refresh: body.refresh_token ?? null,
+  expires: body.expires_in === undefined ? null : new Date(now + body.expires_in * 1000).toISOString(),
 });
 
 /**
@@ -345,12 +350,15 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   const spec = connectedSpec(service.id)!;
   const had = projectToolsOf(store, visit.repo).find(one => one.name === spec.name);
   if (had !== undefined && (had.spec.url !== spec.url || had.spec.bearer !== ACCESS)) return { ok: false, said: `This project already has a tool called ${spec.name}, set up another way. Remove it on this page to connect ${service.label} by signing in.` };
-  let body: Record<string, unknown>;
+  let body: TokenResponse;
   try {
     const answer = await fetcher(visit.token, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, signal: AbortSignal.timeout(15_000),
       body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: visit.redirect, client_id: visit.clientId, code_verifier: visit.verifier, resource: visit.resource, ...(visit.clientSecret === null ? {} : { client_secret: visit.clientSecret }) }) });
-    body = await answer.json() as Record<string, unknown>;
-    if (!answer.ok) return { ok: false, said: `${service.label} didn't finish the sign-in (${typeof body["error"] === "string" ? body["error"] : `HTTP ${answer.status}`}).` };
+    const read = readTokenResponse(await answer.json());
+    // An answer of `null` reads as none, like one that isn't JSON.
+    if (read === null) return { ok: false, said: `${service.label} couldn't be reached to finish the sign-in.` };
+    body = read;
+    if (!answer.ok) return { ok: false, said: `${service.label} didn't finish the sign-in (${body.error ?? `HTTP ${answer.status}`}).` };
   } catch {
     return { ok: false, said: `${service.label} couldn't be reached to finish the sign-in.` };
   }
@@ -361,7 +369,7 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
     if (!added.ok) return { ok: false, said: added.message };
   }
   // The grant: what the answer says, or what was asked for when it says nothing; never one from an earlier sign-in.
-  const granted = "scope" in body ? scopeList(body["scope"]) : scopeList(visit.scope ?? null);
+  const granted = body.scopeSaid ? scopeList(body.scope) : scopeList(visit.scope ?? null);
   setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource, [GRANTED]: granted?.join(" ") ?? "",
     ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }), ...(visit.clientSecret === null ? {} : { [CLIENT_SECRET]: visit.clientSecret }) }, home);
   // The success line names the project it went to: the page and chat may be looking at another.
@@ -388,12 +396,13 @@ export async function refreshConnections(store: Store, repos: readonly string[],
     try {
       const answer = await fetcher(values[TOKEN_URL], { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, signal: AbortSignal.timeout(15_000),
         body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: values[REFRESH], client_id: values[CLIENT], ...(values[CLIENT_SECRET] === undefined ? {} : { client_secret: values[CLIENT_SECRET] }), ...(values[RESOURCE] === undefined ? {} : { resource: values[RESOURCE] }) }) });
-      const body = await answer.json() as Record<string, unknown>;
+      const body = readTokenResponse(await answer.json());
+      if (body === null) { report.problems.push(`${tool.name}: couldn't reach it to renew its sign-in`); continue; }
       const tokens = tokensFrom(body, now.getTime());
       if (!answer.ok || tokens.access === null) { report.problems.push(`${tool.name}: its sign-in ran out; connect it again on the Tools page`); continue; }
       // A refresh carries the same grant or a narrower one, and says so when it changes; said badly, it is unknown.
       setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
-        ...("scope" in body ? { [GRANTED]: scopeList(body["scope"])?.join(" ") ?? "" } : {}) }, home);
+        ...(body.scopeSaid ? { [GRANTED]: scopeList(body.scope)?.join(" ") ?? "" } : {}) }, home);
       renewTried.delete(key);
       report.refreshed++;
     } catch {

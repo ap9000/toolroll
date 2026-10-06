@@ -18,7 +18,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { configPath, loadRepos } from "./repos.js";
 import { addedWords, admitProject, commandLineActor, consoleRunning, proveProjectRoot, registryBeside, releaseProject, type AdmissionActor } from "./project-admission.js";
 import { envValue } from "./names.js";
-import { CAPABILITIES, ENVELOPE_VERSION, capturedEnvelope, envelopeJson, onEnvelopeCaptured, resetCapturedEnvelope } from "./envelope.js";
+import { CAPABILITIES, ENVELOPE_VERSION, capturedEnvelope, onEnvelopeCaptured, resetCapturedEnvelope } from "./envelope.js";
+// Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
+import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import {
   applyClaudeCodeInstall,
   applyInstall,

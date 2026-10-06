@@ -120,7 +120,8 @@ import { admissionRecorded, admitProject, commandLineActor } from "./project-adm
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
-import { envelopeJson } from "./envelope.js";
+// Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
+import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";

@@ -1,0 +1,6220 @@
+$ contract --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "contract",
+  "capabilities": [
+    "envelope/1",
+    "stable-reasons",
+    "idempotency-keys",
+    "exit-codes/0-1-2-3",
+    "output-file",
+    "command-schema/1",
+    "skill-guides/1",
+    "session-client/1"
+  ]
+}
+
+$ contract --commands --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "contract",
+  "schemaVersion": 1,
+  "notes": {
+    "authority": "documentation is not permission; session descriptors also drive parser and request validation; legacy entries remain advisory",
+    "flags": "session flags are exact per operation; legacy flags are intended per command and may use a global parser vocabulary",
+    "reasons": "curated, not exhaustive — the runtime `reason` field is the truth; ignore tokens you do not recognize",
+    "database": "local database commands wait up to 15 seconds for another writer; an exhausted wait returns database-busy and names the selected file"
+  },
+  "commands": [
+    {
+      "invocation": "",
+      "envelopeCommand": "scan",
+      "synopsis": "report what is in flight (the no-verb default; scans below the working directory or the connected repositories)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "path",
+          "required": false,
+          "meaning": "directories to scan instead of the connected set"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "ignore connected repos; scan everything discoverable"
+        },
+        {
+          "name": "local",
+          "takesValue": false,
+          "meaning": "branches only — no network"
+        }
+      ]
+    },
+    {
+      "invocation": "pulls",
+      "synopsis": "report what is waiting on a person",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ]
+    },
+    {
+      "invocation": "graph",
+      "synopsis": "report which work graph is already here",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ]
+    },
+    {
+      "invocation": "repos",
+      "synopsis": "list connected repositories",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ]
+    },
+    {
+      "invocation": "proposals",
+      "synopsis": "what coordinators proposed over the MCP gateway — list, confirm <id> [--yes], dismiss <id>; confirming runs the plane's own door under your password",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "chat",
+      "synopsis": "with a saved profile, --lead <id> --conversation <id> opens central chat; --say sends one message, --follow only reads updates, --authorize --terms-digest enables the displayed paid terms; --local uses the existing local coordinator, where --follow enables crew updates and --no-follow pauses them; proposals keep their approval requirements",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "connect",
+      "synopsis": "save an authenticated central HTTPS profile with --as and --token-stdin or --token-file; --local-login explicitly uses the existing private local sign-in; secrets never belong in arguments or URLs",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead list",
+      "synopsis": "list central leads available to the signed-in account; --profile selects a saved connection",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "lead create",
+      "synopsis": "create a central lead with --name, --instructions and repeatable --project paths admitted by the server",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead update",
+      "synopsis": "change --name, --instructions or --status for --lead at --revision; projects remain fixed",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead member",
+      "synopsis": "set --account membership on --lead with --role, --active true|false and the current --revision",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead transfer",
+      "synopsis": "move ownership of --task to --lead at --revision; existing execution authority remains unchanged",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation list",
+      "synopsis": "list admitted conversations, optionally within --lead; attachment never starts model work",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "conversation create",
+      "synopsis": "create a conversation with --lead, --title, --visibility private|team and repeatable --project paths",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation show",
+      "synopsis": "read --conversation messages and saved work; no model call or read-marker mutation",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "conversation member",
+      "synopsis": "set --account membership on --conversation with --role, --active true|false and the current --revision; lead membership must already permit the role",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation edit",
+      "synopsis": "edit your queued --message in --conversation at --revision using --text; running messages cannot be edited",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation withdraw",
+      "synopsis": "withdraw your queued --message in --conversation at --revision; an active turn requires stop",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation read",
+      "synopsis": "explicitly record your read position at --message within --conversation",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation follow",
+      "synopsis": "enable or pause automatic lead summaries with --conversation and --enabled true|false, within the existing paid chat authorization; passive chat --follow only reads updates",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "conversation stop",
+      "synopsis": "request stopping the exact --message in --conversation; retain uncertain work until its owner settles it",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "repos add",
+      "synopsis": "add a project: a Git repository, in the console at once; the lead adds with its token",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "path",
+          "required": false,
+          "meaning": "the repository (default: the one you are in)"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        }
+      ],
+      "notableReasons": [
+        "not-git",
+        "unavailable",
+        "refused",
+        "locked"
+      ]
+    },
+    {
+      "invocation": "repos remove",
+      "synopsis": "remove a project from the console and the builder; its tasks and results stay saved",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "path",
+          "required": true,
+          "meaning": "the repository"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        }
+      ],
+      "notableReasons": [
+        "refused",
+        "locked"
+      ]
+    },
+    {
+      "invocation": "repos add-from-github",
+      "synopsis": "preview, clone from GitHub, and connect - the console onboarding ceremony as a CLI verb",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "contract",
+      "synopsis": "the machine contract: envelope version + capability tokens; --commands dumps this guide",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "commands",
+          "takesValue": false,
+          "meaning": "dump the declared command guide"
+        }
+      ]
+    },
+    {
+      "invocation": "skills list",
+      "synopsis": "name the guides this exact binary serves",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ]
+    },
+    {
+      "invocation": "skills get",
+      "synopsis": "print one guide's markdown (raw on stdout; --json wraps it)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "name",
+          "required": true,
+          "meaning": "a guide name from `skills list`"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ],
+      "notableReasons": [
+        "unknown-skill",
+        "usage"
+      ]
+    },
+    {
+      "invocation": "skills install",
+      "synopsis": "install or refresh this binary's Toolroll guides for Claude Code; without --claude-code, write the repository-local Agent Skills entry",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "claude-code",
+          "takesValue": false,
+          "meaning": "install the user-level Claude Code skill"
+        },
+        {
+          "name": "dir",
+          "takesValue": true,
+          "meaning": "skill directory (default: ~/.claude/skills/toolroll)"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "write the previewed files"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "repository for the existing project-local install"
+        },
+        {
+          "name": "write-context",
+          "takesValue": false,
+          "meaning": "also add the managed AGENTS.md block for a project-local install"
+        }
+      ],
+      "notableReasons": [
+        "unconfirmed",
+        "foreign-file",
+        "usage"
+      ]
+    },
+    {
+      "invocation": "link",
+      "synopsis": "put toolroll on PATH",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "unlink",
+      "synopsis": "take it off PATH",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "update",
+      "synopsis": "update to the latest release: verified provenance, drained work, backup, rehearsal, health check, automatic restore; --rollback undoes it",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "demo",
+      "synopsis": "a seeded throwaway sandbox",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "session capabilities",
+      "synopsis": "Show executable session schemas and operator authority requirements; no credentials needed",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ]
+    },
+    {
+      "invocation": "session list",
+      "synopsis": "List your native coding sessions",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "nonblank": true
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "project",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "see session list --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session show",
+      "synopsis": "Inspect the saved brief and exact identity; request activity when needed",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "view": {
+            "type": "string",
+            "pattern": "^(brief|activity)$"
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session show --help"
+        },
+        {
+          "name": "view",
+          "takesValue": true,
+          "meaning": "see session show --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session changes",
+      "synopsis": "Read changes from the saved session checkout",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session changes --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session changes --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session changes --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session changes --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session changes --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session changes --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session start",
+      "synopsis": "Start a native coding session in a project",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "keyed",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "project",
+          "title",
+          "prompt",
+          "key"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "nonblank": true
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "nonblank": true
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64000,
+            "nonblank": true,
+            "maxBytes": 64000
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,100}$",
+            "minLength": 16,
+            "maxLength": 100
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "project",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "title",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "model",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "keep the same key when reconciling; inspect after unknown delivery, never blind-retry"
+        },
+        {
+          "name": "file",
+          "takesValue": true,
+          "meaning": "see session start --help"
+        },
+        {
+          "name": "stdin",
+          "takesValue": false,
+          "meaning": "see session start --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session send",
+      "synopsis": "Send a message to the exact saved session and turn",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "keyed",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId",
+          "key",
+          "expectedRevision",
+          "expectedThreadId",
+          "expectedTurnId",
+          "prompt"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,100}$",
+            "minLength": 16,
+            "maxLength": 100
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expectedThreadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "expectedTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64000,
+            "nonblank": true,
+            "maxBytes": 64000
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "keep the same key when reconciling; inspect after unknown delivery, never blind-retry"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "thread",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "turn",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "file",
+          "takesValue": true,
+          "meaning": "see session send --help"
+        },
+        {
+          "name": "stdin",
+          "takesValue": false,
+          "meaning": "see session send --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session stop",
+      "synopsis": "Stop the exact running turn",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "keyed",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId",
+          "key",
+          "expectedRevision",
+          "expectedThreadId",
+          "expectedTurnId"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,100}$",
+            "minLength": 16,
+            "maxLength": 100
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expectedThreadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "expectedTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "keep the same key when reconciling; inspect after unknown delivery, never blind-retry"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "thread",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        },
+        {
+          "name": "turn",
+          "takesValue": true,
+          "meaning": "see session stop --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session resume",
+      "synopsis": "Reconnect the saved conversation",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "keyed",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId",
+          "key",
+          "expectedRevision",
+          "expectedThreadId",
+          "expectedTurnId"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,100}$",
+            "minLength": 16,
+            "maxLength": 100
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expectedThreadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "expectedTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "keep the same key when reconciling; inspect after unknown delivery, never blind-retry"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "thread",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        },
+        {
+          "name": "turn",
+          "takesValue": true,
+          "meaning": "see session resume --help"
+        }
+      ]
+    },
+    {
+      "invocation": "session recover",
+      "synopsis": "Check process exit and reconcile saved delivery receipts",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "keyed",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "sessionId",
+          "key",
+          "expectedRevision",
+          "expectedThreadId",
+          "expectedTurnId"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,100}$",
+            "minLength": 16,
+            "maxLength": 100
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expectedThreadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "expectedTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "nonblank": true,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        }
+      },
+      "flags": [
+        {
+          "name": "url",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "help",
+          "takesValue": false,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "keep the same key when reconciling; inspect after unknown delivery, never blind-retry"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "thread",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        },
+        {
+          "name": "turn",
+          "takesValue": true,
+          "meaning": "see session recover --help"
+        }
+      ]
+    },
+    {
+      "invocation": "knowledge search",
+      "synopsis": "find bounded source excerpts and relevant code symbols",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "base",
+          "takesValue": true,
+          "meaning": "exact committed task base; defaults to current HEAD"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit scoped coordinator credential file"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "environment variable containing a scoped coordinator token"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text or source file for impact"
+        }
+      ]
+    },
+    {
+      "invocation": "knowledge impact",
+      "synopsis": "inspect static imports affected by one file or unambiguous symbol",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "base",
+          "takesValue": true,
+          "meaning": "exact committed task base; defaults to current HEAD"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit scoped coordinator credential file"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "environment variable containing a scoped coordinator token"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text or source file for impact"
+        }
+      ]
+    },
+    {
+      "invocation": "knowledge refresh",
+      "synopsis": "refresh the optional local code index; never starts a model or task",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "base",
+          "takesValue": true,
+          "meaning": "exact committed task base; defaults to current HEAD"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit scoped coordinator credential file"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "environment variable containing a scoped coordinator token"
+        }
+      ]
+    },
+    {
+      "invocation": "knowledge apply",
+      "synopsis": "carry this project's saved knowledge from before a change forward as a new revision; an approver's --as/--token",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "approver account name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the approver's password (never a lead token)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ]
+    },
+    {
+      "invocation": "memory search",
+      "synopsis": "search decisions, instructions, references, lessons and your conversations",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ]
+    },
+    {
+      "invocation": "memory decisions",
+      "synopsis": "list a project's active decisions (--all for history)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ]
+    },
+    {
+      "invocation": "memory show",
+      "synopsis": "read one decision with its reason and history",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ]
+    },
+    {
+      "invocation": "memory decide",
+      "synopsis": "record a settled choice: memory decide \"<choice>\" --why \"<reason>\" --repo PATH",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ]
+    },
+    {
+      "invocation": "memory retire",
+      "synopsis": "retire a decision that no longer holds: memory retire <id> --reason \"<why>\"",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ]
+    },
+    {
+      "invocation": "memory propose",
+      "synopsis": "the backward pass: read recent sessions, keep a ledger of evidenced gaps, propose a few edits (writes nothing to memory)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ]
+    },
+    {
+      "invocation": "memory review",
+      "synopsis": "list pending memory proposals with their evidence",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ]
+    },
+    {
+      "invocation": "memory apply",
+      "synopsis": "decide one proposal: memory apply <id> --decision accept|reject — the only writer",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ]
+    },
+    {
+      "invocation": "memory status",
+      "synopsis": "surface version, instruction budget, sessions analysed, open gaps and pending proposals",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ]
+    },
+    {
+      "invocation": "flows list",
+      "synopsis": "list flows: id, name, project, zones, triggers and cards waiting",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project checkout root"
+        }
+      ]
+    },
+    {
+      "invocation": "flows show",
+      "synopsis": "one flow: zones with their next and failure paths, triggers and recent cards",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        }
+      ]
+    },
+    {
+      "invocation": "flows create",
+      "synopsis": "create a flow from --template <id> (a template or starter flow) or --steps <file|->; previews until --yes",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project checkout root"
+        },
+        {
+          "name": "name",
+          "takesValue": true,
+          "meaning": "the flow's name (a template's label when left out)"
+        },
+        {
+          "name": "template",
+          "takesValue": true,
+          "meaning": "one of coding, issues-to-prs, research, triage, spam-filter, lead-routing, effort-routing, exception-routing, email-replies, follow-up, stalled-decisions, blank, ci-fix, issue-task, overnight, plane-review"
+        },
+        {
+          "name": "steps",
+          "takesValue": true,
+          "meaning": "a JSON file (or - for stdin) with the steps in order, as the lead's flow tool takes them"
+        }
+      ]
+    },
+    {
+      "invocation": "flows edit",
+      "synopsis": "replace a flow's steps (kept steps by id) and optionally rename it; previews until --yes",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        },
+        {
+          "name": "steps",
+          "takesValue": true,
+          "meaning": "a JSON file (or - for stdin) with the steps in order, as the lead's flow tool takes them"
+        },
+        {
+          "name": "name",
+          "takesValue": true,
+          "meaning": "a new name"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        }
+      ]
+    },
+    {
+      "invocation": "flows trigger add",
+      "synopsis": "add a trigger from JSON or a JSON file (any kind: button, schedule, github, linear, flow, webhook, email, chat); previews until --yes",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "trigger",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows trigger pause",
+      "synopsis": "pause a trigger",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "trigger",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows trigger resume",
+      "synopsis": "turn a paused trigger on again",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "trigger",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows trigger remove",
+      "synopsis": "remove a trigger; cards it added stay",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "trigger",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows trigger check",
+      "synopsis": "run a checked trigger (or a schedule's script) now, like Check now",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "trigger",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows script save",
+      "synopsis": "save a project script (a new version when it exists)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project checkout root"
+        },
+        {
+          "name": "name",
+          "takesValue": true,
+          "meaning": "lowercase letters, numbers and dashes"
+        },
+        {
+          "name": "file",
+          "takesValue": true,
+          "meaning": "run this path in the project"
+        },
+        {
+          "name": "body",
+          "takesValue": true,
+          "meaning": "a local file holding the script itself"
+        },
+        {
+          "name": "about",
+          "takesValue": true,
+          "meaning": "one line: what it checks or does"
+        },
+        {
+          "name": "language",
+          "takesValue": true,
+          "meaning": "shell (default), python or node"
+        },
+        {
+          "name": "timeout-minutes",
+          "takesValue": true,
+          "meaning": "1 to 60 (default 15)"
+        }
+      ]
+    },
+    {
+      "invocation": "flows card add",
+      "synopsis": "add a card, in the first zone unless --zone names one",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "title",
+          "takesValue": true,
+          "meaning": "the card's title"
+        },
+        {
+          "name": "description",
+          "takesValue": true,
+          "meaning": "its details"
+        },
+        {
+          "name": "zone",
+          "takesValue": true,
+          "meaning": "a zone id or name"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        }
+      ]
+    },
+    {
+      "invocation": "flows export",
+      "synopsis": "write a flow as a *.toolroll-flow.json file: zones, paths, trigger settings and scripts; never secrets, webhook addresses, names or cards",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "out",
+          "takesValue": true,
+          "meaning": "write the file here (default: print it)"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        }
+      ]
+    },
+    {
+      "invocation": "flows import",
+      "synopsis": "make a flow from a flow file or a gist/GitHub https address; previews in plain words until --yes; triggers arrive off and scripts wait for approval",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project checkout root"
+        },
+        {
+          "name": "param",
+          "takesValue": true,
+          "meaning": "a value the file asks for, as name=value (repeat for more)"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "file",
+          "required": true,
+          "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
+        }
+      ]
+    },
+    {
+      "invocation": "flows script approve",
+      "synopsis": "approve a script an imported flow brought, so it runs",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project checkout root"
+        },
+        {
+          "name": "name",
+          "takesValue": true,
+          "meaning": "the script's name"
+        }
+      ]
+    },
+    {
+      "invocation": "flows archive",
+      "synopsis": "archive a flow: its cards stop moving and its triggers stop; previews until --yes",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        }
+      ]
+    },
+    {
+      "invocation": "models status",
+      "synopsis": "installed CLI versions, available updates, new models and the automatic check",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "claude, codex, gemini or openrouter, for models list"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ]
+    },
+    {
+      "invocation": "models list",
+      "synopsis": "models a provider can run, newest first, with prices (--provider claude|codex|gemini|openrouter)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "claude, codex, gemini or openrouter, for models list"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ]
+    },
+    {
+      "invocation": "models check",
+      "synopsis": "fetch the public model lists and check CLI versions now",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "claude, codex, gemini or openrouter, for models list"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ]
+    },
+    {
+      "invocation": "models update",
+      "synopsis": "update one CLI while no work is running: models update claude|codex|gemini",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "claude, codex, gemini or openrouter, for models list"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the CLI to update, or on/off"
+        }
+      ]
+    },
+    {
+      "invocation": "models watch",
+      "synopsis": "turn the 6-hourly check and its messages on or off: models watch on|off",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "claude, codex, gemini or openrouter, for models list"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the CLI to update, or on/off"
+        }
+      ]
+    },
+    {
+      "invocation": "status",
+      "synopsis": "running work, queued reasons, results to review, the latest release check and plan windows",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "integrations",
+      "synopsis": "every integration as Connected, Not set up or Broken, with its last success and error, what uses it and what to do; --saved skips new checks; never a secret",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "saved",
+          "takesValue": false,
+          "meaning": "show the last checks without checking again"
+        }
+      ]
+    },
+    {
+      "invocation": "ready",
+      "synopsis": "what could be dispatched right now (rows carry reservedFor)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "brief",
+      "synopsis": "with a saved central profile, --lead <id> --conversation <id> reads messages, proposals and saved work; --request-id inspects your saved receipt without resending; --local uses local DB catch-up, where --history selects the older operational report",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "gaps",
+      "synopsis": "requirement gaps blocking dispatch",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ]
+    },
+    {
+      "invocation": "grants",
+      "synopsis": "list authority grants",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "sync",
+      "synopsis": "refresh external-tracker mirrors and deliver write-backs — safe to run; fails closed",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ],
+      "notableReasons": [
+        "no-op",
+        "external"
+      ]
+    },
+    {
+      "invocation": "task add",
+      "synopsis": "queue work",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "title",
+          "required": true,
+          "meaning": "one line of what to do"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "id",
+          "takesValue": true,
+          "meaning": "choose the task id"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository the task belongs to"
+        },
+        {
+          "name": "report",
+          "takesValue": false,
+          "meaning": "a scout task: the deliverable is a report, never a branch"
+        },
+        {
+          "name": "replaces",
+          "takesValue": true,
+          "meaning": "the task this one replaces: it is cancelled and reads \"Replaced by <id>\""
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "a lead token: filed as the lead, so it pings nobody"
+        },
+        {
+          "name": "checks",
+          "takesValue": true,
+          "meaning": "quick|full|off: this task's checks, overriding the project's level (\"skip the tests\" is off)"
+        }
+      ],
+      "notableReasons": [
+        "duplicate",
+        "usage",
+        "unknown-task",
+        "unauthenticated"
+      ]
+    },
+    {
+      "invocation": "task ask",
+      "synopsis": "hand a task to a person: one message saying why, and the task is theirs",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "person",
+          "takesValue": true,
+          "meaning": "who to ask (someone who can see the task's project)"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "what they need to do, one line"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "unknown-person",
+        "unplaced",
+        "unauthenticated"
+      ]
+    },
+    {
+      "invocation": "task checks",
+      "synopsis": "run checks on the task's latest result, on its exact commit, now; a pass upgrades its status and a failure stays visible",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any version of the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "level",
+          "takesValue": true,
+          "meaning": "quick (default) or full"
+        }
+      ],
+      "notableReasons": [
+        "no-result",
+        "no-check",
+        "checks-failed"
+      ]
+    },
+    {
+      "invocation": "task add-tests",
+      "synopsis": "file a small task to write tests for the task's latest change; it waits for approval like any task",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any version of the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "no-result"
+      ]
+    },
+    {
+      "invocation": "task list",
+      "synopsis": "a page of saved task status",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "state",
+          "takesValue": true,
+          "meaning": "queued|running|done|failed|cancelled"
+        },
+        {
+          "name": "view",
+          "takesValue": true,
+          "meaning": "all|needs-you|running|completed"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "page size, 1–100; default 40"
+        },
+        {
+          "name": "cursor",
+          "takesValue": true,
+          "meaning": "nextCursor from the previous response"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "filter to one project"
+        }
+      ]
+    },
+    {
+      "invocation": "task show",
+      "synopsis": "one task in full",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task"
+      ]
+    },
+    {
+      "invocation": "check-progress",
+      "synopsis": "current or final approved check progress",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "run",
+          "required": true,
+          "meaning": "the build run"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-run",
+        "no-progress"
+      ]
+    },
+    {
+      "invocation": "task wait",
+      "synopsis": "wait for the current attempt to finish or need a person",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "timeout",
+          "takesValue": true,
+          "meaning": "stop waiting after this many seconds"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "timeout",
+        "failed",
+        "needs-person"
+      ]
+    },
+    {
+      "invocation": "project show",
+      "synopsis": "show the saved local project and optional credential-file reference",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "project use",
+      "synopsis": "select an exact saved checkout; grants no project or execution authority",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "path",
+          "required": true,
+          "meaning": "exact saved project checkout path"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "optional existing scoped coordinator credential file; saves only its path"
+        }
+      ]
+    },
+    {
+      "invocation": "task complete",
+      "synopsis": "mark the exact inspected result complete; checks and permissions remain unchanged",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "task or assignment id"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "scoped coordinator credential environment variable"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "scoped coordinator credential file; defaults to selected project reference"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "exact receipt from assignment show; required for JSON or scoped agents"
+        },
+        {
+          "name": "pull-request",
+          "takesValue": false,
+          "meaning": "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command"
+        }
+      ]
+    },
+    {
+      "invocation": "task revise",
+      "synopsis": "request a same-task revision using explicit feedback; existing approval terms apply",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "task or assignment id"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "scoped coordinator credential environment variable"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "scoped coordinator credential file; defaults to selected project reference"
+        },
+        {
+          "name": "feedback",
+          "takesValue": true,
+          "meaning": "specific requested change"
+        },
+        {
+          "name": "run",
+          "takesValue": true,
+          "meaning": "exact result run; defaults to current result"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "exact scope digest; defaults to current terms"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "32 hexadecimal characters for exact replay; defaults to a stable feedback identity"
+        }
+      ]
+    },
+    {
+      "invocation": "task merge",
+      "synopsis": "merge the task's pull request once its checks pass — the console's Merge, behind the approver's password; the project's method (squash by default), branch deleted, recorded in the ledger",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any version of the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver merging"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "their password"
+        },
+        {
+          "name": "anyway",
+          "takesValue": false,
+          "meaning": "merge a Quick or Off result without waiting for its full check"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "not-an-approver",
+        "full-checks"
+      ]
+    },
+    {
+      "invocation": "assignment show",
+      "synopsis": "read the root, current work, owner and exact receipt",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any task in the assignment's existing correction chain"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment updates",
+      "synopsis": "read durable updates after a cursor; save nextCursor after processing",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        },
+        {
+          "name": "after",
+          "takesValue": true,
+          "meaning": "last processed admitted update cursor; defaults to 0"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "page size from 1 to 100; defaults to 50"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment claim",
+      "synopsis": "record lead ownership; with the lead token the task reads \"<the lead's name> is on it\" and leaves Needs you until done, handed over, or 2 hours idle; grants no approval or execution authority",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any task in the assignment's existing correction chain"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment check",
+      "synopsis": "acknowledge the exact ready receipt as its lead; accepts no proof and deploys nothing",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any task in the assignment's existing correction chain"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "exact current receipt digest from assignment show"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment brief",
+      "synopsis": "catch up from current assignments and project knowledge in the local database",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "project to include within the credential's access"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "assignment count from 1 to 25; defaults to 10"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment inbox",
+      "synopsis": "receive or replay a saved batch of lead status updates",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        },
+        {
+          "name": "consumer",
+          "takesValue": true,
+          "meaning": "stable lowercase name for this lead's delivery cursor"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "batch size from 1 to 100; defaults to 10"
+        }
+      ]
+    },
+    {
+      "invocation": "assignment ack",
+      "synopsis": "acknowledge delivery of an inbox batch; leaves task completion unchanged",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "token-env",
+          "takesValue": true,
+          "meaning": "explicit environment variable containing a coordinator token; required for claim/check/inbox/ack unless token-file is used"
+        },
+        {
+          "name": "token-file",
+          "takesValue": true,
+          "meaning": "explicit coordinator token file; cannot be combined with token-env"
+        },
+        {
+          "name": "consumer",
+          "takesValue": true,
+          "meaning": "stable lowercase name for this lead's delivery cursor"
+        },
+        {
+          "name": "batch",
+          "takesValue": true,
+          "meaning": "exact batch ID returned by assignment inbox"
+        }
+      ]
+    },
+    {
+      "invocation": "task state",
+      "synopsis": "set a task's state by hand — an operator correction, not a workflow step (--replaced-by <id> with cancelled)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead token",
+      "synopsis": "mint the lead's credential behind your password (--revoke ends it): its own work pings nobody",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "lead say",
+      "synopsis": "as the lead: one short message in its person's chat under the lead's name (Settings → Lead); several within two minutes are one message",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "text",
+          "required": true,
+          "meaning": "one short line in plain words"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "task",
+          "takesValue": true,
+          "meaning": "the task it is about"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "unknown-task",
+        "unauthenticated"
+      ]
+    },
+    {
+      "invocation": "task block",
+      "synopsis": "make one task wait for another",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the waiting task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "on",
+          "takesValue": true,
+          "meaning": "the blocker's id"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "contest-open"
+      ]
+    },
+    {
+      "invocation": "task unblock",
+      "synopsis": "stop waiting",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the waiting task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "on",
+          "takesValue": true,
+          "meaning": "the blocker's id"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task"
+      ]
+    },
+    {
+      "invocation": "task next",
+      "synopsis": "move a task to the front of ITS queue (scheduling only; approval still required)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "undo",
+          "takesValue": false,
+          "meaning": "back to filing order"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "claimed",
+        "contest-open"
+      ]
+    },
+    {
+      "invocation": "task steer",
+      "synopsis": "one credentialed note read before the task's next attempt — steering speaks with the operator's voice",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task assign",
+      "synopsis": "reserve a task for one worker, or return it to the shared queue",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "runner",
+          "takesValue": true,
+          "meaning": "the worker to reserve for"
+        },
+        {
+          "name": "anyone",
+          "takesValue": false,
+          "meaning": "back to the shared queue"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "claimed"
+      ]
+    },
+    {
+      "invocation": "task scope",
+      "synopsis": "state what success is; approval binds to this exact statement",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "goal",
+          "takesValue": true,
+          "meaning": "what success is"
+        },
+        {
+          "name": "not",
+          "takesValue": true,
+          "meaning": "explicitly out of scope"
+        },
+        {
+          "name": "touches",
+          "takesValue": true,
+          "meaning": "comma-separated paths this may change"
+        },
+        {
+          "name": "budget-usd",
+          "takesValue": true,
+          "meaning": "spend ceiling for the build"
+        },
+        {
+          "name": "risk",
+          "takesValue": true,
+          "meaning": "declared risk: routine, elevated, or high — the route reads it"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "contest-open"
+      ]
+    },
+    {
+      "invocation": "task plan",
+      "synopsis": "ask for a plan document (a planning session drafts; a person approves)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "provider",
+          "takesValue": true,
+          "meaning": "pin which provider plans THIS task (plan phase only)"
+        },
+        {
+          "name": "model",
+          "takesValue": true,
+          "meaning": "the pinned plan model, riding --provider"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task"
+      ]
+    },
+    {
+      "invocation": "task hold",
+      "synopsis": "park a task with a reason",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why it waits"
+        },
+        {
+          "name": "until",
+          "takesValue": true,
+          "meaning": "ISO time to resurface"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "held"
+      ]
+    },
+    {
+      "invocation": "task unhold",
+      "synopsis": "release a hold",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "not-yours"
+      ]
+    },
+    {
+      "invocation": "task require",
+      "synopsis": "name the capabilities a task needs before dispatch",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "require",
+          "takesValue": true,
+          "meaning": "comma-separated capability keys"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task"
+      ]
+    },
+    {
+      "invocation": "task approve",
+      "synopsis": "the yes — nothing builds without one; binds to the scope digest",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task requeue",
+      "synopsis": "exit a stall: incidents resolved, strikes cleared, queued again",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task regate",
+      "synopsis": "explicitly rerun the approved check on the last exact commit — no agent or automatic retry",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task review",
+      "synopsis": "read a task's compact result packet with --brief, or a run's automatic findings without it",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "task id with --brief; run id otherwise"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "brief",
+          "takesValue": false,
+          "meaning": "saved conclusion, changed files, checks, findings, screenshots, plan and next actions; missing fields say not recorded"
+        },
+        {
+          "name": "run",
+          "takesValue": true,
+          "meaning": "with --brief, select an exact finished attempt instead of the latest"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include LOW findings within the compact packet's limit; extra findings are counted"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "unauthenticated",
+        "not-found"
+      ]
+    },
+    {
+      "invocation": "task accept",
+      "synopsis": "record an explicit acceptance with limitations; does not change checks or prove deployment",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task repair",
+      "synopsis": "inspect or approve an existing historical repair draft; use task revise for new feedback",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task route",
+      "synopsis": "which configured agents plan, build and repair this task; phase and risk changes require renewed approval",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task reopen",
+      "synopsis": "resume external work its tracker closed and has been SEEN open again",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task stop",
+      "synopsis": "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "run settle",
+      "synopsis": "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "task resume",
+      "synopsis": "resume the exact stopped attempt (--run <id>): refuses until it is quiescent, lifts only that stop's hold, approves nothing — the next pass re-proves the scope and inherits the draft with fresh proof",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "claim",
+      "synopsis": "take one ready, approved task; answers with a lease",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "keyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "key",
+          "takesValue": true,
+          "meaning": "idempotency key — retry with the same key to get the first answer back"
+        },
+        {
+          "name": "runner",
+          "takesValue": true,
+          "meaning": "your registered worker name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the worker's token"
+        },
+        {
+          "name": "ttl",
+          "takesValue": true,
+          "meaning": "lease seconds"
+        }
+      ],
+      "notableReasons": [
+        "held",
+        "fenced",
+        "unapproved",
+        "reserved",
+        "external",
+        "contest-open",
+        "claimed",
+        "not-ready"
+      ]
+    },
+    {
+      "invocation": "heartbeat",
+      "synopsis": "still working; extends the lease",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "lease",
+          "required": true,
+          "meaning": "the lease id"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "not-leased",
+        "fenced"
+      ]
+    },
+    {
+      "invocation": "release",
+      "synopsis": "done with it; fenced if superseded",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "positionals": [
+        {
+          "name": "lease",
+          "required": true,
+          "meaning": "the lease id"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "not-leased",
+        "fenced"
+      ]
+    },
+    {
+      "invocation": "reap",
+      "synopsis": "release every lease that ran out",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "tick",
+      "synopsis": "one unattended pass: claim, build in a leased worktree, commit to a branch — never pushes",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        },
+        {
+          "name": "runner",
+          "takesValue": true,
+          "meaning": "your registered worker name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "the worker's token"
+        },
+        {
+          "name": "max",
+          "takesValue": true,
+          "meaning": "tasks this pass (default 1)"
+        },
+        {
+          "name": "base",
+          "takesValue": true,
+          "meaning": "base ref for first attempts"
+        }
+      ],
+      "notableReasons": [
+        "empty",
+        "fenced"
+      ]
+    },
+    {
+      "invocation": "build",
+      "synopsis": "build one claimed task directly (the piece tick automates)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ],
+      "notableReasons": [
+        "not-leased",
+        "unapproved"
+      ]
+    },
+    {
+      "invocation": "reconcile",
+      "synopsis": "recover what the last stretch left behind — safe to repeat",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ]
+    },
+    {
+      "invocation": "runner list",
+      "synopsis": "registered workers",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "coordinator list",
+      "synopsis": "MCP filing credentials and their limits",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "approver list",
+      "synopsis": "who can say yes (names only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "cap list",
+      "synopsis": "recorded capabilities",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ]
+    },
+    {
+      "invocation": "outbox list",
+      "synopsis": "queued notifications",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "incident list",
+      "synopsis": "open incidents",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "routine list",
+      "synopsis": "scheduled routines",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "routine show",
+      "synopsis": "one routine in full",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the routine"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "config show",
+      "synopsis": "phase and spend configuration",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ]
+    },
+    {
+      "invocation": "setup show",
+      "synopsis": "installation setup",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "verify show",
+      "synopsis": "the repository's check level, its approved full and quick commands, and a suggested quick command",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which repository (repeatable where a command watches several)"
+        }
+      ]
+    },
+    {
+      "invocation": "intake show",
+      "synopsis": "intake configuration",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "providers",
+      "synopsis": "which agent providers this binary can drive, and their transports; --report records this machine's readiness under its runner",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "report",
+          "takesValue": false,
+          "meaning": "record readiness observations under --runner"
+        },
+        {
+          "name": "runner",
+          "takesValue": true,
+          "meaning": "the registered worker name reporting"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that worker's token"
+        }
+      ]
+    },
+    {
+      "invocation": "template list",
+      "synopsis": "routine templates",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "template show",
+      "synopsis": "one template",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "name",
+          "required": true,
+          "meaning": "the template"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "contest show",
+      "synopsis": "a tournament's state and results",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the contest"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "webhook status",
+      "synopsis": "connected messaging services",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "publish status",
+      "synopsis": "publication and merge-grant state",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ]
+    },
+    {
+      "invocation": "approver add",
+      "synopsis": "mint the credential that lets a person say yes",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "runner register",
+      "synopsis": "register a worker bound to its repositories; its token is shown once",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "runner retire",
+      "synopsis": "retire a worker",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "runner bind",
+      "synopsis": "replace which repositories a worker may build in",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "runner capacity",
+      "synopsis": "set how many tasks a worker runs at once; running work carries on, the new number applies at the next claim",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "project checks",
+      "synopsis": "show or set a project's batch checks (--batch on|off, off by default): results that finish within 10 minutes share one full check on a temporary batch commit; nothing is merged into a real branch",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "project concurrency",
+      "synopsis": "set how many of a project's tasks build at once (default 2, never past the worker's capacity); running work carries on",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "coordinator mint",
+      "synopsis": "mint the MCP filing credential — repo-bound, rate-limited, token shown once",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "coordinator revoke",
+      "synopsis": "revoke an MCP filing credential",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "mcp",
+      "synopsis": "serve the MCP gateway over stdio — the coordinator credential is the only key it accepts",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "cap add",
+      "synopsis": "record a capability",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "outbox deliver",
+      "synopsis": "deliver queued notifications",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "peek",
+      "synopsis": "watch live agents in the terminal — one pane per open run; --tmux opens a window per run",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "incident resolve",
+      "synopsis": "resolve an incident",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "decide",
+      "synopsis": "read and ANSWER parked decisions — answering is a person's act",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine add",
+      "synopsis": "file a standing order",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine approve",
+      "synopsis": "approve a standing order",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine refresh",
+      "synopsis": "re-resolve the agents a standing order freezes from today's configuration — approves nothing; approve it again afterwards",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine pause",
+      "synopsis": "pause a standing order",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine resume",
+      "synopsis": "resume a standing order",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "routine run-now",
+      "synopsis": "run a standing order immediately",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "keys status",
+      "synopsis": "which provider API keys are stored — never the values",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "keys set",
+      "synopsis": "store a provider's API key as a private file — piped or --key-file, never on the command line",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "keys clear",
+      "synopsis": "remove a stored provider key (kept only as a fallback; a subscription-mode provider is unaffected)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "keys verify",
+      "synopsis": "check a stored key against its provider live — spends no tokens",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "keys auth",
+      "synopsis": "choose subscription vs API key for a provider (subscription is the default; the key is kept as fallback)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "people list",
+      "synopsis": "everyone who can sign in, their standing, and the open invites",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "people invite",
+      "synopsis": "mint a single-use sign-in link for one person — their powers are pinned when you mint, never after",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "people projects",
+      "synopsis": "set a person's project access — selected project, all projects, or no projects",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "people revoke",
+      "synopsis": "end a person's access — their sessions, invites, and signed modes end with them; history stays",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "mode show",
+      "synopsis": "the repository's operating mode, in full — or 'locked' when none is signed",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "mode set",
+      "synopsis": "sign a per-repository operating mode (password ceremony; standard or hands-off, always expiring)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish merge",
+      "synopsis": "say yes to ONE waiting merge — it fires only when CI is seen green on the exact commit you authorized",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish refire",
+      "synopsis": "recover a merge whose issued call went silent — re-enters the full merge road, never auto-retried",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "review show",
+      "synopsis": "whether a project's finished builds get one automatic review",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none"
+    },
+    {
+      "invocation": "review on",
+      "synopsis": "one automatic review of each finished build whose check passes; only HIGH findings send it back, once",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "review off",
+      "synopsis": "finished builds go straight to the person, unreviewed",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "mode revoke",
+      "synopsis": "revoke a repository's mode — one click, every act it covered falls back to its own ceremony",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "config set",
+      "synopsis": "set phase or spend configuration",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "config clear",
+      "synopsis": "clear phase or spend configuration",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "setup clear",
+      "synopsis": "clear installation setup",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "verify set",
+      "synopsis": "approve the one shell command the plane re-runs after every future commit (--quick \"<cmd>\" approves the fast check Quick runs); --self-heal binds one approved-setup replay when a required project executable is missing",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "verify clear",
+      "synopsis": "revoke a repository's approved verification command; --level quick revokes only the quick command",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "verify level",
+      "synopsis": "set a project's checks after each build: quick (the approved quick command), full, or off — an approver's act, in the ledger",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "intake grant",
+      "synopsis": "grant an intake source",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "intake run",
+      "synopsis": "run intake now",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "intake preview",
+      "synopsis": "preview what intake would file",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "intake pr-comments",
+      "synopsis": "intake review comments from a pull request",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "intake clear",
+      "synopsis": "clear intake configuration",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "contest exclude",
+      "synopsis": "exclude a contestant from a tournament",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "webhook primary",
+      "synopsis": "choose which service receives alerts",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "webhook test",
+      "synopsis": "send a test message",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "bridge",
+      "synopsis": "the Telegram bridge (pairing, tokens, the follower)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "enroll",
+      "synopsis": "grant a repository authority (backends, dispatch) — its own explicit yes",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "revoke",
+      "synopsis": "take an authority grant back",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish",
+      "synopsis": "the publication pass: push built branches, open pull requests, sweep merges",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish grant",
+      "synopsis": "grant publication or auto-merge authority",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish revoke",
+      "synopsis": "take a publication grant back",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish unblock",
+      "synopsis": "lift a repair's merge hold",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "publish rearm",
+      "synopsis": "re-arm a refused merge after fixing the named cause",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "serve",
+      "synopsis": "the operations console (HTTP)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "watch",
+      "synopsis": "the unattended loop, kept running",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "up",
+      "synopsis": "console + worker + browser, one command",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "onboard",
+      "synopsis": "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    },
+    {
+      "invocation": "daemon",
+      "synopsis": "install the loop under the OS service manager",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed"
+    }
+  ]
+}
+
+$ contract --bogus --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "contract",
+  "reason": "usage",
+  "message": "unknown option --bogus for `contract`"
+}
+
+$ <dir> --json --local → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "scan",
+  "scannedAt": "2026-08-13T22:00:00.000Z",
+  "roots": [
+    "<dir>"
+  ],
+  "missingRoots": [],
+  "remoteRead": false,
+  "repos": [
+    {
+      "path": "<dir>/shop",
+      "name": "shop",
+      "head": "main",
+      "remoteUrl": null,
+      "branches": [],
+      "worktrees": [
+        {
+          "path": "<dir>/shop",
+          "head": "0000000000000000000000000000000000000000",
+          "branch": "main",
+          "detached": false,
+          "bare": false,
+          "locked": false,
+          "prunable": false
+        }
+      ],
+      "dirtyFiles": null,
+      "hasTracking": true,
+      "problems": [],
+      "pulls": [],
+      "issues": [],
+      "pullsRead": false,
+      "issuesRead": false,
+      "remoteSkipped": false,
+      "remoteProblems": []
+    }
+  ]
+}
+
+$ task add Tidy the README --id t-readme --repo <dir>/shop --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task add",
+  "task": {
+    "id": "t-readme",
+    "title": "Tidy the README",
+    "state": "queued",
+    "createdAt": "2026-08-13T22:00:00.000Z",
+    "updatedAt": "2026-08-13T22:00:00.000Z",
+    "priority": 0
+  },
+  "repo": "<dir>/shop"
+}
+
+$ task add Fix the login form --id t-login --repo <dir>/shop --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task add",
+  "task": {
+    "id": "t-login",
+    "title": "Fix the login form",
+    "state": "queued",
+    "createdAt": "2026-08-13T22:00:00.000Z",
+    "updatedAt": "2026-08-13T22:00:00.000Z",
+    "priority": 0
+  },
+  "repo": "<dir>/shop"
+}
+
+$ task list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task list",
+  "count": 2,
+  "tasks": [
+    {
+      "rootId": "t-login",
+      "activeTaskId": "t-login",
+      "title": "Fix the login form",
+      "repo": "<dir>/shop",
+      "state": "queued",
+      "assignmentState": "needs-decision",
+      "createdAt": "2026-08-13T22:00:00.000Z",
+      "updatedAt": "2026-08-13T22:00:00.000Z",
+      "versionCount": 1,
+      "earlierActiveCount": 0,
+      "familyProblem": null,
+      "liveRunId": null,
+      "unfinishedRunId": null,
+      "resultRunId": null,
+      "resultTaskId": null,
+      "resultOutcome": null,
+      "publicationUrl": null,
+      "status": {
+        "token": "assignment-needs-decision",
+        "label": "Needs you",
+        "detail": "Say what the task should do so it can be planned.",
+        "tone": "attention",
+        "action": {
+          "label": "Define the task",
+          "kind": "open-task"
+        },
+        "views": [
+          "all",
+          "needs-you"
+        ],
+        "rank": 0
+      },
+      "ask": "decide",
+      "chip": null,
+      "primaryAction": {
+        "code": "write-scope",
+        "label": "Define the task",
+        "target": {
+          "taskId": "t-login",
+          "runId": null,
+          "decisionId": null
+        },
+        "access": "operator-control",
+        "retry": "refresh-before-acting"
+      },
+      "completion": null,
+      "evidence": "recorded",
+      "id": "t-login"
+    },
+    {
+      "rootId": "t-readme",
+      "activeTaskId": "t-readme",
+      "title": "Tidy the README",
+      "repo": "<dir>/shop",
+      "state": "queued",
+      "assignmentState": "needs-decision",
+      "createdAt": "2026-08-13T22:00:00.000Z",
+      "updatedAt": "2026-08-13T22:00:00.000Z",
+      "versionCount": 1,
+      "earlierActiveCount": 0,
+      "familyProblem": null,
+      "liveRunId": null,
+      "unfinishedRunId": null,
+      "resultRunId": null,
+      "resultTaskId": null,
+      "resultOutcome": null,
+      "publicationUrl": null,
+      "status": {
+        "token": "assignment-needs-decision",
+        "label": "Needs you",
+        "detail": "Say what the task should do so it can be planned.",
+        "tone": "attention",
+        "action": {
+          "label": "Define the task",
+          "kind": "open-task"
+        },
+        "views": [
+          "all",
+          "needs-you"
+        ],
+        "rank": 0
+      },
+      "ask": "decide",
+      "chip": null,
+      "primaryAction": {
+        "code": "write-scope",
+        "label": "Define the task",
+        "target": {
+          "taskId": "t-readme",
+          "runId": null,
+          "decisionId": null
+        },
+        "access": "operator-control",
+        "retry": "refresh-before-acting"
+      },
+      "completion": null,
+      "evidence": "recorded",
+      "id": "t-readme"
+    }
+  ],
+  "totals": {
+    "all": 2,
+    "needs-you": 2,
+    "running": 0,
+    "completed": 0
+  },
+  "nextCursor": null,
+  "limit": 40,
+  "view": "all",
+  "evidence": "recorded"
+}
+
+$ task show t-readme --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task show",
+  "task": {
+    "id": "t-readme",
+    "title": "Tidy the README",
+    "state": "queued",
+    "createdAt": "2026-08-13T22:00:00.000Z",
+    "updatedAt": "2026-08-13T22:00:00.000Z",
+    "priority": 0
+  },
+  "work": {
+    "taskId": "t-readme",
+    "state": "queued",
+    "resultRunId": null,
+    "liveRunId": null,
+    "status": {
+      "token": "needs-scope",
+      "label": "Needs you",
+      "detail": "Say what the task should do so it can be planned.",
+      "tone": "attention",
+      "action": {
+        "label": "Define the task",
+        "kind": "open-task"
+      },
+      "views": [
+        "all",
+        "needs-you"
+      ],
+      "rank": 0
+    },
+    "primaryAction": {
+      "code": "write-scope",
+      "label": "Define the task",
+      "target": {
+        "taskId": "t-readme",
+        "runId": null,
+        "decisionId": null
+      },
+      "access": "operator-control",
+      "retry": "refresh-before-acting"
+    },
+    "nextActions": [
+      {
+        "code": "write-scope",
+        "label": "Define the task",
+        "target": {
+          "taskId": "t-readme",
+          "runId": null,
+          "decisionId": null
+        },
+        "access": "operator-control",
+        "retry": "refresh-before-acting"
+      }
+    ],
+    "diagnostics": [],
+    "evidence": "recorded"
+  },
+  "assignment": {
+    "version": 1,
+    "rootId": "t-readme",
+    "activeTaskId": "t-readme",
+    "state": "needs-decision",
+    "detail": "Say what the task should do so it can be planned.",
+    "owner": null,
+    "primaryAction": {
+      "code": "write-scope",
+      "label": "Define the task",
+      "target": {
+        "taskId": "t-readme",
+        "runId": null,
+        "decisionId": null
+      },
+      "access": "operator-control",
+      "retry": "refresh-before-acting"
+    },
+    "attention": [
+      "Say what the task should do so it can be planned."
+    ],
+    "attempts": 1,
+    "handoff": {
+      "kind": "attention",
+      "digest": "0b8c0a6186fb0a4f83c9c26e374ea6fc2397ddcd304782bf6d3e70b87e294cad",
+      "acknowledged": false
+    },
+    "completion": null,
+    "result": null,
+    "publication": null,
+    "review": null,
+    "deployment": {
+      "status": "not-recorded"
+    }
+  },
+  "ref": 1,
+  "blockedBy": [],
+  "position": {
+    "position": 1,
+    "total": 2,
+    "column": null
+  },
+  "reservedFor": null,
+  "hold": null,
+  "claim": null,
+  "scope": null,
+  "approval": {
+    "approved": false,
+    "reason": "never-proposed"
+  },
+  "risk": "routine",
+  "route": {
+    "kind": "unreadable",
+    "source": null,
+    "problem": "approvals bind exact routing — the planner (claude) has no exact model: set one once with `config set plan --provider claude --model <model>`"
+  },
+  "runs": [],
+  "deliverable": "branch",
+  "report": null,
+  "proofVerdict": null,
+  "proofReasons": [],
+  "proofMatrix": [],
+  "proofAccepted": false,
+  "semanticCoverage": null,
+  "review": null,
+  "automaticReview": null,
+  "dispatch": {
+    "condition": "waiting",
+    "code": "needs-scope",
+    "summary": "Needs a scope",
+    "detail": "Write the success contract or ask the planner to draft it.",
+    "action": "write-scope",
+    "nextAt": null,
+    "role": "builder",
+    "blockerTaskId": null,
+    "review": null
+  },
+  "control": {
+    "kind": "none"
+  },
+  "stops": [],
+  "pullRequest": null
+}
+
+$ task show no-such-task --json → 3
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task show",
+  "reason": "unknown-task",
+  "message": "no task `no-such-task`"
+}
+
+$ task hold t-login --reason waiting on design --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task hold",
+  "id": "t-login",
+  "reason": "waiting on design",
+  "until": null
+}
+
+$ task wait --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task wait",
+  "reason": "usage",
+  "message": "Use `toolroll task wait <id> [--timeout <seconds>]`."
+}
+
+$ status --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "status",
+  "generatedAt": "2026-08-13T22:00:00.000Z",
+  "running": {
+    "count": 0,
+    "phases": [],
+    "tasks": []
+  },
+  "queued": {
+    "count": 2,
+    "reasons": [
+      {
+        "reason": "needs a scope",
+        "count": 1
+      },
+      {
+        "reason": "on hold",
+        "count": 1
+      }
+    ],
+    "tasks": [
+      {
+        "task": "t-readme",
+        "reason": "needs a scope"
+      },
+      {
+        "task": "t-login",
+        "reason": "on hold"
+      }
+    ]
+  },
+  "waitingForReview": {
+    "count": 0,
+    "results": []
+  },
+  "releaseCheck": null,
+  "planWindows": [],
+  "signIn": [],
+  "tasks": [
+    {
+      "task": "t-readme",
+      "title": "Tidy the README",
+      "headline": "Needs you",
+      "sentence": "Say what the task should do so it can be planned."
+    },
+    {
+      "task": "t-login",
+      "title": "Fix the login form",
+      "headline": "Stopped",
+      "sentence": "waiting on design"
+    }
+  ],
+  "lead": null,
+  "projects": [
+    {
+      "repo": "<dir>/shop",
+      "name": "shop",
+      "running": 0,
+      "limit": 2
+    }
+  ]
+}
+
+$ status --bogus --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "status",
+  "reason": "usage",
+  "message": "unknown option --bogus — add --help to any queue command for the whole surface"
+}
+
+$ ready --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "ready",
+  "count": 1,
+  "dispatchableCount": 0,
+  "signIn": [],
+  "tasks": [
+    {
+      "id": "t-readme",
+      "ref": 1,
+      "backend": "built-in",
+      "title": "Tidy the README",
+      "state": "queued",
+      "reservedFor": null,
+      "claim": null,
+      "dispatch": {
+        "condition": "waiting",
+        "code": "needs-scope",
+        "summary": "Needs a scope",
+        "detail": "Write the success contract or ask the planner to draft it.",
+        "action": "write-scope",
+        "nextAt": null,
+        "role": "builder",
+        "blockerTaskId": null,
+        "review": null
+      }
+    }
+  ]
+}
+
+$ integrations --saved --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "integrations",
+  "integrations": [
+    {
+      "key": "telegram",
+      "group": "chat",
+      "name": "Telegram",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings#telegram-token",
+        "command": null
+      }
+    },
+    {
+      "key": "slack",
+      "group": "chat",
+      "name": "Slack",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings/slack",
+        "command": null
+      }
+    },
+    {
+      "key": "discord",
+      "group": "chat",
+      "name": "Discord",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings/discord",
+        "command": null
+      }
+    },
+    {
+      "key": "teams",
+      "group": "chat",
+      "name": "Microsoft Teams",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings/teams",
+        "command": null
+      }
+    },
+    {
+      "key": "github",
+      "group": "code",
+      "name": "GitHub",
+      "usedBy": [
+        "Pull requests"
+      ],
+      "account": null,
+      "detail": null,
+      "checked": false,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "connected",
+      "action": {
+        "kind": "test",
+        "label": "Send test"
+      }
+    },
+    {
+      "key": "linear",
+      "group": "code",
+      "name": "Linear",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/flows",
+        "command": null
+      }
+    },
+    {
+      "key": "email",
+      "group": "mail",
+      "name": "Email",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings#email",
+        "command": null
+      }
+    },
+    {
+      "key": "mcp",
+      "group": "tools",
+      "name": "MCP tools",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings/tools",
+        "command": null
+      }
+    },
+    {
+      "key": "monitoring",
+      "group": "monitoring",
+      "name": "Monitoring",
+      "usedBy": [],
+      "account": null,
+      "detail": null,
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": "/settings/monitoring",
+        "command": null
+      }
+    },
+    {
+      "key": "agent:claude",
+      "group": "agents",
+      "name": "Claude",
+      "usedBy": [
+        "Tasks"
+      ],
+      "account": null,
+      "detail": null,
+      "checked": false,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "connected",
+      "action": {
+        "kind": "test",
+        "label": "Send test"
+      }
+    },
+    {
+      "key": "agent:codex",
+      "group": "agents",
+      "name": "Codex",
+      "usedBy": [
+        "Tasks"
+      ],
+      "account": null,
+      "detail": null,
+      "checked": false,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "connected",
+      "action": {
+        "kind": "test",
+        "label": "Send test"
+      }
+    }
+  ],
+  "counts": {
+    "connected": 3,
+    "not-set-up": 8,
+    "broken": 0
+  }
+}
+
+$ flows list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "flows list",
+  "flows": []
+}
+
+$ flows show no-such-flow --json → 3
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "flows show",
+  "reason": "unknown-flow",
+  "message": "No such flow in your projects. toolroll flows list names them."
+}
+
+$ grants --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "grants",
+  "count": 0,
+  "grants": []
+}
+
+$ runner list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "runner list",
+  "count": 0,
+  "runners": []
+}
+
+$ routine list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "routine list",
+  "routines": []
+}
+
+$ outbox list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "outbox list",
+  "notifications": [
+    {
+      "id": 1,
+      "recipient": null,
+      "dedupeKey": "life:task-filed:t1:1",
+      "scope": "task",
+      "project": "<dir>/shop",
+      "taskRef": 1,
+      "taskId": "t-readme",
+      "run": null,
+      "kind": "task-filed",
+      "subject": "New task: Tidy the README",
+      "body": "Filed and waiting in the queue.",
+      "createdAt": "2026-08-13T22:00:00.000Z",
+      "attempts": 0,
+      "lastAttemptAt": null,
+      "lastError": null,
+      "deliveredAt": null,
+      "receipt": null,
+      "resolvedAt": null,
+      "pushClass": null,
+      "link": "/chat?task=t-readme"
+    },
+    {
+      "id": 2,
+      "recipient": null,
+      "dedupeKey": "life:task-filed:t2:1",
+      "scope": "task",
+      "project": "<dir>/shop",
+      "taskRef": 2,
+      "taskId": "t-login",
+      "run": null,
+      "kind": "task-filed",
+      "subject": "New task: Fix the login form",
+      "body": "Filed and waiting in the queue.",
+      "createdAt": "2026-08-13T22:00:00.000Z",
+      "attempts": 0,
+      "lastAttemptAt": null,
+      "lastError": null,
+      "deliveredAt": null,
+      "receipt": null,
+      "resolvedAt": null,
+      "pushClass": null,
+      "link": "/chat?task=t-login"
+    },
+    {
+      "id": 3,
+      "recipient": null,
+      "dedupeKey": "life:task-held:t2:1",
+      "scope": "task",
+      "project": "<dir>/shop",
+      "taskRef": 2,
+      "taskId": "t-login",
+      "run": null,
+      "kind": "task-held",
+      "subject": "Paused",
+      "body": "The next attempt waits until the hold is released. An attempt already running is not stopped by this.",
+      "createdAt": "2026-08-13T22:00:00.000Z",
+      "attempts": 0,
+      "lastAttemptAt": null,
+      "lastError": null,
+      "deliveredAt": null,
+      "receipt": null,
+      "resolvedAt": null,
+      "pushClass": null,
+      "link": "/t/t-login"
+    }
+  ]
+}
+
+$ incident list --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "incident list",
+  "incidents": []
+}

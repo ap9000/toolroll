@@ -23,6 +23,7 @@ import { RETENTION_NOTE } from "./evidence.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
 import { bytesWords, treeBytes } from "./storage.js";
 import type { Database, Store } from "./store.js";
+import { RETENTION_DAYS, retentionDaysSchema, retentionKindSchema, type RetentionKind, type RetentionPeriods } from "./contracts/retention.js";
 
 const RETENTION_TABLE = (name: string) => `
 CREATE TABLE IF NOT EXISTS ${name} (
@@ -53,8 +54,7 @@ export function widenRetentionSchema(db: Database): void {
   }
 }
 
-export type RetentionKind = "evidence" | "checkouts" | "chat" | "notifications";
-export type RetentionPeriods = Record<RetentionKind, number | null>;
+export type { RetentionKind, RetentionPeriods } from "./contracts/retention.js";
 
 export const RETENTION_KINDS: readonly { kind: RetentionKind; label: string; detail: string }[] = [
   { kind: "evidence", label: "Run evidence and logs", detail: "Diffs, check logs, screenshots and reports saved for each run" },
@@ -68,8 +68,8 @@ const LONG_CHOICES: readonly (number | null)[] = [30, 90, 180, 365, 730, null];
 export const PERIOD_CHOICES: Readonly<Record<RetentionKind, readonly (number | null)[]>> = {
   evidence: [1, 7, 14, 28, null], checkouts: LONG_CHOICES, chat: LONG_CHOICES, notifications: LONG_CHOICES,
 };
-export const MIN_DAYS = 1;
-export const MAX_DAYS = 3650;
+export const MIN_DAYS = RETENTION_DAYS.min;
+export const MAX_DAYS = RETENTION_DAYS.max;
 const DAY_MS = 86_400_000;
 /** A sweep is due once a day. */
 export const SWEEP_EVERY_MS = DAY_MS;
@@ -81,7 +81,7 @@ const SWEEP_CURSOR = "retention:last-sweep";
 export const DEFAULT_PERIODS: RetentionPeriods = { evidence: 28, checkouts: null, chat: null, notifications: null };
 
 export function isRetentionKind(value: string): value is RetentionKind {
-  return RETENTION_KINDS.some(one => one.kind === value);
+  return retentionKindSchema.safeParse(value).success;
 }
 
 /** "forever", or a number of days ("90", "90d"), weeks ("12w") or years ("1y"); undefined when it's none of those or out of range. */
@@ -92,7 +92,7 @@ export function parsePeriod(text: string): number | null | undefined {
   if (match === null) return undefined;
   const unit = match[2]?.[0] ?? "d";
   const days = Number(match[1]) * (unit === "y" ? 365 : unit === "w" ? 7 : 1);
-  return days >= MIN_DAYS && days <= MAX_DAYS ? days : undefined;
+  return retentionDaysSchema.safeParse(days).success ? days : undefined;
 }
 
 export function periodWords(days: number | null): string {

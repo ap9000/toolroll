@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { Store } from "./store.js";
 import { fetchOpenRouterModels, type OpenRouterModel } from "./openrouter-models.js";
+import { codexModelSchema, codexModelsCacheSchema, npmLatestSchema } from "./contracts/model-catalog.js";
 import { readCappedBody } from "./converse.js";
 import { validModelId, type ProviderId } from "./provider.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
@@ -92,10 +93,11 @@ export function codexCatalog(home = homedir()): { id: string; name: string }[] {
   try {
     const path = join(home, ".codex", "models_cache.json");
     if (lstatSync(path).size >= 2_000_000) return [];
-    const data = JSON.parse(readFileSync(path, "utf8")) as { models?: { slug?: unknown; display_name?: unknown; visibility?: unknown }[] };
-    return (Array.isArray(data.models) ? data.models : [])
-      .filter(one => one != null && one.visibility === "list" && typeof one.slug === "string" && validModelId(one.slug))
-      .slice(0, 30).map(one => ({ id: one.slug as string, name: typeof one.display_name === "string" ? one.display_name.slice(0, 80) : one.slug as string }));
+    const data = codexModelsCacheSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
+    return (data.success ? data.data.models : []).flatMap(entry => {
+      const one = codexModelSchema.safeParse(entry);
+      return one.success ? [one.data] : [];
+    }).slice(0, 30).map(one => ({ id: one.slug, name: typeof one.display_name === "string" ? one.display_name.slice(0, 80) : one.slug }));
   } catch { return []; }
 }
 
@@ -265,8 +267,8 @@ async function latestVersion(pkg: string, fetcher: typeof fetch): Promise<string
     if (!response.ok) { await response.body?.cancel(); return null; }
     const body = await readCappedBody(response, 2_000_000);
     if (body === null) return null;
-    const version = (JSON.parse(new TextDecoder().decode(body)) as { version?: unknown }).version;
-    return typeof version === "string" && /^\d+\.\d+\.\d+/.test(version) ? version : null;
+    const latest = npmLatestSchema.safeParse(JSON.parse(new TextDecoder().decode(body)));
+    return latest.success ? latest.data.version : null;
   } catch { return null; }
 }
 

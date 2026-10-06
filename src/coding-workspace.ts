@@ -11,6 +11,7 @@ import { processMayBeAlive } from './process-liveness.js';
 import { createCodexCodingProvider, type CodingProvider, type CodingProviderEvent, type CodingCustody } from './coding-provider.js';
 import { verifyCodingContext, type CodingContext } from './coding-context.js';
 import { codingSessionDocument, parseCodingSessionDocument } from './contracts/coding-workspace.js';
+import { readCodingCustodyWitness, readCodingItem, readCodingRequest, readCodingRpcId } from './contracts/coding-activity.js';
 import type { CodingChanges, CodingItem, CodingQuestion, CodingRequest, CodingSession, CodingSnapshot } from './coding-types.js';
 
 export type CodingActor = { name: string; generation: number };
@@ -157,8 +158,8 @@ export class CodingWorkspace {
 
   snapshot(id: string, actor: CodingActor): CodingSnapshot {
     const session = this.get(id, actor);
-    const items = this.db.prepare('SELECT payload FROM coding_item WHERE session=? ORDER BY position').all(id).map(row => JSON.parse(String(row['payload'])) as CodingItem);
-    const requests = this.db.prepare("SELECT payload FROM coding_request WHERE session=? AND status='pending' ORDER BY rowid").all(id).map(row => JSON.parse(String(row['payload'])) as CodingRequest);
+    const items = this.db.prepare('SELECT payload FROM coding_item WHERE session=? ORDER BY position').all(id).map(row => readCodingItem(String(row['payload'])));
+    const requests = this.db.prepare("SELECT payload FROM coding_request WHERE session=? AND status='pending' ORDER BY rowid").all(id).map(row => readCodingRequest(String(row['payload'])));
     const revision = Number(this.db.prepare('SELECT revision FROM coding_session WHERE id=?').get(id)?.['revision']);
     return { session, items, requests, revision };
   }
@@ -169,8 +170,8 @@ export class CodingWorkspace {
     const session = this.get(id, actor);
     const itemRows = this.db.prepare('SELECT payload FROM coding_item WHERE session=? ORDER BY position DESC LIMIT 101').all(id);
     const requestRows = this.db.prepare("SELECT payload FROM coding_request WHERE session=? AND status='pending' ORDER BY rowid LIMIT 51").all(id);
-    const items = itemRows.slice(0, 100).reverse().map(row => JSON.parse(String(row['payload'])) as CodingItem);
-    const requests = requestRows.slice(0, 50).map(row => JSON.parse(String(row['payload'])) as CodingRequest);
+    const items = itemRows.slice(0, 100).reverse().map(row => readCodingItem(String(row['payload'])));
+    const requests = requestRows.slice(0, 50).map(row => readCodingRequest(String(row['payload'])));
     const revision = Number(this.db.prepare('SELECT revision FROM coding_session WHERE id=?').get(id)?.['revision']);
     return { session, items, requests, revision, truncated: itemRows.length > items.length || requestRows.length > requests.length };
   }
@@ -328,7 +329,7 @@ export class CodingWorkspace {
       const item = this.item(p['item']); if (item) { this.pendingItems.delete(`${session.id}:${item.id}`); this.putItem(session.id, item); }
     } else if (event.method === 'item/agentMessage/delta') {
       const id = string(p['itemId']), key = `${session.id}:${id}`;
-      const prior = this.pendingItems.get(key)?.item ?? (() => { const row = this.db.prepare('SELECT payload FROM coding_item WHERE session=? AND id=?').get(session.id, id); return row ? JSON.parse(String(row['payload'])) as CodingItem : { id, type: 'agentMessage', text: '', status: 'inProgress' }; })();
+      const prior = this.pendingItems.get(key)?.item ?? (() => { const row = this.db.prepare('SELECT payload FROM coding_item WHERE session=? AND id=?').get(session.id, id); return row ? readCodingItem(String(row['payload'])) : { id, type: 'agentMessage', text: '', status: 'inProgress' }; })();
       prior.text += string(p['delta']);
       if (prior.text.length > 100_000) prior.text = prior.text.slice(0, 100_000);
       this.pendingItems.set(key, { session: session.id, item: prior });
@@ -445,8 +446,8 @@ export class CodingWorkspace {
     const row = this.db.prepare('SELECT payload FROM coding_custody WHERE singleton=1').get();
     if (!row) return false;
     try {
-      const c = JSON.parse(String(row['payload'])) as CodingCustody;
-      if (c.host !== hostname() || !Array.isArray(c.descendants) || typeof c.observationUnknown !== 'boolean') return false;
+      const c = readCodingCustodyWitness<CodingCustody>(String(row['payload']));
+      if (c === null || c.host !== hostname()) return false;
       if (provenDeadByBootChange(c)) return true;
       if (c.container) return containerEmptiness(c.container.backend, c.container.id, process.platform, c.container.identity) === 'empty';
       if (c.observationUnknown || !Number.isSafeInteger(c.pid) || Number(c.pid) <= 0) return false;
@@ -568,8 +569,8 @@ export class CodingWorkspace {
     const session = this.get(id, actor);
     if (!session.nativeThreadId || !session.turnId || !busy.has(session.status)) throw new CodingActionError('There is no running turn to stop.', 'rejected', id);
     for (const row of this.db.prepare("SELECT token,rpc_id,payload FROM coding_request WHERE session=? AND status='pending'").all(id)) {
-      const request = JSON.parse(String(row['payload'])) as CodingRequest;
-      this.native().respond(JSON.parse(String(row['rpc_id'])) as string | number, request.kind === 'questions' ? { answers: {} } : { decision: 'cancel' });
+      const request = readCodingRequest(String(row['payload']));
+      this.native().respond(readCodingRpcId(String(row['rpc_id'])), request.kind === 'questions' ? { answers: {} } : { decision: 'cancel' });
       this.db.prepare("UPDATE coding_request SET status='withdrawn' WHERE token=?").run(String(row['token']));
     }
     this.save({ ...session, status: 'stopping' });
@@ -580,10 +581,10 @@ export class CodingWorkspace {
     const session = this.get(id, actor);
     const row = this.db.prepare("SELECT * FROM coding_request WHERE session=? AND token=? AND status='pending'").get(id, token);
     if (!row || session.status !== 'needs-input' || !this.loaded.has(id)) throw Error('This request is no longer waiting for an answer.');
-    const request = JSON.parse(String(row['payload'])) as CodingRequest;
+    const request = readCodingRequest(String(row['payload']));
     if (!['accept', 'decline', 'cancel'].includes(decision)) throw Error('Choose an available decision.');
     const result: Record<string, unknown> = request.kind === 'questions' ? { answers: decision === 'accept' ? this.validateAnswers(request, answers) : {} } : { decision };
-    this.native().respond(JSON.parse(String(row['rpc_id'])) as string | number, result);
+    this.native().respond(readCodingRpcId(String(row['rpc_id'])), result);
     this.db.prepare("UPDATE coding_request SET status='answered' WHERE token=?").run(token);
     const remaining = this.db.prepare("SELECT 1 FROM coding_request WHERE session=? AND status='pending'").get(id);
     this.save({ ...session, status: remaining ? 'needs-input' : 'working' });
