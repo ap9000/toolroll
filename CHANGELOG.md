@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.42 — 2026-10-06
+
+- **Zod revamp, waves 3 and 4.** What comes into Toolroll from outside and
+  what it reads back from disk now goes through one schema each in
+  `src/contracts/`: console forms and JSON, CLI `--json` output, webhook,
+  GitHub, Linear, email and form payloads, OAuth replies and tool specs,
+  settings, every JSON column in the database, update and recovery journals,
+  and evidence files. All of it is read as leniently as before. Replayed
+  against real data with 0 differences: 655 runs and 984 evidence folders,
+  5,158 database rows, 7 tool connections. Console JSON and CLI `--json` bytes
+  are unchanged. Console API and CLI input are partly done; what remains is
+  listed in `docs/plans/zod-revamp.md`.
+- **Changed on purpose.** Recipe refusals start with the field's path. An
+  unknown provider is refused as `provider: unknown provider`, without
+  repeating what was typed. A sign-in that answers with an empty token says
+  it couldn't be reached instead of crashing. An update journal missing its
+  core fields (no release since 0.8.0 writes one) is refused rather than read.
+
 ## 0.9.41 — 2026-10-06
 
 - **A read-only PostHog connection works for research.** PostHog adds
