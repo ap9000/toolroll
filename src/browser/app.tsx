@@ -147,8 +147,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
           void check(true);
         } else {
           const busy = state.current.draft.pending !== null || state.current.workspace.conversation?.pendingTurnId != null || sendLatch.current;
-          // A live page (no conversation) reads itself on its own steady beat.
-          pollDelay.current = initial.conversation ? workspacePollDelay(pollDelay.current, unchanged, busy) : initial.refreshSeconds! * 1000;
+          // A live page (no conversation) reads itself on the beat its latest read asked for.
+          pollDelay.current = initial.conversation ? workspacePollDelay(pollDelay.current, unchanged, busy) : (state.current.workspace.refreshSeconds ?? initial.refreshSeconds!) * 1000;
           refreshTimer.current = window.setTimeout(() => { void check(false); }, pollDelay.current);
         }
       }

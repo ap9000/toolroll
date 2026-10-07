@@ -567,12 +567,12 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   });
 }
 
-export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0): BrowserNavigationItem[] {
+export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const knowledge = pathname === '/settings/knowledge' || pathname.startsWith('/settings/knowledge/');
   return [
     { label: 'Chat', href: '/chat', active: pathname === '/chat' },
-    { label: 'Tasks', href: `/work${project === null ? '' : `?project=${encodeURIComponent(project)}`}`,
+    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
       ...(needsYou > 0 ? { count: needsYou } : {}) },
     { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
