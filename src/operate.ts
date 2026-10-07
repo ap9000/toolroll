@@ -11903,13 +11903,21 @@ function showTask(positional: readonly string[], context: Context): number {
   // whatever readiness this task's runners have reported.
   const routed = routeOfTask(store, id, ref, now);
   const readiness = store.readinessLookupFor(ref.repo, ref.assignedRunner, now);
+  const lens = context.principal?.lens ?? null;
+  const access = { principal: "operator" as const, repos: lens, includeUnplaced: lens === null, dependencyRepos: lens };
+  const blockers = store.blockers(id);
+  const visibleBlockers = lens === null ? blockers : blockers.filter(blocker => {
+    const repo = store.lookupRef(blocker)?.repo;
+    return repo != null && lens.includes(repo);
+  });
   const detail = {
     task,
-    work: taskWorkSummaryOf(store, id, now, { principal: "operator", repos: null, includeUnplaced: true }),
-    assignment: assignmentBrief(assignmentOf(store, id, now, { principal: "operator", repos: null, includeUnplaced: true }, context.evidenceRoot)),
+    work: taskWorkSummaryOf(store, id, now, access),
+    assignment: assignmentBrief(assignmentOf(store, id, now, access, context.evidenceRoot)),
     ref: ref.id,
-    blockedBy: store.blockers(id),
-    position: store.queuePosition(id),
+    // One phrase for every inaccessible blocker, so even their number stays private.
+    blockedBy: visibleBlockers.length === blockers.length ? visibleBlockers : [...visibleBlockers, "a task in another project"],
+    position: lens === null ? store.queuePosition(id) : null,
     reservedFor: ref.assignedRunner,
     hold: store.activeHold(ref.id, now),
     claim: currentClaim(store, ref.id, now),
@@ -11934,7 +11942,7 @@ function showTask(positional: readonly string[], context: Context): number {
     // The one automatic review of the latest build: HIGH findings, suggested
     // follow-ups (MEDIUM/LOW), or why it was not reviewed.
     automaticReview: latestFinished === null ? null : buildReviewOf(store, latestFinished.id),
-    dispatch: diagnoseTaskDispatch(store, id, now),
+    dispatch: diagnoseTaskDispatch(store, id, now, lens),
     // v52: the exact-run control the console shows — Stop, Stopping,
     // Paused (resume), or the review-retry door — and every stop on record.
     control: taskControlOf(store, ref.id, now),

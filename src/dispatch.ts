@@ -278,8 +278,8 @@ function approvedProfile(scope: ReturnType<Store["getScope"]>): ExecutionProfile
   return scope.approvedProfile ?? scope.profile ?? null;
 }
 
-/** The read-side lifecycle answer. It changes nothing and grants nothing. */
-export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date): DispatchDiagnosis | null {
+/** The read-side lifecycle answer. Project access limits dependency detail, never the readiness gate. */
+export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, readableRepos: readonly string[] | null = null): DispatchDiagnosis | null {
   const task = store.getTask(taskId);
   const ref = store.lookupRef(taskId);
   if (task === null || ref === null) return null;
@@ -366,9 +366,13 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date): D
   }
   if (local?.code === "dependency") {
     const terminal = local.blockerState === "failed" || local.blockerState === "cancelled";
+    const blockerRepo = readableRepos === null ? null : store.lookupRef(local.blockerId)?.repo;
+    const hidden = readableRepos !== null && (blockerRepo == null || !readableRepos.includes(blockerRepo));
+    const blocker = hidden ? "A task in another project" : local.blockerId;
+    const blockerTaskId = hidden ? null : local.blockerId;
     return terminal
-      ? answer("terminal-dependency", "waiting", "A required task did not finish", `${local.blockerId} ${local.blockerState === "cancelled" ? "was cancelled" : "failed"} before it finished.`, { action: "repair-dependency", blockerTaskId: local.blockerId })
-      : answer("waiting-dependency", "waiting", "Waiting for another task", `${local.blockerId} must finish before this task can start.`, { blockerTaskId: local.blockerId });
+      ? answer("terminal-dependency", "waiting", "A required task did not finish", `${blocker} ${local.blockerState === "cancelled" ? "was cancelled" : "failed"} before it finished.`, { action: "repair-dependency", blockerTaskId })
+      : answer("waiting-dependency", "waiting", "Waiting for another task", `${blocker} must finish before this task can start.`, { blockerTaskId });
   }
 
   const role = dispatchRoleFor(store, ref.id, now);

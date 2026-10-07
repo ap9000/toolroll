@@ -99,9 +99,9 @@ export const REMOTE_ALL_PROJECTS_ONLY: ReadonlyMap<string, "installation-wide" |
     "intake pr-comments", "template list", "template show", "contest show", "review show"].map(row => [row, "not yet scoped"] as const),
 ]);
 
-/** The projects a listing shows this person: null (everything) for someone with access to all of them. */
+/** The projects a listing or task reference may disclose: null for someone with access to all of them. */
 export function remoteLensOf(store: Store, scope: RemoteScope, allows: (repo: string | null) => boolean): readonly string[] | null {
-  if (scope.kind !== "listing" || allows(null)) return null;
+  if ((scope.kind !== "listing" && scope.kind !== "references") || allows(null)) return null;
   return Object.freeze(store.knownRepos().filter(repo => allows(repo)));
 }
 

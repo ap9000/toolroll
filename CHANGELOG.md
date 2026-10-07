@@ -12,9 +12,12 @@
 - **Every remote action is on the record**: who, whether it came from the CLI
   or an agent, and the token's name. A revoked token stops on its next call.
   Other projects' tasks and runs answer "not found".
-- **For now, people limited to some projects** can't run the commands that
-  list across projects (`status`, `task list`) or choose a task's `--id`;
-  they're refused rather than shown a partial list. Filtered views are next.
+- **Your projects, your lists.** Remote `status`, `task list`, `ready` and
+  MCP lists show and count only projects you can access. Task details hide
+  other projects' blocker identities and omit queue position for people with
+  limited access. All-project owner output is unchanged.
+- Still unavailable remotely: `brief`, `spend` and choosing a task's `--id`.
+  Other installation-wide lists still require access to all projects.
 - Still to come: token management in the CLI, rate limits, an audit view, a
   real domain with TLS, and sign-in for agents.
 

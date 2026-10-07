@@ -562,6 +562,114 @@ describe("cross-project lists for a person limited to some projects", () => {
     expect(remoteLedger().slice(0, 5).every(one => one.source === "mcp" && one.actor === "sam")).toBe(true);
   });
 
+  const mcp = async (who: Principal, name: string, args: Record<string, unknown>) => {
+    const runAs: typeof runOperateAs = (argv, opts) => runOperateAs(argv, { ...opts, options: { now: NOW } });
+    const outcome = await callPersonTool({ principal: who, role: "approver", tokenName: "fixture" }, store, runAs, { name, arguments: args });
+    expect(outcome.kind).toBe("result");
+    const result = (outcome as { result: { content: { text: string }[]; isError?: boolean } }).result;
+    expect(result.isError, result.content[0]!.text).toBeUndefined();
+    return result.content[0]!.text;
+  };
+
+  it.each(["queued", "failed", "cancelled", "done"] as const)("task show hides %s foreign blockers in plain, JSON and MCP answers", async state => {
+    const visible = await fileTask(A, "Zebra prerequisite");
+    for (const blocker of [taskB, hiddenSecond, visible]) expect(store.addEdge(taskA, blocker)).toEqual({ ok: true });
+    for (const blocker of [taskB, hiddenSecond]) expect(store.setTaskState(blocker, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    // Both a token's restriction and the account's current grants narrow task references.
+    for (const who of [sam, samRead, { ...alex, projects: [A] }, { ...sam, projects: null }]) {
+      const plain = await run(who, ["task", "show", taskA]);
+      expect(plain.code).toBe(0);
+      expect(plain.text).toContain(`waits for ${visible}, a task in another project`);
+      expect(plain.text).not.toContain("position  ");
+      expect(leaks(plain.text)).toEqual([]);
+      const json = await run(who, ["task", "show", taskA, "--json"]);
+      expect(json.code).toBe(0);
+      expect(leaks(json.text)).toEqual([]);
+      expect(last()).toMatchObject({ blockedBy: [visible, "a task in another project"], position: null,
+        dispatch: { blockerTaskId: state === "done" ? visible : null } });
+      expect(await mcp(who, "task_show", { ref: taskA })).toBe(json.text);
+    }
+    // The owner keeps the real references and queue column, exactly as a local caller sees them.
+    for (const mode of [[], ["--json"]]) {
+      const remote = await run(alex, ["task", "show", taskA, ...mode]);
+      expect(remote.text).toContain(taskB);
+      if (mode.length > 0) {
+        expect(last()["position"]).toEqual(store.queuePosition(taskA));
+        expect(await mcp(alex, "task_show", { ref: taskA })).toBe(remote.text);
+      }
+      out = [];
+      expect(await runOperate("task", ["show", taskA, ...mode, "--db", file], write, { now: NOW, openDatabase: () => openStore(file) })).toBe(remote.code);
+      expect(out.join("\n")).toBe(remote.text);
+    }
+  });
+
+  it.each(["queued", "failed", "cancelled"] as const)("lists and ready hide %s foreign dependencies and their counts", async state => {
+    expect(store.addEdge(taskA, taskB)).toEqual({ ok: true });
+    expect(store.setTaskState(taskB, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    expect(store.setTaskState(hiddenSecond, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    const visible = await fileTask(A, "A ready task with private dependents");
+    const commands = [
+      ["task", "show", taskA], ["task", "show", taskA, "--json"],
+      ["task", "show", visible, "--json"], ["status"], ["status", "--json"], ["ready"], ["ready", "--json"],
+      ...[[], ["--view", "all"], ["--view", "needs-you"], ["--view", "running"], ["--view", "completed"],
+        ["--state", "queued"], ["--repo", A], ["--limit", "1"]].flatMap(flags => [
+          ["task", "list", ...flags], ["task", "list", ...flags, "--json"],
+        ]),
+    ];
+    const read = async () => {
+      const answers = [];
+      for (const argv of commands) {
+        const answer = await run(samRead, argv);
+        expect(answer.code, argv.join(" ")).toBe(0);
+        expect(leaks(answer.text), argv.join(" ")).toEqual([]);
+        if (argv[0] === "ready" && argv.includes("--json")) {
+          expect(last()).toMatchObject({ count: 1, tasks: [{ id: visible, dispatch: { blockerTaskId: null } }] });
+        }
+        answers.push(answer);
+      }
+      for (const [name, args] of [["task_show", { ref: taskA }], ["task_show", { ref: visible }], ["status", {}], ["list_tasks", {}]] as const) {
+        const text = await mcp(samRead, name, args);
+        expect(leaks(text)).toEqual([]);
+        answers.push({ code: 0, text });
+      }
+      return answers;
+    };
+    const before = await read();
+    // A second invisible blocker, dependent and queued task must not change any limited answer.
+    expect(store.addEdge(taskA, hiddenSecond)).toEqual({ ok: true });
+    const dependent = await fileTask(B, "Private dependent count marker");
+    expect(store.addEdge(dependent, visible)).toEqual({ ok: true });
+    expect(await read()).toEqual(before);
+    for (const argv of [["status"], ["status", "--json"], ["task", "list"], ["task", "list", "--json"], ["ready"], ["ready", "--json"]]) {
+      const remote = await run(alex, argv);
+      out = [];
+      expect(await runOperate(argv[0]!, [...argv.slice(1), "--db", file], write, { now: NOW, openDatabase: () => openStore(file) })).toBe(remote.code);
+      expect(out.join("\n"), argv.join(" ")).toBe(remote.text);
+    }
+    // Removing the sole visible ready candidate leaves an empty ready set, even with queued work in B.
+    expect(store.addEdge(visible, taskB)).toEqual({ ok: true });
+    for (const mode of [[], ["--json"]]) {
+      const empty = await run(samRead, ["ready", ...mode]);
+      expect(empty.code).toBe(3);
+      expect(leaks(empty.text)).toEqual([]);
+      if (mode.length > 0) expect(last()).toMatchObject({ count: 0, tasks: [], dispatchableCount: 0 });
+    }
+    // Completed foreign prerequisites admit the tasks without disclosing their dependency edges.
+    for (const blocker of [taskB, hiddenSecond]) {
+      expect(store.setTaskState(blocker, "done", NOW)).toEqual({ ok: true });
+    }
+    for (const mode of [[], ["--json"]]) {
+      const ready = await run(samRead, ["ready", ...mode]);
+      expect(ready.code).toBe(0);
+      expect(leaks(ready.text)).toEqual([]);
+      expect(ready.text).not.toContain(dependent);
+      if (mode.length > 0) expect(last()).toMatchObject({ count: 2, tasks: expect.arrayContaining([
+        expect.objectContaining({ id: taskA, dispatch: expect.objectContaining({ blockerTaskId: null }) }),
+        expect.objectContaining({ id: visible, dispatch: expect.objectContaining({ blockerTaskId: null }) }),
+      ]) });
+    }
+  });
+
   it("keeps an all-project owner's output byte for byte what the same command prints locally", async () => {
     for (const argv of [["status"], ["status", "--json"], ["task", "list"], ["task", "list", "--json"], ["task", "list", "--view", "needs-you", "--json"],
       ["task", "list", "--repo", B, "--json"], ["ready"], ["ready", "--json"]]) {
@@ -579,6 +687,10 @@ describe("cross-project lists for a person limited to some projects", () => {
       const refused = await run(samRead, [...invocation.split(" "), "--json"]);
       expect(refused.code, invocation).toBe(3);
       expect(last(), invocation).toMatchObject({ reason: "all-projects" });
+    }
+    for (const who of [samRead, alex]) for (const command of ["brief", "spend"]) {
+      expect((await run(who, [command, "--json"])).code).toBe(3);
+      expect(last()).toMatchObject({ reason: "not-remote" });
     }
   });
 });
