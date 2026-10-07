@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
-import { effectiveLimits, parseLimit, RequestBudget, REQUEST_BUDGET_DEFAULTS, setLimitOverride, type Admission } from "./request-budget.js";
+import { effectiveLimits, limitWords, parseLimit, RequestBudget, REQUEST_BUDGET_DEFAULTS, setLimitOverride, SourceAdmission, type Admission } from "./request-budget.js";
 
 const T0 = Date.parse("2026-10-06T12:00:00.000Z");
 let dir: string, file: string, store: Store, now: number;
@@ -139,4 +139,41 @@ test("fail closed: an unknown token or unreadable saved usage refuses, and nothi
   expect(budget().admit(id, "api")).toEqual({ ok: false, status: 503 });
   store.handle.prepare("UPDATE request_budget_usage SET minute = '[]' WHERE token_id = ?").run(id);
   expect(budget().admit(id, "api")).toEqual({ ok: true });
+});
+
+test("source admission keeps sliding windows and evicts the least recently used source at capacity", () => {
+  let at = 1_000_000;
+  const budget = new SourceAdmission({ perMinute: 2, tracked: 2, clock: () => at });
+  expect(budget.admit("a")).toEqual({ ok: true });
+  at += 10_000;
+  expect(budget.admit("a")).toEqual({ ok: true });
+  expect(budget.admit("a")).toEqual({ ok: false, status: 429, limit: "per-minute", retryAfter: 50 });
+  expect(budget.admit("b")).toEqual({ ok: true });
+  // A denied use still makes a most recent. Evict b, retaining a's active sliding window.
+  expect(budget.admit("a")).toMatchObject({ ok: false, status: 429 });
+  expect(budget.admit("c")).toEqual({ ok: true });
+  expect(budget.admit("a")).toMatchObject({ ok: false, status: 429, retryAfter: 50 });
+  expect(budget.admit("b")).toEqual({ ok: true });
+  expect(budget.admit("b")).toEqual({ ok: true });
+  expect(budget.admit("b")).toMatchObject({ ok: false, status: 429 });
+  expect(budget.size).toBe(2);
+  at += 60_001;
+  expect(budget.admit("a")).toEqual({ ok: true });
+  expect(budget.admit("c")).toEqual({ ok: true });
+  expect(budget.size).toBe(2);
+  expect(limitWords("per-minute", 5)).toBe("Request limit reached (requests per minute). Try again in 5 seconds.");
+});
+
+test("source admission prunes expired history before evicting a live, older entry", () => {
+  let at = 1_000_000;
+  const budget = new SourceAdmission({ perMinute: 1, tracked: 2, clock: () => at });
+  expect(budget.admit("expired")).toEqual({ ok: true });
+  at += 30_000;
+  expect(budget.admit("live")).toEqual({ ok: true });
+  // A refused attempt updates recency but does not renew the request's sliding window.
+  expect(budget.admit("expired")).toMatchObject({ ok: false, status: 429 });
+  at += 30_001;
+  expect(budget.admit("new")).toEqual({ ok: true });
+  expect(budget.size).toBe(2);
+  expect(budget.admit("live")).toMatchObject({ ok: false, status: 429, retryAfter: 30 });
 });

@@ -1,6 +1,6 @@
 /**
- * Request budgets for person API tokens (v112): how many requests one `so_` token may make to `/api/cli` and `/mcp`.
- * One budget per token, keyed by its api_token row id (never the secret, its name or an address), shared by both
+ * Request budgets for person API tokens (v112): how many requests one `so_` token may make across all accepting routes.
+ * One budget per token, keyed by its api_token row id (never the secret, its name or an address), shared by those
  * routes. A read token gets 120 requests in any sliding minute, an act token 30, and either 10,000 in a rolling day;
  * an instance operator may override any of these for the installation or for one token in the console (step-up).
  *
@@ -42,7 +42,7 @@ export const FLUSH_MS = 5_000;
 const MINUTE = 60_000, DAY = 86_400_000;
 
 /** Which limit a refusal hit: the body of a 429 names only this and Retry-After. */
-export type BudgetLimit = "read-per-minute" | "act-per-minute" | "per-day";
+export type BudgetLimit = "read-per-minute" | "act-per-minute" | "per-day" | "per-minute";
 export type Admission =
   | { ok: true }
   | { ok: false; status: 429; limit: BudgetLimit; retryAfter: number }
@@ -55,7 +55,7 @@ export type EffectiveLimits = { perMinute: number; perDay: number; overridden: b
 
 /** The words for a 429, in one line. */
 export const limitWords = (limit: BudgetLimit, retryAfter: number): string =>
-  `Request limit reached (${limit === "per-day" ? "requests per day" : limit === "read-per-minute" ? "read requests per minute" : "act requests per minute"}). Try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}.`;
+  `Request limit reached (${limit === "per-day" ? "requests per day" : limit === "read-per-minute" ? "read requests per minute" : limit === "act-per-minute" ? "act requests per minute" : "requests per minute"}). Try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}.`;
 
 /** A limit typed into a form: a whole number within bounds, "" for none, or a problem. */
 export function parseLimit(raw: string, max: number): number | null | { problem: string } {
@@ -261,5 +261,49 @@ export class RequestBudget {
       this.usage.delete(oldest);
     }
     return usage;
+  }
+}
+
+/** Per-minute allowances for non-person-token identities and unauthenticated ingress. Password accounts get room
+ * for two-second follower polling plus ordinary commands; OAuth exchanges stay keyed by source address. */
+export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken: 30, coordinator: 120, teamsSource: 120, teamsTenant: 600 });
+
+/**
+ * A sliding minute per source or proved account, with bounded in-memory LRU history. Expired entries are
+ * pruned first; at capacity the least recently used entry is evicted so new callers are never globally locked out.
+ * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above.
+ */
+export class SourceAdmission {
+  private readonly perMinute: number;
+  private readonly clock: () => number;
+  private readonly tracked: number;
+  private readonly usage = new Map<string, number[]>();
+
+  constructor(options: { perMinute: number; clock?: () => number; tracked?: number }) {
+    this.perMinute = Math.max(1, Math.min(PER_MINUTE_MAX, options.perMinute));
+    this.clock = options.clock ?? Date.now;
+    this.tracked = Math.max(1, options.tracked ?? TRACKED_TOKENS);
+  }
+
+  get size(): number { return this.usage.size; }
+
+  admit(source: string): Admission {
+    const now = this.clock();
+    let times = this.usage.get(source);
+    if (times === undefined) {
+      if (this.usage.size >= this.tracked) {
+        for (const [key, kept] of this.usage) if (kept.every(at => at <= now - MINUTE)) this.usage.delete(key);
+        if (this.usage.size >= this.tracked) this.usage.delete(this.usage.keys().next().value!);
+      }
+      times = [];
+    }
+    this.usage.delete(source);
+    this.usage.set(source, times);
+    while (times.length > 0 && times[0]! <= now - MINUTE) times.shift();
+    if (times.length >= this.perMinute) {
+      return { ok: false, status: 429, limit: "per-minute", retryAfter: Math.max(1, Math.ceil((times[times.length - this.perMinute]! + MINUTE - now) / 1000)) };
+    }
+    times.push(now);
+    return { ok: true };
   }
 }

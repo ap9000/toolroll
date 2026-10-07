@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { TEAM_OPERATIONS, type TeamActor, type TeamExecute, type TeamRequest, type TeamResponse } from './team-contract.js';
+import { TEAM_OPERATIONS, teamScopeAllows, type TeamActor, type TeamExecute, type TeamRequest, type TeamResponse } from './team-contract.js';
+import { limitWords, type Admission } from './request-budget.js';
 
 export const TEAM_REQUEST_BYTES = 64 * 1024;
 export type TeamHttpOptions = {
@@ -10,13 +11,17 @@ export type TeamHttpOptions = {
   execute: TeamExecute;
   /** Current, authorized event cursor. null means the audience is no longer available. */
   cursor?: (actor: TeamActor, conversationId?: string) => number | null;
+  /** Source admission before credential verification. Streams are charged once when opened. */
+  admit?: (request: IncomingMessage) => Admission;
+  /** Proved account/token admission, before reading the body or executing any operation. */
+  admitAuthenticated?: (request: IncomingMessage, actor: TeamActor) => Admission;
   streamIntervalMs?: number;
   streams?: Set<ServerResponse>;
 };
 const failure = (code: string, message: string): TeamResponse => ({ version: 1, ok: false, code, message });
-function send(response: ServerResponse, status: number, value: TeamResponse): void {
+function send(response: ServerResponse, status: number, value: TeamResponse, headers: Record<string, string> = {}): void {
   if (response.destroyed || response.writableEnded) return;
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
   response.end(JSON.stringify(value));
 }
 async function body(request: IncomingMessage): Promise<unknown> {
@@ -47,10 +52,19 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
   if ([...url.searchParams.keys()].some(key => /token|password|credential|authorization/i.test(key))) return reject(400, 'credentials-in-url', 'Credentials never travel in URLs.');
   const count = request.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'authorization').length;
   if (count > 1) return reject(400, 'ambiguous-credentials', 'Send one authorization header.');
+  const refuseAdmission = (admitted: Admission): boolean => {
+    if (admitted.ok) return false;
+    if (admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
+    send(response, 429, failure('rate-limited', limitWords(admitted.limit, admitted.retryAfter)), { 'retry-after': String(admitted.retryAfter) });
+    request.resume();
+    return true;
+  };
+  if (options.admit && refuseAdmission(options.admit(request))) return true;
   let actor: TeamActor | null;
   try { actor = await options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
   if (!actor) return reject(401, 'unauthenticated', 'Sign in to continue.');
+  if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
   const conversationId = url.searchParams.get('conversation') ?? undefined;
   if (url.pathname === '/api/team/events') {
     if (request.method !== 'GET') return reject(405, 'method-not-allowed', 'Use GET for conversation updates.');
@@ -104,6 +118,7 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
     input = value;
   } else return reject(405, 'method-not-allowed', 'Use GET or POST.');
   if (!options.revalidate(request, actor)) return reject(401, 'unauthenticated', 'Sign in to continue.');
+  if (!teamScopeAllows(actor, input.operation)) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
   try {
     const result = await options.execute(actor, input);
     send(response, result.ok ? 200 : /forbidden|access|unauthor|member/.test(result.code) ? 403 : 409, result);

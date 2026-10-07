@@ -26,6 +26,8 @@ test('real HTTP requests, live streams and budget refusals reach metrics and the
     const first = await fetch(`${url}/api/cli`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ argv: ['task', 'list', '--json'] }) });
     expect(first.status).toBe(200); expect((await first.json()).exitCode).toBe(0);
     expect((await fetch(`${url}/api/cli`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' })).status).toBe(429);
+    // Budgets cover every remote route (0.9.49): lift the tiny limit so the stream, metrics and health calls below are admitted.
+    setLimitOverride(store, '*', { readPerMinute: null, actPerMinute: null, perDay: null }, 'synthetic-operator', now);
     const stream = await fetch(`${url}/api/team/events?conversation-private-marker=hidden`, { headers, signal: streamAbort.signal });
     expect(stream.status).toBe(200);
     const reader = stream.body!.getReader(); await reader.read();

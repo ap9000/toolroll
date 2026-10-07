@@ -51,6 +51,16 @@ export class UsageError extends Error {}
 type Profile = { origin: string; account: string; token: string };
 type Profiles = { version: 1; active: string; profiles: Record<string, Profile> };
 type Flags = Record<string, string | true | string[]>;
+/** Transport metadata stays local to the CLI; only an actual HTTP 429 permits a follower read retry. */
+const RETRY_AFTER_MS = Symbol('retry-after-ms');
+type TeamReply = TeamResponse & { [RETRY_AFTER_MS]?: number };
+type TeamCall = (operation: TeamOperation, args: Record<string, unknown>, signal?: AbortSignal) => Promise<TeamReply>;
+function retryDelay(header: string | null): number {
+  const raw = header?.trim() ?? '';
+  const delay = /^\d+$/.test(raw) ? Number(raw) * 1000
+    : /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), /.test(raw) ? Date.parse(raw) - Date.now() : NaN;
+  return Number.isFinite(delay) && delay >= 0 ? Math.max(1000, Math.min(300_000, delay)) : 5000;
+}
 const value = (flags: Flags, name: string): string => typeof flags[name] === 'string' ? flags[name] as string : '';
 const required = (flags: Flags, name: string): string => { const result = value(flags, name); if (!result) throw new UsageError(`--${name} is required.`); return result; };
 const number = (flags: Flags, name: string): number => { const result = required(flags, name); if (!/^\d+$/.test(result) || !Number.isSafeInteger(Number(result))) throw new UsageError(`--${name} must be a whole number.`); return Number(result); };
@@ -172,12 +182,17 @@ async function responseBody(response: Response): Promise<unknown> {
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
 }
 function failure(code: string, message: string, result?: unknown): TeamResponse { return { version: 1, ok: false, code, message, ...(result === undefined ? {} : { result }) }; }
-async function perform(profile: Profile, request: TeamRequest, options: TeamCliOptions): Promise<TeamResponse> {
+async function perform(profile: Profile, request: TeamRequest, options: TeamCliOptions): Promise<TeamReply> {
   const reading = ['list', 'show'].includes(request.operation);
-  const unconfirmed = () => failure(reading ? 'service-unavailable' : 'delivery-unconfirmed', reading ? 'The service response could not be read.' : 'The response could not be confirmed. Inspect saved messages before continuing; this request was not retried.', { operation: request.operation, ...(request.args.conversationId ? { conversationId: request.args.conversationId } : {}), ...(request.args.requestId ? { requestId: request.args.requestId } : {}) });
+  const receipt = { operation: request.operation, ...(request.args.conversationId ? { conversationId: request.args.conversationId } : {}), ...(request.args.requestId ? { requestId: request.args.requestId } : {}) };
+  const unconfirmed = () => failure(reading ? 'service-unavailable' : 'delivery-unconfirmed', reading ? 'The service response could not be read.' : 'The response could not be confirmed. Inspect saved messages before continuing; this request was not retried.', receipt);
   try {
     const response = await (options.fetch ?? fetch)(`${profile.origin}/api/team`, { method: 'POST', redirect: 'manual', credentials: 'omit', signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), headers: { authorization: bearerOf(profile), 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(request) });
     if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); return unconfirmed(); }
+    if (response.status === 429) {
+      await response.body?.cancel();
+      return { ...failure('rate-limited', reading ? 'Request limit reached. Try again shortly.' : 'Request limit reached. Inspect saved messages before continuing; this request was not retried.', receipt), [RETRY_AFTER_MS]: retryDelay(response.headers.get('retry-after')) };
+    }
     const payload = await responseBody(response);
     if (!record(payload) || payload.version !== 1 || typeof payload.ok !== 'boolean' || typeof payload.code !== 'string' || typeof payload.message !== 'string' || payload.snapshot !== undefined && !isSnapshot(payload.snapshot) || payload.ok && !response.ok) return unconfirmed();
     const reply = payload as TeamResponse;
@@ -270,7 +285,7 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
     const profile = saved?.profiles[profileName];
     if (!profile || !Object.hasOwn(saved!.profiles, profileName)) throw new UsageError('No saved connection. Use connect with your individual sign-in first.');
     secret = profile.token;
-    const call = (operation: TeamOperation, args: Record<string, unknown>) => perform(profile, { operation, args }, options);
+    const call: TeamCall = (operation, args, signal) => perform(profile, { operation, args }, { ...options, ...(signal === undefined ? {} : { signal }) });
     if (command === 'chat' || command === 'brief') return await chat(command, flags, profile.account, call, emit, options, stderr);
     let operation: TeamOperation, args: Record<string, unknown> = {};
     if (action === 'list') { operation = 'list'; if (flags.lead) args.leadId = value(flags, 'lead'); }
@@ -294,13 +309,13 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
   } catch (error) { const reply = failure('usage', error instanceof UsageError ? error.message : 'The remote command could not be prepared. Check the private profile and credential files.'); if (json) emit(reply); else stderr(text(reply.message)); return 2; }
 }
 
-async function chat(command: string, flags: Flags, account: string, call: (operation: TeamOperation, args: Record<string, unknown>) => Promise<TeamResponse>, emit: (reply: TeamResponse) => void, options: TeamCliOptions, stderr: (line: string) => void): Promise<number> {
+async function chat(command: string, flags: Flags, account: string, call: TeamCall, emit: (reply: TeamResponse) => void, options: TeamCliOptions, stderr: (line: string) => void): Promise<number> {
   const conversationId = required(flags, 'conversation'), leadId = value(flags, 'lead'), requestId = value(flags, 'request-id');
   if (requestId && !/^[0-9a-f]{32}$/.test(requestId)) throw new UsageError('--request-id must be 32 lowercase hexadecimal characters.');
   if (flags['terms-digest'] && !flags.authorize) throw new UsageError('--terms-digest requires --authorize.');
   if (command === 'chat' && requestId && !flags.say) throw new UsageError('Use brief --request-id to inspect a previous message.');
-  const show = async (): Promise<TeamResponse> => {
-    const reply = await call('show', { conversationId });
+  const show = async (signal?: AbortSignal): Promise<TeamReply> => {
+    const reply = await call('show', { conversationId }, signal);
     if (reply.ok && (!reply.snapshot || reply.snapshot.selected?.id !== conversationId || leadId && reply.snapshot.selected.leadId !== leadId)) return failure('conversation-mismatch', 'The service returned a different conversation or lead. Nothing was sent.');
     return reply;
   };
@@ -355,11 +370,16 @@ async function chat(command: string, flags: Flags, account: string, call: (opera
   };
   let pollResult = 0;
   const poll = async () => {
+    let waitMs = 2_000;
     while (!signal.aborted) {
-      try { await (options.sleep ?? ((ms, abort) => delay(ms, undefined, { signal: abort })))(2_000, signal); } catch { break; }
+      try { await (options.sleep ?? ((ms, abort) => delay(ms, undefined, { signal: abort })))(waitMs, signal); } catch { break; }
       if (signal.aborted) break;
-      const next = await show();
+      const next = await show(signal);
+      if (signal.aborted) break;
+      // Only this follower's read poll retries. Sends, authorizations and uncertain deliveries are never replayed.
+      if (!next.ok && next[RETRY_AFTER_MS] !== undefined) { waitMs = next[RETRY_AFTER_MS]; continue; }
       if (!next.ok) { emit(next); pollResult = 1; controller.abort(); break; }
+      waitMs = 2_000;
       current = next; updated(next);
     }
   };

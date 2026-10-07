@@ -21,6 +21,7 @@ import { prepareSharedAction } from "./chat-actions.js";
 import { resolveChannelMate } from "./chat-channel.js";
 import { verifyApproverStanding, ceilingDigestOf } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
+import { SOURCE_BUDGET_DEFAULTS } from "./request-budget.js";
 import { TeamLeads } from "./team-leads.js";
 
 const APP = "11111111-2222-4333-8444-555555555555", TENANT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", SECRET = "secret-value-for-tests-1234567890";
@@ -155,6 +156,38 @@ describe("Teams shared chat", () => {
       // A token whose service URL differs from the activity's is refused.
       expect((await post(token({ serviceurl: "https://other.example/" }), activity(DM_ALEX, ALEX, "hello"))).status).toBe(200);
       expect(state.prepare("SELECT count(*) n FROM chat_event").get()?.n).toBe(1);
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  test("Teams ingress budgets source before authentication and configured tenant before reading or saving activity", async () => {
+    let at = Date.now();
+    const fetcher = vi.fn(scriptedFetch());
+    const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repos: projects, configDir: dir, teamsFetcher: fetcher, requestBudgetClock: () => at });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (!address || typeof address !== "object") throw Error("listen");
+    const base = `http://127.0.0.1:${address.port}`;
+    const auth = token({});
+    const post = (source: string, authorization: string, body = "{") => fetch(`${base}/teams/messages`, { method: "POST", headers: { "content-type": "application/json", authorization, "x-forwarded-for": source, "x-forwarded-proto": "https" }, body });
+    try {
+      for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.teamsSource; i++) expect((await post("203.0.113.1", "Bearer invalid")).status).toBe(401);
+      const denied = await post("203.0.113.1", auth);
+      expect(denied.status).toBe(429);
+      expect(denied.headers.get("retry-after")).toBe("60");
+      expect(fetcher).not.toHaveBeenCalled(); // The exhausted source never verifies the JWT or fetches keys.
+      for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.teamsTenant; i++) expect((await post(`203.0.113.${2 + Math.floor(i / 100)}`, auth)).status).toBe(400);
+      const code = state.pairing(credentials.installation, "alex", store.accountOf("alex")!.generation, now);
+      const body = JSON.stringify(activity(DM_ALEX, ALEX, `pair ${code}`));
+      const tenantDenied = await post("203.0.113.99", auth, body);
+      expect(tenantDenied.status).toBe(429);
+      expect(tenantDenied.headers.get("retry-after")).toBe("60");
+      expect(state.prepare("SELECT * FROM chat_event").all()).toEqual([]);
+      // A different configured tenant has independent admission; body tenant claims never choose a budget.
+      saveTeamsCredentials(dir, { ...credentials, ...teamsIdentity(APP, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), tenant: "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+      expect((await post("203.0.113.99", auth)).status).toBe(400);
+      saveTeamsCredentials(dir, credentials);
+      at += 61_000;
+      expect((await post("203.0.113.1", auth, body)).status).toBe(200);
+      expect(state.prepare("SELECT * FROM chat_event").all()).toHaveLength(1);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 

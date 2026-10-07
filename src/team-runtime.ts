@@ -6,7 +6,7 @@ import { deliverTeamUpdates, startTeamUpdates } from './team-updates.js';
 import type { WorkspaceRevision } from './workspace-revision.js';
 import { workIndexPage } from './work-index.js';
 import { TeamLeads, type TeamClaim } from './team-leads.js';
-import type { TeamActor, TeamChatAuthorization, TeamExecute, TeamResponse, TeamSnapshot } from './team-contract.js';
+import { teamScopeAllows, type TeamActor, type TeamChatAuthorization, type TeamExecute, type TeamResponse, type TeamSnapshot } from './team-contract.js';
 import { verifyApproverStanding } from './principal.js';
 import { credentialKeyOf, isDirectChatProvider, priceForConfig, subscriptionCredentialKey, mateWorstCaseForPrice } from './converse.js';
 import { runMateTurn, type MateTurnInput } from './mate.js';
@@ -179,6 +179,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
 
   const execute: TeamExecute = async (actor, request) => {
     try {
+      if (!teamScopeAllows(actor, request.operation)) return response(false, 'read-only', 'Your token reads only. Use an act token for this.');
       if (request.operation === 'authorize') return authorize(actor, request.args);
       if (request.operation === 'send' || request.operation === 'follow' && request.args['enabled'] === true) {
         const id = typeof request.args['conversationId'] === 'string' ? request.args['conversationId'] : '';

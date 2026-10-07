@@ -3,7 +3,8 @@ import type { Store } from './store.js';
 import { scanForSecrets } from './evidence.js';
 import { ceilingDigestOf } from './principal.js';
 import { normalizeProjectAccess, projectAccessAllows, readProjectAccess } from './project-access.js';
-import type { TeamActor, TeamConversation, TeamLead, TeamMessage, TeamRequest, TeamResponse, TeamRole, TeamSnapshot } from './team-contract.js';
+import { tokenProjects } from './api-tokens.js';
+import { teamScopeAllows, type TeamActor, type TeamConversation, type TeamLead, type TeamMessage, type TeamRequest, type TeamResponse, type TeamRole, type TeamSnapshot } from './team-contract.js';
 
 export type TeamAccess = { conversation: TeamConversation; lead: TeamLead; role: TeamRole };
 export type TeamClaim = {
@@ -47,10 +48,19 @@ function stable(value: unknown): unknown {
 export class TeamLeads {
   constructor(readonly store: Store, readonly enrolled: () => readonly string[]) {}
   private get db() { return this.store.handle; }
+  /** The account as this actor may use it now. An API token's principal narrows it: a read token acts as a viewer, and a
+   * project-limited token sees only its projects. Every role and project check below reads this, never the raw row. */
   private account(actor: TeamActor) {
     const account = this.store.accountOf(actor.name);
     if (account === null || account.revokedAt !== null || account.generation !== actor.generation) refuse('signed-out', 'Sign in again to use this conversation.');
-    return account;
+    const principal = actor.principal;
+    if (principal === undefined) return account;
+    if (principal.account !== actor.name || principal.generation !== actor.generation) refuse('signed-out', 'Sign in again to use this conversation.');
+    return { ...account, role: principal.scope === 'act' ? account.role : 'viewer' as const, projects: tokenProjects(account.projects, principal.projects) };
+  }
+  /** Whether the actor may use `repo` now: their account's access, narrowed by any token limit. */
+  private reaches(actor: TeamActor, repo: string): boolean {
+    return this.store.accountCanAccess(actor.name, repo) && projectAccessAllows(this.account(actor).projects, repo);
   }
   private leadRow(id: string): Row {
     const row = this.db.prepare('SELECT * FROM team_lead WHERE id=?').get(id);
@@ -101,6 +111,18 @@ export class TeamLeads {
     try {
       this.account(actor);
       if (conversationId) { const {lead}=this.access(actor,conversationId); return Number(this.db.prepare('SELECT COALESCE(MAX(id),0) AS n FROM team_event WHERE (conversation=? OR (conversation IS NULL AND lead=?))').get(conversationId,lead.id)?.['n']??0); }
+      // A project-limited token hears only of the leads and conversations it can open, never activity beyond its projects.
+      if (actor.principal?.projects != null) {
+        const account=this.account(actor);
+        const leads=this.db.prepare('SELECT l.id FROM team_lead l JOIN team_lead_member m ON m.lead=l.id WHERE m.account=? AND m.active=1').all(actor.name).map(r=>String(r['id']))
+          .filter(id=>this.leadProjects(id).every(p=>projectAccessAllows(account.projects,p)&&this.enrolled().includes(p)));
+        const conversations=this.db.prepare('SELECT conversation FROM team_participant WHERE account=? AND active=1').all(actor.name).map(r=>String(r['conversation']))
+          .filter(id=>{ try { this.access(actor,id); return true; } catch(e) { if (e instanceof TeamRefusal) return false; throw e; } });
+        let n=0;
+        for (const id of leads) n=Math.max(n,Number(this.db.prepare('SELECT COALESCE(MAX(id),0) AS n FROM team_event WHERE lead=? AND conversation IS NULL').get(id)?.['n']??0));
+        for (const id of conversations) n=Math.max(n,Number(this.db.prepare('SELECT COALESCE(MAX(id),0) AS n FROM team_event WHERE conversation=?').get(id)?.['n']??0));
+        return n;
+      }
       return Number(this.db.prepare(`SELECT COALESCE(MAX(e.id),0) AS n FROM team_event e JOIN team_lead_member m ON m.lead=e.lead AND m.account=? AND m.active=1
         WHERE e.conversation IS NULL OR EXISTS(SELECT 1 FROM team_participant p JOIN team_conversation c ON c.id=p.conversation WHERE p.conversation=e.conversation AND p.account=? AND p.active=1 AND (c.visibility='team' OR c.created_by=?))`).get(actor.name,actor.name,actor.name)?.['n']??0);
     } catch (e) { if (e instanceof TeamRefusal) return null; throw e; }
@@ -123,9 +145,11 @@ export class TeamLeads {
     try {
       const result=this.store.transact(()=>{
         this.account(actor);
+        if(!teamScopeAllows(actor,request.operation))refuse('read-only','Your token reads only. Use an act token for this.');
         const requestId=request.args['requestId'];
         const key=requestId===undefined?null:str(requestId,'Request ID',128);
-        const digest=hash(stable(request));
+        // A token's scope and project limit are part of what was asked: a narrower token never replays a wider one's receipt.
+        const digest=hash(stable(actor.principal===undefined?request:{request,scope:actor.principal.scope,projects:actor.principal.projects}));
         if(key){ const seen=this.db.prepare('SELECT payload_hash,response_json FROM team_request WHERE account=? AND generation=? AND request_id=?').get(actor.name,actor.generation,key); if(seen){if(seen['payload_hash']!==digest)refuse('request-conflict','This request ID was already used for different content.');return JSON.parse(String(seen['response_json'])) as TeamResponse;} }
         const response=this.perform(actor,request,now);
         if(key)this.db.prepare('INSERT INTO team_request(account,generation,request_id,payload_hash,response_json) VALUES(?,?,?,?,?)').run(actor.name,actor.generation,key,digest,JSON.stringify(response));
@@ -360,7 +384,7 @@ export class TeamLeads {
       const lead=this.leadAccess(actor,leadId,'contributor').lead;
       const ancestry=this.store.revisionAncestryStatus(taskId);if(ancestry.problem!==null)return false;
       const ref=this.store.lookupRef(ancestry.chain[ancestry.chain.length-1]??taskId);
-      if(!ref||ref.repo===null||!lead.projects.includes(ref.repo)||!this.store.accountCanAccess(actor.name,ref.repo))return false;
+      if(!ref||ref.repo===null||!lead.projects.includes(ref.repo)||!this.reaches(actor,ref.repo))return false;
       if(conversationId){const access=this.access(actor,conversationId,'contributor');if(access.lead.id!==leadId||!access.conversation.projects.includes(ref.repo))return false;}
       const changed=this.db.prepare('INSERT INTO team_task_owner(task_ref,lead,conversation,changed_by,changed_at) VALUES(?,?,?,?,?) ON CONFLICT(task_ref) DO NOTHING').run(ref.id,leadId,conversationId,actor.name,now.toISOString());
       if(Number(changed.changes)===1)this.event(leadId,conversationId,'task-owner-changed',actor.name,now);
@@ -370,7 +394,7 @@ export class TeamLeads {
   private transfer(actor:TeamActor,a:Record<string,unknown>,now:Date):TeamResponse {
     const taskId=str(a['taskId'],'Task'),leadId=str(a['leadId'],'Lead');
     const target=this.leadAccess(actor,leadId,'manager').lead,ancestry=this.store.revisionAncestryStatus(taskId);if(ancestry.problem!==null)refuse('invalid-task','Task history needs inspection before ownership can change.');const ref=this.store.lookupRef(ancestry.chain[ancestry.chain.length-1]??taskId);
-    if(!ref||ref.repo===null||!target.projects.includes(ref.repo)||!this.store.accountCanAccess(actor.name,ref.repo))refuse('forbidden','The receiving lead must have access to this task’s project.');
+    if(!ref||ref.repo===null||!target.projects.includes(ref.repo)||!this.reaches(actor,ref.repo))refuse('forbidden','The receiving lead must have access to this task’s project.');
     const old=this.taskOwner(taskId),expected=integer(a['expectedRevision']);if((old?.revision??0)!==expected)refuse('conflict','Task ownership changed. Reload before transferring.');
     if(old)this.leadAccess(actor,old.leadId,'manager');
     const conversationId=a['conversationId']===undefined?null:str(a['conversationId'],'Conversation');
