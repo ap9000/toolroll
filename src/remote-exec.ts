@@ -14,7 +14,7 @@ import { envelopeJson } from './envelope.js';
 import { COMMAND_GUIDE } from './surface.js';
 import { centralProfile, UsageError, type TeamCliOptions } from './team-cli.js';
 import { CLI_FILES_BYTES, CLI_WAIT_SECONDS, type CliRequest } from './cli-http.js';
-import { contractRow, fileArguments, localOnlyFlag, STEP_UP_MESSAGE, type RemoteCommand, type RemoteCommandLookup } from './remote-command.js';
+import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommand, type RemoteCommandLookup } from './remote-command.js';
 
 export { contractRow, STEP_UP_MESSAGE, type RemoteMode } from './remote-command.js';
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
@@ -82,10 +82,10 @@ function inlineFiles(argv: readonly string[], row: RemoteCommand, cwd: string): 
     const path = resolve(cwd, value);
     let isFile = false;
     try { isFile = statSync(path).isFile(); } catch { isFile = false; }
-    if (!isFile) throw new UsageError(`${value} is not a readable file.`);
+    if (!isFile) throw new UsageError('A remote input must be a readable file.');
     let content: string;
     try { content = new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path)); }
-    catch { throw new UsageError(`${value} must be a readable UTF-8 file.`); }
+    catch { throw new UsageError('A remote input must be a readable UTF-8 file.'); }
     size += Buffer.byteLength(content);
     if (size > CLI_FILES_BYTES) throw new UsageError('Files sent with a remote command are limited to 256 KiB in total. Use --local to run it here.');
     files[value] = content;
@@ -136,8 +136,6 @@ export async function maybeRunRemoteCommand(argv: readonly string[], options: Re
   }
   if (mode === 'step-up') return refuse('step-up', STEP_UP_MESSAGE, EXIT.refused);
   const sent = explicit ? argv.filter((_one, index) => index !== profileAt && index !== profileAt + 1) : [...argv];
-  const local = localOnlyFlag(sent);
-  if (local !== undefined) return refuse('usage', `${local} is not sent to the server: your saved API token already says who you are. Use --local to run it here.`, EXIT.usage);
   let files: Record<string, string>;
   try { files = inlineFiles(sent, row, options.cwd ?? process.cwd()); }
   catch (error) { return refuse('usage', error instanceof UsageError ? error.message : 'A file could not be read.', EXIT.usage); }

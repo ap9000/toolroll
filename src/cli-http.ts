@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from './store.js';
-import { contractRow, fileArguments, localOnlyFlag, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
+import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
 
 /**
  * `POST /api/cli` (remote CLI, Phase 1): a teammate's laptop sends the argv it would have run locally, and the central
@@ -114,13 +114,11 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   const row = (options.modeOf ?? contractRow)(parsed.argv);
   if (row?.mode === 'step-up') return reject(403, 'step-up', STEP_UP_MESSAGE);
   if (row?.mode !== 'yes') return reject(403, 'remote-refused', 'This command cannot run remotely.');
-  const local = localOnlyFlag(parsed.argv);
-  if (local !== undefined) return reject(403, 'local-only-flag', `${local} cannot be used remotely. Sign in with your saved API token.`);
   const paths = fileArguments(parsed.argv, row);
-  if ('problem' in paths) return reject(403, 'missing-file', paths.problem);
+  if ('problem' in paths) return reject(403, paths.code, paths.problem);
   const missing = paths.find(path => !Object.hasOwn(parsed.files, path));
-  if (missing !== undefined) return reject(403, 'missing-file', `Send the contents of ${missing} in files; remote commands cannot read a server file.`);
-  if (Object.keys(parsed.files).some(path => !paths.includes(path))) return reject(400, 'invalid-request', 'Each file must name a --steps or value-taking --file argument.');
+  if (missing !== undefined) return reject(403, 'missing-file', 'Send every input file\'s contents in files; remote commands cannot read a server file.');
+  if (Object.keys(parsed.files).some(path => !paths.includes(path))) return reject(400, 'invalid-request', 'Each file must name a declared input file argument.');
   if (!longPollBounded(parsed.argv)) return reject(400, 'wait-too-long', `A remote task wait holds the server for at most ${CLI_WAIT_SECONDS} seconds; give --timeout ${CLI_WAIT_SECONDS} or less.`);
   let run: RunOperateAs | null;
   try { run = await options.run(); } catch { run = null; }

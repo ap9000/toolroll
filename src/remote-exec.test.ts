@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contractRow, maybeRunRemoteCommand, STEP_UP_MESSAGE, type RemoteExecOptions, type RemoteMode } from './remote-exec.js';
 import { CLI_FILES_BYTES } from './cli-http.js';
+import { PRIVATE_PATH, REMOTE_PATH_CASES } from '../test/remote-path-cases.js';
 
 const TOKEN = `so_abcdefabcdef_${'y'.repeat(43)}`;
 let dir: string, profileFile: string, sent: { url: string; init: RequestInit }[], out: string[], err: string[];
@@ -80,19 +81,19 @@ test('approvals are refused locally with the console/chat message; local credent
 test('--steps contents are inlined under the argument as typed, capped at 256 KiB in total', async () => {
   saveProfile(TOKEN);
   writeFileSync(join(dir, 'plan.txt'), 'step one\n');
-  expect(await maybeRunRemoteCommand(['task', 'add', 'x', '--steps', 'plan.txt'], options())).toBe(0);
-  expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv: ['task', 'add', 'x', '--steps', 'plan.txt'], files: { 'plan.txt': 'step one\n' } });
+  expect(await maybeRunRemoteCommand(['flows', 'create', '--steps', 'plan.txt'], options())).toBe(0);
+  expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv: ['flows', 'create', '--steps', 'plan.txt'], files: { 'plan.txt': 'step one\n' } });
   writeFileSync(join(dir, 'big.txt'), 'x'.repeat(CLI_FILES_BYTES + 1));
-  expect(await maybeRunRemoteCommand(['task', 'add', 'x', '--steps', 'big.txt'], options())).toBe(2);
-  expect(await maybeRunRemoteCommand(['task', 'add', 'x', '--steps', 'missing.txt'], options())).toBe(2);
+  expect(await maybeRunRemoteCommand(['flows', 'create', '--steps', 'big.txt'], options())).toBe(2);
+  expect(await maybeRunRemoteCommand(['flows', 'create', '--steps', 'missing.txt'], options())).toBe(2);
   expect(sent).toHaveLength(1);
 });
 
 test.each([
   ['flows', 'create', '--steps', 'my plan=a.txt'],
   ['flows', 'create', '--steps=my plan=a.txt'],
-  ['flows', 'script', 'save', '--file', 'my plan=a.txt'],
-  ['flows', 'script', 'save', '--file=my plan=a.txt'],
+  ['flows', 'script', 'save', '--body', 'my plan=a.txt'],
+  ['flows', 'script', 'save', '--body=my plan=a.txt'],
 ].map(argv => ({ argv })))('inlines UTF-8 file contents without changing $argv', async ({ argv }) => {
   saveProfile(TOKEN);
   writeFileSync(join(dir, 'my plan=a.txt'), 'é\n一\n');
@@ -103,10 +104,10 @@ test.each([
 test('missing, non-file, invalid UTF-8 and empty file references are not sent in either form', async () => {
   saveProfile(TOKEN);
   writeFileSync(join(dir, 'invalid.txt'), Buffer.from([0xff]));
-  for (const flag of ['--steps', '--file']) {
+  for (const [command, flag] of [['flows create', '--steps'], ['flows script save', '--body']] as const) {
     for (const value of ['missing.txt', 'remote', 'invalid.txt', '']) {
       for (const args of [[flag, value], [`${flag}=${value}`]]) {
-        expect(await maybeRunRemoteCommand(['flows', 'script', 'save', ...args], options()), args.join(' ')).toBe(2);
+        expect(await maybeRunRemoteCommand([...command.split(' '), ...args], options()), args.join(' ')).toBe(2);
       }
     }
   }
@@ -117,7 +118,7 @@ test('file limits sum UTF-8 bytes across both forms and count repeated paths onc
   saveProfile(TOKEN);
   writeFileSync(join(dir, 'one.txt'), 'é'.repeat(CLI_FILES_BYTES / 4));
   writeFileSync(join(dir, 'two.txt'), 'x'.repeat(CLI_FILES_BYTES / 2));
-  const argv = ['flows', 'script', 'save', '--steps=one.txt', '--file', 'two.txt', '--steps', 'one.txt'];
+  const argv = ['flows', 'create', '--steps=one.txt', '--steps', 'two.txt', '--steps', 'one.txt'];
   expect(await maybeRunRemoteCommand(argv, options())).toBe(0);
   const files = JSON.parse(String(sent[0]!.init.body)).files as Record<string, string>;
   expect(Object.keys(files)).toEqual(['one.txt', 'two.txt']);
@@ -134,6 +135,49 @@ test('a declared --file switch never reads the adjacent positional file', async 
   const modeOf: NonNullable<RemoteExecOptions['modeOf']> = () => ({ invocation: 'template apply', mode: 'yes', mutation: 'unkeyed', flags: [{ name: 'file', takesValue: false }] });
   expect(await maybeRunRemoteCommand(argv, options({ modeOf }))).toBe(0);
   expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv, files: {} });
+});
+
+test.each(REMOTE_PATH_CASES)('client path inventory: $name', async ({ argv, row, policy }) => {
+  saveProfile(TOKEN);
+  writeFileSync(join(dir, PRIVATE_PATH), 'é\nscript or steps\n');
+  const code = await maybeRunRemoteCommand(argv, options({ modeOf: () => row }));
+  if (policy === 'inline') {
+    expect(code).toBe(0);
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ argv, files: { [PRIVATE_PATH]: 'é\nscript or steps\n' } });
+  } else {
+    expect(code).toBe(2);
+    expect(sent).toHaveLength(0);
+    expect(err.join('')).not.toContain(PRIVATE_PATH);
+  }
+});
+
+test('literal JSON and flow URLs need no local file; stdin and forbidden paths never make a request', async () => {
+  saveProfile(TOKEN);
+  const modeOf: NonNullable<RemoteExecOptions['modeOf']> = argv => {
+    const row = contractRow(argv);
+    return row === null ? null : { ...row, mode: 'yes' };
+  };
+  for (const argv of [
+    ['flows', 'create', '--steps', '{"steps":[]}'],
+    ['flows', 'trigger', 'add', '42', '{"kind":"button"}'],
+    ['flows', 'import', 'https://gist.github.com/alice/123'],
+  ]) {
+    expect(await maybeRunRemoteCommand(argv, options({ modeOf }))).toBe(0);
+    expect(JSON.parse(String(sent.at(-1)!.init.body))).toEqual({ argv, files: {} });
+  }
+  const accepted = sent.length;
+  for (const argv of [
+    ['flows', 'create', '--steps=-'],
+    ['flows', 'script', 'save', '--body', '-'],
+    ['flows', 'trigger', 'add', '42', '-'],
+    ['flows', 'import', PRIVATE_PATH],
+    ['flows', 'script', 'save', '--body', PRIVATE_PATH, '--file', PRIVATE_PATH],
+  ]) {
+    expect(await maybeRunRemoteCommand(argv, options({ modeOf }))).toBe(2);
+    expect(err.at(-1)).not.toContain(PRIVATE_PATH);
+  }
+  expect(sent).toHaveLength(accepted);
 });
 
 test('401, unreachable, redirected or malformed answers are reported once, never retried', async () => {
