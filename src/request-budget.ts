@@ -1,6 +1,6 @@
 /**
- * Request budgets for person API tokens (v112): how many requests one `so_` token may make to `/api/cli` and `/mcp`.
- * One budget per token, keyed by its api_token row id (never the secret, its name or an address), shared by both
+ * Request budgets for person API tokens (v112): how many requests one `so_` token may make across all accepting routes.
+ * One budget per token, keyed by its api_token row id (never the secret, its name or an address), shared by those
  * routes. A read token gets 120 requests in any sliding minute, an act token 30, and either 10,000 in a rolling day;
  * an instance operator may override any of these for the installation or for one token in the console (step-up).
  *
@@ -13,6 +13,7 @@
  * FLUSH_MS, on eviction, on server close and at once on a refusal, so a restart doesn't hand a client hammering the
  * server a fresh budget. Anything unreadable (a policy or saved usage outside its bounds) refuses: fail closed.
  */
+import { createHash } from "node:crypto";
 import type { Database, Store } from "./store.js";
 import type { TokenAccess } from "./api-tokens.js";
 
@@ -264,15 +265,22 @@ export class RequestBudget {
   }
 }
 
-/** Per-minute allowance for one request source (an address) on bearer routes with no API token: a person's password on
- * /api/team, /api/sessions and the console, and every /oauth/token exchange. */
-export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken: 30 });
+/** Per-minute allowances for non-person-token identities and unauthenticated ingress. Password accounts get room
+ * for two-second follower polling plus ordinary commands; OAuth exchanges stay keyed by source address. */
+export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken: 30, coordinator: 120, teamsSource: 120, teamsTenant: 600 });
+
+/** A password bearer is charged before verification, by its claimed account across all password routes.
+ * Hashing bounds the key size and keeps credentials out of admission state. Match the authentication parser. */
+export function passwordAccountKey(authorization: string | undefined): string | null {
+  const account = /^Bearer (.+):(.+)$/.exec(authorization ?? "")?.[1];
+  return account === undefined ? null : createHash("sha256").update(account).digest("hex");
+}
 
 /**
- * Admission by request source, for bearer requests that carry no `so_` token (so have no token budget) and for the
- * OAuth token endpoint, which is reached before any token exists. A sliding minute per source, in memory, bounded:
- * at most `tracked` sources, and when every one of them still has requests inside its minute a new source is refused
- * rather than letting an old one go (fail closed). Charged once, before the body is read or a password is checked.
+ * A sliding minute per key (source address, claimed password account, coordinator or configured tenant), in memory.
+ * At most `tracked` keys: when every key still has requests inside its minute, a new one is refused rather than
+ * forgetting an active allowance (fail closed). Admission precedes body processing; password and source admission
+ * also precede credential verification. Person API tokens use the persisted RequestBudget above.
  */
 export class SourceAdmission {
   private readonly perMinute: number;

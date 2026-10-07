@@ -4,13 +4,13 @@
  * the console. /api/sessions stays password-only. Every bearer route is budgeted, and the OAuth endpoints refuse
  * plain HTTP from outside this computer and the tailnet.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "node:http";
+import { request as httpRequest, type Server } from "node:http";
 import { openStore, type Store } from "./store.js";
-import { addApprover } from "./scope.js";
+import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
 import { contractRow } from "./remote-command.js";
@@ -91,6 +91,9 @@ describe("/api/team carries the token's whole principal", () => {
       ["member", { leadId, account: "alex", role: "manager", expectedRevision: leadRevision }],
       ["send", { conversationId, text: "hello", requestId: "r2" }],
       ["read", { conversationId, messageId: 0 }],
+      ["edit", { conversationId, messageId: 1, expectedRevision: 1, text: "Changed" }],
+      ["withdraw", { conversationId, messageId: 1, expectedRevision: 1 }],
+      ["stop", { conversationId, messageId: 1 }],
       ["follow", { conversationId, enabled: true }],
       ["authorize", { conversationId, termsDigest: "x" }],
       ["transfer", { taskId: "t", leadId, expectedRevision: 0 }],
@@ -184,9 +187,13 @@ describe("the other token routes keep the token's scope and projects", () => {
     expect((await post(token("act", [A]))).status).toBe(401);
   });
 
-  test("/api/sessions accepts no API token at all", async () => {
-    const response = await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer ${token("act")}`, "content-type": "application/json" }, body: "{}" });
-    expect(response.status).toBe(401);
+  test("/api/sessions refuses read and outside-project API tokens before a mutation", async () => {
+    for (const bearer of [token("read"), token("act", [A])]) {
+      const response = await fetch(`${base}/api/sessions/start`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ repo: B, prompt: "Must not run" }) });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ delivery: "not-sent" });
+    }
+    expect(ran).toEqual([]);
   });
 });
 
@@ -206,7 +213,7 @@ describe("every bearer route is budgeted", () => {
     expect((await fetch(`${base}/api/team`, { headers: { authorization: `Bearer ${read}` } })).status).toBe(200);
   });
 
-  test("password bearers on /api/team and /api/sessions share a per-source budget, charged before the password is checked", async () => {
+  test("password bearers on /api/team and /api/sessions share a per-account budget, charged before the password is checked", async () => {
     const limit = SOURCE_BUDGET_DEFAULTS.password;
     for (let i = 0; i < limit - 1; i++) await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } }).then(one => one.arrayBuffer());
     // A wrong password counts too: guessing is budgeted.
@@ -237,4 +244,93 @@ test("/oauth/token is budgeted by source before its body is read: 429 with Retry
   expect(tokens()).toBe(before);
   now += 61_000;
   expect((await exchange()).status).not.toBe(429);
+});
+
+
+describe("bearer step-up and in-flight revocation", () => {
+  function task() {
+    store.createTask({ id: "guarded", title: "Guarded task" }, new Date());
+    store.placeTask(store.refFor("built-in", "guarded").id, A);
+    for (const phase of ["plan", "build", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", new Date());
+    return propose(store, { taskId: "guarded", goal: "Keep authorization intact", now: new Date() });
+  }
+  function oauthToken() {
+    const minted = mintApiToken(), at = new Date(), expires = new Date(at.getTime() + 3600_000).toISOString();
+    store.registerOAuthClient({ id: "test-client", name: "Test client", redirectUris: ["http://localhost/callback"], source: "test" }, at, 10, 10);
+    store.createOAuthGrant("test-code", { id: minted.id, account: "alex", name: "OAuth test", secretHash: minted.hash, access: "act", expiresAt: expires },
+      { client: "test-client", account: "alex", generation: store.accountOf("alex")!.generation, projects: [A], resource: `${base}/mcp`, accessExpiresAt: expires, refreshHash: "refresh-test" }, at);
+    return minted.token;
+  }
+  const formPost = (bearer: string, path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", redirect: "manual",
+    headers: { authorization: `Bearer ${bearer}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields) });
+
+  test.each(["password", "api", "oauth"])("%s bearer cannot perform any step-up family, even with the correct password", async kind => {
+    const scope = task();
+    const bearer = kind === "password" ? `alex:${password}` : kind === "api" ? token("act") : oauthToken();
+    const snapshot = () => ({ scope: store.getScope("guarded"), accounts: store.listApprovers(), policy: store.orgPolicy(),
+      rows: ["invite", "operating_mode", "chat_approval_setting", "approval_policy"].map(table => store.handle.prepare(`SELECT * FROM ${table}`).all()) });
+    const before = snapshot();
+    const paths = ["/t/guarded/approve", "/people/projects", "/people/invite", "/people/invite-revoke", "/people/revoke", "/settings/policy", "/settings/approval", "/mode/confirm", "/mode/sign", "/settings/chat-approval/confirm", "/settings/chat-approval/save"];
+    for (const path of paths) {
+      const response = await formPost(bearer, path, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A });
+      expect([path, response.status]).toEqual([path, kind === "oauth" ? 401 : 403]);
+      expect(snapshot()).toEqual(before);
+    }
+  });
+
+  test.each(["console", "team"].flatMap(route => ["revoked", "read", "projects", "generation", "expired"].map(change => [route, change])))("%s refuses a token changed to %s during body delivery", async (route, change) => {
+    task();
+    const bearer = token("act"), id = bearer.split("_")[1]!;
+    let authenticated!: () => void;
+    const proved = new Promise<void>(resolve => { authenticated = resolve; });
+    const touch = store.touchApiToken.bind(store);
+    const spy = vi.spyOn(store, "touchApiToken").mockImplementation((...args) => { const result = touch(...args); authenticated(); return result; });
+    const response = new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${base}${route === "team" ? "/api/team" : "/t/guarded/hold"}`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": route === "team" ? "application/json" : "application/x-www-form-urlencoded", "transfer-encoding": "chunked" } }, reply => { reply.resume(); reply.on("end", () => resolve(reply.statusCode!)); });
+      request.on("error", reject);
+      request.flushHeaders();
+      void proved.then(() => {
+        if (change === "revoked") store.revokeApiToken(id, "alex", new Date(), "regression");
+        if (change === "read") store.handle.prepare("UPDATE api_token SET access = 'read' WHERE id = ?").run(id);
+        if (change === "projects") store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
+        if (change === "generation") store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+        if (change === "expired") store.handle.prepare("UPDATE api_token SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), id);
+        request.end(route === "team" ? JSON.stringify({ operation: "create-lead", args: { name: "Must not be saved", projects: [A] } }) : "reason=Must+not+be+saved");
+      }).catch(reject);
+    });
+    try { expect(await response).toBe(route === "team" && change !== "read" ? 401 : 403); expect(count("hold")).toBe(0); expect(count("team_lead")).toBe(0); } finally { spy.mockRestore(); }
+  });
+
+  test("a live act bearer can still hold and remove its own operator hold", async () => {
+    task();
+    const bearer = token("act");
+    expect((await formPost(bearer, "/t/guarded/hold", { reason: "Wait for input" })).status).toBe(303);
+    expect(count("hold")).toBe(1);
+    expect((await formPost(bearer, "/t/guarded/unhold", {})).status).toBe(303);
+  });
+});
+
+
+test("password admission is per claimed account across login, console, team and sessions before password verification", async () => {
+  const other = addApprover(store, "sam", new Date(), { name: "alex", token: password });
+  if (!other.ok) throw Error("sam");
+  const get = (path: string, name = "alex", secret = password, source = "203.0.113.8") => fetch(`${base}${path}`, { headers: { authorization: `Bearer ${name}:${secret}`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
+  const auth = vi.spyOn(store, "accountOf");
+  // Valid requests are charged once, including login, which returns before the console route dispatch.
+  for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) {
+    const response = await get(["/login", "/api/team", "/work"][i % 3]!);
+    expect(response.status).toBe(200); await response.arrayBuffer();
+  }
+  const before = auth.mock.calls.length;
+  const denied = await get("/login", "alex", "wrong-password", "203.0.113.99");
+  expect(denied.status).toBe(429);
+  expect(denied.headers.get("retry-after")).toBe("60");
+  expect(auth.mock.calls.length).toBe(before);
+  expect((await get("/api/team", "sam", other.token)).status).toBe(200);
+  expect((await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer alex:${password}`, "content-type": "application/json" }, body: "{}" })).status).toBe(429);
+  now += 61_000;
+  // Guessing also spends the claimed account's allowance, even on login.
+  for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) await get("/login", "unknown", "bad").then(r => r.arrayBuffer());
+  expect((await get("/login", "unknown", "bad", "203.0.113.77")).status).toBe(429);
+  auth.mockRestore();
 });

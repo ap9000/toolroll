@@ -10,20 +10,31 @@ import { chatObject as object } from "./chat-delivery.js";
 import { loadTeamsCredentials, teamsAccessToken, teamsApi, verifyTeamsToken, TeamsError } from "./teams-api.js";
 import { deliverTeamsPart, planTeamsNotifications, planTeamsRooms, processTeamsEvent, receiveTeams, type TeamsChatOptions } from "./teams-chat.js";
 import type { Store } from "./store.js";
+import { limitWords, type Admission } from "./request-budget.js";
 
 export const TEAMS_ACTIVITY_BYTES = 64 * 1024;
 export const TEAMS_MESSAGES_PATH = "/teams/messages";
 
 /** The receiver: prove the Bot Framework token for this app, save the activity, acknowledge. Nothing runs here. */
-export async function handleTeamsHttp(request: IncomingMessage, response: ServerResponse, options: { store: Store; dir: string; fetcher?: typeof fetch; clock?: () => Date }): Promise<boolean> {
+export async function handleTeamsHttp(request: IncomingMessage, response: ServerResponse, options: { store: Store; dir: string; fetcher?: typeof fetch; clock?: () => Date; admitSource: (request: IncomingMessage) => Admission; admitTenant: (tenant: string) => Admission }): Promise<boolean> {
   const url = new URL(request.url ?? "/", "http://standing-orders.local");
   if (url.pathname !== TEAMS_MESSAGES_PATH) return false;
   const reply = (status: number, body = "{}") => { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(body); request.resume(); return true; };
   if (request.method !== "POST") return reply(405);
+  const refuseAdmission = (admitted: Admission): boolean => {
+    if (admitted.ok) return false;
+    if (admitted.status === 429) response.setHeader("retry-after", String(admitted.retryAfter));
+    return reply(admitted.status, JSON.stringify({ error: admitted.status === 429 ? "rate-limited" : "limits-unavailable",
+      message: admitted.status === 429 ? limitWords(admitted.limit, admitted.retryAfter) : "Request limits could not be checked; nothing was saved." }));
+  };
+  // Source admission precedes JWT verification (including key fetches). Only proved app credentials consume
+  // the configured tenant's allowance; an untrusted activity cannot select or evade that allowance.
+  if (refuseAdmission(options.admitSource(request))) return true;
   const credentials = loadTeamsCredentials(options.dir);
   if (credentials === null) return reply(404);
   const claims = await verifyTeamsToken(request.headers.authorization, credentials.app, options.fetcher ?? fetch);
   if (claims === null) return reply(401);
+  if (refuseAdmission(options.admitTenant(credentials.tenant))) return true;
   if (Number(request.headers["content-length"] ?? 0) > TEAMS_ACTIVITY_BYTES) return reply(413);
   let raw = "";
   try {

@@ -7,6 +7,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
+import { SOURCE_BUDGET_DEFAULTS } from "./request-budget.js";
 import { mintCoordinator } from "./coordinator.js";
 import { ENVELOPE_VERSION } from "./envelope.js";
 import { LEGACY, MODERN, TOOLS } from "./mcp-core.js";
@@ -24,6 +25,7 @@ const modernMeta = { "io.modelcontextprotocol/protocolVersion": MODERN, "io.mode
 const TASK_REPOS: Record<string, string> = { "t-shop": "/repo/shop", "t-bank": "/repo/bank" };
 
 let dir: string, store: Store, base: string, close: () => Promise<void>;
+let budgetTime: number;
 let ran: { argv: string[]; principal: Principal; source: string | undefined }[];
 
 /** Stands in for operate.ts's runOperateAs: grants and scope enforced, one envelope written. */
@@ -45,8 +47,8 @@ const fakeRunAs: RunOperateAs = async (argv, opts) => {
 beforeEach(async () => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-mcp-http-")));
   store = openStore(join(dir, "orders.db"));
-  ran = [];
-  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/shop", configDir: dir, runOperateAs: fakeRunAs });
+  ran = []; budgetTime = Date.now();
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/shop", configDir: dir, runOperateAs: fakeRunAs, requestBudgetClock: () => budgetTime });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
@@ -309,14 +311,19 @@ describe("people over /mcp, against the real runOperateAs", () => {
     expect((await limited.call("task_show", { ref: bankTask })).isError).toBe(true);
     expect((await limited.call("file_task", { repo: bankRepo, title: "Outside the limit", idempotency_key: "limit-0001" })).isError).toBe(true);
     expect(store.listTasks().filter(one => one.title === "Outside the limit")).toHaveLength(0);
-    const cli = async (argv: string[]) => {
-      const response = await fetch(`${real.base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv }) });
+    const cli = async (argv: string[], bearer = minted.token) => {
+      const response = await fetch(`${real.base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ argv }) });
       return { status: response.status, body: await response.json() as { exitCode?: number; stdout?: string } };
     };
     expect((await cli(["task", "show", shopTask, "--json"])).body.exitCode).toBe(0);
     const outside = await cli(["task", "show", bankTask, "--json"]);
     expect(outside.body.exitCode).toBe(3);
     expect(JSON.parse(outside.body.stdout!)).toMatchObject({ ok: false, reason: "not-found" });
+    expect((await cli(["task", "add", "Outside CLI limit", "--repo", bankRepo, "--json"])).body.exitCode).toBe(3);
+    const readOnly = token("alex", "read", "read-mutations").token;
+    expect((await cli(["task", "add", "Read CLI attempt", "--repo", shopRepo, "--json"], readOnly)).body.exitCode).toBe(3);
+    expect((await realClient(readOnly).call("file_task", { repo: shopRepo, title: "Read MCP attempt", idempotency_key: "read-0001" })).isError).toBe(true);
+    expect(store.listTasks().filter(one => ["Outside CLI limit", "Read CLI attempt", "Read MCP attempt"].includes(one.title))).toHaveLength(0);
     // The console's own pages check the account alone, so a limited token signs in nothing there.
     const ledgerPage = (bearer: string) => fetch(`${real.base}/ledger?format=json`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
     expect((await ledgerPage(token("alex", "read", "alex-everywhere").token)).status).toBe(200);
@@ -347,4 +354,24 @@ describe("people over /mcp, against the real runOperateAs", () => {
       ["remote command: task show", "requested", "token sam-dashboard · tool task_show"],
     ]);
   });
+});
+
+
+test("coordinator MCP admission is per authenticated credential and refuses before tool work", async () => {
+  const minted = mintCoordinator(store, { name: "budgeted", repos: ["/repo/shop"], by: "alex", now: new Date() });
+  const other = mintCoordinator(store, { name: "independent", repos: ["/repo/shop"], by: "alex", now: new Date() });
+  if (!minted.ok || !other.ok) throw Error("mint");
+  const bot = client(minted.token);
+  for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.coordinator; i++) expect((await bot.post({ jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(202);
+  const before = store.handle.prepare("SELECT * FROM coordinator_event").all();
+  const denied = await bot.post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { _meta: modernMeta, name: "file_task", arguments: { repo: "/repo/shop", title: "Do not file", idempotency_key: "budget-test" } } }, { "content-type": "text/plain" });
+  expect(denied.status).toBe(429); // Before even validating content type or dispatching the tool.
+  expect(denied.headers.get("retry-after")).toBe("60");
+  expect(await denied.json()).toMatchObject({ error: { code: -32000 } });
+  expect(store.handle.prepare("SELECT * FROM coordinator_event").all()).toEqual(before);
+  expect(ran).toEqual([]);
+  expect((await client(other.token).rpc("tools/list")).status).toBe(200);
+  expect((await client("invalid-coordinator").rpc("tools/list")).status).toBe(401);
+  budgetTime += 61_000;
+  expect((await bot.rpc("tools/list")).status).toBe(200);
 });

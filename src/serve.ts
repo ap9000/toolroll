@@ -133,8 +133,8 @@ import { projectAuthority } from "./project-access.js";
  * centralized gate — `authorizeMutation` — that proves content type, an
  * allowed Origin, and the per-session CSRF nonce, and refuses duplicated
  * security fields; a mutation route cannot forget a check it never wrote.
- * Bearer mutations carry no cookie for a hostile page to ride, so they skip
- * the cookie ceremony and nothing else.
+ * Bearer mutations carry no cookie for a hostile page to ride, so they skip CSRF.
+ * Step-up ceremonies still require a cookie session; repeating a bearer password cannot approve.
  *
  * **Approval is step-up.** A session alone never approves a scope: the
  * approval form restates the goal, the exclusions, and the touches — the
@@ -348,7 +348,7 @@ import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
-import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, limitWords, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, SOURCE_BUDGET_DEFAULTS, SourceAdmission, type Admission, type LimitOverride } from "./request-budget.js";
+import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, limitWords, passwordAccountKey, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, SOURCE_BUDGET_DEFAULTS, SourceAdmission, type Admission, type LimitOverride } from "./request-budget.js";
 import { REMOTE_MESSAGES, reproveRemote, type Principal } from "./operate-remote.js";
 import { hstsFor, LOOPBACK_PEERS, plainHttpRefusal, transportOf } from "./public-access.js";
 import { createOAuthHttp, oauthProjects, oauthTokenAllowed, resourceMetadataUrl } from "./mcp-oauth.js";
@@ -714,7 +714,17 @@ type ApprovalNonce = {
 };
 
 type Who = { name: string; via: "cookie"; session: Session; role: "approver" | "viewer" } | { name: string; via: "bearer"; role: "approver" | "viewer"; /** v101: the API token it came with. */ token?: string;
-  /** The API token's own scope (absent for a password): a read token never mutates, whatever the account's role. */ scope?: "read" | "act" };
+  /** The complete proved API-token authority, retained across body reads. */ principal?: Principal; generation: number };
+
+/** Password re-entry is step-up only inside a browser session. Keep the named ceremonies exact so ordinary
+ * remote actions and authority-lowering controls retain their existing authorization. */
+function cookieOnlyCeremony(path: string): boolean {
+  return /^\/t\/[^/]+\/approve$/.test(path) || new Set([
+    "/people/projects", "/people/invite", "/people/invite-revoke", "/people/revoke",
+    "/settings/policy", "/settings/approval", "/mode/confirm", "/mode/sign",
+    "/settings/chat-approval/confirm", "/settings/chat-approval/save",
+  ]).has(path);
+}
 
 /**
  * v101: browser sessions in memory and in the database (by a hash of the
@@ -1090,14 +1100,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   };
   // v112: one request budget per server for person API tokens, shared by every route a token signs in at (request-budget.ts).
   const requestBudget = new RequestBudget({ store, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
-  // Bearers with no API token (a person's name:password) are budgeted by where they come from, as is /oauth/token.
+  // Password bearers share a claimed-account budget; OAuth exchanges share a source-address budget.
   const sourceClock = options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock };
   const passwordBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.password, ...sourceClock });
+  const teamsSourceBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.teamsSource, ...sourceClock });
+  const teamsTenantBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.teamsTenant, ...sourceClock });
   const oauthTokenBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.oauthToken, ...sourceClock });
-  /** The one admission for a bearer request: an API token's own budget, else the source's. Cookies aren't charged. */
+  /** One admission per bearer request: API token id or claimed password account. Cookies are not charged. */
   const admitBearer = (request: IncomingMessage, principal: Principal | undefined): Admission => {
     if (principal !== undefined) return requestBudget.admit(principal.tokenId, "api");
-    return /^Bearer\s/i.test(request.headers.authorization ?? "") ? passwordBudget.admit(joinSourceOf(request)) : { ok: true };
+    const key = passwordAccountKey(request.headers.authorization);
+    return key === null ? { ok: true } : passwordBudget.admit(key);
   };
   /**
    * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
@@ -1106,13 +1119,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    */
   const tokenPrincipalOf = (request: IncomingMessage): Principal | null => {
     const who = identify(request, false, true);
-    const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
-    const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
-    const account = who === null ? null : store.accountOf(who.name);
-    if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
-    // An MCP sign-in's token (accepted only at /mcp today) is narrowed to the projects its person chose, as mcp-http.ts does.
-    return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id,
-      projects: tokenProjects(tokenProjects(account.projects, row.projects), oauthProjects(store, row.id)) };
+    return who?.via === "bearer" ? who.principal ?? null : null;
   };
   const presentsToken = (request: IncomingMessage): boolean => /^Bearer so_\S+$/.test(request.headers.authorization ?? "");
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
@@ -1135,7 +1142,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const account = store.accountOf(actor.name);
       if (!account || account.revokedAt !== null || account.generation !== actor.generation) return false;
       // An API token is re-proved against the store every time: unrevoked, unexpired, inside its project limit.
-      if (actor.principal !== undefined) return reproveRemote(store, actor.principal, new Date()).ok;
+      if (actor.principal !== undefined) {
+        const live = reproveRemote(store, actor.principal, new Date());
+        if (!live.ok) return false;
+        // The post-body mutation check must see a scope lowered since authentication, too.
+        actor.principal = { ...actor.principal, scope: live.scope };
+        return true;
+      }
       // A password bearer was proved when this connection opened. Cookie expiry/revocation
       // is rechecked without allowing a passive stream to extend its lifetime.
       if (request.headers.authorization) return true;
@@ -1168,7 +1181,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     store,
   });
   const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo),
-    admit: request => passwordBudget.admit(joinSourceOf(request)) });
+    admit: request => admitBearer(request, undefined) });
   /** The enumerable admission list for roll-up SQL: repos-only ceilings
    * enumerate themselves; root ceilings enumerate the STORED repos that
    * pass the ceiling (Codex roll-up review, finding 11); unscoped = null. */
@@ -1282,9 +1295,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     body: FormView<FormFieldOf<"mutationGuard">>,
   ): { status: number; message: string } | null {
     // A read token never mutates, whatever its person's role (operate-remote.ts says the same to the remote CLI).
-    if (who.via === "bearer" && who.scope === "read") return { status: 403, message: REMOTE_MESSAGES.read };
+    if (who.via === "bearer") {
+      if (who.principal !== undefined) {
+        const live = reproveRemote(store, who.principal, new Date());
+        if (!live.ok) return { status: 403, message: REMOTE_MESSAGES.stale };
+        if (live.scope !== "act") return { status: 403, message: REMOTE_MESSAGES.read };
+      }
+      const path = new URL(request.url ?? "/", "http://placeholder").pathname;
+      if (cookieOnlyCeremony(path)) return { status: 403, message: REMOTE_MESSAGES["step-up"] };
+    }
     const current = store.accountOf(who.name);
-    if (current === null || current.revokedAt !== null || current.role !== who.role || (who.via === "cookie" && current.generation !== who.session.generation)) {
+    if (current === null || current.revokedAt !== null || current.role !== who.role || current.generation !== (who.via === "cookie" ? who.session.generation : who.generation)) {
       return { status: 403, message: "Your access changed. Sign in again." };
     }
     const type = request.headers["content-type"] ?? "";
@@ -1580,7 +1601,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (await sessionEndpoint(request, response)) return;
     if (await teamEndpoint(request, response)) return;
     if (await cliEndpoint(request, response)) return;
-    if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock })) return;
+    if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock,
+      admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
     if (serveBrowserAsset(request, response, url.pathname)) return;
     // Exact, content-addressed application CSS only. Session-bearing
     // pages and fragments still use no-store and are never compressed.
@@ -1624,7 +1646,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
     const touch = !(method === "GET" && (workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname)));
+    const refuseBudget = (admitted: Admission): boolean => {
+      if (admitted.ok) return false;
+      request.resume();
+      if (admitted.status === 429) response.setHeader("Retry-After", String(admitted.retryAfter));
+      respond(response, admitted.status, "text/plain; charset=utf-8", admitted.status === 429 ? limitWords(admitted.limit, admitted.retryAfter) : "Request limits could not be checked; nothing ran. Try again shortly.");
+      return true;
+    };
+    // Charge password attempts before hashing/verifying them, including GET /login. API tokens are charged only
+    // after proof. Both paths run once here, before any early login return or console mutation.
+    if (!presentsToken(request) && refuseBudget(admitBearer(request, undefined))) return;
     const who = identify(request, touch);
+    if (who?.via === "bearer" && who.principal !== undefined && refuseBudget(admitBearer(request, who.principal))) return;
 
     if (url.pathname === "/login" && method === "GET") {
       if (options.setupCode !== undefined && store.listApprovers().length === 0) {
@@ -1908,18 +1941,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return method === "GET"
         ? redirect(response, loginHref(url.pathname + url.search))
         : respond(response, 401, "text/plain; charset=utf-8", "authenticate first");
-    }
-    // A bearer is charged once per request, before anything runs: an API token against its own budget (shared with
-    // /api/cli, /mcp and /api/team), a password against its source's.
-    if (who.via === "bearer") {
-      const principal = who.token === undefined ? undefined : tokenPrincipalOf(request);
-      if (principal === null) return respond(response, 401, "text/plain; charset=utf-8", "authenticate first");
-      const admitted = admitBearer(request, principal);
-      if (!admitted.ok) {
-        request.resume();
-        if (admitted.status === 429) response.setHeader("Retry-After", String(admitted.retryAfter));
-        return respond(response, admitted.status, "text/plain; charset=utf-8", admitted.status === 429 ? limitWords(admitted.limit, admitted.retryAfter) : "Request limits could not be checked; nothing ran. Try again shortly.");
-      }
     }
 
     const requestFacts = {
@@ -11756,7 +11777,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }));
   }
 
-  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request, true, true) !== null, admit: person => requestBudget.admit(person.principal.tokenId, "mcp"),
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, ...(options.requestBudgetClock === undefined ? {} : { requestBudgetClock: options.requestBudgetClock }), signedIn: request => identify(request, true, true) !== null, admit: person => requestBudget.admit(person.principal.tokenId, "mcp"),
     resourceMetadata: request => { const origin = consoleOrigin(request.headers.host); return origin === null ? null : resourceMetadataUrl(origin); },
     enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
 
@@ -11802,7 +11823,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // v113: an MCP sign-in's token works only at /mcp, while its access secret is fresh (mcp-oauth.ts).
       if (!oauthTokenAllowed(store, kept.row.id, new URL(request.url ?? "/", "http://placeholder").pathname, new Date(at))) return null;
       store.touchApiToken(kept.row.id, new Date(at));
-      return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name, scope: kept.row.access };
+      const principal: Principal = { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id,
+        projects: tokenProjects(tokenProjects(account.projects, kept.row.projects), oauthProjects(store, kept.row.id)) };
+      return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name, generation: account.generation, principal };
     }
     const bearer = /^Bearer (.+):(.+)$/.exec(request.headers.authorization ?? "");
     if (bearer !== null) {
@@ -11811,7 +11834,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (signInBudget.waitFor(source, at) > 0) return null;
       const authenticated = authenticateAccount(store, bearer[1] as string, bearer[2] as string);
       if (!authenticated.ok && authenticated.reason === "unknown") signInBudget.failed(source, at);
-      return authenticated.ok && passwordAllowed(bearer[1] as string) ? { name: bearer[1] as string, via: "bearer", role: authenticated.role } : null;
+      return authenticated.ok && passwordAllowed(bearer[1] as string) ? { name: bearer[1] as string, via: "bearer", role: authenticated.role, generation: authenticated.generation } : null;
     }
     const cookies = request.headers.cookie ?? "";
     const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})`).exec(cookies);

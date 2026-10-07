@@ -21,7 +21,7 @@ import {
   callCoordinatorTool, capabilitiesShape, readMessage, shapeResult, toolsPayload, type CallOutcome, type Json,
 } from "./mcp-core.js";
 import { callPersonTool, personTools, type Person, type RunOperateAs } from "./mcp-person.js";
-import { limitWords, type Admission } from "./request-budget.js";
+import { limitWords, SOURCE_BUDGET_DEFAULTS, SourceAdmission, type Admission } from "./request-budget.js";
 
 export type McpHttpOptions = {
   store: Store;
@@ -37,6 +37,7 @@ export type McpHttpOptions = {
   runAs?: RunOperateAs;
   /** A person token's request budget (request-budget.ts), charged once per request before its body is read. */
   admit?: (person: Person) => Admission;
+  requestBudgetClock?: () => number;
 };
 
 type Caller = { kind: "coordinator"; token: string; cid: string } | { kind: "person"; person: Person };
@@ -46,6 +47,7 @@ const READ_DECISIONS_KEPT = 200;
 
 export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   const { store } = options;
+  const coordinatorBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.coordinator, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
   /** Stdio remembers per connection which decisions a coordinator read; stateless HTTP remembers it per credential. */
   const readDecisions = new Map<string, Set<number>>();
 
@@ -133,9 +135,10 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here",
         { "www-authenticate": `Bearer realm="toolroll-mcp"${metadata === null ? "" : `, resource_metadata="${metadata}"`}` });
     }
-    // A person's token is counted once per request, notifications included; a coordinator keeps its own proposal limit.
-    if (caller.kind === "person" && options.admit !== undefined) {
-      const admitted = options.admit(caller.person);
+    // Count every authenticated request once, including notifications. Coordinator proposal limits still apply
+    // separately inside tool transactions; this admission also bounds their reads and malformed requests.
+    {
+      const admitted = caller.kind === "person" ? options.admit?.(caller.person) ?? { ok: true as const } : coordinatorBudget.admit(caller.cid);
       if (!admitted.ok && admitted.status === 503) return refuse(response, 503, "request limits could not be checked; nothing ran — try again shortly");
       if (!admitted.ok) {
         request.resume();
