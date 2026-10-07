@@ -18,6 +18,8 @@ import { mailboxReady } from "./mailbox.js";
 import { labelOf, nameOf } from "./teammate-admin.js";
 import { callWords, receiptWords } from "./teammate-tools.js";
 import { undoFor } from "./teammate-week.js";
+import { flowCardTaskLine } from "./flow-card-task.js";
+import { readFlowSecrets } from "./flow-secrets.js";
 
 const e = (value: unknown) =>
   String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -96,9 +98,18 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
   const sortZones = new Set(stages.filter(one => one.kind === "sort").map(one => one.id));
   const decisions = sortZones.size === 0 ? new Map<number, { decisionJson: string }>() : store.flowSortDecisions(flow.id);
   const mates = new Map(store.teammates([flow.repo]).map(one => [one.id, one] as const));
+  const taskSecrets = new Map<string, string[]>();
+  const secretsFor = (repo: string) => {
+    if (!taskSecrets.has(repo)) taskSecrets.set(repo, Object.values(readFlowSecrets(setup.dir, repo)));
+    return taskSecrets.get(repo)!;
+  };
+  const now = new Date();
   const cards: BrowserFlowCard[] = store.flowCards(flow.id, true).filter(card => card.state === "active" || Date.now() - Date.parse(card.updatedAt) < 7 * 86_400_000).map((card: FlowCardRow) => {
     const stage = stages.find(one => one.id === card.stage);
     const task = card.task ?? card.primaryTask;
+    // Build zones may file into another project; the flow alone does not admit its task's detail.
+    const taskRepo = card.task === null ? null : store.lookupRef(card.task)?.repo ?? null;
+    const canReadTask = taskRepo !== null && (taskRepo === flow.repo || (setup.repos.includes(taskRepo) && store.accountCanAccess(viewer.name, taskRepo)));
     const discussion = store.flowComments(card.id);
     const watchers = store.flowCardWatchers(card.id);
     const decider = stage?.kind === "approval" ? deciderOf(stage, flow) : null;
@@ -144,7 +155,9 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       ...(content.items === undefined ? {} : { items: content.items.map((item, index) => ({ number: index + 1, title: item.title, lines: whyLines(item.why), source: item.source, url: item.url,
         image: item.shot === null || content.shots === null ? null : { src: `/r/${content.shots.run}/evidence/${item.shot}`, caption: itemCaption(index + 1, item) } })) }) });
     return {
-      id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state, waiting: card.waiting,
+      id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state,
+      waiting: card.state === "active" && card.task !== null && (stage?.kind === "task" || stage?.kind === "report")
+        ? canReadTask ? flowCardTaskLine(store, card.task, taskRepo!, now, secretsFor(taskRepo!)) : "Task unavailable" : card.waiting,
       task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },
       createdBy: card.createdBy, updatedAt: card.updatedAt,
       canDecide,
