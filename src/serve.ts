@@ -322,6 +322,7 @@ import { createIntegrationMonitor, type IntegrationIo } from "./integrations.js"
 import { BACKUP_CSS, backupHtml } from "./backup-ui.js";
 import { BACKUP_EVERY_HOURS, MAX_KEEP, backupFolderOf, backupNow, checkBackupFolder, defaultBackupFolder } from "./backup.js";
 import { prometheusMetrics } from "./metrics.js";
+import { healthWords, instrumentRequest } from "./server-telemetry.js";
 import { SPEND_CSS, spendCsv, spendHtml } from "./spend-ui.js";
 import { RETENTION_CSS, retentionHtml } from "./retention-ui.js";
 import { STORAGE_CSS, storageHtml } from "./storage-ui.js";
@@ -376,6 +377,7 @@ import { installMethod, type InstallMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { updateNoticeWords } from "./update-notice.js";
 import { whenHtml } from "./when-html.js";
+import { ReadExecutor, attachReadExecutor, defaultReadWorkers } from "./read-executor.js";
 
 export type ServeOptions = {
   /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
@@ -386,6 +388,8 @@ export type ServeOptions = {
   installBin?: string;
   /** Native coding workspace injection for isolated integration tests. */
   codingWorkspace?: CodingWorkspace;
+  /** Read-only worker connections for heavy reads (read-executor.ts); 0 reads in-process. Default: off under tests. */
+  readWorkers?: number;
   store: Store;
   evidenceRoot: string;
   clock?: () => Date;
@@ -776,6 +780,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
   }
   const clock = options.clock ?? (() => new Date());
+  // Heavy reads (the work index behind `task list`) run on read-only worker connections, off the request loop.
+  const readFile = store.isDemo() ? null : store.databaseFile();
+  const readWorkers = options.readWorkers ?? (process.env["VITEST"] !== undefined ? 0 : defaultReadWorkers());
+  const reads = readFile === null || readWorkers < 1 ? null : new ReadExecutor(readFile, readWorkers);
+  const detachReads = reads === null ? () => {} : attachReadExecutor(store, reads);
   /** Task checkouts, for Settings → Storage: the pool's own root, or the folder beside the database. */
   const storagePool = (databaseFile: string) => new WorktreePool(store, { root: options.poolRoot ?? join(dirname(databaseFile), "worktrees") });
   const install = installMethod(options.installBin);
@@ -1139,6 +1148,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const taskRepoOf = (taskRef: number): string | null => store.refForId(taskRef)?.repo ?? null;
 
   const server = createServer((request, response) => {
+    instrumentRequest(store.telemetry, request, response);
     void handle(request, response).catch(error => {
       // Every unhandled error is logged (v99): the path and the message, never the request's body or query.
       logEvent("error", "serve.error", { method: request.method, path: redactedPath(new URL(request.url ?? "/", "http://placeholder").pathname), error: error instanceof Error ? error.message : String(error) });
@@ -1152,6 +1162,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     });
   });
+
+  server.once('listening', () => store.telemetry.start());
+  server.once('close', () => store.telemetry.stop());
 
   // --public-url (arc 3): validated to EXACTLY an https origin. Its host
   // joins the allowed set, its origin authorizes POSTs, and cookies turn
@@ -2166,7 +2179,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       url.pathname !== "/lead/status" && url.pathname !== "/onboarding/phone/dismiss" &&
       !url.pathname.startsWith("/chat/demo/") &&
       !/^\/chat\/action\/[0-9]{1,15}$/.test(url.pathname) &&
-      !url.pathname.startsWith("/settings") && url.pathname !== "/logout" && url.pathname !== "/people" && url.pathname !== "/ledger" && url.pathname !== "/ledger/export" && url.pathname !== "/metrics" && url.pathname !== "/spend" && url.pathname !== "/spend/budget" &&
+      !url.pathname.startsWith("/settings") && url.pathname !== "/logout" && url.pathname !== "/people" && url.pathname !== "/ledger" && url.pathname !== "/ledger/export" && url.pathname !== "/metrics" && url.pathname !== "/health" && url.pathname !== "/spend" && url.pathname !== "/spend/budget" &&
       !(url.pathname === "/board" && url.searchParams.get("scope") === "all");
     if (needsProject) return redirect(response, `/projects?return=${encodeURIComponent(safeReturn(url.pathname + url.search))}`);
 
@@ -4445,6 +4458,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         { chrome: chromeFor(project, "settings") }));
     }
     // v104: Prometheus metrics, for an instance operator (a scraper sends one's API token).
+    if (url.pathname === "/health") {
+      if (!store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator reads server health.", "/");
+      const health = store.telemetry.snapshot();
+      return request.headers.accept?.includes('application/json')
+        ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify(health))
+        : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n`);
+    }
     if (url.pathname === "/metrics") {
       if (!store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator reads metrics.", "/");
       response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
@@ -12307,7 +12327,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     chatStreams.clear();
     flowRooms.close();
     taskRooms.close();
-    void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop())]).then(() => closeServer(callback)).catch(error => {
+    detachReads();
+    void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
     });

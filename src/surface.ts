@@ -143,6 +143,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 
   // ---- the queue (agent surface) ----
   { invocation: "status", synopsis: "running work, queued reasons, results to review, the latest release check and plan windows", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
+  { invocation: 'health', synopsis: 'recent server latency, event-loop delay, SQLite writes and live streams from the saved connection; instance operators only', audience: 'agent', agentMayInvoke: true, mutation: 'none', flags: [jsonFlag, { name: 'profile', takesValue: true, meaning: 'saved server connection' }] },
   { invocation: "integrations", synopsis: "every integration as Connected, Not set up or Broken, with its last success and error, what uses it and what to do; --saved skips new checks; never a secret", audience: "agent", agentMayInvoke: true, mutation: "none",
     flags: [jsonFlag, dbFlag, { name: "saved", takesValue: false, meaning: "show the last checks without checking again" }] },
   { invocation: "ready", synopsis: "what could be dispatched right now (rows carry reservedFor)", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
@@ -465,7 +466,7 @@ const REMOTE_NO: readonly string[] = [
   "conversation read", "conversation follow", "conversation stop",
   "session capabilities", "session list", "session show", "session changes", "session start", "session send", "session stop", "session resume", "session recover",
   // This machine's checkout, saved profile, credentials and catch-up.
-  "project show", "project use", "brief", "lead token", "lead say",
+  "project show", "project use", "brief", "lead token", "lead say", "health",
   "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
