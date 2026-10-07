@@ -4,6 +4,8 @@ import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders, OutgoingHttp
 
 export const TELEMETRY_WINDOW_MS = 300_000;
 const SLICE_MS = 10_000;
+/** monitorEventLoopDelay samples by sleeping this long, so every raw sample includes it. */
+const EVENT_LOOP_RESOLUTION_MS = 20;
 export const LATENCY_BUCKETS = [0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.015, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60];
 export const ROUTE_FAMILIES = ['cli', 'mcp', 'team', 'team-stream', 'chat', 'chat-stream', 'flows', 'flow-stream', 'tasks', 'results', 'decisions', 'sessions', 'settings', 'projects', 'assets', 'auth', 'metrics', 'health', 'console', 'other'] as const;
 export type RouteFamily = typeof ROUTE_FAMILIES[number];
@@ -116,14 +118,17 @@ export class ServerTelemetry {
   }
   start(): void {
     if (this.monitor) return;
-    this.monitor = monitorEventLoopDelay({ resolution: 20 }); this.monitor.enable();
+    this.monitor = monitorEventLoopDelay({ resolution: EVENT_LOOP_RESOLUTION_MS }); this.monitor.enable();
     this.timer = setInterval(() => this.sampleEventLoop(), 1000); this.timer.unref();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.sampleEventLoop(); this.monitor?.disable(); this.monitor = undefined; this.timer = undefined;
   }
-  /** Native nanosecond samples, folded into bounded buckets once a second, never one retained object per tick. */
+  /**
+   * Native nanosecond samples, folded into bounded buckets once a second, never one retained object per tick.
+   * Each raw sample includes the sampling timer's own interval, so it is subtracted: an idle loop reads near zero.
+   */
   sampleEventLoop(): void {
     const h = this.monitor;
     if (!h || !h.count) return;
@@ -131,7 +136,7 @@ export class ServerTelemetry {
     let previous = 0;
     for (let i = 1; i <= steps; i++) {
       const rank = Math.floor(i * count / steps);
-      this.eventLoop.observe(h.percentile(100 * rank / count) / 1e9, rank - previous); previous = rank;
+      this.eventLoop.observe(Math.max(0, h.percentile(100 * rank / count) / 1e6 - EVENT_LOOP_RESOLUTION_MS) / 1000, rank - previous); previous = rank;
     }
     h.reset();
   }

@@ -65,3 +65,14 @@ test('the existing exporter includes real Store transaction and standalone write
     expect(exported).toContain('toolroll_sse_connections{route="team-stream"} 0');
   } finally { store.close(); }
 });
+
+test('an idle event loop reads near zero once the sampling interval is subtracted', async () => {
+  const telemetry = new ServerTelemetry();
+  telemetry.start();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const loop = telemetry.snapshot().eventLoop;
+    expect(loop.count).toBeGreaterThan(0);
+    expect(loop.p50Ms!).toBeLessThan(5);
+  } finally { telemetry.stop(); }
+});
