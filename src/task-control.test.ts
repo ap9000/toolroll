@@ -242,7 +242,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a fresh file is born at the current schema with the run_stop table and a hold that admits the stop owner", () => {
-    expect(SCHEMA_VERSION).toBe(112);
+    expect(SCHEMA_VERSION).toBe(113);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
     expect(store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_stop'").get()).toBeDefined();
     const ddl = String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hold'").get()?.["sql"]);

@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
 import { parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
+import { oauthProjects, oauthTokenAllowed, RESOURCE_PATH } from "./mcp-oauth.js";
 import { authenticateCoordinator } from "./coordinator.js";
 import {
   LEGACY, MAX_REQUEST, META_CAPABILITIES, META_SERVER, META_VERSION, MODERN, TOOLS, UNSUPPORTED_VERSION,
@@ -30,6 +31,8 @@ export type McpHttpOptions = {
   evidenceRoot?: string;
   /** The console's own sign-in for an `so_` bearer: the address's tries, expiry, revocation, a removed account. */
   signedIn: (request: IncomingMessage) => boolean;
+  /** Where an MCP client finds how to sign in (mcp-oauth.ts), named on a 401; null when this address offers none. */
+  resourceMetadata?: (request: IncomingMessage) => string | null;
   /** Runs a person's command on the server (operate.ts); resolved from operate.ts when not injected. */
   runAs?: RunOperateAs;
   /** A person token's request budget (request-budget.ts), charged once per request before its body is read. */
@@ -66,10 +69,14 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       if (!tokenLive(kept.row, options.clock().getTime())) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
+      // An MCP sign-in's token: only while its access is fresh, and only in the projects the person chose (mcp-oauth.ts).
+      if (!oauthTokenAllowed(store, kept.row.id, RESOURCE_PATH, options.clock())) return null;
+      const granted = oauthProjects(store, kept.row.id);
+      const projects = tokenProjects(tokenProjects(account.projects, kept.row.projects), granted);
       return {
         kind: "person",
         person: {
-          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: tokenProjects(account.projects, kept.row.projects) },
+          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects },
           role: account.role,
           tokenName: kept.row.name,
         },
@@ -122,7 +129,9 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
     if (request.headers.origin !== undefined) return refuse(response, 403, "browser requests are refused — connect an MCP client with your API token");
     const caller = callerOf(request);
     if (caller === null) {
-      return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here", { "www-authenticate": 'Bearer realm="toolroll-mcp"' });
+      const metadata = options.resourceMetadata?.(request) ?? null;
+      return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here",
+        { "www-authenticate": `Bearer realm="toolroll-mcp"${metadata === null ? "" : `, resource_metadata="${metadata}"`}` });
     }
     // A person's token is counted once per request, notifications included; a coordinator keeps its own proposal limit.
     if (caller.kind === "person" && options.admit !== undefined) {

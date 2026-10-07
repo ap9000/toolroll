@@ -39,7 +39,7 @@ describe("v74 Teams joins the recorded surfaces", () => {
   test.each([73, -73])("upgrades v%s without changing existing rows and records Teams separately", version => {
     const f = fixture(version);
     store = openStore(f.file);
-    expect(SCHEMA_VERSION).toBe(112);
+    expect(SCHEMA_VERSION).toBe(113);
     expect(store.handle.prepare("SELECT * FROM run_stop").all()).toEqual(f.stops);
     expect(store.handle.prepare("SELECT * FROM decision").all()).toEqual(f.decisions);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);

@@ -10,6 +10,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export type TokenAccess = "read" | "act";
+export type TokenPurpose = "api" | "mcp";
+export const MCP_ROTATION_REFUSAL = "Reconnect the MCP client to renew this token. You can still revoke it here.";
+
+/** Missing purpose is an old ordinary token; an unrecognised stored purpose is never treated as ordinary. */
+export const tokenPurpose = (value: unknown): TokenPurpose => value === undefined || value === "api" ? "api" : "mcp";
+export const tokenRotationProblem = (token: { purpose: TokenPurpose }): string | null => token.purpose === "api" ? null : MCP_ROTATION_REFUSAL;
 export const TOKEN_DAYS = [30, 90, 365] as const;
 const SHAPE = /^so_([a-f0-9]{12})_([A-Za-z0-9_-]{43})$/;
 

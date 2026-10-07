@@ -19,11 +19,12 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v110 to v112 are update-safe, nothing before them is", () => {
+  test("every schema version is classed: v110 to v113 are update-safe, nothing before them is", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
-    expect(SCHEMA_VERSION).toBe(112);
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111, 112]);
+    // v113 (MCP sign-in) only adds its four oauth_ tables plus the purpose column; v111 and v112 are the sibling token and limit migrations.
+    expect(SCHEMA_VERSION).toBe(113);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111, 112, 113]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -75,7 +76,7 @@ describe("update-safe migrations", () => {
     // The rehearsal: the new build migrates the copy, and no saved row changes.
     const store = openStore(backup);
     try {
-      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
       expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });
     } finally { store.close(); }
     const after = new DatabaseSync(backup, { readOnly: true });

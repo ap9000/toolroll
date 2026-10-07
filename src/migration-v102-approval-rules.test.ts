@@ -22,8 +22,8 @@ test.each([101, -101])("v%s: tasks filed before keep working with no filer; rule
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(112);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
+  expect(SCHEMA_VERSION).toBe(113);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.taskFiler("old-task")).toBeNull();
   expect(store.approvalRules("/repo/main")).toMatchObject({ notRequester: false, protectProject: false, protectedPaths: [] });
   store.setApprovalRules("/repo/main", { notRequester: true, protectProject: false, protectedPaths: ["infra/**"] }, "alex", now);

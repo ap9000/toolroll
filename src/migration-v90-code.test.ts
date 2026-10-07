@@ -38,8 +38,8 @@ test.each([89, -89])("v%s: every script stays a shell script with the same diges
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(112);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
+  expect(SCHEMA_VERSION).toBe(113);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.flowScript("/r", "run-tests")).toMatchObject({ language: "shell", file: null, version: 3, digest, body: "npm test" });
   // Saving the same shell script again changes nothing: its digest is the one it had.
   expect(saveScript(store, "/r", { name: "run-tests", about: "Runs the tests", body: "npm test" }, "alex", new Date())).toMatchObject({ ok: true, said: "No changes to save.", version: 3 });

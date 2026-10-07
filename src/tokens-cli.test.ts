@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, hashPassword } from "./scope.js";
-import { parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
+import { MCP_ROTATION_REFUSAL, mintApiToken, parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
 import { reproveRemote, remoteAllows } from "./operate-remote.js";
 import { runTokensCommand, type TokensCliContext } from "./tokens-cli.js";
 import { TOKEN_NOTICE_KIND, tokenNoticePass } from "./token-notices.js";
@@ -241,5 +241,34 @@ describe("toolroll tokens", () => {
     expect(html).not.toMatch(/so_[a-f0-9]{12}_/);
     const soon = credentialsHtml({ who: "alex", everyone: false, canSeeEveryone: false, sessions: [], tokens: store.apiTokens("alex"), now: expires - 5 * DAY }, "csrf", {});
     expect(soon).toContain("Expires in 5 days");
+  });
+
+  test("rotate refuses an MCP sign-in's token with reconnect guidance, and revoke still works", async () => {
+    const client = store.registerOAuthClient({ id: "example-client", name: "Example Agent", redirectUris: ["https://agent.example/cb"], source: "example-source-hash" }, NOW, 20, 10)!;
+    const minted = mintApiToken();
+    store.createOAuthGrant("code-hash", { id: minted.id, account: "alex", name: "MCP: Example Agent", access: "read", secretHash: minted.hash, expiresAt: "2026-11-06T00:00:00.000Z" },
+      { client: client.id, account: "alex", generation: store.accountOf("alex")!.generation, projects: [A], resource: "https://toolroll.example/mcp", accessExpiresAt: "2026-10-06T13:00:00.000Z", refreshHash: "synthetic-refresh-hash" }, NOW);
+    const before = store.apiTokenSecret(minted.id);
+    expect(before?.row).toMatchObject({ purpose: "mcp", projects: [A] });
+    expect(await tokens(["rotate", minted.id, "--as", "alex", "--password-stdin"])).toBe(3);
+    expect(last()).toMatchObject({ ok: false, reason: "mcp-managed", message: MCP_ROTATION_REFUSAL });
+    const replacement = mintApiToken();
+    expect(store.rotateApiToken(minted.id, { id: replacement.id, secretHash: replacement.hash }, "alex", NOW, 0)).toEqual({ ok: false, reason: "mcp-managed" });
+    expect(store.apiTokenSecret(minted.id)).toEqual(before);
+    expect(store.apiTokens("alex")).toHaveLength(1);
+    expect(await tokens(["revoke", minted.id, "--as", "alex", "--password-stdin"])).toBe(0);
+    expect(store.apiTokenSecret(minted.id)?.row.revokedAt).toBe(NOW.toISOString());
+    const visible = JSON.stringify([out, store.apiTokens("alex"), store.actionLedger({ repos: null, limit: 100 })]);
+    for (const secret of [minted.token, minted.secret, minted.hash, replacement.token, "synthetic-refresh-hash", password]) expect(visible).not.toContain(secret);
+  });
+
+  test("rotate still replaces an ordinary token on the same terms, as an ordinary token", async () => {
+    const made = await create("terminal", ["--projects", "shop"]);
+    expect(store.apiTokenSecret(made.id)?.row.purpose).toBe("api");
+    expect(await tokens(["rotate", made.id, "--as", "alex", "--password-stdin"])).toBe(0);
+    const result = last() as { id: string };
+    expect(result).toMatchObject({ ok: true, projects: [A], expiresAt: made.expiresAt, access: "act" });
+    expect(store.apiTokenSecret(result.id)?.row.purpose).toBe("api");
+    expect(store.apiTokenSecret(made.id)?.row.replacedBy).toBe(result.id);
   });
 });

@@ -5,7 +5,7 @@
  * secret is written once, in the answer to create or rotate; nothing else ever shows it, and only its hash is kept.
  */
 import { envelopeJson } from "./envelope.js";
-import { daysLeft, mintApiToken, ROTATION_OVERLAP_MAX_MINUTES, ROTATION_OVERLAP_MINUTES, TOKEN_DAYS, tokenLive } from "./api-tokens.js";
+import { daysLeft, mintApiToken, ROTATION_OVERLAP_MAX_MINUTES, ROTATION_OVERLAP_MINUTES, TOKEN_DAYS, tokenLive, tokenRotationProblem, MCP_ROTATION_REFUSAL } from "./api-tokens.js";
 import { canonicalProject, projectName } from "./project.js";
 import { authenticateAccount } from "./scope.js";
 import type { ApiTokenRow, Store } from "./store.js";
@@ -113,8 +113,11 @@ export async function runTokensCommand(positional: readonly string[], flags: Rea
     store.revokeApiToken(found.row.id, name, now);
     return succeed({ id: found.row.id, name: found.row.name }, [`Revoked ${found.row.name}. Anything using it stops working now.`]);
   }
+  const rotationProblem = tokenRotationProblem(found.row);
+  if (rotationProblem !== null) return fail("mcp-managed", rotationProblem);
   const minted = mintApiToken();
   const rotated = store.rotateApiToken(found.row.id, { id: minted.id, secretHash: minted.hash }, name, now, (overlap as number) * 60_000);
+  if (!rotated.ok && rotated.reason === "mcp-managed") return fail("mcp-managed", MCP_ROTATION_REFUSAL);
   if (!rotated.ok) return fail(rotated.reason === "replaced" ? "replaced" : "not-found", rotated.reason === "replaced" ? "That token was already replaced. Rotate its replacement instead." : "No live token of yours has that name or id.");
   const stops = store.apiTokenSecret(found.row.id)!.row.overlapUntil!;
   return succeed({ token: minted.token, replaced: { id: found.row.id, stopsAt: stops }, ...listed(rotated.row, now) }, [

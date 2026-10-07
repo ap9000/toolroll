@@ -25,8 +25,8 @@ test.each([100, -100])("v%s: a coordinator made before expiry keeps working unti
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(112);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
+  expect(SCHEMA_VERSION).toBe(113);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.handle.prepare("SELECT expires_at FROM coordinator_credential WHERE name = 'old-bot'").get()?.["expires_at"]).toBeNull();
   expect(authenticateCoordinator(store, made.token)).toMatchObject({ ok: true });
   store.createApiToken({ id: "abcdef012345", account: "alex", name: "ci", secretHash: "0".repeat(64), access: "read", expiresAt: "2027-01-01T00:00:00.000Z", by: "alex" }, now);
