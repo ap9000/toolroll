@@ -188,6 +188,8 @@ describe("runOperateAs", () => {
     [["memory", "propose", "--repo", "REPO"], "not-remote", "That command only runs on the server's own machine, not for a remote caller."],
     [["task", "approve", "TASK"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
     [["people", "list"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
+    ...[["tokens", "create", "--name", "x", "--access", "act", "--days", "30"], ["tokens", "list"], ["tokens", "revoke", "alex-ci"], ["tokens", "rotate", "alex-ci"]]
+      .map(argv => [argv, "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."] as [string[], string, string]),
     [["mode", "set"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
     [["chat-approval", "on"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
   ])("refuses %j before any command code runs", async (argv, reason, message) => {

@@ -1,4 +1,5 @@
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
+import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
@@ -23,6 +24,8 @@ import { billingOf, budgetHoldWords, budgetLabel, budgetStates, monthNamed, mont
 import { spendCsv } from "./spend-ui.js";
 import { buildExport, exportSummary, exportZip, writeExportFolder } from "./export.js";
 import { startBudgetAlerts } from "./budget-alerts.js";
+import { runTokensCommand } from "./tokens-cli.js";
+import { startTokenNotices } from "./token-notices.js";
 import { liftAuthPause, openAuthPauses, signInGate, signInWords, startSignInProbes, type SignInGate } from "./provider-auth.js";
 import { createConnectionChecker } from "./provider-connection.js";
 import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
@@ -122,6 +125,7 @@ import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
+import { auditCommand } from "./audit-cli.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";
@@ -359,6 +363,8 @@ export type OperateOptions = {
   releaseIo?: ReleaseIo;
   /** Injected by tests: the bin whose real path says how Toolroll was installed. */
   installBin?: string;
+  /** Tests: what `serve check-public` fetches with instead of the network. */
+  publicProbe?: import("./public-check.js").Probe;
   /** Injected by tests: where `storage` looks for leftover test temp folders (default: the temp folder and /tmp). */
   tempRoots?: readonly string[];
   openDatabase?: (file: string) => Store;
@@ -459,6 +465,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll ledger checkpoint         record the chain's head to copy off this machine (instance operator)
   toolroll ledger export --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--out <file>]
                                         every sealed entry in the range, with an evidence pack per task
+  toolroll audit [--person <p>] [--token <name>] [--source api|mcp] [--since 7d]
+                                        what people did here with their API tokens, newest first (--limit, --cursor;
+                                        remotely, name a token with --token-name)
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
   toolroll task merge <id> --as <you> --token <t>
@@ -868,6 +877,10 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "quick", "level", "checks",
   // lead say: the task the lead's words are about.
   "task",
+  // tokens: an API token's terms, and a rotation's overlap in minutes.
+  "access", "projects", "overlap",
+  // audit: a token by name where --token is a credential (remote).
+  "token-name",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
@@ -889,6 +902,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "anyway",
   // config set/clear: another provider's candidate on the same tier.
   "also",
+  // tokens: the person's password, piped (never an argument).
+  "password-stdin",
 ]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
@@ -993,6 +1008,10 @@ export async function runOperate(
   // through the non-migrating door with its own refusal words (spec v6).
   if (command === "mcp") {
     return mcpCommand(file, flags, write, json);
+  }
+  // The public-address readiness check reads no database: it only asks the network.
+  if (command === "serve" && positional[0] === "check-public") {
+    return checkPublicCommand(flags, { write, json, envelope: envelopeJson, ...(options.publicProbe === undefined ? {} : { probe: options.publicProbe }) });
   }
   // Restore replaces the database file itself, so it opens (and closes) the database on its own.
   if (command === "restore") {
@@ -1130,7 +1149,7 @@ export type { Principal };
  */
 export async function runOperateAs(
   argv: string[],
-  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: RemoteSource; options?: OperateOptions },
+  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: RemoteSource; tool?: string; options?: OperateOptions },
 ): Promise<number> {
   const { principal, store, write } = opts;
   const source: RemoteSource = opts.source === "mcp" ? "mcp" : "api";
@@ -1140,10 +1159,12 @@ export async function runOperateAs(
   const json = rest.includes("--json");
   let invocation = root;
   let tokenName: string | null = null;
+  // An MCP call names the gateway tool it came from, so the history tells a tool from the command it ran.
+  const tool = source === "mcp" && typeof opts.tool === "string" && /^[a-z][a-z0-9_]{0,40}$/.test(opts.tool) ? opts.tool : null;
   const record = (outcome: string, repo: string | null, taskId: string | null, why: string | null): void => {
     store.recordAction({ at: (options.now ?? new Date()).toISOString(), actor: principal.account, repo, taskId, runId: null,
       action: `remote command: ${invocation === "" ? "(none)" : invocation}`.slice(0, 200), outcome, source,
-      detail: `token ${tokenName ?? principal.tokenId}${why === null ? "" : ` · ${why}`}` });
+      detail: `token ${tokenName ?? principal.tokenId}${why === null ? "" : ` · ${why}`}${tool === null ? "" : ` · tool ${tool}`}` });
   };
   const refuse = (reason: string, message: string, repo: string | null = null, taskId: string | null = null): number => {
     record("refused", repo, taskId, reason);
@@ -1359,6 +1380,8 @@ async function dispatch(
       return taskCommand(positional, flags, context);
     case "ledger":
       return ledgerCommand(positional, flags, context);
+    case "audit":
+      return auditCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), ...(context.principal === undefined ? {} : { principal: context.principal }) });
     case "spend":
       return spendCommand(flags, context);
     case "budget":
@@ -1483,6 +1506,13 @@ async function dispatch(
       return chatApprovalCommand(positional, flags, context);
     case "people":
       return peopleCommand(positional, flags, context);
+    case "tokens":
+      return runTokensCommand(positional, flags, {
+        store: context.store, write: context.write, json: context.json, clock: context.clock,
+        caller: activeRemote() !== null ? "remote" : currentActor()?.lead === true || context.leadToken !== undefined ? "lead" : "local",
+        rememberedName: readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name ?? null,
+        interactive, ask, askHidden, readStdin: readBoundedStdin,
+      });
     case "keys":
       return keysCommand(positional, flags, context);
     case "setup":
@@ -5691,6 +5721,8 @@ async function startConsole(options: {
   server.on("close", stopMonitoring);
   // v105: budget alerts at 50/80/100 %, a pass a minute.
   server.on("close", startBudgetAlerts(context.store));
+  // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
+  server.on("close", startTokenNotices(context.store));
   // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
   server.on("close", startSignInProbes(context.store, createConnectionChecker()));
   // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
@@ -9584,6 +9616,8 @@ async function upCommand(
     return fail(write, json, "up", "usage", "--host is an address or a name", EXIT.usage);
   }
   const allowFlag = text(flags, "allow-host");
+  // --public-url: `up` serves a real domain exactly as `serve` does (one process is the whole team server).
+  const publicUrlFlag = text(flags, "public-url");
 
   const progress = (line: string): void => {
     // v99: with TOOLROLL_LOG_FORMAT=json, each line is one JSON event on stderr for a log shipper.
@@ -9836,6 +9870,7 @@ async function upCommand(
       host: hostFlag,
       port,
       ...(allowFlag === undefined ? {} : { allowedHosts: allowFlag.split(",").map(one => one.trim()).filter(one => one !== "") }),
+      ...(publicUrlFlag === undefined ? {} : { publicUrl: publicUrlFlag }),
       localRunner: runnerName,
       poolRoot: pool,
       repos,
@@ -13440,6 +13475,21 @@ function authenticateApprover(store: Store, by: string, token: string, repo?: st
 function verifyApproverByPassword(store: Store, name: string, token: string, repos: readonly string[]): ReturnType<typeof approverByPassword> {
   const remote = activeRemote();
   return approverByPassword(store, name, token, remote === null ? repos : repos.filter(repo => remote.allows(repo)));
+}
+
+/** Standard input, whole, up to `limit` bytes (null past it): never from a terminal, and never inside a remote run. */
+async function readBoundedStdin(limit: number): Promise<string | null> {
+  refusePrompt();
+  if (process.stdin.isTTY) return null;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += bytes.length;
+    if (size > limit) { process.stdin.pause(); return null; }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** Prompts: never inside a remote run — there is nobody at this machine's terminal to answer for the person. */

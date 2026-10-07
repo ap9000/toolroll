@@ -22,6 +22,8 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
     'routine list', 'intake show', 'intake run', 'template list', 'webhook status', 'webhook test', 'review show',
     'chat-approval show', 'chat-approval off'].map(row => [row, args()] as const),
   ['integrations', args('', 'saved')],
+  // --person and --token-name are names compared inside the reader's own view; --token stays a refused credential.
+  ['audit', args('', 'person token-name source since limit cursor')],
   ['outbox list', args('', 'all')],
   ['task add', args('title*', 'key report checks', { id: 'refused', replaces: 'task' })],
   ['task ask', args('id:task', 'person why')],

@@ -64,7 +64,7 @@ describe("the CLI's machine contract", () => {
 
   it("gives every declared command its own answer schema, in guide order, and generates the guide from them", () => {
     expect(COMMAND_GUIDE).toEqual(COMMAND_ENTRIES.map(entry => entry.guide));
-    expect(COMMAND_ENTRIES.length).toBe(220);
+    expect(COMMAND_ENTRIES.length).toBe(226);
     const names = COMMAND_ENTRIES.map(entry => entry.guide.envelopeCommand ?? entry.guide.invocation);
     expect(new Set(names).size, "two rows answer as one command").toBe(names.length);
     for (const [index, entry] of COMMAND_ENTRIES.entries()) {
@@ -99,6 +99,8 @@ describe("the CLI's machine contract", () => {
       "runner retire", "runner bind", "runner capacity", "enroll", "reap", "demo", "", "pulls", "graph"]) expect(policy(invocation), invocation).toBe("no");
     for (const invocation of ["task approve", "task regate", "routine approve", "decide", "people list", "people invite", "people projects", "people revoke",
       "mode show", "mode set", "mode revoke", "chat-approval on", "config set", "verify set"]) expect(policy(invocation), invocation).toBe("step-up");
+    // A person's own API tokens are a password step-up, never a token's act: a token can't make, list, revoke or rotate one.
+    for (const invocation of ["tokens create", "tokens list", "tokens revoke", "tokens rotate"]) expect(policy(invocation), invocation).toBe("step-up");
     for (const invocation of ["status", "task add", "task show", "task list"]) expect(policy(invocation), invocation).toBe("yes");
   });
 
@@ -180,6 +182,8 @@ describe("the CLI's --json bytes", () => {
       await operate(["routine", "list", "--json"]);
       await operate(["outbox", "list", "--json"]);
       await operate(["incident", "list", "--json"]);
+      await operate(["audit", "--json"]);
+      await operate(["audit", "--since", "0d", "--json"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

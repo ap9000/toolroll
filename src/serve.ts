@@ -341,9 +341,15 @@ import { LIMITS_CSS, limitsHtml, limitsView } from "./limits-ui.js";
 import { budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendItems, teammateNames as teammateNamesOf, usd as spendUsd } from "./spend.js";
 import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
-import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS } from "./api-tokens.js";
+import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
+import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, type LimitOverride } from "./request-budget.js";
+import { hstsFor, LOOPBACK_PEERS, plainHttpRefusal, transportOf } from "./public-access.js";
+import { createOAuthHttp, oauthTokenAllowed, resourceMetadataUrl } from "./mcp-oauth.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
+import { REQUEST_LIMITS_CSS, requestLimitsHtml, tokenLimitWords } from "./request-budget-ui.js";
+import { PEOPLE_AUDIT_CSS, personAuditHtml, personHref } from "./people-audit-ui.js";
+import { cursorOf as auditCursorOf, remoteAudit } from "./remote-audit.js";
 import { logEvent } from "./log.js";
 import { modeTermsFromJson, modeWords, presetTerms, modeTermsJson, modeDigestOf, MODE_MAX_DAYS, type ModeName, type ModeTerms } from "./modes.js";
 import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, readProviderKey, keyStatus, plausibleKey, readAuthMode, readAuthModeStrict, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords, type AuthMode } from "./keys.js";
@@ -385,13 +391,16 @@ export type ServeOptions = {
    * (arc 3 finding 2/16): EXACTLY an origin — no path, query, credentials.
    * The one trust anchor for secure-context features: it joins the allowed
    * hosts, its origin authorizes POSTs, cookies turn Secure, and the
-   * install/push cards light up. X-Forwarded-* is never consulted.
+   * install/push cards light up. X-Forwarded-* is consulted only from a
+   * loopback peer, the same-host proxy (public-access.ts).
    */
   publicUrl?: string;
   /** Tests: the shared command boundary `POST /api/cli` runs (default: operate.ts's runOperateAs). */
   cliRunner?: RunOperateAs;
   /** Tests: remote command metadata until the shared contract declares it. */
   cliModeOf?: CliHttpOptions['modeOf'];
+  /** Tests: the clock request budgets for API tokens count by (request-budget.ts). */
+  requestBudgetClock?: () => number;
   /** Where repos.json lives — every enrollment locks exactly this file. */
   registryPath?: string;
   /** This console fronts an `up` process: onboarding copy says how to watch. */
@@ -842,7 +851,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * the trusted proxy itself appended; earlier entries are client-typed). */
   function joinSourceOf(request: IncomingMessage): string {
     const peer = request.socket.remoteAddress ?? "unknown";
-    const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+    const loopback = LOOPBACK_PEERS.has(peer);
     if (!loopback) return peer;
     const forwarded = request.headers["x-forwarded-for"];
     const chain = Array.isArray(forwarded) ? forwarded.join(",") : forwarded ?? "";
@@ -887,7 +896,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no forwarding proxy. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
     const peer = request.socket.remoteAddress ?? "";
-    const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+    const loopback = LOOPBACK_PEERS.has(peer);
     return loopback && request.headers["x-forwarded-for"] === undefined && request.headers["forwarded"] === undefined
       && /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
@@ -1090,15 +1099,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     }, cursor: team.cursor, streams: teamStreams,
   });
+  // v112: one request budget per server for person API tokens, shared by /api/cli and /mcp (request-budget.ts).
+  const requestBudget = new RequestBudget({ store, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
+    admit: principal => requestBudget.admit(principal.tokenId, "api"),
     authenticate: request => {
-      const who = identify(request, false);
+      const who = identify(request, false, true);
       const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
       const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
       const account = who === null ? null : store.accountOf(who.name);
       if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
-      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: account.projects === null ? null : [...account.projects] };
+      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: tokenProjects(account.projects, row.projects) };
     },
     run: async () => options.cliRunner ?? ((await import("./operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
@@ -1167,6 +1179,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const timer = setInterval(refresh, 5 * 60_000);
     timer.unref?.();
     server.on("close", () => clearInterval(timer));
+  }
+  {
+    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } };
+    const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
+    timer.unref?.();
+    server.on("close", () => { clearInterval(timer); flushBudget(); });
   }
   const servedPort = (): number | null => {
     const address = server.address();
@@ -1474,6 +1492,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (!allowedHost(request.headers.host)) {
       return respond(response, 421, "text/html; charset=utf-8", wrongHostPage(wrongHost(request.headers.host)));
     }
+    // A real domain (public-access.ts): HSTS for the public https host reached over HTTPS, and no API token over
+    // plain HTTP from outside this computer and the tailnet — refused before anything reads or checks it.
+    const transport = transportOf({ peer: request.socket.remoteAddress, joinSource: joinSourceOf(request), forwardedProto: request.headers["x-forwarded-proto"], forwarded: request.headers["forwarded"] });
+    const hsts = hstsFor(publicOrigin?.host ?? null, request.headers.host, transport);
+    if (hsts !== null) response.setHeader("Strict-Transport-Security", hsts);
+    const insecure = plainHttpRefusal(transport, hook.pathname, request.headers.authorization);
+    if (insecure !== null) {
+      request.resume();
+      return respond(response, 403, "text/plain; charset=utf-8", insecure);
+    }
 
     const url = new URL(request.url ?? "/", "http://placeholder");
     // A token in a URL is a token in history, logs, and referers. Refused
@@ -1483,6 +1511,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // The MCP gateway over HTTP (mcp-http.ts): coordinators and people's own API tokens, after the Host check.
     if (url.pathname === "/mcp") return mcpHttp(request, response);
+    // MCP sign-in (mcp-oauth.ts): its discovery documents, client registration, consent and tokens.
+    if (await oauthHttp(request, response, url)) return;
     // Back from Google's consent screen (v89). The session cookie is SameSite=Strict and stays behind on
     // a return from another site: the visit's one-time state (made by a signed-in approver) is the proof.
     if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") return googleCallback(request, response, url);
@@ -2964,11 +2994,26 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
 
     if (url.pathname === "/people") {
+      // People → a person: their API tokens and remote activity (people-audit-ui.ts). An approver may open anyone, within
+      // their projects; anyone else only themselves. Another person reads exactly like nobody.
+      const person = url.searchParams.get("person");
+      if (person !== null) {
+        const token = (url.searchParams.get("token-name") ?? "").slice(0, 60) || null, before = url.searchParams.get("before");
+        const cursor = before === null ? null : auditCursorOf(before);
+        if (before !== null && cursor === null) return refuse(response, who, 400, "Invalid activity cursor.", "/people");
+        const page = who.role === "approver" || person === who.name
+          ? remoteAudit(store, { self: who.name, everyone: who.role === "approver", repos: admissionList(), unplaced: store.isInstanceOperator(who.name) },
+            { person, token, source: null, since: null }, { before: cursor })
+          : null;
+        if (page === null || !page.ok) return refuse(response, who, 404, "No such person.", "/people");
+        return sendScreen(response, 200, screen("people", personAuditHtml({ name: person, tokens: store.apiTokens(person), actions: page.actions, token, nextCursor: page.nextCursor, now }),
+          { chrome: chromeFor(project, "people") }));
+      }
       // Approvers see everyone (D7's ceiling: every fact already passed
       // the process admission); a viewer sees exactly themselves (U3).
       if (restricted()) {
         const projects = admissionList() ?? [];
-        return sendScreen(response, 200, screen("people", `<h1>Your access</h1><p>${personChip(who.name)} · ${who.role === "approver" ? "operator" : "viewer"}</p><p>${who.role === "approver" ? "You can create, manage, and approve work in these projects." : "You can read work in these projects."}</p><ul>${projects.map(repo => `<li>${escape(projectName(repo))}</li>`).join("")}</ul><p class="meta">An instance operator manages invitations and project access.</p>`, { chrome: chromeFor(project, "people") }));
+        return sendScreen(response, 200, screen("people", `<h1>Your access</h1><p>${personChip(who.name)} · ${who.role === "approver" ? "operator" : "viewer"}</p><p>${who.role === "approver" ? "You can create, manage, and approve work in these projects." : "You can read work in these projects."}</p><ul>${projects.map(repo => `<li>${escape(projectName(repo))}</li>`).join("")}</ul><p class="meta">An instance operator manages invitations and project access.</p><p><a href="${escape(personHref(who.name))}">Your remote activity</a></p>`, { chrome: chromeFor(project, "people") }));
       }
       const approverView = store.isInstanceOperator(who.name);
       const accounts = store.accountFacts().filter(one => approverView || one.name === who.name);
@@ -3000,6 +3045,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           `<p class="meta">${one.projects === null ? "All projects" : one.projects.length === 0 ? "No project access" : one.projects.map(repo => escape(projectName(repo))).join(", ")}</p>`,
           approverView && one.revokedAt === null ? `<details><summary>Edit project access</summary><form method="post" action="/people/projects">${hiddenFields({ csrf, name: one.name })}${accessFields(one.projects)}<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><p class="meta">Changing access signs this person out and ends their derived sessions and modes. Previously approved work stays recorded.</p><button type="submit">Save project access</button></form></details>` : "",
           `<p class="meta">${seen === null ? "not signed in right now" : `signed in \u2014 active ${escape(new Date(seen).toISOString().slice(11, 16))} UTC`} \u00b7 joined ${escape(one.addedAt.slice(0, 10))}</p>`,
+          `<p><a href="${escape(personHref(one.name))}">Tokens and remote activity</a></p>`,
           attended.length === 0
             ? ""
             : `<p class="row">watching now: ${attended.map(session => `<a href="/t/${escape(session.taskId)}">${escape(session.taskId)}</a>`).join(", ")}</p>`,
@@ -3317,7 +3363,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (who.via === "cookie") return identify(request, false)?.name === who.name;
         if (tokenId === null) return true;
         const token = store.apiTokenSecret(tokenId)?.row;
-        return token !== undefined && token.revokedAt === null && Date.parse(token.expiresAt) > Date.now();
+        return token !== undefined && tokenLive(token, Date.now());
       };
       // The whole walk it starts from is shared by exports in the same minute; a reader who stops reading for a minute is let go.
       const pieces = ledgerExportChunks(store, { from, to }, { repos: access.repos, instance: store.isInstanceOperator(who.name) }, access, who.name, now, evidenceRoot);
@@ -4265,7 +4311,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const everyone = url.searchParams.get("everyone") === "1" && store.isInstanceOperator(who.name);
       const here = sessions.hashOf(who.session);
       const view = { who: who.name, everyone, canSeeEveryone: store.isInstanceOperator(who.name), now: Date.now(),
-        sessions: store.webSessions(everyone ? null : who.name).map(one => ({ ...one, here: one.idHash === here })), tokens: store.apiTokens(everyone ? null : who.name) };
+        sessions: store.webSessions(everyone ? null : who.name).map(one => ({ ...one, here: one.idHash === here })), tokens: store.apiTokens(everyone ? null : who.name),
+        limits: { note: tokenLimitWords.bind(null, store.handle), section: store.isInstanceOperator(who.name) ? requestLimitsHtml(store.handle, store.apiTokens(null), who.session.csrf, Date.now()) : "" } };
       return sendScreen(response, 200, screen("Sessions & tokens", `<p><a href="/settings">Settings</a></p><h1>Sessions &amp; tokens</h1>${credentialsHtml(view, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
         { chrome: chromeFor(project, "settings") }));
     }
@@ -7493,6 +7540,27 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const next = { notRequester: body.get("not_requester") === "1", protectProject: protect === "project", protectedPaths: protect === "paths" ? paths.paths : [] };
       store.setApprovalRules(repo, next, who.name, now);
       return back("said", `Saved. ${rulesSummary(next)}`);
+    }
+    // v112: request limits for API tokens (request-budget.ts). An instance operator, in a browser, with their password;
+    // never over /api/cli or /mcp (a token never reaches a console form).
+    if (url.pathname === "/settings/request-limits") {
+      const body = readForm(posted, CONSOLE_FORMS.requestLimits);
+      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets request limits.", "/settings/sessions");
+      const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${key}=${encodeURIComponent(words)}`);
+      const target = body.get("target") ?? "";
+      const token = target === "*" ? null : store.apiTokens(null).find(one => one.id === target && one.revokedAt === null) ?? null;
+      if (target !== "*" && token === null) return back("problem", "That token is no longer live. Nothing changed.");
+      if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change request limits.");
+      const read = (name: "read-per-minute" | "act-per-minute" | "per-minute" | "per-day") => parseLimit(body.get(name) ?? "", name === "per-day" ? REQUEST_BUDGET_PER_DAY_MAX : REQUEST_BUDGET_PER_MINUTE_MAX);
+      const clear = body.get("action") === "clear";
+      const fields = clear ? { readPerMinute: null, actPerMinute: null, perDay: null }
+        : token === null ? { readPerMinute: read("read-per-minute"), actPerMinute: read("act-per-minute"), perDay: read("per-day") }
+        : { readPerMinute: token.access === "read" ? read("per-minute") : null, actPerMinute: token.access === "act" ? read("per-minute") : null, perDay: read("per-day") };
+      const problem = Object.values(fields).find((value): value is { problem: string } => value !== null && typeof value === "object");
+      if (problem !== undefined) return back("problem", `${problem.problem} Nothing changed.`);
+      setLimitOverride(store, target, fields as LimitOverride, who.name, now);
+      const label = token === null ? "Everyone's tokens" : token.name;
+      return back("said", clear || Object.values(fields).every(value => value === null) ? `${label}: default limits.` : `${label}: limits saved.`);
     }
     if (url.pathname === "/settings/sessions") {
       const body = readForm(posted, CONSOLE_FORMS.sessions);
@@ -11574,12 +11642,34 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }));
   }
 
-  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request) !== null,
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request, true, true) !== null, admit: person => requestBudget.admit(person.principal.tokenId, "mcp"),
+    resourceMetadata: request => { const origin = consoleOrigin(request.headers.host); return origin === null ? null : resourceMetadataUrl(origin); },
     enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
+
+  // MCP sign-in: the console's own sign-in and step-up, a same-site consent form, and the person's current projects.
+  const oauthHttp = createOAuthHttp({ store, clock,
+    originOf: request => consoleOrigin(request.headers.host),
+    requesterKey: joinSourceOf,
+    session: request => {
+      const who = identify(request, false);
+      if (who === null || who.via !== "cookie") return null;
+      return { name: who.name, role: who.role, csrf: who.session.csrf,
+        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } };
+    },
+    sameSite: request => {
+      const origin = request.headers.origin, referer = request.headers.referer;
+      const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
+      return named !== null && allowedHost(named.replace(/^https?:\/\//, "").split("/")[0]);
+    },
+    // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
+    // grant (their role, their projects) is checked beside it.
+    confirm: (session, typed) => typed === "" ? session.sso?.fresh === true : authenticateAccount(store, session.name, typed).ok,
+    projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
+  });
 
   // ---- identity ------------------------------------------------------------
 
-  function identify(request: IncomingMessage, touch = true): Who | null {
+  function identify(request: IncomingMessage, touch = true, limited = false): Who | null {
     // v101: an API token. Wrong ones spend the address's tries like a wrong password; expired or revoked ones, and a removed account's, name no one.
     const presented = /^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1];
     if (presented !== undefined) {
@@ -11588,9 +11678,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const parsed = parseApiToken(presented);
       const kept = parsed === null ? null : store.apiTokenSecret(parsed.id);
       if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) { signInBudget.failed(source, at); return null; }
-      if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= at) return null;
+      if (!tokenLive(kept.row, at)) return null;
+      // v111: a token limited to some projects signs in only where its limit travels with it (the remote CLI and MCP,
+      // through Principal.projects); the console's own pages and APIs check the account's access alone, so it is refused there.
+      if (kept.row.projects !== null && !limited) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
+      // v113: an MCP sign-in's token works only at /mcp, while its access secret is fresh (mcp-oauth.ts).
+      if (!oauthTokenAllowed(store, kept.row.id, new URL(request.url ?? "/", "http://placeholder").pathname, new Date(at))) return null;
       store.touchApiToken(kept.row.id, new Date(at));
       return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name };
     }
@@ -12164,6 +12259,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const closeServer = server.close.bind(server);
   server.close = ((callback?: (error?: Error) => void) => {
     leadClosing = true;
+    try { requestBudget.flush(); } catch { /* saved again on the close event when it can be */ }
     for (const stream of teamStreams) stream.end();
     teamStreams.clear();
     for (const stream of chatStreams) stream.end();
@@ -16237,7 +16333,7 @@ const INBOX_TABS_CSS = '.inbox-tabs{display:inline-flex;gap:2px;max-width:100%;o
   '.inbox-ask{margin:18px 0 0}.inbox-ask>h2{display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:15px;font-weight:600}.inbox-ask>h2 .count{font:500 12px var(--so-mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;color:var(--so-muted)}.inbox-ask h3{font-size:13px;font-weight:600;margin:12px 0 4px}' +
   '.inbox-unread{display:none;position:absolute;top:4px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--so-signal)}' +
   '@media (max-width:760px){.inbox-tabs{display:flex;width:100%}.inbox-tabs a{flex:1;justify-content:center;min-height:44px;padding:0 6px}.inbox-unread{display:block}}';
-const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
+const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
 
 /** Everything the sidebar needs to draw itself for one request. */
 type Chrome = {
@@ -21032,7 +21128,7 @@ function safeReturn(raw: string | null | undefined): string {
  * button can name. Nothing here is a second redirect framework: one
  * same-site path, or "/".
  */
-const LOGIN_RETURN_PAGES = /^\/(t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
+const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
 function loginReturn(raw: string | null | undefined): string {
   const safe = safeReturn(raw);
   if (safe === "/") return "/";

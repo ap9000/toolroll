@@ -149,6 +149,16 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "brief", synopsis: "with a saved central profile, --lead <id> --conversation <id> reads messages, proposals and saved work; --request-id inspects your saved receipt without resending; --local uses local DB catch-up, where --history selects the older operational report", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "gaps", synopsis: "requirement gaps blocking dispatch", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
   { invocation: "grants", synopsis: "list authority grants", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
+  { invocation: "audit", synopsis: "what people did on this server with their API tokens, newest first: when, who, which token, from the CLI (api) or an agent (mcp), the command or tool, the project and the outcome (ok, refused, error); an approver sees everyone in their projects, anyone else only themselves",
+    audience: "agent", agentMayInvoke: true, mutation: "none",
+    flags: [jsonFlag, dbFlag,
+      { name: "person", takesValue: true, meaning: "only this person's actions" },
+      { name: "token", takesValue: true, meaning: "only actions with the token of this name (on the server's own machine)" },
+      { name: "token-name", takesValue: true, meaning: "the same, where --token would be a credential (remotely)" },
+      { name: "source", takesValue: true, meaning: "api (the CLI) or mcp (an agent)" },
+      { name: "since", takesValue: true, meaning: "only the last N days, as Nd (7d)" },
+      { name: "limit", takesValue: true, meaning: "actions per page (default 20, at most 100)" },
+      { name: "cursor", takesValue: true, meaning: "the nextCursor of the previous page" }] },
   { invocation: "sync", synopsis: "refresh external-tracker mirrors and deliver write-backs — safe to run; fails closed", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     flags: [jsonFlag, dbFlag, repoFlag], notableReasons: ["no-op", "external"] },
 
@@ -395,6 +405,10 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("people invite", "mint a single-use sign-in link for one person — their powers are pinned when you mint, never after"),
   operator("people projects", "set a person's project access — selected project, all projects, or no projects"),
   operator("people revoke", "end a person's access — their sessions, invites, and signed modes end with them; history stays"),
+  operator("tokens create", "make one of your API tokens: --name, --access read|act, --days 30|90|365, optional --projects a,b; your password at the prompt or --password-stdin; the token is shown once"),
+  operatorRead("tokens list", "your API tokens: name, access, projects, made, last used, expiry — never a secret; your password at the prompt or --password-stdin"),
+  operator("tokens revoke", "end one of your API tokens now, by name or id; your password at the prompt or --password-stdin"),
+  operator("tokens rotate", "replace one of your API tokens on the same terms; the old one works 10 more minutes (--overlap), then stops; the new one is shown once"),
   operatorRead("mode show", "the repository's operating mode, in full — or 'locked' when none is signed"),
   operator("mode set", "sign a per-repository operating mode (password ceremony; standard or hands-off, always expiring)"),
   operator("publish merge", "say yes to ONE waiting merge — it fires only when CI is seen green on the exact commit you authorized"),
@@ -429,6 +443,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("publish unblock", "lift a repair's merge hold"),
   operator("publish rearm", "re-arm a refused merge after fixing the named cause"),
   operator("serve", "the operations console (HTTP)"),
+  operatorRead("serve check-public", "is this server ready on its --public-url? checks the URL, --allow-host, the console on --port, the certificate, HSTS and the proxy, and names each problem; sends no credentials"),
   operator("watch", "the unattended loop, kept running"),
   operator("up", "console + worker + browser, one command"),
   operator("onboard", "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff"),
@@ -455,7 +470,7 @@ const REMOTE_NO: readonly string[] = [
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
   "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
-  "serve", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
+  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
   // Publication and release.
@@ -471,11 +486,13 @@ const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
+  // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
+  "tokens create", "tokens list", "tokens revoke", "tokens rotate",
   "mode show", "mode set", "mode revoke", "chat-approval on", "review on", "review off", "config set", "config clear",
   "verify set", "verify clear", "verify level", "project checks", "project concurrency", "intake grant", "intake clear", "webhook primary",
 ];
 const REMOTE_YES: readonly string[] = [
-  "status", "integrations", "ready", "gaps", "grants", "sync",
+  "status", "integrations", "ready", "gaps", "grants", "sync", "audit",
   "task add", "task ask", "task checks", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
   "task state", "task block", "task unblock", "task next", "task steer", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
   "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",

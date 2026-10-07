@@ -53,6 +53,12 @@ function seed(): { password: string; apiToken: string; hashes: string[] } {
   if (!alex.ok) throw new Error("alex");
   const api = mintApiToken();
   store.createApiToken({ id: api.id, account: "alex", name: "ci", secretHash: api.hash, access: "read", expiresAt: "2027-01-01T00:00:00.000Z", by: "alex" }, NOW);
+  const oauth = mintApiToken();
+  const client = store.registerOAuthClient({ id: "synthetic-client", name: "Example Agent", redirectUris: ["https://agent.example/cb"], source: "synthetic-source-hash" }, NOW, 10, 5)!;
+  store.createOAuthGrant("synthetic-code-hash", { id: oauth.id, account: "alex", name: "MCP: Example Agent", secretHash: oauth.hash, access: "read", expiresAt: "2027-01-01T00:00:00.000Z" },
+    { client: client.id, account: "alex", generation: store.accountOf("alex")!.generation, projects: [REPO], resource: "https://toolroll.example/mcp", accessExpiresAt: "2026-10-07T00:00:00.000Z", refreshHash: "synthetic-first-refresh-hash" }, NOW);
+  store.rotateOAuthGrant(oauth.id, { client: client.id, resource: "https://toolroll.example/mcp", refreshHash: "synthetic-first-refresh-hash" },
+    { refreshHash: "synthetic-next-refresh-hash", accessHash: "synthetic-access-hash", accessExpiresAt: "2026-10-07T01:00:00.000Z" }, NOW, () => [REPO]);
   // A task and its revision, scoped and run, with usage and cost.
   store.createTask({ id: "refunds", title: `Refunds (key ${PLANTED.anthropic})`, filedBy: { name: "alex", kind: "person" } }, NOW);
   const ref = store.refFor("built-in", "refunds").id;
@@ -76,6 +82,7 @@ function seed(): { password: string; apiToken: string; hashes: string[] } {
   writeFileSync(join(dir, "sign-in.json"), JSON.stringify({ issuer: "https://acme.okta.com", clientId: "so-app", clientSecret: PLANTED.clientSecret, rules: [] }));
   writeFileSync(join(dir, "email.json"), JSON.stringify({ host: "smtp.example.com", port: 587, from: "so@example.com", user: "so", password: PLANTED.mailPassword }));
   const hashes = [
+    "synthetic-first-refresh-hash", "synthetic-next-refresh-hash", "synthetic-code-hash", "synthetic-source-hash",
     ...(store.handle.prepare("SELECT credential_hash AS h FROM approver").all() as { h: string }[]).map(one => one.h),
     ...(store.handle.prepare("SELECT secret_hash AS h FROM api_token").all() as { h: string }[]).map(one => one.h),
   ];

@@ -493,7 +493,7 @@ describe("schema 62 compatibility without manual refresh", () => {
     const root = mkdtempSync(join(tmpdir(), "refresh-migration-")), file = join(root, "test.db");
     try {
       let store = openStore(file); seed(store, join(root, "evidence"));
-      expect(SCHEMA_VERSION).toBe(110);
+      expect(SCHEMA_VERSION).toBe(113);
       expect(store.raw().prepare("PRAGMA table_info(run)").all().some(row => row["name"] === "review_refresh")).toBe(false);
       expect(store.raw().prepare("PRAGMA table_info(review_request)").all().some(row => row["name"] === "refresh_json")).toBe(false);
       // The retired schema-62 draft (a refresh request ledger, a second
@@ -502,7 +502,8 @@ describe("schema 62 compatibility without manual refresh", () => {
       // one-successful-root-review backstop is still the deployed shape.
       const objects = store.raw().prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
       const obsolete = /refresh|second_review|second_successful|review_evidence_request|evidence_refresh/i;
-      expect(objects.filter(one => obsolete.test(one.name) || obsolete.test(one.sql ?? ""))).toEqual([]);
+      // v113's oauth_ tables (MCP sign-in refresh secrets) are not the retired draft.
+      expect(objects.filter(one => !one.tbl_name.startsWith("oauth_") && (obsolete.test(one.name) || obsolete.test(one.sql ?? "")))).toEqual([]);
       for (const table of ["run", "review_request", "criterion_review", "artifact", "proof_verdict"]) {
         expect((store.raw().prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).filter(column => obsolete.test(column.name))).toEqual([]);
       }

@@ -129,6 +129,7 @@ export const CONSOLE_FORMS = {
   policy: formContract("POST /settings/policy", ["password", "provider", "models", "tools", "ceiling"]),
   approval: formContract("POST /settings/approval", ["repo", "password", "protect", "paths", "not_requester"]),
   sessions: formContract("POST /settings/sessions", ["everyone", "action", "session", "token", "name", "access", "days", "password"]),
+  requestLimits: formContract("POST /settings/request-limits", ["target", "action", "read-per-minute", "act-per-minute", "per-minute", "per-day", "password"]),
   signIn: formContract("POST /settings/sign-in", ["action", "password", "issuer", "client-id", "client-secret", "label", "scopes", "groups-claim", "passwords"], { prefixes: ["group-", "role-", "projects-"] }),
   updates: formContract("POST /settings/updates, /settings/updates/seen, /settings/updates/cancel", ["password", "version", "when"]),
   retention: formContract("POST /settings/retention", ["password", "evidence", "checkouts", "chat", "notifications"]),

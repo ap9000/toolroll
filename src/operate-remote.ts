@@ -12,6 +12,7 @@ import type { Store } from "./store.js";
 import type { LedgerSource } from "./action-ledger.js";
 import { COMMAND_GUIDE, type CommandRow } from "./surface.js";
 import { remoteArgumentsOf, REMOTE_NOT_FOUND } from "./operate-remote-arguments.js";
+import { tokenLive, withinTokenLimit } from "./api-tokens.js";
 
 /** Who a remote call is, as the transport proved it from an `so_` token. */
 export type Principal = {
@@ -21,7 +22,7 @@ export type Principal = {
   generation: number;
   scope: "read" | "act";
   tokenId: string;
-  /** The projects the person may use (null: all of them). */
+  /** The projects the person may use through this token (null: all of them): their access, narrowed by the token's limit (tokenProjects). */
   projects: string[] | null;
 };
 
@@ -78,6 +79,8 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
   ["intake pr-comments", installation], ["template list", installation], ["template show", installation], ["contest show", installation],
   ["contest exclude", installation], ["webhook status", installation], ["webhook test", installation], ["review show", installation],
   ["chat-approval show", self], ["chat-approval off", self],
+  // The person's own remote actions, or everyone's within their projects for an approver (remote-audit.ts).
+  ["audit", self],
   ["knowledge search", repo], ["knowledge impact", repo], ["knowledge refresh", repo],
   ...["search", "decisions", "show", "decide", "retire", "review", "status"].map(action => [`memory ${action}`, self] as [string, RemoteScope]),
   ...["list", "show", "export", "create", "edit", "trigger add", "trigger pause", "trigger resume", "trigger remove", "card add", "archive"]
@@ -132,7 +135,9 @@ export function reproveRemote(store: Store, principal: Principal, now: Date): { 
   const account = store.accountOf(principal.account);
   if (account === null || account.revokedAt !== null || account.generation !== principal.generation) return { ok: false };
   const token = store.apiTokenSecret(principal.tokenId)?.row ?? null;
-  if (token === null || token.account !== principal.account || token.revokedAt !== null || Date.parse(token.expiresAt) <= now.getTime()) return { ok: false };
+  if (token === null || token.account !== principal.account || !tokenLive(token, now.getTime())) return { ok: false };
+  // v111: a principal never stands for more projects than its token is limited to, whoever built it.
+  if (!Array.isArray(principal.projects) && principal.projects !== null || !withinTokenLimit(principal.projects, token.projects)) return { ok: false };
   const scope = principal.scope === "act" && token.access === "act" && account.role === "approver" ? "act" : "read";
   return { ok: true, scope, tokenName: token.name };
 }

@@ -253,6 +253,7 @@ export const OPERATE_COMMANDS = new Set([
   "task",
   "project",
   "ledger",
+  "audit",
   "storage",
   "monitoring",
   "integrations",
@@ -299,7 +300,7 @@ export const OPERATE_COMMANDS = new Set([
   "run",
   "routine",
   "flows",
-  "config", "chat", "proposals", "mode", "chat-approval", "people", "keys",
+  "config", "chat", "proposals", "mode", "chat-approval", "people", "tokens", "keys",
   "setup",
   "verify",
   "intake",
@@ -370,6 +371,12 @@ export async function main(
   const { args, outputFile } = extracted;
   if (outputFile !== undefined && !args.includes("--json")) {
     write("-o requires --json — the output file receives the machine envelope");
+    return USAGE_EXIT;
+  }
+
+  // A new API token is shown once, on screen: never saved to a file by the entry point.
+  if (outputFile !== undefined && args.find(one => !one.startsWith("-")) === "tokens") {
+    write("-o isn't used with tokens: a new token is shown once, never saved to a file");
     return USAGE_EXIT;
   }
 
