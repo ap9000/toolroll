@@ -142,7 +142,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const fallback = () => restricted() ? admissionList()?.[0] ?? null : runtime.defaultProject;
     if (who.via === "cookie") {
       const selected = who.session.project;
-      if (!restricted()) return selected;
+      if (!restricted()) {
+        if (selected === null || visible(selected)) return selected;
+        // A saved selection can outlive the live ceiling, including its startup default.
+        const project = fallback();
+        return visible(project) ? project : null;
+      }
       return selected !== null && visible(selected) ? selected : fallback();
     }
     const header = request.headers["x-standing-orders-project"];

@@ -4,8 +4,10 @@ import { TEAM_OPERATIONS, TEAM_MUTATIONS, teamScopeAllows, type TeamActor, type 
 import { limitWords, type Admission } from './request-budget.js';
 
 export const TEAM_REQUEST_BYTES = 64 * 1024;
+/** Account role belongs to HTTP authentication; API tokens carry their own scope. */
+export type TeamHttpActor = TeamActor & { role?: 'approver' | 'viewer' };
 export type TeamHttpOptions = {
-  authenticate: (request: IncomingMessage) => TeamActor | null | Promise<TeamActor | null>;
+  authenticate: (request: IncomingMessage) => TeamHttpActor | null | Promise<TeamHttpActor | null>;
   /** Recheck the original credential/session and current account, without extending idle expiry. */
   revalidate: (request: IncomingMessage, actor: TeamActor) => boolean;
   authorizeMutation: (request: IncomingMessage, actor: TeamActor) => boolean;
@@ -61,12 +63,12 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
     return true;
   };
   if (options.admit && refuseAdmission(options.admit(request))) return true;
-  let actor: TeamActor | null;
+  let actor: TeamHttpActor | null;
   try { actor = await options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
   if (!actor) return reject(401, 'unauthenticated', 'Sign in to continue.');
   if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
-  const policyPrincipal = () => ({ caller: request.headers.authorization ? 'bearer' as const : 'cookie' as const, capability: actor.principal?.scope ?? 'act' as const, token: actor.principal !== undefined });
+  const policyPrincipal = () => ({ caller: request.headers.authorization ? 'bearer' as const : 'cookie' as const, capability: actor.principal?.scope ?? (actor.role === 'approver' ? 'act' as const : 'read' as const), token: actor.principal !== undefined });
   if (!adapterPolicy(policyPrincipal()).ok) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
   const conversationId = url.searchParams.get('conversation') ?? undefined;
   if (url.pathname === '/api/team/events') {

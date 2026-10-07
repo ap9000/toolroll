@@ -69,7 +69,7 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       }
       const who = identify(request, request.method === 'POST');
       const account = who === null ? null : store.accountOf(who.name);
-      return who && account && account.revokedAt === null ? { name: who.name, generation: account.generation } : null;
+      return who && account && account.revokedAt === null ? { name: who.name, generation: account.generation, role: account.role } : null;
     },
     admit: admitPasswordSource,
     admitAuthenticated: admitBearer,

@@ -63,3 +63,51 @@ test('limited-project rules reject instance areas and preserve unscoped collecti
     expect(guards.projectRequestAllowed(row, row.project, new URL('http://local/projects/select'), who, request, response, new URLSearchParams('repo=/allowed&repo=/outside'))).toBe(false);
   });
 });
+
+test.each(['/allowed', null, '/removed'])('unrestricted cookies recover when their open project leaves the ceiling (default %s)', defaultProject => {
+  const { runtime, guards, who, request, response } = fixture();
+  let repos = ['/allowed', '/removed'];
+  runtime.liveCeiling = () => ({ repos, roots: [] });
+  runtime.defaultProject = defaultProject;
+  if (who.via !== 'cookie') throw Error('expected cookie fixture');
+  who.session.project = '/removed';
+  requestContext.run({ actor: 'alice', csrf: '', returnTo: '/' }, () => {
+    expect(guards.projectOf(who, request)).toBe('/removed');
+    repos = ['/allowed'];
+    const fallback = defaultProject === '/allowed' ? '/allowed' : null;
+    expect(guards.projectOf(who, request)).toBe(fallback);
+    for (const path of ['/', '/projects', '/chat', '/work', '/settings/models', '/board']) {
+      const row = matchRoute('GET', path)!;
+      expect(guards.projectRequestAllowed(row, row.project, new URL(path, 'http://local'), who, request, response, null), path).toBe(true);
+    }
+    expect(response.writeHead).not.toHaveBeenCalled();
+    who.session.project = null;
+    expect(guards.projectOf(who, request)).toBeNull();
+    who.session.project = '/allowed';
+    expect(guards.projectOf(who, request)).toBe('/allowed');
+  });
+});
+
+test.each([null, ['/allowed']])('stale cookie recovery preserves explicit project and resource refusals (account projects %s)', projects => {
+  const { runtime, store, guards, who, request, response } = fixture(projects);
+  if (who.via !== 'cookie') throw Error('expected cookie fixture');
+  who.session.project = '/removed';
+  // /outside is served, but unavailable to the limited account; /removed left the ceiling for everyone.
+  runtime.liveCeiling = () => ({ repos: ['/allowed', '/outside'], roots: [] });
+  const outside = projects === null ? '/removed' : '/outside';
+  store.getFlow.mockReturnValue({ repo: outside });
+  requestContext.run({ actor: 'alice', csrf: '', returnTo: '/' }, () => {
+    expect(guards.projectOf(who, request)).toBe('/allowed');
+    for (const [method, path, body, status] of [
+      ['GET', '/flows/7/live', null, 404],
+      ['POST', '/tasks/add', new URLSearchParams({ repo: outside }), 403],
+      ['POST', '/projects/select', new URLSearchParams({ path: process.cwd() }), 403],
+    ] as const) {
+      response.writeHead = vi.fn();
+      request.method = method;
+      const row = matchRoute(method, path)!;
+      expect(guards.projectRequestAllowed(row, row.project, new URL(path, 'http://local'), who, request, response, body), path).toBe(false);
+      expect(response.writeHead).toHaveBeenCalledWith(status, expect.anything());
+    }
+  });
+});
