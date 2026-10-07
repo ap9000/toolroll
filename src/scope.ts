@@ -4,6 +4,7 @@ import { passwordGuardOf } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { projectAuthority } from "./project-access.js";
+import { activeRemote } from "./remote-run.js";
 import { claimActor, currentActor, parseLeadToken } from "./actor.js";
 /**
  * What a task is allowed to become, agreed before anything builds it.
@@ -1014,6 +1015,14 @@ export function authenticateAccount(
   secret: string,
 ): { ok: true; role: "approver" | "viewer"; generation: number } | { ok: false; reason: "no-approvers" | "unknown" | "revoked" | "locked" } {
   if (store.listApprovers().length === 0) return { ok: false, reason: "no-approvers" };
+  // A remote run (runOperateAs) is its token's person: only that run's own credential names them, no password is
+  // checked or counted, and a read token stands as a viewer.
+  const remote = activeRemote();
+  if (remote !== null) {
+    const account = by === remote.account && secret === remote.secret ? store.accountOf(by) : null;
+    if (account === null || account.revokedAt !== null) return { ok: false, reason: "unknown" };
+    return { ok: true, role: remote.scope === "act" ? account.role : "viewer", generation: account.generation };
+  }
   // A lead token signs in as its owner, only inside a command the lead runs with it (never a console sign-in).
   const acting = currentActor();
   if (acting?.lead === true && parseLeadToken(secret) !== null) {
