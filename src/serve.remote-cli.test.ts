@@ -52,6 +52,8 @@ test("two people: attribution, project limits, refused approvals, revocation, an
 
   const real = (await import("./operate.js") as { runOperateAs?: RunOperateAs }).runOperateAs;
   const seen: { argv: string[]; principal: Principal; source: string | undefined }[] = [];
+  // The journey proves the real seam: the stand-in is only for a tree without it.
+  expect(real, "operate.ts exports runOperateAs").toBeTypeOf("function");
   const seam = real ?? stubRunOperateAs(databaseFile);
   const cliRunner: RunOperateAs = async (argv, opts) => { seen.push({ argv, principal: opts.principal, source: opts.source }); return seam(argv, opts); };
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), configDir: dir, cliRunner, cliModeOf: modeOf });
@@ -84,46 +86,54 @@ test("two people: attribution, project limits, refused approvals, revocation, an
     const connected = await asBob(["connect", base, "--as", "bob", "--token-stdin"], bobToken.token);
     expect(connected.code, connected.stdout + connected.stderr).toBe(0);
     expect(connected.stdout).not.toContain(bobToken.secret);
-    const filed = await asBob(["task", "add", "Bob's fix in A", "--id", "bob-a", "--repo", repoA, "--json"]);
+    // A remote caller never picks the id (--id is refused remotely): the server names the task.
+    const named = await asBob(["task", "add", "Bob's fix in A", "--id", "bob-a", "--repo", repoA, "--json"]);
+    expect(named.code).toBe(3);
+    expect(store.getTask("bob-a")).toBeNull();
+    const filed = await asBob(["task", "add", "Bob's fix in A", "--repo", repoA, "--json"]);
     expect(filed.code, filed.stdout + filed.stderr).toBe(0);
     expect(JSON.parse(filed.stdout)).toMatchObject({ ok: true, command: "task add" });
-    expect(store.getTask("bob-a")).not.toBeNull();
+    const bobA = String((JSON.parse(filed.stdout) as { task: { id: string } }).task.id);
+    expect(store.getTask(bobA)).not.toBeNull();
     expect(seen.at(-1)).toMatchObject({ source: "api", principal: { kind: "person", account: "bob", scope: "act", tokenId: bobToken.id, projects: [repoA], generation: store.accountOf("bob")!.generation } });
     if (real !== undefined) {
       // Alice's ledger names Bob, the API and his token.
-      const entry = store.actionLedger({ repos: null, instance: true, limit: 50 }).find(one => one.taskId === "bob-a" && one.actor === "bob");
-      expect(entry).toMatchObject({ actor: "bob", source: "api" });
-      expect(JSON.stringify(entry)).toContain("bob-laptop");
+      const entry = store.actionLedger({ repos: null, instance: true, limit: 50 }).find(one => one.actor === "bob" && one.action === "remote command: task add" && one.outcome === "done");
+      expect(entry).toMatchObject({ actor: "bob", source: "api", repo: repoA, detail: "token bob-laptop" });
     }
 
-    // 3. Bob sees only repo A; his approval is refused with the console/chat message, without reaching the server.
-    if (real !== undefined) {
-      // Status has no project filter of its own: the real seam scopes it to Bob's projects.
-      const status = await asBob(["status", "--json"]);
-      expect(status.code, status.stdout + status.stderr).toBe(0);
-      expect(status.stdout).not.toContain(repoB);
-      expect(status.stdout).not.toContain("alice-b");
+    // 3. Bob sees nothing of repo B. Installation-wide reads (status, task list) need access to every project, so a
+    // person limited to some projects is refused them outright; his own task is his to read.
+    for (const argv of [["status", "--json"], ["task", "list", "--json"], ["task", "list", "--repo", repoA, "--json"]]) {
+      const wide = await asBob(argv);
+      expect(wide.code, argv.join(" ")).toBe(3);
+      expect(JSON.parse(wide.stdout), argv.join(" ")).toMatchObject({ ok: false, reason: "all-projects" });
+      expect(wide.stdout).not.toContain(repoB);
+      expect(wide.stdout).not.toContain("alice-b");
     }
-    const listed = await asBob(["task", "list", "--json"]);
-    expect(listed.code).toBe(0);
-    expect(listed.stdout).toContain("bob-a");
-    expect(listed.stdout).not.toContain(repoB);
-    expect(listed.stdout).not.toContain("alice-b");
+    const own = await asBob(["task", "show", bobA, "--json"]);
+    expect(own.code, own.stdout + own.stderr).toBe(0);
+    expect(own.stdout).toContain(bobA);
+    const foreign = await asBob(["task", "show", "alice-b", "--json"]);
+    const missing = await asBob(["task", "show", "no-such-task", "--json"]);
+    expect(foreign.code).toBe(3);
+    expect(foreign.stdout.replace("alice-b", "<ref>")).toBe(missing.stdout.replace("no-such-task", "<ref>"));
+    expect(foreign.stdout).not.toContain(repoB);
     expect((await asBob(["task", "add", "Sneaky", "--repo", repoB])).code).toBe(3);
-    expect(store.getTask("sneaky")).toBeNull();
+    expect(store.listTasks().filter(one => one.title === "Sneaky")).toHaveLength(0);
     const asked = seen.length;
-    const approve = await asBob(["task", "approve", "bob-a"]);
+    const approve = await asBob(["task", "approve", bobA]);
     expect(approve).toMatchObject({ code: 3, stderr: `${STEP_UP_MESSAGE}\n` });
     expect(seen).toHaveLength(asked);
     // Bypassing the client cannot bypass the server's approval refusal either.
-    const forged = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bobToken.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv: ["task", "approve", "bob-a"] }) });
+    const forged = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bobToken.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv: ["task", "approve", bobA] }) });
     expect(forged.status).toBe(403);
     expect(await forged.json()).toEqual({ ok: false, code: "step-up", message: STEP_UP_MESSAGE });
     expect(seen).toHaveLength(asked);
 
     // Local and remote --json envelopes match byte for byte apart from timestamps (Alice sees everything).
     expect((await asAlice(["connect", base, "--as", "alice", "--token-stdin"], aliceToken.token)).code).toBe(0);
-    for (const argv of [["status", "--json"], ["task", "show", "bob-a", "--json"], ["task", "list", "--json"]]) {
+    for (const argv of [["status", "--json"], ["task", "show", bobA, "--json"], ["task", "list", "--json"]]) {
       const local = await asAlice([...argv, "--local"]);
       const remote = await asAlice(argv);
       expect(remote.code, argv.join(" ")).toBe(local.code);
