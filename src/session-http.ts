@@ -17,6 +17,8 @@ export type SessionHttpOptions = {
   execute: SessionHttpExecute | null;
   /** The bearer request's budget by source (request-budget.ts): charged once, before the credential is checked or a body read. */
   admit?: (request: IncomingMessage) => Admission;
+  /** Account admission after successful authentication, before any body read or owner call. */
+  admitAuthenticated?: (request: IncomingMessage, actor: SessionHttpActor) => Admission;
 };
 type Body = { ok: true; value: unknown } | { ok: false; status: number; reason: string; message: string };
 type HttpRejection = Omit<SessionResponse, 'operation'> & { operation?: SessionOperation };
@@ -109,18 +111,20 @@ export async function handleSessionHttp(request: IncomingMessage, response: Serv
   if (authorizationCount !== 1 || !/^Bearer (.+):(.+)$/.test(request.headers.authorization ?? '')) {
     return reject(401, 'unauthenticated', 'Current operator bearer credentials are required.');
   }
-  const admitted = options.admit === undefined ? { ok: true as const } : options.admit(request);
-  if (!admitted.ok && admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
-  if (!admitted.ok) {
+  const refuseAdmission = (admitted: Admission): boolean => {
+    if (admitted.ok) return false;
+    if (admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
     response.setHeader('retry-after', String(admitted.retryAfter));
     return reject(429, 'rate-limited', limitWords(admitted.limit, admitted.retryAfter));
-  }
+  };
+  if (options.admit && refuseAdmission(options.admit(request))) return true;
   let actor: SessionHttpActor | null;
   try { actor = await options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Operator access could not be checked. Try again after the service is ready.'); }
   if (actor === null || typeof actor.name !== 'string' || !actor.name.trim() || !Number.isSafeInteger(actor.generation) || actor.generation < 1) {
     return reject(401, 'unauthenticated', 'Current operator bearer credentials are required.');
   }
+  if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
   const media = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
   if (media !== 'application/json') return reject(415, 'unsupported-media-type', 'Send the session request as application/json.');
   const length = request.headers['content-length'];

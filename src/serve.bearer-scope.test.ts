@@ -5,11 +5,14 @@
  * plain HTTP from outside this computer and the tailnet.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { request as httpRequest, type Server } from "node:http";
 import { openStore, type Store } from "./store.js";
+import { routineDigestOf } from "./routine.js";
+import { resolveRoutineAuthority } from "./agentconfig.js";
 import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
@@ -184,7 +187,7 @@ describe("the other token routes keep the token's scope and projects", () => {
     const read = await post(token("read"));
     expect(read.status).toBe(403);
     expect(await read.text()).toContain("reads only");
-    expect((await post(token("act", [A]))).status).toBe(401);
+    expect((await post(token("act", [A]))).status).toBe(403);
   });
 
   test("/api/sessions refuses read and outside-project API tokens before a mutation", async () => {
@@ -213,10 +216,10 @@ describe("every bearer route is budgeted", () => {
     expect((await fetch(`${base}/api/team`, { headers: { authorization: `Bearer ${read}` } })).status).toBe(200);
   });
 
-  test("password bearers on /api/team and /api/sessions share a per-account budget, charged before the password is checked", async () => {
+  test("password bearers on /api/team and /api/sessions share source and verified-account budgets", async () => {
     const limit = SOURCE_BUDGET_DEFAULTS.password;
     for (let i = 0; i < limit - 1; i++) await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } }).then(one => one.arrayBuffer());
-    // A wrong password counts too: guessing is budgeted.
+    // A wrong password spends the source allowance but cannot spend the account allowance.
     expect((await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: "Bearer alex:wrong-password", "content-type": "application/json" }, body: "{}" })).status).toBe(401);
     const refused = await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer alex:${password}`, "content-type": "application/json" }, body: "{}" });
     expect(refused.status).toBe(429);
@@ -264,16 +267,73 @@ describe("bearer step-up and in-flight revocation", () => {
   const formPost = (bearer: string, path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", redirect: "manual",
     headers: { authorization: `Bearer ${bearer}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields) });
 
-  test.each(["password", "api", "oauth"])("%s bearer cannot perform any step-up family, even with the correct password", async kind => {
+  // One row per direct password-check site; shared routes add variants below. The structural test keeps this exhaustive.
+  const ceremonies: [string, string, Record<string, string>?][] = [
+    ["routineMutation", "/routines/1/run-now"],
+    ["code", "/code/start"], ["code", `/code/${"a".repeat(32)}/answer`, { decision: "accept" }],
+    ["flows", "/flows/1/triggers/1/secret"], ["flows", "/flows/1/linear-key"],
+    ["spendBudget", "/spend/budget"], ["projectDelete", "/settings/project/delete", { step: "delete" }],
+    ["policy", "/settings/policy"], ["approval", "/settings/approval"], ["requestLimits", "/settings/request-limits"],
+    ["sessions", "/settings/sessions", { action: "create-token", days: "30" }], ["signIn", "/settings/sign-in"],
+    ["updates", "/settings/updates"], ["retention", "/settings/retention"], ["storage", "/settings/storage"],
+    ["pullRequests", "/settings/pull-requests"], ["checks", "/settings/checks"], ["backups", "/settings/backups"],
+    ["data", "/settings/data"], ["monitoring", "/settings/monitoring"], ["toolsConnect", "/settings/tools/connect"],
+    ["toolsChange", "/settings/tools/change", { action: "add-custom" }], ["projectSetup", "/control/instructions-approve"],
+    ["slack", "/settings/slack/connect"], ["teams", "/settings/teams/connect"], ["discord", "/settings/discord/connect"],
+    ["runnerRegister", "/fleet/runner/register"], ["mode", "/mode/sign"], ["peopleProjects", "/people/projects"],
+    ["peopleInvite", "/people/invite"], ["peopleInviteRevoke", "/people/invite-revoke"], ["peopleRevoke", "/people/revoke"],
+    ["runnerRetire", "/fleet/runner/retire"], ["contest", "/contest/1/pick"], ["confirmStopped", "/t/guarded/confirm-stopped"],
+    ["onboard", "/projects/onboard-confirm"], ["pushSubscribe", "/push/subscribe"], ["chatConfig", "/chat/config"],
+    ["chat", "/chat"], ["chatFile", `/chat/file/${"a".repeat(32)}`], ["chatAck", "/chat/ack/1"],
+    ["attendMutation", "/t/guarded/attend"], ["taskReopen", "/t/guarded/reopen"],
+    ["taskRevision", "/t/guarded/accept-revision"], ["taskResume", "/t/guarded/resume"],
+  ];
+  const variants: [string, string, Record<string, string>?][] = [
+    ["project setup", "/control/setup-approve"], ["task approval", "/t/guarded/approve"], ["routine approval", "/routines/1/approve"], ["contest abandon", "/contest/1/abandon"],
+    ["storage clean", "/settings/storage/clean"], ["storage discard", "/settings/storage/discard"],
+    ["mode confirm", "/mode/confirm"], ["chat approval confirm", "/settings/chat-approval/confirm"], ["chat approval save", "/settings/chat-approval/save"],
+  ];
+
+  test("every direct approver password call uses the browser-aware helper and has a bearer refusal case", () => {
+    const source = readFileSync(new URL("./serve.ts", import.meta.url), "utf8");
+    expect(source.match(/checkApproverPassword\(/g)).toHaveLength(1);
+    expect(source).not.toContain("cookieOnlyCeremony");
+    expect(source).not.toMatch(/authenticateApprover\(store/);
+    expect(source).toMatch(/if \(who.via !== "cookie"\) return \{ ok: false, reason: "not-an-approver" \};\s+return checkApproverPassword/);
+    const sites: string[] = [];
+    let fn = "", form = "";
+    for (const line of source.split("\n")) {
+      const declaration = /^  (?:async )?function (\w+)\(/.exec(line);
+      if (declaration) { fn = declaration[1]!; form = ""; }
+      if (line.includes("readForm(")) form = /CONSOLE_FORMS\.(\w+)/.exec(line)?.[1] ?? form;
+      if (/authenticateApprover\(who,/.test(line)) sites.push(form || fn);
+    }
+    expect(sites).toEqual(ceremonies.map(([site]) => site));
+    expect(sites).toHaveLength(45);
+  });
+
+  test.each(["password", "api", "oauth"])("%s bearer gets 403 at every password step-up without changing protected state", async kind => {
     const scope = task();
+    const terms = { repo: A, goal: "Guard routine approval", outOfScope: null, touches: [], acceptance: [], requirements: [], schedule: "every:60", singleFlight: true, costCeilingUsd: null };
+    const authority = resolveRoutineAuthority(store, A, [], new Date());
+    if (!authority.ok) throw Error(authority.problem);
+    expect(store.createRoutine({ name: "guarded", ...terms, digest: routineDigestOf(terms, authority.profile, authority.route), profile: authority.profile, route: authority.route }, new Date()).ok).toBe(true);
+    // This matrix checks authorization. Rate-limit behavior has its own exhaustive tests below.
+    setLimitOverride(store, "*", { readPerMinute: null, actPerMinute: 200, perDay: null }, "alex", new Date());
     const bearer = kind === "password" ? `alex:${password}` : kind === "api" ? token("act") : oauthToken();
-    const snapshot = () => ({ scope: store.getScope("guarded"), accounts: store.listApprovers(), policy: store.orgPolicy(),
-      rows: ["invite", "operating_mode", "chat_approval_setting", "approval_policy"].map(table => store.handle.prepare(`SELECT * FROM ${table}`).all()) });
+    const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+      .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
+    const snapshot = () => Object.fromEntries(tables.map(table => {
+      const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1").map(row => {
+        if (table === "api_token") { const { last_used_at: _used, ...protectedFields } = row; return protectedFields; }
+        return row;
+      });
+      return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
+    }));
     const before = snapshot();
-    const paths = ["/t/guarded/approve", "/people/projects", "/people/invite", "/people/invite-revoke", "/people/revoke", "/settings/policy", "/settings/approval", "/mode/confirm", "/mode/sign", "/settings/chat-approval/confirm", "/settings/chat-approval/save"];
-    for (const path of paths) {
-      const response = await formPost(bearer, path, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A });
-      expect([path, response.status]).toEqual([path, kind === "oauth" ? 401 : 403]);
+    for (const [site, path, fields] of [...ceremonies, ...variants]) {
+      const response = await formPost(bearer, path, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A, ...fields });
+      expect([site, path, response.status]).toEqual([site, path, 403]);
       expect(snapshot()).toEqual(before);
     }
   });
@@ -311,26 +371,52 @@ describe("bearer step-up and in-flight revocation", () => {
 });
 
 
-test("password admission is per claimed account across login, console, team and sessions before password verification", async () => {
+test("verified password admission is shared by account across sources and console, team and sessions", async () => {
   const other = addApprover(store, "sam", new Date(), { name: "alex", token: password });
   if (!other.ok) throw Error("sam");
   const get = (path: string, name = "alex", secret = password, source = "203.0.113.8") => fetch(`${base}${path}`, { headers: { authorization: `Bearer ${name}:${secret}`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
-  const auth = vi.spyOn(store, "accountOf");
-  // Valid requests are charged once, including login, which returns before the console route dispatch.
   for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) {
-    const response = await get(["/login", "/api/team", "/work"][i % 3]!);
+    const response = await get(["/login", "/api/team", "/work"][i % 3]!, "alex", password, `203.0.113.${i % 3 + 1}`);
     expect(response.status).toBe(200); await response.arrayBuffer();
   }
-  const before = auth.mock.calls.length;
-  const denied = await get("/login", "alex", "wrong-password", "203.0.113.99");
+  const denied = await get("/login", "alex", password, "203.0.113.99");
   expect(denied.status).toBe(429);
   expect(denied.headers.get("retry-after")).toBe("60");
-  expect(auth.mock.calls.length).toBe(before);
   expect((await get("/api/team", "sam", other.token)).status).toBe(200);
   expect((await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer alex:${password}`, "content-type": "application/json" }, body: "{}" })).status).toBe(429);
+  // No account allowance is consulted without proof, even when that claimed account has exhausted it.
+  expect((await get("/api/team", "alex", "incorrect", "203.0.113.88")).status).toBe(401);
   now += 61_000;
-  // Guessing also spends the claimed account's allowance, even on login.
-  for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) await get("/login", "unknown", "bad").then(r => r.arrayBuffer());
-  expect((await get("/login", "unknown", "bad", "203.0.113.77")).status).toBe(429);
+  expect((await get("/api/team")).status).toBe(200);
+});
+
+test("unverified password admission is per source across console, team and sessions before authentication", async () => {
+  const send = (i: number, source = "203.0.113.8") => {
+    const path = ["/login", "/api/team", "/api/sessions/list"][i % 3]!;
+    return fetch(`${base}${path}`, { method: path.includes("sessions") ? "POST" : "GET", headers: {
+      authorization: `Bearer fabricated-${i}:bad`, "x-forwarded-for": source, "x-forwarded-proto": "https", "content-type": "application/json" },
+      ...(path.includes("sessions") ? { body: "{}" } : {}) });
+  };
+  for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) await send(i).then(r => r.arrayBuffer());
+  const auth = vi.spyOn(store, "accountOf");
+  for (let i = 0; i < 3; i++) {
+    const response = await send(i + SOURCE_BUDGET_DEFAULTS.password);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("60");
+  }
+  expect(auth).not.toHaveBeenCalled();
+  expect((await send(1, "203.0.113.77")).status).toBe(401);
+  expect(auth).toHaveBeenCalled();
   auth.mockRestore();
+});
+
+test.each([false, true])("fabricated account names cannot lock out a real user (distinct sources: %s)", async distinct => {
+  for (let i = 0; i < 1024; i++) {
+    const response = await fetch(`${base}/api/team`, { headers: { authorization: `Bearer fabricated-${i}:bad`, "x-forwarded-for": distinct ? `198.51.${Math.floor(i / 256)}.${i % 256}` : "203.0.113.8", "x-forwarded-proto": "https" } });
+    await response.arrayBuffer();
+  }
+  const response = await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}`,
+    "x-forwarded-for": "203.0.113.42", "x-forwarded-proto": "https" } });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ ok: true });
 });

@@ -16,6 +16,39 @@ async function fixture(overrides: Partial<TeamHttpOptions> = {}) {
 }
 const headers = { authorization: 'Bearer alex:private', 'content-type': 'application/json', 'x-csrf-token': 'csrf' };
 describe('shared team transport', () => {
+  test.each(['source', 'account'] as const)('%s admission refuses before body parsing or execution', async stage => {
+    const authenticate = vi.fn(() => ({ name: 'alex', generation: 2 }));
+    const denied = { ok: false as const, status: 429 as const, limit: 'per-minute' as const, retryAfter: 19 };
+    const admit = vi.fn(() => stage === 'source' ? denied : { ok: true as const });
+    const admitAuthenticated = vi.fn(() => denied);
+    const { url, execute } = await fixture({ authenticate, admit, admitAuthenticated });
+    // Invalid JSON would fail parsing if the adapter read it before deciding admission.
+    const response = await fetch(url + '/api/team', { method: 'POST', headers, body: '{invalid' });
+    expect(response.status).toBe(429);
+    expect(response.headers.get('retry-after')).toBe('19');
+    expect(await response.json()).toMatchObject({ code: 'rate-limited' });
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(authenticate).toHaveBeenCalledTimes(stage === 'source' ? 0 : 1);
+    expect(admitAuthenticated).toHaveBeenCalledTimes(stage === 'source' ? 0 : 1);
+    if (stage === 'account') expect(admitAuthenticated.mock.calls[0]?.[1]).toEqual({ name: 'alex', generation: 2 });
+    expect(execute).not.toHaveBeenCalled();
+  });
+  test('unproved identities never reach account admission; a successful read spends each budget once', async () => {
+    const authenticate = vi.fn<NonNullable<TeamHttpOptions['authenticate']>>(() => null);
+    const admit = vi.fn(() => ({ ok: true as const }));
+    const admitAuthenticated = vi.fn(() => ({ ok: true as const }));
+    const { url, execute } = await fixture({ authenticate, admit, admitAuthenticated });
+    expect((await fetch(url + '/api/team', { headers })).status).toBe(401);
+    expect(admitAuthenticated).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    admit.mockClear(); authenticate.mockClear();
+    authenticate.mockReturnValue({ name: 'alex', generation: 2 });
+    expect((await fetch(url + '/api/team', { headers })).status).toBe(200);
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(admitAuthenticated).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
   test('derives actor from authentication and passes a single operation', async () => {
     const { url, execute } = await fixture();
     const input = { operation: 'send', args: { conversationId: 'room', requestId: 'once', text: 'Keep the settings simple.' } };

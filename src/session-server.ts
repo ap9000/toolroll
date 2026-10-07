@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import type { Store } from './store.js';
 import type { CodingWorkspace } from './coding-workspace.js';
 import { authenticateAccount } from './scope.js';
-import { handleSessionHttp } from './session-http.js';
+import { handleSessionHttp, type SessionHttpActor } from './session-http.js';
 import { SessionService } from './session-service.js';
 import type { Admission } from './request-budget.js';
 
@@ -17,6 +17,7 @@ export function createSessionEndpoint(options: {
   projectAllowed: (repo: string) => boolean;
   /** The request's source budget (request-budget.ts), charged once before the password is checked. */
   admit?: (request: IncomingMessage) => Admission;
+  admitAuthenticated?: (request: IncomingMessage, actor: SessionHttpActor) => Admission;
 }): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
   const { store } = options;
   const authorized = (actor: { name: string; generation: number }, repo?: string): boolean => {
@@ -33,6 +34,7 @@ export function createSessionEndpoint(options: {
   });
   return (request, response) => handleSessionHttp(request, response, {
     ...(options.admit === undefined ? {} : { admit: options.admit }),
+    ...(options.admitAuthenticated === undefined ? {} : { admitAuthenticated: options.admitAuthenticated }),
     authenticate: request => {
       const bearer = /^Bearer (.+):(.+)$/.exec(request.headers.authorization ?? '');
       if (!bearer) return null;

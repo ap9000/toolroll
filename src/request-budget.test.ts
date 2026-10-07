@@ -141,7 +141,7 @@ test("fail closed: an unknown token or unreadable saved usage refuses, and nothi
   expect(budget().admit(id, "api")).toEqual({ ok: true });
 });
 
-test("source admission: a sliding minute per source, isolated sources, and a full table refuses new sources rather than forgetting live ones", () => {
+test("source admission keeps sliding windows and evicts the least recently used source at capacity", () => {
   let at = 1_000_000;
   const budget = new SourceAdmission({ perMinute: 2, tracked: 2, clock: () => at });
   expect(budget.admit("a")).toEqual({ ok: true });
@@ -149,12 +149,31 @@ test("source admission: a sliding minute per source, isolated sources, and a ful
   expect(budget.admit("a")).toEqual({ ok: true });
   expect(budget.admit("a")).toEqual({ ok: false, status: 429, limit: "per-minute", retryAfter: 50 });
   expect(budget.admit("b")).toEqual({ ok: true });
-  // Two sources are tracked, both still inside their minute: a third is refused (fail closed), never let in by forgetting one.
-  expect(budget.admit("c")).toMatchObject({ ok: false, status: 429 });
+  // A denied use still makes a most recent. Evict b, retaining a's active sliding window.
+  expect(budget.admit("a")).toMatchObject({ ok: false, status: 429 });
+  expect(budget.admit("c")).toEqual({ ok: true });
+  expect(budget.admit("a")).toMatchObject({ ok: false, status: 429, retryAfter: 50 });
+  expect(budget.admit("b")).toEqual({ ok: true });
+  expect(budget.admit("b")).toEqual({ ok: true });
+  expect(budget.admit("b")).toMatchObject({ ok: false, status: 429 });
   expect(budget.size).toBe(2);
   at += 60_001;
   expect(budget.admit("a")).toEqual({ ok: true });
   expect(budget.admit("c")).toEqual({ ok: true });
   expect(budget.size).toBe(2);
   expect(limitWords("per-minute", 5)).toBe("Request limit reached (requests per minute). Try again in 5 seconds.");
+});
+
+test("source admission prunes expired history before evicting a live, older entry", () => {
+  let at = 1_000_000;
+  const budget = new SourceAdmission({ perMinute: 1, tracked: 2, clock: () => at });
+  expect(budget.admit("expired")).toEqual({ ok: true });
+  at += 30_000;
+  expect(budget.admit("live")).toEqual({ ok: true });
+  // A refused attempt updates recency but does not renew the request's sliding window.
+  expect(budget.admit("expired")).toMatchObject({ ok: false, status: 429 });
+  at += 30_001;
+  expect(budget.admit("new")).toEqual({ ok: true });
+  expect(budget.size).toBe(2);
+  expect(budget.admit("live")).toMatchObject({ ok: false, status: 429, retryAfter: 30 });
 });

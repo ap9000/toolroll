@@ -930,7 +930,7 @@ describe("the operations console", () => {
     expect(replay.status).toBe(409);
   });
 
-  test("a bearer caller approves with its credential re-stated, no nonce ceremony", async () => {
+  test("a bearer caller cannot approve even with its credential re-stated", async () => {
     store.createTask({ id: "t-b", title: "api approve" }, T0);
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
@@ -943,8 +943,8 @@ describe("the operations console", () => {
       body: new URLSearchParams({ digest, token: approverToken }),
       redirect: "manual",
     });
-    expect(approved.status).toBe(303);
-    expect(store.getScope("t-b")?.approvedBy).toBe("alex");
+    expect(approved.status).toBe(403);
+    expect(store.getScope("t-b")?.approvedBy).toBeNull();
   });
 
   test("hold and unhold touch only the operator's hold — a decision's survives", async () => {
@@ -2323,6 +2323,17 @@ describe("routines on the console", () => {
     });
     expect(denied.status).toBe(404);
     expect(store.getRoutine(foreign)?.paused).toBe(false);
+  });
+
+  test("routine approval refuses a password bearer even with the password re-stated", async () => {
+    const id = file("bearer-approval");
+    const before = store.getRoutine(id);
+    const response = await fetch(url(`/routines/${id}/approve`), {
+      method: "POST", headers: { authorization: `Bearer alex:${approverToken}` },
+      body: new URLSearchParams({ digest: before!.digest, token: approverToken }), redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+    expect(store.getRoutine(id)).toEqual(before);
   });
 
   test("approving is step-up: the restated order, the nonce, and the password again", async () => {

@@ -13,7 +13,6 @@
  * FLUSH_MS, on eviction, on server close and at once on a refusal, so a restart doesn't hand a client hammering the
  * server a fresh budget. Anything unreadable (a policy or saved usage outside its bounds) refuses: fail closed.
  */
-import { createHash } from "node:crypto";
 import type { Database, Store } from "./store.js";
 import type { TokenAccess } from "./api-tokens.js";
 
@@ -269,18 +268,10 @@ export class RequestBudget {
  * for two-second follower polling plus ordinary commands; OAuth exchanges stay keyed by source address. */
 export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken: 30, coordinator: 120, teamsSource: 120, teamsTenant: 600 });
 
-/** A password bearer is charged before verification, by its claimed account across all password routes.
- * Hashing bounds the key size and keeps credentials out of admission state. Match the authentication parser. */
-export function passwordAccountKey(authorization: string | undefined): string | null {
-  const account = /^Bearer (.+):(.+)$/.exec(authorization ?? "")?.[1];
-  return account === undefined ? null : createHash("sha256").update(account).digest("hex");
-}
-
 /**
- * A sliding minute per key (source address, claimed password account, coordinator or configured tenant), in memory.
- * At most `tracked` keys: when every key still has requests inside its minute, a new one is refused rather than
- * forgetting an active allowance (fail closed). Admission precedes body processing; password and source admission
- * also precede credential verification. Person API tokens use the persisted RequestBudget above.
+ * A sliding minute per source or proved account, with bounded in-memory LRU history. Expired entries are
+ * pruned first; at capacity the least recently used entry is evicted so new callers are never globally locked out.
+ * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above.
  */
 export class SourceAdmission {
   private readonly perMinute: number;
@@ -302,7 +293,7 @@ export class SourceAdmission {
     if (times === undefined) {
       if (this.usage.size >= this.tracked) {
         for (const [key, kept] of this.usage) if (kept.every(at => at <= now - MINUTE)) this.usage.delete(key);
-        if (this.usage.size >= this.tracked) return { ok: false, status: 429, limit: "per-minute", retryAfter: 60 };
+        if (this.usage.size >= this.tracked) this.usage.delete(this.usage.keys().next().value!);
       }
       times = [];
     }

@@ -11,9 +11,10 @@ export type TeamHttpOptions = {
   execute: TeamExecute;
   /** Current, authorized event cursor. null means the audience is no longer available. */
   cursor?: (actor: TeamActor, conversationId?: string) => number | null;
-  /** The bearer's request budget (request-budget.ts), charged once per request (a stream once, when it opens) before the
-   * credential is checked or any body read. */
+  /** Source admission before credential verification. Streams are charged once when opened. */
   admit?: (request: IncomingMessage) => Admission;
+  /** Proved account/token admission, before reading the body or executing any operation. */
+  admitAuthenticated?: (request: IncomingMessage, actor: TeamActor) => Admission;
   streamIntervalMs?: number;
   streams?: Set<ServerResponse>;
 };
@@ -51,17 +52,19 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
   if ([...url.searchParams.keys()].some(key => /token|password|credential|authorization/i.test(key))) return reject(400, 'credentials-in-url', 'Credentials never travel in URLs.');
   const count = request.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'authorization').length;
   if (count > 1) return reject(400, 'ambiguous-credentials', 'Send one authorization header.');
-  const admitted = options.admit === undefined ? { ok: true as const } : options.admit(request);
-  if (!admitted.ok && admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
-  if (!admitted.ok) {
+  const refuseAdmission = (admitted: Admission): boolean => {
+    if (admitted.ok) return false;
+    if (admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
     send(response, 429, failure('rate-limited', limitWords(admitted.limit, admitted.retryAfter)), { 'retry-after': String(admitted.retryAfter) });
     request.resume();
     return true;
-  }
+  };
+  if (options.admit && refuseAdmission(options.admit(request))) return true;
   let actor: TeamActor | null;
   try { actor = await options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
   if (!actor) return reject(401, 'unauthenticated', 'Sign in to continue.');
+  if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
   const conversationId = url.searchParams.get('conversation') ?? undefined;
   if (url.pathname === '/api/team/events') {
     if (request.method !== 'GET') return reject(405, 'method-not-allowed', 'Use GET for conversation updates.');

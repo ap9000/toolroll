@@ -44,12 +44,39 @@ afterEach(async () => {
 });
 
 test('POST calls the shared owner once with server-derived actor and the exact validated identity', async () => {
+  options.admit = vi.fn(() => ({ ok: true }));
+  options.admitAuthenticated = vi.fn(() => ({ ok: true }));
   const response = await post(send, { 'content-type': 'application/json; charset=utf-8' });
   expect(response.status).toBe(200);
   expect(response.headers.get('x-standing-orders-session-delivery')).toBeNull();
   expect(await response.json()).toEqual(success());
   expect(options.authenticate).toHaveBeenCalledTimes(1);
+  expect(options.admit).toHaveBeenCalledTimes(1);
+  expect(options.admitAuthenticated).toHaveBeenCalledExactlyOnceWith(expect.anything(), actor);
   expect(options.execute).toHaveBeenCalledExactlyOnceWith(actor, 'send', send);
+});
+
+test.each(['source', 'account'] as const)('%s admission refuses before body parsing or owner execution', async stage => {
+  const denied = { ok: false as const, status: 429 as const, limit: 'per-minute' as const, retryAfter: 19 };
+  options.admit = vi.fn(() => stage === 'source' ? denied : { ok: true as const });
+  options.admitAuthenticated = vi.fn(() => denied);
+  const response = await post('{invalid');
+  expect(response.headers.get('retry-after')).toBe('19');
+  await rejection(response, 429, 'rate-limited');
+  expect(options.admit).toHaveBeenCalledTimes(1);
+  expect(options.authenticate).toHaveBeenCalledTimes(stage === 'source' ? 0 : 1);
+  expect(options.admitAuthenticated).toHaveBeenCalledTimes(stage === 'source' ? 0 : 1);
+  if (stage === 'account') expect(options.admitAuthenticated).toHaveBeenCalledExactlyOnceWith(expect.anything(), actor);
+});
+
+test('unproved identities never spend an account allowance', async () => {
+  options.authenticate = vi.fn(() => null);
+  options.admit = vi.fn(() => ({ ok: true }));
+  options.admitAuthenticated = vi.fn(() => ({ ok: true }));
+  await rejection(await post(), 401, 'unauthenticated');
+  expect(options.admit).toHaveBeenCalledTimes(1);
+  expect(options.authenticate).toHaveBeenCalledTimes(1);
+  expect(options.admitAuthenticated).not.toHaveBeenCalled();
 });
 
 test('the API owns unsupported paths without falling through to browser redirects', async () => {
