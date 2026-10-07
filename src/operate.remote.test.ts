@@ -182,13 +182,15 @@ describe("runOperateAs", () => {
     [["restore", "x.db"], "not-remote", "That isn't a command a remote caller can run."],
     [["storage"], "not-remote", "That isn't a command a remote caller can run."],
     [["contract", "--commands"], "not-remote", "That command only runs on the server's own machine, not for a remote caller."],
+    // It reads the server owner's own ~/.claude and ~/.codex sessions: never for anyone else.
+    [["memory", "propose", "--repo", "REPO"], "not-remote", "That command only runs on the server's own machine, not for a remote caller."],
     [["task", "approve", "TASK"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
     [["people", "list"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
     [["mode", "set"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
     [["chat-approval", "on"], "step-up", "Approvals, people and policy changes aren't taken from a token: approve in the console or chat."],
   ])("refuses %j before any command code runs", async (argv, reason, message) => {
     const before = store.actionLedger({ repos: null, limit: 500 }).filter(one => one.source !== "api").length;
-    expect(await as(alex, [...argv.map(one => one === "TASK" ? taskA : one), "--json"])).toBe(3);
+    expect(await as(alex, [...argv.map(one => one === "TASK" ? taskA : one === "REPO" ? A : one), "--json"])).toBe(3);
     expect(last()).toMatchObject({ ok: false, reason, message });
     // One refused line in the history, and nothing else happened.
     expect(remoteLedger()).toEqual([expect.objectContaining({ actor: "alex", outcome: "refused", source: "api", detail: `token alex-ci · ${reason}` })]);

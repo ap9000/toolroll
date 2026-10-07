@@ -1854,7 +1854,7 @@ $ contract --commands --json → 0
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
         }
       ],
-      "remote": "yes"
+      "remote": "no"
     },
     {
       "invocation": "memory review",

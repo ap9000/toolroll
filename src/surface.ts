@@ -464,6 +464,8 @@ const REMOTE_NO: readonly string[] = [
   "enroll", "revoke",
   // Flow steps that fetch addresses or run checks and scripts here.
   "flows import", "flows trigger check", "flows script save",
+  // Reads this machine owner's own Claude and Codex session files (~/.claude, ~/.codex).
+  "memory propose",
 ];
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
@@ -482,7 +484,7 @@ const REMOTE_YES: readonly string[] = [
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
   "contest show", "contest exclude", "webhook status", "webhook test", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
-  "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory propose", "memory review", "memory status",
+  "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory review", "memory status",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
   "models status", "models list",
