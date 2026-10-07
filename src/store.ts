@@ -112,6 +112,7 @@ import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
 import { POLICY_SCHEMA, agentRefusal, approvalRefusal, attendedRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
 import { PROVIDER_AUTH_SCHEMA } from "./provider-auth.js";
+import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, teammateFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
@@ -637,7 +638,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v108 keeps sign-in pauses: one incident per provider whose sign-in stopped working (provider_auth_pause).
 // v109 remembers which sign-in pause parked a task (task_ref.auth_wait_pause), so reviews and other runs outside the tick wait for it too.
 // v110 lets the action ledger record commands a person ran on this server with their API token (source 'api', or 'mcp' from their agent).
-export const SCHEMA_VERSION = 110;
+// v111 is remote-tokens' (built in parallel); v112 keeps request budgets for API tokens: owner overrides (request_budget_limit) and saved usage (request_budget_usage).
+export const SCHEMA_VERSION = 112;
 
 /**
  * The migrations `toolroll update` may carry a database through in place: each
@@ -649,8 +651,10 @@ export const SCHEMA_VERSION = 110;
  *
  * v110 rebuilds action_ledger only to widen its source check ('api', 'mcp'):
  * every row, id and hash-chain link is copied unchanged.
+ * v111 is remote-tokens' additive step (built in parallel; nothing on this branch).
+ * v112 only adds the two request-budget tables.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -5358,6 +5362,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(SPEND_SCHEMA);
   // Sign-in pauses: one row per incident of a provider's sign-in no longer working.
   db.exec(PROVIDER_AUTH_SCHEMA);
+  // v112: request budgets for API tokens (request-budget.ts).
+  db.exec(REQUEST_BUDGET_SCHEMA);
   // The sign-in pause the dispatch gate last left this task waiting on (null: none), for the work index.
   addColumn(db, "task_ref", "auth_wait_pause", "INTEGER REFERENCES provider_auth_pause(id)");
   // Sized routing (no version bump: additive, and a wider tier check whose rows carry over): how big each task is,

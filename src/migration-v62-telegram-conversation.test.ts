@@ -66,7 +66,7 @@ describe("v62 Telegram conversation queue", () => {
     expect(before).toHaveLength(1);
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(110);
+    expect(SCHEMA_VERSION).toBe(112);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(store.handle.prepare("SELECT * FROM run_stop ORDER BY run").all()).toEqual(before);
     expect(String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'run_stop'").get()?.["sql"])).toContain("'cli','web','telegram'");

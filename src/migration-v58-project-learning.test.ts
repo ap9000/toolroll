@@ -24,7 +24,7 @@ describe('v58 learning migration on disposable files only',()=>{
           db.exec(sql);
         }};
       }});
-      expect(beforeDdl).toBe(-57);expect(SCHEMA_VERSION).toBe(110);expect(oldReaderCurrent()).toBe(false);old.close();
+      expect(beforeDdl).toBe(-57);expect(SCHEMA_VERSION).toBe(112);expect(oldReaderCurrent()).toBe(false);old.close();
       expect(store.getTask('retained')?.title).toBe('Keep prior work');expect(store.handle.prepare('PRAGMA foreign_key_check').all()).toEqual([]);store.close();
       store=openStore(file);expect(store.getTask('retained')).not.toBeNull();expect(store.handle.prepare('SELECT * FROM learning_event').all()).toEqual([]);store.close();
       const current=openStoreNoMigrate(file);expect(current.ok).toBe(true);if(current.ok)current.store.close();
