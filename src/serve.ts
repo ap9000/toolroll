@@ -692,16 +692,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
       const execute = async () => {
         // THE ROUTE TABLE (server/route-table.ts): nothing reaches a handler unless a row declares this method and
-        // path and admits this kind of caller. An undeclared request answers exactly as the routers' own fallthrough did.
+        // path and admits this kind of caller. Undeclared addresses retain the legacy instance-access refusal
+        // for project-limited accounts, before the unrestricted router's not-found response.
         const route = matchedRoute?.stage === "console" ? matchedRoute : null;
-        if (route === null) return refuse(response, who, 404, "There's no page at this address.", "/chat");
+        if (route === null) return restricted()
+          ? refuse(response, who, 403, "This area requires instance access. Your account operates within its assigned projects.", "/projects")
+          : refuse(response, who, 404, "There's no page at this address.", "/chat");
         const policy = evaluateRoutePolicy(route, { caller: who.via, capability: who.via === "bearer" && who.principal !== undefined ? who.principal.scope : who.role === "approver" ? "act" : "read", viewer: who.role === "viewer", token: who.via === "bearer" && who.principal !== undefined },
           source => projectRequestAllowed(route, source, url, who, request, response, body));
         if (!policy.ok) {
           if (policy.reason === "project") return;
           request.resume();
           if (method === "POST" && who.via === "bearer" && who.principal?.scope === "read") return refuse(response, who, 403, REMOTE_MESSAGES.read);
-          if (policy.reason === "scope") return refuse(response, who, 403, route.scopeRefusal ?? "your login can watch, not act — ask an approver to upgrade you");
+          // A viewer's act stays refused even when the table rejects their caller first (for example a
+          // password bearer at a step-up route). Preserve the viewer wording and explicit protocol refusals.
+          if (policy.reason === "scope" || (method === "POST" && who.role === "viewer" && !route.viewer && route.callerRefusal === undefined)) {
+            return refuse(response, who, 403, route.scopeRefusal ?? "your login can watch, not act — ask an approver to upgrade you");
+          }
           return route.callerRefusal === undefined
             ? refuse(response, who, 403, "This address needs a browser sign-in.")
             : respond(response, route.callerRefusal.status, route.callerRefusal.type, route.callerRefusal.body);
