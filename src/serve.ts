@@ -44,6 +44,7 @@ import { addRoutine, removeRoutine, runRoutine } from "./teammate-desk.js";
 import { sendTeammateWeeklies, undoCall } from "./teammate-week.js";
 import { answerTeammateQuestion } from "./teammate-work.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
+import { createLiveBus, followWorkspace } from "./live-bus.js";
 import { createTaskRooms, taskFingerprint } from "./task-live.js";
 import { runActivityOf } from "./task-activity.js";
 import type { RunActivity } from "./activity-line.js";
@@ -1063,8 +1064,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** One-click connections on their way: the service's sign-in page and back, 15 minutes at most. */
   const connectVisits = new Map<string, ConnectVisit>();
   /** Flows open in a browser (v88): who's here, and a nudge when one changes. */
-  const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow));
-  const taskRooms = createTaskRooms(root => taskFingerprint(store, root, clock()));
+  // Live views push on write (live-bus.ts): the revision triggers move, the rooms hear it.
+  const liveBus = createLiveBus();
+  const liveFollower = followWorkspace(store, () => workspaceRevision.current(), liveBus, { file: store.databaseFile() });
+  const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow), { bus: liveBus });
+  const taskRooms = createTaskRooms(root => taskFingerprint(store, root, clock()), { bus: liveBus });
   const teamChatProvider: TeamChatProviderResolver = () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; };
   const team = createTeamRuntime({ store, repos: codingProjects, evidenceRoot, clock, workspaceRevision,
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
@@ -12328,6 +12332,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     flowRooms.close();
     taskRooms.close();
     detachReads();
+    liveFollower.close();
     void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);

@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto';
 import { DEFAULT_LIVENESS_MS } from './runner.js';
 import type { Store } from './store.js';
 
-const KEY = 'workspace-content:v1';
+/** The service_cursor row the revision triggers move (live-bus.ts listens for it). */
+export const WORKSPACE_REVISION_KEY = 'workspace-content:v1';
+const KEY = WORKSPACE_REVISION_KEY;
 const PREFIX = 'workspace_revision_v1_';
 const MAX_AGE_MS = 60_000;
 const OMIT = new Set(['schema_version', 'service_cursor', 'wake', 'notification_delivery',
