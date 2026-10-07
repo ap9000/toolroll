@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.45 — 2026-10-07
+
+- **Your projects, your lists.** People with access to some projects can now
+  run `status`, `task list` and `ready` remotely, and their agents' list
+  tools, and see and count only those projects. A task waiting on one in
+  another project says "waits for a task in another project", with no id,
+  and queue position counts only your projects. Owners see exactly what they
+  did before.
+- Still unavailable remotely for limited access: `brief`, `spend` and
+  choosing a task's `--id`.
+
 ## 0.9.44 — 2026-10-07
 
 - **Work from your own laptop.** `toolroll connect https://… --token so_…`

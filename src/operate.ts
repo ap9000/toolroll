@@ -203,7 +203,7 @@ import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, 
 import { runMateCli, answerContextLines, type MateCliSeams } from "./mate-cli.js";
 import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./mate-doors.js";
 import { verifyApproverByPassword as approverByPassword } from "./principal.js";
-import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
+import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteLensOf, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
 import { projectAuthority } from "./project-access.js";
 import { authorizedProject, canonicalProject, projectName, resolveCeiling } from "./project.js";
 import { tally, spendLine } from "./summary.js";
@@ -1182,17 +1182,20 @@ export async function runOperateAs(
   const file = store.databaseFile() ?? options.databaseFile;
   if (file === undefined) return refuse("failed", "The server's database has no file.", project.repo, project.taskId);
 
-  const run: RemoteRun = Object.freeze({ account: principal.account, scope: proved.scope, tokenName: proved.tokenName, source, secret: remoteSecret(), allows, files: Object.freeze({ ...(opts.files ?? {}) }) });
+  // The task a `task add` filed is only known once it runs; the final history line names it.
+  let filed: string | null = null;
+  const run: RemoteRun = Object.freeze({ account: principal.account, scope: proved.scope, tokenName: proved.tokenName, source, secret: remoteSecret(), allows,
+    lens: remoteLensOf(store, scope, allows), noteTask: (taskId: string) => { filed = taskId; }, files: Object.freeze({ ...(opts.files ?? {}) }) });
   record("requested", project.repo, project.taskId, null);
   let code: number;
   try {
     code = await withRemote(run, () => dispatchOn(root, parsed.positional, parsed.flags, parsed.repoList, { store, write, json, file, now }, options,
       go => withActor({ account: principal.account, lead: false }, () => projectAuthority.run({ actor: principal.account, repo: project.repo }, go))));
   } catch (error) {
-    record("failed", project.repo, project.taskId, null);
+    record("failed", project.repo, filed ?? project.taskId, null);
     throw error;
   }
-  record(code === EXIT.ok ? "done" : code === EXIT.refused ? "refused" : code === EXIT.usage ? "usage" : "failed", project.repo, project.taskId, null);
+  record(code === EXIT.ok ? "done" : code === EXIT.refused ? "refused" : code === EXIT.usage ? "usage" : "failed", project.repo, filed ?? project.taskId, null);
   return code;
 }
 
@@ -1599,7 +1602,9 @@ async function readyCommand(
     return EXIT.ok;
   }
 
-  const ready = store.listReady(now);
+  // A remote person limited to some projects (remoteLensOf) sees only theirs, counted over those alone.
+  const lens = context.principal?.lens ?? null;
+  const ready = store.listReady(now).filter(ref => lens === null || ref.repo !== null && lens.includes(ref.repo));
 
   const described = ready.map(ref => describeRef(store, ref, now));
   const dispatchableCount = described.filter(one => diagnosisIsDispatchable(one.dispatch)).length;
@@ -11176,6 +11181,13 @@ async function statusCommand(
   if (positional.length > 0) return fail(context.write, context.json, command, "usage", "Use `toolroll status [--json]`.", EXIT.usage);
   // Whose lead the status line follows: the lead's own person, else the remembered login; nobody shows no lead.
   const viewer = currentActor()?.account ?? readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name ?? null;
+  // A remote person limited to some projects sees only those (remoteLensOf): their tasks and counts, and nothing
+  // that belongs to the installation or other projects (updates, integrations, builds by project, unsent replies).
+  const lens = context.principal?.lens ?? null;
+  if (lens !== null) {
+    const status = installationStatus(context.store, context.clock(), viewer, lens);
+    return succeed(context.write, context.json, command, { ...status, projects: [] }, () => renderInstallationStatus(status, true));
+  }
   const status = installationStatus(context.store, context.clock(), viewer);
   // One line, only when a newer Toolroll exists; offline or switched off says nothing.
   const current = PACKAGE_VERSION;
@@ -11540,6 +11552,7 @@ async function addTask(
       throw new RemoteRefusal("not-found", "Not found.");
     }
   }
+  remote?.noteTask(filedId);
   store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
 
   // Placement is explicit, never inferred from where the command happened to
@@ -11845,7 +11858,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
   }
   let page;
   try {
-    page = workIndexPage(store, now, { principal: 'operator', repos: null, includeUnplaced: true }, {
+    // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
+    const lens = context.principal?.lens ?? null;
+    page = workIndexPage(store, now, { principal: 'operator', repos: lens, includeUnplaced: lens === null }, {
       view: parseWorkView(rawView ?? null), limit, cursor: text(flags, 'cursor') ?? null,
       ...(wanted === undefined ? {} : { state: wanted as TaskState }),
       ...(text(flags, 'repo') === undefined ? {} : { project: text(flags, 'repo')! }),
@@ -11888,13 +11903,21 @@ function showTask(positional: readonly string[], context: Context): number {
   // whatever readiness this task's runners have reported.
   const routed = routeOfTask(store, id, ref, now);
   const readiness = store.readinessLookupFor(ref.repo, ref.assignedRunner, now);
+  const lens = context.principal?.lens ?? null;
+  const access = { principal: "operator" as const, repos: lens, includeUnplaced: lens === null, dependencyRepos: lens };
+  const blockers = store.blockers(id);
+  const visibleBlockers = lens === null ? blockers : blockers.filter(blocker => {
+    const repo = store.lookupRef(blocker)?.repo;
+    return repo != null && lens.includes(repo);
+  });
   const detail = {
     task,
-    work: taskWorkSummaryOf(store, id, now, { principal: "operator", repos: null, includeUnplaced: true }),
-    assignment: assignmentBrief(assignmentOf(store, id, now, { principal: "operator", repos: null, includeUnplaced: true }, context.evidenceRoot)),
+    work: taskWorkSummaryOf(store, id, now, access),
+    assignment: assignmentBrief(assignmentOf(store, id, now, access, context.evidenceRoot)),
     ref: ref.id,
-    blockedBy: store.blockers(id),
-    position: store.queuePosition(id),
+    // One phrase for every inaccessible blocker, so even their number stays private.
+    blockedBy: visibleBlockers.length === blockers.length ? visibleBlockers : [...visibleBlockers, "a task in another project"],
+    position: lens === null ? store.queuePosition(id) : null,
     reservedFor: ref.assignedRunner,
     hold: store.activeHold(ref.id, now),
     claim: currentClaim(store, ref.id, now),
@@ -11919,7 +11942,7 @@ function showTask(positional: readonly string[], context: Context): number {
     // The one automatic review of the latest build: HIGH findings, suggested
     // follow-ups (MEDIUM/LOW), or why it was not reviewed.
     automaticReview: latestFinished === null ? null : buildReviewOf(store, latestFinished.id),
-    dispatch: diagnoseTaskDispatch(store, id, now),
+    dispatch: diagnoseTaskDispatch(store, id, now, lens),
     // v52: the exact-run control the console shows — Stop, Stopping,
     // Paused (resume), or the review-retry door — and every stop on record.
     control: taskControlOf(store, ref.id, now),

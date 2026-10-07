@@ -51,24 +51,26 @@ export const REMOTE_MESSAGES = {
 /**
  * How a "yes" command finds the project it touches, before it runs. Any --repo given is checked too.
  *  installation — reads or acts across every project: only for someone with access to all of them.
+ *  listing — lists across projects: someone with access to all of them sees everything, as locally; anyone else
+ *    sees only their own projects (the run's `lens`), with every count taken over those projects alone.
  *  repo — needs --repo, naming a project the server knows and the person may use.
  *  references — the audited arguments resolve every resource to its stored project before dispatch.
  *  self — the command already narrows to the person's own projects (their access is passed in).
  *  global — touches no project's data.
  */
-export type RemoteScope = { kind: "installation" } | { kind: "repo" } | { kind: "references" } | { kind: "self" } | { kind: "global" };
+export type RemoteScope = { kind: "installation" } | { kind: "listing" } | { kind: "repo" } | { kind: "references" } | { kind: "self" } | { kind: "global" };
 
 const installation: RemoteScope = { kind: "installation" }, repo: RemoteScope = { kind: "repo" }, self: RemoteScope = { kind: "self" }, global: RemoteScope = { kind: "global" };
-const references: RemoteScope = { kind: "references" };
+const references: RemoteScope = { kind: "references" }, listing: RemoteScope = { kind: "listing" };
 
 /** Every "yes" row's scope. The remote test holds this to the guide's "yes" rows exactly. */
 export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, RemoteScope>([
-  ["status", installation], ["integrations", installation], ["ready", installation], ["grants", installation], ["sync", installation],
+  ["status", listing], ["integrations", installation], ["ready", listing], ["grants", installation], ["sync", installation],
   ["gaps", repo], ["task add", repo],
   ...["ask", "checks", "add-tests", "show", "wait", "complete", "revise", "state", "block", "unblock", "next", "steer", "assign", "scope", "plan", "hold",
     "unhold", "require", "requeue", "review", "repair", "route", "reopen", "stop", "resume"].map(action => [`task ${action}`, references] as [string, RemoteScope]),
   ["check-progress", references],
-  ["task list", installation],
+  ["task list", listing],
   ["runner list", installation], ["coordinator list", installation], ["outbox list", installation], ["incident list", installation], ["incident resolve", installation],
   ["cap list", repo], ["cap add", repo],
   ...["list", "show", "add", "refresh", "pause", "resume", "run-now"].map(action => [`routine ${action}`, installation] as [string, RemoteScope]),
@@ -82,6 +84,26 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
     .map(action => [`flows ${action}`, self] as [string, RemoteScope]),
   ["models status", global], ["models list", global],
 ]);
+
+/**
+ * Why each "installation" row still needs access to every project rather than listing a person's own. The remote
+ * test holds this to the table's "installation" rows exactly, so a newly allowed cross-project command has to be
+ * scoped as a listing or stated here; it cannot skip project scoping by omission.
+ */
+export const REMOTE_ALL_PROJECTS_ONLY: ReadonlyMap<string, "installation-wide" | "not yet scoped"> = new Map([
+  // Settings, connections and acts that belong to the installation as a whole, not to any one project.
+  ...["integrations", "grants", "sync", "incident resolve", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
+    "config show", "intake run", "contest exclude", "webhook status", "webhook test"].map(row => [row, "installation-wide"] as const),
+  // Cross-project lists and reads a limited person is still refused; scoping them is later work.
+  ...["runner list", "coordinator list", "outbox list", "incident list", "routine list", "routine show", "intake show", "intake preview",
+    "intake pr-comments", "template list", "template show", "contest show", "review show"].map(row => [row, "not yet scoped"] as const),
+]);
+
+/** The projects a listing or task reference may disclose: null for someone with access to all of them. */
+export function remoteLensOf(store: Store, scope: RemoteScope, allows: (repo: string | null) => boolean): readonly string[] | null {
+  if ((scope.kind !== "listing" && scope.kind !== "references") || allows(null)) return null;
+  return Object.freeze(store.knownRepos().filter(repo => allows(repo)));
+}
 
 /** Flags a remote caller never passes: who they are comes from the token, and the server reads and writes no paths for them. */
 export const REMOTE_REFUSED_FLAGS: ReadonlySet<string> = new Set([
@@ -146,6 +168,7 @@ export function remoteProjectOf(
   switch (scope.kind) {
     case "global":
     case "self":
+    case "listing":
       return checked;
     case "installation":
       return run.allows(null) ? { ok: true, repo: named, taskId: null } : { ok: false, reason: "all-projects", message: REMOTE_MESSAGES.installation };

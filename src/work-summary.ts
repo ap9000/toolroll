@@ -96,10 +96,14 @@ export function workSummaryOf(facts: WorkFacts, principal: WorkPrincipal, result
   };
 }
 
-export type WorkSummaryAccess =
+export type WorkSummaryAccess = (
   /** `viewer`: the person reading, whose own lead's claim (lead-voice.ts) a task reads as "<name> is on it". */
   | { principal: "operator"; repos: readonly string[] | null; includeUnplaced?: boolean; viewer?: string | null }
-  | { principal: "coordinator"; repos: readonly string[] };
+  | { principal: "coordinator"; repos: readonly string[] }
+) & {
+  /** Remote task reads also restrict dependency details; omitted preserves existing local output. */
+  dependencyRepos?: readonly string[] | null;
+};
 
 /** Admission precedes reading question/proof bodies. Missing and foreign
  * tasks share the same result. The caller must authenticate/revalidate
@@ -119,7 +123,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
   const publication = result === null ? null : store.publicationForRun(result.id);
   const facts: WorkFacts = {
     id: task.id, title: task.title, repo: ref.repo, state: task.state, updatedAt: task.updatedAt,
-    dispatch: diagnoseTaskDispatch(store, taskId, now), liveRunId: live?.id ?? null,
+    dispatch: diagnoseTaskDispatch(store, taskId, now, access.dependencyRepos ?? null), liveRunId: live?.id ?? null,
     unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
     control: taskControlOf(store, ref.id, now), openDecision: openWorkDecisionOf(store, ref.id, now),
     result: result === null ? null : {

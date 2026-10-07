@@ -31,7 +31,8 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
 import { runOperate, runOperateAs, type Principal } from "./operate.js";
-import { REMOTE_SCOPES, remoteRowOf } from "./operate-remote.js";
+import { REMOTE_ALL_PROJECTS_ONLY, REMOTE_SCOPES, remoteRowOf } from "./operate-remote.js";
+import { callPersonTool } from "./mcp-person.js";
 import { CheckProgressTracker } from "./check-progress.js";
 import { flowFromSteps } from "./flows.js";
 import { COMMAND_GUIDE } from "./surface.js";
@@ -56,7 +57,7 @@ const as = (who: Principal, argv: string[], extra: { files?: Record<string, stri
 const remoteLedger = () => store.actionLedger({ repos: null, limit: 200 }).filter(one => one.source === "api" || one.source === "mcp");
 async function fileTask(repo: string, title: string): Promise<string> {
   out = [];
-  expect(await runOperate("task", ["add", title, "--repo", repo, "--json", "--db", file], write, { now: NOW, openDatabase: () => openStore(file) })).toBe(0);
+  expect(await runOperate("task", ["add", title, "--repo", repo, "--json", "--db", file], write, { now: NOW, openDatabase: () => openStore(file) }), out.join("\n")).toBe(0);
   return String((last()["task"] as { id: string }).id);
 }
 
@@ -143,9 +144,10 @@ describe("runOperateAs", () => {
     expect(filed).toMatchObject({ ok: true, command: "task add", repo: A });
     const id = String((filed["task"] as { id: string }).id);
     expect(store.lookupRef(id)?.repo).toBe(A);
-    expect(remoteLedger().map(one => ({ actor: one.actor, action: one.action, outcome: one.outcome, source: one.source, repo: one.repo, detail: one.detail }))).toEqual([
-      { actor: "sam", action: "remote command: task add", outcome: "done", source: "api", repo: A, detail: "token sam-laptop" },
-      { actor: "sam", action: "remote command: task add", outcome: "requested", source: "api", repo: A, detail: "token sam-laptop" },
+    // The filed task is only known once the command runs: the final line names it.
+    expect(remoteLedger().map(one => ({ actor: one.actor, action: one.action, outcome: one.outcome, source: one.source, repo: one.repo, taskId: one.taskId, detail: one.detail }))).toEqual([
+      { actor: "sam", action: "remote command: task add", outcome: "done", source: "api", repo: A, taskId: id, detail: "token sam-laptop" },
+      { actor: "sam", action: "remote command: task add", outcome: "requested", source: "api", repo: A, taskId: null, detail: "token sam-laptop" },
     ]);
     // Their agent over MCP is the same person, from its own source.
     expect(await as(sam, ["task", "show", taskA, "--json"], { source: "mcp" })).toBe(0);
@@ -220,10 +222,10 @@ describe("runOperateAs", () => {
     // A task in their project, named with another project's --repo, is refused too.
     expect(await as(sam, ["task", "show", taskA, "--repo", B, "--json"])).toBe(3);
     // Installation-wide reads need access to every project.
-    expect(await as(sam, ["status", "--json"])).toBe(3);
+    expect(await as(sam, ["runner", "list", "--json"])).toBe(3);
     expect(last()).toMatchObject({ reason: "all-projects" });
-    expect(await as(alex, ["status", "--json"])).toBe(0);
-    expect(last()).toMatchObject({ ok: true, command: "status" });
+    expect(await as(alex, ["runner", "list", "--json"])).toBe(0);
+    expect(last()).toMatchObject({ ok: true, command: "runner list" });
     // The token's own projects narrow the person's access, and access is read now, not when the token was checked.
     const narrowed = principal("alex", alex.tokenId, "act", [A]);
     expect(await as(narrowed, ["task", "show", taskB, "--json"])).toBe(3);
@@ -388,6 +390,8 @@ describe("runOperateAs", () => {
     const references = store.handle.prepare("SELECT * FROM task_ref").all();
     expect(await as(sam, ["task", "add", "My replay result", "--repo", A, "--key", key, "--json"])).toBe(0);
     expect(last()).toEqual(mine);
+    // A replay's history names the task it answered with, never a fresh candidate.
+    expect(remoteLedger()[0]).toMatchObject({ outcome: "done", taskId: mineId });
     expect(store.handle.prepare("SELECT * FROM task_ref").all()).toEqual(references);
     expect(store.lookupRef(privateId)?.repo).toBe(B);
     // The same account's other project and command have distinct replay identities too.
@@ -427,7 +431,7 @@ describe("runOperateAs", () => {
       expect(await as(sam, ["task", "unhold", taskA, "--key", "unhold-1", "--json"])).toBe(0);
       expect(await as(sam, ["memory", "status", "--json"])).toBe(0);
       expect(await as(sam, ["flows", "list", "--json"])).toBe(0);
-      expect(await as(sam, ["task", "list", "--json"])).toBe(3);
+      expect(await as(sam, ["task", "list", "--json"])).toBe(0);
       expect(await as(sam, ["task", "steer", taskA, "--note", "keep the old copy", "--json"])).toBe(0);
       expect(out.join("\n")).not.toMatch(/a remote run (prompted|read)/);
       expect(loginReads, "a remote run read the owner's saved login").toEqual([]);
@@ -456,7 +460,248 @@ describe("runOperateAs", () => {
   });
 });
 
+describe("cross-project lists for a person limited to some projects", () => {
+  /** Everything of project B a limited person must never see, in any output. */
+  let hiddenSecond = "";
+  const hidden = () => [taskB, hiddenSecond, B, "project-b", "Rotate the billing keys", "Close the old billing account", "Builds by project", "Plan windows", "Release check", "claude max"];
+  const leaks = (text: string) => hidden().filter(one => text.includes(one));
+  const run = async (who: Principal, argv: string[]) => { out = []; const code = await as(who, argv); return { code, text: out.join("\n") }; };
+
+  beforeEach(async () => {
+    // A second task in B and one plan window: both owner-only facts a limited person's counts must leave out.
+    hiddenSecond = await fileTask(B, "Close the old billing account");
+    store.recordProviderLimits({ provider: "claude", plan: "max", windows: [{ window: "five_hour", usedPercent: 40, windowMinutes: 300, resetsAt: null, reached: false }] }, NOW);
+    out = [];
+  });
+
+  it("status shows only their projects, counted over them, and leaves out the installation's lines", async () => {
+    const plain = await run(sam, ["status"]);
+    expect(plain.code).toBe(0);
+    expect(plain.text).toContain(taskA);
+    expect(plain.text).toContain("Queued: 1 — ");
+    expect(leaks(plain.text)).toEqual([]);
+    const json = await run(samRead, ["status", "--json"]);
+    expect(json.code).toBe(0);
+    expect(leaks(json.text)).toEqual([]);
+    const body = last();
+    expect(body).toMatchObject({ ok: true, command: "status", queued: { count: 1, reasons: [{ reason: "needs a scope", count: 1 }] }, running: { count: 0 },
+      waitingForReview: { count: 0 }, releaseCheck: null, planWindows: [], lead: null, projects: [] });
+    expect((body["tasks"] as { task: string }[]).map(one => one.task)).toEqual([taskA]);
+    for (const absent of ["update", "integrations", "updateWaiting", "unsentReplies"]) expect(body, absent).not.toHaveProperty(absent);
+    // The owner still sees the whole installation.
+    const owner = await run(alex, ["status"]);
+    expect(owner.text).toContain("Queued: 3 — ");
+    for (const line of ["Builds by project", "Plan windows: claude max", "Release check: none recorded"]) expect(owner.text).toContain(line);
+  });
+
+  it.each([[], ["--view", "all"], ["--view", "needs-you"], ["--view", "running"], ["--view", "completed"], ["--state", "queued"], ["--limit", "1"], ["--repo", "A"]])(
+    "task list %j pages and counts only their projects", async (...extra) => {
+      const flags = extra.map(one => one === "A" ? A : one);
+      for (const mode of [[], ["--json"]]) {
+        const listed = await run(sam, ["task", "list", ...flags, ...mode]);
+        expect(listed.code, listed.text).toBe(0);
+        expect(leaks(listed.text)).toEqual([]);
+      }
+      // Totals are exactly the owner's for project A alone.
+      const own = last();
+      const view = flags.filter((_one, index) => flags[index - 1] !== "--repo" && flags[index] !== "--repo");
+      await run(alex, ["task", "list", ...view, "--repo", A, "--json"]);
+      expect(own["totals"]).toEqual(last()["totals"]);
+      expect(own["tasks"]).toEqual(last()["tasks"]);
+    });
+
+  it("follows a page cursor without reaching another project", async () => {
+    const extra = await fileTask(A, "Second task in A");
+    const first = await run(sam, ["task", "list", "--limit", "1", "--json"]);
+    const cursor = String(last()["nextCursor"]);
+    expect(cursor).not.toBe("null");
+    const second = await run(sam, ["task", "list", "--limit", "1", "--cursor", cursor, "--json"]);
+    expect(last()["nextCursor"]).toBeNull();
+    expect([first.text, second.text].join("\n")).toContain(extra);
+    expect(leaks(first.text + second.text)).toEqual([]);
+  });
+
+  it("answers another project's --repo exactly as a missing one", async () => {
+    const replies: string[] = [];
+    for (const repo of [B, join(dir, "no-such-project")]) {
+      const listed = await run(sam, ["task", "list", "--repo", repo, "--json"]);
+      expect(listed.code).toBe(3);
+      expect(last()).toMatchObject({ ok: false, reason: "unknown-project" });
+      replies.push(listed.text.replace(repo, "<repo>"));
+    }
+    expect(replies[0]).toBe(replies[1]);
+    expect(leaks(replies.join(""))).toEqual([]);
+  });
+
+  it("ready lists and counts only their projects", async () => {
+    for (const mode of [[], ["--json"]]) {
+      const ready = await run(sam, ["ready", ...mode]);
+      expect(ready.code).toBe(0);
+      expect(ready.text).toContain(taskA);
+      expect(leaks(ready.text)).toEqual([]);
+    }
+    expect(last()).toMatchObject({ ok: true, count: 1 });
+    await run(alex, ["ready", "--json"]);
+    expect(last()).toMatchObject({ ok: true, count: 3 });
+  });
+
+  it("gives the MCP status and list_tasks tools the same view", async () => {
+    const runAs: typeof runOperateAs = (argv, opts) => runOperateAs(argv, { ...opts, options: { now: NOW } });
+    const person = { principal: samRead, role: "approver" as const, tokenName: "sam-dashboard" };
+    for (const [name, args] of [["status", {}], ["list_tasks", {}], ["list_tasks", { state: "queued" }], ["list_tasks", { repo: A }]] as const) {
+      const outcome = await callPersonTool(person, store, runAs, { name, arguments: args });
+      expect(outcome.kind).toBe("result");
+      const result = (outcome as { result: { content: { text: string }[]; isError?: boolean } }).result;
+      expect(result.isError, `${name} ${result.content[0]!.text}`).toBeUndefined();
+      expect(result.content[0]!.text).toContain(taskA);
+      expect(leaks(result.content[0]!.text)).toEqual([]);
+    }
+    const refused = await callPersonTool(person, store, runAs, { name: "list_tasks", arguments: { repo: B } });
+    expect((refused as { result: { isError?: boolean; content: { text: string }[] } }).result).toMatchObject({ isError: true });
+    expect(leaks((refused as { result: { content: { text: string }[] } }).result.content[0]!.text).filter(one => one !== B)).toEqual([]);
+    expect(remoteLedger().slice(0, 5).every(one => one.source === "mcp" && one.actor === "sam")).toBe(true);
+  });
+
+  const mcp = async (who: Principal, name: string, args: Record<string, unknown>) => {
+    const runAs: typeof runOperateAs = (argv, opts) => runOperateAs(argv, { ...opts, options: { now: NOW } });
+    const outcome = await callPersonTool({ principal: who, role: "approver", tokenName: "fixture" }, store, runAs, { name, arguments: args });
+    expect(outcome.kind).toBe("result");
+    const result = (outcome as { result: { content: { text: string }[]; isError?: boolean } }).result;
+    expect(result.isError, result.content[0]!.text).toBeUndefined();
+    return result.content[0]!.text;
+  };
+
+  it.each(["queued", "failed", "cancelled", "done"] as const)("task show hides %s foreign blockers in plain, JSON and MCP answers", async state => {
+    const visible = await fileTask(A, "Zebra prerequisite");
+    for (const blocker of [taskB, hiddenSecond, visible]) expect(store.addEdge(taskA, blocker)).toEqual({ ok: true });
+    for (const blocker of [taskB, hiddenSecond]) expect(store.setTaskState(blocker, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    // Both a token's restriction and the account's current grants narrow task references.
+    for (const who of [sam, samRead, { ...alex, projects: [A] }, { ...sam, projects: null }]) {
+      const plain = await run(who, ["task", "show", taskA]);
+      expect(plain.code).toBe(0);
+      expect(plain.text).toContain(`waits for ${visible}, a task in another project`);
+      expect(plain.text).not.toContain("position  ");
+      expect(leaks(plain.text)).toEqual([]);
+      const json = await run(who, ["task", "show", taskA, "--json"]);
+      expect(json.code).toBe(0);
+      expect(leaks(json.text)).toEqual([]);
+      expect(last()).toMatchObject({ blockedBy: [visible, "a task in another project"], position: null,
+        dispatch: { blockerTaskId: state === "done" ? visible : null } });
+      expect(await mcp(who, "task_show", { ref: taskA })).toBe(json.text);
+    }
+    // The owner keeps the real references and queue column, exactly as a local caller sees them.
+    for (const mode of [[], ["--json"]]) {
+      const remote = await run(alex, ["task", "show", taskA, ...mode]);
+      expect(remote.text).toContain(taskB);
+      if (mode.length > 0) {
+        expect(last()["position"]).toEqual(store.queuePosition(taskA));
+        expect(await mcp(alex, "task_show", { ref: taskA })).toBe(remote.text);
+      }
+      out = [];
+      expect(await runOperate("task", ["show", taskA, ...mode, "--db", file], write, { now: NOW, openDatabase: () => openStore(file) })).toBe(remote.code);
+      expect(out.join("\n")).toBe(remote.text);
+    }
+  });
+
+  it.each(["queued", "failed", "cancelled"] as const)("lists and ready hide %s foreign dependencies and their counts", async state => {
+    expect(store.addEdge(taskA, taskB)).toEqual({ ok: true });
+    expect(store.setTaskState(taskB, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    expect(store.setTaskState(hiddenSecond, state, NOW, {}, "No longer needed")).toEqual({ ok: true });
+    const visible = await fileTask(A, "A ready task with private dependents");
+    const commands = [
+      ["task", "show", taskA], ["task", "show", taskA, "--json"],
+      ["task", "show", visible, "--json"], ["status"], ["status", "--json"], ["ready"], ["ready", "--json"],
+      ...[[], ["--view", "all"], ["--view", "needs-you"], ["--view", "running"], ["--view", "completed"],
+        ["--state", "queued"], ["--repo", A], ["--limit", "1"]].flatMap(flags => [
+          ["task", "list", ...flags], ["task", "list", ...flags, "--json"],
+        ]),
+    ];
+    const read = async () => {
+      const answers = [];
+      for (const argv of commands) {
+        const answer = await run(samRead, argv);
+        expect(answer.code, argv.join(" ")).toBe(0);
+        expect(leaks(answer.text), argv.join(" ")).toEqual([]);
+        if (argv[0] === "ready" && argv.includes("--json")) {
+          expect(last()).toMatchObject({ count: 1, tasks: [{ id: visible, dispatch: { blockerTaskId: null } }] });
+        }
+        answers.push(answer);
+      }
+      for (const [name, args] of [["task_show", { ref: taskA }], ["task_show", { ref: visible }], ["status", {}], ["list_tasks", {}]] as const) {
+        const text = await mcp(samRead, name, args);
+        expect(leaks(text)).toEqual([]);
+        answers.push({ code: 0, text });
+      }
+      return answers;
+    };
+    const before = await read();
+    // A second invisible blocker, dependent and queued task must not change any limited answer.
+    expect(store.addEdge(taskA, hiddenSecond)).toEqual({ ok: true });
+    const dependent = await fileTask(B, "Private dependent count marker");
+    expect(store.addEdge(dependent, visible)).toEqual({ ok: true });
+    expect(await read()).toEqual(before);
+    for (const argv of [["status"], ["status", "--json"], ["task", "list"], ["task", "list", "--json"], ["ready"], ["ready", "--json"]]) {
+      const remote = await run(alex, argv);
+      out = [];
+      expect(await runOperate(argv[0]!, [...argv.slice(1), "--db", file], write, { now: NOW, openDatabase: () => openStore(file) })).toBe(remote.code);
+      expect(out.join("\n"), argv.join(" ")).toBe(remote.text);
+    }
+    // Removing the sole visible ready candidate leaves an empty ready set, even with queued work in B.
+    expect(store.addEdge(visible, taskB)).toEqual({ ok: true });
+    for (const mode of [[], ["--json"]]) {
+      const empty = await run(samRead, ["ready", ...mode]);
+      expect(empty.code).toBe(3);
+      expect(leaks(empty.text)).toEqual([]);
+      if (mode.length > 0) expect(last()).toMatchObject({ count: 0, tasks: [], dispatchableCount: 0 });
+    }
+    // Completed foreign prerequisites admit the tasks without disclosing their dependency edges.
+    for (const blocker of [taskB, hiddenSecond]) {
+      expect(store.setTaskState(blocker, "done", NOW)).toEqual({ ok: true });
+    }
+    for (const mode of [[], ["--json"]]) {
+      const ready = await run(samRead, ["ready", ...mode]);
+      expect(ready.code).toBe(0);
+      expect(leaks(ready.text)).toEqual([]);
+      expect(ready.text).not.toContain(dependent);
+      if (mode.length > 0) expect(last()).toMatchObject({ count: 2, tasks: expect.arrayContaining([
+        expect.objectContaining({ id: taskA, dispatch: expect.objectContaining({ blockerTaskId: null }) }),
+        expect.objectContaining({ id: visible, dispatch: expect.objectContaining({ blockerTaskId: null }) }),
+      ]) });
+    }
+  });
+
+  it("keeps an all-project owner's output byte for byte what the same command prints locally", async () => {
+    for (const argv of [["status"], ["status", "--json"], ["task", "list"], ["task", "list", "--json"], ["task", "list", "--view", "needs-you", "--json"],
+      ["task", "list", "--repo", B, "--json"], ["ready"], ["ready", "--json"]]) {
+      const remote = await run(alex, argv);
+      out = [];
+      const local = await runOperate(argv[0]!, [...argv.slice(1), "--db", file], write, { now: NOW, openDatabase: () => openStore(file) });
+      expect(remote.code, argv.join(" ")).toBe(local);
+      expect(remote.text, argv.join(" ")).toBe(out.join("\n"));
+    }
+  });
+
+  it("still refuses a limited person every cross-project command not yet scoped", async () => {
+    for (const [invocation, why] of REMOTE_ALL_PROJECTS_ONLY) {
+      if (why !== "not yet scoped" || !invocation.endsWith(" list")) continue;
+      const refused = await run(samRead, [...invocation.split(" "), "--json"]);
+      expect(refused.code, invocation).toBe(3);
+      expect(last(), invocation).toMatchObject({ reason: "all-projects" });
+    }
+    for (const who of [samRead, alex]) for (const command of ["brief", "spend"]) {
+      expect((await run(who, [command, "--json"])).code).toBe(3);
+      expect(last()).toMatchObject({ reason: "not-remote" });
+    }
+  });
+});
+
 describe("the remote policy table", () => {
+  it("scopes every cross-project row as a listing or says why it needs every project", () => {
+    const installation = [...REMOTE_SCOPES].filter(([, scope]) => scope.kind === "installation").map(([row]) => row);
+    expect([...REMOTE_ALL_PROJECTS_ONLY.keys()].sort()).toEqual(installation.sort());
+    expect([...REMOTE_SCOPES].filter(([, scope]) => scope.kind === "listing").map(([row]) => row).sort()).toEqual(["ready", "status", "task list"]);
+  });
+
   it("gives every runnable row a project scope, routes it to this dispatcher, and finds each row from its own words", () => {
     const yes = COMMAND_GUIDE.filter(row => row.remote === "yes").map(row => row.invocation);
     expect([...REMOTE_SCOPES.keys()].sort()).toEqual([...yes].sort());

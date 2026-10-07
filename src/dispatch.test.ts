@@ -213,6 +213,11 @@ describe("Never Stuck dispatch diagnosis", () => {
       blockerTaskId: "t-blocker",
     });
     expect(diagnosis?.detail).toContain("cancelled");
+    expect(diagnoseTaskDispatch(store, "t-dependent", T0, [REPO])).toEqual(diagnosis);
+    expect(diagnoseTaskDispatch(store, "t-dependent", T0, [])).toEqual({
+      ...diagnosis, blockerTaskId: null, detail: "A task in another project was cancelled before it finished.",
+    });
+    // Hiding the reference changes only presentation; the actual claim still fails on this dependency.
     expect(taskReadinessBlocker(store, dependent, T0)).toEqual({
       code: "dependency",
       blockerId: "t-blocker",

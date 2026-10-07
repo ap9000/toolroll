@@ -14,6 +14,10 @@ export type RemoteRun = {
   readonly secret: string;
   /** Whether the person may use `repo` now (their token's projects and their account's current access). */
   readonly allows: (repo: string | null) => boolean;
+  /** The projects listings and task references may disclose (remoteLensOf); null shows every project. */
+  readonly lens: readonly string[] | null;
+  /** Called with the task a remote `task add` filed (or replayed), so its action history names it. */
+  readonly noteTask: (taskId: string) => void;
   /** Files the caller sent, keyed by the argument that names them. Nothing else is read for input. */
   readonly files: Readonly<Record<string, string>>;
 };
