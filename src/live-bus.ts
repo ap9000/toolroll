@@ -17,7 +17,7 @@
  * - The safety net. Every room also checks itself about every 30 s, so a
  *   missed signal heals, and sends a keep-alive between.
  * - Back-pressure. Each page's stream is bounded: a page that falls behind
- *   gets nothing more until it drains, then one `reload`.
+ *   gets one `reload` and ends so its EventSource can reconnect.
  *
  * Transport seam: a future WebSocket (live cursors) subscribes to the same
  * LiveBus beside these SSE rooms; nothing in the Store or the triggers changes.
@@ -125,33 +125,35 @@ export const KEEP_ALIVE_MS = 15_000;
 /** What a page's stream may hold unsent before it is "behind". */
 export const STREAM_LIMIT_BYTES = 32 * 1024;
 
-/** One page's stream, bounded. Behind its limit it sends nothing more until it drains, then one `reload`. */
+/** One page's stream, bounded. Overflow is terminal, even below Node's drain threshold. */
 export class LiveStream {
-  private behind = false;
-  constructor(readonly response: ServerResponse, private readonly limit = STREAM_LIMIT_BYTES, private readonly recovered: () => void = () => {}) {}
+  private ended = false;
+  constructor(readonly response: ServerResponse, private readonly limit = STREAM_LIMIT_BYTES, private readonly onOverflow: () => void = () => {}) {}
 
-  get open(): boolean { return !this.response.writableEnded && !this.response.destroyed; }
+  get open(): boolean { return !this.ended && !this.response.writableEnded && !this.response.destroyed; }
 
-  private ready(): boolean {
-    if (!this.open) return false;
-    if (this.behind) return false;
-    if ((this.response.writableLength ?? 0) <= this.limit) return true;
-    this.behind = true;
-    this.response.once("drain", () => {
-      this.behind = false;
-      if (!this.open) return;
-      this.response.write("event: reload\ndata: {}\n\n");
-      this.recovered();
-    });
-    return false;
+  private overflow(): void {
+    if (!this.open) return;
+    this.ended = true;
+    // end(data) queues at most this final frame; it never waits for a drain
+    // that Node may not emit when our limit is below its high-water mark.
+    try { this.response.end("event: reload\ndata: {}\n\n"); }
+    finally { this.onOverflow(); }
+  }
+
+  private write(frame: string): void {
+    if (!this.open) return;
+    if (this.response.writableLength > this.limit) { this.overflow(); return; }
+    this.response.write(frame);
+    if (this.response.writableLength > this.limit) this.overflow();
   }
 
   send(event: string, data: unknown): void {
-    if (this.ready()) this.response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    this.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
   keepAlive(): void {
-    if (this.ready()) this.response.write(": keep-alive\n\n");
+    this.write(": keep-alive\n\n");
   }
 }
 
@@ -250,16 +252,15 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
         rooms.set(key, room);
         if (bus !== null && unsubscribe === null) unsubscribe = bus.subscribe(heard);
       }
-      const joined = room;
-      const stream = new LiveStream(viewer.response, options.limitBytes, () => {
-        // Caught up after falling behind: the reload re-reads the page; say who's here again.
-        if (joined.viewers.has(viewer)) stream.send("here", { people: here(joined, viewer) });
-      });
+      // Remove an overflowed page immediately, even while its final bytes
+      // wait for the client. Peers must not keep seeing stale presence.
+      const stream = new LiveStream(viewer.response, options.limitBytes, () => leave(key, viewer));
       room.viewers.set(viewer, stream);
-      stream.send("change", { at: room.last, revision: bus?.revision() ?? null });
-      stream.send("here", { people: here(room, viewer) });
-      announce(room);
       viewer.response.once("close", () => leave(key, viewer));
+      stream.send("change", { at: room.last, revision: bus?.revision() ?? null });
+      if (!stream.open) return;
+      stream.send("here", { people: here(room, viewer) });
+      if (stream.open) announce(room);
     },
     close() {
       for (const [key, room] of [...rooms]) for (const viewer of [...room.viewers.keys()]) leave(key, viewer);

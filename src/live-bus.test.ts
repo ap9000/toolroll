@@ -1,12 +1,13 @@
 /** Live views push on write (live-bus.ts): a committed write reaches every open task and flow page at once as one
  * opaque change; a rolled-back or quiet write says nothing; an idle open page does no database work; a slow page gets
- * one reload after it drains; and the 30 s safety net heals a signal that never came. */
-import { EventEmitter } from "node:events";
-import type { ServerResponse } from "node:http";
+ * one reload and closes; and the 30 s safety net heals a signal that never came. */
+import { EventEmitter, once } from "node:events";
+import { createServer, type ServerResponse } from "node:http";
+import { Socket } from "node:net";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
-import { createLiveBus, followWorkspace, type LiveBus, type WorkspaceFollower } from "./live-bus.js";
+import { createLiveBus, followWorkspace, LiveStream, STREAM_LIMIT_BYTES, type LiveBus, type WorkspaceFollower } from "./live-bus.js";
 import { heartbeat } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { createTaskRooms, taskFingerprint } from "./task-live.js";
@@ -33,7 +34,7 @@ class Page extends EventEmitter {
   destroyed = false;
   writableLength = 0;
   write(chunk: string) { this.sent.push(chunk); return true; }
-  end() { this.writableEnded = true; this.emit("close"); }
+  end(chunk?: string) { if (chunk !== undefined) this.sent.push(chunk); this.writableEnded = true; this.emit("close"); }
   events(name: string): unknown[] {
     return this.sent.filter(one => one.startsWith(`event: ${name}\n`)).map(one => JSON.parse(one.split("\ndata: ")[1]!.trim()));
   }
@@ -155,25 +156,119 @@ describe("rooms on the bus", () => {
     rooms.close();
   });
 
-  test("a slow page gets nothing more while behind, then one reload and who's here once it drains", () => {
+  test("a paused real socket ends below Node's drain threshold, leaves the room, and never blocks a fast peer", async () => {
+    vi.useRealTimers();
     let print = "a";
-    const rooms = createTaskRooms(() => print, { bus, limitBytes: 1_024 });
-    const slow = new Page(), quick = new Page();
-    rooms.join("t-1", { name: "alex", response: response(slow), valid: () => true });
-    rooms.join("t-1", { name: "robin", response: response(quick), valid: () => true });
-    vi.advanceTimersByTime(200);
-    slow.writableLength = 1_000_000;
-    const sent = slow.sent.length;
-    for (let index = 0; index < 500; index += 1) { print = `p${index}`; bus.publish({ revision: `v1:${index}` }); }
-    expect(slow.sent).toHaveLength(sent);
-    expect(quick.events("change").length).toBeGreaterThan(500);
-    slow.writableLength = 0;
-    slow.emit("drain");
-    expect(slow.sent.slice(sent).map(one => one.split("\n")[0])).toEqual(["event: reload", "event: here"]);
-    expect(slow.listenerCount("drain")).toBe(0);
-    print = "after";
-    bus.publish({ revision: "v1:9999" });
-    expect(slow.events("change").at(-1)).toEqual({ at: "after", revision: "v1:9999" });
-    rooms.close();
+    const limit = STREAM_LIMIT_BYTES;
+    const rooms = createTaskRooms(() => print, { bus, limitBytes: limit });
+    const responses = new Map<string, ServerResponse>();
+    const server = createServer((request, reply) => {
+      reply.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+      reply.flushHeaders();
+      const name = request.url!.slice(1);
+      responses.set(name, reply);
+      rooms.join("t-1", { name, response: reply, valid: () => true });
+    });
+    // Keep the slow reader paused, with almost no user-space receive buffer.
+    const slow = new Socket({ readableHighWaterMark: 1 });
+    const quick = new Socket();
+    let quickText = "";
+    quick.on("data", chunk => { quickText = (quickText + chunk.toString()).slice(-65_536); });
+    const quickSaw = async (text: string) => {
+      while (!quickText.includes(text)) await once(quick, "data");
+    };
+    try {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no loopback address");
+      slow.connect(address.port, "127.0.0.1");
+      await once(slow, "connect");
+      slow.write("GET /alex HTTP/1.1\r\nHost: localhost\r\n\r\n");
+      await once(slow, "readable");
+      slow.pause();
+      expect(slow.isPaused()).toBe(true);
+      quick.connect(address.port, "127.0.0.1");
+      await once(quick, "connect");
+      quick.write("GET /robin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+      await quickSaw('"people":["alex"]');
+
+      const reply = responses.get("alex")!;
+      expect(limit).toBeLessThan(reply.writableHighWaterMark);
+      const writes = vi.spyOn(reply, "write"), ends = vi.spyOn(reply, "end");
+      // Each update fits the application cap. Wait for the fast socket's
+      // receipt before the next, so only the paused reader builds a backlog.
+      // Bound generated traffic to 16 MiB; no sleeps or synthetic drain.
+      for (let index = 0; index < 8_192 && !reply.writableEnded; index += 1) {
+        print = `${index}:${"x".repeat(2_000)}`;
+        bus.publish({ revision: `v1:${index}` });
+        await quickSaw(`"at":"${print}"`);
+      }
+      expect(reply.writableEnded).toBe(true);
+      expect(reply.writableLength).toBeLessThan(reply.writableHighWaterMark);
+      expect(writes.mock.results.length).toBeGreaterThan(1);
+      expect(writes.mock.results.every(result => result.value === true)).toBe(true);
+      expect(reply.listenerCount("drain")).toBe(0);
+      expect(ends).toHaveBeenCalledExactlyOnceWith("event: reload\ndata: {}\n\n");
+      expect(rooms.size()).toBe(1); // leave before the slow reader resumes
+      const sent = writes.mock.calls.length;
+      print = "after-overflow";
+      bus.publish({ revision: "v1:after" });
+      await quickSaw('"at":"after-overflow"');
+      await quickSaw('"people":[]');
+      expect(writes).toHaveBeenCalledTimes(sent);
+      expect(ends).toHaveBeenCalledTimes(1);
+
+      // Resume only after proving the stream ended without a drain. The
+      // response's terminal frame and EOF arrive through the actual socket.
+      let slowText = "";
+      slow.on("data", chunk => { slowText += chunk.toString(); });
+      const closed = once(slow, "end");
+      slow.resume();
+      await closed;
+      expect(slowText.match(/event: reload\n/g)).toHaveLength(1);
+      expect(slowText).not.toContain("after-overflow");
+      rooms.close();
+      expect(rooms.size()).toBe(0);
+      expect(bus.listeners()).toBe(1); // only the fixture's observer remains
+    } finally {
+      slow.destroy(); quick.destroy(); rooms.close(); server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
+describe("the bounded write path", () => {
+  test.each(["event", "keep-alive"] as const)("%s checks the cap both before and after writing, and ends only once", kind => {
+    for (const alreadyOver of [false, true]) {
+      const page = new Page(), closed = vi.fn();
+      const stream = new LiveStream(response(page), 32, closed);
+      page.writableLength = alreadyOver ? 33 : 32;
+      const write = vi.spyOn(page, "write").mockImplementation(chunk => {
+        page.sent.push(chunk); page.writableLength += Buffer.byteLength(chunk); return true;
+      });
+      if (kind === "event") stream.send("change", {}); else stream.keepAlive();
+      expect(write).toHaveBeenCalledTimes(alreadyOver ? 0 : 1);
+      expect(page.events("reload")).toEqual([{}]);
+      expect(stream.open).toBe(false);
+      expect(page.writableEnded).toBe(true);
+      stream.send("change", {}); stream.keepAlive();
+      expect(write).toHaveBeenCalledTimes(alreadyOver ? 0 : 1);
+      expect(page.events("reload")).toEqual([{}]);
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(page.listenerCount("drain")).toBe(0);
+    }
+  });
+
+  test("overflow during the first frame releases the new room and its subscription", () => {
+    const rooms = createTaskRooms(() => "a", { bus, limitBytes: 1 });
+    const page = new Page();
+    page.writableLength = 2;
+    rooms.join("t-1", { name: "alex", response: response(page), valid: () => true });
+    expect(page.events("reload")).toEqual([{}]);
+    expect(rooms.size()).toBe(0);
+    expect(bus.listeners()).toBe(1);
+    vi.advanceTimersByTime(30_000);
+    expect(page.sent).toHaveLength(1);
   });
 });
