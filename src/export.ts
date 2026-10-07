@@ -46,7 +46,7 @@ export type ExportManifest = {
 export type FullExport = { root: string; files: ExportFile[]; manifest: ExportManifest; tables: number; packs: number };
 
 /** Tables that hold nothing but secrets or short-lived sign-in material, and derived search indexes. */
-const SECRET_TABLES = new Set(["web_session", "ceremony_nonce", "telegram_pairing", "slack_pair", "discord_pair", "teams_pair", "oauth_code"]);
+const SECRET_TABLES = new Set(["web_session", "ceremony_nonce", "telegram_pairing", "slack_pair", "discord_pair", "teams_pair", "oauth_code", "oauth_refresh"]);
 const DERIVED_TABLE = /^(sqlite_|memory_search)/;
 
 /** Columns that hold a secret (or what stands in for one): never exported. */
@@ -54,7 +54,7 @@ const SECRET_COLUMNS = new Set([
   "api_token.secret_hash", "lead_credential.secret_hash", "approver.credential_hash", "coordinator_credential.credential_hash", "runner.credential_hash", "invite.token_hash",
   "flow_trigger.hook_hash", "held_session.cookie", "push_subscription.endpoint", "push_subscription.p256dh", "push_subscription.auth",
   "chat_turn.credential_key", "mate_session.credential_key", "mate_turn.credential_key", "bridge_lease.push_url", "workflow_preview.token",
-  "quota.credential_fp", "oauth_grant.renew_hash", "oauth_grant.prior_renew_hash",
+  "quota.credential_fp", "oauth_grant.renew_hash", "oauth_client.source_hash",
 ]);
 
 /** A column named like this holds a secret unless it is reviewed below; an unreviewed one is dropped. */

@@ -11584,6 +11584,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // MCP sign-in: the console's own sign-in and step-up, a same-site consent form, and the person's current projects.
   const oauthHttp = createOAuthHttp({ store, clock,
     originOf: request => consoleOrigin(request.headers.host),
+    requesterKey: joinSourceOf,
     session: request => {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie") return null;

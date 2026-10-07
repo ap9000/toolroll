@@ -13,7 +13,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
-import { parseApiToken, secretMatches } from "./api-tokens.js";
+import { parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
 import { oauthProjects, oauthTokenAllowed, RESOURCE_PATH } from "./mcp-oauth.js";
 import { authenticateCoordinator } from "./coordinator.js";
 import {
@@ -63,16 +63,17 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       const kept = parsed === null ? null : store.apiTokenSecret(parsed.id);
       // The secret is checked here too, so this door never rests on how signedIn reads the request.
       if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) return null;
-      if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= options.clock().getTime()) return null;
+      if (!tokenLive(kept.row, options.clock().getTime())) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
       // An MCP sign-in's token: only while its access is fresh, and only in the projects the person chose (mcp-oauth.ts).
       if (!oauthTokenAllowed(store, kept.row.id, RESOURCE_PATH, options.clock())) return null;
       const granted = oauthProjects(store, kept.row.id);
+      const projects = tokenProjects(tokenProjects(account.projects, kept.row.projects), granted);
       return {
         kind: "person",
         person: {
-          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: granted ?? (account.projects === null ? null : [...account.projects]) },
+          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects },
           role: account.role,
           tokenName: kept.row.name,
         },

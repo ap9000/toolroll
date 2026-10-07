@@ -29,7 +29,7 @@ import { PKCE_CHALLENGE, readOAuthRegistration, readOAuthTokenRequest } from "./
 /** How long each piece lives. A code is spent at once; a grant ends after 30 days and the person consents again. */
 export const OAUTH_TIMES = { requestMs: 10 * 60_000, codeMs: 60_000, accessSeconds: 3600, grantDays: 30 } as const;
 /** The most sign-ins waiting at once, and registered clients kept. */
-const MAX_REQUESTS = 200, MAX_CLIENTS = 500;
+export const OAUTH_LIMITS = { requests: 200, requestsPerSource: 20, clients: 500, clientsPerSource: 20 } as const;
 /** The most a registration or form body may be. */
 const MAX_BODY = 16 * 1024;
 export const OAUTH_SCOPES = ["read", "act"] as const;
@@ -47,8 +47,8 @@ export const resourceMetadataUrl = (origin: string): string => `${origin}/.well-
  */
 export function oauthTokenAllowed(store: Store, tokenId: string, path: string, now: Date): boolean {
   const grant = store.oauthGrant(tokenId);
-  if (grant === null) return true;
-  if (path !== RESOURCE_PATH || Date.parse(grant.accessExpiresAt) <= now.getTime()) return false;
+  if (grant === null) return store.apiTokenSecret(tokenId)?.row.purpose === "api";
+  if (path !== RESOURCE_PATH || !(Date.parse(grant.accessExpiresAt) > now.getTime())) return false;
   const account = store.accountOf(grant.account);
   return account !== null && account.revokedAt === null && account.generation === grant.generation;
 }
@@ -67,6 +67,8 @@ export type OAuthHttpOptions = {
   clock: () => Date;
   /** This console's canonical origin for the request (the https public address, or this computer's loopback one); null: no sign-in here. */
   originOf: (request: IncomingMessage) => string | null;
+  /** Trusted direct peer, or the last hop appended by the console's loopback proxy. */
+  requesterKey: (request: IncomingMessage) => string;
   /** The browser session signed in by cookie, or null. A bearer never consents. */
   session: (request: IncomingMessage) => OAuthSession | null;
   /** A posted form came from a page of this console (its Origin, or Referer, names an allowed host). */
@@ -77,7 +79,7 @@ export type OAuthHttpOptions = {
   projectsFor: (account: string) => string[];
 };
 
-type Waiting = { client: string; redirectUri: string; challenge: string; state: string | null; resource: string; act: boolean; expires: number };
+type Waiting = { client: string; redirectUri: string; challenge: string; state: string | null; resource: string; act: boolean; expires: number; source: string };
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const same = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
@@ -162,7 +164,6 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
 
   const prune = (now: number): void => {
     for (const [id, one] of waiting) if (one.expires <= now) waiting.delete(id);
-    while (waiting.size >= MAX_REQUESTS) waiting.delete(waiting.keys().next().value!);
   };
 
   // ---- discovery ----
@@ -203,8 +204,13 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (read.value.grant_types !== undefined && !read.value.grant_types.includes("authorization_code")) return oauthError(response, 400, "invalid_client_metadata", "This server issues codes: include authorization_code.");
     const name = clean(read.value.client_name ?? "") || "MCP client";
     const now = options.clock();
-    const kept = store.registerOAuthClient({ id: randomBytes(16).toString("hex"), name, redirectUris: redirects }, now, MAX_CLIENTS);
-    if (kept === null) return oauthError(response, 503, "temporarily_unavailable", "Too many clients are registered right now. Try again tomorrow.");
+    prune(now.getTime());
+    const kept = store.registerOAuthClient({ id: randomBytes(16).toString("hex"), name, redirectUris: redirects, source: sha256(options.requesterKey(request)) }, now, OAUTH_LIMITS.clients, OAUTH_LIMITS.clientsPerSource,
+      [...waiting.values()].map(one => one.client));
+    if (kept === null) {
+      response.setHeader("retry-after", "600");
+      return oauthError(response, 429, "temporarily_unavailable", "Too many clients are waiting to connect. Try again later.");
+    }
     return json(response, 201, {
       client_id: kept.id, client_id_issued_at: Math.floor(Date.parse(kept.createdAt) / 1000), client_name: kept.name, redirect_uris: kept.redirectUris,
       grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none",
@@ -214,26 +220,32 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
   // ---- the sign-in and consent ----
 
   function authorizeStart(request: IncomingMessage, response: ServerResponse, url: URL, origin: string): void {
+    const now = options.clock().getTime();
+    prune(now);
+    store.pruneOAuthClients(new Date(now), [...waiting.values()].map(one => one.client));
     const params = url.searchParams;
     for (const key of ["client_id", "redirect_uri", "response_type", "code_challenge", "code_challenge_method", "state", "resource", "scope"]) {
       if (params.getAll(key).length > 1) return problemPage(response, 400, "This sign-in link isn't valid", "Start again from your MCP client.");
     }
     const client = store.oauthClient(params.get("client_id") ?? "");
     const redirectUri = client === null ? null : redirectMatches(params.get("redirect_uri") ?? "", client.redirectUris);
-    // Until the client and its redirect are proved, nothing goes back to any address.
+    // Registration is anonymous. Even a registered redirect is untrusted until the person decides.
     if (client === null || redirectUri === null) return problemPage(response, 400, "This sign-in link isn't valid", "Your MCP client isn't registered here, or asked to return somewhere it didn't register. Start again from the client.");
     const state = params.get("state");
-    const fail = (error: string, description: string) => backToClient(response, origin, redirectUri, state !== null && state.length <= 1024 ? state : null, { error, error_description: description }, "Returning to your MCP client…");
-    if (state !== null && (state.length > 1024 || /[\u0000-\u001f]/.test(state))) return fail("invalid_request", "state is too long");
-    if (params.get("response_type") !== "code") return fail("unsupported_response_type", "only code is supported");
-    if (params.get("code_challenge_method") !== "S256" || !PKCE_CHALLENGE.test(params.get("code_challenge") ?? "")) return fail("invalid_request", "PKCE with S256 is required");
-    if (params.get("resource") !== `${origin}${RESOURCE_PATH}`) return fail("invalid_target", `resource must be ${origin}${RESOURCE_PATH}`);
+    const fail = (description: string) => problemPage(response, 400, "This sign-in link isn't valid", `${description} Start again from your MCP client.`);
+    if (state !== null && (state.length > 1024 || /[\u0000-\u001f]/.test(state))) return fail("The client sent an invalid sign-in identifier.");
+    if (params.get("response_type") !== "code") return fail("The client requested an unsupported sign-in method.");
+    if (params.get("code_challenge_method") !== "S256" || !PKCE_CHALLENGE.test(params.get("code_challenge") ?? "")) return fail("The client didn't provide the required sign-in protection.");
+    if (params.get("resource") !== `${origin}${RESOURCE_PATH}`) return fail("The client requested access to a different server.");
     const scopes = (params.get("scope") ?? "").split(" ").filter(one => one !== "");
-    if (!scopes.every(one => (OAUTH_SCOPES as readonly string[]).includes(one))) return fail("invalid_scope", "scopes are read and act");
-    const now = Date.now();
-    prune(now);
+    if (!scopes.every(one => (OAUTH_SCOPES as readonly string[]).includes(one))) return fail("The client requested access Toolroll doesn't offer.");
+    const source = sha256(options.requesterKey(request));
+    if (waiting.size >= OAUTH_LIMITS.requests || [...waiting.values()].filter(one => one.source === source).length >= OAUTH_LIMITS.requestsPerSource) {
+      response.setHeader("retry-after", "600");
+      return problemPage(response, 429, "Too many sign-ins waiting", "Try again in ten minutes from your MCP client.");
+    }
     const id = randomBytes(24).toString("base64url");
-    waiting.set(id, { client: client.id, redirectUri, challenge: params.get("code_challenge")!, state, resource: `${origin}${RESOURCE_PATH}`, act: scopes.includes("act"), expires: now + OAUTH_TIMES.requestMs });
+    waiting.set(id, { client: client.id, redirectUri, challenge: params.get("code_challenge")!, state, resource: `${origin}${RESOURCE_PATH}`, act: scopes.includes("act"), expires: now + OAUTH_TIMES.requestMs, source });
     return moveOn(response, `/oauth/authorize?request=${id}`, "Opening Toolroll…");
   }
 
@@ -244,7 +256,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     const mayAct = session.role === "approver";
     const access: TokenAccess = chosen?.access ?? (one.act && mayAct ? "act" : "read");
     const checked = new Set(chosen?.projects ?? []);
-    const title = `Allow ${client.name} to use Toolroll?`;
+    const title = "Connect to Toolroll";
     const projectList = projects.length === 0 ? "" : projects.map(path => {
       const name = path.split("/").filter(part => part !== "").pop() ?? path;
       return `<label class="pick"><input type="checkbox" name="project" value="${escape(path)}"${checked.has(path) ? " checked" : ""}><span><b>${escape(name)}</b><small>${escape(path)}</small></span></label>`;
@@ -257,17 +269,18 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
       `<p class="client"><b>${escape(client.name)}</b> <span class="tag">unverified</span> <span class="meta">returns to ${escape(host)}</span></p>`,
       problem === null ? "" : `<div class="problem" role="alert">${escape(problem)}</div>`,
       projects.length === 0
-        ? `<p>You don't have access to any projects yet, so there's nothing to allow. Ask whoever runs Toolroll to add you to one.</p>`
+        ? `<p>You don't have access to any projects. Ask your Toolroll administrator to add you to one.</p>`
           + `<form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="${escape(id)}"><input type="hidden" name="csrf" value="${escape(session.csrf)}"><button name="decision" value="deny" class="secondary">Cancel</button></form>`
         : [
-          `<p>It will run Toolroll commands as you, ${escape(session.name)}, in the projects you choose, until you revoke it in Settings → Sessions &amp; tokens. It can't approve work or change people or policy.</p>`,
+          `<p>Connects as ${escape(session.name)} in your selected projects. It can't approve work or change people or policy.</p>`,
           `<form method="post" action="/oauth/authorize">`,
           `<input type="hidden" name="request" value="${escape(id)}"><input type="hidden" name="csrf" value="${escape(session.csrf)}">`,
           `<fieldset><legend>Access</legend>`,
           `<label class="pick"><input type="radio" name="access" value="read"${access === "read" ? " checked" : ""}><span><b>Read</b><small>See tasks, results and status.</small></span></label>`,
-          mayAct ? `<label class="pick"><input type="radio" name="access" value="act"${access === "act" ? " checked" : ""}><span><b>Act</b><small>Also file tasks under your name. Approving stays with you in the console or chat.</small></span></label>` : `<p class="meta">Your account can watch, so the client can only read.</p>`,
+          mayAct ? `<label class="pick"><input type="radio" name="access" value="act"${access === "act" ? " checked" : ""}><span><b>Act</b><small>Also file tasks under your name.</small></span></label>` : "",
           `</fieldset>`,
           `<fieldset><legend>Projects</legend>${projectList}</fieldset>`,
+          `<p class="meta">Access lasts up to 30 days. Revoke it anytime in Settings → Sessions &amp; tokens.</p>`,
           step,
           `<div class="actions"><button name="decision" value="allow">Allow access</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div>`,
           `</form>`,
@@ -282,7 +295,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (request.method === "GET" || request.method === "HEAD") {
       const id = url.searchParams.get("request") ?? "";
       const one = waiting.get(id);
-      if (one === undefined || one.expires <= Date.now()) return problemPage(response, 410, "This sign-in has expired", "Start again from your MCP client.");
+      if (one === undefined || one.expires <= now.getTime()) return problemPage(response, 410, "This sign-in has expired", "Start again from your MCP client.");
       const session = options.session(request);
       if (session === null) {
         response.writeHead(303, { location: `/login?return=${encodeURIComponent(`/oauth/authorize?request=${id}`)}`, "cache-control": "no-store" });
@@ -300,10 +313,12 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (text === null || !options.sameSite(request) || !same(form.get("csrf") ?? "", session.csrf)) return problemPage(response, 403, "This form expired", "Nothing was allowed. Start again from your MCP client.");
     const id = form.get("request") ?? "";
     const one = waiting.get(id);
-    if (one === undefined || one.expires <= Date.now()) return problemPage(response, 410, "This sign-in has expired", "Nothing was allowed. Start again from your MCP client.");
+    if (one === undefined || one.expires <= now.getTime()) return problemPage(response, 410, "This sign-in has expired", "Nothing was allowed. Start again from your MCP client.");
     const client = store.oauthClient(one.client);
     if (client === null || redirectMatches(one.redirectUri, client.redirectUris) === null) { waiting.delete(id); return problemPage(response, 400, "This client is no longer registered", "Nothing was allowed. Start again from your MCP client."); }
-    if (form.get("decision") !== "allow") {
+    const decision = form.get("decision");
+    if (decision !== "allow" && decision !== "deny") return problemPage(response, 400, "Choose whether to connect", "Nothing was allowed. Start again from your MCP client.");
+    if (decision === "deny") {
       waiting.delete(id);
       return backToClient(response, origin, one.redirectUri, one.state, { error: "access_denied", error_description: "the person declined" }, "Cancelled. Returning to your MCP client…");
     }
@@ -371,24 +386,13 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     const parsed = REFRESH_SHAPE.exec(ask.refresh_token);
     if (parsed === null) return invalid();
     const [, id, secret] = parsed as unknown as [string, string, string];
-    const grant = store.oauthGrant(id);
-    const kept = store.apiTokenSecret(id)?.row ?? null;
-    if (grant === null || kept === null || grant.client !== client.id) return invalid();
-    const presented = hashSecret(secret);
-    const end = (why: string) => { store.revokeApiToken(id, "toolroll", now, why); return invalid(); };
-    // A refresh secret used again after it rotated: someone else has it. The whole grant ends.
-    if (grant.priorRefreshHash !== null && same(presented, grant.priorRefreshHash)) return end("its refresh secret was used twice");
-    if (!same(presented, grant.refreshHash)) return invalid();
-    if (kept.revokedAt !== null || Date.parse(kept.expiresAt) <= now.getTime()) return invalid();
-    const account = store.accountOf(grant.account);
-    if (account === null || account.revokedAt !== null || account.generation !== grant.generation) return end("the person's sign-in changed");
-    if (reachable(grant.account, grant.projects).length === 0) return end("its projects are no longer the person's");
-    if (ask.scope !== undefined && !ask.scope.split(" ").every(one => one === kept.access || one === "read")) return oauthError(response, 400, "invalid_scope", "A refresh can't widen access.");
     const accessSecret = randomBytes(32).toString("base64url");
     const refresh = randomBytes(32).toString("base64url");
     const accessExpiresAt = new Date(now.getTime() + OAUTH_TIMES.accessSeconds * 1000).toISOString();
-    if (!store.rotateOAuthGrant(id, grant.refreshHash, { refreshHash: hashSecret(refresh), accessHash: hashSecret(accessSecret), accessExpiresAt })) return invalid();
-    return json(response, 200, { access_token: `so_${id}_${accessSecret}`, token_type: "Bearer", expires_in: OAUTH_TIMES.accessSeconds, refresh_token: `sor_${id}_${refresh}`, scope: kept.access });
+    const rotated = store.rotateOAuthGrant(id, { client: client.id, resource, refreshHash: hashSecret(secret), ...(ask.scope === undefined ? {} : { scope: ask.scope }) },
+      { refreshHash: hashSecret(refresh), accessHash: hashSecret(accessSecret), accessExpiresAt }, now, options.projectsFor);
+    if (!rotated.ok) return rotated.reason === "invalid_scope" ? oauthError(response, 400, "invalid_scope", "A refresh can't widen access.") : invalid();
+    return json(response, 200, { access_token: `so_${id}_${accessSecret}`, token_type: "Bearer", expires_in: OAUTH_TIMES.accessSeconds, refresh_token: `sor_${id}_${refresh}`, scope: rotated.access });
   }
 
   /** Handles the sign-in's addresses; false for any other path. */
@@ -427,21 +431,21 @@ const STYLE = [
   `:root{color-scheme:light dark;--ground:#efefef;--paper:#fff;--ink:#171717;--muted:#666;--line:#e6e6e6;--soft:#f2f2f2;--accent:#171717;--on-accent:#fff;--problem:#b42318}`,
   `@media (prefers-color-scheme:dark){:root{--ground:#0b0b0b;--paper:#161616;--ink:#ededed;--muted:#a1a1a1;--line:#262626;--soft:#1f1f1f;--accent:#ededed;--on-accent:#0b0b0b;--problem:#ff8a80}}`,
   `*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;background:var(--ground);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}`,
-  `main{width:100%;max-width:520px;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:28px}`,
-  `.mark{font-weight:600;color:var(--muted);margin:0 0 16px}h1{font-size:19px;line-height:1.35;margin:0 0 10px;overflow-wrap:anywhere}p{margin:0 0 14px}`,
-  `.client{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:baseline;overflow-wrap:anywhere}.tag{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}`,
-  `.meta,small{color:var(--muted);font-size:13px}fieldset{border:0;margin:0 0 16px;padding:0}legend{font-weight:600;margin-bottom:6px}`,
+  `main{width:100%;min-width:0;max-width:520px;overflow-wrap:anywhere;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:28px}`,
+  `h1{font-size:19px;line-height:1.35;margin:0 0 10px;overflow-wrap:anywhere}p{margin:0 0 14px}`,
+  `.client{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:baseline;overflow-wrap:anywhere}.client>*{min-width:0}.tag{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}`,
+  `.meta,small{color:var(--muted);font-size:13px}fieldset{border:0;min-width:0;margin:0 0 16px;padding:0}legend{font-weight:600;margin-bottom:6px}`,
   `.pick{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;min-height:44px}`,
-  `.pick input{margin-top:4px;width:18px;height:18px;flex:none}.pick span{display:flex;flex-direction:column;min-width:0}.pick small{overflow-wrap:anywhere}`,
+  `.pick input{margin-top:4px;width:18px;height:18px;flex:none;accent-color:var(--accent)}.pick span{display:flex;flex-direction:column;min-width:0}.pick b,.pick small{overflow-wrap:anywhere}`,
   `.field{display:flex;flex-direction:column;gap:6px;font-weight:600;margin-bottom:14px}.field input{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);min-height:44px}`,
   `.actions{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 0}button{font:inherit;font-weight:600;min-height:44px;padding:0 18px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer;white-space:nowrap}`,
-  `button.secondary{background:transparent;color:var(--ink);border-color:var(--line)}button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid #2563eb;outline-offset:2px}`,
+  `button.secondary{background:transparent;color:var(--ink);border-color:var(--line)}button:hover{opacity:.85}button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}`,
   `form{margin:0 0 16px}`,
   `.problem{border:1px solid var(--problem);color:var(--problem);border-radius:8px;padding:10px 12px;margin-bottom:14px}a{color:inherit;text-underline-offset:3px}`,
-  `details{border-top:1px solid var(--line);padding-top:12px}summary{cursor:pointer;color:var(--muted);font-size:13px}code{font:12.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;background:var(--soft);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}`,
-  `@media (max-width:480px){main{padding:20px}.actions button{flex:1 1 auto}}`,
+  `details{border-top:1px solid var(--line)}summary{cursor:pointer;color:var(--muted);font-size:13px;min-height:44px;padding:12px 0}code{font:12.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;background:var(--soft);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}`,
+  `@media (max-width:480px){main{padding:20px}.field input{font-size:16px}.actions button{flex:1 1 auto}}`,
   `</style>`,
 ].join("");
 
 const shell = (title: string, body: string): string =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escape(title)}</title>${STYLE}</head><body><main><p class="mark">Toolroll</p>${body}</main></body></html>`;
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escape(title)}</title>${STYLE}</head><body><main>${body}</main></body></html>`;

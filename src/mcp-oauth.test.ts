@@ -10,7 +10,7 @@ import { mintApiToken } from "./api-tokens.js";
 import { ENVELOPE_VERSION } from "./envelope.js";
 import { MODERN } from "./mcp-core.js";
 import type { Principal, RunOperateAs } from "./mcp-person.js";
-import { redirectAllowed, redirectMatches } from "./mcp-oauth.js";
+import { OAUTH_LIMITS, OAUTH_TIMES, redirectAllowed, redirectMatches } from "./mcp-oauth.js";
 
 /**
  * MCP sign-in (mcp-oauth.ts) end to end on a real console: discovery from /mcp's 401, registration, the console's own
@@ -24,6 +24,7 @@ const REDIRECT = "http://127.0.0.1:7777/callback";
 let dir: string, store: Store, base: string, close: () => Promise<void>;
 let ran: { argv: string[]; principal: Principal; source: string | undefined }[];
 let passwords: Record<string, string>;
+let clock: Date;
 
 const fakeRunAs: RunOperateAs = async (argv, opts) => {
   ran.push({ argv, principal: opts.principal, source: opts.source });
@@ -36,6 +37,7 @@ beforeEach(async () => {
   store = openStore(join(dir, "orders.db"));
   ran = [];
   const now = new Date();
+  clock = now;
   const alex = addApprover(store, "alex", now);
   if (!alex.ok) throw new Error("alex");
   const sam = addApprover(store, "sam", now, { name: "alex", token: alex.token });
@@ -50,7 +52,7 @@ beforeEach(async () => {
   }
   expect(store.setAccountProjects("sam", ["/repo/shop"], "alex", now)).toEqual({ ok: true });
   expect(store.setAccountProjects("vic", ["/repo/shop"], "alex", now)).toEqual({ ok: true });
-  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/shop", configDir: dir, runOperateAs: fakeRunAs });
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/shop", configDir: dir, runOperateAs: fakeRunAs, clock: () => clock });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
@@ -129,6 +131,65 @@ async function tokensFor(client: string) {
 }
 
 describe("MCP sign-in (OAuth 2.1)", () => {
+  test("pending consent caps isolate sources, never evict a sign-in, and admit again after expiry", async () => {
+    const client = await register();
+    const page = await consentPage(client, "sam", pkce().challenge);
+    const url = new URL(`${base}/oauth/authorize`);
+    url.search = new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", resource: `${base}/mcp` }).toString();
+    const start = (source: string) => fetch(url, { headers: { "x-forwarded-for": source } });
+    for (let i = 0; i < OAUTH_LIMITS.requestsPerSource; i++) expect((await start("192.0.2.1")).status).toBe(200);
+    const refused = await start("192.0.2.1");
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("600");
+    expect(movesTo(await refused.text())).toBe("");
+    // All other sources retain their share until the global bound is full.
+    for (let i = OAUTH_LIMITS.requestsPerSource + 1; i < OAUTH_LIMITS.requests; i++) {
+      expect((await start(`192.0.2.${2 + Math.floor(i / OAUTH_LIMITS.requestsPerSource)}`)).status).toBe(200);
+    }
+    expect((await start("198.51.100.1")).status).toBe(429);
+    const allowed = await consent(page.cookie, { request: page.request, csrf: page.csrf, decision: "allow", access: "read", project: "/repo/shop", password: passwords["sam"]! });
+    expect(new URL(movesTo(await allowed.text())).searchParams.has("code")).toBe(true);
+    clock = new Date(clock.getTime() + OAUTH_TIMES.requestMs);
+    expect((await start("192.0.2.1")).status).toBe(200);
+  });
+
+  test("registration caps isolate sources and expire unused registrations before deduplication", async () => {
+    const reg = (name: string, source: string) => fetch(`${base}/oauth/register`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": source }, body: JSON.stringify({ client_name: name, redirect_uris: [REDIRECT] }) });
+    const first = await (await reg("First client", "192.0.2.1")).json() as { client_id: string };
+    for (let i = 1; i < OAUTH_LIMITS.clientsPerSource; i++) expect((await reg(`Client ${i}`, "192.0.2.1")).status).toBe(201);
+    expect((await reg("Overflow", "192.0.2.1")).status).toBe(429);
+    expect((await reg("Another source", "198.51.100.1")).status).toBe(201);
+    // Earlier untrusted hops cannot change the bucket chosen by the trusted proxy's last hop.
+    expect((await reg("Overflow", "203.0.113.1, 192.0.2.1")).status).toBe(429);
+    expect(store.oauthClient(first.client_id)).not.toBeNull();
+    for (let i = OAUTH_LIMITS.clientsPerSource + 1; i < OAUTH_LIMITS.clients; i++) {
+      expect(store.registerOAuthClient({ id: `client-${i}`, name: `Client ${i}`, redirectUris: [REDIRECT], source: `source-${i}` }, clock, OAUTH_LIMITS.clients, OAUTH_LIMITS.clientsPerSource)).not.toBeNull();
+    }
+    expect((await reg("Global overflow", "203.0.113.2")).status).toBe(429);
+    clock = new Date(clock.getTime() + 86_400_000);
+    const fresh = await reg("First client", "192.0.2.1");
+    expect(fresh.status).toBe(201);
+    expect(((await fresh.json()) as { client_id: string }).client_id).not.toBe(first.client_id);
+    expect(store.oauthClient(first.client_id)).toBeNull();
+  });
+
+  test("registration expiry cannot evict a live consent, and unused clients cannot authorize after expiry", async () => {
+    const client = await register();
+    clock = new Date(clock.getTime() + 86_400_000 - 60_000);
+    const page = await consentPage(client, "sam", pkce().challenge);
+    clock = new Date(clock.getTime() + 60_000);
+    await register(["https://other-agent.example/callback"]);
+    expect(store.oauthClient(client)).not.toBeNull();
+    const allowed = await consent(page.cookie, { request: page.request, csrf: page.csrf, decision: "allow", access: "read", project: "/repo/shop", password: passwords["sam"]! });
+    expect(new URL(movesTo(await allowed.text())).searchParams.has("code")).toBe(true);
+    const unused = await register();
+    clock = new Date(clock.getTime() + 86_400_000);
+    const params = new URLSearchParams({ client_id: unused, redirect_uri: REDIRECT, response_type: "code", code_challenge: pkce().challenge, code_challenge_method: "S256", resource: `${base}/mcp` });
+    const expired = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+    expect(expired.status).toBe(400);
+    expect(movesTo(await expired.text())).toBe("");
+  });
+
   test("discovery: /mcp's 401 names the resource metadata, which names this console's authorization server", async () => {
     const refused = await mcp(null);
     expect(refused.status).toBe(401);
@@ -222,17 +283,22 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     expect((await token({ grant_type: "authorization_code", code: third.code, redirect_uri: REDIRECT, client_id: other, code_verifier: third.verifier })).status).toBe(400);
   });
 
-  test("an authorization request without S256 PKCE or for another resource goes back as an error, never to an unregistered address", async () => {
-    const client = await register();
+  test("pre-consent errors stay on Toolroll even for a registered attacker redirect", async () => {
+    const redirect = "https://attacker.example/callback";
+    const client = await register([redirect]);
     const go = async (extra: Record<string, string>) => {
       const url = new URL(`${base}/oauth/authorize`);
-      for (const [key, value] of Object.entries({ response_type: "code", client_id: client, redirect_uri: REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", resource: `${base}/mcp`, ...extra })) url.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ response_type: "code", client_id: client, redirect_uri: redirect, code_challenge: pkce().challenge, code_challenge_method: "S256", resource: `${base}/mcp`, ...extra })) url.searchParams.set(key, value);
       const answer = await fetch(url, { redirect: "manual" });
-      return { status: answer.status, to: movesTo(await answer.text()) };
+      const html = await answer.text();
+      expect(answer.headers.get("location")).toBeNull();
+      expect(html).not.toContain('http-equiv="refresh"');
+      expect(html).not.toContain("attacker.example");
+      return { status: answer.status, to: movesTo(html) };
     };
-    expect(new URL((await go({ code_challenge_method: "plain" })).to).searchParams.get("error")).toBe("invalid_request");
-    expect(new URL((await go({ resource: "https://elsewhere.example/mcp" })).to).searchParams.get("error")).toBe("invalid_target");
-    expect(new URL((await go({ scope: "admin" })).to).searchParams.get("error")).toBe("invalid_scope");
+    for (const extra of [{ code_challenge_method: "plain" }, { resource: "https://elsewhere.example/mcp" }, { scope: "admin" }, { response_type: "token" }, { state: "x".repeat(1025) }]) {
+      expect(await go(extra)).toEqual({ status: 400, to: "" });
+    }
     const unregistered = await go({ redirect_uri: "http://127.0.0.1:7777/elsewhere" });
     expect(unregistered.status).toBe(400);
     expect(unregistered.to).toBe("");
@@ -256,10 +322,20 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     // Another client can't use it.
     const other = await register(["http://127.0.0.1:8888/other"]);
     expect((await token({ grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: other })).status).toBe(400);
-    // The old refresh secret again: someone else has it, so the grant ends.
+    const thirdResponse = await token({ grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: client });
+    expect(thirdResponse.status).toBe(200);
+    const third = await thirdResponse.json() as { access_token: string; refresh_token: string };
+    // An unknown guess naming a real family cannot revoke it.
+    const guess = `sor_${first.access_token.slice(3, 15)}_${randomBytes(32).toString("base64url")}`;
+    expect((await token({ grant_type: "refresh_token", refresh_token: guess, client_id: client })).status).toBe(400);
+    expect((await mcp(third.access_token)).status).toBe(200);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_refresh").get()?.["n"]).toBe(3);
+    // Even the grandparent secret ends the family, including the newest access and refresh tokens.
     const replay = await token({ grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: client });
     expect(replay.status).toBe(400);
     expect((await mcp(second.access_token)).status).toBe(401);
+    expect((await mcp(third.access_token)).status).toBe(401);
+    expect((await token({ grant_type: "refresh_token", refresh_token: third.refresh_token, client_id: client })).status).toBe(400);
     expect((await token({ grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: client })).status).toBe(400);
     expect(store.apiTokens("sam")[0]!.revokedAt).not.toBeNull();
   });
@@ -315,6 +391,10 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     expect((await consent(page.cookie, { ...allow, csrf: page.csrf }, {})).status).toBe(403);
     // Without a session: nothing.
     expect((await consent("", { ...allow, csrf: page.csrf })).status).toBe(403);
+    // A session and CSRF value alone are not a decision, so an incomplete form must stay local too.
+    const undecided = await consent(page.cookie, { ...allow, csrf: page.csrf, decision: "" });
+    expect(undecided.status).toBe(400);
+    expect(movesTo(await undecided.text())).toBe("");
     // The step-up: a wrong password grants nothing.
     const wrong = await consent(page.cookie, { ...allow, csrf: page.csrf, password: "not-it" });
     expect(wrong.status).toBe(403);
@@ -323,7 +403,10 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     // Declined: back to the client with access_denied, and the request is spent.
     const declined = await consent(page.cookie, { request: page.request, csrf: page.csrf, decision: "deny" });
     expect(declined.status).toBe(200);
-    expect(new URL(movesTo(await declined.text())).searchParams.get("error")).toBe("access_denied");
+    const denial = new URL(movesTo(await declined.text()));
+    expect(denial.searchParams.get("error")).toBe("access_denied");
+    expect(denial.searchParams.get("state")).toBe("st-1");
+    expect(denial.searchParams.get("iss")).toBe(base);
     expect((await consent(page.cookie, { ...allow, csrf: page.csrf })).status).toBe(410);
     // A code nobody consented to is just a guess.
     expect((await token({ grant_type: "authorization_code", code: "guess".repeat(9), redirect_uri: REDIRECT, client_id: client, code_verifier: pkce().verifier })).status).toBe(400);
@@ -366,6 +449,17 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     expect(listed.result.tools.map(one => one.name)).not.toContain("file_task");
   });
 
+  test("without projects, consent offers only cancellation and issues no code", async () => {
+    expect(store.setAccountProjects("sam", [], "alex", clock)).toEqual({ ok: true });
+    const page = await consentPage(await register(), "sam", pkce().challenge);
+    expect(page.html).toContain("You don't have access to any projects.");
+    expect(page.html).not.toContain('value="allow"');
+    expect(page.html).not.toContain('<script');
+    const response = await consent(page.cookie, { request: page.request, csrf: page.csrf, decision: "deny" });
+    expect(new URL(movesTo(await response.text())).searchParams.get("error")).toBe("access_denied");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_code").get()?.["n"]).toBe(0);
+  });
+
   test("a pasted so_ token works as before, everywhere it did", async () => {
     const minted = mintApiToken();
     const now = new Date();
@@ -375,5 +469,39 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     expect(ran.at(-1)!.principal).toMatchObject({ account: "sam", tokenId: minted.id, projects: ["/repo/shop"] });
     const cli = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv: ["status"] }) });
     expect(cli.status).not.toBe(401);
+  });
+
+  test("MCP intersects current account access, API-token limits and the OAuth grant; corrupt limits fail closed", async () => {
+    const client = await register();
+    const tokens = await tokensFor(client);
+    const id = tokens.access_token.slice(3, 15);
+    const projects = async () => {
+      await mcp(tokens.access_token, "tools/call", { name: "list_tasks", arguments: {} });
+      return ran.at(-1)!.principal.projects;
+    };
+    // Neither stored record can confer a project outside current account access.
+    store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop", "/repo/bank"]), id);
+    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop", "/repo/bank"]), id);
+    expect(await projects()).toEqual(["/repo/shop"]);
+    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/bank"]), id);
+    expect(await projects()).toEqual([]);
+    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop"]), id);
+    store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/bank"]), id);
+    expect(await projects()).toEqual([]);
+    store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop", 1]), id);
+    expect(await projects()).toEqual([]);
+    store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop"]), id);
+    store.handle.prepare("UPDATE api_token SET projects_json = 'broken' WHERE id = ?").run(id);
+    expect(await projects()).toEqual([]);
+    expect((await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client })).status).toBe(400);
+  });
+
+  test("an MCP-managed token missing its grant cannot become an ordinary bearer", async () => {
+    const client = await register();
+    const tokens = await tokensFor(client);
+    store.handle.prepare("DELETE FROM oauth_refresh").run();
+    store.handle.prepare("DELETE FROM oauth_grant").run();
+    expect((await mcp(tokens.access_token)).status).toBe(401);
+    expect((await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${tokens.access_token}`, "content-type": "application/json" }, body: JSON.stringify({ argv: ["status"] }) })).status).toBe(401);
   });
 });

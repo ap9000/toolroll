@@ -11,7 +11,7 @@ import { mintApiToken } from "./api-tokens.js";
 let dir: string, store: Store | undefined;
 afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-test.each([110, -110])("v%s: MCP sign-in's tables are added and every API token stays as it was", version => {
+test.each([110, -110, 111, -111, 112, -112])("v%s: MCP sign-in's tables are added and every API token stays as it was", version => {
   dir = mkdtempSync(join(tmpdir(), "so-v113-"));
   const file = join(dir, "state.db");
   const now = new Date("2026-10-07T09:00:00.000Z");
@@ -21,9 +21,11 @@ test.each([110, -110])("v%s: MCP sign-in's tables are added and every API token 
   first.createApiToken({ id: minted.id, account: "alex", name: "laptop", secretHash: minted.hash, access: "act", expiresAt: "2027-01-01T00:00:00.000Z", by: "alex" }, now);
   const tokens = first.apiTokens(null);
   first.close();
-  // The v110 shape: none of the oauth_ tables.
+  // Pre-OAuth shapes, including the sibling v111/v112 migrations: no OAuth tables or purpose yet.
   const db = new DatabaseSync(file);
-  db.exec("DROP TABLE oauth_grant; DROP TABLE oauth_code; DROP TABLE oauth_client");
+  db.exec("DROP TABLE oauth_refresh; DROP TABLE oauth_grant; DROP TABLE oauth_code; DROP TABLE oauth_client");
+  const columns = Math.abs(version) < 111 ? ["purpose", "projects_json", "replaces", "replaced_by", "overlap_until"] : ["purpose"];
+  for (const column of columns) db.exec(`ALTER TABLE api_token DROP COLUMN ${column}`);
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
 
@@ -31,7 +33,7 @@ test.each([110, -110])("v%s: MCP sign-in's tables are added and every API token 
   expect(SCHEMA_VERSION).toBe(113);
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'oauth_%' ORDER BY name").all().map(row => row["name"]))
-    .toEqual(["oauth_client", "oauth_code", "oauth_grant"]);
+    .toEqual(["oauth_client", "oauth_code", "oauth_grant", "oauth_refresh"]);
   // The token and its kept hash are untouched, and an ordinary token has no MCP sign-in binding.
   expect(store.apiTokens(null)).toEqual(tokens);
   expect(store.apiTokenSecret(minted.id)?.secretHash).toBe(minted.hash);

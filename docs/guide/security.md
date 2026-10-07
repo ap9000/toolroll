@@ -71,7 +71,22 @@ gets works only at `/mcp`, lasts an hour and renews itself for 30 days at
 most; after that it asks again. It is listed under **Sessions & tokens** as
 "MCP: <client name>": revoke it there or with `toolroll tokens`, and its next
 call is refused. A change to your projects or role ends it too. Sign-in needs
-Toolroll's https address (`--public-url`), or this computer's own.
+Toolroll's https address (`--public-url`), or this computer's own. Reconnect
+the MCP client to renew its connection manually: `toolroll tokens rotate`
+refuses these managed tokens. Their access is the intersection of your
+current projects, the API token's limit, and the projects you consented to.
+
+Before you allow or decline, sign-in errors stay on Toolroll; registering a
+client doesn't make its return address trusted. Pending sign-ins are capped
+at 20 per source address and 200 overall. Unused client registrations are
+capped at 20 per source and 500 overall, and expire after a day. Limits refuse
+new requests instead of evicting someone else's sign-in. Source addresses
+come from the direct peer or the last hop appended by the local TLS proxy.
+
+Each refresh rotates both secrets. Toolroll retains every issued refresh
+hash for that connection: reuse of any older secret revokes the whole
+connection, including tokens just issued by a concurrent refresh. Unknown
+guesses cannot revoke it. These hashes are never included in data exports.
 
 Coordinator credentials (`coordinator mint --days`, 90 days unless said)
 and runner tokens (a year from registering; every start registers again)

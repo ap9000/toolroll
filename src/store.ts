@@ -14,6 +14,7 @@ import { cardOutputsForStore, cardOutputsFromStore } from "./contracts/stage-out
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { actorLabel, currentActor, leadSecretMatches, mintLeadToken, parseLeadToken, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
+import { tokenPurpose, tokenRotationProblem, type TokenPurpose } from "./api-tokens.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
  *
@@ -651,7 +652,7 @@ export const SCHEMA_VERSION = 113;
  *
  * v110 rebuilds action_ledger only to widen its source check ('api', 'mcp'):
  * every row, id and hash-chain link is copied unchanged.
- * v113 only adds the oauth_client, oauth_code and oauth_grant tables.
+ * v113 adds MCP sign-in tables and API-token purpose metadata.
  */
 export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113]);
 
@@ -723,15 +724,17 @@ CREATE INDEX IF NOT EXISTS web_session_account ON web_session (account);
 /**
  * v113: MCP sign-in (OAuth 2.1, mcp-oauth.ts). A registered client, a one-time code (its hash, a minute at most), and
  * each grant: the ordinary API token it signs in with (revoked like any other), the account generation and exact
- * projects the person chose, and the hashes of its current refresh secret and the one before (a replay ends it).
+ * projects the person chose, and every issued refresh-secret hash (any replay ends the whole family).
  */
 const OAUTH_SCHEMA = `
 CREATE TABLE IF NOT EXISTS oauth_client (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
   redirect_json TEXT NOT NULL,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  source_hash   TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS oauth_client_source ON oauth_client (source_hash);
 CREATE TABLE IF NOT EXISTS oauth_code (
   hash         TEXT PRIMARY KEY,
   client       TEXT NOT NULL REFERENCES oauth_client(id),
@@ -754,16 +757,26 @@ CREATE TABLE IF NOT EXISTS oauth_grant (
   projects_json      TEXT NOT NULL,
   resource           TEXT NOT NULL,
   access_expires_at  TEXT NOT NULL,
-  renew_hash       TEXT NOT NULL,
-  prior_renew_hash TEXT
+  renew_hash       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS oauth_grant_client ON oauth_grant (client);
+CREATE TABLE IF NOT EXISTS oauth_refresh (
+  token TEXT NOT NULL REFERENCES oauth_grant(token),
+  hash  TEXT NOT NULL,
+  PRIMARY KEY (token, hash)
+);
 `;
 export type OAuthClientRow = { id: string; name: string; redirectUris: string[]; createdAt: string };
 export type OAuthCodeRow = { client: string; account: string; generation: number; access: "read" | "act"; projects: string[]; redirectUri: string; resource: string; challenge: string; expiresAt: string; usedAt: string | null; token: string | null };
-export type OAuthGrantRow = { token: string; client: string; account: string; generation: number; projects: string[]; resource: string; accessExpiresAt: string; refreshHash: string; priorRefreshHash: string | null };
-const stringList = (raw: unknown): string[] => { try { const value = JSON.parse(String(raw)) as unknown; return Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []; } catch { return []; } };
-export type ApiTokenRow = { id: string; account: string; name: string; access: "read" | "act"; createdAt: string; createdBy: string; expiresAt: string; lastUsedAt: string | null; revokedAt: string | null; revokedBy: string | null };
+export type OAuthGrantRow = { token: string; client: string; account: string; generation: number; projects: string[]; resource: string; accessExpiresAt: string; refreshHash: string };
+const stringList = (raw: unknown): string[] => { try { const value = JSON.parse(String(raw)) as unknown; return Array.isArray(value) && value.every((one): one is string => typeof one === "string") ? value : []; } catch { return []; } };
+export type ApiTokenRow = { id: string; account: string; name: string; access: "read" | "act"; createdAt: string; createdBy: string; expiresAt: string; lastUsedAt: string | null; revokedAt: string | null; revokedBy: string | null;
+  /** v113: MCP manages its own access-secret rotation. */
+  purpose: TokenPurpose;
+  /** v111: the projects it is limited to (null: every project its person may use). */
+  projects: string[] | null;
+  /** v111: the token it replaced, the one that replaced it, and when this one stops after being replaced. */
+  replaces: string | null; replacedBy: string | null; overlapUntil: string | null };
 export type WebSessionRow = { idHash: string; account: string; csrf: string; role: "approver" | "viewer"; generation: number; createdAt: number; lastSeen: number; project: string | null; projectRevision: number; ssoAt: number | null; agent: string | null; address: string | null };
 
 /** v100: which account each identity-provider identity (issuer + subject) signs in as. */
@@ -5389,7 +5402,13 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(TEAM_SCHEMA);
   db.exec(SSO_SCHEMA);
   db.exec(CREDENTIALS_SCHEMA);
+  // v111: a token's project limit (null: every project its person may use) and its rotation.
+  addColumn(db, "api_token", "projects_json", "TEXT");
+  addColumn(db, "api_token", "replaces", "TEXT");
+  addColumn(db, "api_token", "replaced_by", "TEXT");
+  addColumn(db, "api_token", "overlap_until", "TEXT");
   db.exec(OAUTH_SCHEMA);
+  addColumn(db, "api_token", "purpose", "TEXT NOT NULL DEFAULT 'api' CHECK (purpose IN ('api','mcp'))");
   db.exec(APPROVAL_SCHEMA);
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
@@ -7096,7 +7115,19 @@ function rebuildExact(
 function readApiToken(row: Record<string, unknown>): ApiTokenRow {
   const text = (key: string) => row[key] == null ? null : String(row[key]);
   return { id: String(row["id"]), account: String(row["account"]), name: String(row["name"]), access: row["access"] === "act" ? "act" : "read", createdAt: String(row["created_at"]), createdBy: String(row["created_by"]),
-    expiresAt: String(row["expires_at"]), lastUsedAt: text("last_used_at"), revokedAt: text("revoked_at"), revokedBy: text("revoked_by") };
+    expiresAt: String(row["expires_at"]), lastUsedAt: text("last_used_at"), revokedAt: text("revoked_at"), revokedBy: text("revoked_by"),
+    purpose: tokenPurpose(row["purpose"]), projects: tokenProjectsOf(row["projects_json"]), replaces: text("replaces"), replacedBy: text("replaced_by"), overlapUntil: text("overlap_until") };
+}
+
+/** A token's stored project limit. Anything unreadable limits it to no project at all: never wider. */
+function tokenProjectsOf(value: unknown): string[] | null {
+  if (value == null) return null;
+  try {
+    const parsed: unknown = JSON.parse(String(value));
+    return Array.isArray(parsed) && parsed.every(one => typeof one === "string") ? parsed as string[] : [];
+  } catch {
+    return [];
+  }
 }
 
 function readWebSession(row: Record<string, unknown>): WebSessionRow {
@@ -11827,13 +11858,44 @@ export class Store {
 
   // ---- API tokens and browser sessions (v101) ------------------------------
 
-  createApiToken(token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string; by: string }, now: Date): void {
+  createApiToken(token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string; by: string; projects?: readonly string[] | null; purpose?: TokenPurpose }, now: Date): void {
     this.transact(() => {
-      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt);
+      const projects = token.projects ?? null;
+      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt, projects === null ? null : JSON.stringify(projects), token.purpose ?? "api");
       this.recordAction({ at: now.toISOString(), actor: token.by, repo: null, taskId: null, runId: null, action: `API token created: ${token.name}`, outcome: token.access, source: "access",
-        detail: `for ${token.account}, until ${token.expiresAt.slice(0, 10)}` });
+        detail: `for ${token.account}, until ${token.expiresAt.slice(0, 10)}${projects === null ? "" : ` · ${projects.length === 0 ? "no projects" : projects.join(", ")}`} · id ${token.id}` });
     });
+  }
+
+  /**
+   * v111: replace a live, not-yet-replaced token with a new secret on the same terms (access, projects, end date, so
+   * rotating never extends it). The old one keeps working until `overlapUntil` (never past its own end), then stops;
+   * every check reads that time, and endRotatedApiTokens records the end afterwards. Only the token's own person.
+   */
+  rotateApiToken(oldId: string, replacement: { id: string; secretHash: string }, by: string, now: Date, overlapMs: number): { ok: true; row: ApiTokenRow } | { ok: false; reason: "unknown" | "replaced" | "mcp-managed" } {
+    return this.transact(() => {
+      const old = this.apiTokenSecret(oldId)?.row ?? null;
+      const at = now.getTime();
+      if (old === null || old.account !== by || old.revokedAt !== null || !(Date.parse(old.expiresAt) > at) || old.overlapUntil !== null && !(Date.parse(old.overlapUntil) > at)) return { ok: false as const, reason: "unknown" as const };
+      if (tokenRotationProblem(old) !== null || this.oauthGrant(oldId) !== null) return { ok: false as const, reason: "mcp-managed" as const };
+      if (old.replacedBy !== null) return { ok: false as const, reason: "replaced" as const };
+      const stamp = now.toISOString();
+      const until = new Date(Math.min(at + Math.max(0, overlapMs), Date.parse(old.expiresAt))).toISOString();
+      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, replaces) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(replacement.id, old.account, old.name, replacement.secretHash, old.access, stamp, by, old.expiresAt, old.projects === null ? null : JSON.stringify(old.projects), old.id);
+      this.db.prepare("UPDATE api_token SET replaced_by = ?, overlap_until = ? WHERE id = ? AND replaced_by IS NULL").run(replacement.id, until, old.id);
+      this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: `API token rotated: ${old.name}`, outcome: old.access, source: "access",
+        detail: `${old.account}'s · id ${old.id} → ${replacement.id}, the old one stops ${until.slice(0, 16).replace("T", " ")} UTC` });
+      return { ok: true as const, row: this.apiTokenSecret(replacement.id)!.row };
+    });
+  }
+
+  /** v111: record the end of each replaced token whose overlap has passed (it already signs no one in). */
+  endRotatedApiTokens(now: Date): number {
+    const due = this.db.prepare("SELECT id, overlap_until FROM api_token WHERE revoked_at IS NULL AND overlap_until IS NOT NULL AND overlap_until <= ?").all(now.toISOString());
+    for (const row of due) this.revokeApiToken(String(row["id"]), "system", new Date(String(row["overlap_until"])), "replaced; its overlap ended");
+    return due.length;
   }
 
   /** A token by id with its kept hash (for the check), or null. */
@@ -11870,20 +11932,30 @@ export class Store {
     return row === undefined ? null : { id: String(row["id"]), name: String(row["name"]), redirectUris: stringList(row["redirect_json"]), createdAt: String(row["created_at"]) };
   }
 
+  /** Expire unused registrations, retaining clients with a live code, grant or in-process consent. */
+  pruneOAuthClients(now: Date, pending: readonly string[] = []): void {
+    this.transact(() => {
+      const stale = new Date(now.getTime() - 86_400_000).toISOString();
+      this.db.prepare("DELETE FROM oauth_code WHERE expires_at <= ?").run(now.toISOString());
+      this.db.prepare(`DELETE FROM oauth_client WHERE created_at <= ? AND id NOT IN (SELECT client FROM oauth_grant)
+        AND id NOT IN (SELECT client FROM oauth_code) AND id NOT IN (SELECT value FROM json_each(?))`).run(stale, JSON.stringify(pending));
+    });
+  }
+
   /**
-   * Register a client: the same name and redirects answer the client already kept. Clients that never got a grant
-   * go after a day; past `cap` live clients a new one is refused (null).
+   * Unused registrations expire after a day. Admission has a global and per-source bound; it never evicts a live
+   * registration. Repeating metadata from the same source returns its existing registration without spending a slot.
    */
-  registerOAuthClient(client: { id: string; name: string; redirectUris: string[] }, now: Date, cap: number): OAuthClientRow | null {
+  registerOAuthClient(client: { id: string; name: string; redirectUris: string[]; source: string }, now: Date, cap: number, perSourceCap: number, pending: readonly string[] = []): OAuthClientRow | null {
     return this.transact(() => {
       const redirectJson = JSON.stringify(client.redirectUris);
-      const same = this.db.prepare("SELECT id FROM oauth_client WHERE name = ? AND redirect_json = ?").get(client.name, redirectJson);
+      this.pruneOAuthClients(now, pending);
+      const same = this.db.prepare("SELECT id FROM oauth_client WHERE name = ? AND redirect_json = ? AND source_hash = ?").get(client.name, redirectJson, client.source);
       if (same !== undefined) return this.oauthClient(String(same["id"]));
-      const stale = new Date(now.getTime() - 86_400_000).toISOString();
-      this.db.prepare(`DELETE FROM oauth_code WHERE expires_at < ?`).run(now.toISOString());
-      this.db.prepare(`DELETE FROM oauth_client WHERE created_at < ? AND id NOT IN (SELECT client FROM oauth_grant) AND id NOT IN (SELECT client FROM oauth_code)`).run(stale);
-      if (Number(this.db.prepare("SELECT COUNT(*) AS n FROM oauth_client").get()?.["n"] ?? 0) >= cap) return null;
-      this.db.prepare("INSERT INTO oauth_client (id, name, redirect_json, created_at) VALUES (?, ?, ?, ?)").run(client.id, client.name, redirectJson, now.toISOString());
+      const unused = "FROM oauth_client WHERE id NOT IN (SELECT client FROM oauth_grant)";
+      if (Number(this.db.prepare(`SELECT COUNT(*) AS n ${unused}`).get()?.["n"] ?? 0) >= cap
+        || Number(this.db.prepare(`SELECT COUNT(*) AS n ${unused} AND source_hash = ?`).get(client.source)?.["n"] ?? 0) >= perSourceCap) return null;
+      this.db.prepare("INSERT INTO oauth_client (id, name, redirect_json, created_at, source_hash) VALUES (?, ?, ?, ?, ?)").run(client.id, client.name, redirectJson, now.toISOString(), client.source);
       return this.oauthClient(client.id);
     });
   }
@@ -11911,11 +11983,12 @@ export class Store {
   }
 
   /** Make a grant: its API token (created and recorded as any other) and its binding, together; the code notes the token. */
-  createOAuthGrant(code: string, token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string }, grant: Omit<OAuthGrantRow, "token" | "priorRefreshHash">, now: Date): void {
+  createOAuthGrant(code: string, token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string }, grant: Omit<OAuthGrantRow, "token">, now: Date): void {
     this.transact(() => {
-      this.createApiToken({ ...token, by: token.account }, now);
+      this.createApiToken({ ...token, by: token.account, projects: grant.projects, purpose: "mcp" }, now);
       this.db.prepare("INSERT INTO oauth_grant (token, client, account, generation, projects_json, resource, access_expires_at, renew_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run(token.id, grant.client, grant.account, grant.generation, JSON.stringify(grant.projects), grant.resource, grant.accessExpiresAt, grant.refreshHash);
+      this.db.prepare("INSERT INTO oauth_refresh (token, hash) VALUES (?, ?)").run(token.id, grant.refreshHash);
       this.db.prepare("UPDATE oauth_code SET token = ? WHERE hash = ?").run(token.id, code);
     });
   }
@@ -11924,20 +11997,44 @@ export class Store {
   oauthGrant(token: string): OAuthGrantRow | null {
     const row = this.db.prepare("SELECT * FROM oauth_grant WHERE token = ?").get(token);
     return row === undefined ? null : { token: String(row["token"]), client: String(row["client"]), account: String(row["account"]), generation: Number(row["generation"]), projects: stringList(row["projects_json"]),
-      resource: String(row["resource"]), accessExpiresAt: String(row["access_expires_at"]), refreshHash: String(row["renew_hash"]), priorRefreshHash: row["prior_renew_hash"] === null ? null : String(row["prior_renew_hash"]) };
+      resource: String(row["resource"]), accessExpiresAt: String(row["access_expires_at"]), refreshHash: String(row["renew_hash"]) };
   }
 
   /**
-   * Rotate a grant's secrets, only from the refresh secret it holds now (a compare-and-swap: of two refreshes with
-   * the same secret, one wins). The access secret is the API token's own hash.
+   * Classify, validate and rotate under one write transaction. Every issued hash remains in the family, so any
+   * older secret revokes even a concurrent winner. An unknown guess or the wrong client cannot end the family.
    */
-  rotateOAuthGrant(token: string, from: string, next: { refreshHash: string; accessHash: string; accessExpiresAt: string }): boolean {
+  rotateOAuthGrant(token: string, ask: { client: string; resource: string; refreshHash: string; scope?: string },
+    next: { refreshHash: string; accessHash: string; accessExpiresAt: string }, now: Date, projectsFor: (account: string) => readonly string[]):
+    { ok: true; access: "read" | "act" } | { ok: false; reason: "invalid_grant" | "invalid_scope" } {
     return this.transact(() => {
-      const moved = this.db.prepare("UPDATE oauth_grant SET prior_renew_hash = renew_hash, renew_hash = ?, access_expires_at = ? WHERE token = ? AND renew_hash = ?")
-        .run(next.refreshHash, next.accessExpiresAt, token, from);
-      if (Number(moved.changes) !== 1) return false;
+      const invalid = { ok: false, reason: "invalid_grant" } as const;
+      const grant = this.oauthGrant(token), kept = this.apiTokenSecret(token)?.row;
+      if (grant === null || kept === undefined || grant.client !== ask.client || grant.resource !== ask.resource) return invalid;
+      const issued = this.db.prepare("SELECT 1 FROM oauth_refresh WHERE token = ? AND hash = ?").get(token, ask.refreshHash);
+      if (issued === undefined) return invalid;
+      if (grant.refreshHash !== ask.refreshHash) {
+        this.revokeApiToken(token, "toolroll", now, "its refresh secret was used twice");
+        return invalid;
+      }
+      if (kept.revokedAt !== null || !(Date.parse(kept.expiresAt) > now.getTime())) return invalid;
+      const account = this.accountOf(grant.account);
+      if (account === null || account.revokedAt !== null || account.generation !== grant.generation || (kept.access === "act" && account.role !== "approver")) {
+        this.revokeApiToken(token, "toolroll", now, "the person's sign-in changed");
+        return invalid;
+      }
+      const mine = projectsFor(grant.account);
+      if (!grant.projects.some(project => mine.includes(project) && (kept.projects === null || kept.projects.includes(project)))) {
+        this.revokeApiToken(token, "toolroll", now, "its projects are no longer the person's");
+        return invalid;
+      }
+      if (ask.scope !== undefined && !ask.scope.split(" ").every(one => one === kept.access || one === "read")) return { ok: false, reason: "invalid_scope" } as const;
+      const moved = this.db.prepare("UPDATE oauth_grant SET renew_hash = ?, access_expires_at = ? WHERE token = ? AND renew_hash = ?")
+        .run(next.refreshHash, next.accessExpiresAt, token, ask.refreshHash);
+      if (Number(moved.changes) !== 1) return invalid;
       this.db.prepare("UPDATE api_token SET secret_hash = ? WHERE id = ? AND revoked_at IS NULL").run(next.accessHash, token);
-      return true;
+      this.db.prepare("INSERT INTO oauth_refresh (token, hash) VALUES (?, ?)").run(token, next.refreshHash);
+      return { ok: true, access: kept.access } as const;
     });
   }
 
