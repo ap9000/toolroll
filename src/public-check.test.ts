@@ -88,7 +88,7 @@ test("names certificate, proxy and HSTS problems at the public address", async (
 test("answers as one checked envelope, and refuses a bad --port", async () => {
   const port = await console_();
   const lines: string[] = [];
-  const code = await runOperate("serve", ["check-public", "--public-url", URL_, "--port", String(port), "--json"], line => lines.push(line), { publicProbe: outside(), databaseFile: join(tmpdir(), "never-opened.db") });
+  const code = await runOperate("serve", ["check-public", "--public-url", URL_, "--port", String(port), "--json"], line => lines.push(line), { publicProbe: outside(), databaseFile: join(tmpdir(), "so-never-opened.db") });
   expect(code).toBe(1);
   const envelope = JSON.parse(lines.join("")) as Record<string, unknown>;
   expect(envelopeProblems(envelope)).toEqual([]);
