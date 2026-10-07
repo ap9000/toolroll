@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.47 — 2026-10-07
+
+- **Live tasks.** Task pages update live and show who else is viewing.
+- **Last activity.** Running tasks say what the agent did last and when
+  ("Ran the tests · 40 s ago"). After 5 minutes of silence they turn amber,
+  and they say "Worker offline" when it is.
+- **Flow cards** show their task's state: "Building · step 3 of 6",
+  "Stuck: …", "Waiting on you".
+- **Teammates.** People limited to some projects now get live flows and
+  presence.
+- **Refresh.** The task list, task pages and home refresh on their own,
+  with or without the chat open.
+- **One badge.** The Needs-you count is the same everywhere, and says which
+  projects it covers.
+
 ## 0.9.46 — 2026-10-07
 
 - **Tokens from the terminal.** `toolroll tokens create|list|revoke|rotate`.
