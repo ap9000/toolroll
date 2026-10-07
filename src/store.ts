@@ -1,4 +1,6 @@
 import { chatSchema, chatTables } from "./contracts/chat-tables.js";
+import { ServerTelemetry } from "./server-telemetry.js";
+import { instrumentDatabase, measureWriteWait } from "./sqlite-telemetry.js";
 import type { DecisionOption } from "./contracts/decision.js";
 import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn, type SavedToolAction, type SavedToolRule } from "./contracts/store-json.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
@@ -5205,6 +5207,10 @@ export function isDatabaseBusy(error: unknown): boolean {
  * wait, which is still counted in nominal sleep.
  */
 function beginWriteWithin(db: Database, budgetMs: number): void {
+  measureWriteWait(db, () => beginWriteAttempt(db, budgetMs));
+}
+
+function beginWriteAttempt(db: Database, budgetMs: number): void {
   const deadline = performance.now() + budgetMs;
   db.exec(`PRAGMA busy_timeout = ${WRITE_WAIT_SLICE_MS}`);
   try {
@@ -8975,7 +8981,12 @@ export class ReviewBindingError extends Error {
 }
 
 export class Store {
-  constructor(private readonly db: Database) {}
+  readonly telemetry: ServerTelemetry;
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.telemetry = new ServerTelemetry();
+    this.db = instrumentDatabase(db, this.telemetry);
+  }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
    * code never calls this — the typed methods are the API. */
@@ -9693,16 +9704,28 @@ export class Store {
     if (this.transacting) return body();
     beginWriteWithin(this.db, CONCURRENT_WRITER_WAIT_MS);
     this.transacting = true;
+    let result: T;
     try {
-      const result = body();
+      result = body();
       this.db.exec("COMMIT");
-      return result;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     } finally {
       this.transacting = false;
     }
+    // Only after the outer COMMIT: a rolled-back or nested body tells no one.
+    for (const listener of this.commitListeners) { try { listener(); } catch { /* a listener never fails the write */ } }
+    return result;
+  }
+
+  private readonly commitListeners = new Set<() => void>();
+
+  /** Hear each outer transact() commit (live-bus.ts). Listeners run synchronously
+   * after COMMIT and must not write; the return value stops listening. */
+  onCommit(listener: () => void): () => void {
+    this.commitListeners.add(listener);
+    return () => { this.commitListeners.delete(listener); };
   }
 
   /**

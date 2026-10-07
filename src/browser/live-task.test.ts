@@ -78,9 +78,39 @@ describe("the task stream", () => {
     await act(async () => Events.latest.emit("change", { at: "b" }));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]![0])).toContain("/t/t-1");
-    // Without a beat of its own, the page waits for the next nudge rather than polling.
-    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    // Without a beat of its own, the page still reconciles on a slow 30 s timer, not once a second.
+    await act(async () => vi.advanceTimersByTimeAsync(29_000));
     expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(31_000));
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  test("a nudge during a read queues one more read; a failed read retries on its own; reload reads", async () => {
+    let fail = true;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      if (fail) throw new TypeError("offline");
+      return new Response(JSON.stringify(workspace(taskView({ live: { href: "/t/t-1/live", at: "c" } }))), { headers: { etag: '"3"' } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await mount(workspace(taskView({ live: { href: "/t/t-1/live", at: "a" } })));
+    await act(async () => Events.latest.emit("change", { at: "b", revision: "v1:2" }));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // The read failed: the page doesn't stay stale until the next write.
+    fail = false;
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    // Two nudges while one read is in flight: exactly one follow-up.
+    let release!: () => void;
+    fetcher.mockImplementationOnce(() => new Promise<Response>(resolve => { release = () => resolve(new Response(null, { status: 304, headers: { etag: '"3"' } })); }));
+    await act(async () => Events.latest.emit("change", { at: "d" }));
+    await act(async () => Events.latest.emit("change", { at: "e" }));
+    await act(async () => Events.latest.emit("change", { at: "f" }));
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    // The server's stream fell behind and caught up: the page reads again.
+    await act(async () => Events.latest.dispatchEvent(new MessageEvent("reload", { data: "{}" })));
+    expect(fetcher).toHaveBeenCalledTimes(5);
   });
 
   test("a stream that gives up clears who's here and leaves the workspace's own beat reading the page", async () => {

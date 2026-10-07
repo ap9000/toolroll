@@ -57,3 +57,39 @@ test.each([false, true])("live task states replace the card line and keep its ta
   expect(panel).not.toBeNull();
   expect(panel.querySelector('a[href="/t/checkout"]')?.textContent).toBe("Open its task");
 });
+
+test("a nudge during a read is kept, a failed read retries on its own, and reload reads again", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(createElement(FlowView, { view: view("Building · step 1 of 6", "first"), csrf: "fixture" })));
+    const nudge = (at: string) => act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ at, revision: "v1:9" }) })); });
+    let release!: () => void;
+    const fetcher = vi.fn()
+      .mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => view("Building · step 2 of 6", "second") }); }))
+      .mockImplementation(async () => ({ ok: true, json: async () => view("Building · step 3 of 6", "third") }));
+    vi.stubGlobal("fetch", fetcher);
+    await nudge("second");
+    await nudge("third");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // The nudge that arrived mid-read isn't dropped: one more read follows, and the page shows the newest state.
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Building · step 3 of 6");
+
+    // A failed read doesn't leave the page stale until the next write.
+    fetcher.mockImplementationOnce(async () => { throw new TypeError("offline"); });
+    await nudge("fourth");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(fetcher).toHaveBeenCalledTimes(4);
+
+    // The server's stream fell behind and caught up.
+    await act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("reload", { data: "{}" })); });
+    expect(fetcher).toHaveBeenCalledTimes(5);
+    // And the page reconciles on its own slow beat.
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(fetcher).toHaveBeenCalledTimes(6);
+  } finally { vi.useRealTimers(); }
+});

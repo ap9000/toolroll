@@ -286,7 +286,8 @@ import { presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords,
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
 import { worktreeAdoptionNotice } from "./worktree-notices.js";
-import { workIndexPage, WorkIndexCursorError } from "./work-index.js";
+import { workIndexPage, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
+import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
 import { assignmentOf, assignmentBrief, syncAssignmentHandoffs } from "./assignment.js";
@@ -11880,7 +11881,7 @@ async function capCommand(
   return fail(write, json, "cap", "usage", `unknown \`cap ${action}\` — try add, list, scan, probe`, EXIT.usage);
 }
 
-function listTasks(flags: Map<string, string | true>, context: Context): number {
+function listTasks(flags: Map<string, string | true>, context: Context): number | Promise<number> {
   const { store, write, json, now } = context;
   const wanted = text(flags, 'state');
   const rawView = text(flags, 'view');
@@ -11893,30 +11894,38 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running or completed; --limit takes 1–100', EXIT.usage);
   }
-  let page;
-  try {
-    // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
-    const lens = context.principal?.lens ?? null;
-    page = workIndexPage(store, now, { principal: 'operator', repos: lens, includeUnplaced: lens === null }, {
-      view: parseWorkView(rawView ?? null), limit, cursor: text(flags, 'cursor') ?? null,
-      ...(wanted === undefined ? {} : { state: wanted as TaskState }),
-      ...(text(flags, 'repo') === undefined ? {} : { project: text(flags, 'repo')! }),
-    });
-  } catch (error) {
+  // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
+  const lens = context.principal?.lens ?? null;
+  const access = { principal: 'operator' as const, repos: lens, includeUnplaced: lens === null };
+  const options = {
+    view: parseWorkView(rawView ?? null), limit, cursor: text(flags, 'cursor') ?? null,
+    ...(wanted === undefined ? {} : { state: wanted as TaskState }),
+    ...(text(flags, 'repo') === undefined ? {} : { project: text(flags, 'repo')! }),
+  };
+  const refused = (error: unknown): number => {
     if (!(error instanceof WorkIndexCursorError)) throw error;
     return fail(write, json, 'task list', 'usage', 'Invalid page cursor. Start again without --cursor.', EXIT.usage);
-  }
-  const tasks = page.items.map(item => ({ ...item, id: item.rootId }));
-  if (json) {
-    write(envelopeJson({ ok: true, command: 'task list', count: tasks.length, tasks,
-      totals: page.totals, nextCursor: page.nextCursor, limit: page.limit, view: page.view, evidence: 'recorded' }));
+  };
+  const show = (page: WorkIndexPage): number => {
+    const tasks = page.items.map(item => ({ ...item, id: item.rootId }));
+    if (json) {
+      write(envelopeJson({ ok: true, command: 'task list', count: tasks.length, tasks,
+        totals: page.totals, nextCursor: page.nextCursor, limit: page.limit, view: page.view, evidence: 'recorded' }));
+      return EXIT.ok;
+    }
+    if (tasks.length === 0) write(wanted === undefined ? 'The task list is empty.' : `Nothing is ${wanted}.`);
+    const width = Math.max(0, ...tasks.map(task => task.id.length));
+    for (const task of tasks) write(`  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`);
+    if (page.nextCursor !== null) write(`Next page: --cursor ${page.nextCursor}`);
     return EXIT.ok;
-  }
-  if (tasks.length === 0) write(wanted === undefined ? 'The task list is empty.' : `Nothing is ${wanted}.`);
-  const width = Math.max(0, ...tasks.map(task => task.id.length));
-  for (const task of tasks) write(`  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`);
-  if (page.nextCursor !== null) write(`Next page: --cursor ${page.nextCursor}`);
-  return EXIT.ok;
+  };
+  // On the server, the same page is read on a worker's read-only connection so the request loop stays free.
+  const executor = readExecutorOf(store);
+  if (executor !== null) return executor.workIndexPage(now, access, options).then(show, refused);
+  let page;
+  try { page = workIndexPage(store, now, access, options); }
+  catch (error) { return refused(error); }
+  return show(page);
 }
 
 function showTask(positional: readonly string[], context: Context): number {

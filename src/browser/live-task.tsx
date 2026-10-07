@@ -52,6 +52,8 @@ export function useLiveTask(live: { href: string; at?: string | null } | null | 
       stream.addEventListener("change", event => {
         try { const at = (JSON.parse((event as MessageEvent<string>).data) as { at: string | null }).at; if (at === null || at !== seen.current) nudge(); } catch { nudge(); }
       });
+      // The server's stream fell behind and caught up: read again whatever it last said.
+      stream.addEventListener("reload", nudge);
       stream.addEventListener("here", event => {
         try { const list = (JSON.parse((event as MessageEvent<string>).data) as { people: unknown }).people; if (Array.isArray(list)) setPeople(list.filter((one): one is string => typeof one === "string")); } catch { /* keep the last list */ }
       });

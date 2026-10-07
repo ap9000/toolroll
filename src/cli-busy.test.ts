@@ -113,12 +113,15 @@ describe("CLI database contention", () => {
     const store = openStore(file);
     const writer = await holdWriter(file, null);
     const lines: string[] = [];
-    // An injected clock: the write budget is counted in performance.now()
-    // readings, and each reading here moves a second. The 15-second bound is
-    // spent exactly — in about 15 real 100 ms lock attempts — however loaded
-    // the machine is. The short-write test above keeps the real wait.
+    // Advance time for each real lock attempt, not for clock reads: adding an
+    // observer (such as telemetry) must not itself spend the injected budget.
+    // The short-write test above keeps the real wait.
     let clock = 0;
-    const now = vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+    const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const exec = store.handle.exec.bind(store.handle);
+    const attempt = vi.spyOn(store.handle, 'exec').mockImplementation(sql => {
+      try { return exec(sql); } finally { if (sql === 'BEGIN IMMEDIATE') clock += 1_000; }
+    });
     let code: number;
     let elapsed: number;
     try {
@@ -130,6 +133,7 @@ describe("CLI database contention", () => {
       );
       elapsed = performance.now() - started;
     } finally {
+      attempt.mockRestore();
       now.mockRestore();
     }
 

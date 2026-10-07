@@ -74,19 +74,33 @@ function useLiveFlow(view: BrowserFlowView, setView: (view: BrowserFlowView) => 
   const paused = useRef(me.editing);
   paused.current = me.editing;
   const reading = useRef(false);
+  // A nudge that arrives mid-read, or while the flow is being changed, is kept: one more read follows.
+  const again = useRef(false);
+  const retry = useRef<number | undefined>(undefined);
   const href = view.flow.href;
-  const read = useCallback(async () => {
-    if (reading.current || paused.current) return;
+  const read = useCallback(async (): Promise<void> => {
+    if (reading.current || paused.current) { again.current = true; return; }
     reading.current = true;
+    again.current = false;
+    window.clearTimeout(retry.current);
+    let ok = false;
     try {
       const response = await fetch(`${href}?format=json`, { credentials: "same-origin", headers: { accept: "application/json" } });
-      if (response.ok) { const next = await response.json() as BrowserFlowView; seen.current = next.live; setView(next); }
-    } catch { /* the next nudge or tick reads again */ }
+      if (response.ok) { const next = await response.json() as BrowserFlowView; seen.current = next.live; setView(next); ok = true; }
+    } catch { /* retried below */ }
     finally { reading.current = false; }
+    if (again.current) void read();
+    // A failed read doesn't leave the page stale until the next write: try again shortly.
+    else if (!ok) retry.current = window.setTimeout(() => { if (document.visibilityState === "visible") void read(); }, 5000);
   }, [href, setView]);
+  // Done changing the flow: catch up on anything held back meanwhile.
+  useEffect(() => { if (!me.editing && again.current) void read(); }, [me.editing, read]);
+  useEffect(() => () => window.clearTimeout(retry.current), []);
   useEffect(() => {
     let source: EventSource | null = null;
     let fallback: number | undefined;
+    // The page reconciles on its own slow beat too, not only when the server speaks.
+    const reconcile = window.setInterval(() => { if (document.visibilityState === "visible" && source !== null) void read(); }, 30_000);
     const query = new URLSearchParams({ ...(me.card === null ? {} : { card: String(me.card) }), ...(me.editing ? { editing: "1" } : {}) }).toString();
     const poll = () => { window.clearInterval(fallback); fallback = window.setInterval(() => { if (document.visibilityState === "visible") void read(); }, 5000); };
     const open = () => {
@@ -94,6 +108,8 @@ function useLiveFlow(view: BrowserFlowView, setView: (view: BrowserFlowView) => 
       const stream = new EventSource(`${href}/live${query === "" ? "" : `?${query}`}`);
       source = stream;
       stream.addEventListener("change", event => { try { const at = (JSON.parse((event as MessageEvent<string>).data) as { at: string | null }).at; if (at === null || at !== seen.current) void read(); } catch { void read(); } });
+      // The server's stream fell behind and caught up: read again.
+      stream.addEventListener("reload", () => { void read(); });
       stream.addEventListener("here", event => { try { setOthers((JSON.parse((event as MessageEvent<string>).data) as { people: Here[] }).people); } catch { /* keep the last list */ } });
       stream.addEventListener("gone", () => { stream.close(); if (source === stream) source = null; setOthers([]); });
       stream.addEventListener("open", () => window.clearInterval(fallback));
@@ -105,7 +121,7 @@ function useLiveFlow(view: BrowserFlowView, setView: (view: BrowserFlowView) => 
     const visible = () => { if (document.hidden) close(); else if (source === null) { open(); void read(); } };
     if (!document.hidden) open();
     document.addEventListener("visibilitychange", visible);
-    return () => { document.removeEventListener("visibilitychange", visible); close(); };
+    return () => { document.removeEventListener("visibilitychange", visible); window.clearInterval(reconcile); close(); };
   }, [href, me.card, me.editing, read]);
   return others;
 }

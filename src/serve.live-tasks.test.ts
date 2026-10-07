@@ -108,7 +108,7 @@ describe("the live task stream", () => {
     const changes = (await live.until(all => all.filter(one => one.event === "change").length >= 2)).filter(one => one.event === "change");
     expect(changes).toHaveLength(2);
     expect(changes[1]!.data).not.toEqual(changes[0]!.data);
-    expect(Object.keys(changes[1]!.data as object)).toEqual(["at"]);
+    expect(Object.keys(changes[1]!.data as object)).toEqual(["at", "revision"]);
     live.close();
   });
 
@@ -152,6 +152,56 @@ describe("the live task stream", () => {
     const after = await alexOn.until(all => { const last = all.filter(one => one.event === "here").at(-1); return last !== undefined && (last.data as { people: string[] }).people.length === 0; });
     expect(after.filter(one => one.event === "here").at(-1)!.data).toEqual({ people: [] });
     alexOn.close();
+  });
+});
+
+describe("the live task stream on the bus", () => {
+  const changes = (all: { event: string }[]) => all.filter(one => one.event === "change").length;
+
+  test("a person granted one project never hears another project's writes or who is there, and is dropped when narrowed", async () => {
+    const runA = running("t-a", repoA), runB = running("t-b", repoB);
+    const alex = await login("alex", alexToken), robin = await login("robin", robinToken);
+    const robinOn = await stream("/t/t-b/live", robin);
+    await robinOn.until(all => all.some(one => one.event === "here"));
+    const alexOn = await stream("/t/t-a/live", alex);
+    await alexOn.until(all => all.some(one => one.event === "here"));
+
+    // Work in project A: Alex hears it at once; Robin, in project B only, hears nothing.
+    const started = Date.now();
+    store.recordRunActivity(runA, "command", new Date());
+    await alexOn.until(all => changes(all) >= 2);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(changes(alexOn.events)).toBe(2);
+
+    // Work in project B reaches Robin; the project A write before it never did (it would be a third change).
+    store.recordRunActivity(runB, "command", new Date());
+    await robinOn.until(all => changes(all) >= 2);
+    expect(changes(robinOn.events)).toBe(2);
+    expect(JSON.stringify(robinOn.events)).not.toContain("alex");
+
+    // Robin's projects narrow (itself a write): the stream ends at once, not at the next poll.
+    expect(store.setAccountProjects("robin", [repoA], "alex", new Date())).toEqual({ ok: true });
+    await robinOn.until(all => all.some(one => one.event === "gone"), 2_000);
+    expect(robinOn.events.at(-1)!.event).toBe("gone");
+    robinOn.close(); alexOn.close();
+  });
+
+  test("redaction holds: a key-shaped string written at runtime never reaches the stream", async () => {
+    const run = running("t-secret", repoA);
+    const cookie = await login("alex", alexToken);
+    const live = await stream("/t/t-secret/live", cookie);
+    await live.until(all => all.some(one => one.event === "here"));
+    const key = ["sk", "ant", "api03", Array.from({ length: 40 }, (_, index) => "abcdefghij"[index % 10]).join("")].join("-");
+    store.recordRunActivity(run, "command", new Date());
+    store.handle.prepare("INSERT INTO decision (run, urgency, state, recap, question, options, recommendation, created_at) VALUES (?, 'blocking', 'open', ?, ?, '[]', 'one', ?)")
+      .run(run, `The tool call was given ${key}`, `Use ${key}?`, new Date().toISOString());
+    await live.until(all => changes(all) >= 3, 2_000);
+    expect(changes(live.events)).toBeGreaterThanOrEqual(2);
+    const sent = JSON.stringify(live.events);
+    expect(sent).not.toContain(key);
+    expect(sent).not.toContain("api03");
+    for (const one of live.events.filter(item => item.event === "change")) expect(Object.keys(one.data as object)).toEqual(["at", "revision"]);
+    live.close();
   });
 });
 
