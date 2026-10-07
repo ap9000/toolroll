@@ -149,6 +149,16 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "brief", synopsis: "with a saved central profile, --lead <id> --conversation <id> reads messages, proposals and saved work; --request-id inspects your saved receipt without resending; --local uses local DB catch-up, where --history selects the older operational report", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "gaps", synopsis: "requirement gaps blocking dispatch", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
   { invocation: "grants", synopsis: "list authority grants", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
+  { invocation: "audit", synopsis: "what people did on this server with their API tokens, newest first: when, who, which token, from the CLI (api) or an agent (mcp), the command or tool, the project and the outcome (ok, refused, error); an approver sees everyone in their projects, anyone else only themselves",
+    audience: "agent", agentMayInvoke: true, mutation: "none",
+    flags: [jsonFlag, dbFlag,
+      { name: "person", takesValue: true, meaning: "only this person's actions" },
+      { name: "token", takesValue: true, meaning: "only actions with the token of this name (on the server's own machine)" },
+      { name: "token-name", takesValue: true, meaning: "the same, where --token would be a credential (remotely)" },
+      { name: "source", takesValue: true, meaning: "api (the CLI) or mcp (an agent)" },
+      { name: "since", takesValue: true, meaning: "only the last N days, as Nd (7d)" },
+      { name: "limit", takesValue: true, meaning: "actions per page (default 20, at most 100)" },
+      { name: "cursor", takesValue: true, meaning: "the nextCursor of the previous page" }] },
   { invocation: "sync", synopsis: "refresh external-tracker mirrors and deliver write-backs — safe to run; fails closed", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     flags: [jsonFlag, dbFlag, repoFlag], notableReasons: ["no-op", "external"] },
 
@@ -475,7 +485,7 @@ const REMOTE_STEP_UP: readonly string[] = [
   "verify set", "verify clear", "verify level", "project checks", "project concurrency", "intake grant", "intake clear", "webhook primary",
 ];
 const REMOTE_YES: readonly string[] = [
-  "status", "integrations", "ready", "gaps", "grants", "sync",
+  "status", "integrations", "ready", "gaps", "grants", "sync", "audit",
   "task add", "task ask", "task checks", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
   "task state", "task block", "task unblock", "task next", "task steer", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
   "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",

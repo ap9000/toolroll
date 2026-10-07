@@ -122,6 +122,7 @@ import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
+import { auditCommand } from "./audit-cli.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";
@@ -459,6 +460,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll ledger checkpoint         record the chain's head to copy off this machine (instance operator)
   toolroll ledger export --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--out <file>]
                                         every sealed entry in the range, with an evidence pack per task
+  toolroll audit [--person <p>] [--token <name>] [--source api|mcp] [--since 7d]
+                                        what people did here with their API tokens, newest first (--limit, --cursor;
+                                        remotely, name a token with --token-name)
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
   toolroll task merge <id> --as <you> --token <t>
@@ -868,6 +872,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "quick", "level", "checks",
   // lead say: the task the lead's words are about.
   "task",
+  // audit: a token by name where --token is a credential (remote).
+  "token-name",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
@@ -1130,7 +1136,7 @@ export type { Principal };
  */
 export async function runOperateAs(
   argv: string[],
-  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: RemoteSource; options?: OperateOptions },
+  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: RemoteSource; tool?: string; options?: OperateOptions },
 ): Promise<number> {
   const { principal, store, write } = opts;
   const source: RemoteSource = opts.source === "mcp" ? "mcp" : "api";
@@ -1140,10 +1146,12 @@ export async function runOperateAs(
   const json = rest.includes("--json");
   let invocation = root;
   let tokenName: string | null = null;
+  // An MCP call names the gateway tool it came from, so the history tells a tool from the command it ran.
+  const tool = source === "mcp" && typeof opts.tool === "string" && /^[a-z][a-z0-9_]{0,40}$/.test(opts.tool) ? opts.tool : null;
   const record = (outcome: string, repo: string | null, taskId: string | null, why: string | null): void => {
     store.recordAction({ at: (options.now ?? new Date()).toISOString(), actor: principal.account, repo, taskId, runId: null,
       action: `remote command: ${invocation === "" ? "(none)" : invocation}`.slice(0, 200), outcome, source,
-      detail: `token ${tokenName ?? principal.tokenId}${why === null ? "" : ` · ${why}`}` });
+      detail: `token ${tokenName ?? principal.tokenId}${why === null ? "" : ` · ${why}`}${tool === null ? "" : ` · tool ${tool}`}` });
   };
   const refuse = (reason: string, message: string, repo: string | null = null, taskId: string | null = null): number => {
     record("refused", repo, taskId, reason);
@@ -1359,6 +1367,8 @@ async function dispatch(
       return taskCommand(positional, flags, context);
     case "ledger":
       return ledgerCommand(positional, flags, context);
+    case "audit":
+      return auditCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), ...(context.principal === undefined ? {} : { principal: context.principal }) });
     case "spend":
       return spendCommand(flags, context);
     case "budget":

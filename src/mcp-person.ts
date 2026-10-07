@@ -96,7 +96,7 @@ export async function callPersonTool(person: Person, store: Store, runAs: RunOpe
   let written = "";
   let code: number;
   try {
-    code = await runAs(argv, { principal: person.principal, store, write: chunk => { written += chunk; }, source: "mcp" });
+    code = await runAs(argv, { principal: person.principal, store, write: chunk => { written += chunk; }, source: "mcp", tool });
   } catch (error) {
     return refused(`the command failed on the server: ${error instanceof Error ? error.message : String(error)}`);
   }

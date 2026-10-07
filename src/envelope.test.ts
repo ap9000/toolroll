@@ -132,6 +132,7 @@ describe("the machine envelope", () => {
       ready: ["--json"],
       task: ["list", "--json"],
       ledger: ["verify", "--json"],
+      audit: ["--json"],
       storage: ["--json"],
       monitoring: ["--json"],
       integrations: ["--saved", "--json"],
