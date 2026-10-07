@@ -73,6 +73,6 @@ test('an idle event loop reads near zero once the sampling interval is subtracte
     await new Promise(resolve => setTimeout(resolve, 600));
     const loop = telemetry.snapshot().eventLoop;
     expect(loop.count).toBeGreaterThan(0);
-    expect(loop.p50Ms!).toBeLessThan(5);
+    expect(loop.p50Ms!).toBeLessThan(15); // an unsubtracted 20 ms interval would still fail; shared CI runners jitter a few ms
   } finally { telemetry.stop(); }
 });
