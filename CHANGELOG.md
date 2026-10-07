@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.49 — 2026-10-07
+
+- **Tokens keep their limits.** A token's scope and project limits now hold
+  on every remote route.
+- **Browser login for step-ups.** Approvals and other password step-ups need
+  a browser login. OAuth refuses plain HTTP off loopback or your tailnet.
+- **Request budgets everywhere.** Budgets cover every remote route, and fake
+  account names can't lock anyone out.
+
 ## 0.9.48 — 2026-10-07
 
 - **Instant live views.** Changes reach open pages in about 2 ms (was about
