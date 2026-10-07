@@ -112,7 +112,7 @@ import {
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
-import { sweepLiveLogs } from "./live.js";
+import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
 import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
@@ -5188,6 +5188,8 @@ async function reconcileCommand(
   // day, orphans on mtime, active runs untouchable. Never evidence, never
   // load-bearing — a sweep that finds nothing is the common case.
   const liveSwept = sweepLiveLogs(store, context.evidenceRoot, clock());
+  // What each agent did last goes by the same rules, from its own row.
+  try { store.sweepRunActivity(clock(), LIVE_RETAIN_MS, LIVE_FILE_BOUND); } catch { /* display state: the next pass sweeps */ }
 
   const worktrees = new WorktreePool(store, {
     root: pool,

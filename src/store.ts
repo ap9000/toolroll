@@ -14,6 +14,7 @@ import { cardOutputsForStore, cardOutputsFromStore } from "./contracts/stage-out
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { actorLabel, currentActor, leadSecretMatches, mintLeadToken, parseLeadToken, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
+import { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live.js";
 import { tokenPurpose, tokenRotationProblem, type TokenPurpose } from "./api-tokens.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
@@ -413,6 +414,17 @@ CREATE INDEX IF NOT EXISTS telegram_flow_choice_visit ON telegram_flow_choice (c
 /** An owner's lasting choice to approve plans and merges from their paired chat (chat-approval.ts), for all their
  * projects (scope '*') or one (its path), with the limits they agreed to. Off unless a row says on; a project's own row
  * outranks the all-projects one. `generation` is the account's at the change: a reset password ends it. */
+/** What a running agent did last (live tasks): one row per run, a fixed kind from live.ts's
+ * vocabulary and when — never text, tool names or arguments. Display state, not evidence;
+ * a finished run's row goes with the live log's own retention (sweepRunActivity). */
+export const RUN_ACTIVITY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_activity (
+  run  INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('session','message','edit','command','read','search','lookup','plan','delegate','tool')),
+  at   TEXT NOT NULL
+);
+`;
+
 export const CHAT_APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_approval_setting (
   approver             TEXT NOT NULL,
@@ -5423,6 +5435,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
   db.exec(CHAT_APPROVAL_SCHEMA);
+  // What a running agent did last (no version bump: additive only; absent means no word yet).
+  db.exec(RUN_ACTIVITY_SCHEMA);
   db.exec(TELEGRAM_FLOW_CONFIRM_SCHEMA);
   // A flow's "Send to me" and "Person chooses" zones (no version bump: additive only).
   db.exec(FLOW_SEND_SCHEMA);
@@ -20972,6 +20986,30 @@ export class Store {
   latestCheckpointForTask(taskRef: number): RunCheckpoint | null {
     const row = this.db.prepare("SELECT * FROM run_checkpoint WHERE task_ref = ? ORDER BY id DESC LIMIT 1").get(taskRef);
     return row === undefined ? null : readRunCheckpoint(row as Record<string, unknown>);
+  }
+
+  /** What the agent did last on this run (live tasks): one fixed kind and when, replacing the last. */
+  recordRunActivity(run: number, kind: LiveActivityKind, now: Date): void {
+    this.db.prepare("INSERT INTO run_activity (run, kind, at) VALUES (?, ?, ?) ON CONFLICT (run) DO UPDATE SET kind = excluded.kind, at = excluded.at")
+      .run(run, kind, now.toISOString());
+  }
+
+  /** A run's last recorded activity and its newest progress checkpoint's time, in one read. */
+  runActivity(run: number): { kind: LiveActivityKind | null; at: string | null; progressAt: string | null } {
+    const row = this.db.prepare(`SELECT (SELECT kind FROM run_activity WHERE run = ?1) AS kind, (SELECT at FROM run_activity WHERE run = ?1) AS at,
+      (SELECT created_at FROM run_checkpoint WHERE run = ?1 ORDER BY id DESC LIMIT 1) AS progress_at`).get(run) as Record<string, unknown>;
+    const kind = typeof row["kind"] === "string" && (LIVE_ACTIVITY_KINDS as readonly string[]).includes(row["kind"]) ? row["kind"] as LiveActivityKind : null;
+    return { kind, at: kind === null ? null : String(row["at"]), progressAt: row["progress_at"] == null ? null : String(row["progress_at"]) };
+  }
+
+  /** The live log's own retention: a finished run's activity goes once older than `retainMs`, and beyond the newest
+   * `bound` finished runs; a live run's always stays. */
+  sweepRunActivity(now: Date, retainMs: number, bound: number): number {
+    const finished = "run IN (SELECT id FROM run WHERE outcome IS NOT NULL)";
+    const aged = this.db.prepare(`DELETE FROM run_activity WHERE at < ? AND ${finished}`).run(new Date(now.getTime() - retainMs).toISOString()).changes;
+    const over = this.db.prepare(`DELETE FROM run_activity WHERE ${finished} AND run NOT IN (SELECT run FROM run_activity WHERE ${finished} ORDER BY at DESC, run DESC LIMIT ?)`)
+      .run(Math.max(0, Math.floor(bound))).changes;
+    return Number(aged) + Number(over);
   }
 
   /** One run's full checkpoint history, oldest first. */

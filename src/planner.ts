@@ -42,6 +42,7 @@ import {
 import type { Runner } from "./builder.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { openLiveLog } from "./live.js";
+import { withRunActivity } from "./task-activity.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { CLAUDE_LIMITS, ACCEPTANCE_LIMITS } from "./scope.js";
 import {
@@ -777,7 +778,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = openLiveLog(root, request.runId);
+  const liveLog = withRunActivity(openLiveLog(root, request.runId), store, request.runId, clock);
   // The durable run row, not a caller's duplicate options, is the route
   // every correction inherits.
   const provider = logicalRun.provider;
@@ -941,7 +942,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
-        ...(liveLog === null ? {} : { onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event) }),
+        onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
       },
     );
 
@@ -1100,7 +1101,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
             ...(agent === undefined ? {} : { runner: agent }),
             ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
             clock,
-            ...(liveLog === null ? {} : { onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event) }),
+            onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
           },
         );
       } catch (error) {

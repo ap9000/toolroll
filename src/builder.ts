@@ -62,6 +62,7 @@ import { invokeAgent, type AgentOutcome, type InvokeResult } from "./invoke.js";
 import { TELEGRAM_TOKEN_ENVS } from "./names.js";
 import { OPENROUTER_ENV_KEY, auditOf, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { openLiveLog } from "./live.js";
+import { withRunActivity } from "./task-activity.js";
 import { CheckProgressTracker } from "./check-progress.js";
 import {
   captureParkEvidence,
@@ -1444,7 +1445,8 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // The live window (arc 1): display state beside the run, never evidence.
   // Every streaming transport emits events now (peek); a file that cannot
   // open is a null, and a null never costs a build.
-  const liveLog = openLiveLog(root, request.runId);
+  // What the agent did last rides the same stream into one row (live tasks).
+  const liveLog = withRunActivity(openLiveLog(root, request.runId), store, request.runId, clock);
   // The retry base (steering fix for run 1465's proof): the SAME pinned
   // base the machine will use to capture the sealed diff (settleProof
   // below, mirroring store.firstBuilderBase's own doc). Null on a first
@@ -1635,7 +1637,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         omitEnv: AGENT_ENV_DENYLIST,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
-        ...(liveLog === null ? {} : { onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event) }),
+        onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
         // The receipt (finding 8): the stream proved the prompt reached the
         // agent — settle delivery NOW, durably, whatever happens to the run
         // later. The runner latches and isolates this callback; a throw

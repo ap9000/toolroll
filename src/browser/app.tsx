@@ -26,6 +26,7 @@ import { HeadlineBadge } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
+import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
@@ -102,8 +103,10 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (owner) setStorageAvailable(saveDraft(browserStorage(), owner, next));
   }, [initial]);
 
+  // A task page that follows its own stream (/t/<id>/live) reads itself when nudged.
+  const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
   const check = useCallback(async (force = true): Promise<void> => {
-    if (!mounted.current || state.current.stale || !(initial.conversation || initial.refreshSeconds) || !canRefreshWorkspace()) return;
+    if (!mounted.current || state.current.stale || !(initial.conversation || initial.refreshSeconds || liveTask) || !canRefreshWorkspace()) return;
     // A send or explicit refresh during a read must run immediately afterward,
     // rather than lose its receipt check or start an overlapping request.
     if (polling.current) { if (force) refreshQueued.current = true; return; }
@@ -141,7 +144,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
       setNotice(error instanceof Error ? error.message : "Updates are unavailable. Your work is still saved.");
     } finally {
       polling.current = false;
-      if (mounted.current && !state.current.stale && canRefreshWorkspace()) {
+      // A page that only follows its task's stream has no beat of its own: the next nudge reads it again.
+      if (mounted.current && !state.current.stale && canRefreshWorkspace() && (initial.conversation || (state.current.workspace.refreshSeconds ?? initial.refreshSeconds))) {
         if (refreshQueued.current) {
           refreshQueued.current = false;
           void check(true);
@@ -153,7 +157,15 @@ export function useWorkspace(initial: BrowserWorkspace) {
         }
       }
     }
-  }, [initial, updateDraft]);
+  }, [initial, liveTask, updateDraft]);
+
+  // The task's stream says it changed: read now (live-task.tsx).
+  useEffect(() => {
+    if (!liveTask) return;
+    const nudge = () => { void check(true); };
+    window.addEventListener(WORKSPACE_NUDGE, nudge);
+    return () => window.removeEventListener(WORKSPACE_NUDGE, nudge);
+  }, [check, liveTask]);
 
   useEffect(() => {
     mounted.current = true;
@@ -264,6 +276,7 @@ export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; it
     <div className="so-work-row">
       <a className="so-work-link" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
       <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} className="so-work-badge" /><CrewAge at={item.updatedAt} /></div>
+      {item.activity !== undefined && <ActivityLine activity={item.activity} className="so-work-activity text-[12px]" />}
       </a>
       {item.detail && <details className="so-work-reason" key={item.detail}>
         <summary title={item.detail}><span>{item.detail}</span><svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg></summary>

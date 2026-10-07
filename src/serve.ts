@@ -44,6 +44,9 @@ import { addRoutine, removeRoutine, runRoutine } from "./teammate-desk.js";
 import { sendTeammateWeeklies, undoCall } from "./teammate-week.js";
 import { answerTeammateQuestion } from "./teammate-work.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
+import { createTaskRooms, taskFingerprint } from "./task-live.js";
+import { runActivityOf } from "./task-activity.js";
+import type { RunActivity } from "./activity-line.js";
 import { disconnectGoogle, finishGoogleConsent, GOOGLE_CALLBACK, googleConnected, googleConsent, readGoogleMail, saveGoogleClient, type GoogleVisit } from "./google-mail.js";
 import { mailboxAccess, readThroughImap } from "./mailbox.js";
 import { readEmailSettings, saveEmailSettings, sendingAccount, sendThroughServer, setFlowSecret, type MailSender } from "./flow-actions.js";
@@ -1052,6 +1055,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const connectVisits = new Map<string, ConnectVisit>();
   /** Flows open in a browser (v88): who's here, and a nudge when one changes. */
   const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow));
+  const taskRooms = createTaskRooms(root => taskFingerprint(store, root, clock()));
   const teamChatProvider: TeamChatProviderResolver = () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; };
   const team = createTeamRuntime({ store, repos: codingProjects, evidenceRoot, clock, workspaceRevision,
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
@@ -2010,7 +2014,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const read = new Set(["/settings/flows", "/settings/skills", "/settings/knowledge", "/settings", "/settings/learning", "/recipes", "/recipes/run", "/recipes/start", "/recipes/new", "/recipes/edit", "/recipes/from-task", "/recipes/preview", "/recipes/export", "/", "/inbox", "/work", "/projects", "/people", "/ledger", "/ledger/export", "/next", "/board", "/tasks", "/tasks/new", "/runs", "/review", "/done", "/routines", "/menu"]);
     const write = new Set(["/settings/flows/on", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings/learning/change", "/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/projects/select", "/tasks/add", "/routines/add"]);
-    const task = matchTaskPath(path, request.method === "GET" ? "(/evidence)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
+    const task = matchTaskPath(path, request.method === "GET" ? "(/evidence|/live)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
     const resource = request.method === "GET"
       ? /^\/(?:r|d)\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) || /^\/routines\/[0-9]{1,15}$/.test(path) || path === "/flows" || /^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path)
       : /^\/d\/[0-9]{1,15}\/answer$/.test(path) || /^\/routines\/[0-9]{1,15}\/(approve|refresh|pause|resume|run-now)$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path) || path === "/flows/import" || /^\/flows\/[0-9]{1,15}\/(save|cards|archive|scripts)$/.test(path) || /^\/flows\/[0-9]{1,15}\/cards\/[0-9]{1,15}\/(move|decide|cancel|comment|assign|watch)$/.test(path) || /^\/flows\/[0-9]{1,15}\/triggers(\/[0-9]{1,15}\/(pause|resume|remove|check|press|renew|secret|share|unshare))?$/.test(path) || /^\/r\/[0-9]{1,15}\/(note|comment|revise|draft-repair|checks|add-tests)$/.test(path);
@@ -2152,7 +2156,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // New work names its project in the form (a dropdown of known
       // projects); /tasks/add still admits the posted repo on its own.
       url.pathname !== "/tasks/new" && url.pathname !== "/tasks/add" &&
-      !/^\/t\/[^/]+(\/evidence)?$/.test(url.pathname) &&
+      !/^\/t\/[^/]+(\/evidence|\/live)?$/.test(url.pathname) &&
       !/^\/r\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(url.pathname) &&
       !url.pathname.startsWith("/d/") && !url.pathname.startsWith("/contest/") &&
       url.pathname !== "/projects" &&
@@ -3321,6 +3325,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response, 200, newTaskPage(chrome, project, csrf, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
     }
 
+    const taskLive = matchTaskPath(url.pathname, "/live$");
+    if (taskLive !== null) {
+      // The live task page: a nudge the moment the task changes, and who else
+      // has it open. Hints only — the page reads the task the usual way.
+      if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+      const family = familyOf(taskLive.taskId);
+      if (family === null || family.problem !== null) return respond(response, 404, "application/json", JSON.stringify({ error: "task" }));
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
+      const name = who.name, repo = family.root.repo;
+      taskRooms.join(family.root.id, {
+        name, response,
+        // Rechecked while open, from the cookie and the account (never a request's context): a sign-out or a narrowed account stops it.
+        valid: () => { const again = identify(request, false); return again !== null && again.name === name && rowVisible(liveCeiling(), repo) && store.accountCanAccess(name, repo); },
+      });
+      request.once("close", () => { if (!response.writableEnded) response.end(); });
+      return;
+    }
     const task = matchTaskPath(url.pathname, "");
     if (task !== null) {
       const family = familyOf(task.taskId);
@@ -5357,6 +5378,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           // The reader's own lead's claims read "<name> is on it" here too.
           : browserCrewOf(store, clock(), { principal: 'operator', repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null }, { evidenceRoot, project });
       } catch { notices.push('Crew updates are unavailable. Open Tasks to inspect saved work.'); }
+      // A running row says what its agent did last, and when (the task page's own line).
+      try {
+        const now = clock(), live = new Map<string, RunActivity>();
+        if (crew.crew.length > 0) for (const run of store.liveRuns(now)) {
+          const root = familyOf(run.taskId)?.root.id;
+          if (root !== undefined && !live.has(root)) live.set(root, runActivityOf(store, run, now));
+        }
+        if (live.size > 0) crew = { ...crew, crew: crew.crew.map(item => { const activity = live.get(item.id); return activity === undefined ? item : { ...item, activity }; }) };
+      } catch { /* the rows keep their status; the line returns on the next read */ }
       // "Wake me only for these": the navigation carries the sidebar's own
       // Tasks count (chromeFor) and links to the project view it covers, so
       // it matches that page's Needs you tab on every screen.
@@ -5459,7 +5489,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const agents = store.liveRuns(now).filter(run => admitted(run.repo)).map(run => {
       const root = familyOf(run.taskId)?.root ?? null;
       return { runId: run.id, taskId: root?.id ?? run.taskId, title: root?.title ?? run.title, href: taskHref(root?.id ?? run.taskId),
-        agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt };
+        agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt,
+        activity: runActivityOf(store, run, now) };
     });
     const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT });
     const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT });
@@ -6425,6 +6456,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // What went wrong reads the family's latest finished attempt, as the Tasks row does.
     presentedData.failure = failureOf(presentedData.family?.runs ?? data.runs, data.assignment ?? null);
     presentedData.runChecks = runChecksHere(data.assignment?.receipt?.runId ?? null, who, taskHref(taskId));
+    const liveRun = data.liveRunId == null ? undefined : data.runs.find(one => one.id === data.liveRunId);
+    if (liveRun !== undefined) presentedData.activity = runActivityOf(store, liveRun, clock());
     presentedData.demo = store.isDemo();
     const paneProject = restricted() ? store.lookupRef(taskId)?.repo ?? null : who.via === "cookie" ? who.session.project : null;
     const page = taskPage(
@@ -6438,7 +6471,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const docked = focus === null ? null : dockedConversation(who, focus, null, clock(), taskHref(focus.id));
     // The conversation is the page's own thread here, so the page drops its Ask tab;
     // only an approver is offered a road to message the agent.
-    const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }) } : page.workspace?.view;
+    const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
+      // A signed-in page hears the moment the task changes, and who else has it open.
+      ...(who.via === "cookie" ? { live: { href: `${taskHref(family?.root.id ?? taskId)}/live`, at: (() => { try { return taskFingerprint(store, family?.root.id ?? taskId, clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
     if (docked !== null) page.workspace = { ...page.workspace, ...(taskView === undefined ? {} : { view: taskView }), conversation: docked, pageHtml: page.body };
     else if (taskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: taskView };
     page.refreshSeconds = liveRefreshSeconds();
@@ -12269,6 +12304,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const stream of chatStreams) stream.end();
     chatStreams.clear();
     flowRooms.close();
+    taskRooms.close();
     void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
@@ -21884,6 +21920,8 @@ function taskBodyParts(data: {
   /** The run whose lease is the CURRENT live claim — computed by the data
    * layer; the renderer never guesses liveness from a null outcome. */
   liveRunId?: number | null;
+  /** What the agent did last on that live run, and when (task-activity.ts). */
+  activity?: RunActivity | null;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -23380,6 +23418,8 @@ function taskBodyParts(data: {
     retry,
     runChecks,
     progress,
+    // One quiet line under the step: what the agent did last, and when.
+    activity: liveRun === undefined ? null : data.activity ?? null,
     stop,
     record,
     earlier,

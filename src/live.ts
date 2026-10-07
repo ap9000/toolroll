@@ -38,27 +38,74 @@ export function liveLogPath(root: string, runId: number): string {
 }
 
 /**
- * The fixed tool-headline vocabulary. Known harness tools map to OUR
- * phrases; anything unrecognized gets the generic line. The tool's own
+ * The fixed tool vocabulary. Known harness tools map to OUR kinds and
+ * phrases; anything unrecognized gets the generic one. The tool's own
  * name, arguments, and metadata never reach the file: a tool named after
  * a secret stays unspoken.
  */
-const TOOL_HEADLINES: ReadonlyMap<string, string> = new Map([
-  ["Edit", "→ editing files"],
-  ["Write", "→ editing files"],
-  ["MultiEdit", "→ editing files"],
-  ["NotebookEdit", "→ editing files"],
-  ["Bash", "→ running a command"],
-  ["Read", "→ reading the code"],
-  ["Glob", "→ searching the code"],
-  ["Grep", "→ searching the code"],
-  ["LS", "→ reading the code"],
-  ["WebFetch", "→ looking something up"],
-  ["WebSearch", "→ looking something up"],
-  ["TodoWrite", "→ organizing its plan"],
-  ["Task", "→ delegating to a helper"],
+export type LiveActivityKind = "session" | "message" | "edit" | "command" | "read" | "search" | "lookup" | "plan" | "delegate" | "tool";
+export const LIVE_ACTIVITY_KINDS: readonly LiveActivityKind[] = ["session", "message", "edit", "command", "read", "search", "lookup", "plan", "delegate", "tool"];
+const TOOL_KINDS: ReadonlyMap<string, LiveActivityKind> = new Map([
+  ["Edit", "edit"],
+  ["Write", "edit"],
+  ["MultiEdit", "edit"],
+  ["NotebookEdit", "edit"],
+  ["Bash", "command"],
+  ["Read", "read"],
+  ["Glob", "search"],
+  ["Grep", "search"],
+  ["LS", "read"],
+  ["WebFetch", "lookup"],
+  ["WebSearch", "lookup"],
+  ["TodoWrite", "plan"],
+  ["Task", "delegate"],
 ]);
-const TOOL_HEADLINE_GENERIC = "→ using a tool";
+const KIND_HEADLINES: Readonly<Record<LiveActivityKind, string>> = {
+  session: "the agent session started",
+  message: "",
+  edit: "→ editing files",
+  command: "→ running a command",
+  read: "→ reading the code",
+  search: "→ searching the code",
+  lookup: "→ looking something up",
+  plan: "→ organizing its plan",
+  delegate: "→ delegating to a helper",
+  tool: "→ using a tool",
+};
+const toolKind = (name: unknown): LiveActivityKind => TOOL_KINDS.get(typeof name === "string" ? name : "") ?? "tool";
+
+/**
+ * What one stream event says the agent just did, as one fixed kind: the
+ * last-activity line's only input. Never text, names or arguments; an
+ * event that says nothing (results, deltas, subagent chatter) is null.
+ */
+export function liveActivityKind(event: Record<string, unknown>): LiveActivityKind | null {
+  try {
+    const type = String(event["type"] ?? "");
+    if ((type === "system" && String(event["subtype"] ?? "") === "init") || type === "thread.started" || type === "init") return "session";
+    if (type === "item.completed") {
+      const item = event["item"] as Record<string, unknown> | undefined;
+      const kind = item === undefined || item === null ? "" : String(item["type"] ?? "");
+      return kind === "agent_message" ? "message" : kind === "command_execution" ? "command" : kind === "file_change" ? "edit" : kind === "web_search" ? "lookup" : null;
+    }
+    if (type === "message") return String(event["role"] ?? "") === "assistant" && event["delta"] !== true ? "message" : null;
+    if (type === "tool_call" || type === "tool_use") return toolKind(event["name"] ?? (event["tool"] as Record<string, unknown> | undefined)?.["name"]);
+    if (type !== "assistant") return null;
+    const parent = event["parent_tool_use_id"];
+    if (parent !== undefined && parent !== null) return null;
+    const content = (event["message"] as Record<string, unknown> | undefined)?.["content"];
+    if (!Array.isArray(content)) return null;
+    let last: LiveActivityKind | null = null;
+    for (const block of content as Record<string, unknown>[]) {
+      if (block === null || typeof block !== "object") continue;
+      if (block["type"] === "tool_use") last = toolKind(block["name"]);
+      else if (block["type"] === "text" && typeof block["text"] === "string" && block["text"].trim() !== "") last = "message";
+    }
+    return last;
+  } catch {
+    return null;
+  }
+}
 
 /** Strip ANSI escapes and every control character; tabs become spaces. */
 function stripControls(text: string): string {
@@ -110,7 +157,7 @@ export function renderTranscriptLines(event: Record<string, unknown>): string[] 
   }
   if (type === "tool_call" || type === "tool_use") {
     const name = event["name"] ?? (event["tool"] as Record<string, unknown> | undefined)?.["name"];
-    return [TOOL_HEADLINES.get(typeof name === "string" ? name : "") ?? TOOL_HEADLINE_GENERIC];
+    return [KIND_HEADLINES[toolKind(name)]];
   }
   if (type !== "assistant") return [];
   // Top-level only: a subagent's words are not this run's transcript.
@@ -132,7 +179,7 @@ export function renderTranscriptLines(event: Record<string, unknown>): string[] 
       }
     } else if (kind === "tool_use") {
       const name = block["name"];
-      lines.push(TOOL_HEADLINES.get(typeof name === "string" ? name : "") ?? TOOL_HEADLINE_GENERIC);
+      lines.push(KIND_HEADLINES[toolKind(name)]);
     }
   }
   return lines;
