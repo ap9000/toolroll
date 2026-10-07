@@ -27,7 +27,7 @@ export type RemotePathArgument = {
  * '*' is reserved for the credentials/database and cli.ts's output redirection, on every command.
  */
 export const REMOTE_PATH_ARGUMENTS: readonly RemotePathArgument[] = [
-  ...['--token', '--token-file', '--token-env', '--db', '-o'].map(flag => ({ invocation: '*', argument: { flag }, policy: 'refuse' as const })),
+  ...['--token', '--token-file', '--token-env', '--db', '-o', '--output'].map(flag => ({ invocation: '*', argument: { flag }, policy: 'refuse' as const })),
   { invocation: 'flows create', argument: { flag: '--steps' }, policy: 'inline', literal: 'json' },
   { invocation: 'flows edit', argument: { flag: '--steps' }, policy: 'inline', literal: 'json' },
   { invocation: 'flows script save', argument: { flag: '--body' }, policy: 'inline' },
@@ -70,7 +70,7 @@ export function fileArguments(argv: readonly string[], row: RemoteCommand): stri
   if (!words.every((word, index) => argv[index] === word)) return { problem: 'The command arguments do not match its invocation.', code: 'invalid-arguments' };
   const inspect = (rule: RemotePathArgument, value: string | undefined): FileProblem | undefined => {
     const label = 'flag' in rule.argument ? rule.argument.flag : `${row.invocation} ${rule.argument.name} argument`;
-    if (rule.invocation === '*' && 'flag' in rule.argument && rule.argument.flag !== '-o') {
+    if (rule.invocation === '*' && 'flag' in rule.argument && rule.argument.flag !== '-o' && rule.argument.flag !== '--output') {
       return { problem: `${label} cannot be used remotely. Sign in with your saved API token.`, code: 'local-only-flag' };
     }
     if (value !== undefined && (rule.literal === 'json' && /^[{[]/.test(value.trim()) || rule.literal === 'url' && /^[a-z][a-z0-9+.-]*:\/\//i.test(value))) return;

@@ -10,7 +10,7 @@ const inspect = (argv: string[]) => {
 
 test('the inventory includes all audited file, destination, credential and executable arguments', () => {
   expect(REMOTE_PATH_ARGUMENTS.map(rule => `${rule.invocation || 'scan'} ${'flag' in rule.argument ? rule.argument.flag : `@${rule.argument.position}`} ${rule.policy}${rule.literal ? `/${rule.literal}` : ''}`)).toEqual([
-    '* --token refuse', '* --token-file refuse', '* --token-env refuse', '* --db refuse', '* -o refuse',
+    '* --token refuse', '* --token-file refuse', '* --token-env refuse', '* --db refuse', '* -o refuse', '* --output refuse',
     'flows create --steps inline/json', 'flows edit --steps inline/json', 'flows script save --body inline',
     'flows script save --file refuse', 'flows export --out refuse', 'flows import @0 refuse/url', 'flows trigger add @1 inline/json',
     'task evidence --out refuse', 'ledger export --out refuse', 'export --out refuse', 'restore @0 refuse',
@@ -56,6 +56,14 @@ test('flags consume their values, boolean --file stays boolean, and positions co
   // --to is a date for ledger export, not link's destination.
   const row: RemoteCommand = { invocation: 'ledger export', mode: 'yes', mutation: 'none', flags: [{ name: 'to', takesValue: true }] };
   expect(fileArguments(['ledger', 'export', '--to', '2026-10-01'], row)).toEqual([]);
+});
+
+test('--output is -o spelled long: a server path in every form, never echoed', () => {
+  for (const args of [['-o', PRIVATE_PATH], ['--output', PRIVATE_PATH], [`--output=${PRIVATE_PATH}`], ['--json', '--output', PRIVATE_PATH]]) {
+    const result = inspect(['task', 'show', '42', ...args]);
+    expect(result).toMatchObject({ code: 'server-path' });
+    expect(JSON.stringify(result)).not.toContain(PRIVATE_PATH);
+  }
 });
 
 test('unclassified flags and ambiguous positionals fail closed without echoing values', () => {
