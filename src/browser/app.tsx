@@ -335,7 +335,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     <nav aria-label="Workspace" className="so-primary-navigation">{workspace.navigation.filter(item => item.href !== "/menu").map(item => {
       const name = item.label.toLowerCase() as "chat" | "tasks" | "flows" | "projects" | "knowledge" | "settings";
       return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
-        {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={`${item.count} ${item.count === 1 ? "needs" : "need"} you`}>{item.count}</span>}</a>;
+        {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
     {currentProject && <div className="so-project-links">
       <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>

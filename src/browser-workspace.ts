@@ -20,7 +20,16 @@ import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
-export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number };
+export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
+  /** What the count covers, said aloud and on hover: "3 need you in shop". */
+  countLabel?: string };
+
+/** The Tasks badge's words: the count and the projects it covers
+ * ("3 need you in shop", "1 needs you across all your projects"). */
+export function needsYouLabelOf(count: number, projectName: string | null, saturated = false): string {
+  const where = projectName === null ? 'across all your projects' : `in ${projectName}`;
+  return `${count}${saturated ? '+' : ''} ${count === 1 && !saturated ? 'needs' : 'need'} you ${where}`;
+}
 export type BrowserChatLink = { kind: 'project' | 'task'; title: string; href: string; at: string | null; active: boolean };
 export type BrowserCrewItem = {
   id: string; title: string; project: string | null;
@@ -576,14 +585,14 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   });
 }
 
-export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project): BrowserNavigationItem[] {
+export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const knowledge = pathname === '/settings/knowledge' || pathname.startsWith('/settings/knowledge/');
   return [
     { label: 'Chat', href: '/chat', active: pathname === '/chat' },
     { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
-      ...(needsYou > 0 ? { count: needsYou } : {}) },
+      ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
     { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
     { label: 'Projects', href: '/projects', active: pathname === '/projects' },
     { label: 'Knowledge', href: `/settings/knowledge${project === null ? '' : `?repo=${encodeURIComponent(project)}`}`, active: knowledge },

@@ -8,7 +8,7 @@ import { projectBatchChecks, setProjectBatchChecks } from './batch-policy.js';
 import { CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, suggestQuickCommand, type CheckLevel } from './check-levels.js';
 import { repositoryContextHtml } from './repository-context-ui.js';
 import { browserAssetsAvailable, browserWorkspaceDocument, serveBrowserAsset } from './browser-shell.js';
-import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserSettingsGroup, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
+import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, needsYouLabelOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserSettingsGroup, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
 import { configureLeadFollow, leadFollowStatus, runLeadFollowPass } from './lead-follow.js';
 import { cancelCommitment, conditionWords, openCommitments } from './lead-commitments.js';
 import { startMaintenance } from './maintenance.js';
@@ -5424,7 +5424,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         catchUpHtml: extras.catchUpHtml ?? '', controlsHtml: extras.controlsHtml ?? '', notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml,
-        navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
+        navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
         chats,
         ...(s.refreshSeconds === undefined ? {} : { refreshSeconds: Math.max(5, Math.floor(s.refreshSeconds)) }),
         ...(s.chrome.signIn === undefined ? {} : { signIn: s.chrome.signIn }),
@@ -5587,6 +5587,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       inboxCount: badge.count,
       inboxSaturated: badge.saturated,
       inboxProject,
+      inboxLabel: needsYouLabelOf(badge.count, inboxProject === null ? null
+        : store.listProjects().find(one => one.path === inboxProject)?.name ?? projectName(inboxProject), badge.saturated),
       settings: true,
       ...(store.isDemo() ? { demo: true } : {}),
       ...(() => { const signIn = signInNotices(store); return signIn.length === 0 ? {} : { signIn }; })(),
@@ -16391,6 +16393,8 @@ type Chrome = {
   /** The project the Tasks count covers: the request's own project view
    * (the open project, or /work's ?project=), null for every admitted project. */
   inboxProject?: string | null;
+  /** The Tasks badge's words, naming what it covers: "3 need you in shop". */
+  inboxLabel?: string;
   inboxSaturated: boolean;
   settings: boolean;
   /** This database is a demo sandbox: banner every page, spend fenced. */
@@ -16872,9 +16876,9 @@ function shell(
   // saturated needs-you count, exactly as the inbox row wore it.
   const primary = chrome.active === "code" ? "work" : primaryDestinationOf(chrome.active);
   const primaryItem = (key: "code" | "chat" | "work" | "projects" | "flows", href: string, label: string, count?: number): string =>
-    `<a href="${href}" aria-label="${escape(label)}" title="${escape(label)}"${primary === key ? ' class="active" aria-current="page"' : ""}${key === "work" && count !== undefined ? ` data-waiting="${count}"` : ""}>` +
+    `<a href="${href}" aria-label="${escape(key === "work" && count !== undefined && count > 0 && chrome.inboxLabel !== undefined ? `${label}, ${chrome.inboxLabel}` : label)}" title="${escape(label)}"${primary === key ? ' class="active" aria-current="page"' : ""}${key === "work" && count !== undefined ? ` data-waiting="${count}"` : ""}>` +
     `<span class="glyph">${NAV_ICONS[key] ?? ""}</span>${label}` +
-    `${count !== undefined && count > 0 ? ` <span class="count badge badge-open">${count}${chrome.inboxSaturated ? "+" : ""}</span>` : ""}</a>`;
+    `${count !== undefined && count > 0 ? ` <span${chrome.inboxLabel === undefined ? "" : ` aria-label="${escape(chrome.inboxLabel)}" title="${escape(chrome.inboxLabel)}"`} class="count badge badge-open">${count}${chrome.inboxSaturated ? "+" : ""}</span>` : ""}</a>`;
   const side = [
     `<aside class="side">`,
     `<div class="side-head"><a class="brand" href="${chrome.chat === true ? "/chat" : "/work"}"><span class="brand-long">Toolroll</span><span class="brand-short">T</span></a>`,
@@ -16969,7 +16973,7 @@ function shell(
     // A phone tab says THAT something waits, with a dot; the number is on
     // the Work views themselves (Linear Mobile's rule — one tap away).
     `<a href="${href}"${primary === key ? ' class="active" aria-current="page"' : ""}><span class="glyph">${TAB_ICONS[key]}</span>${label}` +
-    `${count !== undefined && count > 0 ? `<span class="dot-badge" role="img" aria-label="${count} waiting"></span>` : ""}</a>`;
+    `${count !== undefined && count > 0 ? `<span class="dot-badge" role="img" aria-label="${escape(chrome.inboxLabel ?? `${count} waiting`)}"></span>` : ""}</a>`;
   // Three primary tabs, the same three as the rail: chat where allowed,
   // work, projects. Tools and settings sit behind the header's menu action.
   const tabbar = [

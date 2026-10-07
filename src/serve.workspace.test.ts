@@ -1303,4 +1303,24 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(countsOf(await page(cookie, `/work?project=${encodeURIComponent(alpha)}&view=needs-you`))["Needs you"]).toBe(2);
     expect(await badgeOf("/flows/" + flow)).toEqual({ sidebar: 2, navigation: 2, href: `/work?project=${encodeURIComponent(alpha)}` });
   });
+
+  test("the Tasks badge says which projects its count covers, aloud and on hover", async () => {
+    finished("t-a1", "Alpha result", alpha, { verdict: "verified", reasons: [] });
+    finished("t-b1", "Beta result", beta, { verdict: "verified", reasons: [] });
+    finished("t-b2", "Second beta result", beta, { verdict: "verified", reasons: [] });
+    const cookie = await login();
+    const labelsOf = async (path: string): Promise<{ navigation: string | undefined; rail: string | undefined; railTitle: string | undefined }> => {
+      const html = await page(cookie, path);
+      const tasks = workspaceOf(html).navigation.find(one => one.label === "Tasks");
+      const rail = /<span aria-label="([^"]*)" title="([^"]*)" class="count badge badge-open">/.exec(html);
+      return { navigation: tasks?.countLabel, rail: rail?.[1], railTitle: rail?.[2] };
+    };
+    const all = "3 need you across all your projects";
+    expect(await labelsOf("/work")).toEqual({ navigation: all, rail: all, railTitle: all });
+    await selectProject(cookie, alpha);
+    const name = workspaceOf(await page(cookie, "/work")).projects.find(one => one.path === alpha)?.name;
+    expect(name).toBeTruthy();
+    const one = `1 needs you in ${name}`;
+    expect(await labelsOf("/t/t-b1")).toEqual({ navigation: one, rail: one, railTitle: one });
+  });
 });
