@@ -168,6 +168,12 @@ export class RequestBudget {
    * read. Anything unreadable refuses with 503 and nothing runs.
    */
   admit(tokenId: string, route: BudgetRoute): Admission {
+    const result = this.check(tokenId, route);
+    if (!result.ok) this.store.telemetry.budgetRefused(route, result.status === 429 ? result.limit : 'unavailable');
+    return result;
+  }
+
+  private check(tokenId: string, route: BudgetRoute): Admission {
     try {
       const now = this.clock();
       const token = this.store.apiTokenSecret(tokenId)?.row;

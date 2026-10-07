@@ -36,6 +36,7 @@ import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.
 import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
 import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
+import { runHealthCommand } from "./health-cli.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
 import { readPulls } from "./pulls.js";
 import {
@@ -114,6 +115,7 @@ Usage
   toolroll up               app + builder for every saved project — the normal start
   toolroll onboard          make your agent Toolroll's lead: add this repo, install its skill (--yes), offer starter flows (--starter)
   toolroll status           running, queued, ready results, release check and plan windows
+  toolroll health           recent server latency, write waits and live streams
   toolroll integrations     which integrations work, and what to do about the ones that don't (--json)
   toolroll session          native coding sessions through the running service
   toolroll connect          save a private connection to your central service
@@ -456,6 +458,7 @@ async function dispatch(
   mainOptions: MainOptions,
 ): Promise<number> {
   // A saved API token sends commands marked remote to the central server, before anything local opens.
+  if (argv[0] === 'health') return runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
   const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
   if (typeof central === "number") return central;
   if (central !== null) argv = central.local;

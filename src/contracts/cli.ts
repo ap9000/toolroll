@@ -14,6 +14,7 @@ import { ENVELOPE_VERSION, envelopeJson, type EnvelopePayload } from "../envelop
 import type { SessionDescriptor } from "../session-contract.js";
 import { parseContract } from "./contract.js";
 import { LISTED_TASK_STATES } from "./lead-tools.js";
+import { healthSnapshotSchema } from './health.js';
 
 const str = z.string();
 const int = z.number().int();
@@ -193,6 +194,7 @@ export const COMMAND_OUTPUTS = {
   contract: contractOutput,
   scan: scanOutput,
   status: statusOutput,
+  health: answers('health', { health: healthSnapshotSchema }),
   integrations: integrationsOutput,
   ready: z.union([
     answers("ready", { count: int, tasks: rows({ id: str, title: str, state: str }) }),

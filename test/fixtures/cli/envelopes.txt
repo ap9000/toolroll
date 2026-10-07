@@ -2969,6 +2969,26 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "health",
+      "synopsis": "recent server latency, event-loop delay, SQLite writes and live streams from the saved connection; instance operators only",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "profile",
+          "takesValue": true,
+          "meaning": "saved server connection"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "integrations",
       "synopsis": "every integration as Connected, Not set up or Broken, with its last success and error, what uses it and what to do; --saved skips new checks; never a secret",
       "audience": "agent",

@@ -288,6 +288,16 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
 )`;
 
 const registered = new WeakMap<object, string>();
+type Statement = ReturnType<Store['handle']['prepare']>;
+const statements = new WeakMap<object, Map<string, Statement>>();
+/** The page query is long and has one text per view filter: compile each once per connection. */
+function prepared(store: Store, sql: string): Statement {
+  let cache = statements.get(store.handle);
+  if (cache === undefined) statements.set(store.handle, cache = new Map());
+  let statement = cache.get(sql);
+  if (statement === undefined) cache.set(sql, statement = store.handle.prepare(sql));
+  return statement;
+}
 /** Connection-local pure parsing, with exactly the authoritative stored-scope
  * validator. The callback cannot query, inspect files or grant authority. */
 function registerValidators(store: Store): string {
@@ -394,7 +404,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
-  const rows = store.handle.prepare(`${projection}, selected_page AS MATERIALIZED (
+  const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
     SELECT * FROM ranked WHERE ${filter} AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit

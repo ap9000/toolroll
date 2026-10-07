@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import type { Store } from "./store.js";
+import { LATENCY_BUCKETS, QUEUE_BUCKETS, STREAM_FAMILIES, type ServerTelemetry, type TimingHistogram } from "./server-telemetry.js";
 
 type Sample = { labels?: Record<string, string>; value: number };
 type Metric = { name: string; help: string; type: "gauge" | "counter"; samples: Sample[] };
@@ -67,5 +68,49 @@ export function prometheusMetrics(store: Store, now: Date, repos: readonly strin
   add("toolroll_checkouts", "Build checkouts on disk, by state.", "gauge",
     rows(`SELECT CASE WHEN runner IS NOT NULL AND released_at IS NULL THEN 'leased' ELSE 'released' END AS state, COUNT(*) AS n FROM worktree WHERE ${inProjects("repo")} GROUP BY 1`, ...scoped).map(row => ({ labels: { state: String(row["state"]) }, value: Number(row["n"]) })));
 
-  return `${metrics.map(metric => [`# HELP ${metric.name} ${metric.help}`, `# TYPE ${metric.name} ${metric.type}`, ...metric.samples.map(sample => line(metric.name, sample))].join("\n")).join("\n")}\n`;
+  return `${metrics.map(metric => [`# HELP ${metric.name} ${metric.help}`, `# TYPE ${metric.name} ${metric.type}`, ...metric.samples.map(sample => line(metric.name, sample))].join("\n")).join("\n")}\n${performanceMetrics(store.telemetry)}`;
+}
+
+/** Performance labels are fixed vocabularies only, independent of the store's project labels. */
+export function performanceMetrics(telemetry: ServerTelemetry): string {
+  const out: string[] = [];
+  const header = (name: string, help: string, type: string) => out.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
+  const histogram = (name: string, value: TimingHistogram, labels: Record<string, string> = {}) => {
+    let cumulative = 0;
+    for (const [i, n] of value.total.bins.entries()) {
+      cumulative += n;
+      out.push(line(`${name}_bucket`, { labels: { ...labels, le: String(LATENCY_BUCKETS[i] ?? '+Inf') }, value: cumulative }));
+    }
+    out.push(line(`${name}_sum`, { labels, value: value.total.sum }), line(`${name}_count`, { labels, value: value.total.count }));
+  };
+  header('toolroll_http_request_duration_seconds', 'Request duration; SSE measures opening headers, not stream lifetime.', 'histogram');
+  for (const [route, value] of telemetry.routes) histogram('toolroll_http_request_duration_seconds', value, { route });
+  for (const [name, help, value] of [
+    ['toolroll_sqlite_write_wait_seconds', 'Elapsed acquisition of an explicit write lock, including failed waits and all retry slices.', telemetry.writeWait],
+    ['toolroll_sqlite_write_hold_seconds', 'Time holding an explicit write transaction, through commit or rollback.', telemetry.writeHold],
+    ['toolroll_sqlite_write_statement_seconds', 'Standalone write duration, including native busy waits that SQLite cannot separate.', telemetry.writeStatement],
+  ] as const) { header(name, help, 'histogram'); histogram(name, value); }
+  const snapshot = telemetry.snapshot();
+  header('toolroll_event_loop_delay_seconds', 'Approximate event-loop delay over the last five minutes; 20 ms sampling interval.', 'gauge');
+  for (const [quantile, value] of [['0.5', snapshot.eventLoop.p50Ms], ['0.99', snapshot.eventLoop.p99Ms]] as const) {
+    if (value !== null) out.push(line('toolroll_event_loop_delay_seconds', { labels: { quantile }, value: value / 1000 }));
+  }
+  header('toolroll_event_loop_delay_samples', 'Event-loop samples in the recent window; zero means no measurement yet.', 'gauge');
+  out.push(line('toolroll_event_loop_delay_samples', { value: snapshot.eventLoop.count }));
+  header('toolroll_sse_connections', 'Currently open live streams.', 'gauge');
+  for (const route of STREAM_FAMILIES) out.push(line('toolroll_sse_connections', { labels: { route }, value: telemetry.streamQueues(route).length }));
+  header('toolroll_sse_queue_bytes', 'Bytes currently waiting to send across open streams.', 'gauge');
+  header('toolroll_sse_queue_max_bytes', 'Largest current per-stream send queue.', 'gauge');
+  header('toolroll_sse_queue_bytes_bucket', 'Current per-stream queue depth distribution, not a lifetime histogram; each stream contributes once.', 'gauge');
+  for (const route of STREAM_FAMILIES) {
+    const queues = telemetry.streamQueues(route);
+    out.push(line('toolroll_sse_queue_bytes', { labels: { route }, value: queues.reduce((sum, n) => sum + n, 0) }));
+    out.push(line('toolroll_sse_queue_max_bytes', { labels: { route }, value: queues.reduce((max, n) => Math.max(max, n), 0) }));
+    for (const bound of [...QUEUE_BUCKETS, Infinity]) out.push(line('toolroll_sse_queue_bytes_bucket', { labels: { route, le: Number.isFinite(bound) ? String(bound) : '+Inf' }, value: queues.filter(n => n <= bound).length }));
+  }
+  header('toolroll_request_budget_refusals_total', 'Requests refused by the shared CLI and MCP request budget, including unavailable budget checks.', 'counter');
+  for (const route of ['api', 'mcp']) for (const reason of ['read-per-minute', 'act-per-minute', 'per-day', 'unavailable']) {
+    out.push(line('toolroll_request_budget_refusals_total', { labels: { route, reason }, value: telemetry.refusals.get(`${route}:${reason}`) ?? 0 }));
+  }
+  return `${out.join('\n')}\n`;
 }
