@@ -344,6 +344,7 @@ import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
 import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, type LimitOverride } from "./request-budget.js";
+import { hstsFor, plainHttpRefusal, transportOf } from "./public-access.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { REQUEST_LIMITS_CSS, requestLimitsHtml, tokenLimitWords } from "./request-budget-ui.js";
 import { PEOPLE_AUDIT_CSS, personAuditHtml, personHref } from "./people-audit-ui.js";
@@ -389,7 +390,8 @@ export type ServeOptions = {
    * (arc 3 finding 2/16): EXACTLY an origin — no path, query, credentials.
    * The one trust anchor for secure-context features: it joins the allowed
    * hosts, its origin authorizes POSTs, cookies turn Secure, and the
-   * install/push cards light up. X-Forwarded-* is never consulted.
+   * install/push cards light up. X-Forwarded-* is consulted only from a
+   * loopback peer, the same-host proxy (public-access.ts).
    */
   publicUrl?: string;
   /** Tests: the shared command boundary `POST /api/cli` runs (default: operate.ts's runOperateAs). */
@@ -1488,6 +1490,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (hook.pathname.startsWith("/hooks/")) return flowHook(request, response, hook);
     if (!allowedHost(request.headers.host)) {
       return respond(response, 421, "text/html; charset=utf-8", wrongHostPage(wrongHost(request.headers.host)));
+    }
+    // A real domain (public-access.ts): HSTS for the public https host reached over HTTPS, and no API token over
+    // plain HTTP from outside this computer and the tailnet — refused before anything reads or checks it.
+    const transport = transportOf({ peer: request.socket.remoteAddress, joinSource: joinSourceOf(request), forwardedProto: request.headers["x-forwarded-proto"], forwarded: request.headers["forwarded"] });
+    const hsts = hstsFor(publicOrigin?.host ?? null, request.headers.host, transport);
+    if (hsts !== null) response.setHeader("Strict-Transport-Security", hsts);
+    const insecure = plainHttpRefusal(transport, hook.pathname, request.headers.authorization);
+    if (insecure !== null) {
+      request.resume();
+      return respond(response, 403, "text/plain; charset=utf-8", insecure);
     }
 
     const url = new URL(request.url ?? "/", "http://placeholder");

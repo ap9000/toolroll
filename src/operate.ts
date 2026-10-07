@@ -1,4 +1,5 @@
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
+import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
@@ -362,6 +363,8 @@ export type OperateOptions = {
   releaseIo?: ReleaseIo;
   /** Injected by tests: the bin whose real path says how Toolroll was installed. */
   installBin?: string;
+  /** Tests: what `serve check-public` fetches with instead of the network. */
+  publicProbe?: import("./public-check.js").Probe;
   /** Injected by tests: where `storage` looks for leftover test temp folders (default: the temp folder and /tmp). */
   tempRoots?: readonly string[];
   openDatabase?: (file: string) => Store;
@@ -1005,6 +1008,10 @@ export async function runOperate(
   // through the non-migrating door with its own refusal words (spec v6).
   if (command === "mcp") {
     return mcpCommand(file, flags, write, json);
+  }
+  // The public-address readiness check reads no database: it only asks the network.
+  if (command === "serve" && positional[0] === "check-public") {
+    return checkPublicCommand(flags, { write, json, envelope: envelopeJson, ...(options.publicProbe === undefined ? {} : { probe: options.publicProbe }) });
   }
   // Restore replaces the database file itself, so it opens (and closes) the database on its own.
   if (command === "restore") {
@@ -9609,6 +9616,8 @@ async function upCommand(
     return fail(write, json, "up", "usage", "--host is an address or a name", EXIT.usage);
   }
   const allowFlag = text(flags, "allow-host");
+  // --public-url: `up` serves a real domain exactly as `serve` does (one process is the whole team server).
+  const publicUrlFlag = text(flags, "public-url");
 
   const progress = (line: string): void => {
     // v99: with TOOLROLL_LOG_FORMAT=json, each line is one JSON event on stderr for a log shipper.
@@ -9861,6 +9870,7 @@ async function upCommand(
       host: hostFlag,
       port,
       ...(allowFlag === undefined ? {} : { allowedHosts: allowFlag.split(",").map(one => one.trim()).filter(one => one !== "") }),
+      ...(publicUrlFlag === undefined ? {} : { publicUrl: publicUrlFlag }),
       localRunner: runnerName,
       poolRoot: pool,
       repos,
