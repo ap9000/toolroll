@@ -2,6 +2,7 @@
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
 import type { TeamSnapshot } from './team-contract.js';
+import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
 import type { AssignmentSnapshot } from './assignment.js';
 import { browserCrewFromIndex } from './browser-crew.js';
@@ -31,6 +32,8 @@ export type BrowserCrewItem = {
   detail?: string;
   /** "<name> is on it.": the person's own lead took it on, by the name they gave it. */
   lead?: string;
+  /** A running task: what its agent did last, and when. */
+  activity?: RunActivity;
 };
 export type BrowserMessage = {
   id: number; role: 'operator' | 'assistant'; text: string; html: string;
@@ -186,6 +189,10 @@ export type BrowserTaskView = {
   /** A live build: the step it is on (or stuck on, with the act that helps), and the earlier attempts that stopped
    * before it, folded into one quiet line. */
   progress?: { line: string; stuck: { step: number; why: string | null; line: string; action: BrowserLink | null } | null } | null;
+  /** What the agent did last on the live run, and when; the page words it against its own clock (activity-line.ts). */
+  activity?: RunActivity | null;
+  /** The task's live stream (/t/<id>/live): change nudges and who else has it open. Absent: the page reads on its beat. */
+  live?: { href: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
   /** The Building card's link to the live build's own record ("Build #N record", /r/<id>). */
@@ -497,7 +504,9 @@ export type BrowserWorkspace = {
 };
 
 /** One agent at work now: its task and the machine's own phase, in words. */
-export type BrowserHomeAgent = { runId: number; taskId: string; title: string; href: string; agent: string; phase: string; project: string | null; since: string };
+export type BrowserHomeAgent = { runId: number; taskId: string; title: string; href: string; agent: string; phase: string; project: string | null; since: string;
+  /** What the agent did last, and when. */
+  activity?: RunActivity };
 export type BrowserHomeCount = { key: 'working' | 'waiting' | 'ready' | 'done'; label: string; value: number; href: string };
 export type BrowserCatchUpTab = 'needs-you' | 'ready' | 'running' | 'all';
 export type BrowserCatchUpItem = {

@@ -7,6 +7,7 @@ import type { BrowserCatchUpItem, BrowserCatchUpTab, BrowserHome } from "../../b
 import { cn } from "../components/ui/index.js";
 import { HeadlineBadge } from "./status-summary.js";
 import { threadWhen } from "./task-view.js";
+import { ActivityLine } from "../live-task.js";
 
 const TABS: { id: BrowserCatchUpTab; label: string; empty: string }[] = [
   { id: "needs-you", label: "Needs you", empty: "Nothing needs you right now." },
@@ -77,6 +78,7 @@ export function Home({ home, compact = false }: { home: BrowserHome; compact?: b
             <a href={agent.href} className="flex h-full min-w-0 flex-col gap-1.5 rounded-[10px] border border-border bg-card px-3.5 py-3 transition-colors hover:border-input hover:bg-[var(--so-raised)] phone:px-3 phone:py-2.5">
               <span className="flex items-center gap-1.5 text-[12px] font-medium text-info"><span aria-hidden="true" className="so-home-live size-1.5 shrink-0 rounded-full bg-info" />{agent.phase}</span>
               <span className="line-clamp-2 text-[13.5px] font-medium leading-snug text-foreground">{agent.title}</span>
+              {agent.activity !== undefined && <ActivityLine activity={agent.activity} className="text-[12px]" />}
               <span className="mt-auto truncate text-[12px] text-muted-foreground">{agent.agent} · <span className="tabular-nums">{since(agent.since)}</span></span>
             </a>
           </li>)}
