@@ -1,4 +1,7 @@
 import { SCREENSHOT_CAPTURE, structuredHandoffView, terminalDiffView, type StructuredHandoffView, type TerminalDiffView } from "./result-evidence-readers.js";
+import { matchRoute } from "./server/route-table.js";
+import { flowHook, healthz, telegramHook, type RemoteHookContext } from "./server/remote-hooks.js";
+import { serveInstallAsset } from "./server/pages-assets.js";
 import { checkLeadIdentity, leadIdentityOf, leadNameOf, LEAD_NAME_MAX, LEAD_PERSONA_MAX, type LeadIdentity } from "./lead-identity.js";
 import { aboutYouOf, checkAboutYou, saveAboutYou, ABOUT_YOU_LINE_MAX, ABOUT_YOU_MAX_LINES } from "./lead-about.js";
 import { withActor } from "./actor.js";
@@ -54,8 +57,8 @@ import { readEmailSettings, saveEmailSettings, sendingAccount, sendThroughServer
 import { assignFlowCard, commentOnFlowCard, watchFlowCard } from "./flow-people.js";
 import { saveScript } from "./flow-scripts.js";
 import { flowInsights } from "./flow-insights.js";
-import { FORM_PATH, flowFormPage, receiveFlowForm, shareFlowButton, stopSharingFlowButton } from "./flow-triggers.js";
-import { addFlowTriggerTo, checkFlowTriggerNow, HOOK_PATH, pressFlowButton, receiveFlowHook, removeFlowTrigger, renewFlowHook, removeLinearKey, saveHooksBase, saveLinearKey, saveLinearSigningSecret, type TriggerIo } from "./flow-triggers.js";
+import { shareFlowButton, stopSharingFlowButton } from "./flow-triggers.js";
+import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, renewFlowHook, removeLinearKey, saveHooksBase, saveLinearKey, saveLinearSigningSecret, type TriggerIo } from "./flow-triggers.js";
 import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decideFlowCard, FLOW_HREF, flowDefinitionOf, moveCardInFlow } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";
 import { FlowContractError, FLOW_TEMPLATES, validateFlowDefinition, withZoneNames } from "./flows.js";
@@ -171,7 +174,6 @@ import { listCoordinators } from "./coordinator.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses, type DispatchDiagnosis } from "./dispatch.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf, type TaskControlView } from "./task-control.js";
 import { WorktreePool } from "./worktree.js";
-import { GEIST_SANS_400, GEIST_SANS_500, GEIST_SANS_600, GEIST_MONO_400, GEIST_MONO_500, GEIST_MONO_600 } from "./fonts.js";
 import { ACCENT_PRESETS, DEFAULT_ACCENT, accentStyle, normalHex, pinnedAccent } from "./accent-colors.js";
 import { gateWords, parseProtectedPaths } from "./approval-policy.js";
 import { APPROVAL_RULES_CSS, approvalRulesHtml, rulesSummary } from "./approval-rules-ui.js";
@@ -362,7 +364,7 @@ import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, readProviderK
 import type { Routine, PublicationGrant, ChatTurn, ChatProviderId, Contest, TournamentTerms, SteerNote, PushSubscription, RepairChainRow, TaskRef } from "./store.js";
 import type { ChatConfig, ChatSnapshot, DirectChatProviderId, SubscriptionChatProviderId } from "./store.js";
 import type { PlanRevision, PlanRevisionKind, PlanRevisionStatus, ReviewRetryState, RevisionLineage } from "./store.js";
-import { hashPairingCode, keepPushedUpdate, loadBotToken, mintPairingCode, PAIRING_TTL_MS, pushedByTelegram, redactToken, saveBotToken, TELEGRAM_HOOK_PATH, telegramHookSecret, TOKEN_ENV, type TokenSource } from "./telegram.js";
+import { hashPairingCode, loadBotToken, mintPairingCode, PAIRING_TTL_MS, redactToken, saveBotToken, TELEGRAM_HOOK_PATH, TOKEN_ENV, type TokenSource } from "./telegram.js";
 import { telegramSettingsHtml } from "./telegram-settings.js";
 import { teamsSettingsHtml } from "./teams-settings.js";
 import { handleTeamsHttp } from "./teams.js";
@@ -582,75 +584,6 @@ const TASK_STATES: readonly TaskState[] = ["queued", "running", "done", "failed"
 /** Read-only fragment polls that must never refresh session activity (arc 1). */
 const NO_TOUCH_FRAGMENTS: ReadonlySet<string> = new Set(["1", "facts", "peek", "rail", "transcript"]);
 
-// ---- the phone (arc 3): install assets, served BEFORE authentication — they
-// contain nothing secret, and a background service-worker update that met a
-// login redirect would fail MIME validation and unregister itself.
-const PWA_ICON_192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAB1klEQVR42u3bMQ0AIAxFwepgQgD+TSECPJSBQO/nKSA30lhmBwtPYAAZQAaQAWQGkAFkABlAZgAZQPY4oNaHagaQABJAAkgAASSABJAAEkAACSABJIAEEEACSAAJIAEEkAASQAJIAHlHgAASQAJIAAkggASQABJAAgggASSABJAAAkgACSABJIAAAgggASSAss3aAwgggAACCCCAAAIIIIAAAggggAACCCCAAAIIIIAAAggggAACCCCAAAIIIIAAAggggORLK0AAASSABJAAEkAACSABJIAEEEACSAAJIAEEkAASQAJIAAEkgASQAHKV4SoDIIAAAggggAACCCCAAAIIIIAAAggggAACCCCAAAIIIIAAAggggAACCCCAAAJIfiR6R4AAEkACSAAJIIAEkAASQAIIIAEkgASQAAJIAAkgASSAAAIIIAEkgFxluMoACCCAAAIIIIAAAggggAACCCCAAAIIIIAAAggggAACCCCAAAIIIIAAAggggACSH4kCCCABJIAEkAACSAAJIAEkgAASQAJIAAkggASQABJAAggggAASQAJIAAkggASQABJAAgggASSABJAAAkgACSB9BMgMIAPIADKAzAAygAwgA8gAMgPI7mwDbzYVUJcW7UcAAAAASUVORK5CYII=";
-const PWA_ICON_512 = "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7GkOtAAAJF0lEQVR42u3VwQ0AEBBFQXU4KUD/TW0R3JzcRLJhfqYCwivDzMy+XHEEZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmZgJgZmYCYGZmAmBmJgBmZiYAZmYmAGZmJgBmZiYAZmYmAGZmJgDb1dYBOCEAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACAIAAACAAAAgAAAIAgAAAIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACAIAAACAAAAgAAAIAgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIAAACAIAAACAAAAgAAAIAgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIAAACAIAAACAAAAgAAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACcF+Y5Z5HKgACIAAmAAgAAmACgAAgACYACAACYAKAACAAJgAIAAJgAoAAIAAmAAgAAmACIAACgP/FBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQABMABAAARAAEwAEAAEwAUAAEAATAAQAATABQAAQABMABAABMAFAABAAEwABEAAEwARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEQADMBEAABEAAzARAAARAAMwEQAAEAEAABABAAAQAQAAAEAAABAAAAQBAAAAQAAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAANwcgAAAIAAACAAAAgCAAAAgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIAgAAAIAAACAAAAgCAAAAgAAACIAC/C7Pc80gFQAAEwAQAAUAATAAQAATABAABQABMABAABMAEAAFAAEwAEAAEwAQAAUAATAAEQADwv5gACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgAkAAiAAAmACgAAgACYACAACYAKAACAAJgAIAAJgAoAAIAAmAAgAAmACIAACgACYAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAIgJkACIAACICZAAiAAAiAmQAIgAAACIAAAAiAAAAIAAACAIAAACAAAAgAAAIAgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAmwMQAAAEAAABAEAAABAAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAQAQAAEAEAABABAAAAQAAAEAAABAEAAABAAAASAJcxyzyMVAAEQABMABAABMAFAABAAEwAEAAEwAUAAEAATAAQAATABQAAQABMABAABMAEQAAHA/2ICIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgACYACIAACIAJAAKAAJgAIAAIgAkAAoAAmAAgAAiACQACgACYACAACIAJgAAIAAJgAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIgAGYCIAACIABmAiAAAiAAZgIgAAIAIAACACAAAgAgAAAIAAACAIAAACAAAAgAAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAAgAgAAIAIAACACAAbg5AAAAQAAAEAAABAEAAABAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAAQBAAAAQAAAEAAABAEAAABAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABEAAAARAAAAEQAAABcHkAAgCAAAAgAAAIAAACAIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgAAACIAAAAiAAAAIgJmZPT4BMDMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMxMAMzMTADMzEwAzMwEwMzMBMDMzATAzMwEwMzMBMDOzJzYBVJhD+Nnu218AAAAASUVORK5CYII=";
-const PWA_ICON_APPLE = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAABqklEQVR42u3aMQ0AIAxFwepgQgD+TSECFHQiYWjv5ylobmwcs2ThBAaHwWFwGBwGh8FhcBgcBofBkW7MparBITgEh+AQHIJDcAgOwQEHHHDAAYfgEByCQ3AIDsEhOASHI8IBBxxwCA7BITgEh+AQHIJDcAgOOOCAQ3AIDsEhOASH4BAcguNPu9PggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw44PPsIDsEhOASH4BAcgkNwCA444IADDjgEh+AQHIJDcAgOwSE44IDDg7EHYzjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw559hEcgkNwwAEHHHDAITgEh+AQHIJDcAgOwQEHHHDAAYfgEByCQ3B4MIYDDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOODw7OPZBw7BITgEh+AQHIJDcAgOOOCAAw44BIfgEByCQ3AIDsEhOAQHHHDAITgEh+AQHIJDcAgOwSE44IADDjgecVjbwWFwGBwGh8FhcBgcBofBYeV3AaohX51oqNRKAAAAAElFTkSuQmCC";
-const PWA_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect x="6" y="6" width="88" height="88" rx="14" fill="#1a202c"/><rect x="28" y="28" width="44" height="8" rx="4" fill="#ebebeb"/><rect x="28" y="47" width="44" height="8" rx="4" fill="#ebebeb"/><rect x="28" y="66" width="44" height="8" rx="4" fill="#ebebeb"/></svg>`;
-/** The typefaces by route: exact names only, served pre-auth like the icons. */
-const FONT_FILES: Record<string, string> = {
-  "/fonts/geist-sans-400.woff2": GEIST_SANS_400,
-  "/fonts/geist-sans-500.woff2": GEIST_SANS_500,
-  "/fonts/geist-sans-600.woff2": GEIST_SANS_600,
-  "/fonts/geist-mono-400.woff2": GEIST_MONO_400,
-  "/fonts/geist-mono-500.woff2": GEIST_MONO_500,
-  "/fonts/geist-mono-600.woff2": GEIST_MONO_600,
-};
-const PWA_MANIFEST = JSON.stringify({
-  name: "Toolroll",
-  short_name: "Toolroll",
-  id: "/",
-  scope: "/",
-  start_url: "/",
-  display: "standalone",
-  background_color: "#0b0b0b",
-  theme_color: "#0b0b0b",
-  icons: [
-    { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-    { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
-    { src: "/icon.svg", sizes: "any", type: "image/svg+xml" },
-  ],
-});
-// The service worker, DELIBERATELY MINIMAL: no fetch handler — no cache, no
-// offline copy of authenticated pages, nothing intercepting requests. Push
-// and the tap, only. notificationclick resolves ONLY allow-listed relative
-// paths — the payload URL is data, revalidated, never handed raw to the
-// browser (arc 3 finding 5).
-const PWA_WORKER = `// Toolroll — push only; deliberately NO fetch handler (no offline cache of an authenticated console).
-const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/contest\\/[0-9]+$/, /^\\/r\\/[0-9]+$/];
-self.addEventListener("push", function (event) {
-  var data = {};
-  try { data = event.data ? event.data.json() : {}; } catch (e) {}
-  var body = typeof data.body === "string" ? data.body : "the console needs you";
-  var tag = typeof data.tag === "string" ? data.tag : "toolroll";
-  var url = typeof data.url === "string" && SHAPES.some(function (s) { return s.test(data.url); }) ? data.url : "/next";
-  if (typeof data.waiting === "number" && data.waiting >= 0 && self.registration.setAppBadge) {
-    // A count, never content. Honest no-op where unsupported.
-    event.waitUntil(self.registration.setAppBadge(Math.floor(data.waiting)).catch(function () {}));
-  }
-  event.waitUntil(self.registration.showNotification("Toolroll", { body: body, tag: tag, data: { url: url } }));
-});
-self.addEventListener("message", function (event) {
-  // The page recomputes on load/focus and is authoritative over any stale
-  // push: {badge: N} sets, {badge: 0} clears.
-  var badge = event.data && typeof event.data.badge === "number" ? event.data.badge : null;
-  if (badge === null || !self.registration.setAppBadge) return;
-  if (badge <= 0 && self.registration.clearAppBadge) { self.registration.clearAppBadge().catch(function () {}); return; }
-  self.registration.setAppBadge(Math.floor(badge)).catch(function () {});
-});
-self.addEventListener("notificationclick", function (event) {
-  event.notification.close();
-  if (self.registration.clearAppBadge) self.registration.clearAppBadge().catch(function () {});
-  var url = event.notification.data && event.notification.data.url;
-  var target = new URL(SHAPES.some(function (s) { return s.test(url); }) ? url : "/next", self.location.origin).href;
-  event.waitUntil(clients.matchAll({ type: "window" }).then(function (open) {
-    for (var i = 0; i < open.length; i++) { if (open[i].url === target && open[i].focus) return open[i].focus(); }
-    return clients.openWindow(target);
-  }));
-});
-`;
 
 type Session = {
   name: string;
@@ -1372,82 +1305,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return canonical;
   }
 
-  /** Flow webhooks (v82): the one road a public relay may expose. The secret
-   * address proves nothing about the sender on its own for GitHub and Linear:
-   * their signatures are checked too. Nothing runs here; cards wait for a pass. */
-  /**
-   * v98: Telegram pushes this bot's updates here. Only a request carrying our
-   * secret header is Telegram's; each update is kept for the bridge (which
-   * applies it through the same door as a polled one), and answered at once so
-   * Telegram doesn't send it again. An update already kept or applied is fine.
-   */
-  async function telegramHook(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const reply = (status: number) => { response.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); response.end(status === 200 ? "ok" : "no"); request.resume(); };
-    const source = options.configDir === undefined || options.telegramTokenFile === undefined ? null : loadBotToken(process.env, options.telegramTokenFile);
-    if (source === null || options.configDir === undefined) return reply(404);
-    if (request.method !== "POST") return reply(405);
-    if (!pushedByTelegram(request.headers["x-telegram-bot-api-secret-token"], telegramHookSecret(options.configDir))) return reply(401);
-    if (Number(request.headers["content-length"] ?? 0) > 1_000_000) return reply(413);
-    const chunks: Buffer[] = [];
-    try {
-      await new Promise<void>((resolve, reject) => {
-        let size = 0;
-        request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1_000_000) reject(new Error("too-large")); else chunks.push(chunk); });
-        request.on("end", resolve);
-        request.on("error", reject);
-      });
-    } catch { return reply(413); }
-    try {
-      return reply(keepPushedUpdate(store, source.botId, Buffer.concat(chunks), clock()).ok ? 200 : 400);
-    } catch { return reply(500); }
-  }
-
-  async function flowHook(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const reply = (status: number, said: string) => { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ said })); request.resume(); };
-    if (url.pathname.startsWith(FORM_PATH)) return flowForm(request, response, url);
-    if (options.configDir === undefined || !url.pathname.startsWith(HOOK_PATH)) return reply(404, "No such address.");
-    if (request.method !== "POST") return reply(405, "Send a POST.");
-    if (Number(request.headers["content-length"] ?? 0) > 1_000_000) return reply(413, "Too large.");
-    const chunks: Buffer[] = [];
-    try {
-      await new Promise<void>((resolve, reject) => {
-        let size = 0;
-        request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1_000_000) reject(new Error("too-large")); else chunks.push(chunk); });
-        request.on("end", resolve);
-        request.on("error", reject);
-      });
-    } catch (error) { return reply(error instanceof Error && error.message === "too-large" ? 413 : 400, "Couldn't read that."); }
-    try {
-      const answer = receiveFlowHook(store, url.pathname.slice(HOOK_PATH.length), { headers: request.headers, body: Buffer.concat(chunks) }, options.configDir, clock());
-      return reply(answer.status, answer.said);
-    } catch { return reply(500, "Not saved."); }
-  }
-
-  /** A shared button as a public form (v84): its questions, and one card per submission. No sign-in, no session, nothing about the flow shown. */
-  async function flowForm(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const page = (answer: { status: number; html: string }) => {
-      response.writeHead(answer.status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
-        "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-      response.end(request.method === "HEAD" ? undefined : answer.html);
-      request.resume();
-    };
-    const token = url.pathname.slice(FORM_PATH.length);
-    if (request.method === "GET" || request.method === "HEAD") return page(flowFormPage(store, token, clock()));
-    if (request.method !== "POST") return page({ status: 405, html: "" });
-    if (Number(request.headers["content-length"] ?? 0) > 65_536) return page({ status: 413, html: "" });
-    let raw = "";
-    try {
-      await new Promise<void>((resolve, reject) => {
-        request.setEncoding("utf8");
-        request.on("data", (chunk: string) => { raw += chunk; if (raw.length > 65_536) reject(new Error("too-large")); });
-        request.on("end", resolve);
-        request.on("error", reject);
-      });
-    } catch { return page({ status: 413, html: "" }); }
-    try { return page(receiveFlowForm(store, token, new URLSearchParams(raw), clock())); }
-    catch { return page({ status: 500, html: "" }); }
-  }
-
   /** Google's redirect back: the code becomes a saved refresh token, and a page sends the person back to Settings. */
   async function googleCallback(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const done = (said: string) => {
@@ -1540,14 +1397,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return done(back, "said", finished.said);
   }
 
-  function healthz(response: ServerResponse, head: boolean): void {
-    let healthy = true;
-    try { store.handle.prepare("SELECT 1 FROM schema_version").get(); } catch { healthy = false; }
-    const body = JSON.stringify({ status: healthy ? "ok" : "unavailable" });
-    response.writeHead(healthy ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
-    response.end(head ? undefined : body);
-  }
-
+  const hookContext: RemoteHookContext = { store, clock, options };
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     // Webhooks come through a public relay (Tailscale Funnel, a reverse
     // proxy) that forwards its own host name. The host check guards pages a
@@ -1556,9 +1406,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const hook = new URL(request.url ?? "/", "http://placeholder");
     // v99: a liveness probe for a load balancer or orchestrator. It answers before the host check (a probe
     // uses the address it reached), reads one row, and says nothing else about the installation.
-    if (hook.pathname === "/healthz" && (request.method === "GET" || request.method === "HEAD")) return healthz(response, request.method === "HEAD");
-    if (hook.pathname === TELEGRAM_HOOK_PATH) return telegramHook(request, response);
-    if (hook.pathname.startsWith("/hooks/")) return flowHook(request, response, hook);
+    if (hook.pathname === "/healthz" && (request.method === "GET" || request.method === "HEAD")) return healthz(store, response, request.method === "HEAD");
+    if (hook.pathname === TELEGRAM_HOOK_PATH) return telegramHook(hookContext, request, response);
+    if (hook.pathname.startsWith("/hooks/")) return flowHook(hookContext, request, response, hook);
     if (!allowedHost(request.headers.host)) {
       return respond(response, 421, "text/html; charset=utf-8", wrongHostPage(wrongHost(request.headers.host)));
     }
@@ -1600,27 +1450,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if ((method === "GET" || method === "HEAD") && url.pathname === WORKSPACE_STYLE.path) {
       return WORKSPACE_STYLE.serve(request, response);
     }
-    // The install assets (arc 3): pre-auth by design; nothing secret rides
-    // them, and each carries nosniff + its own conservative caching/CSP.
-    if (method === "GET") {
-      const asset = (type: string, body: string | Buffer, csp?: string): void => {
-        response.setHeader("x-content-type-options", "nosniff");
-        response.setHeader("cache-control", url.pathname === "/sw.js" ? "no-store" : "public, max-age=3600");
-        if (csp !== undefined) response.setHeader("content-security-policy", csp);
-        respond(response, 200, type, body as string);
-      };
-      if (url.pathname === "/manifest.webmanifest") return asset("application/manifest+json", PWA_MANIFEST);
-      if (url.pathname === "/favicon.ico") return asset("image/png", Buffer.from(PWA_ICON_APPLE, "base64"));
-      if (url.pathname === "/icon.svg") return asset("image/svg+xml", PWA_ICON_SVG);
-      if (url.pathname === "/icon-192.png") return asset("image/png", Buffer.from(PWA_ICON_192, "base64"));
-      if (url.pathname === "/icon-512.png") return asset("image/png", Buffer.from(PWA_ICON_512, "base64"));
-      if (url.pathname === "/apple-touch-icon.png") return asset("image/png", Buffer.from(PWA_ICON_APPLE, "base64"));
-      if (url.pathname === "/sw.js") return asset("text/javascript; charset=utf-8", PWA_WORKER, "default-src 'none'");
-      // The typefaces: exact-allowlisted like the icons — nothing dynamic
-      // rides the path, unknown names fall through to the router's refusal.
-      const font = FONT_FILES[url.pathname];
-      if (font !== undefined) return asset("font/woff2", Buffer.from(font, "base64"));
-    }
+    // The install assets (arc 3): pre-auth by design (server/pages-assets.ts).
+    if (method === "GET" && serveInstallAsset(response, url.pathname, respond)) return;
     // A fragment poll is the page keeping itself fresh, not a person acting.
     // It authenticates like any request but must not count as activity —
     // otherwise a board left open on a wall keeps its session alive forever
@@ -1965,6 +1796,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const body = method === "POST" ? await form(request, url.pathname === "/settings/skills/import" ? 2 * 1024 * 1024 : url.pathname === "/flows/import" ? 1024 * 1024 : taskTextForm ? TASK_FORM_BODY_CAP : BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
       const execute = async () => {
+        // THE ROUTE TABLE (server/route-table.ts): nothing reaches a handler unless a row declares this method and
+        // path and admits this kind of caller. An undeclared request answers exactly as the routers' own fallthrough did.
+        const route = matchRoute(method, url.pathname, "console");
+        if (route === null) return refuse(response, who, 404, "There's no page at this address.", "/chat");
+        if (!route.callers.includes(who.via)) {
+          request.resume();
+          return route.callerRefusal === undefined
+            ? refuse(response, who, 403, "This address needs a browser sign-in.")
+            : respond(response, route.callerRefusal.status, route.callerRefusal.type, route.callerRefusal.body);
+        }
         if (!projectRequestAllowed(url, who, request, response)) return;
         if (method === "GET") {
           // Authorize every read before considering a conditional response.
@@ -2065,27 +1906,26 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
   }
 
+  /**
+   * What a project-limited account may do at this address: a projection of the route table's `limited` column
+   * (server/route-table.ts), never a hand-kept list. An address the table does not declare is instance-only.
+   */
   function projectRequestAllowed(url: URL, who: Who, request: IncomingMessage, response: ServerResponse): boolean {
     if (!restricted()) return true;
     const path = url.pathname;
+    const route = matchRoute(request.method ?? "GET", path, "console");
     // Shared coordination has its own complete audience/project admission.
     // A person's open-project filter does not deny an explicitly scoped room.
-    if (path === '/chat' && request.method === 'GET' && who.via === 'cookie' && url.searchParams.get('private') !== '1' && ((!url.searchParams.has('task') && !url.searchParams.has('result')) || url.searchParams.has('conversation'))) {
+    if (route?.limited === 'conversation' && request.method === 'GET' && who.via === 'cookie' && url.searchParams.get('private') !== '1' && ((!url.searchParams.has('task') && !url.searchParams.has('result')) || url.searchParams.has('conversation'))) {
       try {
         const snapshot = team.domain.snapshot({ name: who.name, generation: who.session.generation }, url.searchParams.get('conversation') ?? undefined, url.searchParams.get('lead') ?? undefined);
         if ((snapshot.leads.length > 0 || url.searchParams.get('team') === '1') && (!snapshot.selected || snapshot.selected.projects.every(visible))) return true;
       } catch { refuse(response, who, 404, 'This conversation is unavailable.', '/projects'); return false; }
     }
-    // Personal pairing changes only the signed-in person's phone. The route
-    // separately proves cookie, approver standing and password; instance bot
-    // settings remain outside this exact allowlist.
-    if ((request.method === "GET" && path === "/settings/telegram") ||
-      (request.method === "POST" && ["/settings/telegram/pair", "/settings/telegram/unpair", "/settings/telegram/retry"].includes(path))) return true;
-    // A person's own chat-approval setting; the route proves each project it names.
-    if (request.method === "POST" && ["/settings/chat-approval/confirm", "/settings/chat-approval/save", "/settings/chat-approval/off"].includes(path)) return true;
-    // Coding routes require an instance operator, then prove saved ownership and project access.
-    if (path === "/code" || path.startsWith("/code/")) return true;
-    if((request.method==='GET'&&/^\/chat\/action\/[0-9]{1,15}$/.test(path))||(request.method==='POST'&&/^\/chat\/proposal\/[0-9]{1,15}\/(confirm|dismiss)$/.test(path))){
+    // The person's own settings and saved objects (personal pairing, their chat-approval setting, their coding
+    // sessions): each route separately proves cookie, standing, password and every project it names.
+    if (route?.limited === "self") return true;
+    if (route?.limited === "proposal") {
       const proposal=store.getMateProposal(Number(path.split('/')[3])),action=proposal?.kind==='action'?sharedActionPayload(proposal.payload):null;
       const shared = proposal ? store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(proposal.thread) : null;
       if (shared && who.via === 'cookie') {
@@ -2097,27 +1937,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if(action&&proposal&&action.repo===''&&OWNER_ACTIONS.has(action.operation)&&store.getMateThread(proposal.thread)?.approver===who.name)return true;
       refuse(response,who,404,'No such action in your projects.','/projects');return false;
     }
-    const read = new Set(["/settings/flows", "/settings/skills", "/settings/knowledge", "/settings", "/settings/learning", "/recipes", "/recipes/run", "/recipes/start", "/recipes/new", "/recipes/edit", "/recipes/from-task", "/recipes/preview", "/recipes/export", "/", "/inbox", "/work", "/projects", "/people", "/ledger", "/ledger/export", "/next", "/board", "/tasks", "/tasks/new", "/runs", "/review", "/done", "/routines", "/menu"]);
-    const write = new Set(["/settings/flows/on", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings/learning/change", "/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/projects/select", "/tasks/add", "/routines/add"]);
-    const task = matchTaskPath(path, request.method === "GET" ? "(/evidence|/live)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
-    const resource = request.method === "GET"
-      ? /^\/(?:r|d)\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) || /^\/routines\/[0-9]{1,15}$/.test(path) || path === "/flows" || /^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path)
-      : /^\/d\/[0-9]{1,15}\/answer$/.test(path) || /^\/routines\/[0-9]{1,15}\/(approve|refresh|pause|resume|run-now)$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path) || path === "/flows/import" || /^\/flows\/[0-9]{1,15}\/(save|cards|archive|scripts)$/.test(path) || /^\/flows\/[0-9]{1,15}\/cards\/[0-9]{1,15}\/(move|decide|cancel|comment|assign|watch)$/.test(path) || /^\/flows\/[0-9]{1,15}\/triggers(\/[0-9]{1,15}\/(pause|resume|remove|check|press|renew|secret|share|unshare))?$/.test(path) || /^\/r\/[0-9]{1,15}\/(note|comment|revise|draft-repair|checks|add-tests)$/.test(path);
-    if (!(request.method === "GET" ? read : write).has(path) && task === null && !resource) {
+    // A task address whose id does not decode names no task.
+    const undecodable = route?.project === "task" && matchTaskPath(path, "(?:/[a-z-]+)?$") === null;
+    if (route === null || route.limited === "deny" || route.limited === "conversation" || undecodable) {
       refuse(response, who, 403, "This area requires instance access. Your account operates within its assigned projects.", "/projects");
       return false;
     }
-    if (task !== null || resource) {
+    if (route.limited === "resource") {
       if (!visible(actionTarget(url, who, request).repo)) {
         refuse(response, who, 404, "No such resource in your projects.", "/projects"); return false;
       }
     }
-    // Every collection except these three must have a concrete project;
+    // Every collection except the unscoped ones must have a concrete project;
     // NULL otherwise means all rows in legacy store APIs.
-    if (!["/settings/skills", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings", "/settings/learning", "/settings/learning/change", "/projects", "/people", "/ledger", "/ledger/export", "/projects/select"].includes(path) && !visible(projectOf(who, request) ?? null)) {
+    if (route.limited !== "unscoped" && !visible(projectOf(who, request) ?? null)) {
       refuse(response, who, 403, "No assigned project is available. Ask an instance operator for access.", "/projects"); return false;
     }
-    if (request.method === "GET" && path === "/board") {
+    if (route.id === "board") {
       url.searchParams.delete("scope");
       if (url.searchParams.get("view") === "order") url.searchParams.delete("view");
     }
@@ -2226,32 +2062,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // admission checks. Shared action links likewise recheck the saved
     // owner and project in their handler, so they stay reachable from All
     // projects without changing the selected project or granting access.
+    // Which reads first need an open project is the route table's `needsProject` column; an exact result link
+    // and the all-projects board carry their own read context.
     const needsProject =
       who.via === "cookie" && project === null && !unscopedMode &&
-      url.pathname !== "/" && url.pathname !== "/inbox" && url.pathname !== "/work" &&
+      (matchRoute("GET", url.pathname, "console")?.needsProject ?? true) &&
       !(url.pathname === "/review" && url.searchParams.has("result")) &&
-      url.pathname !== "/menu" &&
-      url.pathname !== "/recipes" &&
-      // A flow names its own project; the list spans every project.
-      url.pathname !== "/flows" && url.pathname !== "/flows/import" && !/^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(url.pathname) &&
-      // The gallery (Flows → New) asks for its project on each template's page.
-      url.pathname !== "/flows/new" && !/^\/flows\/new\/[a-z-]{1,40}$/.test(url.pathname) &&
-      // Teammates (v92) name their own project, like flows.
-      !url.pathname.startsWith("/teammates") &&
-      // New work names its project in the form (a dropdown of known
-      // projects); /tasks/add still admits the posted repo on its own.
-      url.pathname !== "/tasks/new" && url.pathname !== "/tasks/add" &&
-      !/^\/t\/[^/]+(\/evidence|\/live)?$/.test(url.pathname) &&
-      !/^\/r\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(url.pathname) &&
-      !url.pathname.startsWith("/d/") && !url.pathname.startsWith("/contest/") &&
-      url.pathname !== "/projects" &&
-      url.pathname !== "/projects/browse" && url.pathname !== "/projects/github" && url.pathname !== "/workbench" &&
-      url.pathname !== "/fleet" &&
-      url.pathname !== "/chat" && url.pathname !== "/chat/mate/status" && url.pathname !== "/chat/task-status" && url.pathname !== "/chat/stream" &&
-      url.pathname !== "/lead/status" && url.pathname !== "/onboarding/phone/dismiss" &&
-      !url.pathname.startsWith("/chat/demo/") &&
-      !/^\/chat\/action\/[0-9]{1,15}$/.test(url.pathname) &&
-      !url.pathname.startsWith("/settings") && url.pathname !== "/logout" && url.pathname !== "/people" && url.pathname !== "/ledger" && url.pathname !== "/ledger/export" && url.pathname !== "/metrics" && url.pathname !== "/health" && url.pathname !== "/spend" && url.pathname !== "/spend/budget" &&
       !(url.pathname === "/board" && url.searchParams.get("scope") === "all");
     if (needsProject) return redirect(response, `/projects?return=${encodeURIComponent(safeReturn(url.pathname + url.search))}`);
 
@@ -7193,8 +7009,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // /logout and /join answer before this handler; the attended beat
     // guards itself (approver-only) above.
     if (who.role === "viewer") {
-      const viewerAllowed = new Set(["/projects/select", "/session/editor-links"]);
-      if (!viewerAllowed.has(url.pathname)) {
+      if (matchRoute("POST", url.pathname, "console")?.viewer !== true) {
         return refuse(response, who, 403, "your login can watch, not act — ask an approver to upgrade you");
       }
     }
