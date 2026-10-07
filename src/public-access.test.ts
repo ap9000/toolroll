@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { carriesToken, hstsFor, isLoopbackAddress, isTailnetAddress, plainHttpRefusal, transportOf, USE_HTTPS } from "./public-access.js";
+import { carriesToken, hstsFor, isLoopbackAddress, isLoopbackPeer, isTailnetAddress, plainHttpRefusal, transportOf, USE_HTTPS } from "./public-access.js";
 
 test("classifies loopback and tailnet addresses, mapped and bracketed forms included", () => {
   for (const one of ["127.0.0.1", "127.8.9.10", "::1", "[::1]", "::ffff:127.0.0.1"]) expect(isLoopbackAddress(one), one).toBe(true);
@@ -16,6 +16,16 @@ test("believes forwarded headers only from a loopback peer, and only the last ho
   expect(relayed("fwd:100.70.0.2").privatePath).toBe(true);
   expect(relayed("127.0.0.1").privatePath).toBe(true);
   expect(relayed("127.0.0.1", undefined, "for=203.0.113.10").privatePath).toBe(false);
+});
+
+test("trusts only the exact loopback peers joinSourceOf trusts, not all of 127/8", () => {
+  for (const one of ["127.0.0.1", "::1", "[::1]", "::ffff:127.0.0.1"]) expect(isLoopbackPeer(one), one).toBe(true);
+  for (const one of ["127.0.0.2", "127.8.9.10", "::ffff:127.0.0.2", "0:0:0:0:0:0:0:1", ""]) expect(isLoopbackPeer(one), one).toBe(false);
+  // A proxy on 127.0.0.2 relaying a public caller: serve.ts's joinSourceOf leaves its peer as the source, and so must this.
+  expect(transportOf({ peer: "127.0.0.2", joinSource: "127.0.0.2", forwardedProto: "https", forwarded: undefined })).toEqual({ source: "127.0.0.2", https: false, privatePath: false });
+  expect(plainHttpRefusal(transportOf({ peer: "127.0.0.2", joinSource: "127.0.0.2", forwardedProto: undefined, forwarded: undefined }), "/mcp", undefined)).toBe(USE_HTTPS);
+  // A trusted proxy cannot launder a forwarded 127/8 hop into this computer either.
+  expect(transportOf({ peer: "127.0.0.1", joinSource: "fwd:127.0.0.2", forwardedProto: undefined, forwarded: undefined }).privatePath).toBe(false);
 });
 
 test("refuses only token-bearing requests that are neither HTTPS nor private; HSTS only for the public host over HTTPS", () => {

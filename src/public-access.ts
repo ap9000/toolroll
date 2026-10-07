@@ -27,7 +27,18 @@ function ipv4Of(address: string): number[] | null {
 /** Strips brackets and an IPv6 zone so `[::1]` and `fe80::1%en0` compare as addresses. */
 const bareAddress = (address: string): string => address.trim().replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "").toLowerCase();
 
-/** 127.0.0.0/8, ::1 and their IPv4-mapped forms. */
+/**
+ * The exact loopback peers serve.ts trusts as the same-host proxy (joinSourceOf, fromThisComputer). Not all of
+ * 127/8: a proxy listening on 127.0.0.2 must not make public callers look like this computer.
+ */
+export const LOOPBACK_PEERS: ReadonlySet<string> = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+/** One of LOOPBACK_PEERS (brackets, an IPv6 zone and case ignored). The only loopback test that grants trust. */
+export function isLoopbackPeer(address: string): boolean {
+  return LOOPBACK_PEERS.has(bareAddress(address));
+}
+
+/** 127.0.0.0/8, ::1 and their IPv4-mapped forms. For naming hosts only (public-check.ts); trust uses isLoopbackPeer. */
 export function isLoopbackAddress(address: string): boolean {
   const bare = bareAddress(address);
   const v4 = ipv4Of(bare);
@@ -71,14 +82,14 @@ export function transportOf(request: {
   forwarded: string | string[] | undefined;
 }): Transport {
   const peer = request.peer ?? "";
-  if (!isLoopbackAddress(peer)) {
+  if (!isLoopbackPeer(peer)) {
     return { source: peer, https: false, privatePath: isTailnetAddress(peer) };
   }
   const relayed = request.joinSource.startsWith("fwd:");
   const source = relayed ? request.joinSource.slice(4) : peer;
   const https = lastValue(request.forwardedProto) === "https";
   if (!relayed && request.forwarded !== undefined) return { source: "unknown", https, privatePath: false };
-  return { source, https, privatePath: isLoopbackAddress(source) || isTailnetAddress(source) };
+  return { source, https, privatePath: isLoopbackPeer(source) || isTailnetAddress(source) };
 }
 
 /** Requests that carry, or exist to carry, an API token: the remote CLI, the MCP gateway, and any bearer credential. */

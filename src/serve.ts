@@ -344,7 +344,7 @@ import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
 import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, type LimitOverride } from "./request-budget.js";
-import { hstsFor, plainHttpRefusal, transportOf } from "./public-access.js";
+import { hstsFor, LOOPBACK_PEERS, plainHttpRefusal, transportOf } from "./public-access.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { REQUEST_LIMITS_CSS, requestLimitsHtml, tokenLimitWords } from "./request-budget-ui.js";
 import { PEOPLE_AUDIT_CSS, personAuditHtml, personHref } from "./people-audit-ui.js";
@@ -850,7 +850,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * the trusted proxy itself appended; earlier entries are client-typed). */
   function joinSourceOf(request: IncomingMessage): string {
     const peer = request.socket.remoteAddress ?? "unknown";
-    const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+    const loopback = LOOPBACK_PEERS.has(peer);
     if (!loopback) return peer;
     const forwarded = request.headers["x-forwarded-for"];
     const chain = Array.isArray(forwarded) ? forwarded.join(",") : forwarded ?? "";
@@ -895,7 +895,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no forwarding proxy. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
     const peer = request.socket.remoteAddress ?? "";
-    const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+    const loopback = LOOPBACK_PEERS.has(peer);
     return loopback && request.headers["x-forwarded-for"] === undefined && request.headers["forwarded"] === undefined
       && /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
