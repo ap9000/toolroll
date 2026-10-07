@@ -343,6 +343,7 @@ import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
+import { createOAuthHttp, oauthTokenAllowed, resourceMetadataUrl } from "./mcp-oauth.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { logEvent } from "./log.js";
 import { modeTermsFromJson, modeWords, presetTerms, modeTermsJson, modeDigestOf, MODE_MAX_DAYS, type ModeName, type ModeTerms } from "./modes.js";
@@ -1483,6 +1484,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // The MCP gateway over HTTP (mcp-http.ts): coordinators and people's own API tokens, after the Host check.
     if (url.pathname === "/mcp") return mcpHttp(request, response);
+    // MCP sign-in (mcp-oauth.ts): its discovery documents, client registration, consent and tokens.
+    if (await oauthHttp(request, response, url)) return;
     // Back from Google's consent screen (v89). The session cookie is SameSite=Strict and stays behind on
     // a return from another site: the visit's one-time state (made by a signed-in approver) is the proof.
     if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") return googleCallback(request, response, url);
@@ -11575,7 +11578,28 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   }
 
   const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request) !== null,
+    resourceMetadata: request => { const origin = consoleOrigin(request.headers.host); return origin === null ? null : resourceMetadataUrl(origin); },
     enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
+
+  // MCP sign-in: the console's own sign-in and step-up, a same-site consent form, and the person's current projects.
+  const oauthHttp = createOAuthHttp({ store, clock,
+    originOf: request => consoleOrigin(request.headers.host),
+    session: request => {
+      const who = identify(request, false);
+      if (who === null || who.via !== "cookie") return null;
+      return { name: who.name, role: who.role, csrf: who.session.csrf,
+        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } };
+    },
+    sameSite: request => {
+      const origin = request.headers.origin, referer = request.headers.referer;
+      const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
+      return named !== null && allowedHost(named.replace(/^https?:\/\//, "").split("/")[0]);
+    },
+    // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
+    // grant (their role, their projects) is checked beside it.
+    confirm: (session, typed) => typed === "" ? session.sso?.fresh === true : authenticateAccount(store, session.name, typed).ok,
+    projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
+  });
 
   // ---- identity ------------------------------------------------------------
 
@@ -11591,6 +11615,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= at) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
+      // v113: an MCP sign-in's token works only at /mcp, while its access secret is fresh (mcp-oauth.ts).
+      if (!oauthTokenAllowed(store, kept.row.id, new URL(request.url ?? "/", "http://placeholder").pathname, new Date(at))) return null;
       store.touchApiToken(kept.row.id, new Date(at));
       return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name };
     }
@@ -21032,7 +21058,7 @@ function safeReturn(raw: string | null | undefined): string {
  * button can name. Nothing here is a second redirect framework: one
  * same-site path, or "/".
  */
-const LOGIN_RETURN_PAGES = /^\/(t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
+const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
 function loginReturn(raw: string | null | undefined): string {
   const safe = safeReturn(raw);
   if (safe === "/") return "/";

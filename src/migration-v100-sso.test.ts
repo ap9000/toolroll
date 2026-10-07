@@ -22,8 +22,8 @@ test.each([99, -99])("v%s: accounts carry over, and identities from the provider
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(110);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(110);
+  expect(SCHEMA_VERSION).toBe(113);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.accountOf("alex")).toMatchObject({ role: "approver" });
   expect(store.linkSsoIdentity("alex", { issuer: "https://sso.example.com", subject: "00u1", email: "alex@acme.com", label: "Okta" }, now)).toEqual({ ok: true });
   expect(store.ssoAccount("https://sso.example.com", "00u1")).toBe("alex");

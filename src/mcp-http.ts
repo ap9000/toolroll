@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
 import { parseApiToken, secretMatches } from "./api-tokens.js";
+import { oauthProjects, oauthTokenAllowed, RESOURCE_PATH } from "./mcp-oauth.js";
 import { authenticateCoordinator } from "./coordinator.js";
 import {
   LEGACY, MAX_REQUEST, META_CAPABILITIES, META_SERVER, META_VERSION, MODERN, TOOLS, UNSUPPORTED_VERSION,
@@ -29,6 +30,8 @@ export type McpHttpOptions = {
   evidenceRoot?: string;
   /** The console's own sign-in for an `so_` bearer: the address's tries, expiry, revocation, a removed account. */
   signedIn: (request: IncomingMessage) => boolean;
+  /** Where an MCP client finds how to sign in (mcp-oauth.ts), named on a 401; null when this address offers none. */
+  resourceMetadata?: (request: IncomingMessage) => string | null;
   /** Runs a person's command on the server (operate.ts); resolved from operate.ts when not injected. */
   runAs?: RunOperateAs;
 };
@@ -63,10 +66,13 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= options.clock().getTime()) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
+      // An MCP sign-in's token: only while its access is fresh, and only in the projects the person chose (mcp-oauth.ts).
+      if (!oauthTokenAllowed(store, kept.row.id, RESOURCE_PATH, options.clock())) return null;
+      const granted = oauthProjects(store, kept.row.id);
       return {
         kind: "person",
         person: {
-          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: account.projects === null ? null : [...account.projects] },
+          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: granted ?? (account.projects === null ? null : [...account.projects]) },
           role: account.role,
           tokenName: kept.row.name,
         },
@@ -119,7 +125,9 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
     if (request.headers.origin !== undefined) return refuse(response, 403, "browser requests are refused — connect an MCP client with your API token");
     const caller = callerOf(request);
     if (caller === null) {
-      return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here", { "www-authenticate": 'Bearer realm="toolroll-mcp"' });
+      const metadata = options.resourceMetadata?.(request) ?? null;
+      return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here",
+        { "www-authenticate": `Bearer realm="toolroll-mcp"${metadata === null ? "" : `, resource_metadata="${metadata}"`}` });
     }
     if (!/^application\/json\s*(;|$)/i.test(request.headers["content-type"] ?? "")) return refuse(response, 415, "send the JSON-RPC message as application/json");
     if (Number(request.headers["content-length"] ?? 0) > MAX_REQUEST) return tooLarge(request, response);

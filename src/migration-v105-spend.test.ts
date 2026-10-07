@@ -30,8 +30,8 @@ test.each([104, -104])("v%s: runs from before are priced when read (none settled
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(110);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(110);
+  expect(SCHEMA_VERSION).toBe(113);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
   expect(store.monthSpend(now).items).toMatchObject([{ runId: run, microusd: 2_500_000, source: "reported", person: "alex" }]);
   expect(store.providerLimits()).toEqual([]);
   expect(store.budgets()).toEqual([]);

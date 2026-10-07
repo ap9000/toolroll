@@ -64,6 +64,15 @@ days; it is shown once and only its hash is kept. Each request a token makes
 is named in the action ledger. A token outlives a password change and ends
 when its person is removed or their access changes.
 
+An MCP client can **sign in** to `/mcp` instead of being given a token. It
+opens Toolroll's own sign-in in your browser, then asks you to allow it: read
+or act, and which of your projects, confirmed with your password. What it
+gets works only at `/mcp`, lasts an hour and renews itself for 30 days at
+most; after that it asks again. It is listed under **Sessions & tokens** as
+"MCP: <client name>": revoke it there or with `toolroll tokens`, and its next
+call is refused. A change to your projects or role ends it too. Sign-in needs
+Toolroll's https address (`--public-url`), or this computer's own.
+
 Coordinator credentials (`coordinator mint --days`, 90 days unless said)
 and runner tokens (a year from registering; every start registers again)
 expire too.
