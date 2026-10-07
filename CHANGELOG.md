@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.50 — 2026-10-07
+
+- **One route policy table.** Every route's access rules live in one table,
+  checked before any handler runs. Undeclared routes are refused, approvals
+  are browser-only, and read tokens can't change anything.
+- **Server split by area.** The server code now lives in smaller modules.
+  No behaviour change for users.
+
 ## 0.9.49 — 2026-10-07
 
 - **Tokens keep their limits.** A token's scope and project limits now hold
