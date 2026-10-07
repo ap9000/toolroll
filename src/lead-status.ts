@@ -211,15 +211,20 @@ export function repairStaleStatuses(store: Store, now: Date): { exitsRecorded: n
   return { exitsRecorded, readyForReview: workReadyForReview(store, now, { principal: "operator", repos: null, includeUnplaced: true }, 0).count };
 }
 
-/** `viewer`: the person asking (the lead asks as its person); null when nobody is known, which shows no lead. */
-export function installationStatus(store: Store, now: Date, viewer: string | null = currentActor()?.account ?? null): InstallationStatus {
-  const runningRows = store.handle.prepare(`SELECT run.id, run.role, run.phase, ref.id AS task_ref, ref.external_id AS task
+/** `viewer`: the person asking (the lead asks as its person); null when nobody is known, which shows no lead.
+ * `repos`: the only projects to report (a remote person limited to some projects); null is the whole installation.
+ * A limited report counts only those projects' tasks and leaves out what belongs to the installation as a whole:
+ * the release check, plan windows and the lead line are empty, never another project's. */
+export function installationStatus(store: Store, now: Date, viewer: string | null = currentActor()?.account ?? null, repos: readonly string[] | null = null): InstallationStatus {
+  const admitted = (row: Record<string, unknown>) => repos === null || typeof row["repo"] === "string" && repos.includes(row["repo"]);
+  const access = { principal: "operator" as const, repos, includeUnplaced: repos === null };
+  const runningRows = store.handle.prepare(`SELECT run.id, run.role, run.phase, ref.id AS task_ref, ref.external_id AS task, ref.repo
     FROM run INDEXED BY work_unfinished
     JOIN task_ref AS ref ON ref.id = run.task_ref
     JOIN claim ON claim.lease_id = run.lease_id
     WHERE run.outcome IS NULL AND claim.released_at IS NULL AND claim.expires_at > ?
       AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest INDEXED BY claim_by_task WHERE newest.task_ref = run.task_ref)
-    ORDER BY run.id`).all(now.toISOString());
+    ORDER BY run.id`).all(now.toISOString()).filter(admitted);
   const phases = new Map<string, number>();
   const runningTasks = runningRows.map(row => {
     const phase = phaseWords(phaseOf(row));
@@ -228,7 +233,7 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
   });
 
   const runningRefs = new Set(runningRows.map(row => Number(row["task_ref"])));
-  const queuedRows = store.handle.prepare(`SELECT task.id, ref.id AS task_ref, ref.plan, ref.strikes, scope.digest AS scope_digest,
+  const queuedRows = store.handle.prepare(`SELECT task.id, ref.id AS task_ref, ref.repo, ref.plan, ref.strikes, scope.digest AS scope_digest,
       scope.profile_state,
       (scope.approved_at IS NOT NULL AND scope.approved_by IS NOT NULL AND scope.approved_digest = scope.digest) AS approved,
       EXISTS (SELECT 1 FROM task_edge WHERE task_edge.blocked = task.id
@@ -239,7 +244,7 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
     JOIN task_ref AS ref INDEXED BY sqlite_autoindex_task_ref_1 ON ref.backend = ? AND ref.external_id = task.id
     LEFT JOIN task_scope AS scope ON scope.task_id = task.id
     WHERE task.state = 'queued'`).all(now.toISOString(), BUILT_IN)
-    .filter(row => !runningRefs.has(Number(row["task_ref"])));
+    .filter(row => !runningRefs.has(Number(row["task_ref"])) && admitted(row));
   const reasons = new Map<string, number>();
   const queuedTasks: { task: string; reason: string }[] = [];
   const pauses = openAuthPauses(store);
@@ -257,12 +262,12 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
 
   // One per family, from the same projection as the Tasks list: a completed
   // family (root or any revision) and a superseded version never count.
-  const ready = workReadyForReview(store, now, { principal: "operator", repos: null, includeUnplaced: true }, 5);
+  const ready = workReadyForReview(store, now, access, 5);
   const checkRow = (run: number) => store.handle.prepare(`SELECT ${CHECK_COLUMNS} FROM run_check AS rc WHERE rc.run = ?`).get(run);
 
   // Run ids grow with time, so the newest finished release check is the
   // first finished row down the partial index.
-  const release = store.handle.prepare(`SELECT run.id, run.finished_at, ${CHECK_COLUMNS}, ref.external_id AS task
+  const release = repos !== null ? undefined : store.handle.prepare(`SELECT run.id, run.finished_at, ${CHECK_COLUMNS}, ref.external_id AS task
     FROM run_check AS rc INDEXED BY run_check_release
     JOIN run ON run.id = rc.run
     JOIN task_ref AS ref ON ref.id = run.task_ref
@@ -279,7 +284,7 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
     },
     waitingForReview: { count: ready.count, results: ready.results.map(one => ({ task: one.taskId, run: one.run, check: checkOf(one.run === null ? undefined : checkRow(one.run)) })) },
     releaseCheck: release === undefined ? null : { task: String(release["task"]), run: Number(release["id"]), finishedAt: release["finished_at"] == null ? null : String(release["finished_at"]), check: checkOf(release) },
-    planWindows: store.handle.prepare(`SELECT provider, window, used_percent, window_minutes, resets_at, reached, plan, observed_at
+    planWindows: repos !== null ? [] : store.handle.prepare(`SELECT provider, window, used_percent, window_minutes, resets_at, reached, plan, observed_at
       FROM provider_limit INDEXED BY sqlite_autoindex_provider_limit_1 ORDER BY provider, window`).all().map(row => ({
         provider: String(row["provider"]),
         plan: row["plan"] == null ? null : String(row["plan"]),
@@ -291,9 +296,9 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
         observedAt: String(row["observed_at"]),
       })),
     signIn: pauses.map(one => ({ provider: one.provider, reason: signInReason(one), command: signInCommand(one), since: one.openedAt })),
-    tasks: workIndexPage(store, now, { principal: "operator", repos: null, includeUnplaced: true, viewer }, { limit: 8 }).items
+    tasks: workIndexPage(store, now, { ...access, viewer }, { limit: 8 }).items
       .map(one => ({ task: one.rootId, title: one.title, headline: one.status.label, sentence: one.status.detail })),
-    lead: (() => {
+    lead: repos !== null ? null : (() => {
       // Only the asker's own lead: another person's lead is never "Your lead".
       const activity = leadActivity(store, viewer);
       return activity === null ? null : { owner: activity.owner, doing: activity.doing, at: activity.at, task: activity.taskId, line: leadActivityLine(activity, now) };
@@ -301,7 +306,8 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
   };
 }
 
-export function renderInstallationStatus(status: InstallationStatus): string[] {
+/** `limited`: a report over some projects (installationStatus's `repos`), which has no release check or plan windows to state. */
+export function renderInstallationStatus(status: InstallationStatus, limited = false): string[] {
   const lines: string[] = [];
   // A paused provider comes first: it is the one thing a person must do.
   for (const one of status.signIn) lines.push(`${one.reason} — run \`${one.command}\`. Its tasks wait until then.`);
@@ -314,6 +320,8 @@ export function renderInstallationStatus(status: InstallationStatus): string[] {
   lines.push(status.running.count === 0 ? "Building: none" : `Building: ${status.running.count} — ${status.running.tasks.map(one => `${one.task} (#${one.run}, ${one.phase})`).join(", ")}${status.running.count > status.running.tasks.length ? ", …" : ""}`);
   lines.push(status.queued.count === 0 ? "Queued: none" : `Queued: ${status.queued.count} — ${status.queued.tasks.map(one => `${one.task} (${one.reason})`).join(", ")}${status.queued.count > status.queued.tasks.length ? ", …" : ""}`);
   lines.push(status.waitingForReview.count === 0 ? "Ready for review: none" : `Ready for review: ${status.waitingForReview.count} — ${status.waitingForReview.results.map(one => one.run === null ? one.task : `${one.task} (#${one.run})`).join(", ")}${status.waitingForReview.count > status.waitingForReview.results.length ? ", …" : ""}`);
+  // Neither the release check nor plan windows belong to a person's projects: a limited report leaves both out.
+  if (limited) return lines;
   if (status.releaseCheck === null) {
     lines.push("Release check: none recorded");
   } else {

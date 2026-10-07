@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from './store.js';
+import type { Principal } from './operate.js';
 import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
 
 /**
@@ -12,9 +13,10 @@ import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommandLookup }
  * carrying a browser Origin is refused, so a page can never drive it.
  */
 
-/** Who a remote command runs as. The shared seam with operate.ts (remote-principal). */
-export type Principal = { kind: 'person'; account: string; generation: number; scope: 'read' | 'act'; tokenId: string; projects: string[] | null };
-export type RunOperateAs = (argv: string[], opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: 'api' | 'mcp' }) => Promise<number>;
+/** Who a remote command runs as, and the runner: operate.ts's own types, so a change there breaks this build instead of
+ * drifting. Type-only: the value is loaded lazily through `run` (operate.ts imports the server that imports this). */
+export type { Principal } from './operate.js';
+export type RunOperateAs = typeof import('./operate.js').runOperateAs;
 
 export type CliRequest = { argv: string[]; files: Record<string, string> };
 export type CliReply = { exitCode: number; stdout: string; stderr: string };

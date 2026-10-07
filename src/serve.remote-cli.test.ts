@@ -102,15 +102,19 @@ test("two people: attribution, project limits, refused approvals, revocation, an
       expect(entry).toMatchObject({ actor: "bob", source: "api", repo: repoA, detail: "token bob-laptop" });
     }
 
-    // 3. Bob sees nothing of repo B. Installation-wide reads (status, task list) need access to every project, so a
-    // person limited to some projects is refused them outright; his own task is his to read.
-    for (const argv of [["status", "--json"], ["task", "list", "--json"], ["task", "list", "--repo", repoA, "--json"]]) {
+    // 3. Bob sees nothing of repo B. Cross-project lists (status, task list) show only his projects; his own task is his to read.
+    for (const argv of [["status", "--json"], ["task", "list", "--json"], ["task", "list", "--repo", repoA, "--json"], ["status"], ["task", "list"]]) {
       const wide = await asBob(argv);
-      expect(wide.code, argv.join(" ")).toBe(3);
-      expect(JSON.parse(wide.stdout), argv.join(" ")).toMatchObject({ ok: false, reason: "all-projects" });
+      expect(wide.code, argv.join(" ") + wide.stdout).toBe(0);
+      expect(wide.stdout, argv.join(" ")).toContain(bobA);
       expect(wide.stdout).not.toContain(repoB);
       expect(wide.stdout).not.toContain("alice-b");
+      expect(wide.stdout).not.toContain("Alice's task in B");
     }
+    const elsewhere = await asBob(["task", "list", "--repo", repoB, "--json"]);
+    const nowhere = await asBob(["task", "list", "--repo", join(dir, "repo-gone"), "--json"]);
+    expect(elsewhere.code).toBe(3);
+    expect(elsewhere.stdout).toBe(nowhere.stdout);
     const own = await asBob(["task", "show", bobA, "--json"]);
     expect(own.code, own.stdout + own.stderr).toBe(0);
     expect(own.stdout).toContain(bobA);
