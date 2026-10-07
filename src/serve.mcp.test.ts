@@ -294,7 +294,7 @@ describe("people over /mcp, against the real runOperateAs", () => {
     expect(store.listTasks().filter(one => one.title === "Sneak in")).toHaveLength(0);
 
     const shown = mcpLedger().find(one => one.taskId === shopTask && one.outcome === "done");
-    expect(shown).toMatchObject({ actor: "sam", source: "mcp", action: "remote command: task show", detail: "token sam-agent" });
+    expect(shown).toMatchObject({ actor: "sam", source: "mcp", action: "remote command: task show", detail: "token sam-agent · tool task_show" });
     expect(mcpLedger().every(one => one.actor === "sam" && one.detail?.startsWith("token sam-agent"))).toBe(true);
   });
 
@@ -343,8 +343,8 @@ describe("people over /mcp, against the real runOperateAs", () => {
     expect(refused.isError).toBe(true);
     expect(store.listTasks().filter(one => one.title === "Write access please")).toHaveLength(0);
     expect(mcpLedger().map(one => [one.action, one.outcome, one.detail])).toEqual([
-      ["remote command: task show", "done", "token sam-dashboard"],
-      ["remote command: task show", "requested", "token sam-dashboard"],
+      ["remote command: task show", "done", "token sam-dashboard · tool task_show"],
+      ["remote command: task show", "requested", "token sam-dashboard · tool task_show"],
     ]);
   });
 });

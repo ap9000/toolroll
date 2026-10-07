@@ -172,6 +172,17 @@ const taskShowOutput = answers("task show", {
   stops: list,
 });
 
+/** `audit` (remote-audit.ts): one page of remote actions, newest first, and the filters it applied. */
+const auditOutput = answers("audit", {
+  filters: z.looseObject({ person: nullable(str), token: nullable(str), source: nullable(z.enum(["api", "mcp"])), since: nullable(str) }),
+  actions: rows({
+    id: int, at: str, person: str, token: nullable(str), source: z.enum(["api", "mcp"]), kind: z.enum(["command", "tool"]), name: str, command: str,
+    tool: nullable(str), repo: nullable(str), taskId: nullable(str), outcome: z.enum(["ok", "refused", "error"]), reason: nullable(str),
+  }),
+  limit: int,
+  nextCursor: nullable(str),
+});
+
 const flowListed = z.looseObject({ id: int, name: str, repo: str, project: str, zones: z.array(str), triggers: int, cardsWaiting: int, needDecision: int });
 
 /**
@@ -214,6 +225,7 @@ export const COMMAND_OUTPUTS = {
   "cap list": answers("cap list", { repo: str, capabilities: list }),
   gaps: answers("gaps", { repo: str, gaps: list }),
   reap: answers("reap", { count: int, released: list }),
+  audit: auditOutput,
   "skills list": answers("skills list", { guides: rows({ name: str, title: str, oneLiner: str }) }),
 } as const satisfies Record<string, z.ZodType>;
 
