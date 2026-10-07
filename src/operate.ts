@@ -23,6 +23,8 @@ import { billingOf, budgetHoldWords, budgetLabel, budgetStates, monthNamed, mont
 import { spendCsv } from "./spend-ui.js";
 import { buildExport, exportSummary, exportZip, writeExportFolder } from "./export.js";
 import { startBudgetAlerts } from "./budget-alerts.js";
+import { runTokensCommand } from "./tokens-cli.js";
+import { startTokenNotices } from "./token-notices.js";
 import { liftAuthPause, openAuthPauses, signInGate, signInWords, startSignInProbes, type SignInGate } from "./provider-auth.js";
 import { createConnectionChecker } from "./provider-connection.js";
 import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
@@ -868,6 +870,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "quick", "level", "checks",
   // lead say: the task the lead's words are about.
   "task",
+  // tokens: an API token's terms, and a rotation's overlap in minutes.
+  "access", "projects", "overlap",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
@@ -889,6 +893,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "anyway",
   // config set/clear: another provider's candidate on the same tier.
   "also",
+  // tokens: the person's password, piped (never an argument).
+  "password-stdin",
 ]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
@@ -1483,6 +1489,13 @@ async function dispatch(
       return chatApprovalCommand(positional, flags, context);
     case "people":
       return peopleCommand(positional, flags, context);
+    case "tokens":
+      return runTokensCommand(positional, flags, {
+        store: context.store, write: context.write, json: context.json, clock: context.clock,
+        caller: activeRemote() !== null ? "remote" : currentActor()?.lead === true || context.leadToken !== undefined ? "lead" : "local",
+        rememberedName: readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name ?? null,
+        interactive, ask, askHidden, readStdin: readBoundedStdin,
+      });
     case "keys":
       return keysCommand(positional, flags, context);
     case "setup":
@@ -5691,6 +5704,8 @@ async function startConsole(options: {
   server.on("close", stopMonitoring);
   // v105: budget alerts at 50/80/100 %, a pass a minute.
   server.on("close", startBudgetAlerts(context.store));
+  // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
+  server.on("close", startTokenNotices(context.store));
   // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
   server.on("close", startSignInProbes(context.store, createConnectionChecker()));
   // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
@@ -13440,6 +13455,21 @@ function authenticateApprover(store: Store, by: string, token: string, repo?: st
 function verifyApproverByPassword(store: Store, name: string, token: string, repos: readonly string[]): ReturnType<typeof approverByPassword> {
   const remote = activeRemote();
   return approverByPassword(store, name, token, remote === null ? repos : repos.filter(repo => remote.allows(repo)));
+}
+
+/** Standard input, whole, up to `limit` bytes (null past it): never from a terminal, and never inside a remote run. */
+async function readBoundedStdin(limit: number): Promise<string | null> {
+  refusePrompt();
+  if (process.stdin.isTTY) return null;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += bytes.length;
+    if (size > limit) { process.stdin.pause(); return null; }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** Prompts: never inside a remote run — there is nobody at this machine's terminal to answer for the person. */

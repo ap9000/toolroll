@@ -4,7 +4,8 @@
  * can see and end everyone's.
  */
 import type { ApiTokenRow, WebSessionRow } from "./store.js";
-import { TOKEN_DAYS } from "./api-tokens.js";
+import { daysLeft, expiryNoticeDue, TOKEN_DAYS, tokenLive } from "./api-tokens.js";
+import { projectName } from "./project.js";
 
 const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -12,6 +13,7 @@ export const CREDENTIALS_CSS = `.credentials{max-width:820px;min-width:0}.creden
   `.credentials .rows{display:grid;gap:0;border:1px solid var(--so-line);border-radius:10px;overflow:hidden}.credentials .row-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--so-line)}` +
   `.credentials .row-item:last-child{border-bottom:0}.credentials .row-item p{margin:0}.credentials .row-item .meta{font-size:.85rem}.credentials form{margin:0}.credentials button{min-height:40px;white-space:nowrap}` +
   `.credentials .create{display:grid;gap:10px}.credentials .create label{display:grid;gap:6px}.credentials .create input,.credentials .create select{box-sizing:border-box;width:100%}.credentials .badge-here{font-size:.75rem;padding:1px 6px;border-radius:999px;background:var(--so-success-soft);color:var(--so-success);margin-left:6px}` +
+  `.credentials .row-item>div{min-width:0}.credentials .row-item p{overflow-wrap:anywhere}.credentials .soon{color:var(--so-warning,#9a6700);font-weight:600}` +
   `@media(max-width:600px){.credentials .row-item{flex-wrap:wrap}.credentials .create input,.credentials .create select{font-size:16px}}`;
 
 /** "Chrome on macOS", from a user agent, for a person to recognise a session. */
@@ -47,10 +49,18 @@ export function credentialsHtml(view: CredentialsView, csrf: string, notice: { s
     `${one.here ? "" : post({ action: "end-session", session: one.idHash }, "Sign out")}</div>`).join("")}</div>`;
   const others = view.sessions.filter(one => !one.here && one.account === view.who).length;
   const endOthers = others > 0 && !view.everyone ? post({ action: "end-others" }, `Sign out everywhere else (${others})`) : "";
-  const live = view.tokens.filter(one => one.revokedAt === null && Date.parse(one.expiresAt) > view.now);
+  const live = view.tokens.filter(one => tokenLive(one, view.now));
+  // v111: its projects, and one state: when it stops (soon, said once and marked) or, once replaced, when it ends.
+  const ends = (one: ApiTokenRow) => {
+    if (one.replacedBy !== null && one.overlapUntil !== null) return `<span class="soon">Replaced · stops ${e(one.overlapUntil.slice(11, 16))} UTC</span>`;
+    if (expiryNoticeDue(one, view.now) === null) return `Expires ${e(one.expiresAt.slice(0, 10))}`;
+    const days = daysLeft(one.expiresAt, view.now);
+    return `<span class="soon">Expires ${days <= 1 ? "within a day" : `in ${days} days`}</span>`;
+  };
+  const scope = (one: ApiTokenRow) => one.projects === null ? "All projects" : one.projects.length === 0 ? "No projects" : one.projects.map(repo => e(projectName(repo))).join(", ");
   const tokens = live.length === 0 ? `<p class="meta">No API tokens.</p>` : `<div class="rows">${live.map(one =>
     `<div class="row-item" data-token="${e(one.id)}"><div><p>${view.everyone ? `<strong>${e(one.account)}</strong> · ` : ""}${e(one.name)} · ${one.access === "act" ? "Can act" : "Read only"}</p>` +
-    `<p class="meta">Expires ${e(one.expiresAt.slice(0, 10))} · last used ${e(when(one.lastUsedAt, view.now))}</p></div>${post({ action: "revoke-token", token: one.id }, "Revoke")}</div>`).join("")}</div>`;
+    `<p class="meta">${scope(one)} · ${ends(one)} · last used ${e(when(one.lastUsedAt, view.now))}</p></div>${post({ action: "revoke-token", token: one.id }, "Revoke")}</div>`).join("")}</div>`;
   const create = `<details class="card"><summary>New API token</summary><form method="post" action="/settings/sessions" class="create">${hidden({ csrf, action: "create-token" })}` +
     `<label>Name<input type="text" name="name" maxlength="60" required placeholder="for example: CI"></label>` +
     `<label>It can<select name="access"><option value="read">Read (tasks, results, the ledger)</option><option value="act">Act as you (file and manage work; never approve)</option></select></label>` +

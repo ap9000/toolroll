@@ -19,22 +19,23 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v110 is update-safe, nothing before it is", () => {
+  test("every schema version is classed: v110 and v111 are update-safe, nothing before them is", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
-    expect(SCHEMA_VERSION).toBe(110);
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110]);
+    expect(SCHEMA_VERSION).toBe(111);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
   test("a settled database reaches this build through update-safe migrations alone, or is refused", () => {
     expect(updateSafeSchema(SCHEMA_VERSION)).toBe(true);
+    expect(updateSafeSchema(110)).toBe(true);
     expect(updateSafeSchema(109)).toBe(true);
     // v109 itself was never classed update-safe: a v108 database needs the separate procedure.
     expect(updateSafeSchema(108)).toBe(false);
     expect(updateSafeSchema(47)).toBe(false);
     // A fresh file, a mid-flight marker, nonsense, and a newer build's schema are never carried forward.
-    for (const version of [null, -109, -110, 0, SCHEMA_VERSION + 1, 1.5]) expect(updateSafeSchema(version)).toBe(false);
+    for (const version of [null, -109, -110, -111, 0, SCHEMA_VERSION + 1, 1.5]) expect(updateSafeSchema(version)).toBe(false);
   });
 
   test("a v109 database is backed up for toolroll update, and its rehearsal keeps every row and the ledger chain", async () => {
@@ -72,7 +73,7 @@ describe("update-safe migrations", () => {
     // The rehearsal: the new build migrates the copy, and no saved row changes.
     const store = openStore(backup);
     try {
-      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(110);
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(111);
       expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });
     } finally { store.close(); }
     const after = new DatabaseSync(backup, { readOnly: true });

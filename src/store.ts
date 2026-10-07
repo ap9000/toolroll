@@ -637,7 +637,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v108 keeps sign-in pauses: one incident per provider whose sign-in stopped working (provider_auth_pause).
 // v109 remembers which sign-in pause parked a task (task_ref.auth_wait_pause), so reviews and other runs outside the tick wait for it too.
 // v110 lets the action ledger record commands a person ran on this server with their API token (source 'api', or 'mcp' from their agent).
-export const SCHEMA_VERSION = 110;
+// v111 keeps an API token's project limit and its rotation: the token that replaced it, and when the old one stops.
+export const SCHEMA_VERSION = 111;
 
 /**
  * The migrations `toolroll update` may carry a database through in place: each
@@ -648,9 +649,10 @@ export const SCHEMA_VERSION = 110;
  * migrates and does not read this list.
  *
  * v110 rebuilds action_ledger only to widen its source check ('api', 'mcp'):
- * every row, id and hash-chain link is copied unchanged.
+ * every row, id and hash-chain link is copied unchanged. v111 adds nullable
+ * api_token columns (project limit, rotation); existing tokens read as before.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -717,7 +719,11 @@ CREATE TABLE IF NOT EXISTS web_session (
 );
 CREATE INDEX IF NOT EXISTS web_session_account ON web_session (account);
 `;
-export type ApiTokenRow = { id: string; account: string; name: string; access: "read" | "act"; createdAt: string; createdBy: string; expiresAt: string; lastUsedAt: string | null; revokedAt: string | null; revokedBy: string | null };
+export type ApiTokenRow = { id: string; account: string; name: string; access: "read" | "act"; createdAt: string; createdBy: string; expiresAt: string; lastUsedAt: string | null; revokedAt: string | null; revokedBy: string | null;
+  /** v111: the projects it is limited to (null: every project its person may use). */
+  projects: string[] | null;
+  /** v111: the token it replaced, the one that replaced it, and when this one stops after being replaced. */
+  replaces: string | null; replacedBy: string | null; overlapUntil: string | null };
 export type WebSessionRow = { idHash: string; account: string; csrf: string; role: "approver" | "viewer"; generation: number; createdAt: number; lastSeen: number; project: string | null; projectRevision: number; ssoAt: number | null; agent: string | null; address: string | null };
 
 /** v100: which account each identity-provider identity (issuer + subject) signs in as. */
@@ -5343,6 +5349,11 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(TEAM_SCHEMA);
   db.exec(SSO_SCHEMA);
   db.exec(CREDENTIALS_SCHEMA);
+  // v111: a token's project limit (null: every project its person may use) and its rotation.
+  addColumn(db, "api_token", "projects_json", "TEXT");
+  addColumn(db, "api_token", "replaces", "TEXT");
+  addColumn(db, "api_token", "replaced_by", "TEXT");
+  addColumn(db, "api_token", "overlap_until", "TEXT");
   db.exec(APPROVAL_SCHEMA);
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
@@ -7049,7 +7060,19 @@ function rebuildExact(
 function readApiToken(row: Record<string, unknown>): ApiTokenRow {
   const text = (key: string) => row[key] == null ? null : String(row[key]);
   return { id: String(row["id"]), account: String(row["account"]), name: String(row["name"]), access: row["access"] === "act" ? "act" : "read", createdAt: String(row["created_at"]), createdBy: String(row["created_by"]),
-    expiresAt: String(row["expires_at"]), lastUsedAt: text("last_used_at"), revokedAt: text("revoked_at"), revokedBy: text("revoked_by") };
+    expiresAt: String(row["expires_at"]), lastUsedAt: text("last_used_at"), revokedAt: text("revoked_at"), revokedBy: text("revoked_by"),
+    projects: tokenProjectsOf(row["projects_json"]), replaces: text("replaces"), replacedBy: text("replaced_by"), overlapUntil: text("overlap_until") };
+}
+
+/** A token's stored project limit. Anything unreadable limits it to no project at all: never wider. */
+function tokenProjectsOf(value: unknown): string[] | null {
+  if (value == null) return null;
+  try {
+    const parsed: unknown = JSON.parse(String(value));
+    return Array.isArray(parsed) && parsed.every(one => typeof one === "string") ? parsed as string[] : [];
+  } catch {
+    return [];
+  }
 }
 
 function readWebSession(row: Record<string, unknown>): WebSessionRow {
@@ -11780,13 +11803,43 @@ export class Store {
 
   // ---- API tokens and browser sessions (v101) ------------------------------
 
-  createApiToken(token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string; by: string }, now: Date): void {
+  createApiToken(token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string; by: string; projects?: readonly string[] | null }, now: Date): void {
     this.transact(() => {
-      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt);
+      const projects = token.projects ?? null;
+      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt, projects === null ? null : JSON.stringify(projects));
       this.recordAction({ at: now.toISOString(), actor: token.by, repo: null, taskId: null, runId: null, action: `API token created: ${token.name}`, outcome: token.access, source: "access",
-        detail: `for ${token.account}, until ${token.expiresAt.slice(0, 10)}` });
+        detail: `for ${token.account}, until ${token.expiresAt.slice(0, 10)}${projects === null ? "" : ` · ${projects.length === 0 ? "no projects" : projects.join(", ")}`} · id ${token.id}` });
     });
+  }
+
+  /**
+   * v111: replace a live, not-yet-replaced token with a new secret on the same terms (access, projects, end date, so
+   * rotating never extends it). The old one keeps working until `overlapUntil` (never past its own end), then stops;
+   * every check reads that time, and endRotatedApiTokens records the end afterwards. Only the token's own person.
+   */
+  rotateApiToken(oldId: string, replacement: { id: string; secretHash: string }, by: string, now: Date, overlapMs: number): { ok: true; row: ApiTokenRow } | { ok: false; reason: "unknown" | "replaced" } {
+    return this.transact(() => {
+      const old = this.apiTokenSecret(oldId)?.row ?? null;
+      const at = now.getTime();
+      if (old === null || old.account !== by || old.revokedAt !== null || !(Date.parse(old.expiresAt) > at) || old.overlapUntil !== null && !(Date.parse(old.overlapUntil) > at)) return { ok: false as const, reason: "unknown" as const };
+      if (old.replacedBy !== null) return { ok: false as const, reason: "replaced" as const };
+      const stamp = now.toISOString();
+      const until = new Date(Math.min(at + Math.max(0, overlapMs), Date.parse(old.expiresAt))).toISOString();
+      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, replaces) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(replacement.id, old.account, old.name, replacement.secretHash, old.access, stamp, by, old.expiresAt, old.projects === null ? null : JSON.stringify(old.projects), old.id);
+      this.db.prepare("UPDATE api_token SET replaced_by = ?, overlap_until = ? WHERE id = ? AND replaced_by IS NULL").run(replacement.id, until, old.id);
+      this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: `API token rotated: ${old.name}`, outcome: old.access, source: "access",
+        detail: `${old.account}'s · id ${old.id} → ${replacement.id}, the old one stops ${until.slice(0, 16).replace("T", " ")} UTC` });
+      return { ok: true as const, row: this.apiTokenSecret(replacement.id)!.row };
+    });
+  }
+
+  /** v111: record the end of each replaced token whose overlap has passed (it already signs no one in). */
+  endRotatedApiTokens(now: Date): number {
+    const due = this.db.prepare("SELECT id, overlap_until FROM api_token WHERE revoked_at IS NULL AND overlap_until IS NOT NULL AND overlap_until <= ?").all(now.toISOString());
+    for (const row of due) this.revokeApiToken(String(row["id"]), "system", new Date(String(row["overlap_until"])), "replaced; its overlap ended");
+    return due.length;
   }
 
   /** A token by id with its kept hash (for the check), or null. */
