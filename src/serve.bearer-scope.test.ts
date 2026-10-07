@@ -295,7 +295,9 @@ describe("bearer step-up and in-flight revocation", () => {
   ];
 
   test("every direct approver password call uses the browser-aware helper and has a bearer refusal case", () => {
-    const source = readFileSync(new URL("./serve.ts", import.meta.url), "utf8");
+    // Decision 16: preserve the same password-site inventory across the handler move.
+    const source = ["./serve.ts", "./server/tasks.ts", "./server/flows.ts", "./server/chat.ts", "./server/settings.ts", "./server/people-tokens.ts", "./server/remote.ts", "./server/pages.ts", "./server/guards.ts"]
+      .map(path => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
     expect(source.match(/checkApproverPassword\(/g)).toHaveLength(1);
     expect(source).not.toContain("cookieOnlyCeremony");
     expect(source).not.toMatch(/authenticateApprover\(store/);
@@ -308,7 +310,7 @@ describe("bearer step-up and in-flight revocation", () => {
       if (line.includes("readForm(")) form = /CONSOLE_FORMS\.(\w+)/.exec(line)?.[1] ?? form;
       if (/authenticateApprover\(who,/.test(line)) sites.push(form || fn);
     }
-    expect(sites).toEqual(ceremonies.map(([site]) => site));
+    expect(sites.sort()).toEqual(ceremonies.map(([site]) => site).sort());
     expect(sites).toHaveLength(45);
   });
 

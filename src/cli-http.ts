@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from './store.js';
 import type { Principal } from './operate.js';
@@ -119,6 +120,7 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
     request.resume();
     return true;
   }
+  if (!adapterPolicy({ caller: "bearer", capability: principal.scope, token: true }).ok) return reject(403, "read-only", "Your token reads only. Use an act token for this.");
   let value: unknown;
   try { value = await body(request); }
   catch (error) { return reject(error instanceof Error && error.message === 'too-large' ? 413 : 400, 'invalid-body', 'Send a valid JSON request; files are limited to 256 KiB in total.'); }

@@ -1,5 +1,6 @@
+import { adapterPolicy } from "./server/route-policy.js";
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { TEAM_OPERATIONS, teamScopeAllows, type TeamActor, type TeamExecute, type TeamRequest, type TeamResponse } from './team-contract.js';
+import { TEAM_OPERATIONS, TEAM_MUTATIONS, teamScopeAllows, type TeamActor, type TeamExecute, type TeamRequest, type TeamResponse } from './team-contract.js';
 import { limitWords, type Admission } from './request-budget.js';
 
 export const TEAM_REQUEST_BYTES = 64 * 1024;
@@ -65,6 +66,8 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
   if (!actor) return reject(401, 'unauthenticated', 'Sign in to continue.');
   if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
+  const policyPrincipal = () => ({ caller: request.headers.authorization ? 'bearer' as const : 'cookie' as const, capability: actor.principal?.scope ?? 'act' as const, token: actor.principal !== undefined });
+  if (!adapterPolicy(policyPrincipal()).ok) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
   const conversationId = url.searchParams.get('conversation') ?? undefined;
   if (url.pathname === '/api/team/events') {
     if (request.method !== 'GET') return reject(405, 'method-not-allowed', 'Use GET for conversation updates.');
@@ -118,7 +121,7 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
     input = value;
   } else return reject(405, 'method-not-allowed', 'Use GET or POST.');
   if (!options.revalidate(request, actor)) return reject(401, 'unauthenticated', 'Sign in to continue.');
-  if (!teamScopeAllows(actor, input.operation)) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
+  if (!adapterPolicy(policyPrincipal(), TEAM_MUTATIONS[input.operation] ? "act" : "read").ok || !teamScopeAllows(actor, input.operation)) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
   try {
     const result = await options.execute(actor, input);
     send(response, result.ok ? 200 : /forbidden|access|unauthor|member/.test(result.code) ? 403 : 409, result);

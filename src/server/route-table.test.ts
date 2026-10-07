@@ -97,7 +97,8 @@ describe("the route table", () => {
   });
 
   test("every literal address the console's routers compare against is declared", () => {
-    const source = readFileSync(join(import.meta.dirname, "..", "serve.ts"), "utf8");
+    const sources = ["tasks", "flows", "chat", "settings", "people-tokens", "pages"].map(name => readFileSync(join(import.meta.dirname, `${name}.ts`), "utf8"));
+    let source = "";
     const body = (header: string): string => {
       const start = source.indexOf(header);
       const end = source.indexOf("\n  }\n", start);
@@ -105,7 +106,11 @@ describe("the route table", () => {
       return source.slice(start, end);
     };
     const literals = (text: string): string[] => [...new Set([...text.matchAll(/url\.pathname\s*===\s*["'`](\/[^"'`$]*)["'`]/g)].map(match => match[1]!))];
-    const reads = literals(body("  async function handleGet(")), writes = literals(body("  async function handlePost("));
+    const reads: string[] = [], writes: string[] = [];
+    for (source of sources) {
+      reads.push(...literals(body("  async function get(")));
+      writes.push(...literals(body("  async function post(")));
+    }
     expect(reads.length).toBeGreaterThan(60);
     expect(writes.length).toBeGreaterThan(80);
     expect(reads.filter(path => matchRoute("GET", path, "console") === null)).toEqual([]);

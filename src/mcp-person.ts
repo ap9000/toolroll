@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 /**
  * A person's tools on the HTTP gateway. A person signs in with their own API token (api-tokens.ts) and every tool call
  * is the exact `toolroll` command line they could type, run on the server under their principal through
@@ -88,7 +89,7 @@ export async function callPersonTool(person: Person, store: Store, runAs: RunOpe
   if (rawArgs === null) return { kind: "error", code: -32602, message: "arguments must be an object", fatal: false };
   const read = parseContract<Record<string, unknown>>(PERSON_TOOL_INPUTS[tool] as never, rawArgs);
   if (!read.ok) return { kind: "error", code: -32602, message: read.issues.map(one => one.line).join("; "), fatal: false };
-  if (!mayCall(person, tool)) {
+  if (!adapterPolicy({ caller: "bearer", capability: person.principal.scope, token: true }, TOOLS[tool].acts ? "act" : "read").ok || !mayCall(person, tool)) {
     const why = person.principal.scope === "read" ? "this token reads only — make an act token in the console to file work" : "your account can watch, not act";
     return refused(`${tool}: ${why}`);
   }

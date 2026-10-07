@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 /**
  * The MCP gateway over streamable HTTP, served at /mcp by the console (serve.ts). Stateless: one JSON-RPC message per
  * POST, answered with one JSON body (a notification gets 202 and no body); there is no session and no event stream.
@@ -145,6 +146,10 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
         return send(response, 429, { jsonrpc: "2.0", id: null, error: { code: -32000, message: limitWords(admitted.limit, admitted.retryAfter), data: { limit: admitted.limit, retryAfter: admitted.retryAfter } } }, { "retry-after": String(admitted.retryAfter) });
       }
     }
+    const policy = caller.kind === "coordinator"
+      ? adapterPolicy({ caller: "coordinator", capability: "act" })
+      : adapterPolicy({ caller: oauthProjects(store, caller.person.principal.tokenId) === null ? "bearer" : "oauth", capability: caller.person.principal.scope, token: true });
+    if (!policy.ok) return refuse(response, 403, "this credential cannot call this route");
     if (!/^application\/json\s*(;|$)/i.test(request.headers["content-type"] ?? "")) return refuse(response, 415, "send the JSON-RPC message as application/json");
     if (Number(request.headers["content-length"] ?? 0) > MAX_REQUEST) return tooLarge(request, response);
     const text = await readBody(request);

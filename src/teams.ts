@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 /** Microsoft Teams: the leased delivery loop hosted by the ordinary worker,
  * and the HTTPS receiver the console mounts for the Bot Framework. Teams
  * has no client-initiated socket, so inbound activities arrive over HTTPS
@@ -34,6 +35,7 @@ export async function handleTeamsHttp(request: IncomingMessage, response: Server
   if (credentials === null) return reply(404);
   const claims = await verifyTeamsToken(request.headers.authorization, credentials.app, options.fetcher ?? fetch);
   if (claims === null) return reply(401);
+  if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return reply(403);
   if (refuseAdmission(options.admitTenant(credentials.tenant))) return true;
   if (Number(request.headers["content-length"] ?? 0) > TEAMS_ACTIVITY_BYTES) return reply(413);
   let raw = "";

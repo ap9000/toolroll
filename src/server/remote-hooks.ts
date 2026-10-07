@@ -1,11 +1,12 @@
+import { adapterPolicy } from "./route-policy.js";
 /**
  * The remote domain's public roads (moved from serve.ts unchanged): the liveness probe and the webhooks a public
  * relay may expose. Each is declared in the route table's edge stage and answers before the console's sign-in.
  */
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage,ServerResponse } from "node:http";
+import { flowFormPage,FORM_PATH,HOOK_PATH,receiveFlowForm,receiveFlowHook } from "../flow-triggers.js";
 import type { Store } from "../store.js";
-import { FORM_PATH, flowFormPage, HOOK_PATH, receiveFlowForm, receiveFlowHook } from "../flow-triggers.js";
-import { keepPushedUpdate, loadBotToken, pushedByTelegram, telegramHookSecret } from "../telegram.js";
+import { keepPushedUpdate,loadBotToken,pushedByTelegram,telegramHookSecret } from "../telegram.js";
 
 /** What the hooks read from the server: its store, clock and the two configuration paths. */
 export interface RemoteHookContext {
@@ -30,6 +31,7 @@ export async function telegramHook(ctx: RemoteHookContext, request: IncomingMess
   if (source === null || options.configDir === undefined) return reply(404);
   if (request.method !== "POST") return reply(405);
   if (!pushedByTelegram(request.headers["x-telegram-bot-api-secret-token"], telegramHookSecret(options.configDir))) return reply(401);
+  if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return reply(403);
   if (Number(request.headers["content-length"] ?? 0) > 1_000_000) return reply(413);
   const chunks: Buffer[] = [];
   try {
