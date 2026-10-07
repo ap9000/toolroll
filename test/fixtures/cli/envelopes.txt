@@ -5676,6 +5676,14 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "serve check-public",
+      "synopsis": "is this server ready on its --public-url? checks the URL, --allow-host, the console on --port, the certificate, HSTS and the proxy, and names each problem; sends no credentials",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
       "invocation": "watch",
       "synopsis": "the unattended loop, kept running",
       "audience": "operator",

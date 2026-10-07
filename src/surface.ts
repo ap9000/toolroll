@@ -429,6 +429,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("publish unblock", "lift a repair's merge hold"),
   operator("publish rearm", "re-arm a refused merge after fixing the named cause"),
   operator("serve", "the operations console (HTTP)"),
+  operatorRead("serve check-public", "is this server ready on its --public-url? checks the URL, --allow-host, the console on --port, the certificate, HSTS and the proxy, and names each problem; sends no credentials"),
   operator("watch", "the unattended loop, kept running"),
   operator("up", "console + worker + browser, one command"),
   operator("onboard", "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff"),
@@ -455,7 +456,7 @@ const REMOTE_NO: readonly string[] = [
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
   "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
-  "serve", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
+  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
   // Publication and release.
