@@ -179,7 +179,7 @@ function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
               {data.lookers[card.id]!.slice(0, 2).map(name => <span key={name} className="rounded-full ring-2 ring-primary/70"><Face name={name} /></span>)}</span>}
           </div>
           {card.sorted !== null && <div className="mt-1 flex"><SortChip sorted={card.sorted} /></div>}
-          {card.waiting !== null && <div className={cn("mt-1 line-clamp-2 text-[11px] leading-snug", card.canDecide || card.question?.mine ? "font-semibold text-attention" : "text-muted-foreground")}>{card.canDecide ? NEEDS.card.sentence({}) : card.question?.mine ? `${card.question.from.split(" · ")[0]} asks you` : card.waiting}</div>}
+          {card.waiting !== null && <div className={cn("mt-1 text-[11px] leading-snug", card.task !== null && (stage.kind === "task" || stage.kind === "report") ? "truncate" : "line-clamp-2", card.canDecide || card.question?.mine ? "font-semibold text-attention" : "text-muted-foreground")}>{card.canDecide ? NEEDS.card.sentence({}) : card.question?.mine ? `${card.question.from.split(" · ")[0]} asks you` : card.waiting}</div>}
           {card.deadline != null && <div className="mt-0.5 text-[11px] text-muted-foreground" data-card-deadline>{deadlineWords(card.deadline)}</div>}
           {(card.owner !== null || card.comments.length > 0) && <div className="mt-1.5 flex items-center gap-1.5">
             {card.owner !== null && <Face name={card.owner} />}
@@ -1626,7 +1626,7 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
         {cards.length > 0 && <ul className="flex flex-col gap-2 px-3 pb-3">{cards.map(one => <li key={one.id}><button type="button" onClick={() => setOpen(one.id)} className={cn("min-h-11 w-full rounded-lg border bg-card px-3 py-2 text-left", one.canDecide && "border-attention/60")}>
           <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-[14px] font-medium">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
           {one.sorted !== null && <div className="mt-1 flex"><SortChip sorted={one.sorted} /></div>}
-          {one.waiting !== null && <div className={cn("text-[12px]", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
+          {one.waiting !== null && <div className={cn("text-[12px]", one.task !== null && (stage.kind === "task" || stage.kind === "report") && "truncate", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
           {one.comments.length > 0 && <div className="mt-0.5 inline-flex items-center gap-1 text-[12px] text-muted-foreground"><MessageSquare className="size-3" aria-hidden="true" />{one.comments.length}</div>}
         </button></li>)}</ul>}
       </section>;

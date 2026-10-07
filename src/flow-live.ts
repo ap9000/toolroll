@@ -2,9 +2,9 @@
  * The live canvas (v88): a flow open in several browsers stays the same in
  * all of them, and each shows who else has it open.
  *
- * - A change nudge. While anyone has a flow open, one cheap query a second
- *   reads the flow's fingerprint (its revision, cards, moves, comments,
- *   watchers, step runs and triggers); when it changes, every open page
+ * - A change nudge. While anyone has a flow open, a small read each second
+ *   checks the flow's fingerprint (its revision, cards, moves, comments,
+ *   watchers, step runs, linked task progress and triggers); when it changes, every open page
  *   hears "change" and reads the flow again the usual way. The nudge
  *   carries no card data: what a page shows is always what its own read
  *   returned, under its own checks.
@@ -27,8 +27,15 @@ const CHECK_EVERY = 15;
 const HEARTBEAT_EVERY = 15;
 const PRESENCE_SETTLE_MS = 150;
 
-/** What changes when anything on the canvas changes: one row, one read, kept short and opaque. */
-export function flowFingerprint(store: Store, flow: number): string | null {
+/** What changes when anything on the canvas changes: metadata only, kept short and opaque. */
+export function flowFingerprint(store: Store, flow: number, now = new Date()): string | null {
+  // A revision can progress while its card still links to the original task,
+  // including a build in another project. The page read admits the viewer;
+  // this stream only carries a hash. No evidence files or logs are read.
+  const linked = store.handle.prepare(`SELECT DISTINCT c.task, tr.repo FROM flow_card c
+    JOIN task_ref tr ON tr.external_id = c.task AND tr.backend = 'built-in'
+    WHERE c.flow = ? AND c.state = 'active' AND tr.repo IS NOT NULL ORDER BY c.task`).all(flow);
+  const refs = [...new Set(linked.flatMap(one => store.taskFamilyOf(String(one["task"]), [String(one["repo"])], false)?.versions.map(version => version.refId) ?? []))].sort((a, b) => a - b);
   const row = store.handle.prepare(`SELECT f.state || '|' || f.revision || '|' || f.updated_at || '|' || coalesce(f.owner, '') AS head,
     (SELECT count(*) || ':' || coalesce(max(updated_at), '') FROM flow_card WHERE flow = f.id) AS cards,
     (SELECT coalesce(max(e.id), 0) FROM flow_event e JOIN flow_card c ON c.id = e.card WHERE c.flow = f.id) AS moves,
@@ -36,8 +43,20 @@ export function flowFingerprint(store: Store, flow: number): string | null {
     (SELECT count(*) || ':' || coalesce(max(w.added_at), '') FROM flow_card_watcher w JOIN flow_card c ON c.id = w.card WHERE c.flow = f.id) AS watchers,
     (SELECT count(*) || ':' || coalesce(sum(r.attempts), 0) || ':' || coalesce(max(coalesce(r.finished_at, r.started_at)), '') || ':' || coalesce(sum(r.state = 'running'), 0)
        FROM flow_step_run r JOIN flow_card c ON c.id = r.card WHERE c.flow = f.id) AS runs,
-    (SELECT count(*) || ':' || coalesce(max(updated_at), '') || ':' || coalesce(max(last_at), '') || ':' || coalesce(sum(failures), 0) FROM flow_trigger WHERE flow = f.id) AS triggers
-    FROM flow f WHERE f.id = ?`).get(flow) as Record<string, unknown> | undefined;
+    (SELECT count(*) || ':' || coalesce(max(updated_at), '') || ':' || coalesce(max(last_at), '') || ':' || coalesce(sum(failures), 0) FROM flow_trigger WHERE flow = f.id) AS triggers,
+    (SELECT json_group_array(json_array(tr.id, t.id, t.state, t.updated_at, tr.plan,
+       s.digest, s.approved_digest, s.approved_at,
+       (SELECT max(p.id) FROM run_checkpoint p WHERE p.task_ref = tr.id),
+       (SELECT q.lease_id FROM claim q WHERE q.task_ref = tr.id AND q.released_at IS NULL AND q.expires_at > ? ORDER BY q.lease_generation DESC LIMIT 1),
+       (SELECT json_group_array(json_array(r.id, r.outcome, r.finished_at, r.reason,
+          (SELECT json_array(k.status, k.exit_code, k.updated_at) FROM run_check k WHERE k.run = r.id))) FROM run r WHERE r.task_ref = tr.id),
+       (SELECT json_group_array(json_array(d.id, d.state, d.question, d.answered_at)) FROM decision d JOIN run r ON r.id = d.run WHERE r.task_ref = tr.id),
+       (SELECT json_group_array(json_array(h.id, h.reason)) FROM hold h WHERE h.task_ref = tr.id AND (h.until IS NULL OR h.until > ?)),
+       (SELECT max(a.id) FROM action_ledger a WHERE a.task_id = t.id)))
+     FROM task_ref tr JOIN task t ON t.id = tr.external_id
+     LEFT JOIN task_scope s ON s.task_id = t.id
+     WHERE tr.id IN (SELECT value FROM json_each(?))) AS tasks
+    FROM flow f WHERE f.id = ?`).get(now.toISOString(), now.toISOString(), JSON.stringify(refs), flow) as Record<string, unknown> | undefined;
   return row === undefined ? null : createHash("sha256").update(Object.values(row).map(String).join("|")).digest("hex").slice(0, 16);
 }
 
