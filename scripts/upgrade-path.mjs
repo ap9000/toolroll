@@ -32,7 +32,13 @@
  * then the release's own code opens the database and reads the goal and note
  * back whole and loads the flow (it re-checks a zone's instructions against
  * 4,000 characters, so the candidate saves the rest beside them), and the
- * release's `toolroll status` opens it: going back a version still works.
+ * release's `toolroll status` opens it. That read runs only when both share a
+ * schema: after a migration the release refuses the newer database by design.
+ * Then `toolroll update --rollback` puts back the release and the database
+ * backed up before the update; the release's `toolroll status` and `ledger
+ * verify` pass over it, completed tasks keep their digests, and what the
+ * candidate wrote since is gone from it, kept in the copy set aside (named in
+ * the output): going back a version still works.
  *
  *   node scripts/upgrade-path.mjs [--candidate <checkout with dist>] [--versions 0.9.9,0.9.10,0.9.11] [--keep]
  *
@@ -44,7 +50,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -335,6 +341,45 @@ async function rollback({ dist, databaseFile, task, flow }) {
   } finally { store.close(); }
 }
 
+/** Each build's own schema version, read in this child so the two never share a process. */
+async function schemas({ releaseDist, candidateDist }) {
+  const release = (await load(releaseDist, "store.js")).SCHEMA_VERSION;
+  const candidate = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", `import(${JSON.stringify(pathToFileURL(join(candidateDist, "store.js")).href)}).then(m => process.stdout.write(String(m.SCHEMA_VERSION)))`], { encoding: "utf8" });
+  if (candidate.status !== 0) throw Error(`could not read the candidate's schema version: ${candidate.stderr}`);
+  return { release, candidate: Number(candidate.stdout) };
+}
+
+/** After `toolroll update --rollback`: the release reads its own database (completed tasks whole), what the candidate
+ * wrote after the update is gone from it and is in the copy set aside. */
+async function rolledBack({ dist, databaseFile, kept, evidenceRoot, completed, task, flow }) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { openStore } = await load(dist, "store.js");
+  const { assignmentOf } = await load(dist, "assignment.js");
+  const store = openStore(databaseFile);
+  const after = {};
+  let restoredHasTask;
+  try {
+    for (const one of completed) {
+      try {
+        const a = assignmentOf(store, one.task, NOW(), { principal: "operator", repos: null, includeUnplaced: true }, evidenceRoot);
+        after[one.task] = { state: a?.state ?? "missing", digest: a?.completion?.digest ?? null };
+      } catch (error) { after[one.task] = { state: "unreadable", digest: null, error: String(error?.message ?? error).slice(0, 200) }; }
+    }
+    restoredHasTask = store.lookupRef(task) !== null || store.getFlow(flow) !== null;
+  } finally { store.close(); }
+  // The copy set aside is the candidate's schema: only read here, by plain SQL.
+  const copy = new DatabaseSync(kept, { readOnly: true });
+  let keptHasTask, ledgerSince;
+  try {
+    keptHasTask = Number(copy.prepare("SELECT count(*) n FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(task).n) > 0;
+    const restored = new DatabaseSync(databaseFile, { readOnly: true });
+    let lastId;
+    try { lastId = Number(restored.prepare("SELECT coalesce(max(id), 0) m FROM action_ledger WHERE action NOT LIKE 'toolroll %'").get().m); } finally { restored.close(); }
+    ledgerSince = Number(copy.prepare("SELECT count(*) n FROM action_ledger WHERE id > ? AND action NOT LIKE 'toolroll %'").get(lastId).n);
+  } finally { copy.close(); }
+  return { after, restoredHasTask, keptHasTask, ledgerSince };
+}
+
 // ---- the parent: one temporary home per published release ------------------
 
 /** Pack the candidate checkout's built package once. */
@@ -428,13 +473,38 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   if (updated.leftoverOpen !== 0) problems.push(`run #${seeded.leftoverRun}'s leftover record was not settled`);
   if (problems.length > 0) throw Object.assign(Error(`after toolroll update: ${problems.join("; ")}`), { step: "inspect (updated)" });
 
-  // Back a version: the candidate writes text only its raised limits allow, then the release reads it whole.
+  // Back a version: the candidate writes text only its raised limits allow, then the person goes back.
   if (atLeast(version, ROLLBACK_FROM)) {
     const wrote = step("long text (candidate)", () => child("longText", { candidateDist: staged.to, databaseFile: seeded.databaseFile, repo: seeded.repo }, env, "the candidate writing long text"));
-    const read = step("rollback read", () => child("rollback", { dist: installed, databaseFile: seeded.databaseFile, task: wrote.task, flow: wrote.flow }, env, `${version} reading the candidate's long text`));
-    if (!read.flow) throw Object.assign(Error(`${version} couldn't load the flow whose zone has ${wrote.instructions} characters of instructions`), { step: "rollback read" });
-    if (read.goal !== wrote.goal || read.note !== wrote.note) throw Object.assign(Error(`${version} read a ${read.goal}-character goal and a ${read.note}-character note; the candidate wrote ${wrote.goal} and ${wrote.note}`), { step: "rollback read" });
-    step("toolroll status (rollback)", () => must(sh(process.execPath, [join(installed, "bin.js"), "status", "--db", seeded.databaseFile], { env, timeout: 120_000 }), `${version}'s toolroll status over the candidate's database`));
+    // Without a schema change the release can still open the candidate's database (a reinstall of the older
+    // package does exactly that): it reads the long text back whole. After a migration it refuses a newer schema by
+    // design, so the only way back is the rollback below.
+    const schemas = step("schemas", () => child("schemas", { releaseDist: installed, candidateDist: staged.to }, env, "reading both schema versions"));
+    if (schemas.release >= schemas.candidate) {
+      const read = step("rollback read", () => child("rollback", { dist: installed, databaseFile: seeded.databaseFile, task: wrote.task, flow: wrote.flow }, env, `${version} reading the candidate's long text`));
+      if (!read.flow) throw Object.assign(Error(`${version} couldn't load the flow whose zone has ${wrote.instructions} characters of instructions`), { step: "rollback read" });
+      if (read.goal !== wrote.goal || read.note !== wrote.note) throw Object.assign(Error(`${version} read a ${read.goal}-character goal and a ${read.note}-character note; the candidate wrote ${wrote.goal} and ${wrote.note}`), { step: "rollback read" });
+      step("toolroll status (rollback read)", () => must(sh(process.execPath, [join(installed, "bin.js"), "status", "--db", seeded.databaseFile], { env, timeout: 120_000 }), `${version}'s toolroll status over the candidate's database`));
+    }
+    // What a person runs: `toolroll update --rollback` puts back the release and the database backed up before the update.
+    const rolled = step("toolroll update --rollback", () => {
+      const result = sh(join(prefix, "bin", "toolroll"), ["update", "--rollback", "--yes", "--now", "--db", seeded.databaseFile], { env, timeout: UPDATE_LIMIT_MS });
+      if (result.signal === "SIGTERM" || result.error?.code === "ETIMEDOUT") throw Error(`toolroll update --rollback was still waiting after ${UPDATE_LIMIT_MS / 60_000} minutes:\n${tail(result.stdout)}\n${tail(readJournalDetail(stateDir))}`);
+      must(result, "toolroll update --rollback");
+      const j = JSON.parse(readFileSync(join(stateDir, "toolroll-update.json"), "utf8"));
+      if (j.kind !== "rollback" || j.phase !== "complete" || j.to.version !== version || !j.backupPath) throw Error(`toolroll update --rollback ended ${j.kind} ${j.phase}: ${j.detail}`);
+      const linked = realpathSync(join(prefix, "bin", "toolroll"));
+      if (linked !== realpathSync(join(installed, "bin.js"))) throw Error(`toolroll runs ${linked} after the rollback, not ${version}`);
+      return { kept: j.backupPath };
+    });
+    step("toolroll status (rolled back)", () => must(sh(join(prefix, "bin", "toolroll"), ["status", "--db", seeded.databaseFile], { env, timeout: 120_000 }), `${version}'s toolroll status after the rollback`));
+    step("toolroll ledger verify (rolled back)", () => must(sh(join(prefix, "bin", "toolroll"), ["ledger", "verify", "--db", seeded.databaseFile], { env, timeout: 120_000 }), `${version}'s toolroll ledger verify after the rollback`));
+    const back = step("inspect (rolled back)", () => child("rolledBack", { dist: installed, databaseFile: seeded.databaseFile, kept: rolled.kept, evidenceRoot: seeded.evidenceRoot, completed: seeded.completed, task: wrote.task, flow: wrote.flow }, env, `${version} reading its database after the rollback`));
+    const backProblems = completionProblems(seeded.completed, back.after);
+    if (back.restoredHasTask) backProblems.push(`the restored database still holds ${wrote.task}, written after the update`);
+    if (!back.keptHasTask) backProblems.push(`the copy set aside does not hold ${wrote.task}, written after the update`);
+    if (backProblems.length > 0) throw Object.assign(Error(`after toolroll update --rollback: ${backProblems.join("; ")}`), { step: "inspect (rolled back)" });
+    steps.push(`rollback discarded what was written after the update (task ${wrote.task}, flow ${wrote.flow}, ${back.ledgerSince} ledger entries), kept in ${basename(rolled.kept)}`);
   }
 
   // npm i -g over the same release and database, then its toolroll status opens the database.
@@ -483,7 +553,7 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SELF) {
-  const modes = { seed, facts, stage, inspect, hold, release, longText, rollback };
+  const modes = { seed, facts, stage, inspect, hold, release, longText, rollback, schemas, rolledBack };
   const mode = Object.keys(modes).find(name => args[0] === `--${name}`);
   if (mode) {
     modes[mode](JSON.parse(args[1])).then(value => { process.stdout.write(`\n${JSON.stringify(value)}\n`); }, error => { process.stderr.write(`${error?.stack ?? error}\n`); process.exitCode = 1; });

@@ -638,8 +638,10 @@ describe("the MCP stdio server", () => {
   test("ARCH: no raw row spread leaves this module", () => {
     // The typed-projection rule (spec v6): reading the source proves no
     // `...row` reaches a tool result.
-    const source = require("node:fs").readFileSync(new URL("./mcp.ts", import.meta.url), "utf8") as string;
-    expect(source.includes("...row")).toBe(false);
+    for (const file of ["./mcp.ts", "./mcp-core.ts", "./mcp-person.ts", "./mcp-http.ts"]) {
+      const source = require("node:fs").readFileSync(new URL(file, import.meta.url), "utf8") as string;
+      expect(source.includes("...row")).toBe(false);
+    }
   });
 
   test("the read tools the mate shares (mate arc, slice 4): recap, list_decisions, queue — the coordinator's view keeps paths, never consequences", () => {

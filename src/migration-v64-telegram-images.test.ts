@@ -100,7 +100,7 @@ describe("v64 Telegram result images", () => {
     }
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(109);
+    expect(SCHEMA_VERSION).toBe(110);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const after = store.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[];
     expect(after.map(v63Columns)).toEqual(before.parts.map(v63Columns));

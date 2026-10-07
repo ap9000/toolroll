@@ -58,7 +58,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "branches only — no network"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "pulls",
@@ -72,7 +73,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "answer with one machine envelope on stdout"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "graph",
@@ -86,7 +88,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "answer with one machine envelope on stdout"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "repos",
@@ -100,126 +103,144 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "answer with one machine envelope on stdout"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "proposals",
       "synopsis": "what coordinators proposed over the MCP gateway — list, confirm <id> [--yes], dismiss <id>; confirming runs the plane's own door under your password",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "chat",
       "synopsis": "with a saved profile, --lead <id> --conversation <id> opens central chat; --say sends one message, --follow only reads updates, --authorize --terms-digest enables the displayed paid terms; --local uses the existing local coordinator, where --follow enables crew updates and --no-follow pauses them; proposals keep their approval requirements",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "connect",
       "synopsis": "save an authenticated central HTTPS profile with --as and --token-stdin or --token-file; --local-login explicitly uses the existing private local sign-in; secrets never belong in arguments or URLs",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "lead list",
       "synopsis": "list central leads available to the signed-in account; --profile selects a saved connection",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "no"
     },
     {
       "invocation": "lead create",
       "synopsis": "create a central lead with --name, --instructions and repeatable --project paths admitted by the server",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "lead update",
       "synopsis": "change --name, --instructions or --status for --lead at --revision; projects remain fixed",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "lead member",
       "synopsis": "set --account membership on --lead with --role, --active true|false and the current --revision",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "lead transfer",
       "synopsis": "move ownership of --task to --lead at --revision; existing execution authority remains unchanged",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation list",
       "synopsis": "list admitted conversations, optionally within --lead; attachment never starts model work",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "no"
     },
     {
       "invocation": "conversation create",
       "synopsis": "create a conversation with --lead, --title, --visibility private|team and repeatable --project paths",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation show",
       "synopsis": "read --conversation messages and saved work; no model call or read-marker mutation",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "no"
     },
     {
       "invocation": "conversation member",
       "synopsis": "set --account membership on --conversation with --role, --active true|false and the current --revision; lead membership must already permit the role",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation edit",
       "synopsis": "edit your queued --message in --conversation at --revision using --text; running messages cannot be edited",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation withdraw",
       "synopsis": "withdraw your queued --message in --conversation at --revision; an active turn requires stop",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation read",
       "synopsis": "explicitly record your read position at --message within --conversation",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation follow",
       "synopsis": "enable or pause automatic lead summaries with --conversation and --enabled true|false, within the existing paid chat authorization; passive chat --follow only reads updates",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "conversation stop",
       "synopsis": "request stopping the exact --message in --conversation; retain uncertain work until its owner settles it",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "repos add",
@@ -251,7 +272,8 @@ $ contract --commands --json → 0
         "unavailable",
         "refused",
         "locked"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "repos remove",
@@ -281,14 +303,16 @@ $ contract --commands --json → 0
       "notableReasons": [
         "refused",
         "locked"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "repos add-from-github",
       "synopsis": "preview, clone from GitHub, and connect - the console onboarding ceremony as a CLI verb",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "contract",
@@ -307,7 +331,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "dump the declared command guide"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "skills list",
@@ -321,7 +346,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "answer with one machine envelope on stdout"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "skills get",
@@ -346,7 +372,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-skill",
         "usage"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "skills install",
@@ -390,35 +417,40 @@ $ contract --commands --json → 0
         "unconfirmed",
         "foreign-file",
         "usage"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "link",
       "synopsis": "put toolroll on PATH",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "unlink",
       "synopsis": "take it off PATH",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "update",
       "synopsis": "update to the latest release: verified provenance, drained work, backup, rehearsal, health check, automatic restore; --rollback undoes it",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "demo",
       "synopsis": "a seeded throwaway sandbox",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "session capabilities",
@@ -432,7 +464,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "answer with one machine envelope on stdout"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session list",
@@ -505,7 +538,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "see session list --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session show",
@@ -574,7 +608,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "see session show --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session changes",
@@ -634,7 +669,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "see session changes --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session start",
@@ -752,7 +788,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "see session start --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session send",
@@ -884,7 +921,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "see session send --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session stop",
@@ -998,7 +1036,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "see session stop --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session resume",
@@ -1112,7 +1151,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "see session resume --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "session recover",
@@ -1226,7 +1266,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "see session recover --help"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "knowledge search",
@@ -1272,7 +1313,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text or source file for impact"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "knowledge impact",
@@ -1318,7 +1360,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text or source file for impact"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "knowledge refresh",
@@ -1357,7 +1400,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "environment variable containing a scoped coordinator token"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "knowledge apply",
@@ -1391,7 +1435,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "local Toolroll database"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "memory search",
@@ -1462,7 +1507,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text, a decision id, or the decision sentence"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory decisions",
@@ -1526,7 +1572,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory show",
@@ -1597,7 +1644,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text, a decision id, or the decision sentence"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory decide",
@@ -1668,7 +1716,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text, a decision id, or the decision sentence"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory retire",
@@ -1739,7 +1788,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text, a decision id, or the decision sentence"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory propose",
@@ -1803,7 +1853,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "memory review",
@@ -1867,7 +1918,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "memory apply",
@@ -1938,7 +1990,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "search text, a decision id, or the decision sentence"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "memory status",
@@ -2002,7 +2055,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows list",
@@ -2026,7 +2080,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "the project checkout root"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows show",
@@ -2052,7 +2107,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a flow id from flows list"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows create",
@@ -2106,7 +2162,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "a JSON file (or - for stdin) with the steps in order, as the lead's flow tool takes them"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows edit",
@@ -2157,7 +2214,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a flow id from flows list"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows trigger add",
@@ -2203,7 +2261,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows trigger pause",
@@ -2244,7 +2303,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows trigger resume",
@@ -2285,7 +2345,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows trigger remove",
@@ -2326,7 +2387,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows trigger check",
@@ -2367,7 +2429,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "flows script save",
@@ -2431,7 +2494,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "1 to 60 (default 15)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "flows card add",
@@ -2482,7 +2546,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a flow id from flows list"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows card approve",
@@ -2528,7 +2593,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a card id from flows show"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "flows card send-back",
@@ -2574,7 +2640,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a card id from flows show"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "flows export",
@@ -2605,7 +2672,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a flow id from flows list"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "flows import",
@@ -2656,7 +2724,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "flows script approve",
@@ -2695,7 +2764,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "the script's name"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "flows archive",
@@ -2736,7 +2806,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "a flow id from flows list"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "models status",
@@ -2760,7 +2831,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "local Toolroll database"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "models list",
@@ -2784,7 +2856,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "local Toolroll database"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "models check",
@@ -2808,7 +2881,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "local Toolroll database"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "models update",
@@ -2839,7 +2913,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "the CLI to update, or on/off"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "models watch",
@@ -2870,7 +2945,8 @@ $ contract --commands --json → 0
           "required": true,
           "meaning": "the CLI to update, or on/off"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "status",
@@ -2889,7 +2965,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "integrations",
@@ -2913,7 +2990,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "show the last checks without checking again"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "ready",
@@ -2932,7 +3010,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "brief",
@@ -2951,7 +3030,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "gaps",
@@ -2975,7 +3055,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "which repository (repeatable where a command watches several)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "grants",
@@ -2994,7 +3075,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "sync",
@@ -3022,7 +3104,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "no-op",
         "external"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task add",
@@ -3089,7 +3172,8 @@ $ contract --commands --json → 0
         "usage",
         "unknown-task",
         "unauthenticated"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task ask",
@@ -3136,7 +3220,8 @@ $ contract --commands --json → 0
         "unknown-person",
         "unplaced",
         "unauthenticated"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task checks",
@@ -3172,7 +3257,8 @@ $ contract --commands --json → 0
         "no-result",
         "no-check",
         "checks-failed"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task add-tests",
@@ -3201,7 +3287,8 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "no-result"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task list",
@@ -3245,7 +3332,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "filter to one project"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task show",
@@ -3274,7 +3362,8 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "unknown-task"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "check-progress",
@@ -3304,7 +3393,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-run",
         "no-progress"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task wait",
@@ -3341,7 +3431,8 @@ $ contract --commands --json → 0
         "timeout",
         "failed",
         "needs-person"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "project show",
@@ -3360,7 +3451,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "project use",
@@ -3391,7 +3483,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "optional existing scoped coordinator credential file; saves only its path"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "task complete",
@@ -3437,7 +3530,8 @@ $ contract --commands --json → 0
           "takesValue": false,
           "meaning": "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task revise",
@@ -3493,7 +3587,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "32 hexadecimal characters for exact replay; defaults to a stable feedback identity"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task merge",
@@ -3539,7 +3634,8 @@ $ contract --commands --json → 0
         "usage",
         "not-an-approver",
         "full-checks"
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "assignment show",
@@ -3575,7 +3671,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "explicit coordinator token file; cannot be combined with token-env"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment updates",
@@ -3614,7 +3711,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "page size from 1 to 100; defaults to 50"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment claim",
@@ -3650,7 +3748,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "explicit coordinator token file; cannot be combined with token-env"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment check",
@@ -3691,7 +3790,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "exact current receipt digest from assignment show"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment brief",
@@ -3730,7 +3830,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "assignment count from 1 to 25; defaults to 10"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment inbox",
@@ -3769,7 +3870,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "batch size from 1 to 100; defaults to 10"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "assignment ack",
@@ -3808,21 +3910,24 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "exact batch ID returned by assignment inbox"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "task state",
       "synopsis": "set a task's state by hand — an operator correction, not a workflow step (--replaced-by <id> with cancelled)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "lead token",
       "synopsis": "mint the lead's credential behind your password (--revoke ends it): its own work pings nobody",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "lead say",
@@ -3863,7 +3968,8 @@ $ contract --commands --json → 0
         "usage",
         "unknown-task",
         "unauthenticated"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "task block",
@@ -3903,7 +4009,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-task",
         "contest-open"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task unblock",
@@ -3942,7 +4049,8 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "unknown-task"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task next",
@@ -3983,14 +4091,16 @@ $ contract --commands --json → 0
         "unknown-task",
         "claimed",
         "contest-open"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task steer",
       "synopsis": "one credentialed note read before the task's next attempt — steering speaks with the operator's voice",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "task assign",
@@ -4035,7 +4145,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-task",
         "claimed"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task scope",
@@ -4095,7 +4206,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-task",
         "contest-open"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task plan",
@@ -4139,7 +4251,8 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "unknown-task"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task hold",
@@ -4184,7 +4297,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-task",
         "held"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task unhold",
@@ -4219,7 +4333,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "unknown-task",
         "not-yours"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task require",
@@ -4258,28 +4373,32 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "unknown-task"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task approve",
       "synopsis": "the yes — nothing builds without one; binds to the scope digest",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "task requeue",
       "synopsis": "exit a stall: incidents resolved, strikes cleared, queued again",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "task regate",
       "synopsis": "explicitly rerun the approved check on the last exact commit — no agent or automatic retry",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "task review",
@@ -4330,56 +4449,64 @@ $ contract --commands --json → 0
         "usage",
         "unauthenticated",
         "not-found"
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "task accept",
       "synopsis": "record an explicit acceptance with limitations; does not change checks or prove deployment",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "task repair",
       "synopsis": "inspect or approve an existing historical repair draft; use task revise for new feedback",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "task route",
       "synopsis": "which configured agents plan, build and repair this task; phase and risk changes require renewed approval",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "task reopen",
       "synopsis": "resume external work its tracker closed and has been SEEN open again",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "task stop",
       "synopsis": "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "run settle",
       "synopsis": "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "task resume",
       "synopsis": "resume the exact stopped attempt (--run <id>): refuses until it is quiescent, lifts only that stop's hold, approves nothing — the next pass re-proves the scope and inherits the draft with fresh proof",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "claim",
@@ -4435,7 +4562,8 @@ $ contract --commands --json → 0
         "contest-open",
         "claimed",
         "not-ready"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "heartbeat",
@@ -4465,7 +4593,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "not-leased",
         "fenced"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "release",
@@ -4495,7 +4624,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "not-leased",
         "fenced"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "reap",
@@ -4514,7 +4644,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "tick",
@@ -4562,7 +4693,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "empty",
         "fenced"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "build",
@@ -4597,7 +4729,8 @@ $ contract --commands --json → 0
       "notableReasons": [
         "not-leased",
         "unapproved"
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "reconcile",
@@ -4621,7 +4754,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "which repository (repeatable where a command watches several)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "runner list",
@@ -4640,7 +4774,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "coordinator list",
@@ -4659,7 +4794,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "approver list",
@@ -4678,7 +4814,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "cap list",
@@ -4702,7 +4839,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "which repository (repeatable where a command watches several)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "outbox list",
@@ -4721,7 +4859,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "incident list",
@@ -4740,7 +4879,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "routine list",
@@ -4759,7 +4899,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "routine show",
@@ -4785,7 +4926,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "config show",
@@ -4809,7 +4951,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "which repository (repeatable where a command watches several)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "setup show",
@@ -4828,7 +4971,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "verify show",
@@ -4852,7 +4996,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "which repository (repeatable where a command watches several)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "intake show",
@@ -4871,7 +5016,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "providers",
@@ -4900,7 +5046,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "that worker's token"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "template list",
@@ -4919,7 +5066,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "template show",
@@ -4945,7 +5093,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "contest show",
@@ -4971,7 +5120,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "webhook status",
@@ -4990,7 +5140,8 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "yes"
     },
     {
       "invocation": "publish status",
@@ -5009,483 +5160,552 @@ $ contract --commands --json → 0
           "takesValue": true,
           "meaning": "path to the database file (defaults to the installation's)"
         }
-      ]
+      ],
+      "remote": "no"
     },
     {
       "invocation": "approver add",
       "synopsis": "mint the credential that lets a person say yes",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "runner register",
       "synopsis": "register a worker bound to its repositories; its token is shown once",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "runner retire",
       "synopsis": "retire a worker",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "runner bind",
       "synopsis": "replace which repositories a worker may build in",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "runner capacity",
       "synopsis": "set how many tasks a worker runs at once; running work carries on, the new number applies at the next claim",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "project checks",
       "synopsis": "show or set a project's batch checks (--batch on|off, off by default): results that finish within 10 minutes share one full check on a temporary batch commit; nothing is merged into a real branch",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "project concurrency",
       "synopsis": "set how many of a project's tasks build at once (default 2, never past the worker's capacity); running work carries on",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "coordinator mint",
       "synopsis": "mint the MCP filing credential — repo-bound, rate-limited, token shown once",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "coordinator revoke",
       "synopsis": "revoke an MCP filing credential",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "mcp",
       "synopsis": "serve the MCP gateway over stdio — the coordinator credential is the only key it accepts",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "cap add",
       "synopsis": "record a capability",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "outbox deliver",
       "synopsis": "deliver queued notifications",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "peek",
       "synopsis": "watch live agents in the terminal — one pane per open run; --tmux opens a window per run",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "incident resolve",
       "synopsis": "resolve an incident",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "decide",
       "synopsis": "read and ANSWER parked decisions — answering is a person's act",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "routine add",
       "synopsis": "file a standing order",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "routine approve",
       "synopsis": "approve a standing order",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "routine refresh",
       "synopsis": "re-resolve the agents a standing order freezes from today's configuration — approves nothing; approve it again afterwards",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "routine pause",
       "synopsis": "pause a standing order",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "routine resume",
       "synopsis": "resume a standing order",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "routine run-now",
       "synopsis": "run a standing order immediately",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "keys status",
       "synopsis": "which provider API keys are stored — never the values",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "no"
     },
     {
       "invocation": "keys set",
       "synopsis": "store a provider's API key as a private file — piped or --key-file, never on the command line",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "keys clear",
       "synopsis": "remove a stored provider key (kept only as a fallback; a subscription-mode provider is unaffected)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "keys verify",
       "synopsis": "check a stored key against its provider live — spends no tokens",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "no"
     },
     {
       "invocation": "keys auth",
       "synopsis": "choose subscription vs API key for a provider (subscription is the default; the key is kept as fallback)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "people list",
       "synopsis": "everyone who can sign in, their standing, and the open invites",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "step-up"
     },
     {
       "invocation": "people invite",
       "synopsis": "mint a single-use sign-in link for one person — their powers are pinned when you mint, never after",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "people projects",
       "synopsis": "set a person's project access — selected project, all projects, or no projects",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "people revoke",
       "synopsis": "end a person's access — their sessions, invites, and signed modes end with them; history stays",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "mode show",
       "synopsis": "the repository's operating mode, in full — or 'locked' when none is signed",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "step-up"
     },
     {
       "invocation": "mode set",
       "synopsis": "sign a per-repository operating mode (password ceremony; standard or hands-off, always expiring)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "publish merge",
       "synopsis": "say yes to ONE waiting merge — it fires only when CI is seen green on the exact commit you authorized",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish refire",
       "synopsis": "recover a merge whose issued call went silent — re-enters the full merge road, never auto-retried",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "review show",
       "synopsis": "whether a project's finished builds get one automatic review",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "yes"
     },
     {
       "invocation": "review on",
       "synopsis": "one automatic review of each finished build whose check passes; only HIGH findings send it back, once",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "review off",
       "synopsis": "finished builds go straight to the person, unreviewed",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "chat-approval show",
       "synopsis": "whether your own taps in your paired chat approve plans and merges: all projects and each project's own setting",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "none"
+      "mutation": "none",
+      "remote": "yes"
     },
     {
       "invocation": "chat-approval on",
       "synopsis": "let your paired chat approve plans and merges in all your projects or one (--repo); lasting, with limits; previews until --yes",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "chat-approval off",
       "synopsis": "stop approving from chat for all your projects or one (--repo); one step",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "mode revoke",
       "synopsis": "revoke a repository's mode — one click, every act it covered falls back to its own ceremony",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "config set",
       "synopsis": "set phase or spend configuration",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "config clear",
       "synopsis": "clear phase or spend configuration",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "setup clear",
       "synopsis": "clear installation setup",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "verify set",
       "synopsis": "approve the one shell command the plane re-runs after every future commit (--quick \"<cmd>\" approves the fast check Quick runs); --self-heal binds one approved-setup replay when a required project executable is missing",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "verify clear",
       "synopsis": "revoke a repository's approved verification command; --level quick revokes only the quick command",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "verify level",
       "synopsis": "set a project's checks after each build: quick (the approved quick command), full, or off — an approver's act, in the ledger",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "intake grant",
       "synopsis": "grant an intake source",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "intake run",
       "synopsis": "run intake now",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "intake preview",
       "synopsis": "preview what intake would file",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "intake pr-comments",
       "synopsis": "intake review comments from a pull request",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "intake clear",
       "synopsis": "clear intake configuration",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "contest exclude",
       "synopsis": "exclude a contestant from a tournament",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "webhook primary",
       "synopsis": "choose which service receives alerts",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "step-up"
     },
     {
       "invocation": "webhook test",
       "synopsis": "send a test message",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "yes"
     },
     {
       "invocation": "bridge",
       "synopsis": "the Telegram bridge (pairing, tokens, the follower)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "enroll",
       "synopsis": "grant a repository authority (backends, dispatch) — its own explicit yes",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "revoke",
       "synopsis": "take an authority grant back",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish",
       "synopsis": "the publication pass: push built branches, open pull requests, sweep merges",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish grant",
       "synopsis": "grant publication or auto-merge authority",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish revoke",
       "synopsis": "take a publication grant back",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish unblock",
       "synopsis": "lift a repair's merge hold",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "publish rearm",
       "synopsis": "re-arm a refused merge after fixing the named cause",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "serve",
       "synopsis": "the operations console (HTTP)",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "watch",
       "synopsis": "the unattended loop, kept running",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "up",
       "synopsis": "console + worker + browser, one command",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "onboard",
       "synopsis": "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "daemon",
       "synopsis": "install the loop under the OS service manager",
       "audience": "operator",
       "agentMayInvoke": false,
-      "mutation": "unkeyed"
+      "mutation": "unkeyed",
+      "remote": "no"
     }
   ]
 }

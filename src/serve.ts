@@ -67,6 +67,7 @@ import { learningHtml } from "./workspace-ui.js";
 import { acceptWithChecksOf, resultActsOf, type ResultActFacts } from "./result-acts.js";
 import { createSessionEndpoint } from './session-server.js';
 import { handleTeamHttp } from './team-http.js';
+import { handleCliHttp, type CliHttpOptions, type RunOperateAs } from './cli-http.js';
 import { teamWorkspaceHtml } from './team-ui.js';
 import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import { createTeamRuntime } from './team-runtime.js';
@@ -341,6 +342,7 @@ import { budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendI
 import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS } from "./api-tokens.js";
+import { createMcpHttp } from "./mcp-http.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { logEvent } from "./log.js";
 import { modeTermsFromJson, modeWords, presetTerms, modeTermsJson, modeDigestOf, MODE_MAX_DAYS, type ModeName, type ModeTerms } from "./modes.js";
@@ -367,6 +369,8 @@ import { updateNoticeWords } from "./update-notice.js";
 import { whenHtml } from "./when-html.js";
 
 export type ServeOptions = {
+  /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
+  runOperateAs?: import("./mcp-person.js").RunOperateAs;
   /** `toolroll demo`: the scripted lead that answers Chat instead of a model. */
   demoLead?: import("./demo.js").DemoLead;
   /** Tests: the bin whose real path says how Toolroll was installed (Settings → Updates' command). */
@@ -384,6 +388,10 @@ export type ServeOptions = {
    * install/push cards light up. X-Forwarded-* is never consulted.
    */
   publicUrl?: string;
+  /** Tests: the shared command boundary `POST /api/cli` runs (default: operate.ts's runOperateAs). */
+  cliRunner?: RunOperateAs;
+  /** Tests: remote command metadata until the shared contract declares it. */
+  cliModeOf?: CliHttpOptions['modeOf'];
   /** Where repos.json lives — every enrollment locks exactly this file. */
   registryPath?: string;
   /** This console fronts an `up` process: onboarding copy says how to watch. */
@@ -1082,6 +1090,20 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     }, cursor: team.cursor, streams: teamStreams,
   });
+  // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
+  const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
+    authenticate: request => {
+      const who = identify(request, false);
+      const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
+      const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
+      const account = who === null ? null : store.accountOf(who.name);
+      if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
+      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: account.projects === null ? null : [...account.projects] };
+    },
+    run: async () => options.cliRunner ?? ((await import("./operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
+    modeOf: options.cliModeOf,
+    store,
+  });
   const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo) });
   /** The enumerable admission list for roll-up SQL: repos-only ceilings
    * enumerate themselves; root ceilings enumerate the STORED repos that
@@ -1459,6 +1481,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (url.searchParams.has("token")) {
       return respond(response, 400, "text/plain; charset=utf-8", "credentials never travel in URLs");
     }
+    // The MCP gateway over HTTP (mcp-http.ts): coordinators and people's own API tokens, after the Host check.
+    if (url.pathname === "/mcp") return mcpHttp(request, response);
     // Back from Google's consent screen (v89). The session cookie is SameSite=Strict and stays behind on
     // a return from another site: the visit's one-time state (made by a signed-in approver) is the proof.
     if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") return googleCallback(request, response, url);
@@ -1467,6 +1491,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const method = request.method ?? "GET";
     if (await sessionEndpoint(request, response)) return;
     if (await teamEndpoint(request, response)) return;
+    if (await cliEndpoint(request, response)) return;
     if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock })) return;
     if (serveBrowserAsset(request, response, url.pathname)) return;
     // Exact, content-addressed application CSS only. Session-bearing
@@ -11548,6 +11573,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       approved: (() => { const scope = store.getScope(taskId); return scope !== null && approvalOf(scope).approved; })(),
     }));
   }
+
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request) !== null,
+    enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
 
   // ---- identity ------------------------------------------------------------
 

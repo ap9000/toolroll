@@ -1,7 +1,8 @@
 import type { Database } from "./store.js";
 
-/** v99: sign-ins (and refusals, lockouts, sign-outs) and policy changes are their own kinds of event. */
-export const LEDGER_SOURCES = ["work", "request", "access", "sign-in", "policy"] as const;
+/** v99: sign-ins (and refusals, lockouts, sign-outs) and policy changes are their own kinds of event.
+ * v110: commands a person ran on this server with their API token, from the CLI ('api') or their agent ('mcp'). */
+export const LEDGER_SOURCES = ["work", "request", "access", "sign-in", "policy", "api", "mcp"] as const;
 export type LedgerSource = typeof LEDGER_SOURCES[number];
 
 export type LedgerEntry = {
@@ -21,12 +22,21 @@ export const LEDGER_V54_TABLE = (name: string) => `CREATE TABLE ${name} (
   source TEXT NOT NULL CHECK (source IN ('work','request','access'))
 )`;
 export const LEDGER_V54_COLUMNS = ["id", "at", "actor", "repo", "task_id", "run_id", "action", "outcome", "source"] as const;
-export const LEDGER_TABLE = (name: string) => `CREATE TABLE ${name} (
+/** The table as v99 made it: the v110 rebuild accepts this shape and v54's. */
+export const LEDGER_V99_TABLE = (name: string) => `CREATE TABLE ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, actor TEXT NOT NULL, repo TEXT,
   task_id TEXT, run_id INTEGER,
   action TEXT NOT NULL, outcome TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('work','request','access','sign-in','policy')),
+  detail TEXT
+)`;
+export const LEDGER_TABLE = (name: string) => `CREATE TABLE ${name} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, actor TEXT NOT NULL, repo TEXT,
+  task_id TEXT, run_id INTEGER,
+  action TEXT NOT NULL, outcome TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('work','request','access','sign-in','policy','api','mcp')),
   detail TEXT
 )`;
 

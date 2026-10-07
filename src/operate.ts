@@ -106,7 +106,7 @@ import {
   type Store,
   type TaskState,
 } from "./store.js";
-import { randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { sweepLiveLogs } from "./live.js";
@@ -199,10 +199,12 @@ import {
 import type { TelegramConversationOptions } from "./telegram-mate.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
-import { ask, askHidden, confirm, interactive, underAgent } from "./prompt.js";
+import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
 import { runMateCli, answerContextLines, type MateCliSeams } from "./mate-cli.js";
 import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./mate-doors.js";
-import { verifyApproverByPassword } from "./principal.js";
+import { verifyApproverByPassword as approverByPassword } from "./principal.js";
+import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
+import { projectAuthority } from "./project-access.js";
 import { authorizedProject, canonicalProject, projectName, resolveCeiling } from "./project.js";
 import { tally, spendLine } from "./summary.js";
 import {
@@ -275,7 +277,7 @@ import {
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover, describeScope, approvalOf, hashToken as hashApproverToken, profileFromJson, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, profileFromJson, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
 import { presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
@@ -1023,6 +1025,29 @@ export async function runOperate(
     if (flagLead) flags.delete("token");
     actor = { account: lead.owner, lead: true };
   }
+  try {
+    return await dispatchOn(command, positional, flags, parsed.repoList, { store, write, json, file, now, ...(actor === null ? {} : { leadToken: presented! }) }, options,
+      run => LEAD_COMMANDS.has(command) ? withActor(actor, run) : run());
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Run one command against an open store: the dispatcher both roads share. The caller owns the store (runOperate
+ * opens and closes its own; runOperateAs uses the server's and leaves it open) and says what the command runs
+ * inside (`enter`: the actor, and for a remote run its person and project).
+ */
+async function dispatchOn(
+  command: string,
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  repoList: string[],
+  base: { store: Store; write: Write; json: boolean; file: string; now: Date; leadToken?: string },
+  options: OperateOptions,
+  enter: (run: () => Promise<number>) => Promise<number>,
+): Promise<number> {
+  const { store, write, json, file, now } = base;
   // v105: a Claude turn anywhere in this command says its plan's usage windows; keep the latest.
   const dropLimitSink = pushLimitSink(reading => store.recordProviderLimits(reading, new Date()));
   // Filed tasks are sized by the owner's own fast classifier (never in tests, the demo, or with NO_TASK_CLASSIFIER).
@@ -1037,11 +1062,11 @@ export async function runOperate(
 
   try {
     const run = (): Promise<number> => dispatch(command, positional, flags, {
-      ...(actor === null ? {} : { leadToken: presented! }),
+      ...(base.leadToken === undefined ? {} : { leadToken: base.leadToken }),
       store,
       write,
       json,
-      repoList: parsed.repoList,
+      repoList,
       now,
       clock,
       // Evidence lives beside the database for the same reason the database
@@ -1075,9 +1100,11 @@ export async function runOperate(
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
+      ...(activeRemote() === null ? {} : { principal: activeRemote()! }),
     });
-    return await (LEAD_COMMANDS.has(command) ? withActor(actor, run) : run());
+    return await enter(run);
   } catch (error) {
+    if (error instanceof RemoteRefusal) return fail(write, json, command, error.reason, error.message, EXIT.refused);
     if (isDatabaseBusy(error)) return databaseFailure(write, json, command, file, error);
     return fail(write, json, command, "failed", describe(error), EXIT.failed);
   } finally {
@@ -1085,14 +1112,102 @@ export async function runOperate(
     await settleSizings();
     dropSizer();
     dropLimitSink();
-    store.close();
   }
+}
+
+export type { Principal };
+
+/**
+ * Run one command on this server for a person who signed in with their own API token (the transport and MCP
+ * gateway prove the `so_` token and refuse browser origins; this is everything after). The command's row in the
+ * machine contract decides first: "no" and "step-up" rows, and commands with no row, are refused before any
+ * command code runs. The principal is re-proved against the store, a read token runs only reads, and the project
+ * the command touches must be one the person may use, named by --repo where a local run would use the working
+ * directory. The command then runs as that person: every credential check resolves to them, nothing prompts, and
+ * this machine's saved login and lead token are never read. Files are only those sent in `files`, keyed by the
+ * argument that names them. Every call is in the action history as the person, from source `api` (or `mcp`),
+ * with the token's name. The store is the caller's and stays open.
+ */
+export async function runOperateAs(
+  argv: string[],
+  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: RemoteSource; options?: OperateOptions },
+): Promise<number> {
+  const { principal, store, write } = opts;
+  const source: RemoteSource = opts.source === "mcp" ? "mcp" : "api";
+  const options = opts.options ?? {};
+  const now = options.now ?? new Date();
+  const [root = "", ...rest] = argv;
+  const json = rest.includes("--json");
+  let invocation = root;
+  let tokenName: string | null = null;
+  const record = (outcome: string, repo: string | null, taskId: string | null, why: string | null): void => {
+    store.recordAction({ at: (options.now ?? new Date()).toISOString(), actor: principal.account, repo, taskId, runId: null,
+      action: `remote command: ${invocation === "" ? "(none)" : invocation}`.slice(0, 200), outcome, source,
+      detail: `token ${tokenName ?? principal.tokenId}${why === null ? "" : ` · ${why}`}` });
+  };
+  const refuse = (reason: string, message: string, repo: string | null = null, taskId: string | null = null): number => {
+    record("refused", repo, taskId, reason);
+    return fail(write, json, invocation === "" ? "remote" : invocation, reason, message, EXIT.refused);
+  };
+
+  const proved = reproveRemote(store, principal, now);
+  if (!proved.ok) return refuse("unauthenticated", REMOTE_MESSAGES.stale);
+  tokenName = proved.tokenName;
+
+  // The row first, from the words before any flag: a refused command is refused whatever its flags say.
+  const firstFlag = rest.findIndex(one => one.startsWith("-"));
+  const row = remoteRowOf(root, firstFlag === -1 ? rest : rest.slice(0, firstFlag));
+  if (row === null) return refuse("not-remote", REMOTE_MESSAGES.unknown);
+  invocation = row.invocation;
+  if (row.remote === "step-up") return refuse("step-up", REMOTE_MESSAGES["step-up"]);
+  const scope = REMOTE_SCOPES.get(row.invocation);
+  if (row.remote !== "yes" || scope === undefined) return refuse("not-remote", REMOTE_MESSAGES.no);
+  const parsed = parseOperateArgs(rest, root === "flows" ? FLOWS_VALUE_FLAGS : undefined);
+  if ("error" in parsed) return refuse("usage", parsed.error);
+  // The parser's positionals must spell the same row (a value flag can't hide a subcommand).
+  if (remoteRowOf(root, parsed.positional)?.invocation !== row.invocation) return refuse("not-remote", REMOTE_MESSAGES.unknown);
+  if (proved.scope === "read" && row.mutation !== "none") return refuse("read-only", REMOTE_MESSAGES.read);
+  if ([...parsed.flags.keys()].some(name => REMOTE_REFUSED_FLAGS.has(name))) return refuse("usage", REMOTE_MESSAGES.credential);
+
+  const allows = (repo: string | null) => remoteAllows(store, principal, repo);
+  const project = remoteProjectOf(store, { allows }, scope, parsed.positional, parsed.repoList, row.invocation, parsed.flags, opts.files ?? {});
+  if (!project.ok) return refuse(project.reason, project.message);
+  // The local mutation cache has a global key namespace. A token must not use a chosen key to read
+  // another person's/project's cached result. Revision keys already bind the actor and result in
+  // task-outcome-cli.ts, which also validates their public 32-hex format; leave those intact.
+  const key = text(parsed.flags, "key");
+  if (key !== undefined && row.invocation !== "task revise") {
+    parsed.flags.set("key", `remote:${createHash("sha256").update(JSON.stringify([principal.account, row.invocation, project.repo, project.taskId, key])).digest("hex")}`);
+  }
+  const file = store.databaseFile() ?? options.databaseFile;
+  if (file === undefined) return refuse("failed", "The server's database has no file.", project.repo, project.taskId);
+
+  const run: RemoteRun = Object.freeze({ account: principal.account, scope: proved.scope, tokenName: proved.tokenName, source, secret: remoteSecret(), allows, files: Object.freeze({ ...(opts.files ?? {}) }) });
+  record("requested", project.repo, project.taskId, null);
+  let code: number;
+  try {
+    code = await withRemote(run, () => dispatchOn(root, parsed.positional, parsed.flags, parsed.repoList, { store, write, json, file, now }, options,
+      go => withActor({ account: principal.account, lead: false }, () => projectAuthority.run({ actor: principal.account, repo: project.repo }, go))));
+  } catch (error) {
+    record("failed", project.repo, project.taskId, null);
+    throw error;
+  }
+  record(code === EXIT.ok ? "done" : code === EXIT.refused ? "refused" : code === EXIT.usage ? "usage" : "failed", project.repo, project.taskId, null);
+  return code;
+}
+
+/** A file a remote caller sent with the request, by the argument that names it; never a path on this machine. */
+function remoteFile(remote: RemoteRun, path: string): string {
+  if (Object.prototype.hasOwnProperty.call(remote.files, path)) return remote.files[path]!;
+  throw new RemoteRefusal("usage", REMOTE_MESSAGES.files);
 }
 
 /** The short commands a lead token works for, and where whoever signs in is recorded as the actor. */
 const LEAD_COMMANDS: ReadonlySet<string> = new Set(["task", "assignment", "status", "ready", "brief", "peek", "check-progress", "notifications", "lead"]);
 
 type Context = {
+  /** A remote run's person (runOperateAs): every credential check resolves to them. Absent for every local command. */
+  principal?: RemoteRun;
   /** The lead token this command runs under: it signs in as its owner. */
   leadToken?: string;
   desktopIdentity?: string;
@@ -1434,6 +1549,8 @@ function openBackend(name: string, store: Store, repo: string): GraphBackend | n
 
 /** The repository a backend command applies to, normalised like the grant is. */
 function repoFrom(flags: Map<string, string | true>): string {
+  // The server's working directory is nobody's project: a remote caller names theirs.
+  if (activeRemote() !== null && text(flags, "repo") === undefined) throw new RemoteRefusal("unknown-project", REMOTE_MESSAGES.project);
   return resolve(text(flags, "repo") ?? process.cwd());
 }
 
@@ -9145,6 +9262,8 @@ export function writeLoginFileDurably(path: string, name: string, password: stri
 }
 
 function readLoginFile(path: string): { name: string; password: string } | null {
+  // The owner's saved login is never anyone else's: a remote run that reaches here is a bug, and ends refused.
+  if (activeRemote() !== null) throw new RemoteRefusal("unauthenticated", REMOTE_MESSAGES.credential);
   try {
     const raw = readFileSync(path, "utf8").trim();
     const cut = raw.indexOf(" ");
@@ -11381,7 +11500,8 @@ async function addTask(
     ]);
   }
 
-  const id = text(flags, "id") ?? slug(title, now);
+  // Remote creation cannot probe global IDs, including predictable title/time collisions.
+  const id = text(flags, "id") ?? (activeRemote() === null ? slug(title, now) : `task-${randomBytes(16).toString("hex")}`);
   // Re-filing: the new task replaces an earlier one, which is cancelled and reads "Replaced by <id>".
   const replaces = text(flags, "replaces");
   if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) {
@@ -11411,13 +11531,22 @@ async function addTask(
     return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
   }
 
-  store.stampFiledVia(store.refFor(BUILT_IN, id).id, "cli");
+  const filedId = outcome.task.id;
+  const remote = activeRemote();
+  if (remote !== null && filedId !== id) {
+    // Re-prove a replayed creation too: it may have been moved since the original filing.
+    const saved = store.lookupRef(filedId);
+    if (saved === null || saved.repo !== text(flags, "repo") || !remote.allows(saved.repo)) {
+      throw new RemoteRefusal("not-found", "Not found.");
+    }
+  }
+  store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
 
   // Placement is explicit, never inferred from where the command happened to
   // run: a task filed from the wrong directory would silently bind to it.
   const placedIn = text(flags, "repo");
   if (placedIn !== undefined) {
-    const placed = store.placeTask(store.refFor(BUILT_IN, id).id, canonicalProject(placedIn) ?? resolve(placedIn));
+    const placed = store.placeTask(store.refFor(BUILT_IN, filedId).id, canonicalProject(placedIn) ?? resolve(placedIn));
     if (typeof placed === "object" && !placed.ok) {
       return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
     }
@@ -13242,6 +13371,9 @@ function credentialsFrom(
   flags: Map<string, string | true>,
   context: { databaseFile: string; leadToken?: string },
 ): { name: string | undefined; token: string | undefined } {
+  // A remote run is its token's person, whatever the flags or this machine's saved login say.
+  const remote = activeRemote();
+  if (remote !== null) return { name: remote.account, token: remote.secret };
   // The lead signs in as its owner with its own token, never the owner's password.
   const lead = currentActor();
   if (context.leadToken !== undefined && lead?.lead === true) return { name: lead.account, token: context.leadToken };
@@ -13270,16 +13402,56 @@ async function askCredentials(
   return { name, token };
 }
 
+/*
+ * Credential checks in this file. Locally they are the password checks in scope.ts and principal.ts. Inside a
+ * remote run (`runOperateAs`) the only credential is the one credentialsFrom handed out for the token's person,
+ * which scope.ts's authenticateAccount takes as that person (a viewer for a read token) and never checks as a
+ * password; these add the token's own project limit.
+ */
+function authenticateApprover(store: Store, by: string, token: string, repo?: string | null): ReturnType<typeof passwordApprover> {
+  const remote = activeRemote();
+  if (remote !== null && repo !== undefined && !remote.allows(repo)) return { ok: false, reason: "not-an-approver" };
+  return passwordApprover(store, by, token, repo);
+}
+
+function verifyApproverByPassword(store: Store, name: string, token: string, repos: readonly string[]): ReturnType<typeof approverByPassword> {
+  const remote = activeRemote();
+  return approverByPassword(store, name, token, remote === null ? repos : repos.filter(repo => remote.allows(repo)));
+}
+
+/** Prompts: never inside a remote run — there is nobody at this machine's terminal to answer for the person. */
+function interactive(): boolean {
+  return activeRemote() === null && promptInteractive();
+}
+function refusePrompt(): void {
+  if (activeRemote() !== null) throw new RemoteRefusal("unauthenticated", REMOTE_MESSAGES.credential);
+}
+async function ask(question: string): Promise<string> {
+  refusePrompt();
+  return promptAsk(question);
+}
+async function askHidden(question: string): Promise<string> {
+  refusePrompt();
+  return promptHidden(question);
+}
+async function confirm(question: string): Promise<boolean> {
+  refusePrompt();
+  return promptConfirm(question);
+}
+
 /** `flows …`: the console's flow rules from a terminal. Writes are an approver's (--as/--token or the remembered login). */
 async function flowsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { store } = context;
   const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
-  const projects = [...new Set([...store.knownRepos(), ...store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
+  const remote = activeRemote();
+  // A remote person sees and changes flows only in their own projects, and sends any flow file with the request.
+  const projects = [...new Set([...store.knownRepos(), ...store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])].filter(one => remote === null || remote.allows(one));
   const writes = positional[0] !== undefined && positional[0] !== "list" && positional[0] !== "show" && positional[0] !== "export";
   const acting = writes && !flags.has("help") ? await askCredentials(flags, context) : null;
   const dir = dirname(context.databaseFile);
   return runFlowsCommand(positional, flags, {
     store, write: context.write, json: context.json, clock: context.clock, credentials: acting, projects, configDir: dir, evidenceRoot: context.evidenceRoot,
+    ...(remote === null ? {} : { readInput: (path: string) => remoteFile(remote, path) }),
     ...(context.flowFetch === undefined ? {} : { fetchFlow: context.flowFetch }),
     // "Check now": the same io the worker's pass checks triggers with.
     triggerIo: { gh: context.flowTriggerIo?.gh ?? run, fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,

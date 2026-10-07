@@ -29,12 +29,12 @@ test("a store from before lead_commitment gains the table on open, keeps its row
   // The shape the older build leaves: no lead_commitment table or indexes, the same v109 stamp.
   const db = new DatabaseSync(file);
   db.exec("DROP INDEX lead_commitment_due; DROP INDEX lead_commitment_owner; DROP TABLE lead_commitment");
-  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(109);
+  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(110);
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(109);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(109);
+  expect(SCHEMA_VERSION).toBe(110);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(110);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lead_commitment%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["lead_commitment", "lead_commitment_due", "lead_commitment_owner"]);
   expect(store.listMateMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
@@ -50,7 +50,7 @@ test("a store from before lead_commitment gains the table on open, keeps its row
   if (plain.ok) { store = plain.store; expect(openCommitments(store, "alex")).toHaveLength(1); }
 });
 
-test("the previous release (schema v109) opens and writes a store this build made, and this build reads it back", () => {
+test("the release before lead_commitment (schema v109) refuses a store this build made, without changing it, and this build reads it back", () => {
   dir = mkdtempSync(join(tmpdir(), "so-commitment-older-"));
   const file = join(dir, "state.db");
   store = openStore(file);
@@ -72,10 +72,11 @@ const count = (sql: string) => Number(store.handle.prepare(sql).get()?.["n"]);
 console.log(JSON.stringify({ speaks: SCHEMA_VERSION, threads: count("SELECT COUNT(*) AS n FROM mate_thread"), promises: count("SELECT COUNT(*) AS n FROM lead_commitment") }));
 store.close();
 `);
-  const out = execFileSync(join(REPO, "node_modules", ".bin", "tsx"), [join(older, "read.ts"), file], { cwd: older, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  expect(JSON.parse(out.trim().split("\n").at(-1)!)).toEqual({ speaks: 109, threads: 2, promises: 1 });
+  // v110 (the ledger's remote sources) is newer than it speaks: it refuses to open rather than alter what it can't name.
+  expect(() => execFileSync(join(REPO, "node_modules", ".bin", "tsx"), [join(older, "read.ts"), file], { cwd: older, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))
+    .toThrow(/schema v110, written by a newer build/);
 
   store = openStore(file);
   expect(getCommitment(store, made.id)).toEqual(made);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(109);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(110);
 }, 60_000);

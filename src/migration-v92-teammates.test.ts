@@ -32,8 +32,8 @@ test.each([91, -91])("v%s: every step run stays as it was, a teammate's turn can
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(109);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(109);
+  expect(SCHEMA_VERSION).toBe(110);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(110);
   expect(store.flowStepRun(card, 1)).toMatchObject({ kind: "email", state: "passed", result: "Emailed priya@example.com." });
   const now = new Date("2026-09-26T10:00:00.000Z");
   expect(store.claimFlowStep({ card, entry: 2, stage: "decide", kind: "teammate", script: null, scriptVersion: null }, now)).toBe(true);
