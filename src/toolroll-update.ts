@@ -36,6 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
+import { updateSafeSchema } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -770,7 +771,9 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
         assertCodingUpdateStopped(db);
       } finally { db.close(); }
       const backup = join(j.stageDir, existsSync(join(j.stageDir, "orders.backup.db")) ? `orders.backup.${randomUUID()}.db` : "orders.backup.db");
-      j.backupHash = await verifiedDatabaseBackup(j.databaseFile, backup, j.id, async () => { await codingBackup(j); }); j.backupPath = backup;
+      // A database one or more update-safe migrations behind is backed up as it is: the rehearsal below proves the
+      // migration on a copy, and the new runtime runs it. Any other schema needs the separate migration procedure.
+      j.backupHash = await verifiedDatabaseBackup(j.databaseFile, backup, j.id, async () => { await codingBackup(j); }, undefined, updateSafeSchema); j.backupPath = backup;
       save(j, "backing-up", "Database and coding catalog backed up.", system.now());
       step("rehearsing", `Rehearsing ${j.to.version} on a copy of the database.`);
       j.rehearsal = await rehearse(j, system, j.restoreFrom?.path ?? j.backupPath);

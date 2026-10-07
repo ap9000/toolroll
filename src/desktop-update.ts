@@ -111,11 +111,14 @@ export function readUpdateJournal(stateDir: string, retainedReceipt?: string): U
   }
   return j;
 }
-function connect(file: string, readOnly = false): DatabaseSync {
+/** Which settled schema versions a caller works on: the desktop update, which never migrates, only this build's own. */
+export type SchemaAccepted = (version: number | null) => boolean;
+const currentSchemaOnly: SchemaAccepted = version => version === SCHEMA_VERSION;
+function connect(file: string, readOnly = false, accepts: SchemaAccepted = currentSchemaOnly): DatabaseSync {
   if (!existsSync(file) || lstatSync(file).isSymbolicLink()) throw Error("The task database is missing or linked. It was not recreated.");
   const db = new (sqlite().DatabaseSync)(file, { readOnly }); db.exec("PRAGMA busy_timeout=1000");
   const schema = readSchemaVersion(db);
-  if (!schema.ok || schema.version !== SCHEMA_VERSION) { db.close(); throw Error("This update needs the current database schema. Use the separate verified migration procedure; the installed app is unchanged."); }
+  if (!schema.ok || !accepts(schema.version)) { db.close(); throw Error("This update needs the current database schema. Use the separate verified migration procedure; the installed app is unchanged."); }
   return db;
 }
 const resources = (app: DesktopBundle) => join(app.path, "Contents", "Resources");
@@ -402,17 +405,17 @@ async function verifiedBackup(j: UpdateJournal): Promise<void> {
  * reservation so no writer slips in between the snapshot and the copy. The
  * copy drops the update's own admission pause. `inside` runs before the
  * reservation is released, `after` once it is; returns the copy's hash. */
-export async function verifiedDatabaseBackup(databaseFile: string, backupPath: string, gateId: string, inside: () => Promise<void> = async () => {}, after: () => void = () => {}): Promise<string> {
-  const db = connect(databaseFile);
+export async function verifiedDatabaseBackup(databaseFile: string, backupPath: string, gateId: string, inside: () => Promise<void> = async () => {}, after: () => void = () => {}, accepts: SchemaAccepted = currentSchemaOnly): Promise<string> {
+  const db = connect(databaseFile, false, accepts);
   try {
     db.exec("BEGIN IMMEDIATE");
     // The write reservation prevents a concurrent writer; a separate read
     // connection is required because SQLite cannot back up a write transaction.
-    const source = connect(databaseFile, true);
+    const source = connect(databaseFile, true, accepts);
     let before: string;
     try { before = snapshot(source); await sqlite().backup(source, backupPath); } finally { source.close(); }
     chmodSync(backupPath, 0o600);
-    const copied = connect(backupPath);
+    const copied = connect(backupPath, false, accepts);
     try {
       if (copied.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok" || copied.prepare("PRAGMA foreign_key_check").all().length !== 0 || snapshot(copied) !== before) throw Error("Backup verification failed. The installed app is unchanged.");
       removeUpdateGate(copied, gateId);

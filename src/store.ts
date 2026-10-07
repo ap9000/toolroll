@@ -639,6 +639,26 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v110 lets the action ledger record commands a person ran on this server with their API token (source 'api', or 'mcp' from their agent).
 export const SCHEMA_VERSION = 110;
 
+/**
+ * The migrations `toolroll update` may carry a database through in place: each
+ * one only adds (a table, a column, an accepted value) and leaves every saved row
+ * as it was, so the updater's rehearsal on a copy (same history, integrity ok)
+ * proves it and the verified backup undoes it. Any migration not listed here
+ * needs the separate verified migration procedure. The desktop update never
+ * migrates and does not read this list.
+ *
+ * v110 rebuilds action_ledger only to widen its source check ('api', 'mcp'):
+ * every row, id and hash-chain link is copied unchanged.
+ */
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110]);
+
+/** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
+export function updateSafeSchema(version: number | null): boolean {
+  if (version === null || !Number.isSafeInteger(version) || version <= 0 || version > SCHEMA_VERSION) return false;
+  for (let next = version + 1; next <= SCHEMA_VERSION; next++) if (!UPDATE_SAFE_MIGRATIONS.includes(next)) return false;
+  return true;
+}
+
 /** v102: a project's approval rules, and each person's approval of an exact scope (two are needed for protected work). */
 const APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS approval_policy (
