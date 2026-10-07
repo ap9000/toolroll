@@ -68,11 +68,12 @@ cloudflared tunnel create toolroll
 cloudflared tunnel route dns toolroll toolroll.example.com
 ```
 
-`~/.cloudflared/config.yml`:
+The service runs as root and reads `/etc/cloudflared` (`sudo mkdir -p /etc/cloudflared`), so put the config and credentials there.
+`/etc/cloudflared/config.yml`:
 
 ```yaml
-tunnel: toolroll
-credentials-file: /home/toolroll/.cloudflared/<TUNNEL-ID>.json
+tunnel: <TUNNEL-ID>
+credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
 ingress:
   - hostname: toolroll.example.com
     service: http://127.0.0.1:4180
@@ -80,6 +81,7 @@ ingress:
 ```
 
 ```sh
+sudo cp ~/.cloudflared/<TUNNEL-ID>.json /etc/cloudflared/
 sudo cloudflared service install
 ```
 
