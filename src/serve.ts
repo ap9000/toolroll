@@ -348,9 +348,10 @@ import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
-import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, type LimitOverride } from "./request-budget.js";
+import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, limitWords, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, SOURCE_BUDGET_DEFAULTS, SourceAdmission, type Admission, type LimitOverride } from "./request-budget.js";
+import { REMOTE_MESSAGES, reproveRemote, type Principal } from "./operate-remote.js";
 import { hstsFor, LOOPBACK_PEERS, plainHttpRefusal, transportOf } from "./public-access.js";
-import { createOAuthHttp, oauthTokenAllowed, resourceMetadataUrl } from "./mcp-oauth.js";
+import { createOAuthHttp, oauthProjects, oauthTokenAllowed, resourceMetadataUrl } from "./mcp-oauth.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { REQUEST_LIMITS_CSS, requestLimitsHtml, tokenLimitWords } from "./request-budget-ui.js";
 import { PEOPLE_AUDIT_CSS, personAuditHtml, personHref } from "./people-audit-ui.js";
@@ -712,7 +713,8 @@ type ApprovalNonce = {
   expiresAt: number;
 };
 
-type Who = { name: string; via: "cookie"; session: Session; role: "approver" | "viewer" } | { name: string; via: "bearer"; role: "approver" | "viewer"; /** v101: the API token it came with. */ token?: string };
+type Who = { name: string; via: "cookie"; session: Session; role: "approver" | "viewer" } | { name: string; via: "bearer"; role: "approver" | "viewer"; /** v101: the API token it came with. */ token?: string;
+  /** The API token's own scope (absent for a password): a read token never mutates, whatever the account's role. */ scope?: "read" | "act" };
 
 /**
  * v101: browser sessions in memory and in the database (by a hash of the
@@ -1086,22 +1088,62 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return { ...summary, card: teamProposalCardParts(store, actor, proposal, snapshot, csrf, decision, clock(), teamChatProvider).card };
     }) } };
   };
+  // v112: one request budget per server for person API tokens, shared by every route a token signs in at (request-budget.ts).
+  const requestBudget = new RequestBudget({ store, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
+  // Bearers with no API token (a person's name:password) are budgeted by where they come from, as is /oauth/token.
+  const sourceClock = options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock };
+  const passwordBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.password, ...sourceClock });
+  const oauthTokenBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.oauthToken, ...sourceClock });
+  /** The one admission for a bearer request: an API token's own budget, else the source's. Cookies aren't charged. */
+  const admitBearer = (request: IncomingMessage, principal: Principal | undefined): Admission => {
+    if (principal !== undefined) return requestBudget.admit(principal.tokenId, "api");
+    return /^Bearer\s/i.test(request.headers.authorization ?? "") ? passwordBudget.admit(joinSourceOf(request)) : { ok: true };
+  };
+  /**
+   * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
+   * scope, its project limit narrowed by the person's current access, and its id. Every route that accepts an API token
+   * builds its identity here and carries it whole, so no route can drop the token's narrower scope or projects.
+   */
+  const tokenPrincipalOf = (request: IncomingMessage): Principal | null => {
+    const who = identify(request, false, true);
+    const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
+    const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
+    const account = who === null ? null : store.accountOf(who.name);
+    if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
+    // An MCP sign-in's token (accepted only at /mcp today) is narrowed to the projects its person chose, as mcp-http.ts does.
+    return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id,
+      projects: tokenProjects(tokenProjects(account.projects, row.projects), oauthProjects(store, row.id)) };
+  };
+  const presentsToken = (request: IncomingMessage): boolean => /^Bearer so_\S+$/.test(request.headers.authorization ?? "");
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
     authenticate: request => {
+      if (presentsToken(request)) {
+        const principal = tokenPrincipalOf(request);
+        return principal === null ? null : { name: principal.account, generation: principal.generation, principal };
+      }
       const who = identify(request, request.method === 'POST');
       const account = who === null ? null : store.accountOf(who.name);
       return who && account && account.revokedAt === null ? { name: who.name, generation: account.generation } : null;
     },
+    // Before the credential is checked: a token that doesn't sign in isn't charged (identify counts it as a failed sign-in).
+    admit: request => {
+      if (!presentsToken(request)) return admitBearer(request, undefined);
+      const principal = tokenPrincipalOf(request);
+      return principal === null ? { ok: true } : admitBearer(request, principal);
+    },
     revalidate: (request, actor) => {
       const account = store.accountOf(actor.name);
       if (!account || account.revokedAt !== null || account.generation !== actor.generation) return false;
-      // Bearer was proved when this connection opened. Cookie expiry/revocation
+      // An API token is re-proved against the store every time: unrevoked, unexpired, inside its project limit.
+      if (actor.principal !== undefined) return reproveRemote(store, actor.principal, new Date()).ok;
+      // A password bearer was proved when this connection opened. Cookie expiry/revocation
       // is rechecked without allowing a passive stream to extend its lifetime.
       if (request.headers.authorization) return true;
       const who = identify(request, false);
       return who?.name === actor.name && who.via === 'cookie' && who.session.generation === actor.generation;
     },
     authorizeMutation: (request, actor) => {
+      if (actor.principal !== undefined) return request.headers.origin === undefined;
       const who = identify(request, false);
       if (!who || who.name !== actor.name) return false;
       if (who.via === 'bearer') return request.headers.origin === undefined;
@@ -1112,28 +1154,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     },
     execute: async (actor, input) => {
       const reply = await team.execute(actor, input);
+      if (actor.principal !== undefined) return reply;
       const who = identify(request, false);
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     }, cursor: team.cursor, streams: teamStreams,
   });
-  // v112: one request budget per server for person API tokens, shared by /api/cli and /mcp (request-budget.ts).
-  const requestBudget = new RequestBudget({ store, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
     admit: principal => requestBudget.admit(principal.tokenId, "api"),
-    authenticate: request => {
-      const who = identify(request, false, true);
-      const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
-      const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
-      const account = who === null ? null : store.accountOf(who.name);
-      if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
-      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: tokenProjects(account.projects, row.projects) };
-    },
+    authenticate: tokenPrincipalOf,
     run: async () => options.cliRunner ?? ((await import("./operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
     store,
   });
-  const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo) });
+  const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo),
+    admit: request => passwordBudget.admit(joinSourceOf(request)) });
   /** The enumerable admission list for roll-up SQL: repos-only ceilings
    * enumerate themselves; root ceilings enumerate the STORED repos that
    * pass the ceiling (Codex roll-up review, finding 11); unscoped = null. */
@@ -1246,6 +1281,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     who: Who,
     body: FormView<FormFieldOf<"mutationGuard">>,
   ): { status: number; message: string } | null {
+    // A read token never mutates, whatever its person's role (operate-remote.ts says the same to the remote CLI).
+    if (who.via === "bearer" && who.scope === "read") return { status: 403, message: REMOTE_MESSAGES.read };
     const current = store.accountOf(who.name);
     if (current === null || current.revokedAt !== null || current.role !== who.role || (who.via === "cookie" && current.generation !== who.session.generation)) {
       return { status: 403, message: "Your access changed. Sign in again." };
@@ -1871,6 +1908,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return method === "GET"
         ? redirect(response, loginHref(url.pathname + url.search))
         : respond(response, 401, "text/plain; charset=utf-8", "authenticate first");
+    }
+    // A bearer is charged once per request, before anything runs: an API token against its own budget (shared with
+    // /api/cli, /mcp and /api/team), a password against its source's.
+    if (who.via === "bearer") {
+      const principal = who.token === undefined ? undefined : tokenPrincipalOf(request);
+      if (principal === null) return respond(response, 401, "text/plain; charset=utf-8", "authenticate first");
+      const admitted = admitBearer(request, principal);
+      if (!admitted.ok) {
+        request.resume();
+        if (admitted.status === 429) response.setHeader("Retry-After", String(admitted.retryAfter));
+        return respond(response, admitted.status, "text/plain; charset=utf-8", admitted.status === 429 ? limitWords(admitted.limit, admitted.retryAfter) : "Request limits could not be checked; nothing ran. Try again shortly.");
+      }
     }
 
     const requestFacts = {
@@ -11730,6 +11779,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // grant (their role, their projects) is checked beside it.
     confirm: (session, typed) => typed === "" ? session.sso?.fresh === true : authenticateAccount(store, session.name, typed).ok,
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
+    admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),
   });
 
   // ---- identity ------------------------------------------------------------
@@ -11752,7 +11802,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // v113: an MCP sign-in's token works only at /mcp, while its access secret is fresh (mcp-oauth.ts).
       if (!oauthTokenAllowed(store, kept.row.id, new URL(request.url ?? "/", "http://placeholder").pathname, new Date(at))) return null;
       store.touchApiToken(kept.row.id, new Date(at));
-      return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name };
+      return { name: kept.row.account, via: "bearer", role: kept.row.access === "read" ? "viewer" : account.role, token: kept.row.name, scope: kept.row.access };
     }
     const bearer = /^Bearer (.+):(.+)$/.exec(request.headers.authorization ?? "");
     if (bearer !== null) {

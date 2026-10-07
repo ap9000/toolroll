@@ -136,7 +136,7 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     const page = await consentPage(client, "sam", pkce().challenge);
     const url = new URL(`${base}/oauth/authorize`);
     url.search = new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", resource: `${base}/mcp` }).toString();
-    const start = (source: string) => fetch(url, { headers: { "x-forwarded-for": source } });
+    const start = (source: string) => fetch(url, { headers: { "x-forwarded-for": source, "x-forwarded-proto": "https" } });
     for (let i = 0; i < OAUTH_LIMITS.requestsPerSource; i++) expect((await start("192.0.2.1")).status).toBe(200);
     const refused = await start("192.0.2.1");
     expect(refused.status).toBe(429);
@@ -154,7 +154,7 @@ describe("MCP sign-in (OAuth 2.1)", () => {
   });
 
   test("registration caps isolate sources and expire unused registrations before deduplication", async () => {
-    const reg = (name: string, source: string) => fetch(`${base}/oauth/register`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": source }, body: JSON.stringify({ client_name: name, redirect_uris: [REDIRECT] }) });
+    const reg = (name: string, source: string) => fetch(`${base}/oauth/register`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": source, "x-forwarded-proto": "https" }, body: JSON.stringify({ client_name: name, redirect_uris: [REDIRECT] }) });
     const first = await (await reg("First client", "192.0.2.1")).json() as { client_id: string };
     for (let i = 1; i < OAUTH_LIMITS.clientsPerSource; i++) expect((await reg(`Client ${i}`, "192.0.2.1")).status).toBe(201);
     expect((await reg("Overflow", "192.0.2.1")).status).toBe(429);

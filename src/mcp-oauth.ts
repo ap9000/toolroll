@@ -24,6 +24,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Store } from "./store.js";
 import { hashSecret, mintApiToken, type TokenAccess } from "./api-tokens.js";
+import { limitWords, type Admission } from "./request-budget.js";
 import { PKCE_CHALLENGE, readOAuthRegistration, readOAuthTokenRequest } from "./contracts/mcp-oauth.js";
 
 /** How long each piece lives. A code is spent at once; a grant ends after 30 days and the person consents again. */
@@ -77,6 +78,8 @@ export type OAuthHttpOptions = {
   confirm: (session: OAuthSession, typed: string) => boolean;
   /** The projects this person may choose: each a project the server knows that they can use now. */
   projectsFor: (account: string) => string[];
+  /** The token exchange's budget by source (request-budget.ts): charged once per request, before its body is read or any code or refresh secret is spent. */
+  admitToken?: (request: IncomingMessage) => Admission;
 };
 
 type Waiting = { client: string; redirectUri: string; challenge: string; state: string | null; resource: string; act: boolean; expires: number; source: string };
@@ -344,6 +347,12 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
 
   async function token(request: IncomingMessage, response: ServerResponse, origin: string): Promise<void> {
     if (request.method !== "POST") return oauthError(response, 405, "invalid_request", "Use POST.");
+    const admitted = options.admitToken === undefined ? { ok: true as const } : options.admitToken(request);
+    if (!admitted.ok) {
+      request.resume();
+      if (admitted.status === 503) return oauthError(response, 503, "temporarily_unavailable", "Request limits could not be checked; nothing was issued. Try again shortly.");
+      return json(response, 429, { error: "temporarily_unavailable", error_description: limitWords(admitted.limit, admitted.retryAfter) }, { "retry-after": String(admitted.retryAfter) });
+    }
     if (media(request) !== "application/x-www-form-urlencoded") return oauthError(response, 400, "invalid_request", "Send application/x-www-form-urlencoded.");
     const text = await readBody(request);
     if (text === null) return oauthError(response, 400, "invalid_request", "The request is over 16 KiB.");

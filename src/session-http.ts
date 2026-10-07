@@ -3,6 +3,7 @@ import {
   SESSION_REQUEST_BYTES, SESSION_RESPONSE_BYTES, isSessionResponse, sessionDescriptor, validateSessionRequest,
   type SessionOperation, type SessionRequests, type SessionResponse,
 } from './session-contract.js';
+import { limitWords, type Admission } from './request-budget.js';
 
 export type SessionHttpActor = { name: string; generation: number };
 export type SessionHttpExecute = <O extends SessionOperation>(actor: SessionHttpActor, operation: O, request: SessionRequests[O]) => Promise<SessionResponse>;
@@ -14,6 +15,8 @@ export type SessionHttpOptions = {
   /** The existing live owner's operation. Null means no owner is ready.
    * The service rechecks actor generation and project access at execution. */
   execute: SessionHttpExecute | null;
+  /** The bearer request's budget by source (request-budget.ts): charged once, before the credential is checked or a body read. */
+  admit?: (request: IncomingMessage) => Admission;
 };
 type Body = { ok: true; value: unknown } | { ok: false; status: number; reason: string; message: string };
 type HttpRejection = Omit<SessionResponse, 'operation'> & { operation?: SessionOperation };
@@ -105,6 +108,12 @@ export async function handleSessionHttp(request: IncomingMessage, response: Serv
   const authorizationCount = request.rawHeaders.filter((_, index) => index % 2 === 0 && request.rawHeaders[index]?.toLowerCase() === 'authorization').length;
   if (authorizationCount !== 1 || !/^Bearer (.+):(.+)$/.test(request.headers.authorization ?? '')) {
     return reject(401, 'unauthenticated', 'Current operator bearer credentials are required.');
+  }
+  const admitted = options.admit === undefined ? { ok: true as const } : options.admit(request);
+  if (!admitted.ok && admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
+  if (!admitted.ok) {
+    response.setHeader('retry-after', String(admitted.retryAfter));
+    return reject(429, 'rate-limited', limitWords(admitted.limit, admitted.retryAfter));
   }
   let actor: SessionHttpActor | null;
   try { actor = await options.authenticate(request); }

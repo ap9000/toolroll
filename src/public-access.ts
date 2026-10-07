@@ -92,9 +92,13 @@ export function transportOf(request: {
   return { source, https, privatePath: isLoopbackPeer(source) || isTailnetAddress(source) };
 }
 
-/** Requests that carry, or exist to carry, an API token: the remote CLI, the MCP gateway, and any bearer credential. */
+/** The OAuth endpoints that hand out, consent to or take back a token (mcp-oauth.ts; revoke is reserved). Discovery stays public. */
+export const OAUTH_TOKEN_PATHS: ReadonlySet<string> = new Set(["/oauth/authorize", "/oauth/token", "/oauth/register", "/oauth/revoke"]);
+
+/** Requests that carry, or exist to carry, an API token: the remote CLI, the MCP gateway, MCP sign-in, and any bearer credential. */
 export function carriesToken(pathname: string, authorization: string | undefined): boolean {
   if (pathname === "/api/cli" || pathname.startsWith("/api/cli/") || pathname === "/mcp" || pathname.startsWith("/mcp/")) return true;
+  if (OAUTH_TOKEN_PATHS.has(pathname.replace(/\/+$/, "") || "/")) return true;
   return authorization !== undefined && /^bearer\s/i.test(authorization);
 }
 

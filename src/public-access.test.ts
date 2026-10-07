@@ -34,6 +34,15 @@ test("refuses only token-bearing requests that are neither HTTPS nor private; HS
   expect(carriesToken("/mcp", undefined)).toBe(true);
   expect(carriesToken("/api/team", "bearer so_x_y")).toBe(true);
   expect(carriesToken("/login", undefined)).toBe(false);
+  // MCP sign-in hands out tokens with no Authorization header at all; its discovery documents stay public.
+  for (const path of ["/oauth/authorize", "/oauth/token", "/oauth/register", "/oauth/revoke", "/oauth/token/"]) {
+    expect(carriesToken(path, undefined)).toBe(true);
+    expect(plainHttpRefusal(remote, path, undefined)).toBe(USE_HTTPS);
+    expect(plainHttpRefusal({ ...remote, https: true }, path, undefined)).toBeNull();
+    expect(plainHttpRefusal({ ...remote, privatePath: true }, path, undefined)).toBeNull();
+  }
+  expect(carriesToken("/.well-known/oauth-authorization-server", undefined)).toBe(false);
+  expect(carriesToken("/.well-known/oauth-protected-resource/mcp", undefined)).toBe(false);
   expect(plainHttpRefusal(remote, "/mcp", undefined)).toBe(USE_HTTPS);
   expect(plainHttpRefusal(remote, "/login", undefined)).toBeNull();
   expect(plainHttpRefusal({ ...remote, https: true }, "/mcp", undefined)).toBeNull();

@@ -93,6 +93,25 @@ test("API tokens over plain HTTP from elsewhere are refused before anything chec
   expect(ran).toBe(0);
 });
 
+test("MCP sign-in refuses plain HTTP from elsewhere at every token endpoint before handling it, and stays open over HTTPS", async () => {
+  const before = store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_client").get()?.["n"];
+  peer = "198.51.100.7";
+  const form = { "content-type": "application/x-www-form-urlencoded" };
+  expect(refused(await send("/oauth/token", { method: "POST", headers: form, body: "grant_type=refresh_token&refresh_token=sor_x_y&client_id=c" }))).toBe(true);
+  expect(refused(await send("/oauth/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "x", redirect_uris: ["https://a.example/cb"] }) }))).toBe(true);
+  expect(refused(await send("/oauth/authorize?response_type=code&client_id=c"))).toBe(true);
+  expect(refused(await send("/oauth/revoke", { method: "POST", headers: form, body: "token=x" }))).toBe(true);
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_client").get()?.["n"]).toBe(before);
+  // Discovery is public; and through the same-host proxy over HTTPS the endpoints answer as before.
+  expect((await send("/.well-known/oauth-authorization-server")).status).toBe(200);
+  peer = null;
+  const https = { "x-forwarded-for": "203.0.113.10", "x-forwarded-proto": "https" };
+  const token = await send("/oauth/token", { method: "POST", headers: { ...form, ...https }, body: "grant_type=refresh_token&refresh_token=sor_x_y&client_id=c" });
+  expect(refused(token)).toBe(false);
+  expect(token.headers["content-type"]).toMatch(/json/);
+  expect(refused(await send("/oauth/revoke", { method: "POST", headers: { ...form, ...https }, body: "token=x" }))).toBe(false);
+});
+
 test("password sign-in in the browser is untouched over plain HTTP", async () => {
   peer = "198.51.100.7";
   const answer = await send("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "name=alice&token=wrong" });

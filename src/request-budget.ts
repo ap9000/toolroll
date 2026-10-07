@@ -42,7 +42,7 @@ export const FLUSH_MS = 5_000;
 const MINUTE = 60_000, DAY = 86_400_000;
 
 /** Which limit a refusal hit: the body of a 429 names only this and Retry-After. */
-export type BudgetLimit = "read-per-minute" | "act-per-minute" | "per-day";
+export type BudgetLimit = "read-per-minute" | "act-per-minute" | "per-day" | "per-minute";
 export type Admission =
   | { ok: true }
   | { ok: false; status: 429; limit: BudgetLimit; retryAfter: number }
@@ -55,7 +55,7 @@ export type EffectiveLimits = { perMinute: number; perDay: number; overridden: b
 
 /** The words for a 429, in one line. */
 export const limitWords = (limit: BudgetLimit, retryAfter: number): string =>
-  `Request limit reached (${limit === "per-day" ? "requests per day" : limit === "read-per-minute" ? "read requests per minute" : "act requests per minute"}). Try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}.`;
+  `Request limit reached (${limit === "per-day" ? "requests per day" : limit === "read-per-minute" ? "read requests per minute" : limit === "act-per-minute" ? "act requests per minute" : "requests per minute"}). Try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}.`;
 
 /** A limit typed into a form: a whole number within bounds, "" for none, or a problem. */
 export function parseLimit(raw: string, max: number): number | null | { problem: string } {
@@ -261,5 +261,50 @@ export class RequestBudget {
       this.usage.delete(oldest);
     }
     return usage;
+  }
+}
+
+/** Per-minute allowance for one request source (an address) on bearer routes with no API token: a person's password on
+ * /api/team, /api/sessions and the console, and every /oauth/token exchange. */
+export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken: 30 });
+
+/**
+ * Admission by request source, for bearer requests that carry no `so_` token (so have no token budget) and for the
+ * OAuth token endpoint, which is reached before any token exists. A sliding minute per source, in memory, bounded:
+ * at most `tracked` sources, and when every one of them still has requests inside its minute a new source is refused
+ * rather than letting an old one go (fail closed). Charged once, before the body is read or a password is checked.
+ */
+export class SourceAdmission {
+  private readonly perMinute: number;
+  private readonly clock: () => number;
+  private readonly tracked: number;
+  private readonly usage = new Map<string, number[]>();
+
+  constructor(options: { perMinute: number; clock?: () => number; tracked?: number }) {
+    this.perMinute = Math.max(1, Math.min(PER_MINUTE_MAX, options.perMinute));
+    this.clock = options.clock ?? Date.now;
+    this.tracked = Math.max(1, options.tracked ?? TRACKED_TOKENS);
+  }
+
+  get size(): number { return this.usage.size; }
+
+  admit(source: string): Admission {
+    const now = this.clock();
+    let times = this.usage.get(source);
+    if (times === undefined) {
+      if (this.usage.size >= this.tracked) {
+        for (const [key, kept] of this.usage) if (kept.every(at => at <= now - MINUTE)) this.usage.delete(key);
+        if (this.usage.size >= this.tracked) return { ok: false, status: 429, limit: "per-minute", retryAfter: 60 };
+      }
+      times = [];
+    }
+    this.usage.delete(source);
+    this.usage.set(source, times);
+    while (times.length > 0 && times[0]! <= now - MINUTE) times.shift();
+    if (times.length >= this.perMinute) {
+      return { ok: false, status: 429, limit: "per-minute", retryAfter: Math.max(1, Math.ceil((times[times.length - this.perMinute]! + MINUTE - now) / 1000)) };
+    }
+    times.push(now);
+    return { ok: true };
   }
 }

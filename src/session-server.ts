@@ -5,6 +5,7 @@ import type { CodingWorkspace } from './coding-workspace.js';
 import { authenticateAccount } from './scope.js';
 import { handleSessionHttp } from './session-http.js';
 import { SessionService } from './session-service.js';
+import type { Admission } from './request-budget.js';
 
 /** Bind the transport to createDecisionServer's existing catalog owner and
  * live project admission. No cookie, coordinator token or caller-supplied actor
@@ -14,6 +15,8 @@ export function createSessionEndpoint(options: {
   workspace: CodingWorkspace | null;
   projects: () => readonly string[];
   projectAllowed: (repo: string) => boolean;
+  /** The request's source budget (request-budget.ts), charged once before the password is checked. */
+  admit?: (request: IncomingMessage) => Admission;
 }): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
   const { store } = options;
   const authorized = (actor: { name: string; generation: number }, repo?: string): boolean => {
@@ -29,6 +32,7 @@ export function createSessionEndpoint(options: {
     },
   });
   return (request, response) => handleSessionHttp(request, response, {
+    ...(options.admit === undefined ? {} : { admit: options.admit }),
     authenticate: request => {
       const bearer = /^Bearer (.+):(.+)$/.exec(request.headers.authorization ?? '');
       if (!bearer) return null;
