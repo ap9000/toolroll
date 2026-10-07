@@ -226,6 +226,26 @@ test("idle polling backs off to a bounded interval without replacing or renderin
   expect(fetcher).toHaveBeenCalledTimes(count + 1);
 });
 
+test("a page without a docked chat reads on the beat its latest read asks for, and never while hidden", async () => {
+  vi.useFakeTimers();
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  const page = (seconds: number): BrowserWorkspace => ({ ...fixture(), path: "/work", refreshUrl: "/work", conversation: null, pageHtml: "<h1>Tasks</h1>", refreshSeconds: seconds });
+  const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => tagged(page(10))).mockImplementation(async () => unchanged());
+  vi.stubGlobal("fetch", fetcher);
+  await workspaceProbe(page(30));
+  await act(async () => vi.advanceTimersByTimeAsync(29_999));
+  expect(fetcher).toHaveBeenCalledTimes(0);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  // Something started building: the next read comes 10 s later.
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  hidden.mockReturnValue(true);
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await act(async () => vi.advanceTimersByTimeAsync(120_000));
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
 test("visibility refresh queues once behind an active read, pauses hidden/offline, and stops on auth expiry", async () => {
   vi.useFakeTimers();
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);

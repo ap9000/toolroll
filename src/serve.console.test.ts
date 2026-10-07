@@ -681,6 +681,26 @@ describe("the operations console", () => {
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     expect(workspaceOf(inbox).refreshSeconds).toBeUndefined();
     expect(inbox).not.toContain('http-equiv="refresh"');
+    // Tasks, a task and Home read themselves every 10 s while something builds, without a docked chat.
+    for (const path of ["/work", "/t/t-live", "/chat"]) {
+      const html = await (await fetch(url(path), { headers: { cookie } })).text();
+      expect(workspaceOf(html).refreshSeconds, path).toBe(10);
+      expect(workspaceOf(html).conversation ?? null, path).toBeNull();
+      expect(html, path).not.toContain('http-equiv="refresh"');
+    }
+  });
+
+  test("with nothing building, Tasks, a task and Home read themselves every 30 s", async () => {
+    store.createTask({ id: "t-idle", title: "waiting its turn" }, T0);
+    store.placeTask(store.refFor("built-in", "t-idle").id, "/repo/main");
+    const cookie = await login();
+    for (const path of ["/work", "/t/t-idle", "/chat"]) {
+      const html = await (await fetch(url(path), { headers: { cookie } })).text();
+      expect(workspaceOf(html).refreshSeconds, path).toBe(30);
+      expect(workspaceOf(html).conversation ?? null, path).toBeNull();
+    }
+    // Home's beat is its own: the landing says who is working, and nobody is.
+    expect(workspaceOf(await (await fetch(url("/chat"), { headers: { cookie } })).text()).home?.agents).toEqual([]);
   });
 
   test("tasks: list, validated filter, and atomic add from the console", async () => {

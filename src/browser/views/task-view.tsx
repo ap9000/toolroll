@@ -14,6 +14,7 @@ import { Badge, Button, Card, Textarea, cn } from "../components/ui/index.js";
 import { ConfirmStoppedForm, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
+import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
 
 /** A link to a fold (#scope, #holds, #task-actions) opens it and every fold
  * around it, on arrival and on in-page links alike. */
@@ -97,6 +98,7 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
           {stuck !== null && <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />}
           <span className="[overflow-wrap:anywhere]">{card.status.sentence}</span>
         </p>
+        {view.activity != null && <ActivityLine activity={view.activity} className="mt-1" />}
         {view.record != null && <p className="mt-1 text-[13px]">
           <a href={view.record.href} data-build-record className="text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-muted-foreground phone:inline-flex phone:min-h-11 phone:items-center">{view.record.label}</a>
         </p>}
@@ -286,6 +288,7 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
  * panel), the Details content follows the thread. */
 export function TaskView({ view, chat = null, details = true, csrf = "" }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string }) {
   useRevealHashTarget();
+  const people = useLiveTask(view.live);
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 phone:gap-3">
     <header className="flex flex-col gap-3 pb-1 phone:gap-2 phone:pb-0">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 phone:gap-y-2">
@@ -295,6 +298,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
             {view.project !== null && <><span className="font-medium text-foreground/80">{view.project}</span><span aria-hidden="true">·</span></>}
             <span className="min-w-0 truncate font-mono text-xs">{view.id}</span>
             {view.scout && <Badge tone="info">Scout</Badge>}
+            {people.length > 0 && <><span aria-hidden="true">·</span><AlsoViewing people={people} /></>}
           </p>
         </div>
         {view.tabs.length > 0 && <nav aria-label="Task view">

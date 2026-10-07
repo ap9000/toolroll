@@ -8,7 +8,7 @@ import { projectBatchChecks, setProjectBatchChecks } from './batch-policy.js';
 import { CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, suggestQuickCommand, type CheckLevel } from './check-levels.js';
 import { repositoryContextHtml } from './repository-context-ui.js';
 import { browserAssetsAvailable, browserWorkspaceDocument, serveBrowserAsset } from './browser-shell.js';
-import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserSettingsGroup, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
+import { browserCrewOf, browserCrewFromIndex, browserWorkActionHref, browserProjectsOf, browserNavigationOf, needsYouLabelOf, type BrowserWorkspace, type BrowserChatLink, type BrowserTasksView, type BrowserLimits, type BrowserSettingsView, type BrowserTaskView, type BrowserTaskFact, type BrowserTaskSection, type BrowserTaskThreadItem, type BrowserTaskDetailGroup, type BrowserHome, type BrowserHomeCount, type BrowserCatchUpItem, type BrowserProjectsView, type BrowserProjectRow, type BrowserResultPanel, type BrowserCheckItem, type BrowserResultView, type BrowserNeedAction, type BrowserActionCard, type BrowserSignIn, type BrowserUpdateNotice, type BrowserUpdates, type BrowserSettingsGroup, type BrowserFirstRun, type BrowserPhoneCard } from './browser-workspace.js';
 import { configureLeadFollow, leadFollowStatus, runLeadFollowPass } from './lead-follow.js';
 import { cancelCommitment, conditionWords, openCommitments } from './lead-commitments.js';
 import { startMaintenance } from './maintenance.js';
@@ -44,6 +44,9 @@ import { addRoutine, removeRoutine, runRoutine } from "./teammate-desk.js";
 import { sendTeammateWeeklies, undoCall } from "./teammate-week.js";
 import { answerTeammateQuestion } from "./teammate-work.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
+import { createTaskRooms, taskFingerprint } from "./task-live.js";
+import { runActivityOf } from "./task-activity.js";
+import type { RunActivity } from "./activity-line.js";
 import { disconnectGoogle, finishGoogleConsent, GOOGLE_CALLBACK, googleConnected, googleConsent, readGoogleMail, saveGoogleClient, type GoogleVisit } from "./google-mail.js";
 import { mailboxAccess, readThroughImap } from "./mailbox.js";
 import { readEmailSettings, saveEmailSettings, sendingAccount, sendThroughServer, setFlowSecret, type MailSender } from "./flow-actions.js";
@@ -1052,6 +1055,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const connectVisits = new Map<string, ConnectVisit>();
   /** Flows open in a browser (v88): who's here, and a nudge when one changes. */
   const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow));
+  const taskRooms = createTaskRooms(root => taskFingerprint(store, root, clock()));
   const teamChatProvider: TeamChatProviderResolver = () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; };
   const team = createTeamRuntime({ store, repos: codingProjects, evidenceRoot, clock, workspaceRevision,
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
@@ -2010,9 +2014,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const read = new Set(["/settings/flows", "/settings/skills", "/settings/knowledge", "/settings", "/settings/learning", "/recipes", "/recipes/run", "/recipes/start", "/recipes/new", "/recipes/edit", "/recipes/from-task", "/recipes/preview", "/recipes/export", "/", "/inbox", "/work", "/projects", "/people", "/ledger", "/ledger/export", "/next", "/board", "/tasks", "/tasks/new", "/runs", "/review", "/done", "/routines", "/menu"]);
     const write = new Set(["/settings/flows/on", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings/learning/change", "/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/projects/select", "/tasks/add", "/routines/add"]);
-    const task = matchTaskPath(path, request.method === "GET" ? "(/evidence)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
+    const task = matchTaskPath(path, request.method === "GET" ? "(/evidence|/live)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
     const resource = request.method === "GET"
-      ? /^\/(?:r|d)\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) || /^\/routines\/[0-9]{1,15}$/.test(path) || path === "/flows" || /^\/flows\/[0-9]{1,15}(\/insights|\/export|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path)
+      ? /^\/(?:r|d)\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) || /^\/routines\/[0-9]{1,15}$/.test(path) || path === "/flows" || /^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path)
       : /^\/d\/[0-9]{1,15}\/answer$/.test(path) || /^\/routines\/[0-9]{1,15}\/(approve|refresh|pause|resume|run-now)$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path) || path === "/flows/import" || /^\/flows\/[0-9]{1,15}\/(save|cards|archive|scripts)$/.test(path) || /^\/flows\/[0-9]{1,15}\/cards\/[0-9]{1,15}\/(move|decide|cancel|comment|assign|watch)$/.test(path) || /^\/flows\/[0-9]{1,15}\/triggers(\/[0-9]{1,15}\/(pause|resume|remove|check|press|renew|secret|share|unshare))?$/.test(path) || /^\/r\/[0-9]{1,15}\/(note|comment|revise|draft-repair|checks|add-tests)$/.test(path);
     if (!(request.method === "GET" ? read : write).has(path) && task === null && !resource) {
       refuse(response, who, 403, "This area requires instance access. Your account operates within its assigned projects.", "/projects");
@@ -2066,6 +2070,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       project = wanted;
     }
+    // Every page's Tasks count covers this one project view, whatever project the page itself shows.
+    const facts = requestContext.getStore();
+    if (facts !== undefined) facts.lens = project;
     // Exact result links carry their own read context. Check the stored
     // placement against both account and instance access before using it;
     // viewing a result never changes the session's selected project, and
@@ -2141,7 +2148,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       url.pathname !== "/menu" &&
       url.pathname !== "/recipes" &&
       // A flow names its own project; the list spans every project.
-      url.pathname !== "/flows" && url.pathname !== "/flows/import" && !/^\/flows\/[0-9]{1,15}(\/insights|\/export|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(url.pathname) &&
+      url.pathname !== "/flows" && url.pathname !== "/flows/import" && !/^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(url.pathname) &&
       // The gallery (Flows → New) asks for its project on each template's page.
       url.pathname !== "/flows/new" && !/^\/flows\/new\/[a-z-]{1,40}$/.test(url.pathname) &&
       // Teammates (v92) name their own project, like flows.
@@ -2149,7 +2156,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // New work names its project in the form (a dropdown of known
       // projects); /tasks/add still admits the posted repo on its own.
       url.pathname !== "/tasks/new" && url.pathname !== "/tasks/add" &&
-      !/^\/t\/[^/]+(\/evidence)?$/.test(url.pathname) &&
+      !/^\/t\/[^/]+(\/evidence|\/live)?$/.test(url.pathname) &&
       !/^\/r\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(url.pathname) &&
       !url.pathname.startsWith("/d/") && !url.pathname.startsWith("/contest/") &&
       url.pathname !== "/projects" &&
@@ -2435,6 +2442,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const projectThread = url.searchParams.has('project') && project !== null && managedRepos().includes(project) ? project : null;
       const docked = projectThread === null ? null : dockedConversation(who, null, projectThread, now, `/work?project=${encodeURIComponent(projectThread)}`);
       if (docked !== null) page.workspace = { ...page.workspace, conversation: docked, pageHtml: page.body };
+      // Without a docked chat the list reads itself: 10 s while any of its tasks is building, else 30 s.
+      page.refreshSeconds = work.totals.running > 0 ? 10 : 30;
       return sendScreen(response, 200, page);
     }
 
@@ -3316,6 +3325,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return sendScreen(response, 200, newTaskPage(chrome, project, csrf, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
     }
 
+    const taskLive = matchTaskPath(url.pathname, "/live$");
+    if (taskLive !== null) {
+      // The live task page: a nudge the moment the task changes, and who else
+      // has it open. Hints only — the page reads the task the usual way.
+      if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+      const family = familyOf(taskLive.taskId);
+      if (family === null || family.problem !== null) return respond(response, 404, "application/json", JSON.stringify({ error: "task" }));
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
+      const name = who.name, repo = family.root.repo;
+      taskRooms.join(family.root.id, {
+        name, response,
+        // Rechecked while open, from the cookie and the account (never a request's context): a sign-out or a narrowed account stops it.
+        valid: () => { const again = identify(request, false); return again !== null && again.name === name && rowVisible(liveCeiling(), repo) && store.accountCanAccess(name, repo); },
+      });
+      request.once("close", () => { if (!response.writableEnded) response.end(); });
+      return;
+    }
     const task = matchTaskPath(url.pathname, "");
     if (task !== null) {
       const family = familyOf(task.taskId);
@@ -4081,7 +4107,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Console v2: the landing's live view (who is working, four counts, Catch up in tabs).
       const home = focusTask === null && chatProject === null && !roomId ? chatHomeOf(who, repos, now) : null;
       const withFirstRun = (shown: Screen): Screen => firstRun === undefined && phone === undefined && home === null ? shown
-        : { ...shown, workspace: { ...shown.workspace, ...(firstRun === undefined ? {} : { firstRun }), ...(phone === undefined ? {} : { phone }), ...(home === null ? {} : { home }) } };
+        : { ...shown, ...(home === null ? {} : { refreshSeconds: liveRefreshSeconds() }),
+          workspace: { ...shown.workspace, ...(firstRun === undefined ? {} : { firstRun }), ...(phone === undefined ? {} : { phone }), ...(home === null ? {} : { home }) } };
       if (enabled.ok && mateSession !== null && principal !== null && !ceilingStale) {
         {
           const said = takeMateNote(who.session.csrf, mateSession.id);
@@ -5351,13 +5378,20 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           // The reader's own lead's claims read "<name> is on it" here too.
           : browserCrewOf(store, clock(), { principal: 'operator', repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null }, { evidenceRoot, project });
       } catch { notices.push('Crew updates are unavailable. Open Tasks to inspect saved work.'); }
-      // "Wake me only for these": the navigation carries the count of tasks
-      // waiting on a person behind its Tasks link — the open project's, or
-      // everything this person may see — so it matches that page's Needs you tab.
-      let needsYou = 0;
-      try { needsYou = (requestFacts.workCounts ?? workCountsByProject(store, clock(), workAccess()))
-        .filter(one => s.chrome?.project == null || one.repo === s.chrome.project).reduce((sum, one) => sum + one.totals['needs-you'], 0); }
-      catch { needsYou = 0; }
+      // A running row says what its agent did last, and when (the task page's own line).
+      try {
+        const now = clock(), live = new Map<string, RunActivity>();
+        if (crew.crew.length > 0) for (const run of store.liveRuns(now)) {
+          const root = familyOf(run.taskId)?.root.id;
+          if (root !== undefined && !live.has(root)) live.set(root, runActivityOf(store, run, now));
+        }
+        if (live.size > 0) crew = { ...crew, crew: crew.crew.map(item => { const activity = live.get(item.id); return activity === undefined ? item : { ...item, activity }; }) };
+      } catch { /* the rows keep their status; the line returns on the next read */ }
+      // "Wake me only for these": the navigation carries the sidebar's own
+      // Tasks count (chromeFor) and links to the project view it covers, so
+      // it matches that page's Needs you tab on every screen.
+      const needsYou = s.chrome.inboxCount;
+      const tasksProject = s.chrome.inboxProject === undefined ? s.chrome.project : s.chrome.inboxProject;
       // The person's own project and task conversations (v77), for the
       // sidebar's chat list; a thread whose project is out of view is left out.
       let chats: BrowserChatLink[] = [];
@@ -5390,7 +5424,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         catchUpHtml: extras.catchUpHtml ?? '', controlsHtml: extras.controlsHtml ?? '', notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml,
-        navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
+        navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
         chats,
         ...(s.refreshSeconds === undefined ? {} : { refreshSeconds: Math.max(5, Math.floor(s.refreshSeconds)) }),
         ...(s.chrome.signIn === undefined ? {} : { signIn: s.chrome.signIn }),
@@ -5446,12 +5480,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return page(response, status, html, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
   }
 
-  /** The badge cache: five seconds per project — mutations invalidate it. */
-  const badgeCache = new Map<string, { at: number; count: number; saturated: boolean }>();
-  /** The needs-you count every surface wears for a project (workspace
-   * package 1): Work's own Needs-you membership, cached per viewer and
-   * project, so the rail, the phone tab, the scope bar, the project cards,
-   * the chat overview, and the Needs-you tab never disagree. */
   /** The Chat landing's live view: each agent at work now with its task and
    * phase, four counts, plan-window use (never dollars: subscriptions don't
    * bill per run) and Catch up's items, each tagged with its tab. Reads only. */
@@ -5461,7 +5489,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const agents = store.liveRuns(now).filter(run => admitted(run.repo)).map(run => {
       const root = familyOf(run.taskId)?.root ?? null;
       return { runId: run.id, taskId: root?.id ?? run.taskId, title: root?.title ?? run.title, href: taskHref(root?.id ?? run.taskId),
-        agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt };
+        agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt,
+        activity: runActivityOf(store, run, now) };
     });
     const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT });
     const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT });
@@ -5495,18 +5524,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       planUse: (windows?.tiles ?? []).map(one => ({ name: one.name, window: one.window, percent: one.percent, detail: one.detail, tone: one.tone })),
     };
   }
+  /** The needs-you count every surface wears, read from this request's own
+   * Work counts (one query per request, never a cached earlier one), so a
+   * live page's badge and its Needs you tab always agree. */
   function needsYouBadge(project: string | null): { count: number; saturated: boolean } {
-    const actor = requestContext.getStore()?.actor;
-    const key = `${actor ?? ""}:${actor === undefined ? "" : store.accountOf(actor)?.generation}:${project ?? ""}`;
-    const cached = badgeCache.get(key);
-    if (cached !== undefined && Date.now() - cached.at <= 5_000) return cached;
-    const counted = needsYouCount(project);
-    const badge = { at: Date.now(), count: counted.count, saturated: counted.saturated };
-    badgeCache.set(key, badge);
-    return badge;
+    return needsYouCount(project);
   }
   const bustBadge = (): void => {
-    badgeCache.clear();
     paletteCache.clear();
   };
 
@@ -5519,7 +5543,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   ): Chrome {
     if (restricted() && !visible(project)) project = null;
     const actor = requestContext.getStore()?.actor;
-    const badge = needsYouBadge(project);
+    // One Tasks count per request: Needs you in the request's project view
+    // (the open project, else every admitted project), never the page's own
+    // project — a flow or task in another project shows the same number.
+    const lens = requestContext.getStore()?.lens;
+    const inboxProject = lens !== undefined && (!restricted() || visible(lens)) ? lens : project;
+    const badge = needsYouBadge(inboxProject);
     const liveMode = project === null ? null : store.activeMode(project, clock());
     const liveModeTerms = liveMode === null ? null : modeTermsFromJson(liveMode.termsJson);
     let projectPeek: ProjectPeek | null | undefined = project === null ? null : undefined;
@@ -5557,6 +5586,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(facts === undefined ? {} : { csrf: facts.csrf, returnTo: facts.returnTo }),
       inboxCount: badge.count,
       inboxSaturated: badge.saturated,
+      inboxProject,
+      inboxLabel: needsYouLabelOf(badge.count, inboxProject === null ? null
+        : store.listProjects().find(one => one.path === inboxProject)?.name ?? projectName(inboxProject), badge.saturated),
       settings: true,
       ...(store.isDemo() ? { demo: true } : {}),
       ...(() => { const signIn = signInNotices(store); return signIn.length === 0 ? {} : { signIn }; })(),
@@ -5609,6 +5641,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const count = projectCounts(clock()).filter(one => project === null || one.repo === project)
       .reduce((sum, one) => sum + one.totals['needs-you'], 0);
     return { count, saturated: false };
+  }
+  /** A live page's own beat without a docked chat: 10 s while any admitted task is building, else 30 s. */
+  function liveRefreshSeconds(): number {
+    return projectCounts(clock()).some(one => one.totals.running > 0) ? 10 : 30;
   }
   function projectFamilyPeek(repo: string, now: Date): ProjectPeek {
     const row = projectCounts(now).find(one => one.repo === repo);
@@ -6422,6 +6458,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // What went wrong reads the family's latest finished attempt, as the Tasks row does.
     presentedData.failure = failureOf(presentedData.family?.runs ?? data.runs, data.assignment ?? null);
     presentedData.runChecks = runChecksHere(data.assignment?.receipt?.runId ?? null, who, taskHref(taskId));
+    const liveRun = data.liveRunId == null ? undefined : data.runs.find(one => one.id === data.liveRunId);
+    if (liveRun !== undefined) presentedData.activity = runActivityOf(store, liveRun, clock());
     presentedData.demo = store.isDemo();
     const paneProject = restricted() ? store.lookupRef(taskId)?.repo ?? null : who.via === "cookie" ? who.session.project : null;
     const page = taskPage(
@@ -6435,9 +6473,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const docked = focus === null ? null : dockedConversation(who, focus, null, clock(), taskHref(focus.id));
     // The conversation is the page's own thread here, so the page drops its Ask tab;
     // only an approver is offered a road to message the agent.
-    const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }) } : page.workspace?.view;
+    const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
+      // A signed-in page hears the moment the task changes, and who else has it open.
+      ...(who.via === "cookie" ? { live: { href: `${taskHref(family?.root.id ?? taskId)}/live`, at: (() => { try { return taskFingerprint(store, family?.root.id ?? taskId, clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
     if (docked !== null) page.workspace = { ...page.workspace, ...(taskView === undefined ? {} : { view: taskView }), conversation: docked, pageHtml: page.body };
     else if (taskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: taskView };
+    page.refreshSeconds = liveRefreshSeconds();
     return sendScreen(response, status, page);
   }
 
@@ -12265,6 +12306,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const stream of chatStreams) stream.end();
     chatStreams.clear();
     flowRooms.close();
+    taskRooms.close();
     void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
@@ -16348,6 +16390,11 @@ type Chrome = {
   scope?: "all" | "project" | "board-all";
   /** The saturated inbox count — never a sum of unbounded list reads. */
   inboxCount: number;
+  /** The project the Tasks count covers: the request's own project view
+   * (the open project, or /work's ?project=), null for every admitted project. */
+  inboxProject?: string | null;
+  /** The Tasks badge's words, naming what it covers: "3 need you in shop". */
+  inboxLabel?: string;
   inboxSaturated: boolean;
   settings: boolean;
   /** This database is a demo sandbox: banner every page, spend fenced. */
@@ -16829,9 +16876,9 @@ function shell(
   // saturated needs-you count, exactly as the inbox row wore it.
   const primary = chrome.active === "code" ? "work" : primaryDestinationOf(chrome.active);
   const primaryItem = (key: "code" | "chat" | "work" | "projects" | "flows", href: string, label: string, count?: number): string =>
-    `<a href="${href}" aria-label="${escape(label)}" title="${escape(label)}"${primary === key ? ' class="active" aria-current="page"' : ""}${key === "work" && count !== undefined ? ` data-waiting="${count}"` : ""}>` +
+    `<a href="${href}" aria-label="${escape(key === "work" && count !== undefined && count > 0 && chrome.inboxLabel !== undefined ? `${label}, ${chrome.inboxLabel}` : label)}" title="${escape(label)}"${primary === key ? ' class="active" aria-current="page"' : ""}${key === "work" && count !== undefined ? ` data-waiting="${count}"` : ""}>` +
     `<span class="glyph">${NAV_ICONS[key] ?? ""}</span>${label}` +
-    `${count !== undefined && count > 0 ? ` <span class="count badge badge-open">${count}${chrome.inboxSaturated ? "+" : ""}</span>` : ""}</a>`;
+    `${count !== undefined && count > 0 ? ` <span${chrome.inboxLabel === undefined ? "" : ` aria-label="${escape(chrome.inboxLabel)}" title="${escape(chrome.inboxLabel)}"`} class="count badge badge-open">${count}${chrome.inboxSaturated ? "+" : ""}</span>` : ""}</a>`;
   const side = [
     `<aside class="side">`,
     `<div class="side-head"><a class="brand" href="${chrome.chat === true ? "/chat" : "/work"}"><span class="brand-long">Toolroll</span><span class="brand-short">T</span></a>`,
@@ -16926,7 +16973,7 @@ function shell(
     // A phone tab says THAT something waits, with a dot; the number is on
     // the Work views themselves (Linear Mobile's rule — one tap away).
     `<a href="${href}"${primary === key ? ' class="active" aria-current="page"' : ""}><span class="glyph">${TAB_ICONS[key]}</span>${label}` +
-    `${count !== undefined && count > 0 ? `<span class="dot-badge" role="img" aria-label="${count} waiting"></span>` : ""}</a>`;
+    `${count !== undefined && count > 0 ? `<span class="dot-badge" role="img" aria-label="${escape(chrome.inboxLabel ?? `${count} waiting`)}"></span>` : ""}</a>`;
   // Three primary tabs, the same three as the rail: chat where allowed,
   // work, projects. Tools and settings sit behind the header's menu action.
   const tabbar = [
@@ -21091,7 +21138,7 @@ function accentHead(): string {
   const accent = requestContext.getStore()?.accent ?? null;
   return accent === null ? "" : `<style data-accent="${accent}">${accentStyle(accent)}</style>`;
 }
-const requestContext = new AsyncLocalStorage<{ appOrigins?: readonly (string | null)[]; sso?: { label: string; fresh: boolean } | undefined; refusal?: (response: ServerResponse, status: number, body: string) => void; theme?: "light" | "dark" | null; accent?: string | null; updateSeen?: string | null; csrf: string; returnTo: string; actor?: string; createdTask?: string; browser?: boolean; workspaceRead?: boolean; workspaceRequest?: string | null; workCounts?: ReturnType<typeof workCountsByProject>; workCrew?: { project: string | null; page: WorkIndexPage }; workspaceValidator?: { key: string; revision: string; expiresAt: number; etag: string } }>();
+const requestContext = new AsyncLocalStorage<{ appOrigins?: readonly (string | null)[]; sso?: { label: string; fresh: boolean } | undefined; refusal?: (response: ServerResponse, status: number, body: string) => void; theme?: "light" | "dark" | null; accent?: string | null; updateSeen?: string | null; csrf: string; returnTo: string; actor?: string; createdTask?: string; browser?: boolean; workspaceRead?: boolean; workspaceRequest?: string | null; workCounts?: ReturnType<typeof workCountsByProject>; workCrew?: { project: string | null; page: WorkIndexPage }; lens?: string | null; workspaceValidator?: { key: string; revision: string; expiresAt: number; etag: string } }>();
 
 /** A same-site path or "/": never a scheme, a host, or a protocol-relative road. */
 /** The words a result page shows for a refusal its own form led to, by the fixed code a redirect carries. */
@@ -21877,6 +21924,8 @@ function taskBodyParts(data: {
   /** The run whose lease is the CURRENT live claim — computed by the data
    * layer; the renderer never guesses liveness from a null outcome. */
   liveRunId?: number | null;
+  /** What the agent did last on that live run, and when (task-activity.ts). */
+  activity?: RunActivity | null;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -23373,6 +23422,8 @@ function taskBodyParts(data: {
     retry,
     runChecks,
     progress,
+    // One quiet line under the step: what the agent did last, and when.
+    activity: liveRun === undefined ? null : data.activity ?? null,
     stop,
     record,
     earlier,

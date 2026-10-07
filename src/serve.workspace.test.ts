@@ -1238,4 +1238,89 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(await stylesOf(tasks, base)).toContain(".path-words { overflow-wrap: anywhere; word-break: break-word; }");
     expect(tasks).not.toContain(`in <span class="mono">${alpha}</span> —`);
   });
+
+  test("a project-scoped account gets its own project's live flow stream with presence, never another project's", async () => {
+    const { flowFromSteps } = await import("./flows.js");
+    const definitionJson = JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null));
+    const own = store.createFlow({ repo: alpha, name: "Support", by: "alex", definitionJson }, now);
+    const other = store.createFlow({ repo: beta, name: "Billing", by: "alex", definitionJson }, now);
+    const minted = store.mintInvite("approver", "alex", now, undefined, [alpha]);
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: minted.token, name: "member", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
+    const member = await login("member", memberPassword);
+    const abort = new AbortController();
+    const live = await fetch(url(`/flows/${own}/live`), { headers: { cookie: member }, redirect: "manual", signal: abort.signal });
+    expect(live.status).toBe(200);
+    expect(live.headers.get("content-type")).toBe("text/event-stream");
+    const reader = live.body!.getReader();
+    let text = "";
+    while (!text.includes("event: here")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      text += new TextDecoder().decode(chunk.value);
+    }
+    expect(text).toContain("event: change");
+    expect(text).toContain('event: here\ndata: {"people":[]}');
+    abort.abort();
+    await reader.cancel().catch(() => undefined);
+    const foreign = await fetch(url(`/flows/${other}/live`), { headers: { cookie: member }, redirect: "manual" });
+    expect(foreign.status).toBe(404);
+    expect(foreign.headers.get("content-type")).not.toBe("text/event-stream");
+    await foreign.text();
+    // With All projects open, the stream names its own flow's project too: no project chooser redirect.
+    const everything = new AbortController();
+    const operator = await fetch(url(`/flows/${other}/live`), { headers: { cookie: await login() }, redirect: "manual", signal: everything.signal });
+    expect(operator.status).toBe(200);
+    expect(operator.headers.get("content-type")).toBe("text/event-stream");
+    everything.abort();
+  });
+
+  test("the Tasks count is one number per session: a flow page and a task page in different projects agree with Needs you", async () => {
+    const { flowFromSteps } = await import("./flows.js");
+    finished("t-a1", "Alpha result", alpha, { verdict: "verified", reasons: [] });
+    finished("t-b1", "Beta result", beta, { verdict: "verified", reasons: [] });
+    finished("t-b2", "Second beta result", beta, { verdict: "verified", reasons: [] });
+    const flow = store.createFlow({ repo: alpha, name: "Support", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);
+    const cookie = await login();
+    const badgeOf = async (path: string): Promise<{ sidebar: number; navigation: number | undefined; href: string | undefined }> => {
+      const html = await page(cookie, path);
+      const tasks = workspaceOf(html).navigation.find(one => one.label === "Tasks");
+      return { sidebar: Number(/<a href="\/work"[^>]*data-waiting="(\d+)"/.exec(html)?.[1]), navigation: tasks?.count, href: tasks?.href };
+    };
+    const surfaces = ["/flows/" + flow, "/t/t-b1", "/work", "/chat"];
+    // All projects open: every surface counts Needs you across both projects.
+    const everything = countsOf(await page(cookie, "/work?view=needs-you"))["Needs you"];
+    expect(everything).toBe(3);
+    for (const path of surfaces) expect(await badgeOf(path), path).toEqual({ sidebar: 3, navigation: 3, href: "/work" });
+    // One project open: the flow (alpha) and the task (beta) both count alpha's Needs you, and link there.
+    await selectProject(cookie, alpha);
+    const alphaOnly = countsOf(await page(cookie, `/work?project=${encodeURIComponent(alpha)}&view=needs-you`))["Needs you"];
+    expect(alphaOnly).toBe(1);
+    for (const path of surfaces) expect(await badgeOf(path), path).toEqual({ sidebar: 1, navigation: 1, href: `/work?project=${encodeURIComponent(alpha)}` });
+    // Reading another project's Tasks counts that project there.
+    expect(await badgeOf(`/work?project=${encodeURIComponent(beta)}`)).toEqual({ sidebar: 2, navigation: 2, href: `/work?project=${encodeURIComponent(beta)}` });
+    // A change from outside this console (a worker, the CLI) shows on the very next page, as on the Needs you tab.
+    finished("t-a2", "Another alpha result", alpha, { verdict: "verified", reasons: [] });
+    expect(countsOf(await page(cookie, `/work?project=${encodeURIComponent(alpha)}&view=needs-you`))["Needs you"]).toBe(2);
+    expect(await badgeOf("/flows/" + flow)).toEqual({ sidebar: 2, navigation: 2, href: `/work?project=${encodeURIComponent(alpha)}` });
+  });
+
+  test("the Tasks badge says which projects its count covers, aloud and on hover", async () => {
+    finished("t-a1", "Alpha result", alpha, { verdict: "verified", reasons: [] });
+    finished("t-b1", "Beta result", beta, { verdict: "verified", reasons: [] });
+    finished("t-b2", "Second beta result", beta, { verdict: "verified", reasons: [] });
+    const cookie = await login();
+    const labelsOf = async (path: string): Promise<{ navigation: string | undefined; rail: string | undefined; railTitle: string | undefined }> => {
+      const html = await page(cookie, path);
+      const tasks = workspaceOf(html).navigation.find(one => one.label === "Tasks");
+      const rail = /<span aria-label="([^"]*)" title="([^"]*)" class="count badge badge-open">/.exec(html);
+      return { navigation: tasks?.countLabel, rail: rail?.[1], railTitle: rail?.[2] };
+    };
+    const all = "3 need you across all your projects";
+    expect(await labelsOf("/work")).toEqual({ navigation: all, rail: all, railTitle: all });
+    await selectProject(cookie, alpha);
+    const name = workspaceOf(await page(cookie, "/work")).projects.find(one => one.path === alpha)?.name;
+    expect(name).toBeTruthy();
+    const one = `1 needs you in ${name}`;
+    expect(await labelsOf("/t/t-b1")).toEqual({ navigation: one, rail: one, railTitle: one });
+  });
 });

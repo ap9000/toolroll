@@ -2,6 +2,7 @@
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
 import type { TeamSnapshot } from './team-contract.js';
+import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
 import type { AssignmentSnapshot } from './assignment.js';
 import { browserCrewFromIndex } from './browser-crew.js';
@@ -19,7 +20,16 @@ import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
-export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number };
+export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
+  /** What the count covers, said aloud and on hover: "3 need you in shop". */
+  countLabel?: string };
+
+/** The Tasks badge's words: the count and the projects it covers
+ * ("3 need you in shop", "1 needs you across all your projects"). */
+export function needsYouLabelOf(count: number, projectName: string | null, saturated = false): string {
+  const where = projectName === null ? 'across all your projects' : `in ${projectName}`;
+  return `${count}${saturated ? '+' : ''} ${count === 1 && !saturated ? 'needs' : 'need'} you ${where}`;
+}
 export type BrowserChatLink = { kind: 'project' | 'task'; title: string; href: string; at: string | null; active: boolean };
 export type BrowserCrewItem = {
   id: string; title: string; project: string | null;
@@ -31,6 +41,8 @@ export type BrowserCrewItem = {
   detail?: string;
   /** "<name> is on it.": the person's own lead took it on, by the name they gave it. */
   lead?: string;
+  /** A running task: what its agent did last, and when. */
+  activity?: RunActivity;
 };
 export type BrowserMessage = {
   id: number; role: 'operator' | 'assistant'; text: string; html: string;
@@ -186,6 +198,10 @@ export type BrowserTaskView = {
   /** A live build: the step it is on (or stuck on, with the act that helps), and the earlier attempts that stopped
    * before it, folded into one quiet line. */
   progress?: { line: string; stuck: { step: number; why: string | null; line: string; action: BrowserLink | null } | null } | null;
+  /** What the agent did last on the live run, and when; the page words it against its own clock (activity-line.ts). */
+  activity?: RunActivity | null;
+  /** The task's live stream (/t/<id>/live): change nudges and who else has it open. Absent: the page reads on its beat. */
+  live?: { href: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
   /** The Building card's link to the live build's own record ("Build #N record", /r/<id>). */
@@ -497,7 +513,9 @@ export type BrowserWorkspace = {
 };
 
 /** One agent at work now: its task and the machine's own phase, in words. */
-export type BrowserHomeAgent = { runId: number; taskId: string; title: string; href: string; agent: string; phase: string; project: string | null; since: string };
+export type BrowserHomeAgent = { runId: number; taskId: string; title: string; href: string; agent: string; phase: string; project: string | null; since: string;
+  /** What the agent did last, and when. */
+  activity?: RunActivity };
 export type BrowserHomeCount = { key: 'working' | 'waiting' | 'ready' | 'done'; label: string; value: number; href: string };
 export type BrowserCatchUpTab = 'needs-you' | 'ready' | 'running' | 'all';
 export type BrowserCatchUpItem = {
@@ -567,14 +585,14 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   });
 }
 
-export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0): BrowserNavigationItem[] {
+export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const knowledge = pathname === '/settings/knowledge' || pathname.startsWith('/settings/knowledge/');
   return [
     { label: 'Chat', href: '/chat', active: pathname === '/chat' },
-    { label: 'Tasks', href: `/work${project === null ? '' : `?project=${encodeURIComponent(project)}`}`,
+    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
-      ...(needsYou > 0 ? { count: needsYou } : {}) },
+      ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
     { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
     { label: 'Projects', href: '/projects', active: pathname === '/projects' },
     { label: 'Knowledge', href: `/settings/knowledge${project === null ? '' : `?repo=${encodeURIComponent(project)}`}`, active: knowledge },

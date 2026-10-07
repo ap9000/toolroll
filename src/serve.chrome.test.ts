@@ -1262,7 +1262,8 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     expect([...primary.matchAll(/<a href="([^"]+)"/g)].map(m => m[1])).toEqual(["/chat", "/work", "/flows", "/projects"]);
     // The count rides the Work row (the inbox lives under it); every
     // primary row wears an icon; the inbox page lights Work.
-    expect(primary).toMatch(/<a href="\/work" aria-label="Tasks" title="Tasks" class="active" aria-current="page" data-waiting="1"><span class="glyph"><svg.*?<span class="count badge badge-open">1<\/span><\/a>/s);
+    // It says which projects it counts, aloud and on hover.
+    expect(primary).toMatch(/<a href="\/work" aria-label="Tasks, 1 needs you in main" title="Tasks" class="active" aria-current="page" data-waiting="1"><span class="glyph"><svg.*?<span aria-label="1 needs you in main" title="1 needs you in main" class="count badge badge-open">1<\/span><\/a>/s);
     expect((primary.match(/<span class="glyph">/g) ?? []).length).toBe(4);
 
     // Both groups collapsed by default: neither carries the inbox's group open.
@@ -1306,7 +1307,7 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     const tabbar = /<nav class="tabbar">(.*?)<\/nav>/s.exec(home)?.[1] ?? "";
     expect([...tabbar.matchAll(/<a href="([^"]+)"/g)].map(m => m[1])).toEqual(["/chat", "/work", "/flows", "/projects"]);
     // A phone tab says THAT something waits — a dot, never a number.
-    expect(tabbar).toContain('<span class="dot-badge" role="img" aria-label="1 waiting"></span>');
+    expect(tabbar).toContain('<span class="dot-badge" role="img" aria-label="1 needs you in main"></span>');
     expect(tabbar).not.toContain("badge-open");
     expect(home).toContain('<a class="manage" href="/projects">manage projects</a>');
     // Tools and settings are a header action on the phone, never a tab.
