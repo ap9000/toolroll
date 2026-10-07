@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.48 — 2026-10-07
+
+- **Instant live views.** Changes reach open pages in about 2 ms (was about
+  half a second). Idle pages cost the server nothing. A slow connection is
+  told to reload instead of freezing.
+- **Faster under load.** With 20 people and 50 agents busy, the slowest 1%
+  of requests drop from about 17 s to 0.3 s, with no dropped requests. The
+  task list now builds off the main thread.
+- **`toolroll health`** shows response times, server delay, database waits
+  and open live views. Operators get a team load benchmark
+  (`scripts/bench-team.mjs`).
+
 ## 0.9.47 — 2026-10-07
 
 - **Live tasks.** Task pages update live and show who else is viewing.
