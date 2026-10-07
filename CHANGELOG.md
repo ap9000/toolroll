@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.44 — 2026-10-07
+
+- **Work from your own laptop.** `toolroll connect https://… --token so_…`
+  and allowed commands run on the server as you, with the same output and
+  exit codes. Approvals, people, policy and anything touching the server's
+  files stay in the console and chat.
+- **Agents connect over HTTPS.** `claude mcp add --transport http toolroll
+  https://<host>/mcp --header "Authorization: Bearer so_…"`. Tools cover only
+  that person's projects.
+- **Every remote action is on the record**: who, whether it came from the CLI
+  or an agent, and the token's name. A revoked token stops on its next call.
+  Other projects' tasks and runs answer "not found".
+- Still to come: token management in the CLI, rate limits, an audit view, a
+  real domain with TLS, and sign-in for agents.
+
 ## 0.9.43 — 2026-10-06
 
 - **Approve from chat and the CLI.** A plan waiting on you and a flow's
