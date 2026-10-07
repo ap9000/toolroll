@@ -13,13 +13,12 @@ import { PERSON_TOOL_INPUTS, PERSON_TOOL_OUTPUTS, type PersonToolInput, type Per
 import { reportToolOutput } from "./contracts/lead-tools.js";
 import { callArguments, type CallOutcome, type Json } from "./mcp-core.js";
 import type { Store } from "./store.js";
+import type { Principal } from "./operate.js";
 
-/** The shared remote seam (operate.ts): who runs a command on the server. */
-export type Principal = { kind: "person"; account: string; generation: number; scope: "read" | "act"; tokenId: string; projects: string[] | null };
-export type RunOperateAs = (
-  argv: string[],
-  opts: { principal: Principal; store: Store; write: (s: string) => void; files?: Record<string, string>; source?: "api" | "mcp" },
-) => Promise<number>;
+/** The shared remote seam (operate.ts): who runs a command on the server, and the runner itself. Type-only, so a
+ * change to either breaks this build instead of drifting; the value is loaded lazily (operate.ts imports serve.ts). */
+export type { Principal } from "./operate.js";
+export type RunOperateAs = typeof import("./operate.js").runOperateAs;
 
 /** A signed-in person: the principal the command runs as, and what their account may do. */
 export type Person = { principal: Principal; role: "approver" | "viewer"; tokenName: string };

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
@@ -11,6 +11,7 @@ import { mintCoordinator } from "./coordinator.js";
 import { ENVELOPE_VERSION } from "./envelope.js";
 import { LEGACY, MODERN, TOOLS } from "./mcp-core.js";
 import type { Principal, RunOperateAs } from "./mcp-person.js";
+import { runOperate } from "./operate.js";
 
 /**
  * The MCP gateway over HTTP at /mcp. People's commands run through `runOperateAs`, which the remote-principal change
@@ -217,5 +218,79 @@ describe("the /mcp door", () => {
     expect(status.isError).toBeUndefined();
     expect(JSON.parse(status.content[0]!.text)).toHaveProperty("waitsOnYou");
     expect(ran).toHaveLength(0);
+  });
+});
+
+/** The same doors with nothing injected: the gateway loads operate.ts's real runOperateAs. */
+describe("people over /mcp, against the real runOperateAs", () => {
+  let real: { base: string; close: () => Promise<void> };
+  let shopRepo: string, bankRepo: string;
+  beforeEach(async () => {
+    shopRepo = join(dir, "shop"); bankRepo = join(dir, "bank");
+    mkdirSync(shopRepo); mkdirSync(bankRepo);
+    const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), configDir: dir });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address !== "object") throw new Error("listen");
+    real = { base: `http://127.0.0.1:${address.port}`, close: () => new Promise(resolve => server.close(() => resolve())) };
+  });
+  afterEach(async () => { await real.close(); });
+
+  const realClient = (bearer: string) => {
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await fetch(`${real.base}/mcp`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { _meta: modernMeta, name, arguments: args } }) });
+      expect(response.status).toBe(200);
+      return ((await response.json()) as Record<string, any>)["result"] as { content: { text: string }[]; isError?: boolean };
+    };
+    return { call };
+  };
+  /** Two people as before, but sam's grant names the real shop folder. */
+  const twoPeople = async (): Promise<{ shopTask: string; bankTask: string }> => {
+    const now = new Date();
+    const alex = addApprover(store, "alex", now);
+    if (!alex.ok) throw new Error("alex");
+    const sam = addApprover(store, "sam", now, { name: "alex", token: alex.token });
+    if (!sam.ok) throw new Error("sam");
+    expect(store.setAccountProjects("sam", [shopRepo], "alex", now)).toEqual({ ok: true });
+    const file = async (repo: string, title: string): Promise<string> => {
+      const lines: string[] = [];
+      expect(await runOperate("task", ["add", title, "--repo", repo, "--json", "--db", join(dir, "orders.db")], line => { lines.push(line); }, { openDatabase: () => openStore(join(dir, "orders.db")) })).toBe(0);
+      return String((JSON.parse(lines.at(-1)!) as { task: { id: string } }).task.id);
+    };
+    return { shopTask: await file(shopRepo, "Shop work"), bankTask: await file(bankRepo, "Bank work") };
+  };
+  const mcpLedger = () => store.actionLedger({ repos: null, instance: true, limit: 200 }).filter(one => one.source === "mcp");
+
+  test("another project's task answers exactly like a missing one, and the ledger names the person, mcp and the token", async () => {
+    const { shopTask, bankTask } = await twoPeople();
+    const sam = realClient(token("sam", "act", "sam-agent").token);
+    const own = await sam.call("task_show", { ref: shopTask });
+    expect(own.isError, own.content[0]!.text).toBeUndefined();
+    expect(JSON.parse(own.content[0]!.text)).toMatchObject({ ok: true, command: "task show" });
+    const foreign = await sam.call("task_show", { ref: bankTask });
+    const missing = await sam.call("task_show", { ref: "t-nowhere" });
+    expect(foreign.isError).toBe(true);
+    const shape = (text: string) => { const { message: _m, ...rest } = JSON.parse(text) as Record<string, unknown>; return rest; };
+    expect(shape(foreign.content[0]!.text)).toEqual(shape(missing.content[0]!.text));
+    expect(foreign.content[0]!.text).not.toContain(bankRepo);
+    expect((await sam.call("file_task", { repo: bankRepo, title: "Sneak in", idempotency_key: "bank-0001" })).isError).toBe(true);
+    expect(store.listTasks().filter(one => one.title === "Sneak in")).toHaveLength(0);
+
+    const shown = mcpLedger().find(one => one.taskId === shopTask && one.outcome === "done");
+    expect(shown).toMatchObject({ actor: "sam", source: "mcp", action: "remote command: task show", detail: "token sam-agent" });
+    expect(mcpLedger().every(one => one.actor === "sam" && one.detail?.startsWith("token sam-agent"))).toBe(true);
+  });
+
+  test("a read token reads its own project and files nothing", async () => {
+    const { shopTask } = await twoPeople();
+    const reader = realClient(token("sam", "read", "sam-dashboard").token);
+    expect((await reader.call("task_show", { ref: shopTask })).isError).toBeUndefined();
+    const refused = await reader.call("file_task", { repo: shopRepo, title: "Write access please", idempotency_key: "read-0001" });
+    expect(refused.isError).toBe(true);
+    expect(store.listTasks().filter(one => one.title === "Write access please")).toHaveLength(0);
+    expect(mcpLedger().map(one => [one.action, one.outcome, one.detail])).toEqual([
+      ["remote command: task show", "done", "token sam-dashboard"],
+      ["remote command: task show", "requested", "token sam-dashboard"],
+    ]);
   });
 });

@@ -76,11 +76,8 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
     return auth.ok ? { kind: "coordinator", token: presented, cid: auth.who.cid } : null;
   };
 
-  const runAs = async (): Promise<RunOperateAs | null> => {
-    if (options.runAs !== undefined) return options.runAs;
-    const operate = (await import("./operate.js")) as unknown as { runOperateAs?: RunOperateAs };
-    return typeof operate.runOperateAs === "function" ? operate.runOperateAs : null;
-  };
+  /** Loaded on first use: operate.ts imports serve.ts, which serves this gateway. */
+  const runAs = async (): Promise<RunOperateAs> => options.runAs ?? (await import("./operate.js")).runOperateAs;
 
   const readBody = (request: IncomingMessage): Promise<string | null> => new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -95,9 +92,7 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
 
   const call = async (caller: Caller, params: Record<string, unknown>): Promise<CallOutcome> => {
     if (caller.kind === "person") {
-      const run = await runAs();
-      if (run === null) return { kind: "result", result: { content: [{ type: "text", text: "this server cannot run commands for people yet — update Toolroll" }], isError: true } };
-      return callPersonTool(caller.person, store, run, params);
+      return callPersonTool(caller.person, store, await runAs(), params);
     }
     let read = readDecisions.get(caller.cid);
     if (read === undefined) readDecisions.set(caller.cid, read = new Set());
