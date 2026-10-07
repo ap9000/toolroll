@@ -9,6 +9,7 @@ import { sessionServiceOrigin } from './session-cli.js';
 import { databasePath } from './store.js';
 import type { TeamChatAuthorization, TeamMessage, TeamOperation, TeamRequest, TeamResponse, TeamSnapshot } from './team-contract.js';
 import { configBase, namedPath } from './names.js';
+import { parseApiToken } from './api-tokens.js';
 
 export type TeamCliOptions = {
   fetch?: typeof fetch; env?: NodeJS.ProcessEnv; home?: string; profileFile?: string;
@@ -18,7 +19,9 @@ export type TeamCliOptions = {
 };
 export const TEAM_CLI_ACTIONS = ['connect', 'lead list', 'lead create', 'lead update', 'lead member', 'lead transfer', 'conversation list', 'conversation create', 'conversation show', 'conversation member', 'conversation edit', 'conversation withdraw', 'conversation read', 'conversation follow', 'conversation stop'] as const;
 const HELP = `toolroll connect <HTTPS-origin> --as <account> --token-stdin
-  Use --token-file <private-file> or --local-login for your existing local sign-in.
+  Pipe your API token (so_…, from Settings → API tokens) or use --token-file <private-file>;
+  --local-login uses your existing local sign-in for chat only.
+  With an API token saved, other commands run on that server as you (--local runs here).
   Optional: --profile <name> (saved as the active profile).
 toolroll lead list|create|update|member|transfer [--profile <name>] [--json]
   create: --name <name> --instructions <text> --project <server-path> (repeatable)
@@ -44,7 +47,7 @@ toolroll brief --lead <id> --conversation <id> [--json]
 Saved profiles select the central service for chat and brief. Use --local for the
 existing local commands. Credentials stay in a private file, never in URLs or arguments.
 Reads and attachment do not start model work. Server permissions remain authoritative.`;
-class UsageError extends Error {}
+export class UsageError extends Error {}
 type Profile = { origin: string; account: string; token: string };
 type Profiles = { version: 1; active: string; profiles: Record<string, Profile> };
 type Flags = Record<string, string | true | string[]>;
@@ -103,6 +106,20 @@ function saveProfile(options: TeamCliOptions, name: string, profile: Profile): v
     fd = openSync(directory, constants.O_RDONLY); fsyncSync(fd);
   } finally { if (fd !== undefined) closeSync(fd); if (existsSync(temporary)) unlinkSync(temporary); }
 }
+/** An API token (so_…) is sent bare; an older saved sign-in keeps its account:secret form. */
+export const bearerOf = (profile: Profile): string => parseApiToken(profile.token) !== null ? `Bearer ${profile.token}` : `Bearer ${profile.account}:${profile.token}`;
+
+/** The saved central profile remote commands use: the named one (or the active one), and whether it holds an API token.
+ * null when nothing is saved. Reads only the private profile file — never a local login or the database. */
+export function centralProfile(options: TeamCliOptions, name?: string): { name: string; origin: string; account: string; token: string; apiToken: boolean } | null {
+  const saved = profiles(options);
+  if (saved === null) return null;
+  const chosen = name ?? saved.active;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(chosen) || !Object.hasOwn(saved.profiles, chosen)) throw new UsageError(`No saved connection named ${chosen}. Use connect with your API token first.`);
+  const profile = saved.profiles[chosen]!;
+  return { name: chosen, ...profile, apiToken: parseApiToken(profile.token) !== null };
+}
+
 async function stdinSecret(): Promise<string> {
   if (process.stdin.isTTY) throw new UsageError('Pipe your sign-in secret into --token-stdin, or use --token-file.');
   const chunks: Buffer[] = []; let size = 0;
@@ -159,7 +176,7 @@ async function perform(profile: Profile, request: TeamRequest, options: TeamCliO
   const reading = ['list', 'show'].includes(request.operation);
   const unconfirmed = () => failure(reading ? 'service-unavailable' : 'delivery-unconfirmed', reading ? 'The service response could not be read.' : 'The response could not be confirmed. Inspect saved messages before continuing; this request was not retried.', { operation: request.operation, ...(request.args.conversationId ? { conversationId: request.args.conversationId } : {}), ...(request.args.requestId ? { requestId: request.args.requestId } : {}) });
   try {
-    const response = await (options.fetch ?? fetch)(`${profile.origin}/api/team`, { method: 'POST', redirect: 'manual', credentials: 'omit', signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), headers: { authorization: `Bearer ${profile.account}:${profile.token}`, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(request) });
+    const response = await (options.fetch ?? fetch)(`${profile.origin}/api/team`, { method: 'POST', redirect: 'manual', credentials: 'omit', signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), headers: { authorization: bearerOf(profile), 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(request) });
     if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); return unconfirmed(); }
     const payload = await responseBody(response);
     if (!record(payload) || payload.version !== 1 || typeof payload.ok !== 'boolean' || typeof payload.code !== 'string' || typeof payload.message !== 'string' || payload.snapshot !== undefined && !isSnapshot(payload.snapshot) || payload.ok && !response.ok) return unconfirmed();

@@ -35,6 +35,7 @@ import { run as execRun } from "./exec.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
 import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
 import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
+import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
 import { readPulls } from "./pulls.js";
 import {
@@ -315,6 +316,8 @@ export type MainOptions = {
   operate?: OperateOptions;
   session?: SessionCliOptions;
   team?: TeamCliOptions;
+  /** Injected by tests: the remote CLI's profile, fetch and output streams (defaults to `team`'s profile seams). */
+  remote?: RemoteExecOptions;
   /** Injected by tests: the gh-facing halves of `repos add-from-github` —
    * the verb's parsing, gating, and enrollment are what CLI tests prove;
    * gh itself is proved by onboard.test.ts. */
@@ -445,6 +448,10 @@ async function dispatch(
   write: Write,
   mainOptions: MainOptions,
 ): Promise<number> {
+  // A saved API token sends commands marked remote to the central server, before anything local opens.
+  const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
+  if (typeof central === "number") return central;
+  if (central !== null) argv = central.local;
   const team = await maybeRunTeamCommand(argv, write, mainOptions.team);
   if (team !== null) return team;
   if ((argv[0] === "chat" || argv[0] === "brief") && argv.includes("--local")) argv = argv.filter(arg => arg !== "--local");
