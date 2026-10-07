@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.46 — 2026-10-07
+
+- **Tokens from the terminal.** `toolroll tokens create|list|revoke|rotate`.
+  Creating or rotating asks for your password and shows the secret once.
+  Tokens can be limited to projects and always expire; rotating never
+  extends one. You're warned 7 days and 1 day before expiry.
+- **Request limits per token.** Too many requests get a 429 with
+  Retry-After. Owners change the limits in the console.
+- **`toolroll audit`** and the People page show who did what remotely, with
+  which token, and how it went. People see only their own.
+- **A real domain, safely.** HSTS only on the https public host. Tokens are
+  refused over plain HTTP from outside this machine or your tailnet.
+  `toolroll serve check-public` checks the setup; see docs/team-server.md.
+- **Agents sign in instead of pasting a token.** OAuth with PKCE and a
+  consent screen, short-lived tokens, and reuse detection. Pasted tokens
+  still work.
+- Still to come: `brief` and `spend` remotely for limited access.
+
 ## 0.9.45 — 2026-10-07
 
 - **Your projects, your lists.** People with access to some projects can now
