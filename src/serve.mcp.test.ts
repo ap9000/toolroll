@@ -197,6 +197,23 @@ describe("the /mcp door", () => {
     expect(wrongHost).toBe(421);
   });
 
+  test("a body with no length is cut off at 256 KiB: 413 before the client finishes, then the connection closes", async () => {
+    people();
+    const bearer = token("alex", "act").token;
+    const outcome = await new Promise<{ status: number; closed: boolean }>((resolve, reject) => {
+      const sent = request(`${base}/mcp`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "transfer-encoding": "chunked" } }, answer => {
+        answer.resume();
+        answer.on("end", () => resolve({ status: answer.statusCode ?? 0, closed: answer.headers.connection === "close" }));
+      });
+      sent.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && (error as NodeJS.ErrnoException).code !== "EPIPE") reject(error); });
+      // 300 KiB in 16 KiB pieces and the request is never ended: only an early answer can settle this.
+      const piece = "x".repeat(16 * 1024);
+      for (let i = 0; i < 19; i++) sent.write(piece);
+    });
+    expect(outcome).toEqual({ status: 413, closed: true });
+    expect(ran).toHaveLength(0);
+  });
+
   test("a handshake-era client initializes statelessly; notifications are accepted without a body", async () => {
     people();
     const alex = client(token("alex", "act").token);

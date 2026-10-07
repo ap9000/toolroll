@@ -79,16 +79,28 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
   /** Loaded on first use: operate.ts imports serve.ts, which serves this gateway. */
   const runAs = async (): Promise<RunOperateAs> => options.runAs ?? (await import("./operate.js")).runOperateAs;
 
+  /** The body, or null the moment it passes MAX_REQUEST: reading stops there and nothing more is buffered. */
   const readBody = (request: IncomingMessage): Promise<string | null> => new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    request.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       size += chunk.length;
-      if (size <= MAX_REQUEST) chunks.push(chunk);
-    });
-    request.on("end", () => resolve(size > MAX_REQUEST ? null : Buffer.concat(chunks).toString("utf8")));
+      if (size <= MAX_REQUEST) return void chunks.push(chunk);
+      request.off("data", onData);
+      request.pause();
+      chunks.length = 0;
+      resolve(null);
+    };
+    request.on("data", onData);
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     request.on("error", reject);
   });
+
+  /** 413, then the connection goes: the rest of an oversized body is never read. */
+  const tooLarge = (request: IncomingMessage, response: ServerResponse): void => {
+    response.once("finish", () => request.destroy());
+    refuse(response, 413, "request over 256 KiB", { connection: "close" });
+  };
 
   const call = async (caller: Caller, params: Record<string, unknown>): Promise<CallOutcome> => {
     if (caller.kind === "person") {
@@ -110,9 +122,9 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here", { "www-authenticate": 'Bearer realm="toolroll-mcp"' });
     }
     if (!/^application\/json\s*(;|$)/i.test(request.headers["content-type"] ?? "")) return refuse(response, 415, "send the JSON-RPC message as application/json");
-    if (Number(request.headers["content-length"] ?? 0) > MAX_REQUEST) return refuse(response, 413, "request over 256 KiB", { connection: "close" });
+    if (Number(request.headers["content-length"] ?? 0) > MAX_REQUEST) return tooLarge(request, response);
     const text = await readBody(request);
-    if (text === null) return refuse(response, 413, "request over 256 KiB", { connection: "close" });
+    if (text === null) return tooLarge(request, response);
 
     const message = readMessage(text);
     if (!message.ok) return send(response, 400, { jsonrpc: "2.0", id: message.id, error: { code: message.code, message: message.message } });
