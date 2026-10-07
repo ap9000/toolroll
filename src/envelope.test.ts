@@ -181,6 +181,7 @@ describe("the machine envelope", () => {
       config: ["show", "--json"],
       mode: ["show", "--repo", "/nope", "--json"],
       people: ["list", "--json"],
+      tokens: ["list", "--json"],
       keys: ["status", "--json"],
       setup: ["show", "--json"],
       verify: ["show", "--json"],

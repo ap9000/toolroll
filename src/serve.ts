@@ -341,7 +341,7 @@ import { LIMITS_CSS, limitsHtml, limitsView } from "./limits-ui.js";
 import { budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendItems, teammateNames as teammateNamesOf, usd as spendUsd } from "./spend.js";
 import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
-import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS } from "./api-tokens.js";
+import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
 import { logEvent } from "./log.js";
@@ -1093,12 +1093,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
     authenticate: request => {
-      const who = identify(request, false);
+      const who = identify(request, false, true);
       const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
       const row = id === undefined ? undefined : store.apiTokenSecret(id)?.row;
       const account = who === null ? null : store.accountOf(who.name);
       if (who?.via !== "bearer" || who.token === undefined || row === undefined || row.account !== who.name || account === null || account.revokedAt !== null) return null;
-      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: account.projects === null ? null : [...account.projects] };
+      return { kind: "person", account: who.name, generation: account.generation, scope: row.access, tokenId: row.id, projects: tokenProjects(account.projects, row.projects) };
     },
     run: async () => options.cliRunner ?? ((await import("./operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
@@ -3317,7 +3317,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (who.via === "cookie") return identify(request, false)?.name === who.name;
         if (tokenId === null) return true;
         const token = store.apiTokenSecret(tokenId)?.row;
-        return token !== undefined && token.revokedAt === null && Date.parse(token.expiresAt) > Date.now();
+        return token !== undefined && tokenLive(token, Date.now());
       };
       // The whole walk it starts from is shared by exports in the same minute; a reader who stops reading for a minute is let go.
       const pieces = ledgerExportChunks(store, { from, to }, { repos: access.repos, instance: store.isInstanceOperator(who.name) }, access, who.name, now, evidenceRoot);
@@ -11574,12 +11574,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }));
   }
 
-  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request) !== null,
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request, true, true) !== null,
     enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
 
   // ---- identity ------------------------------------------------------------
 
-  function identify(request: IncomingMessage, touch = true): Who | null {
+  function identify(request: IncomingMessage, touch = true, limited = false): Who | null {
     // v101: an API token. Wrong ones spend the address's tries like a wrong password; expired or revoked ones, and a removed account's, name no one.
     const presented = /^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1];
     if (presented !== undefined) {
@@ -11588,7 +11588,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const parsed = parseApiToken(presented);
       const kept = parsed === null ? null : store.apiTokenSecret(parsed.id);
       if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) { signInBudget.failed(source, at); return null; }
-      if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= at) return null;
+      if (!tokenLive(kept.row, at)) return null;
+      // v111: a token limited to some projects signs in only where its limit travels with it (the remote CLI and MCP,
+      // through Principal.projects); the console's own pages and APIs check the account's access alone, so it is refused there.
+      if (kept.row.projects !== null && !limited) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
       store.touchApiToken(kept.row.id, new Date(at));

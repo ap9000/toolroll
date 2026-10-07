@@ -13,7 +13,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
-import { parseApiToken, secretMatches } from "./api-tokens.js";
+import { parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
 import { authenticateCoordinator } from "./coordinator.js";
 import {
   LEGACY, MAX_REQUEST, META_CAPABILITIES, META_SERVER, META_VERSION, MODERN, TOOLS, UNSUPPORTED_VERSION,
@@ -60,13 +60,13 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
       const kept = parsed === null ? null : store.apiTokenSecret(parsed.id);
       // The secret is checked here too, so this door never rests on how signedIn reads the request.
       if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) return null;
-      if (kept.row.revokedAt !== null || Date.parse(kept.row.expiresAt) <= options.clock().getTime()) return null;
+      if (!tokenLive(kept.row, options.clock().getTime())) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;
       return {
         kind: "person",
         person: {
-          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: account.projects === null ? null : [...account.projects] },
+          principal: { kind: "person", account: kept.row.account, generation: account.generation, scope: kept.row.access, tokenId: kept.row.id, projects: tokenProjects(account.projects, kept.row.projects) },
           role: account.role,
           tokenName: kept.row.name,
         },

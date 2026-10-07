@@ -31,3 +31,42 @@ export function secretMatches(secret: string, keptHash: string): boolean {
   const a = Buffer.from(hashSecret(secret), "hex"), b = Buffer.from(keptHash, "hex");
   return a.length === b.length && timingSafeEqual(a, b);
 }
+
+/** v111: how long a rotated token keeps working beside its replacement, by default and at most. */
+export const ROTATION_OVERLAP_MINUTES = 10;
+export const ROTATION_OVERLAP_MAX_MINUTES = 60;
+/** v111: the person is told this many days before a token expires, once each. */
+export const EXPIRY_NOTICE_DAYS = [7, 1] as const;
+
+type TokenState = { revokedAt: string | null; expiresAt: string; overlapUntil: string | null };
+
+/** Whether a token signs anyone in at `now`: unrevoked, unexpired, and (once replaced) inside its overlap. */
+export function tokenLive(token: TokenState, now: number): boolean {
+  if (token.revokedAt !== null || !(Date.parse(token.expiresAt) > now)) return false;
+  return token.overlapUntil === null || Date.parse(token.overlapUntil) > now;
+}
+
+/**
+ * The projects a token's person may use through it now: the person's current access, narrowed by the token's limit.
+ * Null is every project. A limit never widens access, and a project the person has lost stays lost.
+ */
+export function tokenProjects(account: readonly string[] | null, token: readonly string[] | null): string[] | null {
+  if (token === null) return account === null ? null : [...account];
+  return token.filter(repo => account === null || account.includes(repo));
+}
+
+/** Whether `projects` (a principal's) stays inside the token's limit. A limited token never stands for every project. */
+export function withinTokenLimit(projects: readonly string[] | null, limit: readonly string[] | null): boolean {
+  if (limit === null) return true;
+  return projects !== null && projects.every(repo => limit.includes(repo));
+}
+
+/** Whole days until a token expires, rounded up (0 once it has). */
+export const daysLeft = (expiresAt: string, now: number): number => Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 86_400_000));
+
+/** The expiry notice a token is due at `now` (7 or 1 days), or null. Replaced and revoked tokens get none. */
+export function expiryNoticeDue(token: TokenState & { replacedBy: string | null }, now: number): (typeof EXPIRY_NOTICE_DAYS)[number] | null {
+  if (token.replacedBy !== null || !tokenLive(token, now)) return null;
+  const left = Date.parse(token.expiresAt) - now;
+  return EXPIRY_NOTICE_DAYS.filter(days => left <= days * 86_400_000).at(-1) ?? null;
+}

@@ -5404,6 +5404,38 @@ $ contract --commands --json → 0
       "remote": "step-up"
     },
     {
+      "invocation": "tokens create",
+      "synopsis": "make one of your API tokens: --name, --access read|act, --days 30|90|365, optional --projects a,b; your password at the prompt or --password-stdin; the token is shown once",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "step-up"
+    },
+    {
+      "invocation": "tokens list",
+      "synopsis": "your API tokens: name, access, projects, made, last used, expiry — never a secret; your password at the prompt or --password-stdin",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "step-up"
+    },
+    {
+      "invocation": "tokens revoke",
+      "synopsis": "end one of your API tokens now, by name or id; your password at the prompt or --password-stdin",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "step-up"
+    },
+    {
+      "invocation": "tokens rotate",
+      "synopsis": "replace one of your API tokens on the same terms; the old one works 10 more minutes (--overlap), then stops; the new one is shown once",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "step-up"
+    },
+    {
       "invocation": "mode show",
       "synopsis": "the repository's operating mode, in full — or 'locked' when none is signed",
       "audience": "operator",

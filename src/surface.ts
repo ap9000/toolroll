@@ -395,6 +395,10 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("people invite", "mint a single-use sign-in link for one person — their powers are pinned when you mint, never after"),
   operator("people projects", "set a person's project access — selected project, all projects, or no projects"),
   operator("people revoke", "end a person's access — their sessions, invites, and signed modes end with them; history stays"),
+  operator("tokens create", "make one of your API tokens: --name, --access read|act, --days 30|90|365, optional --projects a,b; your password at the prompt or --password-stdin; the token is shown once"),
+  operatorRead("tokens list", "your API tokens: name, access, projects, made, last used, expiry — never a secret; your password at the prompt or --password-stdin"),
+  operator("tokens revoke", "end one of your API tokens now, by name or id; your password at the prompt or --password-stdin"),
+  operator("tokens rotate", "replace one of your API tokens on the same terms; the old one works 10 more minutes (--overlap), then stops; the new one is shown once"),
   operatorRead("mode show", "the repository's operating mode, in full — or 'locked' when none is signed"),
   operator("mode set", "sign a per-repository operating mode (password ceremony; standard or hands-off, always expiring)"),
   operator("publish merge", "say yes to ONE waiting merge — it fires only when CI is seen green on the exact commit you authorized"),
@@ -471,6 +475,8 @@ const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
+  // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
+  "tokens create", "tokens list", "tokens revoke", "tokens rotate",
   "mode show", "mode set", "mode revoke", "chat-approval on", "review on", "review off", "config set", "config clear",
   "verify set", "verify clear", "verify level", "project checks", "project concurrency", "intake grant", "intake clear", "webhook primary",
 ];

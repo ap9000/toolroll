@@ -81,7 +81,7 @@ const T0 = new Date("2026-09-12T08:00:00.000Z");
 
     store = openStore(file);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(110);
+    expect(SCHEMA_VERSION).toBe(111);
     expect(columns(file)).toEqual(expect.arrayContaining(["boot_id", "containment", "container", "container_empty_at"]));
     const after = store.raw().prepare("SELECT * FROM run_process ORDER BY id").all();
     expect(after.map(row => ({ id: row["id"], run: row["run"], pid: row["pid"], host: row["host"], process_group: row["process_group"], observed_at: row["observed_at"], exited_at: row["exited_at"] }))).toEqual(before);

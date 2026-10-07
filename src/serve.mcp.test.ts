@@ -298,6 +298,43 @@ describe("people over /mcp, against the real runOperateAs", () => {
     expect(mcpLedger().every(one => one.actor === "sam" && one.detail?.startsWith("token sam-agent"))).toBe(true);
   });
 
+  test("v111: a project-limited token works only inside its projects on /mcp and /api/cli, never on the console, and a rotated one stops after its overlap", async () => {
+    const { shopTask, bankTask } = await twoPeople();
+    // alex may use every project; this token only the shop.
+    const minted = mintApiToken();
+    const now = new Date();
+    store.createApiToken({ id: minted.id, account: "alex", name: "alex-shop", secretHash: minted.hash, access: "act", expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), by: "alex", projects: [shopRepo] }, now);
+    const limited = realClient(minted.token);
+    expect((await limited.call("task_show", { ref: shopTask })).isError).toBeUndefined();
+    expect((await limited.call("task_show", { ref: bankTask })).isError).toBe(true);
+    expect((await limited.call("file_task", { repo: bankRepo, title: "Outside the limit", idempotency_key: "limit-0001" })).isError).toBe(true);
+    expect(store.listTasks().filter(one => one.title === "Outside the limit")).toHaveLength(0);
+    const cli = async (argv: string[]) => {
+      const response = await fetch(`${real.base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: JSON.stringify({ argv }) });
+      return { status: response.status, body: await response.json() as { exitCode?: number; stdout?: string } };
+    };
+    expect((await cli(["task", "show", shopTask, "--json"])).body.exitCode).toBe(0);
+    const outside = await cli(["task", "show", bankTask, "--json"]);
+    expect(outside.body.exitCode).toBe(3);
+    expect(JSON.parse(outside.body.stdout!)).toMatchObject({ ok: false, reason: "not-found" });
+    // The console's own pages check the account alone, so a limited token signs in nothing there.
+    const ledgerPage = (bearer: string) => fetch(`${real.base}/ledger?format=json`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
+    expect((await ledgerPage(token("alex", "read", "alex-everywhere").token)).status).toBe(200);
+    const refused = await ledgerPage(minted.token);
+    expect(refused.status).toBe(303);
+    expect(refused.headers.get("location")).toMatch(/^\/login/);
+    // Rotated, with its overlap over: the old token signs in nowhere, before any cleanup, and the new one carries the limit.
+    const replacement = mintApiToken();
+    expect(store.rotateApiToken(minted.id, { id: replacement.id, secretHash: replacement.hash }, "alex", now, 600_000)).toMatchObject({ ok: true, row: { projects: [shopRepo] } });
+    expect((await cli(["task", "show", shopTask, "--json"])).body.exitCode).toBe(0);
+    store.handle.prepare("UPDATE api_token SET overlap_until = ? WHERE id = ?").run(new Date(Date.now() - 1).toISOString(), minted.id);
+    expect((await cli(["task", "show", shopTask, "--json"])).status).toBe(401);
+    expect((await fetch(`${real.base}/mcp`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta } }) })).status).toBe(401);
+    const renewed = realClient(replacement.token);
+    expect((await renewed.call("task_show", { ref: bankTask })).isError).toBe(true);
+    expect((await renewed.call("task_show", { ref: shopTask })).isError).toBeUndefined();
+  });
+
   test("a read token reads its own project and files nothing", async () => {
     const { shopTask } = await twoPeople();
     const reader = realClient(token("sam", "read", "sam-dashboard").token);
