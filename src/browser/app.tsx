@@ -115,7 +115,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (force) pollDelay.current = 5_000;
     polling.current = true;
     const asked = state.current.draft.pending?.request ?? null;
-    let unchanged = false;
+    let unchanged = false, failed = false;
     try {
       const read = await readWorkspace(state.current.workspace, asked, fetch, { etag: refreshTag.current, force });
       if (!mounted.current) return;
@@ -140,6 +140,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
       setNotice(received.pending ? "Delivery is not confirmed. Check again before sending another message." : "");
     } catch (error) {
       if (!mounted.current) return;
+      failed = true;
       if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
       setNotice(error instanceof Error ? error.message : "Updates are unavailable. Your work is still saved.");
     } finally {
@@ -155,6 +156,11 @@ export function useWorkspace(initial: BrowserWorkspace) {
           pollDelay.current = initial.conversation ? workspacePollDelay(pollDelay.current, unchanged, busy) : (state.current.workspace.refreshSeconds ?? initial.refreshSeconds!) * 1000;
           refreshTimer.current = window.setTimeout(() => { void check(false); }, pollDelay.current);
         }
+      } else if (mounted.current && liveTask && !state.current.stale && canRefreshWorkspace()) {
+        // A page that only follows its task's stream: a nudge during this read reads again now; a failed read
+        // retries soon; otherwise the page reconciles on its own slow beat, not only when the server speaks.
+        if (refreshQueued.current) { refreshQueued.current = false; void check(true); }
+        else refreshTimer.current = window.setTimeout(() => { void check(false); }, failed ? 5_000 : 30_000);
       }
     }
   }, [initial, liveTask, updateDraft]);
@@ -164,8 +170,11 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (!liveTask) return;
     const nudge = () => { void check(true); };
     window.addEventListener(WORKSPACE_NUDGE, nudge);
-    return () => window.removeEventListener(WORKSPACE_NUDGE, nudge);
-  }, [check, liveTask]);
+    // With no beat of its own, the page still reconciles every 30 s (an unchanged read is a 304).
+    const own = !initial.conversation && !initial.refreshSeconds;
+    if (own) refreshTimer.current = window.setTimeout(() => { void check(false); }, 30_000);
+    return () => { window.removeEventListener(WORKSPACE_NUDGE, nudge); if (own) clearTimeout(refreshTimer.current); };
+  }, [check, liveTask, initial]);
 
   useEffect(() => {
     mounted.current = true;

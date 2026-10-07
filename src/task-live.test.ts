@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { createTaskRooms, taskFingerprint, type TaskViewer } from "./task-live.js";
+import { createLiveBus } from "./live-bus.js";
 import { presented, T0 } from "../test/serve-kit.js";
 
 let store: Store;
@@ -61,10 +62,11 @@ describe("a task room", () => {
   test("a joining page hears where the task stands and who else is here, once per person", async () => {
     vi.useFakeTimers();
     let print = "a";
-    const rooms = createTaskRooms(() => print, 1_000);
+    const bus = createLiveBus();
+    const rooms = createTaskRooms(() => print, { bus });
     const alex = new Page(), robin = new Page(), robinAgain = new Page();
     rooms.join("t-1", viewer("alex", alex));
-    expect(alex.events("change")).toEqual([{ at: "a" }]);
+    expect(alex.events("change")).toEqual([{ at: "a", revision: null }]);
     expect(alex.events("here")).toEqual([{ people: [] }]);
     rooms.join("t-1", viewer("robin", robin));
     rooms.join("t-1", viewer("robin", robinAgain));
@@ -73,10 +75,13 @@ describe("a task room", () => {
     expect(robin.events("here").at(-1)).toEqual({ people: ["alex"] });
     expect(rooms.size()).toBe(3);
 
-    // A change nudges every page; the nudge carries no task data.
+    // A write nudges every page at once; the nudge carries no task data, only the fingerprint and revision.
     print = "b";
-    await vi.advanceTimersByTimeAsync(1_000);
-    for (const page of [alex, robin, robinAgain]) expect(page.events("change").at(-1)).toEqual({ at: "b" });
+    bus.publish({ revision: "v1:2" });
+    for (const page of [alex, robin, robinAgain]) expect(page.events("change").at(-1)).toEqual({ at: "b", revision: "v1:2" });
+    // A write that doesn't touch this task says nothing.
+    bus.publish({ revision: "v1:3" });
+    expect(alex.events("change")).toHaveLength(2);
 
     // Robin closes both pages: Alex hears they left.
     robin.end(); robinAgain.end();
@@ -90,17 +95,19 @@ describe("a task room", () => {
   test("a page whose access ended hears gone and is dropped; a task that no longer reads ends every page", async () => {
     vi.useFakeTimers();
     let allowed = true, print: string | null = "a";
-    const rooms = createTaskRooms(() => print, 1_000);
+    const bus = createLiveBus();
+    const rooms = createTaskRooms(() => print, { bus });
     const alex = new Page(), robin = new Page();
     rooms.join("t-1", viewer("alex", alex));
     rooms.join("t-1", viewer("robin", robin, () => allowed));
+    // Access narrows (itself a write): the next signal drops the page at once.
     allowed = false;
-    await vi.advanceTimersByTimeAsync(15_000);
+    bus.publish({ revision: "v1:2" });
     expect(robin.events("gone")).toHaveLength(1);
     expect(robin.writableEnded).toBe(true);
     expect(alex.writableEnded).toBe(false);
     print = null;
-    await vi.advanceTimersByTimeAsync(1_000);
+    bus.publish({ revision: "v1:3" });
     expect(alex.events("gone")).toHaveLength(1);
     expect(rooms.size()).toBe(0);
   });

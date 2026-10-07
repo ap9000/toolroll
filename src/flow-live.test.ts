@@ -3,6 +3,8 @@ import type { ServerResponse } from "node:http";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
+import { createLiveBus, followWorkspace } from "./live-bus.js";
+import { prepareWorkspaceRevision } from "./workspace-revision.js";
 import { openStore, type Store } from "./store.js";
 
 const now = new Date("2026-10-07T17:00:00Z");
@@ -195,20 +197,23 @@ test("lease expiry changes the fingerprint without a task or card write", () => 
   expect(flowFingerprint(store, fixture.flow, new Date(now.getTime() + 3_600_001))).not.toBe(fingerprint());
 });
 
-test("the existing stream sends one opaque change event on the next one-second tick", () => {
-  const rooms = createFlowRooms(() => fingerprint());
+test("a write reaches the open stream at once as one opaque change; nothing written, nothing sent", () => {
+  const bus = createLiveBus();
+  const revision = prepareWorkspaceRevision(store);
+  const follower = followWorkspace(store, () => revision.current(), bus);
+  const rooms = createFlowRooms(() => fingerprint(), { bus });
   const write = vi.fn();
-  const response = Object.assign(new EventEmitter(), { write, end: vi.fn(), writableEnded: false, destroyed: false });
+  const response = Object.assign(new EventEmitter(), { write, end: vi.fn(), writableEnded: false, destroyed: false, writableLength: 0 });
   try {
     rooms.join(fixture.flow, { name: "alex", card: null, editing: false, response: response as unknown as ServerResponse, valid: () => true });
     write.mockClear();
     fixture.checkpoint(["blocked"], "private diagnostic");
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(1);
     const changes = write.mock.calls.map(call => String(call[0])).filter(line => line.startsWith("event: change"));
     expect(changes).toHaveLength(1);
-    expect(changes[0]).toMatch(/^event: change\ndata: \{"at":"[a-f0-9]{16}"\}\n\n$/);
+    expect(changes[0]).toMatch(/^event: change\ndata: \{"at":"[a-f0-9]{16}","revision":"v1:\d+"\}\n\n$/);
     expect(changes[0]).not.toContain("private diagnostic");
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(10_000);
     expect(write.mock.calls.filter(call => String(call[0]).startsWith("event: change"))).toHaveLength(1);
-  } finally { rooms.close(); }
+  } finally { rooms.close(); follower.close(); }
 });
