@@ -25,8 +25,8 @@ test.each([92, -92])("v%s: a teammate's open question stays open, and it can be 
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(111);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(111);
+  expect(SCHEMA_VERSION).toBe(112);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
   expect(store.teammateQuestion(question)).toMatchObject({ state: "open", question: "Refund all $200?", askedOf: "alex" });
   for (const table of ["telegram_question_action", "telegram_question_prompt", "slack_question_action", "discord_question_prompt", "teams_question_action"]) {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.n).toBe(1);

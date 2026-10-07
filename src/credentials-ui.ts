@@ -36,6 +36,8 @@ export type CredentialsView = {
   sessions: (WebSessionRow & { here: boolean })[];
   tokens: ApiTokenRow[];
   now: number;
+  /** Request limits (request-budget-ui.ts): words for each token's line, and the operator's disclosure. */
+  limits?: { note: (token: ApiTokenRow) => string; section: string };
 };
 
 export function credentialsHtml(view: CredentialsView, csrf: string, notice: { said?: string | null; problem?: string | null }): string {
@@ -60,14 +62,14 @@ export function credentialsHtml(view: CredentialsView, csrf: string, notice: { s
   const scope = (one: ApiTokenRow) => one.projects === null ? "All projects" : one.projects.length === 0 ? "No projects" : one.projects.map(repo => e(projectName(repo))).join(", ");
   const tokens = live.length === 0 ? `<p class="meta">No API tokens.</p>` : `<div class="rows">${live.map(one =>
     `<div class="row-item" data-token="${e(one.id)}"><div><p>${view.everyone ? `<strong>${e(one.account)}</strong> · ` : ""}${e(one.name)} · ${one.access === "act" ? "Can act" : "Read only"}</p>` +
-    `<p class="meta">${scope(one)} · ${ends(one)} · last used ${e(when(one.lastUsedAt, view.now))}</p></div>${post({ action: "revoke-token", token: one.id }, "Revoke")}</div>`).join("")}</div>`;
+    `<p class="meta">${scope(one)} · ${ends(one)} · last used ${e(when(one.lastUsedAt, view.now))}${view.limits === undefined ? "" : ` · ${e(view.limits.note(one))}`}</p></div>${post({ action: "revoke-token", token: one.id }, "Revoke")}</div>`).join("")}</div>`;
   const create = `<details class="card"><summary>New API token</summary><form method="post" action="/settings/sessions" class="create">${hidden({ csrf, action: "create-token" })}` +
     `<label>Name<input type="text" name="name" maxlength="60" required placeholder="for example: CI"></label>` +
     `<label>It can<select name="access"><option value="read">Read (tasks, results, the ledger)</option><option value="act">Act as you (file and manage work; never approve)</option></select></label>` +
     `<label>Expires in<select name="days">${TOKEN_DAYS.map(days => `<option value="${days}"${days === 90 ? " selected" : ""}>${days} days</option>`).join("")}</select></label>` +
     `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button>Make the token</button></form></details>`;
   return `<section class="credentials">${note}${toggle}<h2>Signed in</h2>${sessions}${endOthers}<h2 style="margin-top:1.5rem">API tokens</h2>` +
-    `<p class="meta">For scripts and CI: send <code>Authorization: Bearer &lt;token&gt;</code>. A token can't approve anything.</p>${tokens}${view.everyone ? "" : create}</section>`;
+    `<p class="meta">For scripts and CI: send <code>Authorization: Bearer &lt;token&gt;</code>. A token can't approve anything.</p>${tokens}${view.everyone ? "" : create}${view.limits?.section ?? ""}</section>`;
 }
 
 /** The token, once: a focused page with no script. */

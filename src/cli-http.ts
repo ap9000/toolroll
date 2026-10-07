@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from './store.js';
 import type { Principal } from './operate.js';
 import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
+import { limitWords, type Admission, type BudgetLimit } from './request-budget.js';
 
 /**
  * `POST /api/cli` (remote CLI, Phase 1): a teammate's laptop sends the argv it would have run locally, and the central
@@ -20,7 +21,7 @@ export type RunOperateAs = typeof import('./operate.js').runOperateAs;
 
 export type CliRequest = { argv: string[]; files: Record<string, string> };
 export type CliReply = { exitCode: number; stdout: string; stderr: string };
-export type CliFailure = { ok: false; code: string; message: string };
+export type CliFailure = { ok: false; code: string; message: string; limit?: BudgetLimit; retryAfter?: number };
 
 /** Inlined file contents, summed as UTF-8 bytes. */
 export const CLI_FILES_BYTES = 256 * 1024;
@@ -37,12 +38,14 @@ export type CliHttpOptions = {
   run: () => Promise<RunOperateAs | null>;
   /** Tests: command policy while the parallel command contract is not yet available. Defaults to COMMAND_GUIDE. */
   modeOf?: RemoteCommandLookup | undefined;
+  /** The token's request budget (request-budget.ts), charged once per request before its body is read. */
+  admit?: ((principal: Principal) => Admission) | undefined;
   store: Store;
 };
 
-function send(response: ServerResponse, status: number, value: CliReply | CliFailure): void {
+function send(response: ServerResponse, status: number, value: CliReply | CliFailure, headers: Record<string, string> = {}): void {
   if (response.destroyed || response.writableEnded) return;
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
   response.end(JSON.stringify(value));
 }
 
@@ -108,6 +111,14 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   try { principal = options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
   if (!principal) return reject(401, 'unauthenticated', 'This API token is not valid (expired, revoked or its person removed).');
+  // Counted once here, however long the command then holds the request (a task wait is one request).
+  const admitted = options.admit === undefined ? { ok: true as const } : options.admit(principal);
+  if (!admitted.ok && admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
+  if (!admitted.ok) {
+    send(response, 429, { ok: false, code: 'rate-limited', message: limitWords(admitted.limit, admitted.retryAfter), limit: admitted.limit, retryAfter: admitted.retryAfter }, { 'retry-after': String(admitted.retryAfter) });
+    request.resume();
+    return true;
+  }
   let value: unknown;
   try { value = await body(request); }
   catch (error) { return reject(error instanceof Error && error.message === 'too-large' ? 413 : 400, 'invalid-body', 'Send a valid JSON request; files are limited to 256 KiB in total.'); }

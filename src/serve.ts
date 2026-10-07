@@ -343,7 +343,9 @@ import { targetOf } from "./monitoring.js";
 import { SSO_CSS, ssoSettingsHtml } from "./sso-ui.js";
 import { mintApiToken, parseApiToken, secretMatches, TOKEN_DAYS, tokenLive, tokenProjects } from "./api-tokens.js";
 import { createMcpHttp } from "./mcp-http.js";
+import { FLUSH_MS as REQUEST_BUDGET_FLUSH_MS, parseLimit, PER_DAY_MAX as REQUEST_BUDGET_PER_DAY_MAX, PER_MINUTE_MAX as REQUEST_BUDGET_PER_MINUTE_MAX, RequestBudget, setLimitOverride, type LimitOverride } from "./request-budget.js";
 import { CREDENTIALS_CSS, credentialsHtml, tokenShownHtml } from "./credentials-ui.js";
+import { REQUEST_LIMITS_CSS, requestLimitsHtml, tokenLimitWords } from "./request-budget-ui.js";
 import { logEvent } from "./log.js";
 import { modeTermsFromJson, modeWords, presetTerms, modeTermsJson, modeDigestOf, MODE_MAX_DAYS, type ModeName, type ModeTerms } from "./modes.js";
 import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, readProviderKey, keyStatus, plausibleKey, readAuthMode, readAuthModeStrict, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords, type AuthMode } from "./keys.js";
@@ -392,6 +394,8 @@ export type ServeOptions = {
   cliRunner?: RunOperateAs;
   /** Tests: remote command metadata until the shared contract declares it. */
   cliModeOf?: CliHttpOptions['modeOf'];
+  /** Tests: the clock request budgets for API tokens count by (request-budget.ts). */
+  requestBudgetClock?: () => number;
   /** Where repos.json lives — every enrollment locks exactly this file. */
   registryPath?: string;
   /** This console fronts an `up` process: onboarding copy says how to watch. */
@@ -1090,8 +1094,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     }, cursor: team.cursor, streams: teamStreams,
   });
+  // v112: one request budget per server for person API tokens, shared by /api/cli and /mcp (request-budget.ts).
+  const requestBudget = new RequestBudget({ store, ...(options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock }) });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
+    admit: principal => requestBudget.admit(principal.tokenId, "api"),
     authenticate: request => {
       const who = identify(request, false, true);
       const id = parseApiToken(/^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "")?.id;
@@ -1167,6 +1174,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const timer = setInterval(refresh, 5 * 60_000);
     timer.unref?.();
     server.on("close", () => clearInterval(timer));
+  }
+  {
+    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } };
+    const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
+    timer.unref?.();
+    server.on("close", () => { clearInterval(timer); flushBudget(); });
   }
   const servedPort = (): number | null => {
     const address = server.address();
@@ -4265,7 +4278,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const everyone = url.searchParams.get("everyone") === "1" && store.isInstanceOperator(who.name);
       const here = sessions.hashOf(who.session);
       const view = { who: who.name, everyone, canSeeEveryone: store.isInstanceOperator(who.name), now: Date.now(),
-        sessions: store.webSessions(everyone ? null : who.name).map(one => ({ ...one, here: one.idHash === here })), tokens: store.apiTokens(everyone ? null : who.name) };
+        sessions: store.webSessions(everyone ? null : who.name).map(one => ({ ...one, here: one.idHash === here })), tokens: store.apiTokens(everyone ? null : who.name),
+        limits: { note: tokenLimitWords.bind(null, store.handle), section: store.isInstanceOperator(who.name) ? requestLimitsHtml(store.handle, store.apiTokens(null), who.session.csrf, Date.now()) : "" } };
       return sendScreen(response, 200, screen("Sessions & tokens", `<p><a href="/settings">Settings</a></p><h1>Sessions &amp; tokens</h1>${credentialsHtml(view, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
         { chrome: chromeFor(project, "settings") }));
     }
@@ -7493,6 +7507,27 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const next = { notRequester: body.get("not_requester") === "1", protectProject: protect === "project", protectedPaths: protect === "paths" ? paths.paths : [] };
       store.setApprovalRules(repo, next, who.name, now);
       return back("said", `Saved. ${rulesSummary(next)}`);
+    }
+    // v112: request limits for API tokens (request-budget.ts). An instance operator, in a browser, with their password;
+    // never over /api/cli or /mcp (a token never reaches a console form).
+    if (url.pathname === "/settings/request-limits") {
+      const body = readForm(posted, CONSOLE_FORMS.requestLimits);
+      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets request limits.", "/settings/sessions");
+      const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${key}=${encodeURIComponent(words)}`);
+      const target = body.get("target") ?? "";
+      const token = target === "*" ? null : store.apiTokens(null).find(one => one.id === target && one.revokedAt === null) ?? null;
+      if (target !== "*" && token === null) return back("problem", "That token is no longer live. Nothing changed.");
+      if (!authenticateApprover(store, who.name, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change request limits.");
+      const read = (name: "read-per-minute" | "act-per-minute" | "per-minute" | "per-day") => parseLimit(body.get(name) ?? "", name === "per-day" ? REQUEST_BUDGET_PER_DAY_MAX : REQUEST_BUDGET_PER_MINUTE_MAX);
+      const clear = body.get("action") === "clear";
+      const fields = clear ? { readPerMinute: null, actPerMinute: null, perDay: null }
+        : token === null ? { readPerMinute: read("read-per-minute"), actPerMinute: read("act-per-minute"), perDay: read("per-day") }
+        : { readPerMinute: token.access === "read" ? read("per-minute") : null, actPerMinute: token.access === "act" ? read("per-minute") : null, perDay: read("per-day") };
+      const problem = Object.values(fields).find((value): value is { problem: string } => value !== null && typeof value === "object");
+      if (problem !== undefined) return back("problem", `${problem.problem} Nothing changed.`);
+      setLimitOverride(store, target, fields as LimitOverride, who.name, now);
+      const label = token === null ? "Everyone's tokens" : token.name;
+      return back("said", clear || Object.values(fields).every(value => value === null) ? `${label}: default limits.` : `${label}: limits saved.`);
     }
     if (url.pathname === "/settings/sessions") {
       const body = readForm(posted, CONSOLE_FORMS.sessions);
@@ -11574,7 +11609,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }));
   }
 
-  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request, true, true) !== null,
+  const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, signedIn: request => identify(request, true, true) !== null, admit: person => requestBudget.admit(person.principal.tokenId, "mcp"),
     enrolled: () => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])], ...(options.runOperateAs === undefined ? {} : { runAs: options.runOperateAs }) });
 
   // ---- identity ------------------------------------------------------------
@@ -12167,6 +12202,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const closeServer = server.close.bind(server);
   server.close = ((callback?: (error?: Error) => void) => {
     leadClosing = true;
+    try { requestBudget.flush(); } catch { /* saved again on the close event when it can be */ }
     for (const stream of teamStreams) stream.end();
     teamStreams.clear();
     for (const stream of chatStreams) stream.end();
@@ -16240,7 +16276,7 @@ const INBOX_TABS_CSS = '.inbox-tabs{display:inline-flex;gap:2px;max-width:100%;o
   '.inbox-ask{margin:18px 0 0}.inbox-ask>h2{display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:15px;font-weight:600}.inbox-ask>h2 .count{font:500 12px var(--so-mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;color:var(--so-muted)}.inbox-ask h3{font-size:13px;font-weight:600;margin:12px 0 4px}' +
   '.inbox-unread{display:none;position:absolute;top:4px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--so-signal)}' +
   '@media (max-width:760px){.inbox-tabs{display:flex;width:100%}.inbox-tabs a{flex:1;justify-content:center;min-height:44px;padding:0 6px}.inbox-unread{display:block}}';
-const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
+const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
 
 /** Everything the sidebar needs to draw itself for one request. */
 type Chrome = {

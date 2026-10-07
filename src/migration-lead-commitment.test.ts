@@ -29,12 +29,12 @@ test("a store from before lead_commitment gains the table on open, keeps its row
   // The shape the older build leaves: no lead_commitment table or indexes, the same v109 stamp.
   const db = new DatabaseSync(file);
   db.exec("DROP INDEX lead_commitment_due; DROP INDEX lead_commitment_owner; DROP TABLE lead_commitment");
-  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(111);
+  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(112);
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(111);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(111);
+  expect(SCHEMA_VERSION).toBe(112);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(112);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lead_commitment%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["lead_commitment", "lead_commitment_due", "lead_commitment_owner"]);
   expect(store.listMateMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
@@ -74,9 +74,9 @@ store.close();
 `);
   // v110 and later (the ledger's remote sources, v111's token terms) are newer than it speaks: it refuses to open rather than alter what it can't name.
   expect(() => execFileSync(join(REPO, "node_modules", ".bin", "tsx"), [join(older, "read.ts"), file], { cwd: older, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))
-    .toThrow(/schema v111, written by a newer build/);
+    .toThrow(/schema v112, written by a newer build/);
 
   store = openStore(file);
   expect(getCommitment(store, made.id)).toEqual(made);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(111);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(112);
 }, 60_000);

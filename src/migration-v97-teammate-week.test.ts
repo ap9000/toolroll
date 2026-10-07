@@ -36,8 +36,8 @@ test.each([96, -96])("v%s: a teammate's calls carry over whole; turns start bein
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(111);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(111);
+  expect(SCHEMA_VERSION).toBe(112);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
   expect(store.teammateCall(call)).toMatchObject({ action: "add_label", state: "done", undoOf: null, undoneBy: null });
   expect(store.getTeammate(mate)).toMatchObject({ weeklyAt: null, deskFlow: null });
   store.addTeammateTurn({ teammate: mate, card, model: "default", ok: true, ms: 4000, costUsd: 0.01 }, now);

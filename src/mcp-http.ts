@@ -20,6 +20,7 @@ import {
   callCoordinatorTool, capabilitiesShape, readMessage, shapeResult, toolsPayload, type CallOutcome, type Json,
 } from "./mcp-core.js";
 import { callPersonTool, personTools, type Person, type RunOperateAs } from "./mcp-person.js";
+import { limitWords, type Admission } from "./request-budget.js";
 
 export type McpHttpOptions = {
   store: Store;
@@ -31,6 +32,8 @@ export type McpHttpOptions = {
   signedIn: (request: IncomingMessage) => boolean;
   /** Runs a person's command on the server (operate.ts); resolved from operate.ts when not injected. */
   runAs?: RunOperateAs;
+  /** A person token's request budget (request-budget.ts), charged once per request before its body is read. */
+  admit?: (person: Person) => Admission;
 };
 
 type Caller = { kind: "coordinator"; token: string; cid: string } | { kind: "person"; person: Person };
@@ -120,6 +123,15 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
     const caller = callerOf(request);
     if (caller === null) {
       return refuse(response, 401, "sign in with your API token (Authorization: Bearer so_…) or a coordinator credential — passwords and cookies are not accepted here", { "www-authenticate": 'Bearer realm="toolroll-mcp"' });
+    }
+    // A person's token is counted once per request, notifications included; a coordinator keeps its own proposal limit.
+    if (caller.kind === "person" && options.admit !== undefined) {
+      const admitted = options.admit(caller.person);
+      if (!admitted.ok && admitted.status === 503) return refuse(response, 503, "request limits could not be checked; nothing ran — try again shortly");
+      if (!admitted.ok) {
+        request.resume();
+        return send(response, 429, { jsonrpc: "2.0", id: null, error: { code: -32000, message: limitWords(admitted.limit, admitted.retryAfter), data: { limit: admitted.limit, retryAfter: admitted.retryAfter } } }, { "retry-after": String(admitted.retryAfter) });
+      }
     }
     if (!/^application\/json\s*(;|$)/i.test(request.headers["content-type"] ?? "")) return refuse(response, 415, "send the JSON-RPC message as application/json");
     if (Number(request.headers["content-length"] ?? 0) > MAX_REQUEST) return tooLarge(request, response);

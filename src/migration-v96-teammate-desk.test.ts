@@ -26,8 +26,8 @@ test.each([95, -95])("v%s: a teammate carries over whole and gets a desk only wh
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(111);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(111);
+  expect(SCHEMA_VERSION).toBe(112);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(112);
   expect(store.getTeammate(mate)).toMatchObject({ handle: "maya", manager: "alex", deskFlow: null });
   const flow = store.createFlow({ repo: "/r", name: "Maya's desk", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: "alex" }, now);
   store.setTeammateDesk(mate, flow);
