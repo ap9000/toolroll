@@ -4398,7 +4398,7 @@ $ contract --commands --json → 0
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
-      "remote": "yes"
+      "remote": "step-up"
     },
     {
       "invocation": "task review",

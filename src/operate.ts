@@ -106,7 +106,7 @@ import {
   type Store,
   type TaskState,
 } from "./store.js";
-import { randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { sweepLiveLogs } from "./live.js";
@@ -1170,8 +1170,15 @@ export async function runOperateAs(
   if ([...parsed.flags.keys()].some(name => REMOTE_REFUSED_FLAGS.has(name))) return refuse("usage", REMOTE_MESSAGES.credential);
 
   const allows = (repo: string | null) => remoteAllows(store, principal, repo);
-  const project = remoteProjectOf(store, { allows }, scope, parsed.positional, parsed.repoList);
+  const project = remoteProjectOf(store, { allows }, scope, parsed.positional, parsed.repoList, row.invocation, parsed.flags, opts.files ?? {});
   if (!project.ok) return refuse(project.reason, project.message);
+  // The local mutation cache has a global key namespace. A token must not use a chosen key to read
+  // another person's/project's cached result. Revision keys already bind the actor and result in
+  // task-outcome-cli.ts, which also validates their public 32-hex format; leave those intact.
+  const key = text(parsed.flags, "key");
+  if (key !== undefined && row.invocation !== "task revise") {
+    parsed.flags.set("key", `remote:${createHash("sha256").update(JSON.stringify([principal.account, row.invocation, project.repo, project.taskId, key])).digest("hex")}`);
+  }
   const file = store.databaseFile() ?? options.databaseFile;
   if (file === undefined) return refuse("failed", "The server's database has no file.", project.repo, project.taskId);
 
@@ -11493,7 +11500,8 @@ async function addTask(
     ]);
   }
 
-  const id = text(flags, "id") ?? slug(title, now);
+  // Remote creation cannot probe global IDs, including predictable title/time collisions.
+  const id = text(flags, "id") ?? (activeRemote() === null ? slug(title, now) : `task-${randomBytes(16).toString("hex")}`);
   // Re-filing: the new task replaces an earlier one, which is cancelled and reads "Replaced by <id>".
   const replaces = text(flags, "replaces");
   if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) {
@@ -11523,13 +11531,22 @@ async function addTask(
     return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
   }
 
-  store.stampFiledVia(store.refFor(BUILT_IN, id).id, "cli");
+  const filedId = outcome.task.id;
+  const remote = activeRemote();
+  if (remote !== null && filedId !== id) {
+    // Re-prove a replayed creation too: it may have been moved since the original filing.
+    const saved = store.lookupRef(filedId);
+    if (saved === null || saved.repo !== text(flags, "repo") || !remote.allows(saved.repo)) {
+      throw new RemoteRefusal("not-found", "Not found.");
+    }
+  }
+  store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
 
   // Placement is explicit, never inferred from where the command happened to
   // run: a task filed from the wrong directory would silently bind to it.
   const placedIn = text(flags, "repo");
   if (placedIn !== undefined) {
-    const placed = store.placeTask(store.refFor(BUILT_IN, id).id, canonicalProject(placedIn) ?? resolve(placedIn));
+    const placed = store.placeTask(store.refFor(BUILT_IN, filedId).id, canonicalProject(placedIn) ?? resolve(placedIn));
     if (typeof placed === "object" && !placed.ok) {
       return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
     }

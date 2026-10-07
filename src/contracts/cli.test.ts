@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../cli.js";
 import { ENVELOPE_VERSION, envelopeJson } from "../envelope.js";
 import { runOperate } from "../operate.js";
+import { REMOTE_ARGUMENTS } from "../operate-remote-arguments.js";
+import { REMOTE_REFUSED_FLAGS } from "../operate-remote.js";
 import { COMMAND_ENTRIES, COMMAND_GUIDE, GUIDE_INVOCATIONS, REMOTE_POLICY, REMOTE_POLICY_COUNT } from "../surface.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { checkedEnvelopeJson, COMMAND_OUTPUTS, commandOutputSchema, commandRowSchema, envelopeProblems, envelopeSchema } from "./cli.js";
@@ -95,9 +97,23 @@ describe("the CLI's machine contract", () => {
     for (const invocation of ["up", "serve", "daemon", "watch", "bridge", "tick", "mcp", "models update", "setup show", "setup clear", "onboard", "update", "link",
       "repos add", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "providers", "publish", "publish merge", "publish grant", "runner register",
       "runner retire", "runner bind", "runner capacity", "enroll", "reap", "demo", "", "pulls", "graph"]) expect(policy(invocation), invocation).toBe("no");
-    for (const invocation of ["task approve", "routine approve", "decide", "people list", "people invite", "people projects", "people revoke",
+    for (const invocation of ["task approve", "task regate", "routine approve", "decide", "people list", "people invite", "people projects", "people revoke",
       "mode show", "mode set", "mode revoke", "chat-approval on", "config set", "verify set"]) expect(policy(invocation), invocation).toBe("step-up");
     for (const invocation of ["status", "task add", "task show", "task list"]) expect(policy(invocation), invocation).toBe("yes");
+  });
+
+  it("requires an explicit argument audit for every remotely allowed command", () => {
+    const yes = COMMAND_GUIDE.filter(row => row.remote === "yes");
+    expect([...REMOTE_ARGUMENTS.keys()].sort()).toEqual(yes.map(row => row.invocation).sort());
+    for (const row of yes) {
+      const audit = REMOTE_ARGUMENTS.get(row.invocation)!;
+      for (const flag of row.flags ?? []) {
+        expect(audit.flags.has(flag.name) || REMOTE_REFUSED_FLAGS.has(flag.name), `${row.invocation} --${flag.name} needs a remote audit`).toBe(true);
+      }
+      for (const [index, positional] of (row.positionals ?? []).entries()) {
+        expect(audit.positionals[index]?.name, `${row.invocation} ${positional.name} needs a remote audit`).toBe(positional.name);
+      }
+    }
   });
 
   it("writes exactly what envelopeJson writes, logging a disagreement and never throwing", () => {

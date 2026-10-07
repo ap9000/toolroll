@@ -466,7 +466,7 @@ const REMOTE_NO: readonly string[] = [
   "flows import", "flows trigger check", "flows script save",
 ];
 const REMOTE_STEP_UP: readonly string[] = [
-  "proposals", "decide", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
+  "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   "mode show", "mode set", "mode revoke", "chat-approval on", "review on", "review off", "config set", "config clear",
@@ -476,7 +476,7 @@ const REMOTE_YES: readonly string[] = [
   "status", "integrations", "ready", "gaps", "grants", "sync",
   "task add", "task ask", "task checks", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
   "task state", "task block", "task unblock", "task next", "task steer", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
-  "task requeue", "task regate", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
+  "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
   "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",
   "routine list", "routine show", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",

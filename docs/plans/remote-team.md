@@ -18,6 +18,9 @@ coding agents run the same commands the server runs locally; nothing gets a seco
 - The principal is re-proved on every call: account standing, credential generation, token state and scope.
 - The project a command touches must be one the person can use now. Where a local run would use the
   working directory, a remote caller must name `--repo` with the server path of a known project.
+- Every resource argument is checked before dispatch, including secondary tasks, runs and flow settings.
+  Missing, inaccessible and mismatched references all say "Not found." Caller-chosen task IDs are refused.
+  The argument audit in `src/operate-remote-arguments.ts` rejects unclassified flags and extra arguments.
 - No fallback: a remote run never reads the owner's saved login, never prompts, never uses a lead token, and
   never runs as the owner. Credential and path flags (`--as`, `--token`, `--db`, `--out`, ...) are refused.
 - Input files travel with the request, keyed by the argument that names them. The server reads no
