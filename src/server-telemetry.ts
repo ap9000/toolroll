@@ -1,5 +1,6 @@
 /** Bounded, in-memory performance measurements. Never retain URLs, SQL, or identities. */
 import { monitorEventLoopDelay, type ELDHistogram } from 'node:perf_hooks';
+import type { BudgetLimit } from './request-budget.js';
 import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders, OutgoingHttpHeader } from 'node:http';
 
 export const TELEMETRY_WINDOW_MS = 300_000;
@@ -140,7 +141,7 @@ export class ServerTelemetry {
     }
     h.reset();
   }
-  budgetRefused(route: 'api' | 'mcp', reason: 'read-per-minute' | 'act-per-minute' | 'per-day' | 'unavailable'): void {
+  budgetRefused(route: 'api' | 'mcp', reason: BudgetLimit | 'unavailable'): void {
     const key = `${route}:${reason}`;
     this.refusals.set(key, (this.refusals.get(key) ?? 0) + 1);
     const at = Math.floor(this.clock() / SLICE_MS);
