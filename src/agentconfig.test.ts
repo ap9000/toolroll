@@ -8,8 +8,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { openStore, BUILT_IN, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { resolvePhaseAgent, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
-import { approveRoutine, fireRoutine, routineDigestOf, type RoutineTerms } from "./routine.js";
-import { resolveScopeProfile, resolveRoutineAuthority, agentChoicesFor } from "./agentconfig.js";
+import { resolveScopeProfile, resolveAgentAuthority, agentChoicesFor } from "./agentconfig.js";
 
 const T0 = new Date("2026-08-13T22:00:00.000Z");
 const HOUR = 60 * 60_000;
@@ -132,87 +131,6 @@ describe("phase-agent resolution", () => {
   });
 });
 
-describe("firing pins the agent and re-proves the ceiling against it", () => {
-  let store: Store;
-  let token: string;
-
-  const TERMS: RoutineTerms = {
-    repo: "/work/repo",
-    goal: "Refresh the notes",
-    outOfScope: null,
-    touches: [],
-    acceptance: [{ id: "c1", statement: "The notes are refreshed.", how: null, evidence: ["manual-review"] }],
-    requirements: [],
-    schedule: "every:60",
-    singleFlight: true,
-    costCeilingUsd: null,
-  };
-
-  beforeEach(() => {
-    store = openStore(":memory:");
-    const added = addApprover(store, "alex", T0);
-    if (!added.ok) throw new Error("setup");
-    token = added.token;
-  });
-  afterEach(() => store.close());
-
-  const arm = (terms: RoutineTerms, name: string): number => {
-    // v24/v48: filing resolves the profile AND the four-role route from the
-    // config the test just set, exactly as fileRoutineProposal does — the
-    // digest binds both.
-    const authority = resolveRoutineAuthority(store, terms.repo, terms.acceptance, T0);
-    if (!authority.ok) throw new Error(`setup: ${authority.problem}`);
-    const digest = routineDigestOf(terms, authority.profile, authority.route);
-    const created = store.createRoutine({ name, ...terms, digest, profile: authority.profile, route: authority.route }, T0);
-    if (!created.ok) throw new Error("setup");
-    const approved = approveRoutine(store, created.id, "alex", T0, digest, token);
-    expect(approved.ok).toBe(true);
-    return created.id;
-  };
-
-  test("the instance carries the agent the fire resolved — later flags cannot re-route it", () => {
-    store.setPhaseConfig("/work/repo", "build", "codex", "gpt-5-codex", "alex", T0);
-    store.setPhaseConfig("/work/repo", "plan", "codex", "gpt-5-codex", "alex", T0);
-    store.setPhaseConfig("/work/repo", "review", "codex", "gpt-5-codex", "alex", T0);
-    const id = arm(TERMS, "notes");
-    const fired = fireRoutine(store, id, new Date(T0.getTime() + 2 * HOUR));
-    expect(fired.ok).toBe(true);
-    if (!fired.ok) return;
-    const ref = store.refFor(BUILT_IN, fired.taskId);
-    expect(ref.agentProvider).toBe("codex");
-    expect(ref.agentModel).toBe("gpt-5-codex");
-    // Resolution for this task now answers 'pinned', whatever flags say.
-    expect(resolvePhaseAgent(store, "build", "/work/repo", { provider: "claude" }, ref)).toMatchObject({
-      source: "pinned", spec: { provider: "codex" },
-    });
-  });
-
-  test("a ceiling against a provider that reports no dollars skips the slot and says why", () => {
-    store.setPhaseConfig("/work/repo", "build", "codex", "gpt-5-codex", "alex", T0);
-    store.setPhaseConfig("/work/repo", "plan", "codex", "gpt-5-codex", "alex", T0);
-    store.setPhaseConfig("/work/repo", "review", "codex", "gpt-5-codex", "alex", T0);
-    const id = arm({ ...TERMS, costCeilingUsd: 5 }, "capped");
-    const refused = fireRoutine(store, id, new Date(T0.getTime() + 2 * HOUR));
-    expect(refused).toMatchObject({ ok: false, reason: "unmeasured" });
-    const fires = store.routineFires(id);
-    expect(fires[0]).toMatchObject({ outcome: "skipped" });
-    expect(fires[0]?.reason).toContain("unmeasured-provider");
-    expect(store.listNotifications("all").some(one => one.subject.includes("cannot honor a cost ceiling"))).toBe(true);
-    // v24: dropping the config is no longer enough — the approved profile
-    // IS the routing. The road is restatement onto claude and a fresh yes.
-    store.clearPhaseConfig("/work/repo", "build");
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "alex", T0);
-    const restated = resolveRoutineAuthority(store, "/work/repo", TERMS.acceptance, T0);
-    if (!restated.ok) throw new Error(restated.problem);
-    const terms = { ...TERMS, costCeilingUsd: 5 };
-    const newDigest = routineDigestOf(terms, restated.profile, restated.route);
-    expect(store.updateRoutineTerms(id, { ...terms, digest: newDigest, profile: restated.profile, route: restated.route }, new Date(T0.getTime() + 2 * HOUR))).toBe(true);
-    expect(approveRoutine(store, id, "alex", new Date(T0.getTime() + 2 * HOUR), newDigest, token).ok).toBe(true);
-    const fired = fireRoutine(store, id, new Date(T0.getTime() + 3 * HOUR));
-    expect(fired.ok).toBe(true);
-  });
-});
-
 describe("route candidates and the task route (v47)", () => {
   let store: Store;
 
@@ -272,7 +190,8 @@ describe("route candidates and the task route (v47)", () => {
     store.createTask({ id: "t", title: "t" }, T0);
     const ref = store.refFor(BUILT_IN, "t");
     store.placeTask(ref.id, "/repo");
-    propose(store, { taskId: "t", goal: "g", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], riskLevel: "high", now: T0 });
+    store.writeSizing(ref.id, { size: "large", risky: false, source: "person", reason: "" });
+    propose(store, { taskId: "t", goal: "g", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: T0 });
     const routed = routeOfTask(store, "t", store.refFor(BUILT_IN, "t"), T0);
     if (routed === null || routed.kind !== "route") throw new Error("expected a route");
     expect(routed.route.legs.find(one => one.phase === "build")).toMatchObject({ provider: "gemini", model: "gemini-2.5-pro" });
@@ -300,11 +219,11 @@ describe("route candidates and the task route (v47)", () => {
     expect(store.refFor(BUILT_IN, "t").routeOverrides?.map(one => one.phase)).toEqual(["plan"]);
   });
 
-  test("routine authority (v48): the four-role route and its exact profile resolve together from configuration, or refuse with the words", () => {
-    expect(resolveRoutineAuthority(store, "/repo", [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], T0)).toMatchObject({ ok: false, problem: expect.stringContaining("planner") });
+  test("agent authority (v48): the four-role route and its exact profile resolve together from configuration, or refuse with the words", () => {
+    expect(resolveAgentAuthority(store, "/repo", [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], T0)).toMatchObject({ ok: false, problem: expect.stringContaining("planner") });
     exactInstall();
     store.setPhaseConfig("/repo", "repair", "claude", "haiku", "alex", T0);
-    const authority = resolveRoutineAuthority(store, "/repo", [{ id: "c1", statement: "s", how: null, evidence: ["screenshot"] }], T0);
+    const authority = resolveAgentAuthority(store, "/repo", [{ id: "c1", statement: "s", how: null, evidence: ["screenshot"] }], T0);
     expect(authority.ok).toBe(true);
     if (!authority.ok) return;
     expect(authority.route.risk).toBe("routine");
@@ -313,7 +232,7 @@ describe("route candidates and the task route (v47)", () => {
     expect(authority.profile).toMatchObject({ provider: "claude", model: "sonnet", repairModel: "haiku" });
     // A repair row on another provider cannot make a runnable route.
     store.setPhaseConfig("/repo", "repair", "codex", "gpt-5", "alex", T0);
-    expect(resolveRoutineAuthority(store, "/repo", [], T0)).toMatchObject({ ok: false, problem: expect.stringContaining("cross-provider repair does not exist") });
+    expect(resolveAgentAuthority(store, "/repo", [], T0)).toMatchObject({ ok: false, problem: expect.stringContaining("cross-provider repair does not exist") });
   });
 
   test("the strong tier is only ever a configured EXACT row: project beats installation, review inherits the plan's; a null-model or unknown row refuses", () => {
@@ -352,10 +271,10 @@ describe("route candidates and the task route (v47)", () => {
     store.createTask({ id: "t", title: "t" }, T0);
     const ref = store.refFor(BUILT_IN, "t");
     store.placeTask(ref.id, "/repo");
-    expect(store.editTaskRoute(ref.id, { by: "alex", authenticate: () => ({ ok: true }), risk: "high" }, T0).ok).toBe(true);
+    expect(store.editTaskRoute(ref.id, { by: "alex", authenticate: () => ({ ok: true }), size: { size: "large", risky: false } }, T0).ok).toBe(true);
     const live = routeOfTask(store, "t", store.refFor(BUILT_IN, "t"), T0);
     expect(live).toMatchObject({ kind: "route", source: "live" });
-    if (live?.kind === "route") expect(live.route.risk).toBe("high");
+    if (live?.kind === "route") expect(live.route.size?.size).toBe("large");
 
     propose(store, { taskId: "t", goal: "g", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: T0 });
     expect(routeOfTask(store, "t", store.refFor(BUILT_IN, "t"), T0)).toMatchObject({ kind: "route", source: "proposed" });
@@ -364,7 +283,7 @@ describe("route candidates and the task route (v47)", () => {
     expect(approve(store, "t", "alex", T0, scope.digest, "tok-alex").ok).toBe(true);
     const sealed = routeOfTask(store, "t", store.refFor(BUILT_IN, "t"), T0);
     expect(sealed).toMatchObject({ kind: "route", source: "approved" });
-    if (sealed?.kind === "route") expect(sealed.route.risk).toBe("high");
+    if (sealed?.kind === "route") expect(sealed.route.size?.size).toBe("large");
 
     // Route data removed from a ROUTED row (the era is set): nothing
     // downgrades to a legacy profile — the task is unreadable, in words.

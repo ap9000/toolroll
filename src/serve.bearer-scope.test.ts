@@ -11,8 +11,6 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { request as httpRequest, type Server } from "node:http";
 import { openStore, type Store } from "./store.js";
-import { routineDigestOf } from "./routine.js";
-import { resolveRoutineAuthority } from "./agentconfig.js";
 import * as approvers from "./scope.js";
 import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -280,10 +278,6 @@ describe("bearer step-up and in-flight revocation", () => {
 
   test.each(["password", "api", "oauth"])("%s bearer gets 403 at every password step-up and browser-only action without changing protected state", async kind => {
     const scope = task();
-    const terms = { repo: A, goal: "Guard routine approval", outOfScope: null, touches: [], acceptance: [], requirements: [], schedule: "every:60", singleFlight: true, costCeilingUsd: null };
-    const authority = resolveRoutineAuthority(store, A, [], new Date());
-    if (!authority.ok) throw Error(authority.problem);
-    expect(store.createRoutine({ name: "guarded", ...terms, digest: routineDigestOf(terms, authority.profile, authority.route), profile: authority.profile, route: authority.route }, new Date()).ok).toBe(true);
     // This matrix checks authorization. Rate-limit behavior has its own exhaustive tests below.
     setLimitOverride(store, "*", { readPerMinute: null, actPerMinute: 200, perDay: null }, "alex", new Date());
     const bearer = kind === "password" ? `alex:${password}` : kind === "api" ? token("act") : oauthToken();
@@ -296,7 +290,7 @@ describe("bearer step-up and in-flight revocation", () => {
       });
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
-    expect(browserOnly).toHaveLength(68);
+    expect(browserOnly).toHaveLength(60);
     const checked = vi.mocked(approvers.authenticateApprover);
     checked.mockClear();
     // Prove this recorder sees an actual browser password ceremony before asserting silence for bearer requests.

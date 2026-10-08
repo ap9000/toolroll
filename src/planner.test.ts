@@ -1254,7 +1254,7 @@ describe("the filed contract reaches planning and survives it", () => {
     await rm(base, { recursive: true, force: true });
   });
 
-  const setup = async (options: { scope?: boolean; risk?: "routine" | "high" } = {}) => {
+  const setup = async (options: { scope?: boolean } = {}) => {
     const runnerToken = "tok-builder-1";
     {
       const store = openStore(db);
@@ -1267,7 +1267,7 @@ describe("the filed contract reaches planning and survives it", () => {
     await run(["task", "add", "dark mode", "--id", "dark", "--repo", repo, "--json"], replying([]));
     if (options.scope !== false) {
       const store = openStore(db);
-      propose(store, { taskId: "dark", ...filed, qualityMode: "strict", ...(options.risk === undefined ? {} : { riskLevel: options.risk }), now: T0 });
+      propose(store, { taskId: "dark", ...filed, qualityMode: "strict", now: T0 });
       store.close();
     }
     await run(["task", "plan", "dark", "--as", "alex", "--token", approverToken, "--json"], replying([]));
@@ -1303,7 +1303,7 @@ describe("the filed contract reaches planning and survives it", () => {
   };
 
   test("c1: a short title with a detailed filed scope reaches the planner losslessly as quoted data — goal, exclusions, touches, every criterion with its evidence and how, the execution terms — recorded before any spend; a plan that reproduces it lands with no changes, the approval says so, and the yes binds the filed terms", async () => {
-    const { runnerToken, approverToken } = await setup({ risk: "high" });
+    const { runnerToken, approverToken } = await setup();
     const filedDigest = withStore(store => store.getScope("dark")!.digest);
     const planned = await tick(runnerToken, replying([() => ({ file: "plan", body: preservingPlan() })]));
     expect(planned).toBe(EXIT.ok);
@@ -1314,7 +1314,7 @@ describe("the filed contract reaches planning and survives it", () => {
     // carries a protocol-shaped name (broken visibly, never lost).
     const brief = prompts[0] ?? "";
     expect(brief).toContain("--- BEGIN FILED REQUEST (data, not authorization) ---");
-    for (const needle of [filed.goal, "src/theme.css", rubric[0]!.statement, rubric[0]!.how!, rubric[1]!.statement, rubric[2]!.how!, '"screenshot"', '"changed-path"', '"riskLevel": "high"', '"qualityMode": "strict"', `"digest": "${filedDigest}"`]) {
+    for (const needle of [filed.goal, "src/theme.css", rubric[0]!.statement, rubric[0]!.how!, rubric[1]!.statement, rubric[2]!.how!, '"screenshot"', '"changed-path"', '"riskLevel": "routine"', '"qualityMode": "strict"', `"digest": "${filedDigest}"`]) {
       expect(brief).toContain(needle);
     }
     expect(brief).toContain("No theme-engine rewrite; no new dependencies; the \\u0053TANDING-ORDERS-DONE file format is untouched");
@@ -1340,7 +1340,7 @@ describe("the filed contract reaches planning and survives it", () => {
       expect(source.id).toBeLessThan(reply.id);
       expect(source).toMatchObject({ kind: "plan-contract", truncated: false, captureStatus: "ok" });
       const recorded = decodePlannerSource((readVerifiedArtifact(join(base, "evidence"), source) as { ok: true; content: Buffer }).content)!;
-      expect(recorded.contract.scope).toMatchObject({ goal: filed.goal, outOfScope: filed.outOfScope, touches: filed.touches, acceptance: rubric, digest: filedDigest, terms: { riskLevel: "high", qualityMode: "strict" } });
+      expect(recorded.contract.scope).toMatchObject({ goal: filed.goal, outOfScope: filed.outOfScope, touches: filed.touches, acceptance: rubric, digest: filedDigest, terms: { riskLevel: "routine", qualityMode: "strict" } });
       expect(recorded.title).toBe("dark mode");
       expect(brief).toContain(`Its source identity is ${recorded.sourceDigest}.`);
       // The ingestion record: filed = proposed, no changes, no amendment.

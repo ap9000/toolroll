@@ -616,34 +616,5 @@
       "mode_digest": null,
       "candidate": null
     }
-  ],
-  "routine": [
-    {
-      "id": 1,
-      "name": "nightly-deps",
-      "repo": "/repo/app",
-      "goal": "refresh the lockfile",
-      "out_of_scope": null,
-      "touches": "[\"package-lock.json\"]",
-      "requirements": "[]",
-      "schedule": "every:60",
-      "single_flight": 1,
-      "cost_ceiling_usd": null,
-      "budget_per_run_microusd": null,
-      "paused": 0,
-      "digest": "3e8204133dfa9b42cef04eba98a8848a",
-      "approved_at": "2026-09-11T02:00:00.000Z",
-      "approved_by": "alex",
-      "approved_digest": "3e8204133dfa9b42cef04eba98a8848a",
-      "profile_json": "{\"digestVersion\":2,\"profile\":{\"maxTurns\":1000,\"model\":\"sonnet\",\"permissionArgv\":\"auto\",\"provider\":\"claude\",\"repairMaxTurns\":4,\"repairModel\":\"inherit\",\"repairTimeoutSeconds\":300,\"timeoutKind\":\"idle\",\"timeoutSeconds\":1200}}",
-      "approved_profile_json": "{\"digestVersion\":2,\"profile\":{\"maxTurns\":1000,\"model\":\"sonnet\",\"permissionArgv\":\"auto\",\"provider\":\"claude\",\"repairMaxTurns\":4,\"repairModel\":\"inherit\",\"repairTimeoutSeconds\":300,\"timeoutKind\":\"idle\",\"timeoutSeconds\":1200}}",
-      "digest_version": 2,
-      "profile_provenance": null,
-      "next_fire_at": "2026-09-11T03:00:00.000Z",
-      "created_at": "2026-09-11T02:00:00.000Z",
-      "updated_at": "2026-09-11T02:00:00.000Z",
-      "filed_via": "cli",
-      "acceptance_json": "[{\"id\":\"c1\",\"statement\":\"it ships\",\"how\":null,\"evidence\":[\"check\"]}]"
-    }
   ]
 }

@@ -1279,7 +1279,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     ]);
   });
 
-  test("chat-steer: the mate reads the current risk and agents, proposes a confirmation-gated agent change, the card says exactly what changes, and confirming goes through the authenticated route edit", async () => {
+  test("chat-steer: the mate reads the current agents, proposes a confirmation-gated agent change, the card says exactly what changes, and confirming goes through the authenticated route edit", async () => {
     store.setPhaseTierConfig("installation", "plan", "strong", "codex", "gpt-5-codex", "test", T0);
     const cookie = await login();
     let html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
@@ -1292,23 +1292,22 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     script.push(
       () => answer([{ type: "tool_use", id: "g1", name: "get_agents", input: { task: "a" } }]),
       () => {
-        return answer([{ type: "tool_use", id: "p1", name: "propose_agents", input: { task: "a", risk: "elevated", role: "planner", agent: { provider: "codex", model: "gpt-5-codex" }, why: "the change touches money" } }]);
+        return answer([{ type: "tool_use", id: "p1", name: "propose_agents", input: { task: "a", role: "planner", agent: { provider: "codex", model: "gpt-5-codex" }, why: "the change touches money" } }]);
       },
-      () => answer([{ type: "text", text: "I propose declaring this elevated and planning on codex · gpt-5-codex." }]),
+      () => answer([{ type: "text", text: "I propose planning on codex · gpt-5-codex." }]),
     );
     const sent = await post(cookie, "/chat", { csrf, task: "a", message: "Who plans this, and can we use the stronger planner?" });
     expect(sent.status).toBe(303);
     await settle();
     // The turn ran both tools and answered; the proposal waits pending.
     expect(store.recentMateTurns("alex", 1)[0]).toMatchObject({ state: "answered" });
-    expect(store.getMateProposal(1)).toMatchObject({ kind: "agents", state: "pending", payload: expect.objectContaining({ task: "a", risk: "elevated", phase: "plan", provider: "codex", model: "gpt-5-codex", approval: "approved", before: "claude · sonnet plans, builds, and repairs" }) });
-    // The card: the role, the exact agent, what the risk does, the approval consequence.
+    expect(store.getMateProposal(1)).toMatchObject({ kind: "agents", state: "pending", payload: expect.objectContaining({ task: "a", phase: "plan", provider: "codex", model: "gpt-5-codex", approval: "approved", before: "claude · sonnet plans, builds, and repairs" }) });
+    // The card: the role, the exact agent, the approval consequence.
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain('data-card-kind="agents"');
     expect(html).toContain("Agents change");
     expect(html).toContain("planner on <span class=\"mono\">codex · gpt-5-codex</span>");
     expect(html).toContain("<dt>agents now</dt><dd>claude · sonnet plans, builds, and repairs</dd>");
-    expect(html).toContain("Elevated risk: planning and building use the strongest agent you have configured.");
     expect(html).toContain("The current approval no longer covers the task afterwards — approve it again on the task.");
     expect(store.refFor("built-in", "a").routeOverrides).toEqual([]);
     expect(approvalOf(store.getScope("a"))).toMatchObject({ approved: true });
@@ -1316,15 +1315,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const confirmed = await post(cookie, "/chat/proposal/1/confirm", { csrf, return: "/chat?task=a" });
     expect(confirmed.status).toBe(303);
     const ref = store.refFor("built-in", "a");
-    expect(ref.riskLevel).toBe("elevated");
     expect(ref.routeOverrides).toEqual([expect.objectContaining({ phase: "plan", provider: "codex", model: "gpt-5-codex", by: "alex" })]);
     expect(approvalOf(store.getScope("a"))).toMatchObject({ approved: false, reason: "changed" });
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
-    expect(html).toContain("risk is now elevated risk; the planner is now codex · gpt-5-codex — the earlier approval no longer covers this task; approve it again");
+    expect(html).toContain("the planner is now codex · gpt-5-codex — the earlier approval no longer covers this task; approve it again");
     expect(html).toContain('<p class="agents-summary">codex · gpt-5-codex plans; claude · sonnet builds and repairs</p>');
-    // Elevated risk plans first, whatever the size: approval waits for the plan.
-    expect(store.refFor("built-in", "a").plan).toBe("requested");
-    expect(html).not.toContain('action="/t/a/approve"');
   });
 
   test("a focused chat answers a blocking decision and returns to the same conversation", async () => {

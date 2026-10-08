@@ -12,7 +12,7 @@ import { openStore, type Store, type TeammateRow } from "./store.js";
 import { addApprover } from "./scope.js";
 import { run as exec } from "./exec.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
-import { parseSchedule, nextFireAt } from "./routine.js";
+import { parseSchedule, nextFireAt } from "./flow-schedule.js";
 import { addressedTo, addRoutine, deskOf, localZone, messageTeammate, removeRoutine, routineSchedule, routinesOf, runRoutine } from "./teammate-desk.js";
 import { setTeammateState } from "./teammate-admin.js";
 import { TEAMMATE_TEMPLATES, type TurnRequest, type TurnRunner } from "./teammates.js";

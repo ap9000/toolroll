@@ -40,9 +40,9 @@ export function isTaskFact(row: Pick<Notification, "taskRef" | "taskId" | "proje
   return row.taskRef !== null && row.taskId !== null && row.project !== null;
 }
 
-/** The attempt a task's card follows: its newest builder attempt, outside any contest. */
+/** The attempt a task's card follows: its newest builder attempt. */
 function cardRun(store: Store, taskRef: number): Run | null {
-  return store.runsFor(taskRef).find(run => run.role === "builder" && run.contestant === null) ?? null;
+  return store.runsFor(taskRef).find(run => run.role === "builder") ?? null;
 }
 
 /** Before any attempt starts, the card says where the task stands in the words of its last lifecycle fact. */

@@ -40,7 +40,6 @@ installation's defaults of the day never apply to them:
 | exclusions (`not this`) | source scope | verbatim |
 | touches | source scope | verbatim |
 | acceptance rubric | source scope | the exact criteria, ids, statements and evidence needs |
-| declared risk | source scope and task | never below the source's signed level or its durable task choice; `high` stays `high` |
 | quality mode | source scope and task | `strict` stays `strict` |
 | permission posture | source task, else its sealed profile | the source's durable choice, else the posture its sealed profile ran under — never wider; a widened installation default does not reach the child |
 | per-attempt budget | source scope | never lifted or removed; a live mode's filing default may only tighten it (`min`) |
@@ -52,10 +51,8 @@ child's digest binds what they resolved to, and a yes on the source never
 covers them:
 
 - the phase route and its execution profile, recommended over the inherited
-  risk, quality, evidence needs, overrides and pins under today's
-  configuration and today's publication authority;
-- the fallback chain, from the repository's configuration — never copied
-  from the source's approved chain;
+  quality, evidence needs, overrides and pins under today's configuration and
+  today's publication authority;
 - the auth mode, read strictly at filing exactly as on every other road.
 
 **Never inherited** — grants and machine state:

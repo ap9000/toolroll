@@ -117,8 +117,6 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   JOIN run r ON r.id=d.run JOIN admitted a ON a.ref_id=r.task_ref
   WHERE d.state<>'answered' AND d.answered_at IS NULL GROUP BY r.task_ref
 ), custody AS MATERIALIZED (
-  SELECT r.task_ref FROM held_session h JOIN run r ON r.id=h.run JOIN admitted a ON a.ref_id=r.task_ref WHERE h.ended_at IS NULL
-  UNION
   SELECT r.task_ref FROM run r INDEXED BY work_spawned_run JOIN admitted a ON a.ref_id=r.task_ref
     WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run=r.id)
   UNION
@@ -155,8 +153,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
 ), workers AS MATERIALIZED (
   SELECT r.name,r.capacity,r.heartbeat_at,j.value repo,
     (SELECT COUNT(*) FROM claim c WHERE c.runner=r.name AND c.released_at IS NULL AND c.expires_at>$now
-      AND c.lease_generation=(SELECT MAX(newest.lease_generation) FROM claim newest WHERE newest.task_ref=c.task_ref)
-      AND c.lease_id NOT IN (SELECT lease_id FROM held_session WHERE ended_at IS NULL)) occupied
+      AND c.lease_generation=(SELECT MAX(newest.lease_generation) FROM claim newest WHERE newest.task_ref=c.task_ref)) occupied
   FROM runner r,json_each(CASE WHEN json_valid(r.repos) THEN r.repos ELSE '[]' END) j WHERE r.retired_at IS NULL
 ), facts AS MATERIALIZED (
   SELECT c.*,f.version_count,f.family_updated,f.earlier_active,f.earlier_id,f.family_running,f.question_id,
@@ -330,8 +327,7 @@ function registerValidators(store: Store): string {
  * `workspace`: a finished task whose last build's workspace note is still
  * there, which only the store can read (a held or unreadable workspace). */
 function custodyReadings(store: Store): { readings: Map<number, StopFact | null>; workspace: Set<number> } {
-  const refs = store.handle.prepare(`SELECT r.task_ref FROM held_session h JOIN run r ON r.id=h.run WHERE h.ended_at IS NULL
-    UNION SELECT r.task_ref FROM run r WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run=r.id)
+  const refs = store.handle.prepare(`SELECT r.task_ref FROM run r WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run=r.id)
     UNION SELECT r.task_ref FROM run_process p JOIN run r ON r.id=p.run WHERE p.exited_at IS NULL AND p.container_empty_at IS NULL`).all().map(row => Number(row['task_ref']));
   const noted = store.handle.prepare(`SELECT r.task_ref,r.worktree FROM task t JOIN task_ref tr ON tr.external_id=t.id
     JOIN run r ON r.id=(SELECT MAX(id) FROM run WHERE task_ref=tr.id AND role IN ('builder','scout') AND finished_at IS NOT NULL)

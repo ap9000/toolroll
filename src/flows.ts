@@ -45,7 +45,7 @@
  * - done      — the end.
  *
  * The engine is deterministic and model-free: it runs in the worker's pass
- * beside routines, and no card ever skips an approval the task itself needs.
+ * beside builds, and no card ever skips an approval the task itself needs.
  */
 import { TEXT_LIMITS } from "./text-limits.js";
 import { createHash } from "node:crypto";

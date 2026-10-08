@@ -33,7 +33,7 @@ const skipBuild = flag("--skip-build");
  * many of its scripted ones another group runs too (checked at the end of every run). Every journey that isn't
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
-  console: { journeys: 14, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects, knowledge, skills, tools, models, routines" },
+  console: { journeys: 14, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects, knowledge, skills, tools, models, old routine links" },
   pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
@@ -236,7 +236,7 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
 });
 
 await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
-  const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/routines", "/recipes",
+  const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
     "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/teammates", "/fleet", "/people"];
   const broken = [];
   const phone = await signIn("sam", { width: 390, height: 844 }, "dark");
@@ -858,28 +858,12 @@ await journey("console", SCRIPTED, "Models: Check now reads the live model lists
   return { said };
 });
 
-// ------------------------------------------------------------------ routines, settings, search, signing out
+// ------------------------------------------------------------------ old routine links, settings, search, signing out
 
-await journey("console", SCRIPTED, "Routines: a standing order is filed, approved with your password, and run now files its task", [], async () => {
-  await page.goto(`${base}/routines`);
-  const form = page.locator('form[action="/routines/add"]');
-  await form.waitFor({ timeout: 10_000 });
-  await form.locator('input[name="name"]').fill("weekly-deps");
-  await form.locator('textarea[name="goal"]').fill("Check the project's dependencies and report any that are out of date.");
-  await form.locator('textarea[name="acceptance"]').fill("A short report lists outdated dependencies | manual-review");
-  await form.locator('select[name="repeat"]').selectOption("weekly").catch(() => undefined);
-  await Promise.all([page.waitForNavigation(), form.locator("button").last().click()]);
-  const approve = page.locator('form[action$="/approve"]').first();
-  await approve.waitFor({ timeout: 10_000 });
-  await approve.locator('input[name="token"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), approve.locator("button").first().click()]);
-  const routine = rows("SELECT id, approved_at FROM routine WHERE name = 'weekly-deps'")[0];
-  if (!routine?.approved_at) throw new Error(`the routine wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
-  const now = page.locator('form[action$="/run-now"]').first();
-  await now.locator('input[name="token"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), now.locator("button").first().click()]);
-  const fired = await until("the routine's task", async () => rows(`SELECT t.external_id AS id FROM task_ref t WHERE t.routine_id = ${routine.id}`)[0], { timeoutMs: 60_000, everyMs: 2000 });
-  return { routine: routine.id, task: fired.id };
+await journey("console", SCRIPTED, "Scheduled work: an old link to routines lands on Flows, where schedules now live", [], async () => {
+  await page.goto(`${base}/routines/1`);
+  if (new URL(page.url()).pathname !== "/flows") throw new Error(`an old routine link landed on ${page.url()}`);
+  return { landed: new URL(page.url()).pathname };
 });
 
 await journey("pages", SCRIPTED, "Settings: the theme switches to dark and the accent to Emerald, and both stay", [], async () => {

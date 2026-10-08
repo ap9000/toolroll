@@ -16,16 +16,16 @@ import { routeFromJson } from "./phase-routing.js";
 
 const T0 = new Date("2026-09-10T12:00:00.000Z");
 
-function file(store: Store, taskId: string, risk?: "routine" | "elevated" | "high"): void {
+function file(store: Store, taskId: string, size?: "small" | "medium" | "large"): void {
   store.createTask({ id: taskId, title: taskId }, T0);
   const ref = store.refFor("built-in", taskId);
   store.placeTask(ref.id, "/repo/app");
+  if (size !== undefined) store.writeSizing(ref.id, { size, risky: false, source: "person", reason: "" });
   propose(store, {
     taskId,
     goal: "ship it",
     acceptance: [{ id: "c1", statement: "it ships", how: null, evidence: ["check"] }],
     now: T0,
-    ...(risk === undefined ? {} : { riskLevel: risk }),
   });
 }
 
@@ -91,9 +91,9 @@ describe("schema v47: explainable phase routing is additive", () => {
     expect(scope.routeEra).toBeNull();
     expect(approvalOf(scope).approved).toBe(true);
     expect(store.sealedRouteOf("legacy")).toMatchObject({ ok: false, reason: "legacy" });
-    expect(store.refFor("built-in", "legacy")).toMatchObject({ riskLevel: null, routeOverrides: [] });
+    expect(store.refFor("built-in", "legacy")).toMatchObject({ routeOverrides: [] });
     // The sealed profile alone governs a legacy build — exactly as before.
-    const proof = proveApprovedProfile(scope, null, { provider: "claude", model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false });
+    const proof = proveApprovedProfile(scope, { provider: "claude", model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false });
     expect(proof.ok).toBe(true);
     // Once re-filed, the row joins the routed era: the digest now binds the
     // exact route, and the approval must be given again.
@@ -117,23 +117,23 @@ describe("schema v47: explainable phase routing is additive", () => {
     expect(approve(store, "routed", "alex", T0, filed.digest, "tok-alex").ok).toBe(true);
     expect(store.sealedRouteOf("routed").ok).toBe(true);
     const sealedProfile = { provider: "claude" as const, model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false };
-    expect(proveApprovedProfile(store.getScope("routed"), null, sealedProfile).ok).toBe(true);
+    expect(proveApprovedProfile(store.getScope("routed"), sealedProfile).ok).toBe(true);
     // Removed route data: the approval no longer proves anything.
     store.raw().prepare("UPDATE task_scope SET approved_route_json = NULL WHERE task_id = 'routed'").run();
     expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
-    const removed = proveApprovedProfile(store.getScope("routed"), null, sealedProfile);
+    const removed = proveApprovedProfile(store.getScope("routed"), sealedProfile);
     expect(removed.ok).toBe(false);
     if (!removed.ok) expect(removed.message).toContain("stale-approval");
     // Malformed route data: the same closed door.
     store.raw().prepare("UPDATE task_scope SET approved_route_json = '{\"version\":1,\"legs\":[]}' WHERE task_id = 'routed'").run();
     expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
-    expect(proveApprovedProfile(store.getScope("routed"), null, sealedProfile).ok).toBe(false);
+    expect(proveApprovedProfile(store.getScope("routed"), sealedProfile).ok).toBe(false);
     // A sealed route whose build leg disagrees with the sealed profile.
     store.raw().prepare("UPDATE task_scope SET approved_route_json = proposed_route_json, approved_profile_json = REPLACE(approved_profile_json, '\"model\":\"sonnet\"', '\"model\":\"haiku\"') WHERE task_id = 'routed'").run();
     expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
   });
 
-  test("a fresh v47 scope files a canonical, exact route with the era marker; the same terms digest the same; risk moves the digest", () => {
+  test("a fresh v47 scope files a canonical, exact route with the era marker; the same terms digest the same; size moves the digest", () => {
     store = openStore(":memory:");
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", T0);
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", T0); // v47: every phase names an exact model
@@ -152,11 +152,11 @@ describe("schema v47: explainable phase routing is additive", () => {
     // Same terms, same route, same digest — deterministic.
     file(store, "twin");
     expect(store.getScope("twin")!.digest).toBe(plain.digest);
-    // Risk is a signed term: the digest moves, and the route is sealed by approval.
-    file(store, "risky", "high");
-    const risky = store.getScope("risky")!;
-    expect(risky.riskLevel).toBe("high");
-    expect(risky.digest).not.toBe(plain.digest);
+    // The size rides the route, a signed term: the digest moves. Every route files at routine risk.
+    file(store, "large", "large");
+    const large = store.getScope("large")!;
+    expect(large.riskLevel).toBe("routine");
+    expect(large.digest).not.toBe(plain.digest);
   });
 
   test("runner readiness rows are per runner and survive reopen; a cascade removes a retired runner's rows", () => {

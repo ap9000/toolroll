@@ -120,7 +120,7 @@ async function notFoundLikeMissing(make: (id: string) => string[], hidden: strin
 
 function runFor(taskId: string): number {
   const ref = store.lookupRef(taskId)!;
-  const authority = store.routeAuthorityFor(ref.id, "builder", null, { provider: "claude", model: null });
+  const authority = store.routeAuthorityFor(ref.id, "builder", { provider: "claude", model: null });
   if (authority === null || !authority.ok) throw new Error("fixture has no route");
   const id = store.startRun({ taskRef: ref.id, leaseId: `lease-${taskId}`, runner: "fixture", branch: "fixture", worktree: join(dir, `work-${taskId}`), now: NOW, route: authority.stamp });
   store.finishRun(id, { outcome: "built", committed: true, now: NOW });

@@ -74,10 +74,9 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
   ["task list", listing],
   ["runner list", installation], ["coordinator list", installation], ["outbox list", installation], ["incident list", installation], ["incident resolve", installation],
   ["cap list", repo], ["cap add", repo],
-  ...["list", "show", "add", "refresh", "pause", "resume", "run-now"].map(action => [`routine ${action}`, installation] as [string, RemoteScope]),
   ["config show", installation], ["verify show", repo], ["intake show", installation], ["intake run", installation], ["intake preview", installation],
-  ["intake pr-comments", installation], ["template list", installation], ["template show", installation], ["contest show", installation],
-  ["contest exclude", installation], ["webhook status", installation], ["review show", installation],
+  ["intake pr-comments", installation], ["template list", installation], ["template show", installation],
+  ["webhook status", installation], ["review show", installation],
   ["chat-approval show", self], ["chat-approval off", self],
   // The person's own remote actions, or everyone's within their projects for an approver (remote-audit.ts).
   ["audit", self],
@@ -95,11 +94,11 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
  */
 export const REMOTE_ALL_PROJECTS_ONLY: ReadonlyMap<string, "installation-wide" | "not yet scoped"> = new Map([
   // Settings, connections and acts that belong to the installation as a whole, not to any one project.
-  ...["integrations", "grants", "sync", "incident resolve", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
-    "config show", "intake run", "contest exclude", "webhook status"].map(row => [row, "installation-wide"] as const),
+  ...["integrations", "grants", "sync", "incident resolve",
+    "config show", "intake run", "webhook status"].map(row => [row, "installation-wide"] as const),
   // Cross-project lists and reads a limited person is still refused; scoping them is later work.
-  ...["runner list", "coordinator list", "outbox list", "incident list", "routine list", "routine show", "intake show", "intake preview",
-    "intake pr-comments", "template list", "template show", "contest show", "review show"].map(row => [row, "not yet scoped"] as const),
+  ...["runner list", "coordinator list", "outbox list", "incident list", "intake show", "intake preview",
+    "intake pr-comments", "template list", "template show", "review show"].map(row => [row, "not yet scoped"] as const),
 ]);
 
 /** The projects a listing or task reference may disclose: null for someone with access to all of them. */

@@ -123,9 +123,8 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   if (store.getTask(taskId)?.state === "cancelled" || store.getTask(taskId)?.state === "done") return { ok: false, why: "This task is already finished." };
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
   if (family === null || family.problem !== null || family.current.id !== taskId) return { ok: false, why: "A newer version of this task is current." };
-  // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, a race, an unreadable route.
+  // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, an unreadable route.
   if (ref.coordinatorCid !== null || (scope.proposedVia ?? null) !== null) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
-  if (store.activeTournamentTerms(ref.id) !== null) return { ok: false, why: "Agents compete on this task, so you approve it in Toolroll." };
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
   const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
   if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };

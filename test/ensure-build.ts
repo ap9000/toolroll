@@ -16,7 +16,7 @@ export function buildIsStale(root: string): boolean {
   if (buildInputs.some(input => !existsSync(join(root, input)) || statSync(join(root, input)).mtimeMs > runtimeBuiltAt)) return true;
 
   if (readdirSync(join(root, "src")).some(name => {
-    if ((!name.endsWith(".ts") || name.endsWith(".test.ts")) && name !== "supervisor.mjs" && name !== "job-object-helper.ps1") return false;
+    if ((!name.endsWith(".ts") || name.endsWith(".test.ts")) && name !== "job-object-helper.ps1") return false;
     if (name.endsWith(".d.ts")) return statSync(join(root, "src", name)).mtimeMs > runtimeBuiltAt;
     const output = join(root, "dist", name.replace(/\.ts$/, ".js"));
     return !existsSync(output) || statSync(join(root, "src", name)).mtimeMs > statSync(output).mtimeMs;

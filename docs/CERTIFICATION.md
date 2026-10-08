@@ -201,16 +201,6 @@ killing a real worker at every lifecycle boundary. Detached descendants,
 interrupted verification reuse, native session recovery, and Windows reboot
 remain separate gates.
 
-## Automatic fallback is a separate claim
-
-A successful canary proves that a provider is installed, authenticated, and
-can complete this workflow now. It does not prove that the provider's real
-subscription-exhaustion terminal is recognizable. `toolroll providers`
-reports `auto fallback` separately and currently says **not armed** for Claude
-and Codex. The state machine fails closed until a real exhausted-account
-terminal is captured, reviewed for its exact CLI version, and that version is
-proven at spawn. See [fallback-fixtures.md](fallback-fixtures.md).
-
 ## OS containment and restart certificates
 
 Bounded, disposable checks accompany the OS containment and login

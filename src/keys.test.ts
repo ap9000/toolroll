@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { saveProviderKey, readProviderKey, clearProviderKey, keyStatus, keyFileFor, verifyProviderKey, verdictWords, readAuthMode, readAuthModeStrict, setAuthMode, PROVIDER_KEY_ENV, OWN_KEY_ENV } from "./keys.js";
-import { invokeAgent, invokeHeldAgent } from "./invoke.js";
+import { invokeAgent } from "./invoke.js";
 import { runOperate } from "./operate.js";
 import { register } from "./runner.js";
 import { acquire, release } from "./claim.js";
@@ -398,33 +398,6 @@ describe("the gateway injection", () => {
     );
     expect(seen?.env?.[PROVIDER_KEY_ENV.claude]).toBe("sk-ant-NowUsingTheKey123");
     expect(seen?.omitEnv).not.toContain(PROVIDER_KEY_ENV.claude);
-  });
-
-  test("held claude honors subscription mode: no key handed to the held session (finding 5)", async () => {
-    saveProviderKey("claude", "sk-ant-HeldButSubscription9", home);
-    const prior = process.env[PROVIDER_KEY_ENV.claude];
-    process.env[PROVIDER_KEY_ENV.claude] = "sk-ant-AmbientHeldIgnored12";
-    let seen: Record<string, unknown> | undefined;
-    const starter = (async (_file: string, _argv: readonly string[], options: Record<string, unknown>) => {
-      seen = options;
-      return { pid: fakePid(1), socketPath: "/tmp/x", waitUntilReady: async () => ({ ready: true as const }) };
-    }) as unknown as Parameters<typeof invokeHeldAgent>[4]["starter"];
-    release(store, "l-1", T0); // the new run's lease must be the current claim
-    claimT1("l-h");
-    const heldRun = store.startRun({ taskRef: store.refFor("built-in", "t-1").id, leaseId: "l-h", runner: "b-1", branch: "b", worktree: "/w", provider: "claude", ...bareLegacy("build", "claude", null), now: T0 });
-    try {
-      await invokeHeldAgent(
-        store, heldRun, { provider: "claude", model: "sonnet" }, ["-p"],
-        { socketPath: "/tmp/x", cookie: "c", keyHome: home, clock: () => T0, starter },
-      );
-      const env = seen?.["env"] as Record<string, string> | undefined;
-      const omit = seen?.["omitEnv"] as string[] | undefined;
-      expect(env?.[PROVIDER_KEY_ENV.claude]).toBeUndefined(); // not injected
-      expect(omit).toContain(PROVIDER_KEY_ENV.claude); // stripped so login wins
-    } finally {
-      if (prior === undefined) delete process.env[PROVIDER_KEY_ENV.claude];
-      else process.env[PROVIDER_KEY_ENV.claude] = prior;
-    }
   });
 
   test("the gateway drops a minted start id when resuming — resume XOR mint (finding 3)", async () => {

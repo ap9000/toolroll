@@ -344,7 +344,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           settings: options.telegramTokenFile !== undefined,
           building: store.liveClaims(project, now),
           runners: store.listRunners(),
-          heldSessions: new Map(store.openHeldSessions().reduce((by, one) => by.set(one.runner, (by.get(one.runner) ?? 0) + 1), new Map<string, number>())),
           worktrees: store
             .listWorktrees()
             .filter(one => project === null || sameRepo(one.repo, project)),
@@ -376,7 +375,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           }),
           building: store.liveClaims(project, now),
           runners: store.listRunners(),
-          heldSessions: new Map(store.openHeldSessions().reduce((by, one) => by.set(one.runner, (by.get(one.runner) ?? 0) + 1), new Map<string, number>())),
           worktrees: store.listWorktrees().filter(one => project === null || sameRepo(one.repo, project)),
           episode: project === null ? null : store.latestWatchEpisode(project),
           outboxPending: store.pendingForAttention().length,

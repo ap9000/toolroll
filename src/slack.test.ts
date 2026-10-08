@@ -223,7 +223,7 @@ describe("Slack shared chat", () => {
     expect(
       approve(store, "sample", "alex", now, scope.digest, password).ok,
     ).toBe(true);
-    const route = store.routeAuthorityFor(ref, "builder", null);
+    const route = store.routeAuthorityFor(ref, "builder");
     if (!route?.ok) throw Error("route");
     const run = store.startRun({
       taskRef: ref,

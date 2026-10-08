@@ -44,7 +44,6 @@ import type { ProviderId } from "./provider.js";
 import {
   NO_READINESS,
   exactModelId,
-  isRiskLevel,
   legOf,
   projectRoute,
   routeDigestOf,
@@ -219,9 +218,10 @@ export function profileDigestOf(profile: ExecutionProfile): string {
     .slice(0, 32);
 }
 
-// ---- fallback chains (v30) ------------------------------------------------
-// The version this build stamps into a chain snapshot AND folds into the
-// chain digest. Bumping it is a re-attestation, never a silent change.
+// ---- fallback chains (v30-v114; removed in v115) --------------------------
+// History only: an approval sealed over a fallback chain still decodes and
+// its digest still re-derives, so old tasks verify and render. Nothing
+// files, seals, or dispatches a chain any more.
 export const CHAIN_DIGEST_VERSION = 1;
 
 /** One entry of an approved fallback chain: the WHOLE execution profile
@@ -245,23 +245,6 @@ export function canonicalChainJson(entries: readonly ChainEntry[]): string {
 export function chainDigestOf(entries: readonly ChainEntry[]): string {
   return createHash("sha256")
     .update(`standing-orders:chain:v${CHAIN_DIGEST_VERSION}:${canonicalChainJson(entries)}`, "utf8")
-    .digest("hex")
-    .slice(0, 32);
-}
-
-/**
- * One chain entry's BINDING digest (E3d): the profile digest + auth mode
- * under their own domain. A run row pins this at admission (or base-cycle
- * open), and the dispatch proof re-derives it from the approved chain at
- * the run's index — so nothing downstream can swap WHICH entry a run
- * spends as, in model or in credential.
- */
-export function entryDigestOf(entry: ChainEntry): string {
-  return createHash("sha256")
-    .update(
-      `standing-orders:chain-entry:v${CHAIN_DIGEST_VERSION}:${profileDigestOf(entry.profile)}:${entry.authMode}`,
-      "utf8",
-    )
     .digest("hex")
     .slice(0, 32);
 }
@@ -504,7 +487,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
 // structural, not a special case. What makes the rubric MANDATORY is not the
 // digest (which stays permissive, exactly like every field before it) — it is
 // every authoring road refusing to save an empty one going forward
-// (`proposeGuarded` and its siblings in routines, templates, the demo, mate
+// (`proposeGuarded` and its siblings in templates, schedules, the demo, mate
 // proposals, and the planner). `propose` itself, the primitive every one of
 // those calls, stays permissive so a scope already on file — approved or not,
 // written before this code existed — is never retroactively invalidated.
@@ -512,7 +495,7 @@ export type { AcceptanceCriterion, AcceptanceProblem };
 
 /**
  * Parse a rubric from already-JSON-parsed input (the planner's handoff, a
- * console form, a routine or template definition): fail closed, every
+ * console form, a template or a schedule's terms): fail closed, every
  * problem reported at once, each naming its path — the acceptance contract
  * (contracts/scope.ts) reads it. An absent or empty `value` parses to `[]`
  * with no problems: whether that is ALLOWED is a question for the caller
@@ -657,13 +640,10 @@ export type Scope = SavedScopeTerms & {
   profileJson?: string | null;
   approvedProfileJson?: string | null;
   digestVersion?: number;
-  /** v30 fallback chains. `proposedChainJson` is the WORKING chain snapshot
-   * the digest bound (present only when the repo has configured fallbacks);
-   * `approvedChainJson` is the immutable snapshot the seal COPIED from it;
-   * `approvalKind` names which the approval sealed. All undefined/null on a
-   * legacy single-profile scope — every scope until an operator configures a
-   * fallback chain. The runtime re-derives the active entry from
-   * `approvedChainJson`, never from mutable config. */
+  /** v30-v114 fallback chains (history): the working and sealed chain
+   * snapshots and which kind the approval sealed. Never written since v115
+   * (a re-approval writes `profile` and clears the sealed chain); an old
+   * chain approval still decodes and verifies. */
   proposedChainJson?: string | null;
   approvedChainJson?: string | null;
   approvalKind?: "profile" | "chain";
@@ -709,8 +689,8 @@ export type ScopeInput = {
   goal: string;
   outOfScope?: string | null;
   touches?: readonly string[];
-  /** v24: an EXPLICIT profile skips resolution in the store (routine
-   * firings and the demo's illustrative scopes use this road). */
+  /** v24: an EXPLICIT profile skips resolution in the store (a schedule's
+   * approved firings and the demo's illustrative scopes use this road). */
   profile?: ExecutionProfile;
   /** A task-level permission choice. When absent, the task's stored choice
    * (if any), then the installation default, decides the concrete profile. */
@@ -720,9 +700,6 @@ export type ScopeInput = {
   qualityMode?: QualityMode;
   /** v69: a prepared commit to install as this attempt — no agent runs. */
   candidate?: string | null;
-  /** v47: the task's declared risk. When absent, the task's stored choice
-   * (if any), else routine. A durable TASK choice, like qualityMode. */
-  riskLevel?: RiskLevel;
   /** Integer micro-dollars per build attempt; digest-bound when present. */
   budgetMicrousd?: number | null;
   /** The mode road's escalated filing default (C7): the resolved profile
@@ -819,7 +796,7 @@ export function digestOf(
 }
 
 export function propose(store: Store, input: ScopeInput): Scope {
-  const { taskId, goal, outOfScope = null, touches = [], budgetMicrousd = null, acceptance = [], qualityMode = "default", now, mutation = {}, profile, permissionMode, posture, proposedVia = null, riskLevel } = input;
+  const { taskId, goal, outOfScope = null, touches = [], budgetMicrousd = null, acceptance = [], qualityMode = "default", now, mutation = {}, profile, permissionMode, posture, proposedVia = null } = input;
 
   const draft = { goal, outOfScope, touches: [...touches], budgetMicrousd, acceptance: [...acceptance], qualityMode, candidate: input.candidate ?? null };
   const previous = store.getScope(taskId);
@@ -843,7 +820,6 @@ export function propose(store: Store, input: ScopeInput): Scope {
     ...(profile === undefined ? {} : { profile }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(input.qualityMode === undefined ? {} : { qualityMode: input.qualityMode }),
-    ...(riskLevel === undefined || !isRiskLevel(riskLevel) ? {} : { riskLevel }),
     ...(posture === undefined ? {} : { posture }),
     proposedVia,
   });
@@ -1058,7 +1034,7 @@ export function authenticateAccount(
  * v100: someone who signed in with the identity provider moments ago has no
  * password to type again. The console marks such a request with this, for
  * that person only, and an EMPTY password then stands for the fresh sign-in
- * at every step-up that reaches `authenticateApprover` (scope and routine
+ * at every step-up that reaches `authenticateApprover` (scope
  * approval, chat-action review, the console's own ceremonies). A typed
  * password is always checked, and nothing else stands in.
  */
@@ -1268,18 +1244,16 @@ export function approvalOf(scope: Scope | null): Approval {
 /**
  * THE STRICT STORED-SCOPE PROJECTION (v48 integrity): the ONE reading of
  * a filed scope that a seal and every consent surface believe. Nothing
- * lenient stands in for it — the working profile, chain, and route are
+ * lenient stands in for it — the working profile and route are
  * re-parsed from their raw bytes with exact keys, safe integers, and
- * timer-safe clocks; the chain's entries carry a well-formed auth mode;
- * the route's build and repair legs ARE the profile's exact pairs; on a
- * chain filing the profile IS the chain's entry zero; and the row's
- * digest re-derives, complete, from these very values. A legacy row (no
+ * timer-safe clocks; the route's build and repair legs ARE the profile's
+ * exact pairs; and the row's digest re-derives, complete, from these very values. A legacy row (no
  * route era) has no authority a person can newly agree to. One
  * disagreement is the words, and nothing — no nonce, no password field,
  * no approve action, no seal — is exposed on it.
  */
 export type ScopeAuthority =
-  | { ok: true; profile: ExecutionProfile; chain: ChainEntry[] | null; route: PhaseRoute; digest: string; authMode: AuthMode | null }
+  | { ok: true; profile: ExecutionProfile; route: PhaseRoute; digest: string; authMode: AuthMode | null }
   | { ok: false; reason: "terms" | "unrouted" | "unresolved" | "profile" | "chain" | "route" | "parity" | "digest" | "auth-mode"; problem: string };
 
 /** What the strict projection reads OUTSIDE the row (atomic authority
@@ -1342,16 +1316,10 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   if (profile === null) {
     return { ok: false, reason: "profile", problem: profileJson === null ? "the scope carries no agent profile" : "the scope's agent profile cannot be read exactly (unknown keys, an unsafe number, or a clock no timer can hold)" };
   }
-  const chainJson = scope.proposedChainJson ?? null;
-  const chain = chainJson === null ? null : chainFromJson(chainJson);
-  if (chainJson !== null && chain === null) {
-    return { ok: false, reason: "chain", problem: "the scope's fallback chain cannot be read exactly (unknown keys, a malformed auth mode, or an entry that is not a whole profile)" };
-  }
-  if (chain !== null) {
-    const base = chain[0];
-    if (base === undefined || profileDigestOf(base.profile) !== profileDigestOf(profile)) {
-      return { ok: false, reason: "parity", problem: "the scope's agent profile is not its fallback chain's first entry" };
-    }
+  // A scope filed with fallback agents (v30-v114) holds no authority now
+  // that fallback chains are gone: saving it again chooses its agents.
+  if (scope.proposedChainJson != null) {
+    return { ok: false, reason: "chain", problem: "this scope named fallback agents, which Toolroll no longer uses — save the scope again to choose its agents" };
   }
   const routeJson = scope.proposedRouteJson ?? null;
   const route = routeFromJson(routeJson);
@@ -1362,7 +1330,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
   const digest = digestOf(
     { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" },
-    chain !== null ? { chain } : profile,
+    profile,
     route,
   );
   if (digest !== scope.digest) {
@@ -1373,30 +1341,14 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   // strict reader — a present mode file that says neither word closes
   // the door in its words, never the default a lenient read would coerce
   // it to (the spawn reads the same way, so nothing sealed here spends
-  // on a credential the operator never named). A chain filing carries
-  // its base entry's pinned mode and must agree with the live file too.
+  // on a credential the operator never named).
   let authMode: AuthMode | null = null;
   if (env.authMode !== undefined) {
     const read = env.authMode(profile.provider);
     if (!read.ok) return { ok: false, reason: "auth-mode", problem: read.problem };
     authMode = read.mode;
-    // PINNED AND LIVE AUTH AGREE, or nothing (final authority closure): a
-    // chain filed under one credential for its base entry, read beside a
-    // live mode file that now says the other, is a scope whose signed
-    // words no longer describe what would spend — a subscription chain
-    // approved after the operator moved to an API key would bill the
-    // key. It holds no authority until it is filed again under today's
-    // mode.
-    const base = chain === null ? null : chain[0] ?? null;
-    if (base !== null && base.authMode !== authMode) {
-      return {
-        ok: false,
-        reason: "auth-mode",
-        problem: `the scope's fallback chain pins its base entry to ${base.authMode === "subscription" ? "your subscription" : "your API key"} for ${profile.provider}, but the live auth mode is now ${authMode === "subscription" ? "your subscription" : "your API key"} — re-file the scope under today's mode`,
-      };
-    }
   }
-  return { ok: true, profile, chain, route, digest, authMode };
+  return { ok: true, profile, route, digest, authMode };
 }
 
 /** The rubric's approval-card lines (v39): one per criterion, the id in
@@ -1431,36 +1383,12 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...(scope.budgetMicrousd === null
       ? []
       : [`  budget       $${(scope.budgetMicrousd / 1_000_000).toFixed(2)} per build attempt — the agent is stopped at this figure`]),
-    // The FALLBACK CHAIN, in the words the yes agrees to (Layer F): when
-    // this scope files under configured fallbacks, the digest above binds
-    // the WHOLE ordered chain — so the card says every entry, credential
-    // included, before anyone signs.
-    ...chainWords(chainFromJson(scope.proposedChainJson ?? null)),
-    // The ROUTE, in the words the yes agrees to (v47): risk, posture, and
-    // every leg with its reason and readiness — before anyone signs.
-    ...(scope.riskLevel === undefined || scope.riskLevel === "routine" ? [] : [`  risk         ${scope.riskLevel}`]),
+    // The ROUTE, in the words the yes agrees to (v47): posture and every
+    // leg with its reason and readiness — before anyone signs.
     ...scopeRouteWords(scope, readiness),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];
-}
-
-/** The chain's approval-card lines; empty for a single-profile scope. */
-export function chainWords(chain: ChainEntry[] | null): string[] {
-  if (chain === null || chain.length < 2) return [];
-  const credential = (mode: ChainEntry["authMode"]): string =>
-    mode === "subscription" ? "your subscription" : "your API key";
-  const lines: string[] = [];
-  const base = chain[0] as ChainEntry;
-  lines.push(`  runs on      ${base.profile.provider} (${base.profile.model}) — ${credential(base.authMode)}`);
-  for (const entry of chain.slice(1)) {
-    lines.push(
-      `  if that runs out  falls back to ${entry.profile.provider} (${entry.profile.model}) — ${credential(entry.authMode)}${
-        entry.authMode === "api-key" ? "; spend moves to that account" : ""
-      }`,
-    );
-  }
-  return lines;
 }
 
 function describeApproval(approval: Approval): string {
@@ -1469,51 +1397,4 @@ function describeApproval(approval: Approval): string {
     return "no — it was approved, then the scope was rewritten; approve it again";
   }
   return "no — nothing will build this until somebody agrees to it";
-}
-
-// ---- attended authorization terms (Parity II Phase 2E, ruling 12) ----------
-
-/**
- * EVERY rendered term of one watched attempt — what the form shows is what
- * the password signs, byte for byte. The subset the dispatch proof
- * re-derives (scopeDigest, profileDigest, profileJson, repo, head) is read
- * back by the builder and the coordinator; the rest are the product terms
- * the ceremony renders in words: the budget as a STOP THRESHOLD, the turn
- * cap, the per-turn clock whose expiry is SESSION-FATAL, and the absolute
- * expiry. Continuation carries the parent attempt and the follow-up text
- * INSIDE the signed terms (v3 R7).
- */
-export type AttendedTerms = {
-  taskId: string;
-  /** v28: HOW liveness is renewed — a SIGNED term, because liveness is an
-   * admission predicate, not decoration. "console-visible" = any open
-   * console page of this server renews use. Legacy terms lack the field
-   * and beat-all refuses them (they were signed as page-bound). */
-  attentionMode: "console-visible";
-  scopeDigest: string;
-  profileDigest: string;
-  profileJson: string;
-  repo: string;
-  runner: string;
-  runnerGeneration: number;
-  head: string;
-  maxSessionTurns: number;
-  budgetMicrousd: number;
-  turnTimeoutSeconds: number;
-  absoluteExpiry: string;
-  parentRun?: number | null;
-  followup?: string | null;
-};
-
-/** Deterministic bytes: sorted keys, undefined dropped — the signed text. */
-export function attendedTermsJson(terms: AttendedTerms): string {
-  return canonicalJson(terms);
-}
-
-/** The composite digest one password signs (ruling 12), domain-separated. */
-export function attendedDigestOf(terms: AttendedTerms): string {
-  return createHash("sha256")
-    .update(`standing-orders:attended:${attendedTermsJson(terms)}`)
-    .digest("hex")
-    .slice(0, 32);
 }

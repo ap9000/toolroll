@@ -2,6 +2,7 @@
  * (the React view's data, plus a plain fallback page the view replaces). */
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
 import { draftFor, flowDefinitionOf } from "./flow-engine.js";
+import { describeStandingOrder } from "./flow-schedule.js";
 import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, takesDeliveries, triggerConfigOf } from "./flow-triggers.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
@@ -197,6 +198,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       hook: config !== null && takesDeliveries(config) ? { ready: hookReady(trigger, setup.dir), needsSecret: config.kind === "linear" } : null,
       checkable: ((config?.kind === "github" || config?.kind === "linear") && config.delivery === "poll") || config?.kind === "email" || (config?.kind === "schedule" && config.script !== undefined) || config?.kind === "plane-review",
       shared: config?.kind === "button" && trigger.hookHash !== null,
+      ...(config?.kind === "schedule" && config.order !== undefined ? { order: describeStandingOrder(config.order, flow.repo, config.schedule) } : {}),
     };
   });
   return {

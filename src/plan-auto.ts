@@ -15,7 +15,7 @@ export const PLAN_AUTO_SCHEMA = `CREATE TABLE IF NOT EXISTS plan_authorization (
 function plainPlan(store: Store, taskId: string): boolean {
   const ref = store.lookupRef(taskId);
   return ref !== null && ref.deliverable === "branch" && ref.coordinatorCid === null &&
-    store.activeTournamentTerms(ref.id) === null && store.openAuthorizationFor(ref.id) === null && store.mirrorByTask(taskId) === null;
+    store.mirrorByTask(taskId) === null;
 }
 
 /** Join the console's authority-free proposal to the authenticated filing
@@ -27,7 +27,7 @@ export function applyModeToNewFiling(store: Store, taskId: string, actor: string
   if (ref === null || scope === null || scope.proposedVia != null || coverage === null) return;
   const filed = propose(store, { taskId, goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, acceptance: scope.acceptance,
     budgetMicrousd: scope.budgetMicrousd ?? coverage.defaultBudgetMicrousd,
-    qualityMode: scope.qualityMode ?? "default", riskLevel: scope.riskLevel ?? "routine",
+    qualityMode: scope.qualityMode ?? "default",
     ...(coverage.escalated ? { posture: "escalated" as const } : {}), now });
   if (ref.plan === "requested") authorizePlanUnderMode(store, taskId, actor, now);
   else if (filed.profileState === "resolved") store.sealScopeApproval(taskId, actor, now, {}, { kind: "mode", modeDigest: coverage.digest });

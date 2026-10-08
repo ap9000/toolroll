@@ -2,7 +2,7 @@ import type { Registration } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { createHash,randomBytes,randomUUID } from "node:crypto";
 import { lstatSync,realpathSync } from "node:fs";
-import { type IncomingMessage,type ServerResponse } from "node:http";
+import { type ServerResponse } from "node:http";
 import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
 import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
@@ -11,7 +11,6 @@ import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
 import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
-import { abandonContest,buildPickView,computePickPlan,finalizeContestPick,nonceHashOf,pickTupleDigest,planComparison,planTournament } from "../contest.js";
 import { checkResponse,CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { diagnoseTaskDispatch } from "../dispatch.js";
@@ -20,11 +19,10 @@ import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../ev
 import { computeGaps } from "../gaps.js";
 import { limitsView } from "../limits-ui.js";
 import { readLiveWindow } from "../live.js";
-import { modeTermsFromJson } from "../modes.js";
 import { latestFinishedAttempt,retryNoteOf } from '../needs-you.js';
 import { REMOTE_MESSAGES } from "../operate-remote.js";
 import { aggregateNewNames,observeWorktree,parseBaseTreeSnapshot,PEEK_LIMITS } from "../peek.js";
-import { isRiskLevel,isTaskSize,PHASES as ROUTE_PHASES,type RiskLevel,type RouteOverride } from "../phase-routing.js";
+import { isTaskSize,PHASES as ROUTE_PHASES,type RouteOverride } from "../phase-routing.js";
 import { applyModeToNewFiling,authorizePlanUnderMode } from "../plan-auto.js";
 import { milestonesOf,parseExecutionPlanDocument } from "../plan.js";
 import { levelOfProfile } from "../policy.js";
@@ -34,12 +32,12 @@ canonicalProject,
 projectName,
 rowVisible
 } from "../project.js";
-import { fileRoutineProposal,fileTaskProposal } from "../proposal.js";
+import { fileTaskProposal } from "../proposal.js";
 import { isProviderId,validateSpec,type ProviderId } from "../provider.js";
 import { completeAndOpenPullRequest,mergeAsPerson } from '../pull-request-flow.js';
 import { isQualityMode,type QualityMode } from "../quality.js";
 import { createResultRevision,requestResultChanges } from "../result-actions.js";
-import { structuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
+import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { fileAddTestsTask,requestFollowUpChecks } from '../result-follow-ups.js';
 import {
 commentSourceKey,
@@ -47,22 +45,15 @@ isRevisionFeedback,
 parseResultTab,
 resultReturnTarget
 } from "../result-review.js";
-import { approveRoutine,fireRoutine,refreshRoutineAgents,routineAgentsState } from "../routine.js";
 import { isAlive as runnerAlive } from "../runner.js";
 import {
 acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-attendedDigestOf,
-attendedTermsJson,
-canonicalProfileJson,
 hasFreshIdentitySignIn,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
-profileDigestOf,
-profileFromJson,
 proposeGuarded,
-type AttendedTerms,
 type UnattendedPermissionMode
 } from "../scope.js";
 import { teammateNames as teammateNamesOf } from "../spend.js";
@@ -74,7 +65,6 @@ type Store,
 type TaskState
 } from "../store.js";
 import { runCostWords } from "../summary.js";
-import { composerSchedule } from "../task-composer.js";
 import { requestTaskStop,resumeTaskStop } from "../task-control.js";
 import { templateByName } from "../templates.js";
 import { TEXT_LIMITS } from "../text-limits.js";
@@ -85,9 +75,9 @@ parseWorkView
 } from "../workspace-ui.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { ACCEPT_ANYWAY_NEEDS_REASON,approvalFormDigest,approveRefusalWords,attendedWatchWords,boardBody,chatReturnWithSaid,checkProgressHtml,consentDoorOf,contestCeremonyPage,contestPage,decisionPage,donePage,editorFileHref,escape,inboxFingerprints,inboxPage,matchTaskPath,newTaskPage,nextPage,oneLineOf,parseInboxTab,PermissionsWouldChange,proofBundleView,QUEUE_FRONT,QUEUE_VIEW,queueBody,queueScript,rankReviewQueue,redirect,refuse,regionScript,requestContext,requirementsFromEditor,respond,RESULT_REFUSALS,resumeDigestOf,REVIEW_QUEUE_CAP,reviewCockpitPage,reviewHref,reviewPriorityOf,routineScreenPage,routinesPage,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,safeChatReturn,safeReturn,SAFETY,screen,TASK_STATES,taskChatHref,taskHref,taskOf,tasksPage,transcriptScript,whenTime,withRefusal,workPage,type CompletedWorkRow,type InboxTab,type PeekAdmission,type RankedReviewRow,type ReviewCockpitView,type Who } from "./shared.js";
+import { ACCEPT_ANYWAY_NEEDS_REASON,approvalFormDigest,nonceHashOf,approveRefusalWords,boardBody,chatReturnWithSaid,checkProgressHtml,consentDoorOf,decisionPage,donePage,editorFileHref,escape,inboxFingerprints,inboxPage,matchTaskPath,newTaskPage,nextPage,oneLineOf,parseInboxTab,PermissionsWouldChange,proofBundleView,QUEUE_FRONT,QUEUE_VIEW,queueBody,queueScript,rankReviewQueue,redirect,refuse,regionScript,requestContext,requirementsFromEditor,respond,RESULT_REFUSALS,resumeDigestOf,REVIEW_QUEUE_CAP,reviewCockpitPage,reviewHref,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,safeChatReturn,safeReturn,SAFETY,screen,TASK_STATES,taskChatHref,taskHref,taskOf,tasksPage,transcriptScript,whenTime,withRefusal,workPage,type CompletedWorkRow,type InboxTab,type PeekAdmission,type RankedReviewRow,type ReviewCockpitView,type Who } from "./shared.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
-  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, allowedHost, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, matePrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
+  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, matePrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
   async function get(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now, project, chosenProject, posted, route } = ctx;
@@ -302,8 +292,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const ref = store.lookupRef(item.approval.taskId);
         const scope = store.getScope(item.approval.taskId);
         const planView = ref !== null && ref.plan === "drafted" ? planViewOf(ref.id) : null;
-        const raceTerms = ref === null ? null : store.activeTournamentTerms(ref.id);
-        const approvalDigest = approvalFormDigest(item.approval.digest, raceTerms?.raceDigest ?? null, planView?.sha256 ?? null);
+        const approvalDigest = approvalFormDigest(item.approval.digest, planView?.sha256 ?? null);
         // The same agents block the task page and chat sign under (v48),
         // and the same consent door: closed, it mints no nonce.
         const route = routeViewOf(item.approval.taskId, ref, scope, now, who);
@@ -313,7 +302,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           planDocument: planView?.document ?? null,
           planContract: ref === null || planView === null ? null : planContractViewOf(ref.id, scope),
           approvalDigest,
-          raceTerms,
           deliverable: ref?.deliverable ?? "branch",
           route,
           csrf, nonce, remaining: remaining.length, skipped: [...skipped], now,
@@ -321,7 +309,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       return sendScreen(response, 200, nextPage(chromeFor(project, "inbox"), {
         item, scope: null, planDocument: null, planContract: null, csrf, nonce: "",
-        approvalDigest: null, raceTerms: null, route: null,
+        approvalDigest: null, route: null,
         remaining: remaining.length, skipped: [...skipped], now,
       }));
     }
@@ -410,15 +398,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           repairChain,
         });
       });
-      // Instances belong to their track row, not the main lanes — the board
-      // is for one-off work; tracks are the heartbeat. The one exception is
-      // attention: anything needing a person surfaces, wearing its routine.
-      const laneCards = [...cards.filter(card => card.routineName === null || card.lane === "attention"), ...unverifiedCards];
-      const tracks = store
-        .routineTracks(all ? null : project, now, admission)
-        .filter(track => visible(track.routine.repo));
+      const laneCards = [...cards, ...unverifiedCards];
       const body = boardBody(
-        { cards: laneCards, tracks, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
+        { cards: laneCards, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
         pr => store.ciFailureObserved(pr),
       );
       if (url.searchParams.get("fragment") === "1") {
@@ -460,7 +442,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       // The review cockpit (Priority 5): every visible COMPLETED task,
       // ranked by review priority, with one selected result projected
       // from the records the task, run, and done pages already read —
-      // scope, plan, run, artifacts, verdict, contest, publication. The
+      // scope, plan, run, artifacts, verdict, publication. The
       // ranking is a labeled presentation aid: it never rewrites the
       // stored verdict, and the sealed patch downloads exactly as stored.
       // Admission binds BEFORE the SQL limit (the done page's own rule),
@@ -598,8 +580,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const csrf = who.via === "cookie" ? who.session.csrf : "";
       const revision = who.via === "cookie" ? who.session.projectRevision : 0;
       // Column headers read one thing beyond the queue snapshot: live claims
-      // in THIS project, per worker (the capacity is global; attended claims
-      // may exceed it), so the header names both and never a ratio.
+      // in THIS project, per worker (the capacity is global), so the header
+      // names both and never a ratio.
       if (url.searchParams.get("fragment") === "1") {
         return respond(response, 200, "text/html; charset=utf-8", queueRegionFor(project, csrf, revision, clock()));
       }
@@ -813,27 +795,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             ? { on: who.session.editorLinks === true }
             : null,
           url.searchParams.get("noted") !== null,
-          (() => {
-            const held = store.heldSessionOf(found.id);
-            if (held === null) return null;
-            const authorization = store.readAuthorization(held.authorizationId);
-            return {
-              turns: store.sessionTurnsOf(found.id),
-              open: held.endedAt === null && held.state === "open",
-              state:
-                authorization === null
-                  ? "session record"
-                  : attendedWatchWords(authorization.lastBeatAt, now, authorization.absoluteExpiry),
-              cap: authorization?.maxSessionTurns ?? 0,
-            };
-          })(),
-          options.attended !== undefined &&
-          who.via === "cookie" &&
-          !store.isDemo() &&
-          (found.outcome === "built" || found.outcome === "no-change") &&
-          store.openAuthorizationFor(found.taskRef) === null
-            ? { taskId }
-            : null,
           structuredHandoffView(artifacts, evidenceRoot),
           proofBundleView(store, found, artifacts, evidenceRoot),
           store.runRoute(found.id),
@@ -853,47 +814,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return runEvidence(response, Number(runArtifact[1]), Number(runArtifact[2]));
     }
 
-    const contestPath = /^\/contest\/([0-9]{1,15})$/.exec(url.pathname);
-    if (contestPath !== null) {
-      return contestScreen(response, who, Number(contestPath[1]), null, 200);
-    }
-
-    if (url.pathname === "/routines") {
-      // The ceiling row by row, exactly as everywhere: a routine placed in
-      // a repo this server may not serve does not exist here.
-      const tracks = store
-        .routineTracks(project, now)
-        .filter(track => visible(track.routine.repo));
-      // ?template=<name> pre-fills the filing form from the shipped
-      // library — a pre-filled form, same guarded submission path.
-      const fromTemplate = url.searchParams.get("template");
-      const picked = fromTemplate === null ? null : templateByName(fromTemplate);
-      return sendScreen(response, 200, routinesPage(chromeFor(project, "routines"), tracks, {
-        csrf: who.via === "cookie" ? who.session.csrf : "",
-        revision: who.via === "cookie" ? who.session.projectRevision : 0,
-        problem: null,
-        prefill:
-          picked !== null && picked.kind === "routine"
-            ? {
-                name: picked.routineName,
-                goal: picked.goal,
-                not: picked.outOfScope ?? "",
-                touches: picked.touches.join(", "),
-                schedule: picked.schedule,
-                acceptance: acceptanceToLines(picked.acceptance).join("\n"),
-              }
-            : null,
-      }));
-    }
-
-    const routineScreen = /^\/routines\/([0-9]{1,15})$/.exec(url.pathname);
-    if (routineScreen !== null) {
-      const routine = store.getRoutine(Number(routineScreen[1]));
-      if (routine === null || !visible(routine.repo)) {
-        return refuse(response, who, 404, "no such routine", "/routines");
-      }
-      return routinePage(response, who, routine.id, null, 200);
-    }
+    // v115: routines became scheduled flows; an old link to the list or to one routine lands on the flows page.
+    if (url.pathname === "/routines" || /^\/routines\/[0-9]{1,15}$/.test(url.pathname)) return redirect(response, "/flows");
 
     const one = /^\/d\/([0-9]{1,15})$/.exec(url.pathname);
     if (one !== null) {
@@ -919,17 +841,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   async function post(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now, project, chosenProject, posted, route } = ctx;
 
-    // The attended beat answers BEFORE the shared mutation guard (v28): it
-    // carries no parameters, so there is no csrf token to check — its OWN
-    // guard is complete and STRICTER for the browsers this console
-    // supports: cookie session, form content-type (form() enforced it),
-    // and `Sec-Fetch-Site: same-origin`, which cross-site POSTs cannot
-    // send and same-origin fetch always does. Renewal-only: an attacker
-    // who somehow posted could only keep the operator's OWN sessions from
-    // lapsing — no mint, no spend, no read.
-    if (url.pathname === "/session/attended-beats") {
-      return attendedBeats(who, request, response, clock());
-    }
     if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
       const body = readForm(posted, CONSOLE_FORMS.code);
       const wantsJson = request.headers.accept?.includes('application/json') === true;
@@ -1156,7 +1067,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const moveReason = (reason: string): string =>
         reason === "stale"
           ? "the queue moved underneath you — it just reloaded"
-          : reason === "claimed" || reason === "contest-open"
+          : reason === "claimed"
             ? "that task is being taken right now — it keeps its claim"
             : reason === "worker-retired"
               ? "that worker is retired — drag its work elsewhere, or register the name again"
@@ -1193,11 +1104,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const now = clock();
         const snapshot = store.queueScoped(ref.repo, now);
         const self = snapshot.find(one => one.id === taskId);
-        // A claim or a contest can land after the form rendered WITHOUT
+        // A claim can land after the form rendered WITHOUT
         // bumping queueRevision, so the snapshot — not the form — decides
         // whether the card is still free. A taken or vanished card is the
         // typed refusal, never a silent no-op that would skip moveTask()'s
-        // own claimed/contest recheck.
+        // own claimed recheck.
         if (self === undefined) return respondMove(409, moveReason("unknown-task"));
         if (self.taken) return respondMove(409, moveReason("claimed"));
         const partition = snapshot.filter(
@@ -1274,91 +1185,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return redirect(response, decisionBack);
     }
 
-    const contestAct = /^\/contest\/([0-9]{1,15})\/(arm|pick|abandon)$/.exec(url.pathname);
-    if (contestAct !== null) {
-      if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
-      const body = readForm(posted, CONSOLE_FORMS.contest);
-      const contestId = Number(contestAct[1]);
-      const verb = contestAct[2] as "arm" | "pick" | "abandon";
-      const data = contestData(contestId);
-      if (data === null) return refuse(response, who, 404, "no such tournament", "/board");
-      const { view } = data;
-
-      if (verb === "arm") {
-        // The ceremony's nonce is minted by THIS POST, never by a GET
-        // (round-3 finding 30): a prefetched or crawled page must not mint
-        // anything. The response is the ceremony form itself, carrying the
-        // nonce value; its hash lives in a durable row bound to the exact
-        // tuple digest being restated.
-        const abandoning = body.get("act") === "abandon";
-        if (abandoning) {
-          if (!["pick-wait", "exhausted", "interrupted", "decision-wait"].includes(view.contest.state)) {
-            return contestScreen(response, who, contestId, "this tournament is not in a state an operator can abandon", 409);
-          }
-          const digest = pickTupleDigest(view, { abandon: true }, { grant: null, head: null });
-          const nonceValue = randomBytes(18).toString("base64url");
-          const minted = store.mintCeremonyNonce(
-            { hash: nonceHashOf(nonceValue), approver: who.name, subject: "contest-abandon", subjectId: contestId, digest, ttlMs: 15 * 60_000 },
-            now,
-          );
-          if (!minted.ok) return contestScreen(response, who, contestId, "too many unfinished confirmations are open — finish or let them expire", 429);
-          return sendScreen(response, 200, contestCeremonyPage(chromeFor(who.via === "cookie" ? who.session.project : null, "tasks"), {
-            kind: "abandon", contestKind: view.contest.kind, contestId, taskId: data.taskId, taskTitle: data.taskTitle,
-            agents: view.agents.length, totalMicrousd: data.totalMicrousd, anyUnknown: data.anyUnknown,
-            nonceValue, csrf: who.via === "cookie" ? who.session.csrf : "",
-          }));
-        }
-        if (view.contest.state !== "pick-wait") {
-          return contestScreen(response, who, contestId, "this tournament is not waiting for a pick", 409);
-        }
-        const choice = Number(body.get("choice") ?? "");
-        const plan = computePickPlan(store, view, choice, data.repo, data.refOrigin);
-        if (!plan.ok) return contestScreen(response, who, contestId, plan.message, 409);
-        const nonceValue = randomBytes(18).toString("base64url");
-        const minted = store.mintCeremonyNonce(
-          { hash: nonceHashOf(nonceValue), approver: who.name, subject: "contest-pick", subjectId: contestId, digest: plan.digest, ttlMs: 15 * 60_000 },
-          now,
-        );
-        if (!minted.ok) return contestScreen(response, who, contestId, "too many unfinished confirmations are open — finish or let them expire", 429);
-        return sendScreen(response, 200, contestCeremonyPage(chromeFor(who.via === "cookie" ? who.session.project : null, "tasks"), {
-          kind: "pick", contestKind: view.contest.kind, contestId, taskId: data.taskId, taskTitle: data.taskTitle,
-          agents: view.agents.length, totalMicrousd: data.totalMicrousd, anyUnknown: data.anyUnknown,
-          chosen: plan.chosen,
-          publication: plan.publishable && plan.grant !== null && plan.chosen.run.branch !== null ? { githubRepo: plan.grant.githubRepo, branch: plan.chosen.run.branch, draft: plan.grant.draft } : null,
-          nonceValue, csrf: who.via === "cookie" ? who.session.csrf : "",
-        }));
-      }
-
-      // pick and abandon: the password, typed again, plus the nonce the arm
-      // POST minted. The store consumes the nonce conditionally inside the
-      // same transaction that moves the tournament — replay finds it gone.
-      const token = body.get("token") ?? "";
-      if (!authenticateApprover(who, token).ok) {
-        return contestScreen(response, who, contestId, "that decision takes your password, typed again", 403);
-      }
-      const nonceValue = body.get("nonce") ?? "";
-      if (nonceValue === "") return contestScreen(response, who, contestId, "that confirmation form was incomplete — start again", 400);
-
-      if (verb === "pick") {
-        const choice = Number(body.get("choice") ?? "");
-        const picked = finalizeContestPick(store, {
-          contestId, contestantId: choice, approver: who.name, nonceValue,
-          evidenceRoot, repo: data.repo, taskId: data.taskId, refOrigin: data.refOrigin,
-        }, now);
-        if (!picked.ok) return contestScreen(response, who, contestId, picked.message, 409);
-        return redirect(response, `/contest/${contestId}`);
-      }
-
-      const gone = abandonContest(store, { contestId, approver: who.name, nonceValue, evidenceRoot, taskId: data.taskId }, now);
-      if (!gone.ok) return contestScreen(response, who, contestId, gone.message, 409);
-      return redirect(response, `/contest/${contestId}`);
-    }
-
-    const attendAct = matchTaskPath(url.pathname, "/(attend-preview|attend|attend-revoke)$");
-    if (attendAct !== null) {
-      return attendMutation(response, who, attendAct.taskId, attendAct.verb, readForm(posted, CONSOLE_FORMS.attend), now);
-    }
-
     const act = matchTaskPath(url.pathname, "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|block|unblock|repair-dependency|next|reopen|steer|follow-up|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
     if (act !== null && act.verb === "confirm-stopped") {
       const body = readForm(posted, CONSOLE_FORMS.confirmStopped);
@@ -1410,84 +1236,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     if (act !== null) {
       return taskMutation(response, who, act.taskId, act.verb, posted, now);
-    }
-
-    if (url.pathname === "/routines/add") {
-      const body = readForm(posted, CONSOLE_FORMS.routinesAdd);
-      // A standing order files into the OPEN project — never a typed path,
-      // so the ceiling question never even arises — and lands on its own
-      // screen where the approval step-up already lives: filing is cheap,
-      // the yes is the ceremony.
-      const project = projectOf(who, request);
-      if (project === undefined || project === null) {
-        return refuse(response, who, 403, "open a project first — a standing order lives somewhere specific");
-      }
-      if (who.via === "cookie") {
-        const seen = body.get("projectRevision");
-        if (seen !== null && seen !== String(who.session.projectRevision)) {
-          return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/routines");
-        }
-      }
-      const name = (body.get("name") ?? "").trim();
-      const ceilingGiven = (body.get("ceiling") ?? "").trim();
-      // Root mode proves the CURRENT project exactly (repo onboarding,
-      // finding 24): canonicalize, authorize, and pass [canonical] as the
-      // admitted list — the same discipline as task filing, so a routine
-      // can land in a fresh clone too.
-      const routineRootMode = !unscopedMode && ceiling.roots.length > 0;
-      let routineRepo = project;
-      let routineAdmitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
-      if (routineRootMode) {
-        const canonical = (await authorizedProject(liveCeiling(), project)) ? canonicalProject(project) : null;
-        if (canonical === null || canonical === undefined) {
-          return refuse(response, who, 403, "the open project is outside what this server was configured to show", "/routines");
-        }
-        routineRepo = canonical;
-        routineAdmitted = [canonical];
-      }
-      // One filing door for every surface (Codex adoption review, finding
-      // 7): the service validates, canonicalizes, digests, and stamps
-      // provenance; the admission list makes the ceiling explicit even
-      // though `project` was already proved inside it.
-      const scheduled = body.has("repeat") ? composerSchedule(body.sent) : { ok: true as const, schedule: (body.get("schedule") ?? "").trim() };
-      if (!scheduled.ok || scheduled.schedule === null) {
-        return sendScreen(response, 400, routinesPage(chromeFor(project, "routines"), store.routineTracks(project, now).filter(track => visible(track.routine.repo)), {
-          csrf: who.via === "cookie" ? who.session.csrf : "", revision: who.via === "cookie" ? who.session.projectRevision : 0,
-          problem: scheduled.ok ? "Choose a recurring schedule." : scheduled.message, values: body.sent,
-        }));
-      }
-      const created = fileRoutineProposal(
-        store,
-        {
-          name,
-          repo: routineRepo,
-          goal: (body.get("goal") ?? "").trim(),
-          outOfScope: (body.get("not") ?? "").trim() || null,
-          touches: (body.get("touches") ?? "").split(/[\n,]/).map(one => one.trim()).filter(one => one !== ""),
-          acceptance: acceptanceLinesToInput((body.get("acceptance") ?? "").split("\n")),
-          requirements: [],
-          schedule: scheduled.schedule,
-          costCeilingUsd: ceilingGiven === "" ? null : Number(ceilingGiven),
-          filedVia: "console", createdBy: who.name,
-          ...(routineAdmitted === null ? {} : { admittedRepos: routineAdmitted }),
-        },
-        now,
-      );
-      if (created.ok && routineRootMode) store.upsertProject(routineRepo, projectName(routineRepo), now);
-      if (!created.ok) {
-        const tracks = store.routineTracks(project, now).filter(track => visible(track.routine.repo));
-        return sendScreen(response, created.reason === "duplicate" ? 409 : 400, routinesPage(chromeFor(project, "routines"), tracks, {
-          csrf: who.via === "cookie" ? who.session.csrf : "",
-          revision: who.via === "cookie" ? who.session.projectRevision : 0,
-          problem: created.message, values: body.sent,
-        }));
-      }
-      return redirect(response, `/routines/${created.id}`);
-    }
-
-    const routineAct = /^\/routines\/([0-9]{1,15})\/(approve|refresh|pause|resume|run-now)$/.exec(url.pathname);
-    if (routineAct !== null) {
-      return routineMutation(response, who, Number(routineAct[1]), routineAct[2] as string, readForm(posted, CONSOLE_FORMS.routine), now);
     }
 
     const runNote = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
@@ -1610,42 +1358,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       who.session.editorLinks = body.get("on") === "1";
       const back = body.get("return") ?? "/";
       return redirect(response, /^\/[a-z0-9/_-]*$/i.test(back) ? back : "/");
-    }
-
-    const turnAct = /^\/r\/([0-9]{1,15})\/turn$/.exec(url.pathname);
-    if (turnAct !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.turn);
-      // The operator's turn (Phase 2E, v2 S1g): cookie-only — a watching
-      // person, never a bearer machine — and every hard gate (custody,
-      // lease, cap, budget, open decision, single flight) re-proves
-      // ATOMICALLY inside the recording transaction. Words here only map
-      // the refusal tokens to sentences.
-      if (who.via !== "cookie") return refuse(response, who, 403, "turns are a browser session's act");
-      const id = Number(turnAct[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) {
-        return refuse(response, who, 404, "no such run");
-      }
-      const text = (body.get("text") ?? "").trim();
-      if (text === "" || text.length > 500) {
-        return refuse(response, who, 400, "a turn is 1 to 500 characters", `/r/${id}`);
-      }
-      const coordinator = options.attended?.coordinator;
-      if (coordinator === undefined) return refuse(response, who, 409, "this console is not holding the session", `/r/${id}`);
-      const injected = coordinator.injectOperatorTurn(id, who.name, text);
-      if (!injected.ok) {
-        const words: Record<string, string> = {
-          "no-held-session": "the session is not held here anymore",
-          fenced: "the session is winding down — nothing more reaches it",
-          "turn-open": "the agent is still working on the last message — wait for it to settle",
-          "turn-cap": "the session's message cap is reached — authorize a new session for more",
-          "budget-exhausted": "the session's budget is spent",
-          "decision-open": "answer the waiting question first — it is on this page",
-          "write-failed": "the message could not reach the agent — it was not charged",
-        };
-        return refuse(response, who, 409, words[injected.reason] ?? injected.reason, `/r/${id}`);
-      }
-      return redirect(response, `/r/${id}`);
     }
 
     const revise = /^\/r\/([0-9]{1,15})\/revise$/.exec(url.pathname);
@@ -1915,281 +1627,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
   }
 
-  function contestScreen(
-    response: ServerResponse,
-    who: Who,
-    contestId: number,
-    problem: string | null,
-    status: number,
-  ): void {
-    const data = contestData(contestId);
-    if (data === null) return refuse(response, who, 404, "no such tournament", "/board");
-    const paneProject = who.via === "cookie" ? who.session.project : null;
-    const diffs = new Map<number, TerminalDiffView | null>();
-    for (const agent of data.view.agents) {
-      if (agent.run !== null) diffs.set(agent.contestant.id, terminalDiffView(store.artifactsFor(agent.run.id), evidenceRoot));
-    }
-    return sendScreen(
-      response,
-      status,
-      contestPage(chromeFor(paneProject, "tasks"), {
-        ...data,
-        diffs,
-        csrf: who.via === "cookie" ? who.session.csrf : "",
-        problem,
-      }),
-    );
-  }
-
-  /**
-   * Routine verbs. The ceiling check is independent of authorizeMutation
-   * (Codex round 2, finding 7): the routine's repository is resolved
-   * server-side and proved against this server's configuration before any
-   * verb runs, whatever the request named.
-   */
-  function routineMutation(
-    response: ServerResponse,
-    who: Who,
-    routineId: number,
-    verb: string,
-    body: FormView<FormFieldOf<"routine">>,
-    now: Date,
-  ): void {
-    const routine = store.getRoutine(routineId);
-    if (routine === null || !visible(routine.repo)) {
-      return refuse(response, who, 404, "no such routine", "/routines");
-    }
-
-    switch (verb) {
-      case "approve": {
-        if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
-        // Step-up, identical to a scope's: the session got you here; only
-        // the password agrees. The digest names what was seen.
-        const digest = body.get("digest") ?? "";
-        const token = body.get("token") ?? "";
-        const nonce = body.get("nonce") ?? "";
-        if (!consumeApprovalNonce(nonce, who.name, `routine:${routine.id}`, digest)) {
-          return routinePage(response, who, routineId, "that approval form is stale — read it again", 409);
-        }
-        if (token === "" && !hasFreshIdentitySignIn(who.name)) {
-          return routinePage(response, who, routineId, "approval requires your password, typed again", 400);
-        }
-        const approved = approveRoutine(store, routineId, who.name, now, digest, token);
-        if (!approved.ok) {
-          const status = approved.reason === "changed" ? 409 : 403;
-          const words =
-            approved.reason === "profile-unresolved"
-              ? "not approved: the routine cannot name an exact agent for every role — configure the project's agents, then file the standing order again"
-              : approved.reason === "requester"
-                ? "You made this standing order, and this project needs someone else to approve it."
-                : `not approved: ${approved.reason}`;
-          return routinePage(response, who, routineId, words, status);
-        }
-        return redirect(response, `/routines/${routineId}`);
-      }
-      case "refresh": {
-        // THE RECOVERY ROAD (v48): re-resolve the agents from today's
-        // configuration and file them as the order's working agents. This
-        // approves nothing — the page then shows the exact agents and asks
-        // for the password again.
-        const refreshed = refreshRoutineAgents(store, routineId, now);
-        if (!refreshed.ok) {
-          return routinePage(response, who, routineId, `agents not refreshed: ${refreshed.problem}`, 409);
-        }
-        return redirect(response, `/routines/${routineId}`);
-      }
-      case "pause":
-      case "resume": {
-        store.setRoutinePaused(routineId, verb === "pause", now);
-        return redirect(response, `/routines/${routineId}`);
-      }
-      case "run-now": {
-        if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
-        // Step-up (Codex Phase C review, M3): run-now is spend outside the
-        // approved schedule, so a session alone cannot ask for it — the
-        // password is typed again, like an approval.
-        const token = body.get("token") ?? "";
-        if (token === "" && !hasFreshIdentitySignIn(who.name)) {
-          return routinePage(response, who, routineId, "run now requires your password, typed again", 400);
-        }
-        const authenticated = authenticateApprover(who, token);
-        if (!authenticated.ok) {
-          return routinePage(response, who, routineId, "that is not your password", 403);
-        }
-        const outcome = fireRoutine(store, routineId, now, { manual: true });
-        if (!outcome.ok) {
-          return routinePage(response, who, routineId, `not fired: ${outcome.detail ?? outcome.reason}`, 409);
-        }
-        return redirect(response, `/routines/${routineId}`);
-      }
-      default:
-        return refuse(response, who, 404, "That action isn't available here.", `/routines/${routineId}`);
-    }
-  }
-
   // ---- mutations -----------------------------------------------------------
-
-  /** v28: the console-scoped liveness beat — see the route note in
-   * handlePost. Supersedes v2 S2f's per-page id binding, reversed
-   * KNOWINGLY: with parallel sessions one foregrounded tab per session is
-   * impossible, and page-binding was attention theater over what was
-   * always renewal-of-use. Approver-bound; never extends cookies, never
-   * touches absolute expiry, never mints. */
-  function attendedBeats(who: Who, request: IncomingMessage, response: ServerResponse, now: Date): void {
-    if (who.via !== "cookie") return refuse(response, who, 403, "watching is a browser session's act");
-    // Round-2 finding 2's named miss: renewal is an approver's act — a
-    // viewer's open tab keeps nothing alive.
-    if (who.role !== "approver") return refuse(response, who, 403, "your login can watch, not keep sessions alive");
-    if (request.headers["sec-fetch-site"] !== "same-origin") {
-      return refuse(response, who, 403, "the beat only answers this console's own pages");
-    }
-    // Belt with the braces: a PRESENT Origin/Referer must also name this
-    // server — the same allowlist the shared guard applies.
-    const namedOrigin =
-      typeof request.headers.origin === "string" && request.headers.origin !== "null"
-        ? request.headers.origin
-        : typeof request.headers.referer === "string"
-          ? request.headers.referer
-          : null;
-    if (namedOrigin !== null && !allowedHost(namedOrigin.replace(/^https?:[/][/]/, "").split("/")[0])) {
-      return refuse(response, who, 403, "origin not allowed");
-    }
-    const attendedRunner = options.attended?.runner;
-    let beaten = 0;
-    if (attendedRunner !== undefined) {
-      for (const open of store.openAuthorizationsOf(attendedRunner)) {
-        if (open.approver !== who.name) continue;
-        if (Date.parse(open.absoluteExpiry) <= now.getTime()) continue;
-        // Only terms SIGNED for console-wide renewal are renewed here
-        // (round-1 finding 2): a legacy page-bound signature never
-        // silently acquires the wider mode — it simply lapses.
-        try {
-          const signedMode = (JSON.parse(open.termsJson) as { attentionMode?: unknown }).attentionMode;
-          if (signedMode !== "console-visible") continue;
-        } catch {
-          continue;
-        }
-        const beatRef = store.refForId(open.taskRef);
-        if (beatRef === null || !visible(beatRef.repo)) continue;
-        store.beatAuthorization(open.id, now);
-        if (open.attemptRun !== null) options.attended?.coordinator?.poke(open.attemptRun);
-        beaten++;
-      }
-    }
-    return respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ ok: true, beaten }));
-  }
-
-  async function attendMutation(
-    response: ServerResponse,
-    who: Who,
-    taskId: string,
-    verb: string,
-    body: FormView<FormFieldOf<"attend">>,
-    now: Date,
-  ): Promise<void> {
-    const ref = store.lookupRef(taskId);
-    if (ref === null || store.getTask(taskId) === null || !visible(ref.repo)) {
-      return refuse(response, who, 404, "no such task", "/tasks");
-    }
-    if (who.via !== "cookie") return refuse(response, who, 403, "watching is a browser session's act");
-    if (store.isDemo()) return refuse(response, who, 403, "the demo authorizes nothing");
-
-    if (verb === "attend-revoke") {
-      const open = store.openAuthorizationFor(ref.id);
-      if (open === null) return refuse(response, who, 409, "nothing to revoke", taskHref(taskId));
-      store.closeAuthorization(open.id, "revoked", now);
-      if (open.attemptRun !== null) options.attended?.coordinator?.poke(open.attemptRun);
-      return redirect(response, taskHref(taskId));
-    }
-
-    const parentGiven = body.get("parent");
-    const followupGiven = body.get("followup");
-    const inputs = {
-      minutes: Number(body.get("minutes") ?? "60"),
-      turns: Number(body.get("turns") ?? "20"),
-      budgetMicrousd: Number(body.get("budget") ?? String(store.getScope(taskId)?.budgetMicrousd ?? 2_000_000)),
-      ...(body.get("expiry") === null ? {} : { expiry: body.get("expiry") as string }),
-      ...(parentGiven === null || parentGiven === "" ? {} : { parent: Number(parentGiven) }),
-      ...(followupGiven === null ? {} : { followup: followupGiven }),
-      ...(body.get("model") === null ? {} : { model: body.get("model") as string }),
-      ...(body.get("posture") === null ? {} : { posture: body.get("posture") as string }),
-    };
-    if (store.openAuthorizationFor(ref.id) !== null) {
-      return refuse(response, who, 409, "an authorization is already open — revoke it first", taskHref(taskId));
-    }
-    const live = await liveAttendedTerms(taskId, inputs, now);
-    if (!live.ok) return refuse(response, who, 409, live.problem, taskHref(taskId));
-    // Sprint 8: an attended session runs at exactly what the person signs, so the organisation policy refuses it
-    // outright (a provider, a model, or a posture above the permission ceiling) before anyone signs.
-    {
-      const pinned = profileFromJson(live.terms.profileJson);
-      const refused = pinned === null ? null : store.attendedPolicyRefusal(pinned);
-      if (refused !== null) return refuse(response, who, 403, refused, taskHref(taskId));
-    }
-    const digest = attendedDigestOf(live.terms);
-
-    if (verb === "attend-preview") {
-      const nonce = mintApprovalNonce(who.name, `attend-${taskId}`, digest);
-      return attendConfirmScreen(response, who, live.terms, inputs, digest, nonce, who.session.csrf);
-    }
-
-    // attend: the yes. The nonce proves THIS form; the digest re-derived
-    // from live state proves the world held between reading and signing.
-    const nonce = body.get("nonce") ?? "";
-    if (!consumeApprovalNonce(nonce, who.name, `attend-${taskId}`, body.get("digest") ?? "")) {
-      return refuse(response, who, 409, "that form is stale — read it again", taskHref(taskId));
-    }
-    if (digest !== (body.get("digest") ?? "")) {
-      return refuse(response, who, 409, "the world moved while you were reading (scope, model, or head) — read it again", taskHref(taskId));
-    }
-    const token = body.get("token") ?? "";
-    let basis: { kind: "mode"; digest: string } | undefined;
-    if (token === "" && !hasFreshIdentitySignIn(who.name)) {
-      // Quick mint (C2/M4): no password typed — valid ONLY when a live
-      // mode with quickMint was signed by THIS session's person. The mint
-      // transaction re-proves it; this pre-check only shapes the refusal.
-      const mode = ref.repo === null ? null : store.activeMode(ref.repo, now);
-      const modeTerms = mode === null ? null : modeTermsFromJson(mode.termsJson);
-      if (mode === null || modeTerms === null || !modeTerms.quickMint || mode.signedBy !== who.name) {
-        return refuse(response, who, 403, "authorizing takes your password, typed again", taskHref(taskId));
-      }
-      basis = { kind: "mode", digest: mode.digest };
-    } else if (!authenticateApprover(who, token).ok) {
-      return refuse(response, who, 403, "authorizing takes your password, typed again", taskHref(taskId));
-    }
-    const minted = store.mintAttendedAuthorization({
-      id: randomUUID(),
-      taskRef: ref.id,
-      approver: who.name,
-      runner: live.terms.runner,
-      runnerGeneration: live.terms.runnerGeneration,
-      compositeDigest: digest,
-      termsJson: attendedTermsJson(live.terms),
-      maxSessionTurns: live.terms.maxSessionTurns,
-      budgetMicrousd: live.terms.budgetMicrousd,
-      ...(live.terms.parentRun == null ? {} : { parentRun: live.terms.parentRun }),
-      ...(live.terms.followup == null ? {} : { followup: live.terms.followup }),
-      absoluteExpiry: live.terms.absoluteExpiry,
-      ...(basis === undefined ? {} : { basis }),
-      now,
-    });
-    if (!minted.ok) {
-      return refuse(
-        response,
-        who,
-        minted.reason === "authorization-open" ? 409 : 403,
-        minted.reason === "mode-ended"
-          ? "the mode that covered quick minting has ended — your password, typed again, still works"
-          : minted.reason === "approval-rules"
-            ? "this project's approval rules need someone else's approval (or two people's) — a watched run can't stand in for it"
-            : "an authorization is already open — revoke it first",
-        taskHref(taskId),
-      );
-    }
-    // The first beat is the mint itself: the person is visibly here.
-    store.beatAuthorization(minted.authorization.id, now);
-    return redirect(response, taskHref(taskId));
-  }
 
   function taskMutation(
     response: ServerResponse,
@@ -2220,13 +1658,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const filed = store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now);
         if (!filed.ok) {
           const said =
-            filed.reason === "contest-open"
-              ? "agents are racing on this task — steering waits until the tournament settles"
-              : filed.reason === "task-finished"
-                ? "this task is finished — a note has no next attempt to reach"
-                : filed.reason === "invalid-note"
-                  ? (filed.problem ?? "that note will not store")
-                  : "no such task";
+            filed.reason === "task-finished"
+              ? "this task is finished — a note has no next attempt to reach"
+              : filed.reason === "invalid-note"
+                ? (filed.problem ?? "that note will not store")
+                : "no such task";
           return taskScreen(response, who, taskId, said, 400);
         }
         return redirect(response, taskHref(taskId));
@@ -2248,16 +1684,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // Chains are scheduling, not authority (chains-and-next review,
         // finding 2): the edge decides WHEN the ready set admits the task;
         // approval still decides WHAT may build. Both ends are re-proved
-        // here — existence, ceiling, and the tournament guard — and the
+        // here — existence and ceiling — and the
         // cycle refusal comes from the store's own closure check.
         const on = (body.get("on") ?? "").trim();
         const blocker = on === "" ? null : store.getTask(on);
         const blockerRef = on === "" ? null : store.lookupRef(on);
         if (blocker === null || blockerRef === null || !visible(blockerRef.repo)) {
           return taskScreen(response, who, taskId, "that task to wait for does not exist here", 404);
-        }
-        if (store.openContestFor(ref.id) !== null) {
-          return taskScreen(response, who, taskId, "a tournament is running on this task — let it finish, then pick or abandon it", 409);
         }
         const added = store.addEdge(taskId, on);
         if (!added.ok) {
@@ -2268,9 +1701,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       case "unblock": {
         const body = readForm(posted, CONSOLE_FORMS.taskBlock);
         const on = (body.get("on") ?? "").trim();
-        if (store.openContestFor(ref.id) !== null) {
-          return taskScreen(response, who, taskId, "a tournament is running on this task — let it finish, then pick or abandon it", 409);
-        }
         const removed = store.removeEdge(taskId, on);
         if (!removed.ok) {
           return taskScreen(response, who, taskId, `${taskId} was not waiting on ${on}`, 409);
@@ -2284,9 +1714,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const blockerTask = blocker === "" || !store.blockers(taskId).includes(blocker) ? null : store.getTask(blocker);
         if (blockerTask === null || (blockerTask.state !== "failed" && blockerTask.state !== "cancelled")) {
           return taskScreen(response, who, taskId, "what this task waits for changed — refresh the page and choose again", 409);
-        }
-        if (store.openContestFor(ref.id) !== null) {
-          return taskScreen(response, who, taskId, "a tournament is running on this task — let it finish before changing its dependencies", 409);
         }
         if (operation === "retry") {
           const blockerRef = store.lookupRef(blocker);
@@ -2334,9 +1761,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
               ? "only queued work can move up — this task is not waiting in the queue"
               : moved.reason === "claimed"
                 ? "this task is being built right now — it needs no place in line"
-                : moved.reason === "contest-open"
-                  ? "a tournament is running on this task — let it finish, then pick or abandon it"
-                  : "the queue rank could not be raised";
+                : "the queue rank could not be raised";
           return taskScreen(response, who, taskId, said, 409);
         }
         return redirect(response, taskHref(taskId));
@@ -2357,7 +1782,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             "not-latched": "the tracker never closed this — there is nothing to reopen",
             "not-seen-open": "the tracker has not been seen open again since the close — reopen it there first; the next sync notices",
             claimed: "this task is being built right now",
-            "contest-open": "a tournament is open on this task — decide it first",
             held: "a hold stands — lift it first",
             "question-open": "an unanswered question stands — answer or close it first",
             "incident-open": "an unresolved incident stands — resolve it first",
@@ -2547,16 +1971,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       case "route": {
         const body = readForm(posted, CONSOLE_FORMS.taskRoute);
-        // THE AGENTS EDIT (v47): an approver's session declares the risk,
+        // THE AGENTS EDIT (v47): an approver's session sets the size,
         // overrides one role to an exact agent, or clears an override — ONE
         // authenticated transaction in the store that CAS-checks the scope
         // digest the form rendered (empty = "I saw no scope"), records the
         // change under this name, reconciles the planner pin, re-files the
         // scope so a sealed route goes visibly stale, and re-requests a
         // drafted plan when the planner changed. The viewer gate above
-        // already refused a watcher; a live claim or a tournament refuses
+        // already refused a watcher; a live claim refuses
         // inside the transaction.
-        const riskGiven = body.get("risk");
         const sizeGiven = body.get("size");
         const riskyGiven = body.getAll("risky");
         const phaseGiven = body.get("phase");
@@ -2569,7 +1992,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const providerGiven = agentGiven === "" ? body.get("provider") : agentGiven.slice(0, agentGiven.indexOf("|") === -1 ? agentGiven.length : agentGiven.indexOf("|"));
         const modelGiven = agentGiven === "" ? (body.get("model") ?? "").trim() : agentGiven.indexOf("|") === -1 ? "" : agentGiven.slice(agentGiven.indexOf("|") + 1).trim();
         const sawDigest = body.get("sawDigest");
-        if (riskGiven !== null && !isRiskLevel(riskGiven)) return taskScreen(response, who, taskId, "risk is routine, elevated, or high", 400);
         const phase = phaseGiven ?? clearGiven;
         if (phase !== null && !(ROUTE_PHASES as readonly string[]).includes(phase)) return taskScreen(response, who, taskId, "the role is planner, builder, or revision", 400);
         if (sizeGiven !== null && !isTaskSize(sizeGiven)) return taskScreen(response, who, taskId, "size is small, medium, or large", 400);
@@ -2579,7 +2001,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           size: sizeGiven !== null && isTaskSize(sizeGiven) ? sizeGiven : ref.sizing?.size ?? "medium",
           risky: riskyGiven.includes("yes") ? true : riskyGiven.includes("no") ? false : ref.sizing?.risky ?? false,
         };
-        if (riskGiven === null && phase === null && sizeEdit === undefined) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
+        if (phase === null && sizeEdit === undefined) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
         if (phaseGiven !== null) {
           if (providerGiven === null || !isProviderId(providerGiven)) return taskScreen(response, who, taskId, "provider is claude, codex, openrouter, or gemini", 400);
           if (modelGiven === "") return taskScreen(response, who, taskId, "name the exact model id — approvals bind exact agents", 400);
@@ -2599,7 +2021,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
               const account = store.accountOf(who.name);
               return account !== null && account.revokedAt === null && account.role === "approver" ? { ok: true } : { ok: false, reason: "your login is no longer an approver" };
             },
-            ...(riskGiven === null ? {} : { risk: riskGiven as RiskLevel }),
             // A person's size replaces the classifier's; the risky flag rides with it.
             ...(sizeEdit === undefined ? {} : { size: sizeEdit }),
             ...(phase === null
@@ -2660,77 +2081,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const exactBudget = exactBudgetGiven === null ? undefined : exactBudgetGiven === "none" ? null : /^[1-9][0-9]{0,14}$/.test(exactBudgetGiven) ? Number(exactBudgetGiven) : NaN;
         if (Number.isNaN(exactBudget)) return taskScreen(response, who, taskId, "the dollar cap is a positive amount", 400);
         const inPlace = body.has("requirement-new");
-        // The tournament controls (operator request): a count of 2–4 files
-        // race terms BESIDE the scope — validated and priced BEFORE anything
-        // saves, so a bad tournament never half-lands on a good scope.
-        const raceCountGiven = (body.get("race-count") ?? "").trim();
-        // The comparison lanes (slice B): any filled row files a comparison
-        // INSTEAD of a tournament — planned and refused BEFORE the save,
-        // filed INSIDE the same transaction (round-6 finding 5 discipline).
-        const comparisonLanes = [1, 2, 3, 4]
-          .map(lane => ({
-            provider: (body.get(`compare-provider-${lane}`) ?? "").trim(),
-            model: (body.get(`compare-model-${lane}`) ?? "").trim(),
-            permissionMode,
-          }))
-          .filter(lane => lane.provider !== "" || lane.model !== "");
-        let plannedComparison: ReturnType<typeof planComparison> | null = null;
-        if (comparisonLanes.length > 0) {
-          if (raceCountGiven !== "") {
-            return taskScreen(response, who, taskId, "a tournament and a comparison are different ceremonies — file one or the other", 400);
-          }
-          if (store.mirrorByTask(taskId) !== null) {
-            return taskScreen(response, who, taskId, "external work compares in a follow-up release — file the comparison on a local task", 409);
-          }
-          plannedComparison = planComparison({ agents: comparisonLanes });
-          if (!plannedComparison.ok) {
-            return taskScreen(response, who, taskId, `comparison not filed: ${plannedComparison.message}`, 400);
-          }
-        }
-        let plannedRace: { agents: { provider: string; model: string; repairModel: string }[]; perAgentBudgetMicrousd: number; overrunReserveMicrousd: number; totalBudgetMicrousd: number; priceVersion: number; publicationPolicy: string; raceDigest: string } | null = null;
-        if (raceCountGiven !== "") {
-          const count = Number(raceCountGiven);
-          const model = body.get("race-model") ?? "";
-          if (!Number.isInteger(count) || count < 2 || count > 4) {
-            return taskScreen(response, who, taskId, "a tournament races 2 to 4 agents", 400);
-          }
-          const perUsd = Number((body.get("race-per-usd") ?? "").trim());
-          const totalUsd = Number((body.get("race-total-usd") ?? "").trim());
-          const planned = planTournament({
-            agents: Array.from({ length: count }, () => ({ provider: "claude", model, permissionMode })),
-            perAgentBudgetUsd: perUsd,
-            totalBudgetUsd: totalUsd,
-          });
-          if (!planned.ok) {
-            return taskScreen(response, who, taskId, `tournament not filed: ${planned.message}`, 400);
-          }
-          plannedRace = planned.plan;
-        }
-        // Refusals that must hold ATOMICALLY with the save (round-6 finding
-        // 5): a race request refused AFTER proposeGuarded would still have
-        // rewritten the scope — so proposal, the attended exclusion, and
-        // race-term filing share one transaction, and every refusal inside
-        // it rolls the whole act back.
-        if (plannedRace !== null && store.mirrorByTask(taskId) !== null) {
-          return taskScreen(response, who, taskId, "external work races in a follow-up release — file the tournament on a local task", 409);
-        }
         let saved: { ok: true } | { ok: false; status: number; message: string };
         try { saved = store.transact(():
           | { ok: true }
           | { ok: false; status: number; message: string } => {
-          if ((plannedRace !== null || plannedComparison !== null) && store.openAuthorizationFor(ref.id) !== null) {
-            return { ok: false, status: 409, message: "an attended authorization is open on this task — revoke it before filing a tournament or comparison" };
-          }
           // C1/M3: the signer's own credentialed filing auto-approves —
           // coverage is asked INSIDE this transaction, the escalated
           // default and budget ride the filing, and the seal commits
-          // atomically with it. Plain scopes only: a tournament or
-          // comparison keeps its own human ceremony.
+          // atomically with it.
           // COOKIE ONLY (C1's channel table; surfaces round 1, finding 1):
           // bearer credentials are for machines, and a machine road must
           // never spend the signer's mode.
           const coverage =
-            who.via === "cookie" && plannedRace === null && plannedComparison === null
+            who.via === "cookie"
               ? modeFilingCoverage(store, ref.repo, who.name, now)
               : null;
           const before = store.getScope(taskId);
@@ -2782,43 +2145,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
               }
             }
           }
-          if (plannedComparison !== null && plannedComparison.ok) {
-            store.fileTournamentTerms(
-              {
-                taskRef: ref.id,
-                kind: "comparison",
-                raceDigest: plannedComparison.plan.comparisonDigest,
-                agents: plannedComparison.plan.agents,
-                perAgentBudgetMicrousd: 0,
-                overrunReserveMicrousd: 0,
-                totalBudgetMicrousd: 0,
-                priceVersion: 0,
-                publicationPolicy: plannedComparison.plan.publicationPolicy,
-              },
-              now,
-            );
-            return { ok: true };
-          }
-          if (plannedRace === null) {
-            // Switching back to "one agent" withdraws a standing race OR
-            // comparison — the deactivated row survives as history, and
-            // the approval card returns to the scope alone.
-            store.retractTournamentTerms(ref.id);
-            return { ok: true };
-          }
-          store.fileTournamentTerms(
-            {
-              taskRef: ref.id,
-              raceDigest: plannedRace.raceDigest,
-              agents: plannedRace.agents,
-              perAgentBudgetMicrousd: plannedRace.perAgentBudgetMicrousd,
-              overrunReserveMicrousd: plannedRace.overrunReserveMicrousd,
-              totalBudgetMicrousd: plannedRace.totalBudgetMicrousd,
-              priceVersion: plannedRace.priceVersion,
-              publicationPolicy: plannedRace.publicationPolicy,
-            },
-            now,
-          );
           return { ok: true };
         }); } catch (error) {
           if (!(error instanceof PermissionsWouldChange)) throw error;
@@ -2869,9 +2195,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         const scopeRow = store.getScope(taskId);
         if (scopeRow === null) return approvalProblem("this task has no scope to approve", 409);
-        const raceTerms = store.activeTournamentTerms(ref.id);
         const planView = planViewOf(ref.id);
-        const expectedDigest = approvalFormDigest(scopeRow.digest, raceTerms?.raceDigest ?? null, planView?.sha256 ?? null);
+        const expectedDigest = approvalFormDigest(scopeRow.digest, planView?.sha256 ?? null);
         if (digest !== expectedDigest) {
           return approvalProblem("the scope or plan changed while this form was open — read the latest version and approve again", 409);
         }
@@ -2885,26 +2210,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (view !== null && "problem" in view) {
             return approvalProblem(`approval is blocked: ${view.problem}`, 409);
           }
-        }
-        // A tournament task's yes covers BOTH documents (finding 31): the
-        // form bound the joint fingerprint, and the scope and race terms
-        // approve together, in one transaction, or not at all.
-        if (raceTerms !== null) {
-          const both = store.transact(() => {
-            const scopeApproved = approveScope(store, taskId, who.name, now, scopeRow.digest, token);
-            if (!scopeApproved.ok) return scopeApproved;
-            if (!store.approveTournamentTerms(raceTerms.id, who.name, raceTerms.raceDigest, now)) {
-              throw new Error("the race terms changed while you were reading — nothing was approved");
-            }
-            return scopeApproved;
-          });
-          if (!both.ok) {
-            if (both.reason === "second-approver") return approvalProblem(gateWords({ verdict: "vote", have: both.have, need: 2, already: both.already }), 200);
-            if (both.reason === "policy") return approvalProblem(both.message, 403);
-            const status = both.reason === "changed" || both.reason === "unrouted" ? 409 : 403;
-            return approvalProblem(approveRefusalWords(both.reason), status);
-          }
-          return redirect(response, approvalBack);
         }
         const approved = approveScope(store, taskId, who.name, now, scopeRow.digest, token);
         if (!approved.ok) {
@@ -3006,14 +2311,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (store.isDemo()) return taskScreen(response, who, taskId, "the demo authorizes nothing", 403);
         const named = (body.get("run") ?? "").trim();
         if (!/^[0-9]{1,15}$/.test(named)) return taskScreen(response, who, taskId, "which attempt? the stop names one exact run", 400);
-        const asked = requestTaskStop(store, { taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", held: options.attended?.coordinator }, now);
+        const asked = requestTaskStop(store, { taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web" }, now);
         if (!asked.ok) {
           const words: Record<string, string> = {
             "no-run": `there is no run #${escape(named)}`,
             "wrong-task": `run #${escape(named)} is not one of this task's attempts`,
             finished: `run #${escape(named)} already ended before the stop — nothing rewrites a finished attempt; reload to see the current state`,
             "not-live": `run #${escape(named)} is not the attempt holding this task now — reload and decide against the current attempt`,
-            tournament: "this run is a racing lane — stop the tournament through its own pick or abandon controls",
             publication: `run #${escape(named)} already admitted its publication — an external request in flight is not recalled by a stop`,
           };
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, 409);
@@ -3192,8 +2496,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   function reviewCockpitViewOf(row: RankedReviewRow, who: Who, now: Date): ReviewCockpitView {
     const ref = store.lookupRef(row.taskId);
     const scope = store.getScope(row.taskId);
-    // The result run, read once: the contest road and the shared result
-    // detail below both hang off this one record.
+    // The result run, read once: the shared result detail below hangs off
+    // this one record.
     const run = row.runId === null ? null : store.getRun(row.runId);
     const intent: ReviewCockpitView["intent"] =
       scope === null
@@ -3217,13 +2521,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         approach: parsed.ok ? oneLineOf(parsed.document.approach, 600) : null,
       };
     })();
-    const contestOf = (): ReviewCockpitView["contest"] => {
-      // Either road to a tournament: the result run was one of its
-      // contestants, or the task still owes an operator a comparison.
-      const viaRun = run?.contestant === null || run?.contestant === undefined ? null : store.getContestant(run.contestant);
-      const contest = viaRun === null ? (ref === null ? null : store.contestNeedingOperator(ref.id)) : store.getContest(viaRun.contest);
-      return contest === null ? null : { id: contest.id, state: contest.state, kind: contest.kind, agents: store.contestants(contest.id).length };
-    };
     const base = {
       taskId: row.taskId,
       title: row.title,
@@ -3234,7 +2531,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       assignment: row.assignment ?? null,
       intent,
       plan,
-      contest: contestOf(),
       ...(store.isDemo() ? { demo: true } : {}),
     };
     if (run === null) {
@@ -3322,44 +2618,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     response.end(read.content);
   }
 
-  /** The routine screen: the standing order restated, its verbs, its ledger. */
-  function routinePage(
-    response: ServerResponse,
-    who: Who,
-    routineId: number,
-    problem: string | null,
-    status: number,
-  ): void {
-    const routine = store.getRoutine(routineId);
-    if (routine === null || !visible(routine.repo)) {
-      return refuse(response, who, 404, "no such routine", "/routines");
-    }
-    // Same rule as scope approval: the nonce exists only where the exact
-    // terms are restated, bound to who saw which digest of which order —
-    // and only where a yes could bind them (v48): an order whose agents
-    // are unresolved, unreadable, or never frozen gets the recovery road,
-    // never a password field.
-    const nonce =
-      who.via === "cookie" && routineAgentsState(routine).approvable
-        ? mintApprovalNonce(who.name, `routine:${routine.id}`, routine.digest)
-        : "";
-    const paneProject = restricted() ? routine.repo : who.via === "cookie" ? who.session.project : null;
-    return sendScreen(
-      response,
-      status,
-      routineScreenPage(chromeFor(paneProject, "routines"), {
-        routine,
-        fires: store.routineFires(routine.id, 14),
-        spend: store.routineSpend(routine.id, new Date(clock().getTime() - 7 * 24 * 60 * 60_000).toISOString()),
-        blocker: store.routineBlocker(routine.id, clock()),
-        csrf: who.via === "cookie" ? who.session.csrf : "",
-        nonce,
-        problem,
-        now: clock(),
-      }),
-    );
-  }
-
   /** The full guard list (v3 §4) — run on every request, hit or miss. */
   function peekGuards(runId: number): { ok: true; admit: PeekAdmission & { entries: NonNullable<PeekAdmission["entries"]> } } | { ok: false; message: string; final?: boolean } {
     if (options.localRunner === undefined || options.poolRoot === undefined) {
@@ -3416,231 +2674,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return { ok: true, admit: { run, worktree: run.worktree, epoch: row.leaseEpoch, entries: snapshot } };
   }
 
-  /**
-   * The tournament's comparison data: the pick view plus everything the
-   * page states — the task behind it, per-agent question counts, and the
-   * money totals. The ceiling is proved here, on the server-resolved repo,
-   * whatever the request named.
-   */
-  function contestData(contestId: number): {
-    view: NonNullable<ReturnType<typeof buildPickView>>;
-    taskId: string;
-    taskTitle: string;
-    repo: string | null;
-    refOrigin: string;
-    questions: Map<number, number>;
-    liveRuns: Set<number>;
-    totalMicrousd: number;
-    anyUnknown: boolean;
-    rollups: Map<number, { costMicrousd: number; tokensIn: number; tokensOut: number; measuredRuns: number; totalRuns: number }>;
-  } | null {
-    const view = buildPickView(store, evidenceRoot, contestId);
-    if (view === null) return null;
-    const ref = store.refForId(view.contest.taskRef);
-    if (ref === null || (ref.repo !== null && !visible(ref.repo))) return null;
-    const found = store.getTask(ref.externalId);
-    if (found === null) return null;
-    // Question counts follow run lineage: every run belonging to the agent,
-    // not just its final one — a parked question is part of its story.
-    const byRun = new Map<number, number>();
-    for (const one of store.runsFor(view.contest.taskRef)) {
-      if (one.contestant !== null) byRun.set(one.id, one.contestant);
-    }
-    const questions = new Map<number, number>();
-    for (const decision of store.decisionsForTask(view.contest.taskRef)) {
-      const owner = byRun.get(decision.run);
-      if (owner !== undefined) questions.set(owner, (questions.get(owner) ?? 0) + 1);
-    }
-    return {
-      rollups: new Map(view.agents.map(agent => [agent.contestant.id, store.contestantSpendRollup(agent.contestant.id)])),
-      view,
-      taskId: ref.externalId,
-      taskTitle: found.title,
-      repo: ref.repo,
-      refOrigin: ref.origin,
-      questions,
-      // An interrupted tournament's agents are STOPPED, not "still
-      // working" — their run records stay unfinished, so the card must
-      // prove liveness the same way every other surface does (round-4
-      // finding 16).
-      liveRuns: liveRunIds(view.agents.flatMap(agent => (agent.run === null ? [] : [agent.run]))),
-      totalMicrousd: view.agents.reduce((sum, agent) => sum + agent.contestant.accountedMicrousd, 0),
-      anyUnknown: view.agents.some(agent => agent.contestant.unknownSpend),
-    };
-  }
-
-  /**
-   * Assemble the LIVE rendered terms of one watched attempt, or say in
-   * words why there are none (Phase 2E, ruling 12). Everything here is
-   * re-read at confirm time — the digest is the proof the world held.
-   */
-  async function liveAttendedTerms(
-    taskId: string,
-    inputs: { minutes: number; turns: number; budgetMicrousd: number; expiry?: string; parent?: number; followup?: string; model?: string; posture?: string },
-    now: Date,
-  ): Promise<{ ok: true; terms: AttendedTerms } | { ok: false; problem: string }> {
-    if (options.attended === undefined) return { ok: false, problem: "this console cannot hold a session — start it with `toolroll up`" };
-    const ref = store.lookupRef(taskId);
-    if (ref === null) return { ok: false, problem: "no such task" };
-    const scope = store.getScope(taskId);
-    if (scope === null) return { ok: false, problem: "file a scope first — the terms come from it" };
-    // CONTINUATION (A4): the parent attempt and the follow-up enter the
-    // SIGNED terms; the head is the parent's accepted commit per outcome;
-    // a moving publication blocks; failed parents are refused outright for
-    // now (a dirty preserved tree cannot promise a clean continuation) —
-    // stated, not hidden.
-    let continuation: { parentRun: number; followup: string; head: string } | null = null;
-    if (inputs.parent !== undefined) {
-      const parent = store.getRun(inputs.parent);
-      if (parent === null || parent.taskRef !== ref.id) return { ok: false, problem: "no such finished attempt on this task" };
-      const followup = (inputs.followup ?? "").trim();
-      if (followup === "" || followup.length > 2000) {
-        return { ok: false, problem: "say what to do next — 1 to 2000 characters" };
-      }
-      if (parent.outcome !== "built" && parent.outcome !== "no-change") {
-        return { ok: false, problem: "only a built or no-change attempt can be continued — for a failed one, file a follow-up task" };
-      }
-      const accepted = parent.outcome === "built" ? parent.headRevision : parent.baseRevision;
-      if (accepted === null) return { ok: false, problem: "the attempt's accepted head was never recorded — file a follow-up task" };
-      const blocked = store.continuationBlockOf(parent.id);
-      if (blocked !== null) return { ok: false, problem: blocked };
-      continuation = { parentRun: parent.id, followup, head: accepted };
-    } else if (approvalOf(scope).approved) {
-      return { ok: false, problem: "the scope is approved — it already dispatches unattended" };
-    }
-    let pinned = scope.profileState === "resolved" ? (scope.profile ?? null) : null;
-    if (pinned === null) {
-      return { ok: false, problem: "the scope cannot say exactly what runs — name a model (task scope --model, or config set build)" };
-    }
-    if (pinned.provider !== "claude") {
-      return { ok: false, problem: `${pinned.provider} cannot hold a watched session yet — this road is claude-only for now` };
-    }
-    // THE MINT PICKER (P1/C7): a chosen model or posture rebuilds the
-    // WHOLE ClaudeProfile — the digest signs the profile that actually
-    // runs, never a partial edit. Absent choices keep the scope's pin.
-    const chosenModel = (inputs.model ?? "").trim();
-    const chosenPosture =
-      inputs.posture === "bypassPermissions"
-        ? ("bypassPermissions" as const)
-        : inputs.posture === "auto"
-          ? ("auto" as const)
-          : inputs.posture === "acceptEdits"
-            ? ("acceptEdits" as const)
-            : null;
-    if (chosenModel !== "" || chosenPosture !== null) {
-      pinned = {
-        ...pinned,
-        ...(chosenModel === "" ? {} : { model: chosenModel }),
-        ...(chosenPosture === null ? {} : { permissionArgv: chosenPosture }),
-      };
-    }
-    if (store.activeTournamentTerms(ref.id) !== null) {
-      return { ok: false, problem: "this task races a tournament — one attempt cannot authorize N racers" };
-    }
-    const repo = ref.repo;
-    if (repo === null) return { ok: false, problem: "place the task in a repository first — the terms pin the exact head" };
-    const head = continuation !== null ? continuation.head : await options.attended.headOf(repo);
-    if (head === null) return { ok: false, problem: `the head of ${repo} cannot be read right now` };
-    const minutes = Math.max(5, Math.min(240, Math.floor(inputs.minutes) || 60));
-    const turns = Math.max(1, Math.min(100, Math.floor(inputs.turns) || 20));
-    const budget = Math.max(100_000, Math.min(50_000_000, Math.floor(inputs.budgetMicrousd) || 2_000_000));
-    return {
-      ok: true,
-      terms: {
-        taskId,
-        attentionMode: "console-visible",
-        scopeDigest: scope.digest,
-        profileDigest: profileDigestOf(pinned),
-        profileJson: canonicalProfileJson(pinned),
-        repo,
-        runner: options.attended.runner,
-        runnerGeneration: 0,
-        head,
-        maxSessionTurns: turns,
-        budgetMicrousd: budget,
-        turnTimeoutSeconds: pinned.timeoutSeconds,
-        ...(continuation === null ? {} : { parentRun: continuation.parentRun, followup: continuation.followup }),
-        // The expiry is FIXED at preview and carried through the confirm —
-        // a timestamp recomputed at signing time would change the digest
-        // every millisecond and make the proof unmatchable. The confirm's
-        // bound check keeps a stale form honest.
-        absoluteExpiry:
-          inputs.expiry !== undefined &&
-          Date.parse(inputs.expiry) > now.getTime() &&
-          Date.parse(inputs.expiry) <= now.getTime() + 241 * 60_000
-            ? inputs.expiry
-            : new Date(now.getTime() + minutes * 60_000).toISOString(),
-      },
-    };
-  }
-
-  /** The signed form, rendered from EXACT terms — what you read is what the password signs. */
-  function attendConfirmScreen(
-    response: ServerResponse,
-    who: Who,
-    terms: AttendedTerms,
-    inputs: { minutes: number; turns: number; budgetMicrousd: number; model?: string; posture?: string },
-    digest: string,
-    nonce: string,
-    csrf: string,
-  ): void {
-    const scope = store.getScope(terms.taskId);
-    // Quick mint (M4): the mode signature substitutes for the password —
-    // the confirm screen still shows EVERY term; only the credential line
-    // changes. The mint transaction re-proves the mode either way.
-    const quickRef = store.lookupRef(terms.taskId);
-    const quickMode = quickRef?.repo == null ? null : store.activeMode(quickRef.repo, clock());
-    const quickTerms = quickMode === null ? null : modeTermsFromJson(quickMode.termsJson);
-    const quick = quickTerms?.quickMint === true && quickMode !== null && quickMode.signedBy === who.name;
-    const body =
-      `<h1>Run ${escape(terms.taskId)} once, while you watch</h1>` +
-      `<form method="post" action="${taskHref(terms.taskId)}/attend" class="card approve-form">` +
-      `<input type="hidden" name="csrf" value="${escape(csrf)}">` +
-      `<input type="hidden" name="nonce" value="${escape(nonce)}">` +
-      `<input type="hidden" name="digest" value="${escape(digest)}">` +
-      `<input type="hidden" name="minutes" value="${inputs.minutes}">` +
-      `<input type="hidden" name="turns" value="${inputs.turns}">` +
-      `<input type="hidden" name="budget" value="${inputs.budgetMicrousd}">` +
-      `<input type="hidden" name="expiry" value="${escape(terms.absoluteExpiry)}">` +
-      (inputs.model === undefined ? "" : `<input type="hidden" name="model" value="${escape(inputs.model)}">`) +
-      (inputs.posture === undefined ? "" : `<input type="hidden" name="posture" value="${escape(inputs.posture)}">`) +
-      (terms.parentRun == null ? "" : `<input type="hidden" name="parent" value="${terms.parentRun}">`) +
-      (terms.followup == null ? "" : `<input type="hidden" name="followup" value="${escape(terms.followup)}">`) +
-      `<p><strong>Your password signs exactly this:</strong></p>` +
-      `<p class="meta">Goal</p><p class="recap" style="margin-top:0">${escape(scope?.goal ?? "")}</p>` +
-      `<p class="meta">Not this</p><p class="recap" style="margin-top:0">${scope?.outOfScope == null ? "<em>no exclusions</em>" : escape(scope.outOfScope)}</p>` +
-      `<p class="meta">Touches · ${scope === null || scope.touches.length === 0 ? "anything" : scope.touches.map(one => escape(one)).join(", ")}</p>` +
-      (() => {
-        const profile = (JSON.parse(terms.profileJson) as { profile?: { model?: string; permissionArgv?: string } }).profile;
-        const posture =
-          profile?.permissionArgv === "bypassPermissions"
-            ? "FULL permissions — claude runs with --dangerously-skip-permissions; nothing asks"
-            : profile?.permissionArgv === "auto"
-              ? "safe unattended permissions — routine project commands and edits proceed; risky acts stop"
-              : "legacy acceptEdits — edits proceed, commands that ask are denied unattended";
-        return `<p class="meta">Runs on</p><p class="recap" style="margin-top:0">claude · ${escape(String(profile?.model ?? ""))} — ${posture}</p>`;
-      })() +
-      (terms.parentRun == null
-        ? ""
-        : `<p class="meta">Continues</p><p class="recap" style="margin-top:0">attempt <a href="/r/${terms.parentRun}" class="mono">#${terms.parentRun}</a>, from exactly where it finished</p>` +
-          `<p class="meta">The follow-up — this is the instruction</p><p class="recap" style="margin-top:0">${escape(terms.followup ?? "")}</p>`) +
-      `<p class="meta">Repository · head</p><p class="recap mono" style="margin-top:0">${escape(terms.repo)} @ ${escape(terms.head.slice(0, 12))}</p>` +
-      `<p class="meta">Worker</p><p class="recap" style="margin-top:0">${escape(terms.runner)} (this machine)</p>` +
-      `<p class="meta">Spending</p><p class="recap" style="margin-top:0">up to about $${(terms.budgetMicrousd / 1_000_000).toFixed(2)} — the agent stops as soon as its total crosses this; the final step may run a little past it</p>` +
-      `<p class="meta">Conversation</p><p class="recap" style="margin-top:0">at most ${terms.maxSessionTurns} messages to the agent, this whole session; each may work up to ${Math.round(terms.turnTimeoutSeconds / 60)} minutes — one that runs past that ends the whole session. If it needs a repair, the repair uses the same session, model, and clock.</p>` +
-      `<p class="meta">While you watch — a signed term</p><p class="recap" style="margin-top:0">your console being open is what keeps it running — any page of it, this one included; close the console and the session winds down within a minute. Everything ends by ${whenTime(terms.absoluteExpiry)} regardless. One attempt; it never converts into unattended work.</p>` +
-      (quick
-        ? `<p class="meta">Your signed mode covers this mint — no password; the mode is re-proved as you confirm, and the session is stamped with its signature</p>`
-        : `<label>Your password, typed again — a signed-in session alone cannot authorize work<input type="password" name="token" autocomplete="current-password"></label>`) +
-      `<div class="sticky-actions"><button type="submit">Run it while I watch</button></div>` +
-      `</form>` +
-      `<p class="meta"><a href="${taskHref(terms.taskId)}">back to the task</a></p>`;
-    // The chrome binds to the AUTHORITY repository (surfaces round 1,
-    // finding 5): the banner on this screen is the mode that would cover
-    // a quick mint here, never the session's open-project filter.
-    return sendScreen(response, 200, screen(`attend \u00b7 ${terms.taskId}`, body, { chrome: chromeFor(terms.repo, "tasks") }));
-  }
-
   /** The live subset of a bounded run page \u2014 one indexed lookup per row. */
   function liveRunIds(rows: readonly (Pick<Run, "id" | "outcome" | "leaseId" | "taskRef">)[]): Set<number> {
     const live = new Set<number>();
@@ -3664,23 +2697,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     { id: "runs", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "run.page", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "run.evidence", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "contest.page", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "routines", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "routine.page", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "decision.page", domain: "tasks", stage: "console", method: "GET", handle: get },
     { id: "decision.evidence", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "session.attended-beats", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "code.act", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "tasks.add", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "queue.move", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "queue.note", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "decision.answer", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "contest.act.arm", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "contest.act.pick", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "contest.act.abandon", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.attend.attend-preview", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.attend.attend", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.attend.attend-revoke", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "task.act.hold", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "task.act.unhold", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "task.act.requeue", domain: "tasks", stage: "console", method: "POST", handle: post },
@@ -3704,16 +2729,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     { id: "task.act.resume-arm", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "task.act.resume", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "task.instance-act", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routines.add", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routine.act.approve", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routine.act.refresh", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routine.act.pause", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routine.act.resume", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "routine.act.run-now", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "run.act", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "session.editor-links", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "run.turn", domain: "tasks", stage: "console", method: "POST", handle: post },
     { id: "incident.resolve", domain: "tasks", stage: "console", method: "POST", handle: post },
   ];
-  return { registrations, get, post, runListPane, peekFragment, contestScreen, routineMutation, attendedBeats, attendMutation, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, routinePage, peekGuards, contestData, liveAttendedTerms, attendConfirmScreen, liveRunIds };
+  return { registrations, get, post, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact,  peekGuards, liveRunIds };
 }

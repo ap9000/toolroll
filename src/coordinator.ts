@@ -368,7 +368,7 @@ function inClause(repos: readonly string[]): { sql: string; args: string[] } {
 
 export function statusFor(store: Store, who: VerifiedCoordinator, now: Date): {
   waitsOnYou: number;
-  waits: { approvals: number; questions: number; incidents: number; picks: number };
+  waits: { approvals: number; questions: number; incidents: number };
   running: number;
   builtToday: number;
   failedToday: number;
@@ -405,10 +405,6 @@ export function statusFor(store: Store, who: VerifiedCoordinator, now: Date): {
       JOIN task_ref ON task_ref.id = run.task_ref AND task_ref.backend = 'built-in'
       WHERE task_ref.repo IN (${sql}) AND incident.resolved_at IS NULL`,
   );
-  const picks = one(
-    `SELECT COUNT(*) AS n FROM contest JOIN task_ref ON task_ref.id = contest.task_ref AND task_ref.backend = 'built-in'
-      WHERE task_ref.repo IN (${sql}) AND contest.state = 'pick-wait'`,
-  );
   const builtToday = one(
     `SELECT COUNT(*) AS n FROM run JOIN task_ref ON task_ref.id = run.task_ref AND task_ref.backend = 'built-in'
       WHERE task_ref.repo IN (${sql}) AND run.outcome = 'built' AND run.finished_at > ?`,
@@ -430,8 +426,8 @@ export function statusFor(store: Store, who: VerifiedCoordinator, now: Date): {
     .all(...args)
     .map(row => ({ repo: String(row["repo"]), queued: Number(row["queued"]), running: Number(row["running"]) }));
   return {
-    waitsOnYou: unsealed + questions + incidents + picks,
-    waits: { approvals: unsealed, questions, incidents, picks },
+    waitsOnYou: unsealed + questions + incidents,
+    waits: { approvals: unsealed, questions, incidents },
     running,
     builtToday,
     failedToday,
@@ -578,7 +574,7 @@ export function taskDetailFor(
     scope: {
       sealed: store.scopeSealed(taskId),
       goal: scope?.goal ?? null,
-      // The scope in the console's own words — fallback chain included.
+      // The scope in the console's own words.
       words: scope === null ? [] : describeScope(scope),
     },
     waits,

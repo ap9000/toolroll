@@ -51,9 +51,7 @@ const LIMITED_ACCESS = {
   'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource',
   'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
-  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'routines.add': 'collection',
-  'routine.act.approve': 'resource', 'routine.act.refresh': 'resource', 'routine.act.pause': 'resource',
-  'routine.act.resume': 'resource', 'routine.act.run-now': 'resource', 'run.act': 'resource',
+  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act': 'resource',
 } satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
 
 describe("the route table", () => {

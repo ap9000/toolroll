@@ -54,7 +54,7 @@ export function preparedCandidateObserverGapEligibility(store: Store, input: {
       if (!run || run.role !== "builder" || (run.outcome !== "built" && run.outcome !== "no-change") ||
           !instant(run.startedAt) || !instant(run.finishedAt) || Date.parse(run.finishedAt) < Date.parse(run.startedAt) ||
           Date.parse(run.finishedAt) > now.getTime()) return refuse("not-terminal-prepared-builder");
-      if (run.providerStartedAt !== null || run.sessionId !== null || run.attendedAuthorization != null || run.contestant !== null ||
+      if (run.providerStartedAt !== null || run.sessionId !== null ||
           !commit(run.baseRevision) || !commit(run.headRevision) || !run.branch || !run.worktree) return refuse("provider-or-run-identity-unproven");
       const ref = store.refById(run.taskRef);
       if (!ref?.repo || store.getTask(ref.externalId)?.state !== "done") return refuse("task-not-terminal");
@@ -81,8 +81,7 @@ export function preparedCandidateObserverGapEligibility(store: Store, input: {
         if (!one || one.outcome === null || !instant(one.startedAt) || !instant(one.finishedAt) ||
             Date.parse(one.finishedAt) < Date.parse(one.startedAt) || Date.parse(one.finishedAt) > Date.parse(run.finishedAt) ||
             one.providerStartedAt !== null || one.sessionId !== null ||
-            store.applicableStopFor(id) !== null || ownedProcessCount(runOwnerTag(store, id)) > 0 ||
-            store.heldSessionOf(id)?.endedAt === null) return refuse("owned-run-not-settled");
+            store.applicableStopFor(id) !== null || ownedProcessCount(runOwnerTag(store, id)) > 0) return refuse("owned-run-not-settled");
         ownedRuns.push({ id, taskRef: one.taskRef, leaseId: one.leaseId, parentRun: one.parentRun, role: one.role,
           outcome: one.outcome, startedAt: one.startedAt, finishedAt: one.finishedAt, providerStartedAt: one.providerStartedAt, sessionId: one.sessionId });
       }

@@ -164,7 +164,7 @@ async function generateBrief(scopeKey, worktree) {
     if (proposed && proposed.ok === false) throw new Error(`propose refused: ${JSON.stringify(proposed)}`);
     const approved = approve(store, scope.taskId, "alex", T0, store.getScope(scope.taskId).digest, added.token);
     if (approved && approved.ok === false) throw new Error(`approve refused: ${JSON.stringify(approved)}`);
-    const authority = store.routeAuthorityFor(taskRef, "builder", null);
+    const authority = store.routeAuthorityFor(taskRef, "builder");
     const route = authority !== null && authority.ok ? { route: authority.stamp } : {};
     const runId = store.startRun({ taskRef, leaseId: "smoke-lease", runner: "smoke-runner", branch: scope.branch, worktree, now: T0, ...route });
     let captured = null;

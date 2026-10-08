@@ -96,7 +96,7 @@ describe("the CLI's machine contract", () => {
     for (const invocation of ["up", "serve", "daemon", "watch", "bridge", "tick", "mcp", "models update", "setup show", "setup clear", "onboard", "update", "link",
       "repos add", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "providers", "publish", "publish merge", "publish grant", "runner register",
       "runner retire", "runner bind", "runner capacity", "enroll", "reap", "demo", "", "pulls", "graph"]) expect(policy(invocation), invocation).toBe("no");
-    for (const invocation of ["task approve", "task regate", "routine approve", "decide", "people list", "people invite", "people projects", "people revoke",
+    for (const invocation of ["task approve", "task regate", "decide", "people list", "people invite", "people projects", "people revoke",
       "mode show", "mode set", "mode revoke", "chat-approval on", "config set", "verify set"]) expect(policy(invocation), invocation).toBe("step-up");
     // A person's own API tokens are a password step-up, never a token's act: a token can't make, list, revoke or rotate one.
     for (const invocation of ["tokens create", "tokens list", "tokens revoke", "tokens rotate"]) expect(policy(invocation), invocation).toBe("step-up");
@@ -178,7 +178,6 @@ describe("the CLI's --json bytes", () => {
       await operate(["flows", "show", "no-such-flow", "--json"]);
       await operate(["grants", "--json"]);
       await operate(["runner", "list", "--json"]);
-      await operate(["routine", "list", "--json"]);
       await operate(["outbox", "list", "--json"]);
       await operate(["outbox", "deliver", "--cmd", "true", "--json"]);
       await operate(["incident", "list", "--json"]);

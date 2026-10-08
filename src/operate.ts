@@ -43,7 +43,7 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
-import { readHooksBase, type TriggerIo } from "./flow-triggers.js";
+import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendTeammateSummaries } from "./teammate-admin.js";
 import { runRequestedUndos, sendTeammateWeeklies } from "./teammate-week.js";
 import { refreshConnections } from "./mcp-connect.js";
@@ -87,7 +87,7 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
  * **Nothing ever prompts.** There is no terminal on the other end at 3am.
  */
 
-import { homedir, hostname, tmpdir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
@@ -100,7 +100,6 @@ import {
   DEFAULT_ACTOR,
   parseCapabilityKey,
   verifiedAuthor,
-  contestantProfileOf,
   isDigestTime,
   RESULT_SCREENSHOTS,
   type ResultScreenshots,
@@ -116,8 +115,8 @@ import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
 import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync, mkdirSync } from "node:fs";
-import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
+import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
 import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -227,16 +226,7 @@ import { starterOf, startersFor, switchOnStarter } from "./flow-starters.js";
 type CapabilityKind = Capability["kind"];
 import {
   acquire,
-  acquireFallback,
   acquireIfReady,
-  completeFenced,
-  finalizeFailureFenced,
-  finalizeMalformedFenced,
-  finalizeParkFenced,
-  finalizePlanFenced,
-  finalizePlanFailureFenced,
-  finalizeScoutFenced,
-  finalizeScoutFailureFenced,
   type FailureClass,
   heartbeat,
   release,
@@ -244,11 +234,9 @@ import {
   currentClaim,
   DEFAULT_LEASE_MS,
   SYNC_MAX_AGE_MS,
-  acquireContinuation,
+  finalize,
 } from "./claim.js";
 import { disposeBuildOutcome, holdStaleApproval, regateTask } from "./dispose.js";
-import { attendedLivenessState } from "./liveness.js";
-import { HeldSessionCoordinator, sweepHeldOrphans } from "./held.js";
 import {
   proposeGrant,
   describeGrant,
@@ -282,7 +270,7 @@ import {
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, profileFromJson, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
 import { presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
@@ -292,30 +280,18 @@ import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
 import { assignmentOf, assignmentBrief, syncAssignmentHandoffs } from "./assignment.js";
-import {
-  approveRoutine,
-  describeRoutine,
-  fireRoutine,
-  refreshRoutineAgents,
-  routineAgentsState,
-  routineDigestOf,
-  validateRoutineTerms,
-  ROUTINE_NAME,
-  type RoutineTerms,
-} from "./routine.js";
-import { fileTaskProposal, fileRoutineProposal, validateTaskText } from "./proposal.js";
+import { createScheduledFlow, describeSchedule, parseSchedule } from "./flow-schedule.js";
+import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
-import { planTournament, planComparison, contestNoun, jointApprovalDigest, admitContest, crossReadyBarrier, finalizeContestant, recoverContests, maybeAggregate as contestMaybeAggregate, sweepContestCleanup, escalateOverdueContests } from "./contest.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
-import { resolvePhaseAgent, resolveScopeProfile, resolveScopeChain, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
-import { isRiskLevel, isTaskSize, legOf, projectRoute, riskConsequence, routeDigestOf, routeWords, RISK_LEVELS, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RiskLevel, type RouteOverride, type RouteStamp } from "./phase-routing.js";
+import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
+import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
-import { recognizesEligible } from "./exhaustion.js";
 import {
   build,
   proveApprovedProfile,
@@ -324,7 +300,7 @@ import {
 import { plan as planTask } from "./planner.js";
 import { attachTmux, elapsedWords, openInTmux, PEEK_TAIL_LINES, runPeek, snapshotLiveRuns } from "./peek-cli.js";
 import { scout as scoutTask } from "./scout.js";
-import { profileDigestOf, chainDigestOf, entryDigestOf } from "./scope.js";
+import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords, type AuthMode } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
@@ -399,10 +375,6 @@ export type OperateOptions = {
   integrationIo?: Partial<IntegrationIo>;
   /** Injected by tests: the mate's provider fetch, key environment, and stdin lines. */
   mateSeams?: MateCliSeams;
-  /** Injected by tests: a held-session coordinator, so a `tick` exercises
-   * the attended road exactly as a co-located `up` would (production wires
-   * one only inside `up`). */
-  heldCoordinator?: import("./held.js").HeldSessionCoordinator;
   /** Test seam for the short indexed wait loop. */
   waitSleep?: (milliseconds: number) => Promise<void>;
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
@@ -547,14 +519,8 @@ External trackers — build what a tracker nominates, under local approvals
   toolroll approver list
   toolroll task scope <id> --goal <what success is>
       [--not <text>] [--touches a,b] [--budget-usd <n>]
-      [--race provider:model[,provider:model…]] [--race-count 2..4]
-      [--race-per-usd <n>] [--race-total-usd <n>]
-      [--compare provider:model[,provider:model…]]  (labeled comparison — no dollar caps; needs a lane no budget can bound)
-                                        a tournament races 2-4 agents on the
-                                        task; you compare and pick one
   toolroll task approve <id>         the yes — interactive, or
-      --yes --digest <d> --as <you> --token <t> for scripts; a tournament
-      approves both documents with one yes, on the joint fingerprint
+      --yes --digest <d> --as <you> --token <t> for scripts
   toolroll task requeue <id> --as <you> --token <t>
                                         exit a stall: incidents resolved,
                                         strikes cleared, queued again
@@ -562,8 +528,7 @@ External trackers — build what a tracker nominates, under local approvals
                                         run the approved check again on the
                                         last attempt's exact commit — a new
                                         attempt, no agent, saved result
-  toolroll config set budgets [--build-usd <n>] [--race-per-usd <n>]
-      [--race-total-usd <n>] [--race-agents 2..4] --as <you> --token <t>
+  toolroll config set budgets [--build-usd <n>] --as <you> --token <t>
                                         spend defaults new filings pre-fill
                                         from; config clear budgets resets
 
@@ -631,35 +596,19 @@ Capabilities — what the work needs, recorded and probed, never valued
                                         plan before building: an agent reads
                                         the repo, asks you questions, and
                                         proposes a scope you approve
-  toolroll task route <id> [--risk routine|elevated|high]
-      [--size small|medium|large] [--risky yes|no]
+  toolroll task route <id> [--size small|medium|large] [--risky yes|no]
       [--phase plan|build|repair --provider <p> [--model <m>] | --clear-phase <phase>]
       --as <you> --token <t>            which agent plans, builds, and repairs
                                         this task, with the reason for
-                                        each; declare its risk or override a
+                                        each; set its size or override a
                                         phase — approval seals the route
 
-Routines — tasks that fire on a schedule, each instance isolated
-  toolroll template list             common routines, shipped
-  toolroll template show <name>      the full prefill + what to edit
+Templates — common work, shipped
+  toolroll template list | show <name>
   toolroll template apply <name> --repo <path> [--file]
-      previews the exact filing; --file files it UNAPPROVED through the
-      same door as a manual filing — a template carries no authority
-
-  toolroll routine add <name> --repo <path> --goal <text>
-      --schedule every:<min>|daily:<HH:MM>[@Zone]|weekly:<0-6>:<HH:MM>[@Zone] (UTC by default)
-      [--not <text>] [--touches a,b] [--require kind:name,…] [--ceiling <usd>]
-      [--budget-usd <n>]                    what each firing may spend
-  toolroll routine approve <name>    the step-up: approving means each
-                                        firing builds WITHOUT asking, inside
-                                        exactly the stated terms; editing any
-                                        term voids the approval
-  toolroll routine list | show <name>
-  toolroll routine refresh <name>    re-resolve the agents it freezes from
-                                        today's configuration; approve again
-                                        afterwards — nothing fires until then
-  toolroll routine pause|resume <name>
-  toolroll routine run-now <name> --as <you> --token <t>
+      previews the exact work; --file makes it UNAPPROVED — a task, or a
+      scheduled flow whose schedule starts paused (turn it on with
+      \`flows trigger resume\`; each run waits for approval)
 
 Flows — processes cards move through; the console's rules
   toolroll flows list [--repo <path>] | show <id>
@@ -709,9 +658,10 @@ Agents — which provider and model each phase runs on
                                         the build it mends.
   toolroll config set <phase> --tier strong --provider <p> --model <m>
       [--repo <path>] --as <you> --token <t>
-                                        the STRONG agent high-risk, strict,
-                                        screenshot-proof, and automerge
-                                        routes reach for; never inferred
+                                        the STRONG agent large or risky,
+                                        strict, screenshot-proof, and
+                                        automerge routes reach for; never
+                                        inferred
   toolroll config set build --tier light --provider <p> --model <m>
       [--repo <path>] --as <you> --token <t>
                                         the fast agent small changes build
@@ -749,8 +699,8 @@ Agents — which provider and model each phase runs on
                                         approve the fast check Quick runs; verify show
                                         suggests one from the project's scripts
   Pass flags still win for one pass: --provider/--model,
-  --plan-provider/--plan-model, --repair-model. A routine instance is
-  pinned at fire time and ignores all of them.
+  --plan-provider/--plan-model, --repair-model. A task a schedule files
+  under an approval moved from a routine is pinned and ignores all of them.
   toolroll peek [<run-id>] [--tmux]  watch live agents: one pane per
                                         open run — stage, clock, and what
                                         the agent is saying; digits focus,
@@ -828,8 +778,6 @@ export const TASK_ACTIONS = [
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
 export const APPROVER_ACTIONS = ["list", "add"] as const;
-export const ROUTINE_ACTIONS = ["list", "add", "show", "approve", "refresh", "pause", "resume", "run-now"] as const;
-export const CONTEST_ACTIONS = ["show", "exclude"] as const;
 export const PEOPLE_ACTIONS = ["list", "invite", "projects", "revoke"] as const;
 export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as const;
 
@@ -843,7 +791,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
-  "choose", "note", "max-open-decisions", "max-held-sessions", "name", "days", "publication", "auto-approve", "review-auto", "entries", "port", "host", "allow-host",
+  "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
@@ -858,8 +806,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "project-root", "schedule", "ceiling", "require",
   "provider", "plan-model", "plan-provider", "public-url", "editor",
   "command", "timeout-seconds", "setup-digest", "stop-grace", "title", "name", "every", "lines",
-  "label", "reviewers", "limit", "role", "key-file", "weekly-usd", "daily-turns", "per-hour", "token-file", "race", "compare", "race-per-usd", "race-total-usd", "race-count", "race-agents", "budget-usd", "build-usd", "sync-max-age", "merge-method",
-  "phase", "risk", "tier", "clear-phase", "size", "risky",
+  "label", "reviewers", "limit", "role", "key-file", "weekly-usd", "daily-turns", "per-hour", "token-file", "budget-usd", "build-usd", "sync-max-age", "merge-method",
+  "phase", "tier", "clear-phase", "size", "risky",
   "run", "containment", "agent",
   // onboard: the starter flows to switch on.
   "starter",
@@ -878,7 +826,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "token-name",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
-  "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file", "allow-paid-fallback",
+  "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
@@ -1117,7 +1065,6 @@ async function dispatchOn(
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
       ...(options.mateSeams === undefined ? {} : { mateSeams: options.mateSeams }),
-      ...(options.heldCoordinator === undefined ? {} : { heldCoordinator: options.heldCoordinator }),
       ...(options.waitSleep === undefined ? {} : { waitSleep: options.waitSleep }),
       ...(options.releaseIo === undefined ? {} : { releaseIo: options.releaseIo }),
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
@@ -1277,25 +1224,13 @@ type Context = {
   integrationIo?: Partial<IntegrationIo>;
   /**
    * The stop fence (Codex M5-M8 audit, IV-1): set by the watch when a
-   * signal lands. A pass that sees true admits NOTHING more — no routine
+   * signal lands. A pass that sees true admits NOTHING more — no schedule
    * fires, no claim, no run, no spawn. The in-flight build finishes under
    * its own bounds (or the grace kill); admission is what stops.
    */
   shouldStop?: () => boolean;
   /** A failed recovery pass pauses new admissions without stopping an owned build. */
   shouldPauseAdmission?: () => boolean;
-  /** The held-session coordinator (Phase 2, attended road) — co-located
-   * `up` only; its absence means attended tasks stay attended-only skips. */
-  heldCoordinator?: import("./held.js").HeldSessionCoordinator;
-  /** This up process's incarnation, for held custody rows. */
-  upIncarnation?: string;
-  /** Short directory for held control sockets (sun_path bound). */
-  heldSocketDir?: string;
-  /** Test seams for the held transport. */
-  heldStarter?: typeof import("./exec.js").startClaudeHeldSession;
-  heldGraceMs?: number;
-  /** v28: optional attended-session cap; absent = unbounded. */
-  maxHeldSessions?: number;
   /** Test seam for task wait; production uses a timer. */
   waitSleep?: (milliseconds: number) => Promise<void>;
   releaseIo?: ReleaseIo;
@@ -1339,13 +1274,11 @@ function telegramCanDeliver(context: { databaseFile: string; telegramTokenFile: 
 
 /** Ordinary paired text talks to the shared assistant: the same evidence
  * root the console reads results from, the same membership harness seam
- * the CLI's chat uses, and this process's held-session supervisor for a
- * confirmed stop. The pass, the follower and the watch all wire it. */
+ * the CLI's chat uses. The pass, the follower and the watch all wire it. */
 function telegramConversation(context: Context, options: { serverOrigin?: string } = {}): TelegramConversationOptions {
   return {
     evidenceRoot: context.evidenceRoot,
     ...(context.mateSeams?.subscriptionRunner === undefined ? {} : { subscriptionRunner: context.mateSeams.subscriptionRunner }),
-    ...(context.heldCoordinator === undefined ? {} : { held: context.heldCoordinator }),
     // Re-read on every card and every `/task`: the same console-url chat
     // links use, held to an https origin, and — inside `up`, where this
     // process also serves the console — equal to that console's own
@@ -1495,8 +1428,6 @@ async function dispatch(
       return decideCommand(positional, flags, context);
     case "incident":
       return incidentCommand(positional, flags, context);
-    case "routine":
-      return routineCommand(positional, flags, context);
     case "flows":
       return flowsCommand(positional, flags, context);
     case "config":
@@ -1531,8 +1462,6 @@ async function dispatch(
       return providersCommand(flags, context);
     case "template":
       return templateCommand(positional, flags, context);
-    case "contest":
-      return contestCommand(positional, flags, context);
     case "webhook":
       return webhookCommand(positional, flags, context);
     case "sync":
@@ -1784,21 +1713,6 @@ function claimCommand(
       return fail(write, json, "claim", "external", said[result.detail] ?? "external work is not dispatchable right now", EXIT.refused, {
         detail: result.detail,
       });
-    }
-    if (result.reason === "attended-held") {
-      return fail(write, json, "claim", "attended-held", `an attended session holds this task for ${result.runner}`, EXIT.refused, {
-        runner: result.runner,
-      });
-    }
-    if (result.reason === "attended-only") {
-      return fail(
-        write,
-        json,
-        "claim",
-        "attended-only",
-        "this task runs only while its operator watches — it needs a live attended authorization or a real approval",
-        EXIT.refused,
-      );
     }
     if (result.reason === "mode-ended") {
       return fail(write, json, "claim", "mode-ended", result.message, EXIT.refused);
@@ -2463,11 +2377,9 @@ async function buildCommand(
   // the same proof the tick's admission wears, refused in words here.
   // Every road stamps at insert (v48 integrity): a routed row's sealed
   // build leg, a pre-routing row's sealed profile, the bare word on a task
-  // with no scope — and a chain approval's base custody rides the same
-  // insert (the standalone road never resumes a parked chain tail; the
-  // tick's proven transfer does that).
+  // with no scope.
   const standaloneModel = text(flags, "model");
-  const authority = store.routeAuthorityFor(ref.id, "builder", null, { provider: "claude", model: standaloneModel ?? null });
+  const authority = store.routeAuthorityFor(ref.id, "builder", { provider: "claude", model: standaloneModel ?? null });
   if (authority !== null && !authority.ok) {
     await worktrees.release(leased.worktree.path, now);
     return fail(write, json, "build", "admission-refused", `${id}: ${authority.problem}`, EXIT.refused);
@@ -2497,7 +2409,6 @@ async function buildCommand(
       worktree: leased.worktree.path,
       ...(authority === null ? {} : { provider: authority.stamp.provider, route: authority.stamp }),
       ...(standaloneModel === undefined ? {} : { model: standaloneModel }),
-      ...(store.approvedChainOf(id) === null ? {} : { custody: { kind: "base" as const } }),
       now,
     });
   } catch (error) {
@@ -2609,15 +2520,10 @@ async function buildCommand(
 
 // ---- the unattended pass --------------------------------------------------
 
-/** An attended authorization whose signed head the leased worktree no
- * longer matches (final authority closure): thrown BEFORE admission so no
- * run opens and no attempt is spent, reported as its own skip reason. */
-class StaleAuthorization extends Error {}
-
 /** What happened to one task this pass looked at. */
 type TickOutcome = {
   id: string;
-  outcome: "built" | "planned" | "reported" | "parked" | "skipped" | "failed" | "contest" | "held" | "stopped" | "reviewed" | "not-reviewed";
+  outcome: "built" | "planned" | "reported" | "parked" | "skipped" | "failed" | "stopped" | "reviewed" | "not-reviewed";
   /** Why it was skipped or how it failed; absent on a build. */
   reason?: string;
   /** The gap's own words, when the reason is a capability. */
@@ -2710,7 +2616,7 @@ async function tickCommand(
   const repo = repoFrom(flags);
   // THE PRE-I/O MEMBERSHIP CHECK (MCP spec v6, round-4 finding 1): the
   // pass proves its canonical repo is in the runner's BOUND list before
-  // any git access, probe, or routine fires. The --repo flag stops being
+  // any git access, probe, or schedule fires. The --repo flag stops being
   // authority on every runner road, not only at the claim.
   if (!auth.runner.repos.includes(canonicalProject(repo) ?? resolve(repo))) {
     return fail(write, json, "tick", "unauthorized-repo", `${runner} is not bound to ${repo} — \`runner bind\` adds it`, EXIT.refused);
@@ -2752,31 +2658,9 @@ async function tickCommand(
   // what acts on them.
   await probeRepo(store, repo, runner, clock());
 
-  // Standing orders fire before the ready set is read, so a fresh instance
-  // joins THIS pass. dueRoutines only nominates; every proof — approval
-  // digest, pause, due, single-flight, budget — is re-made inside
-  // fireRoutine's own transaction, and skipped slots ledger and page
-  // themselves there. This loop just reports.
-  const routines: { routine: string; outcome: string; taskId?: string; detail?: string }[] = [];
-  for (const routine of buildsOnly ? [] : store.dueRoutines(repo, clock())) {
-    // The stop fence (audit IV-1): a signal that landed mid-pass stops
-    // every further admission — a routine not yet fired stays unfired.
-    if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) break;
-    const outcome = fireRoutine(store, routine.id, clock());
-    routines.push(
-      outcome.ok
-        ? { routine: routine.name, outcome: "fired", taskId: outcome.taskId }
-        : {
-            routine: routine.name,
-            outcome: outcome.reason,
-            ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
-          },
-    );
-  }
-
-  // Flows move before the ready set is read, like routines: a card entering
-  // a build or research zone files its task now, and that task joins THIS
-  // pass. The engine is model-free; approvals the task needs still apply.
+  // Flows move before the ready set is read: a card entering
+  // a build or research zone files its task now (as does a schedule's
+  // standing order, v115), and that task joins THIS pass. The engine is model-free; approvals the task needs still apply.
   // Triggers first: a schedule, GitHub, Linear or another flow may start
   // cards, which then move in the same pass. Checking an outside service is
   // `gh` or one HTTPS request, never a model, and only when it is due.
@@ -2804,7 +2688,7 @@ async function tickCommand(
   // other builds may hold the worker for minutes.
   let settled = 0;
   const settleFinished = (): void => {
-    const finished = dispatched.slice(settled).filter(one => one.outcome !== "skipped" && one.outcome !== "contest").map(one => one.id);
+    const finished = dispatched.slice(settled).filter(one => one.outcome !== "skipped").map(one => one.id);
     settled = dispatched.length;
     if (finished.length === 0) return;
     const after = moveCardsAfter(store, repo, finished, clock(), context.evidenceRoot);
@@ -2813,23 +2697,10 @@ async function tickCommand(
     flowPass.problems.push(...after.problems);
   };
 
-  // Tournament housekeeping before the ordinary pass (stage 4): interrupted
-  // races recover by CAS, and an ANSWERED question re-admits its parked
-  // agent — fresh claim, fresh slot, remaining budget only, the SAME
-  // verified checkout on the SAME runner (finding 29's custody rule).
-  if (!buildsOnly) recoverContests(store, clock());
   // Expired ceremony nonces are litter with a bound (round-3 finding 30):
   // the mint refuses past 50 open per approver, so the sweep keeps the
   // ceiling meaningful rather than letting dead rows consume it.
   store.sweepCeremonyNonces(clock());
-  // Decided tournaments give their checkouts back (stage 6) — this runner's
-  // custody only; a checkout that will not release cleanly is flagged and
-  // paged, never force-cleaned. Undecided ones escalate once at 14 days.
-  if (!buildsOnly) {
-    await sweepContestCleanup(store, path => worktrees.release(path, clock()), runner, clock());
-    escalateOverdueContests(store, clock());
-  }
-  const resumed: TickOutcome[] = [];
   // v105: monthly budgets, read when first needed and again after any build (its spend counts): a used-up hard-stop
   // budget holds back new work billed to an API key, on every road below.
   let budgetGate: ReturnType<Store["budgetGate"]> | null = null;
@@ -2837,12 +2708,10 @@ async function tickCommand(
   const budgetWords = (hold: BudgetHold) => budgetHoldWords(hold, monthOf(clock()).name);
   // Sprint 8: the organisation policy, asked before any claim on every road below: a provider or model it doesn't
   // allow never starts (the task waits, saying which rule and where to change it); terms above its permission ceiling
-  // start and run lowered (build() lowers them and says so), except an attended session's, signed at exactly those.
-  const policyHold = (agents: readonly ({ profile: ExecutionProfile; attended?: boolean } | { provider: string; model: string | null; session?: string })[]): string | null => {
+  // start and run lowered (build() lowers them and says so).
+  const policyHold = (agents: readonly ({ profile: ExecutionProfile } | { provider: string; model: string | null; session?: string })[]): string | null => {
     for (const agent of agents) {
       if ("profile" in agent) {
-        const refused = agent.attended === true ? store.attendedPolicyRefusal(agent.profile) : null;
-        if (refused !== null) return refused;
         const verdict = store.runPolicy(agent.profile);
         if (!verdict.ok) return verdict.message;
       } else {
@@ -2853,301 +2722,12 @@ async function tickCommand(
     }
     return null;
   };
-  for (const waiting of buildsOnly ? [] : store.contestsInStates(["decision-wait"])) {
-    if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) break;
-    // D1 belt-and-braces (external dispatch, finding 41): a mirror and a
-    // contest should never coexist; if one ever does, its race resumes
-    // NOTHING — no claim, no run, no worktree, no spend.
-    const waitingTaskId = store.externalIdFor(waiting.taskRef);
-    if (waitingTaskId !== null && store.mirrorByTask(waitingTaskId) !== null) {
-      resumed.push({ id: waitingTaskId, outcome: "skipped", reason: "external-race" });
-      continue;
-    }
-    // THE ANSWERED BATCH IS MARKED ACTIVE FIRST (Codex slice-B finding 2):
-    // resuming lanes one at a time let the FIRST finisher aggregate the
-    // contest while later answered lanes were still 'parked' — excluded
-    // from active, their decisions no longer open — stranding them in a
-    // contest that had already moved on. 'ready' counts as active, so
-    // aggregation waits for the whole batch. Any lane that bails before
-    // its build reverts to 'parked' so the next pass retries it.
-    const batch: { racer: ReturnType<Store["contestants"]>[number] }[] = [];
-    for (const racer of store.contestants(waiting.id).filter(one => one.state === "parked")) {
-      if (store.answeredDecisionForContestant(racer.id) === null) continue;
-      if (store.casContestantState(racer.id, ["parked"], "ready", racer.generation)) {
-        batch.push({ racer });
-      }
-    }
-    for (const { racer } of batch) {
-      const backToParked = (): void => {
-        const current = store.getContestant(racer.id);
-        if (current !== null) store.casContestantState(racer.id, ["ready"], "parked", current.generation);
-      };
-      if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) {
-        backToParked();
-        continue;
-      }
-      const custody = racer.custody === null ? null : (JSON.parse(racer.custody) as { branch: string; head: string | null; runner: string });
-      const taskId = store.externalIdFor(waiting.taskRef);
-      if (custody === null || custody.runner !== runner || taskId === null) {
-        backToParked();
-        continue;
-      }
-      const lanePolicy = policyHold([racer.profile == null ? { provider: racer.provider, model: racer.model } : { profile: racer.profile }]);
-      if (lanePolicy !== null) {
-        backToParked();
-        resumed.push({ id: taskId, outcome: "skipped", reason: "policy", detail: lanePolicy });
-        continue;
-      }
-      const laneBudget = budgetHold(waiting.taskRef, store.agentsFor([racer.provider]));
-      if (laneBudget.over !== null) {
-        backToParked();
-        resumed.push({ id: taskId, outcome: "skipped", reason: "budget", detail: budgetWords(laneBudget) });
-        continue;
-      }
-      // The sign-in pause holds a resumed lane too: it waits, parked, instead of failing.
-      const laneGate = signInGate(store, [racer.provider], clock());
-      if (laneGate.waiting !== null) {
-        backToParked();
-        resumed.push({ id: taskId, outcome: "skipped", reason: "signed-out", detail: signInWords(laneGate.waiting) });
-        continue;
-      }
-      // Legacy comparison lanes carried an absolute clock. New profiles use
-      // a progress watchdog and may remain alive indefinitely while useful
-      // work is observable; only legacy approvals retain their cumulative
-      // wall-clock contract.
-      const remaining = waiting.kind === "comparison" ? null : racer.budgetMicrousd - racer.accountedMicrousd;
-      if (remaining !== null && remaining <= 0) {
-        laneGate.giveBack();
-        const current = store.getContestant(racer.id);
-        if (current !== null) store.casContestantState(racer.id, ["ready"], "stopped", current.generation);
-        contestMaybeAggregate(store, waiting.id, clock());
-        resumed.push({ id: taskId, outcome: "skipped", reason: "over-ceiling" });
-        continue;
-      }
-      if (waiting.kind === "comparison") {
-        const laneProfile = racer.profile ?? contestantProfileOf(racer.provider, racer.model, racer.repairModel);
-        const clockCapMs = 3 * laneProfile.timeoutSeconds * 1000;
-        if (laneProfile.timeoutKind !== "idle" && store.contestantCumulativeMs(racer.id) >= clockCapMs) {
-          laneGate.giveBack();
-          const current = store.getContestant(racer.id);
-          if (current !== null) store.casContestantState(racer.id, ["ready"], "stopped", current.generation);
-          contestMaybeAggregate(store, waiting.id, clock());
-          resumed.push({ id: taskId, outcome: "skipped", reason: "over-ceiling" });
-          continue;
-        }
-      }
-      const reclaimed = acquire(store, waiting.taskRef, runner, { now: clock(), token, ttlMs: leaseTtlMs });
-      if (!reclaimed.ok) {
-        laneGate.giveBack();
-        backToParked();
-        continue;
-      }
-      const freshContest = store.getContest(waiting.id);
-      if (freshContest === null || !store.casContestState(waiting.id, ["decision-wait", "racing"], "racing", freshContest.generation)) {
-        release(store, reclaimed.claim.leaseId, clock());
-        laneGate.giveBack();
-        backToParked();
-        continue;
-      }
-      store.stampContestLease(waiting.id, reclaimed.claim.leaseId, runner, text(flags, "incarnation") ?? null);
-      const leased = await worktrees.lease({ repo, branch: racer.branch, runner, taskRef: waiting.taskRef, now: clock() });
-      const headCheck = leased.ok ? await git("git", ["rev-parse", "HEAD"], { cwd: leased.worktree.path }) : null;
-      if (!leased.ok || (custody.head !== null && headCheck !== null && headCheck.stdout.trim() !== custody.head)) {
-        // The tree cannot be proved to be the one the agent left — stop the
-        // agent rather than cold-starting against a different history.
-        if (leased.ok) await worktrees.release(leased.worktree.path, clock());
-        const current = store.getContestant(racer.id);
-        if (current !== null) store.casContestantState(racer.id, ["ready"], "stopped", current.generation);
-        store.setContestantCleanup(racer.id, "attention");
-        contestMaybeAggregate(store, waiting.id, clock());
-        release(store, reclaimed.claim.leaseId, clock());
-        resumed.push({ id: taskId, outcome: "failed", reason: "contest-custody" });
-        continue;
-      }
-      const [resumeSlot] = store.reserveExecutionSlots(runner, 1, clock());
-      const parkedRun = racer.activeRun;
-      // A contest lane spends under its race-approved profile and says so
-      // at insert (v48 integrity): the lane's proven profile digest, the
-      // exact pair it will spend as — the store's own answer, re-proved
-      // and bound to the lane inside the admission.
-      const laneStamp = store.laneAuthorityFor(racer.id);
-      if (laneStamp === null) {
-        await worktrees.release(leased.worktree.path, clock());
-        release(store, reclaimed.claim.leaseId, clock());
-        backToParked();
-        resumed.push({ id: taskId, outcome: "failed", reason: "admission-refused", detail: `contestant ${racer.id} is gone` });
-        continue;
-      }
-      // THE LANE ADMISSION (atomic authority closure): the resume opens on
-      // the lane under the contest's live custody — this lease, this
-      // runner, this watch incarnation, stamped on the contest just above
-      // — presenting the lane's stored sealed profile; value-shaped.
-      const admittedResume = store.admitContestLane({
-        taskRef: waiting.taskRef,
-        leaseId: reclaimed.claim.leaseId,
-        runner,
-        incarnation: text(flags, "incarnation") ?? null,
-        branch: racer.branch,
-        worktree: leased.worktree.path,
-        provider: racer.provider,
-        model: racer.model,
-        contestant: racer.id,
-        ...(parkedRun === null ? {} : { parentRun: parkedRun }),
-        now: clock(),
-        route: laneStamp,
-      });
-      if (!admittedResume.ok) {
-        await worktrees.release(leased.worktree.path, clock());
-        release(store, reclaimed.claim.leaseId, clock());
-        backToParked();
-        resumed.push({ id: taskId, outcome: "failed", reason: "admission-refused", detail: admittedResume.problem });
-        continue;
-      }
-      const resumeRun = admittedResume.runId;
-      // The lane's pointer moved to the resume INSIDE its admission (raw
-      // authority repair): from the parked attempt it continues, proved
-      // there — no release-then-claim window exists any more.
-      const afterClaim = store.getContestant(racer.id);
-      if (afterClaim !== null) store.casContestantState(racer.id, ["ready"], "building", afterClaim.generation);
-      budgetGate = null; // this build's spend counts toward the next check
-      const resumeResult = await build(store, {
-        taskId,
-        taskRef: waiting.taskRef,
-        runner,
-        leaseId: reclaimed.claim.leaseId,
-        runnerToken: token,
-        runId: resumeRun,
-        evidenceRoot: context.evidenceRoot,
-        worktree: leased.worktree.path,
-        branch: racer.branch,
-        now: clock(),
-        clock,
-        provider: racer.provider as ProviderId,
-        // v24: the contestant's OWN sealed profile is the authority — the
-        // proof holds the lane to it (model, limits, permissions), so no
-        // flag-shaped overrides ride along.
-        contestProfile: racer.profile ?? contestantProfileOf(racer.provider, racer.model, racer.repairModel),
-        ...(remaining === null ? {} : { maxBudgetUsd: Math.min(remaining, laneBudget.remainingMicrousd ?? Infinity) / 1_000_000 }),
-        onProviderSpawn: (pid: number) => {
-          worktrees.recordProviderOccupancy(leased.worktree.path, runner, pid, leased.worktree.leaseEpoch);
-          if (resumeSlot !== undefined) {
-            const facts = { run: resumeRun, contestant: racer.id, incarnation: text(flags, "incarnation") ?? null, processGroup: pid };
-            if (!store.markSlotRunning(resumeSlot, facts, clock()) && !store.refreshSlotProcess(resumeSlot, facts)) throw new Error("the provider's execution slot no longer belongs to this attempt");
-          }
-        },
-        ...(context.agentRunner === undefined ? {} : { agent: context.agentRunner }),
-        ...(context.gitRunner === undefined ? {} : { git: context.gitRunner }),
-        ...(context.shouldStop === undefined ? {} : { shouldStop: context.shouldStop }),
-      });
-      const resumedRunRow = store.getRun(resumeRun);
-      const resumeMeasured =
-        resumedRunRow === null || resumedRunRow.providerStartedAt === null
-          ? 0
-          : resumedRunRow.costUsd !== null
-            ? Math.round(resumedRunRow.costUsd * 1_000_000)
-            : null;
-      let resumedOutcome: "built" | "failed" | "parked" | "stopped" = "failed";
-      let resumedCommitted = false;
-      if (resumeResult.ok && resumeResult.parked !== undefined) {
-        resumedOutcome = "parked";
-        const asked = resumeResult.parked.decision;
-        const racerDecision = store.saveDecision(
-          {
-            run: resumeRun,
-            contestant: racer.id,
-            urgency: asked.urgency,
-            recap: asked.recap,
-            question: asked.question,
-            options: asked.options,
-            recommendation: asked.recommendation,
-            ...(asked.assignee === null ? {} : { assignee: asked.assignee }),
-            ...(asked.deadline === null ? {} : { deadline: asked.deadline }),
-          },
-          clock(),
-        );
-        // A racing agent's question pages like any other (arc 3 finding 21):
-        // aggregation stays quiet ASSUMING this row already spoke.
-        store.enqueueNotification(
-          {
-            source: { run: resumeRun },
-            dedupeKey: `decision:${racerDecision}`,
-            kind: "decision",
-            subject: `${taskId} parked a decision (${contestNoun(waiting.kind)} agent)`,
-            body: `\`toolroll decide ${racerDecision}\``,
-            pushClass: "decision",
-            link: `/d/${racerDecision}`,
-          },
-          clock(),
-        );
-      } else if (resumeResult.ok) {
-        resumedOutcome = "built";
-        resumedCommitted = resumeResult.committed;
-      } else if (resumeResult.reason === "stopped") {
-        resumedOutcome = "stopped";
-      }
-      if (resumedRunRow !== null && resumedRunRow.outcome === null) {
-        // The reason rides the resumed run too (Codex slice-B finding 7):
-        // both settlement paths, one honesty.
-        const resumeReason = !resumeResult.ok ? resumeResult.reason : undefined;
-        store.finishRun(resumeRun, {
-          outcome: resumedOutcome === "built" && !resumedCommitted ? "no-change" : resumedOutcome === "stopped" ? "failed" : resumedOutcome === "parked" ? "parked" : resumedOutcome,
-          committed: resumedCommitted,
-          ...(resumeReason === undefined ? {} : { reason: resumeReason }),
-          now: clock(),
-        });
-      }
-      if (resumedOutcome === "parked") {
-        // Custody refreshes on EVERY park (Codex slice-B finding 9): a
-        // re-parked lane whose custody still named the pre-resume head
-        // would falsely stop as contest-custody on its next answer.
-        const headNow = await git("git", ["rev-parse", "HEAD"], { cwd: leased.worktree.path });
-        const dirtyNow = await git("git", ["status", "--porcelain"], { cwd: leased.worktree.path });
-        store.setContestantCustody(
-          racer.id,
-          JSON.stringify({
-            branch: racer.branch,
-            head: headNow.code === 0 ? headNow.stdout.trim() : null,
-            runner,
-            dirty: dirtyNow.stdout.trim() !== "",
-            at: clock().toISOString(),
-          }),
-        );
-      }
-      await worktrees.release(leased.worktree.path, clock());
-      const resumedFinal = finalizeContestant(
-        store,
-        {
-          contestId: waiting.id,
-          contestantId: racer.id,
-          runId: resumeRun,
-          outcome: resumedOutcome,
-          measuredMicrousd: resumeMeasured,
-          slotId: resumeSlot ?? null,
-        },
-        clock(),
-      );
-      resumed.push({ id: taskId, outcome: "contest", reason: resumedFinal.aggregated ?? "racing" });
-    }
-  }
-
-  // THE CHAIN RECONCILER (E3d, review finding 3): a crash between a run's
-  // disposition and its cycle resolution leaves an OPEN cycle with a
-  // concluded tail — resolve each through the SAME resolver the disposition
-  // uses, before any admission can re-tag or race it. Advancing here lands
-  // the cycle in pending-admission for THIS pass's chain admission below.
-  // One shared piece with the fault tests (F+G review, finding 5).
-  if (!buildsOnly) store.reconcileStrandedChains(repo, clock());
-
   // The DISPATCH view of the queue (queue columns, v19): this runner's own
   // reserved work first, then the shared queue; work reserved for other
   // workers is absent. The claim primitive re-proves the reservation.
   const ready = store.listReady(clock(), runner);
   const considered = ready.length;
-  const dispatched: TickOutcome[] = [...resumed];
-  // Expired attended authorizations close durably each pass (round-6
-  // finding 8): the partial unique frees, and the claim gates stop
-  // honoring corpses.
-  store.sweepExpiredAuthorizations(clock());
+  const dispatched: TickOutcome[] = [];
   // The stale-scan (dispatch v3, finding 20): mirrors the courtesy filter
   // kept out of ready are REPORTED here, typed, with a paged episode —
   // an undispatakable tracker item is a 9am fact, not a silent absence.
@@ -3184,14 +2764,8 @@ async function tickCommand(
     settleFinished();
     untakenTrial?.giveBack();
     untakenTrial = null;
-    // The build budget governs UNATTENDED admissions (round-1 finding 4):
-    // once it is spent, the pass keeps SCANNING for attended
-    // authorizations — operator-invoked sessions launch regardless —
-    // while declining every further ordinary admission.
-    if (built >= max) {
-      const openAuth = store.openAuthorizationFor(ref.id);
-      if (openAuth === null || openAuth.runner !== runner || openAuth.attemptRun !== null) continue;
-    }
+    // The build budget: once it is spent, no further admission this pass.
+    if (built >= max) continue;
     // The stop fence (audit IV-1): checked before every claim. The build
     // already in flight finishes under its own bounds; nothing NEW is
     // admitted once the operator has said stop.
@@ -3204,97 +2778,17 @@ async function tickCommand(
       continue;
     }
 
-    // EVERY live fallback cycle defers the ordinary road (Codex E3d review,
-    // finding 5) — a pending admission belongs to the chain pass below, and
-    // an open cycle's custody moves only through proven roads, never an
-    // in-passing re-tag. The ONE exception: an open cycle whose tail PARKED
-    // — the paused lineage — proceeds, and the new run takes custody through
-    // the proven parked-resume transfer after it is created.
-    const liveCycle = store.fallbackCycleFor(ref.id);
-    const parkedChainTail =
-      liveCycle !== null && liveCycle.state === "open" && liveCycle.tailRun !== null
-        ? store.getRun(liveCycle.tailRun)
-        : null;
-    if (liveCycle !== null && !(parkedChainTail !== null && parkedChainTail.outcome === "parked")) {
-      dispatched.push({ id, outcome: "skipped", reason: "fallback-active" });
-      continue;
-    }
-
     // A plan the operator asked for dispatches a PLANNER — the one
     // legitimate spend on a task with no approved scope. Everything else
-    // unapproved is a person's pending decision: skip, not refuse — EXCEPT
-    // the attended road (Phase 2, v6 W1): a live attended authorization
-    // naming THIS runner is authority for one watched attempt, and the
-    // skip for everything short of that is its own typed word, never the
-    // generic `unapproved` the round-5 review caught masking it.
+    // unapproved is a person's pending decision: skip, not refuse.
     const scopeApproved = scopeApprovedForDispatch(store, ref.id, clock());
     const wantsPlan = ref.plan === "requested" && !scopeApproved;
     // A report task with an approved scope dispatches a SCOUT (mate arc
     // §10): the same approval, the planner's read-only road, a report back.
     const wantsScout = ref.deliverable === "report" && scopeApproved;
-    let attendedDispatch: import("./store.js").AttendedAuthorization | null = null;
     if (!wantsPlan && !scopeApproved) {
-      const open = store.openAuthorizationFor(ref.id);
-      const watching =
-        open === null
-          ? null
-          : attendedLivenessState(
-              open.lastBeatAt === null ? null : Date.parse(open.lastBeatAt),
-              clock().getTime(),
-              Date.parse(open.absoluteExpiry),
-            );
-      if (
-        open !== null &&
-        open.runner === runner &&
-        (watching === "live" || watching === "grace") &&
-        open.attemptRun === null &&
-        context.heldCoordinator !== undefined
-      ) {
-        // v28: sessions are unbounded by default; an operator-set cap
-        // skips FURTHER launches in words. The gauge is durable custody
-        // rows, never the in-process map — a restarted up with orphans
-        // pending must count them.
-        if (context.maxHeldSessions !== undefined && store.openHeldSessionCount(runner) >= context.maxHeldSessions) {
-          dispatched.push({
-            id,
-            outcome: "skipped",
-            reason: "session-cap",
-            detail: `this machine holds ${store.openHeldSessionCount(runner)} of ${context.maxHeldSessions} attended sessions — end one, or raise --max-held-sessions`,
-          });
-          continue;
-        }
-        attendedDispatch = open;
-      } else if (open !== null) {
-        dispatched.push({ id, outcome: "skipped", reason: "attended-only" });
-        continue;
-      } else {
-        dispatched.push({ id, outcome: "skipped", reason: "unapproved" });
-        continue;
-      }
-    }
-
-    // TOURNAMENT TERMS FIRST (foundations finding 8's reorder): an approved
-    // race's admission is governed by its own fingerprinted terms, and pass
-    // flags must not be able to shape it — so the terms are discovered
-    // before any flag-shaped resolution runs, and a raced task's build
-    // resolution ignores the flags outright.
-    const racedAhead = wantsPlan || wantsScout || attendedDispatch !== null ? null : store.activeTournamentTerms(ref.id);
-    // The attended spec comes from the authorization's PINNED terms — the
-    // courtesy half of the proof; the coordinator's transaction re-proves
-    // byte-for-byte at the actual HEAD (v6 W1).
-    let attendedSpec: { provider: ProviderId; model: string | null; digest: string; profile: ExecutionProfile } | null = null;
-    if (attendedDispatch !== null) {
-      try {
-        const terms = JSON.parse(attendedDispatch.termsJson) as { profileJson?: unknown };
-        const pinned = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
-        if (pinned !== null) attendedSpec = { provider: pinned.provider, model: pinned.model, digest: profileDigestOf(pinned), profile: pinned };
-      } catch {
-        attendedSpec = null;
-      }
-      if (attendedSpec === null) {
-        dispatched.push({ id, outcome: "skipped", reason: "attended-only", detail: "the authorization's pinned profile cannot be read" });
-        continue;
-      }
+      dispatched.push({ id, outcome: "skipped", reason: "unapproved" });
+      continue;
     }
     // The phase agent, resolved BEFORE anything is claimed and snapshotted
     // into the run: pin > flags > project > installation > default. Planner
@@ -3302,14 +2796,14 @@ async function tickCommand(
     // when no plan-specific flag is given.
     // THE ROUTE (v47): the sealed route when the approval stands, else the
     // working proposed route, else — with no scope yet — a live
-    // recommendation from the task's own risk, overrides, and pins; a row
+    // recommendation from the task's own size, overrides, and pins; a row
     // proven to predate routing is the LEGACY road (its sealed profile,
     // then flags and configuration); a routed row whose route cannot be
     // read FAILS CLOSED here, in words. Dispatch resolves each phase from
     // ITS leg: the plan leg for a planner (pass flags may restate it, never
     // contradict it), the SEALED build leg for every routed approval
     // (mutable configuration cannot reroute an approved build).
-    const taskRoute = attendedSpec !== null || racedAhead !== null ? null : routeOfTask(store, id, ref, clock());
+    const taskRoute = routeOfTask(store, id, ref, clock());
     if (taskRoute !== null && taskRoute.kind === "unreadable") {
       dispatched.push({ id, outcome: "skipped", reason: "agent-config", detail: taskRoute.problem });
       continue;
@@ -3319,9 +2813,8 @@ async function tickCommand(
     // authority closure): a planner on a filed, unapproved scope runs
     // under the WORKING route only as the whole scope proves — exact raw
     // terms (a proposed-via marker this code never writes), a resolved
-    // profile, a whole fallback chain (an unresolved `[]` is none), route
-    // parity with the signed risk, the digest, and the live auth mode
-    // agreeing with a chain's pinned base mode. One disagreement skips the
+    // profile, route parity with the signed risk, the digest, and the live
+    // auth mode. One disagreement skips the
     // task in words before any claim; the admission and the spawn ask the
     // same question again.
     if (wantsPlan && route !== null && route.source === "proposed") {
@@ -3333,21 +2826,6 @@ async function tickCommand(
     }
     const planLeg = route === null ? null : legOf(route.route, "plan");
     const sealedBuildLeg = route !== null && route.source === "approved" ? legOf(route.route, "build") : null;
-    // A parked chain tail PAST the base (v48 authority repair): its successor resumes the
-    // entry's custody and spends as that entry — the exact approved pair
-    // under `fallback` provenance — never as the sealed build leg. An
-    // entry the approved chain no longer carries under the tail's digest
-    // is refused here, in words, before any claim moves.
-    let parkedEntry: { index: number; provider: ProviderId; model: string } | null = null;
-    if (parkedChainTail !== null && parkedChainTail.chainIndex != null && parkedChainTail.chainIndex > 0 && !wantsPlan && !wantsScout && attendedSpec === null && racedAhead === null) {
-      const chain = store.approvedChainOf(id);
-      const entry = chain === null ? undefined : chain[parkedChainTail.chainIndex];
-      if (entry === undefined || entryDigestOf(entry) !== parkedChainTail.entryDigest) {
-        dispatched.push({ id, outcome: "skipped", reason: "stale-approval", detail: `${id}: the parked attempt #${parkedChainTail.id} is bound to fallback entry ${parkedChainTail.chainIndex}, which the approved chain no longer carries — nothing resumes it` });
-        continue;
-      }
-      parkedEntry = { index: parkedChainTail.chainIndex, provider: entry.profile.provider, model: entry.profile.model };
-    }
     const planFlagged = planProvider !== undefined || planModel !== undefined || providerFlag !== undefined || model !== undefined;
     if (wantsPlan && planLeg !== null && planFlagged) {
       // Pass flags cannot contradict the task's plan leg: a flag that names
@@ -3365,48 +2843,40 @@ async function tickCommand(
         continue;
       }
     }
-    const resolution = attendedSpec !== null
-      ? null
-      : wantsPlan
-        ? planLeg !== null
-          ? resolvePhaseAgent(store, "plan", repo, { provider: planLeg.provider, model: planLeg.model })
-          : resolvePhaseAgent(store, "plan", repo, {
-              // The legacy road (P2/C7 precedence): the task's plan PIN
-              // beats every flag and config row; flags beat config.
-              provider: ref.planProvider ?? planProvider ?? providerFlag,
-              model: ref.planProvider !== null ? (ref.planModel ?? undefined) : (planModel ?? model),
-            })
-        : racedAhead !== null
-          ? resolvePhaseAgent(store, "build", repo, {}, ref)
-          : parkedEntry !== null
-            ? resolvePhaseAgent(store, "build", repo, { provider: parkedEntry.provider, model: parkedEntry.model })
-            : sealedBuildLeg !== null
-              ? resolvePhaseAgent(store, "build", repo, { provider: sealedBuildLeg.provider, model: sealedBuildLeg.model }, ref)
-              : resolvePhaseAgent(store, "build", repo, { provider: providerFlag, model }, ref);
-    if (resolution !== null && !resolution.ok) {
+    const resolution = wantsPlan
+      ? planLeg !== null
+        ? resolvePhaseAgent(store, "plan", repo, { provider: planLeg.provider, model: planLeg.model })
+        : resolvePhaseAgent(store, "plan", repo, {
+            // The legacy road (P2/C7 precedence): the task's plan PIN
+            // beats every flag and config row; flags beat config.
+            provider: ref.planProvider ?? planProvider ?? providerFlag,
+            model: ref.planProvider !== null ? (ref.planModel ?? undefined) : (planModel ?? model),
+          })
+      : sealedBuildLeg !== null
+        ? resolvePhaseAgent(store, "build", repo, { provider: sealedBuildLeg.provider, model: sealedBuildLeg.model }, ref)
+        : resolvePhaseAgent(store, "build", repo, { provider: providerFlag, model }, ref);
+    if (!resolution.ok) {
       dispatched.push({ id, outcome: "skipped", reason: "agent-config", detail: resolution.problem });
       continue;
     }
-    const spec = resolution === null ? (attendedSpec as { provider: ProviderId; model: string | null }) : resolution.spec;
+    const spec = resolution.spec;
     // THE AUTH MODE, strictly, before any claim or row (atomic authority
     // closure): a present mode file for the provider this pass would spend
     // as that says neither word is a stated problem — the same reader the
     // filing, the seal, and the spawn use — and the task is skipped in
     // words with nothing opened, never dispatched to be refused later.
-    const modeProviders: ProviderId[] = racedAhead !== null ? racedAhead.agents.filter(agent => isProviderId(agent.provider)).map(agent => agent.provider as ProviderId) : [spec.provider];
-    const brokenMode = [...new Set(modeProviders)].map(one => readAuthModeStrict(one)).find(one => !one.ok);
-    if (brokenMode !== undefined && !brokenMode.ok) {
+    const brokenMode = readAuthModeStrict(spec.provider);
+    if (!brokenMode.ok) {
       dispatched.push({ id, outcome: "skipped", reason: "auth-mode", detail: brokenMode.problem });
       continue;
     }
     // THE SIGN-IN PAUSE: a provider whose sign-in stopped working takes no
-    // new work — no claim, no run, never a substitute (a lapsed login must not
-    // reach a paid fallback) — until a run or check on it works again or a
+    // new work — no claim, no run, never a substitute — until a run or check on it works again or a
     // person resumes it. Other providers keep working.
     // One task every AUTH_TRIAL_MS goes ahead as the trial: a sign-in check
     // can say "logged in" for a session that cannot refresh, so a real run
     // decides — it lifts the pause, or fails into the same incident.
-    const gate = signInGate(store, modeProviders, clock(), ref.id);
+    const gate = signInGate(store, [spec.provider], clock(), ref.id);
     if (gate.waiting !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "signed-out", detail: signInWords(gate.waiting) });
       continue;
@@ -3414,37 +2884,26 @@ async function tickCommand(
     // A trial whose task is skipped before its claim succeeds is given back
     // at the next task (or after the pass), so the next pass may take it.
     untakenTrial = gate;
-    // The leg is the authority: what resolved must BE the leg, exactly —
-    // the sealed build leg, or the parked fallback entry's own pair.
-    const governingLeg = wantsPlan ? planLeg : parkedEntry !== null ? { provider: parkedEntry.provider, model: parkedEntry.model, chosen: "fallback" as const } : sealedBuildLeg;
+    // The leg is the authority: what resolved must BE the leg, exactly.
+    const governingLeg = wantsPlan ? planLeg : sealedBuildLeg;
     if (governingLeg !== null && (spec.provider !== governingLeg.provider || spec.model !== governingLeg.model)) {
       dispatched.push({ id, outcome: "skipped", reason: "agent-config", detail: `${id}: the ${wantsPlan ? "plan" : "build"} leg names ${governingLeg.provider} · ${governingLeg.model} but resolution produced ${spec.provider} · ${spec.model ?? "(no model)"} — nothing substitutes` });
       continue;
     }
     // Route provenance for the run this pass opens (v47): PRESENTED to the
     // admission transaction, from the leg that governs it — the store
-    // dictates nothing (v48 authority repair). A parked fallback entry's successor presents
-    // `fallback` under the sealed route — there is no chain-only digest
-    // (raw authority repair): with no sealed route it presents nothing,
-    // and the admission refuses in words.
-    // Every road presents at insert (v48 integrity): an attended session
-    // its pinned profile; a pre-routing row its sealed profile (or the
-    // bare word on a task with no scope) — the store's own answer, so the
+    // dictates nothing (v48 authority repair).
+    // Every road presents at insert (v48 integrity): a pre-routing row its
+    // sealed profile (or the bare word on a task with no scope) — the store's own answer, so the
     // admission proves exactly what the row holds.
     const routeStamp = (phase: "plan" | "build"): RouteStamp | null => {
-      if (attendedSpec !== null && phase === "build") {
-        return { routeDigest: `profile:${attendedSpec.digest}`, phase, provider: spec.provider, model: spec.model, chosen: "legacy" };
-      }
       // A task with NO scope holds no filed route (final authority
       // closure): its planner presents the bare word `legacy` for the pair
       // the live recommendation resolved — the recommendation chose the
       // agent, but nothing anybody filed is the authority it spends under.
       if (governingLeg === null || route === null || (phase === "plan" && route.source === "live")) {
-        const legacy = store.routeAuthorityFor(ref.id, phase === "plan" ? "planner" : "builder", null, { provider: spec.provider, model: spec.model });
+        const legacy = store.routeAuthorityFor(ref.id, phase === "plan" ? "planner" : "builder", { provider: spec.provider, model: spec.model });
         return legacy !== null && legacy.ok ? legacy.stamp : null;
-      }
-      if (parkedEntry !== null && phase === "build") {
-        return { routeDigest: routeDigestOf(route.route), phase, provider: spec.provider, model: spec.model, chosen: "fallback" };
       }
       return { routeDigest: routeDigestOf(route.route), phase, provider: spec.provider, model: spec.model, chosen: governingLeg.chosen };
     };
@@ -3455,7 +2914,7 @@ async function tickCommand(
     // must BE that pair. A disagreement used to open a row and refuse it
     // at the dispatch proof; now nothing opens — the task is held under
     // the same backoff the approval door lifts, and paged once.
-    if (!wantsPlan && !wantsScout && attendedSpec === null && racedAhead === null && route === null) {
+    if (!wantsPlan && !wantsScout && route === null) {
       const legacyStamp = routeStamp("build");
       if (legacyStamp !== null && (legacyStamp.provider !== spec.provider || legacyStamp.model !== spec.model)) {
         const message = `${id}: the sealed profile builds on ${legacyStamp.provider} · ${legacyStamp.model ?? "(no model)"} but today's routing resolved ${spec.provider} · ${spec.model ?? "(no model)"} — nothing runs on it (stale-approval)`;
@@ -3468,32 +2927,16 @@ async function tickCommand(
     // THE READINESS HALT (v47): a provider THIS runner has reported
     // unavailable never claims and never spends — no substitution, no
     // second-best; the skip names the observation and the ways out.
-    // Unknown readiness passes (every existing gate still applies); a
-    // raced task halts if any lane's provider is unavailable, because a
-    // subset is a different contest than the one signed. The ONE road
-    // onward is an EXPLICITLY APPROVED fallback chain: when the sealed
-    // build leg's provider is unavailable, the task moves to the approved
-    // next entry — that one and no other — and the chain admission pass
-    // below runs it after re-proving everything; otherwise it fails closed.
+    // Unknown readiness passes (every existing gate still applies).
     {
-      const providersToProve = racedAhead !== null ? racedAhead.agents.map(agent => agent.provider) : [spec.provider];
-      const unavailable = providersToProve
-        .map(candidate => store.runnerReadinessOf(runner, candidate))
-        .find(seen => seen !== null && seen.state === "unavailable");
-      if (unavailable !== undefined && unavailable !== null) {
+      const unavailable = store.runnerReadinessOf(runner, spec.provider);
+      if (unavailable !== null && unavailable.state === "unavailable") {
         const observed = `${unavailable.provider} is reported unavailable on ${runner} (${unavailable.reason}; observed ${unavailable.observedAt})`;
-        const onward =
-          !wantsPlan && !wantsScout && racedAhead === null && attendedSpec === null && sealedBuildLeg !== null
-            ? store.skipUnavailablePrimary(ref.id, id, repo, runner, clock())
-            : null;
         dispatched.push({
           id,
           outcome: "skipped",
           reason: "provider-unavailable",
-          detail:
-            onward !== null && onward.ok
-              ? `${observed} — moving to the approved fallback ${onward.next.provider} · ${onward.next.model}, the only substitution the approval allows; it is admitted next`
-              : `${observed} — nothing substitutes for a routed provider${onward === null || onward.reason === "no-chain" ? "" : ` (${onward.detail})`}: override the phase with \`task route\` or restore the provider and report readiness again`,
+          detail: `${observed} — nothing substitutes for a routed provider: override the phase with \`task route\` or restore the provider and report readiness again`,
         });
         continue;
       }
@@ -3504,24 +2947,14 @@ async function tickCommand(
     // worktree, no wake churn. The provider source is the AUTHORITATIVE
     // one per road: the sealed approval snapshot for ordinary builds (the
     // same snapshot the dispatch proof enforces), the plan resolver for
-    // planner runs. Attended work is claude-only and excluded; tournament
-    // contestants cannot be tier-2 today (the money gate refuses them at
-    // filing). A missing or malformed snapshot is NOT skipped here — the
+    // planner runs. A missing
+    // or malformed snapshot is NOT skipped here — the
     // existing approval refusals own that road, and attestation must
     // never mask them. The gateway re-checks before spawn; this skip only
     // keeps the normal road cheap.
-    const skipProviders: ProviderId[] =
-      attendedSpec !== null
-        ? []
-        : racedAhead !== null
-          ? // The contest road (slice B): every lane's provider, so an
-            // out-of-range attested lane skips the WHOLE contest before
-            // any claim — running a subset is a different contest than
-            // the one the operator signed.
-            racedAhead.agents.filter(agent => isProviderId(agent.provider)).map(agent => agent.provider as ProviderId)
-          : wantsPlan
-            ? [spec.provider]
-            : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
+    const skipProviders: ProviderId[] = wantsPlan
+      ? [spec.provider]
+      : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
     for (const candidate of new Set(skipProviders)) {
       if (attestationOf(candidate) === null) continue;
@@ -3542,10 +2975,9 @@ async function tickCommand(
 
     // Sprint 8: the organisation policy before the claim (build() looks again before spawn, and lowers).
     {
-      const sealed = wantsPlan || wantsScout ? null : store.approvedChainOf(id)?.[0]?.profile ?? store.getScope(id)?.approvedProfile ?? null;
-      const refused = racedAhead !== null ? policyHold(racedAhead.agents.map(agent => ({ provider: agent.provider, model: agent.model })))
-        : policyHold([attendedSpec !== null ? { profile: attendedSpec.profile, attended: true } : sealed !== null ? { profile: sealed }
-          : { provider: spec.provider, model: spec.model, ...(wantsPlan ? { session: "planning" } : wantsScout ? { session: "scouting" } : {}) }]);
+      const sealed = wantsPlan || wantsScout ? null : store.getScope(id)?.approvedProfile ?? null;
+      const refused = policyHold([sealed !== null ? { profile: sealed }
+        : { provider: spec.provider, model: spec.model, ...(wantsPlan ? { session: "planning" } : wantsScout ? { session: "scouting" } : {}) }]);
       if (refused !== null) {
         dispatched.push({ id, outcome: "skipped", reason: "policy", detail: refused });
         continue;
@@ -3555,9 +2987,8 @@ async function tickCommand(
     // v105: a monthly budget that stops new API work, used up: the task waits in the queue until the month turns or the
     // budget is raised (the 100% alert went out; the task page and the spend page say why).
     // Budgets are dollars: work that runs only on subscriptions passes (see Store.budgetGate).
-    // A chain's base entry says how it bills (a pinned key); otherwise each provider as it bills now.
-    const chainBase = wantsPlan || wantsScout ? undefined : store.approvedChainOf(id)?.[0];
-    const budgeted = budgetHold(ref.id, chainBase !== undefined ? [{ provider: chainBase.profile.provider, billing: chainBase.authMode }] : store.agentsFor([spec.provider, ...skipProviders]));
+    // Each provider as it bills now.
+    const budgeted = budgetHold(ref.id, store.agentsFor([spec.provider, ...skipProviders]));
     if (budgeted.over !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "budget", detail: budgetWords(budgeted) });
       continue;
@@ -3565,9 +2996,8 @@ async function tickCommand(
 
     // THE DAILY RAIL (modes chain D4): a live mode's run cap reserves at
     // admission — atomic, so two watch loops cannot both slip under it.
-    // Attended sessions and raced tasks reserve on their own roads below;
-    // an ordinary/planner start reserves ONE here. No mode = no-op.
-    if (attendedDispatch === null && racedAhead === null && repo !== null) {
+    // An ordinary/planner start reserves ONE here. No mode = no-op.
+    if (repo !== null) {
       const railed = store.reserveModeRail(repo, 1, clock());
       if (!railed.ok) {
         dispatched.push({ id, outcome: "skipped", reason: railed.rail, detail: railed.detail });
@@ -3627,255 +3057,6 @@ async function tickCommand(
       continue;
     }
     const lease = claimed.claim.leaseId;
-
-    // A tournament rides this claim (stage 3b): approved race terms send N
-    // agents instead of one builder. Everything after admission either
-    // reaches the ready barrier for ALL agents or interrupts the whole
-    // tournament — a partial race is never dispatched (finding 19).
-    const raceTerms = racedAhead;
-    if (raceTerms !== null && raceTerms.approvedDigest === raceTerms.raceDigest) {
-      const admittedKind = raceTerms.kind;
-      // The rail reserves every lane at once (D4) — a tournament is N
-      // starts from one filing. Refused before any skeleton exists.
-      if (repo !== null) {
-        const railedRace = store.reserveModeRail(repo, raceTerms.n, clock());
-        if (!railedRace.ok) {
-          dispatched.push({ id, outcome: "skipped", reason: railedRace.rail, detail: railedRace.detail });
-          continue;
-        }
-      }
-      const scopeRow = store.getScope(id);
-      const admitted = admitContest(
-        store,
-        {
-          taskId: id,
-          taskRef: ref.id,
-          runner,
-          leaseId: lease,
-          incarnation: text(flags, "incarnation") ?? null,
-          scopeDigest: scopeRow?.digest ?? "",
-          scopeApproved: scopeRow !== null && scopeApprovedForDispatch(store, ref.id, clock()),
-          // 'tasks' capacity mode keeps the claim-counted contract; the
-          // slot ledger records regardless (finding 26).
-          capacity: null,
-          quotaBlocked: (provider, model) => store.quotaState(runner, provider, model, clock())?.state ?? null,
-        },
-        clock(),
-      );
-      if (!admitted.ok) {
-        release(store, lease, clock());
-        dispatched.push({ id, outcome: "skipped", reason: admitted.reason });
-        continue;
-      }
-      const interrupt = async (why: string, leasedPaths: string[]): Promise<void> => {
-        const fresh = store.getContest(admitted.contestId);
-        if (fresh !== null) store.casContestState(admitted.contestId, ["dispatching", "racing"], "interrupted", fresh.generation);
-        store.releaseSlotsForContest(admitted.contestId, clock());
-        for (const path of leasedPaths) await worktrees.release(path, clock());
-        release(store, lease, clock());
-        dispatched.push({ id, outcome: "failed", reason: why });
-        broke++;
-      };
-      const baseRead = await git("git", ["rev-parse", "HEAD"], { cwd: repo });
-      if (baseRead.code !== 0) {
-        await interrupt("contest-base", []);
-        continue;
-      }
-      const baseSha = baseRead.stdout.trim();
-      store.stampContestDispatch(admitted.contestId, baseSha, store.liveWorktreeSetup(repo)?.digest ?? null);
-      const agents = store.contestants(admitted.contestId);
-      const prepared: { contestantId: number; slotId: number; runId: number; worktree: string; branch: string; leaseEpoch: string | null }[] = [];
-      let prepFailed = false;
-      for (const [index, agent] of agents.entries()) {
-        const leased = await worktrees.lease({ repo, branch: agent.branch, runner, taskRef: ref.id, now: clock(), base: baseSha });
-        if (!leased.ok) {
-          prepFailed = true;
-          break;
-        }
-        store.setContestantWorktree(agent.id, leased.worktree.path);
-        // The lane's provenance rides its insert (v48 integrity): the
-        // race-approved profile it will be proved against, exactly — the
-        // store's own answer, re-proved and bound to the lane there.
-        const laneStamp = store.laneAuthorityFor(agent.id);
-        if (laneStamp === null) {
-          prepFailed = true;
-          break;
-        }
-        // THE LANE ADMISSION (atomic authority closure): under the custody
-        // admitContest stamped — this lease, runner, and incarnation.
-        const admittedLane = store.admitContestLane({
-          taskRef: ref.id,
-          leaseId: lease,
-          runner,
-          incarnation: text(flags, "incarnation") ?? null,
-          branch: agent.branch,
-          worktree: leased.worktree.path,
-          provider: agent.provider,
-          model: agent.model,
-          contestant: agent.id,
-          now: clock(),
-          route: laneStamp,
-        });
-        if (!admittedLane.ok) {
-          prepFailed = true;
-          break;
-        }
-        const contestantRun = admittedLane.runId;
-        // The lane's pointer was bound inside the insert above (raw
-        // authority repair); nothing claims it after the fact.
-        prepared.push({
-          contestantId: agent.id,
-          slotId: admitted.slotIds[index] ?? -1,
-          runId: contestantRun,
-          worktree: leased.worktree.path,
-          branch: agent.branch,
-          leaseEpoch: leased.worktree.leaseEpoch ?? null,
-        });
-      }
-      const freshContest = store.getContest(admitted.contestId);
-      if (prepFailed || freshContest === null || !crossReadyBarrier(store, freshContest, admitted.contestantIds)) {
-        await interrupt("contest-admission", prepared.map(one => one.worktree));
-        continue;
-      }
-      // Every agent is READY and nothing has spawned: cross into racing and
-      // spend. The builds run concurrently; the stop fence stops them all.
-      budgetGate = null; // the race's spend counts toward the next check
-      // v105: the lanes run at once, so they share what's left of a monthly budget.
-      const laneShare = budgeted.remainingMicrousd === null ? null : Math.max(1, Math.floor(budgeted.remainingMicrousd / Math.max(1, prepared.length)));
-      const settled = await Promise.allSettled(
-        prepared.map(async entry => {
-          const agent = store.getContestant(entry.contestantId);
-          if (agent === null) throw new Error("contestant vanished");
-          store.casContestantState(entry.contestantId, ["ready"], "building", agent.generation);
-          return build(store, {
-            taskId: id,
-            taskRef: ref.id,
-            runner,
-            leaseId: lease,
-            runId: entry.runId,
-            evidenceRoot: context.evidenceRoot,
-            worktree: entry.worktree,
-            branch: entry.branch,
-            now: clock(),
-            clock,
-            provider: agent.provider as ProviderId,
-            contestProfile: contestantProfileOf(agent.provider, agent.model, agent.repairModel),
-            // A comparison lane has no dollar cap — the sealed clock is the
-            // bound; only race lanes carry the harness stop (E1).
-            ...(agent.budgetMicrousd > 0 ? { maxBudgetUsd: Math.min(agent.budgetMicrousd, laneShare ?? Infinity) / 1_000_000 } : {}),
-            onProviderSpawn: pid => {
-              worktrees.recordProviderOccupancy(entry.worktree, runner, pid, entry.leaseEpoch);
-              const facts = { run: entry.runId, contestant: entry.contestantId, incarnation: text(flags, "incarnation") ?? null, processGroup: pid };
-              if (!store.markSlotRunning(entry.slotId, facts, clock()) && !store.refreshSlotProcess(entry.slotId, facts)) throw new Error("the provider's execution slot no longer belongs to this attempt");
-            },
-            ...(context.agentRunner === undefined ? {} : { agent: context.agentRunner }),
-            ...(context.gitRunner === undefined ? {} : { git: context.gitRunner }),
-            ...(context.shouldStop === undefined ? {} : { shouldStop: context.shouldStop }),
-          });
-        }),
-      );
-      let lastAggregate: string | null = null;
-      for (const [index, entry] of prepared.entries()) {
-        const outcome = settled[index];
-        const run = store.getRun(entry.runId);
-        const measured =
-          run === null || run.providerStartedAt === null
-            ? 0
-            : run.costUsd !== null
-              ? Math.round(run.costUsd * 1_000_000)
-              : null;
-        let contestantOutcome: "built" | "failed" | "parked" | "stopped" = "failed";
-        let committed = false;
-        if (outcome !== undefined && outcome.status === "fulfilled") {
-          const result = outcome.value;
-          if (result.ok && result.parked !== undefined) {
-            contestantOutcome = "parked";
-            // The question still reaches the operator, tagged with its agent;
-            // decision-wait mechanics land in stage 4 — the card works today.
-            const asked = result.parked.decision;
-            const contestantDecision = store.saveDecision(
-              {
-                run: entry.runId,
-                contestant: entry.contestantId,
-                urgency: asked.urgency,
-                recap: asked.recap,
-                question: asked.question,
-                options: asked.options,
-                recommendation: asked.recommendation,
-                ...(asked.assignee === null ? {} : { assignee: asked.assignee }),
-                ...(asked.deadline === null ? {} : { deadline: asked.deadline }),
-              },
-              clock(),
-            );
-            store.enqueueNotification(
-              {
-                source: { run: entry.runId },
-                dedupeKey: `decision:${contestantDecision}`,
-                kind: "decision",
-                subject: `${id} parked a decision (${contestNoun(admittedKind)} agent)`,
-                body: `\`toolroll decide ${contestantDecision}\``,
-                pushClass: "decision",
-                link: `/d/${contestantDecision}`,
-              },
-              clock(),
-            );
-          } else if (result.ok) {
-            contestantOutcome = "built";
-            committed = result.committed;
-          } else if (result.reason === "stopped") {
-            contestantOutcome = "stopped";
-          }
-        }
-        if (run !== null && run.outcome === null) {
-          // The reason rides the run (slice B, E2 — kind-agnostic): "lane 3
-          // failed" with no words when a binary drifted out of its attested
-          // range is exactly the silence the attested runtime rules out.
-          const laneReason =
-            outcome !== undefined && outcome.status === "fulfilled" && !outcome.value.ok
-              ? outcome.value.reason
-              : undefined;
-          store.finishRun(entry.runId, {
-            outcome: contestantOutcome === "built" && !committed ? "no-change" : contestantOutcome === "stopped" ? "failed" : contestantOutcome === "parked" ? "parked" : contestantOutcome,
-            committed,
-            ...(laneReason === undefined ? {} : { reason: laneReason }),
-            now: clock(),
-          });
-        }
-        if (contestantOutcome === "parked") {
-          // Custody (round-3 finding 29): who owns this checkout while the
-          // question waits, and what exact state it was left in — the
-          // resume verifies all of it before trusting the tree again.
-          const headNow = await git("git", ["rev-parse", "HEAD"], { cwd: entry.worktree });
-          const dirtyNow = await git("git", ["status", "--porcelain"], { cwd: entry.worktree });
-          store.setContestantCustody(
-            entry.contestantId,
-            JSON.stringify({
-              branch: entry.branch,
-              head: headNow.code === 0 ? headNow.stdout.trim() : null,
-              runner,
-              dirty: dirtyNow.stdout.trim() !== "",
-              at: clock().toISOString(),
-            }),
-          );
-        }
-        await worktrees.release(entry.worktree, clock());
-        const final = finalizeContestant(
-          store,
-          {
-            contestId: admitted.contestId,
-            contestantId: entry.contestantId,
-            runId: entry.runId,
-            outcome: contestantOutcome,
-            measuredMicrousd: measured,
-            slotId: entry.slotId >= 0 ? entry.slotId : null,
-          },
-          clock(),
-        );
-        if (final.aggregated !== null) lastAggregate = final.aggregated;
-      }
-      dispatched.push({ id, outcome: "contest", reason: lastAggregate ?? "racing" });
-      continue;
-    }
 
     if (wantsPlan) {
       // THE FILED REQUEST, FIRST (contract handoff, task 1): everything the
@@ -3958,11 +3139,11 @@ async function tickCommand(
         );
       } catch (error) {
         await worktrees.release(planLeased.worktree.path, clock());
-        const unrecorded = finalizePlanFailureFenced(store, {
-          leaseId: lease,
+        const unrecorded = finalize(store, lease, {
+          kind: "plan-failure",
           runId: planRunId,
           taskId: id,
-          kind: "failure",
+          failure: "failure",
           message: `the planner's source could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
           now: clock(),
         });
@@ -3998,8 +3179,8 @@ async function tickCommand(
       await worktrees.release(planLeased.worktree.path, clock());
 
       if (outcome.ok && "parked" in outcome) {
-        const sealed = finalizeParkFenced(store, {
-          leaseId: lease,
+        const sealed = finalize(store, lease, {
+          kind: "park",
           runId: planRunId,
           taskId: id,
           decision: outcome.parked.decision,
@@ -4020,8 +3201,8 @@ async function tickCommand(
         continue;
       }
       if (outcome.ok) {
-        const sealed = finalizePlanFenced(store, {
-          leaseId: lease,
+        const sealed = finalize(store, lease, {
+          kind: "plan",
           runId: planRunId,
           taskId: id,
           plan: outcome.drafted.plan,
@@ -4051,11 +3232,11 @@ async function tickCommand(
         }
         continue;
       }
-      const sealedFailure = finalizePlanFailureFenced(store, {
-        leaseId: lease,
+      const sealedFailure = finalize(store, lease, {
+        kind: "plan-failure",
         runId: planRunId,
         taskId: id,
-        kind: outcome.kind,
+        failure: outcome.kind,
         ...(outcome.kind === "malformed" ? { malformed: outcome.reason === "malformed-decision" ? ("decision" as const) : ("plan" as const) } : {}),
         message: outcome.message,
         now: clock(),
@@ -4081,7 +3262,7 @@ async function tickCommand(
       const scopeRow = store.getScope(id);
       // Approvals bind exact routing for a scout exactly as for a build:
       // the pinned profile is proved BEFORE the workspace is leased.
-      const proof = proveApprovedProfile(scopeRow, null, {
+      const proof = proveApprovedProfile(scopeRow, {
         provider: spec.provider,
         model: spec.model ?? undefined,
         maxTurns: undefined,
@@ -4161,8 +3342,8 @@ async function tickCommand(
       const leftover = discarded.ok ? {} : { detail: `checkout kept: ${discarded.message}` };
 
       if (scouted.ok && "parked" in scouted) {
-        const sealed = finalizeParkFenced(store, {
-          leaseId: lease,
+        const sealed = finalize(store, lease, {
+          kind: "park",
           runId: scoutRunId,
           taskId: id,
           decision: scouted.parked.decision,
@@ -4179,8 +3360,8 @@ async function tickCommand(
         continue;
       }
       if (scouted.ok) {
-        const sealed = finalizeScoutFenced(store, {
-          leaseId: lease,
+        const sealed = finalize(store, lease, {
+          kind: "scout",
           runId: scoutRunId,
           taskId: id,
           report: scouted.reported.report,
@@ -4198,11 +3379,11 @@ async function tickCommand(
         }
         continue;
       }
-      const sealedFailure = finalizeScoutFailureFenced(store, {
-        leaseId: lease,
+      const sealedFailure = finalize(store, lease, {
+        kind: "scout-failure",
         runId: scoutRunId,
         taskId: id,
-        kind: scouted.kind,
+        failure: scouted.kind,
         ...(scouted.kind === "malformed" ? { malformed: scouted.reason === "malformed-decision" ? ("decision" as const) : ("report" as const) } : {}),
         message: scouted.message,
         now: clock(),
@@ -4268,99 +3449,12 @@ async function tickCommand(
     // a row with no outcome — an attempt that vanished, visible by morning.
     // Its route provenance (v47) is written in the same admission
     // transaction; build() then refuses to spend as anything else.
-    // The chain custody for this run (E3b/E3d, atomic since the v48 authority repair): a parked
-    // chain tail hands custody to this successor through the PROVEN resume
-    // transfer, otherwise a chain approval opens its fresh cycle bound to
-    // this run — both proved and written IN the run's own insert. A
-    // single-profile approval — every task until an operator configures a
-    // fallback chain — binds nothing, so this is inert by default. A
-    // binding that cannot be proved, or a stamp the task's authority does
-    // not admit, rolls the insert back: no row, no claim kept, said why.
+    // A stamp the task's authority does not admit rolls the insert back:
+    // no row, no claim kept, said why.
     const buildStamp = routeStamp("build");
     let runId: number;
     try {
-      if (parkedEntry !== null && parkedChainTail !== null && liveCycle !== null && buildStamp !== null) {
-        // A parked FALLBACK tail's successor is admitted by the one
-        // fallback road (v48 integrity): every fact the tail's binding
-        // states is presented and re-proved — cycle, index, digest, auth
-        // mode, provider, exact model, repair binding, the sealed-profile
-        // mirror, the approved chain — with the parked run as the live
-        // tail, before any row exists.
-        const chain = store.approvedChainOf(id);
-        const entry = chain === null ? undefined : chain[parkedEntry.index];
-        const mirror = store.getScope(id)?.approvedProfile ?? null;
-        if (chain === null || entry === undefined || mirror === null || parkedChainTail.entryDigest == null || parkedChainTail.authMode == null || spec.model === null) {
-          throw new Error(`${id}: the parked attempt #${parkedChainTail.id}'s fallback binding cannot be restated against the approved chain — nothing resumes it`);
-        }
-        const admitted = store.admitFallback(
-          {
-            kind: "resume",
-            parkedRun: parkedChainTail.id,
-            cycleId: liveCycle.id,
-            expectCursor: parkedEntry.index,
-            expectTail: parkedChainTail.id,
-            entryDigest: parkedChainTail.entryDigest,
-            authMode: parkedChainTail.authMode,
-            repairModel: entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel,
-            approved: { chainDigest: chainDigestOf(chain), profile: mirror },
-            run: {
-              taskRef: ref.id, leaseId: lease, runner, branch, worktree: leased.worktree.path, provider: spec.provider, model: spec.model,
-              // The recovered draft's lineage rides the insert (raw
-              // authority repair) — never a later stamp.
-              ...(leased.resumedFromRun === undefined ? {} : { recoveredFrom: leased.resumedFromRun }),
-            },
-            route: buildStamp,
-          },
-          clock(),
-        );
-        if (!admitted.ok) throw new Error(admitted.problem);
-        runId = admitted.runId;
-      } else if (attendedDispatch !== null && attendedSpec !== null) {
-        // THE ATTENDED ADMISSION (atomic authority closure): the one
-        // watched attempt opens under exactly this authorization — named
-        // by id, runner, and generation — and the insert consumes its
-        // attempt and binds the row to it in one transaction.
-        if (buildStamp === null) throw new Error(`${id}: the attended authorization's pinned profile presents no build authority`);
-        // THE SIGNED HEAD, BEFORE THE ATTEMPT IS SPENT (final authority
-        // closure): the authorization signed the exact commit the watched
-        // attempt would start from. The leased worktree's HEAD is read
-        // here and held to it BEFORE admission — a head that moved opens
-        // no run and spends no attempt; the authorization closes in the
-        // refusal's words so the operator sees why and may authorize
-        // again at today's head. The coordinator's final proof re-reads
-        // the same term against the captured base revision.
-        let signedHead: string | null = null;
-        try {
-          const terms = JSON.parse(attendedDispatch.termsJson) as { head?: unknown };
-          signedHead = typeof terms.head === "string" && terms.head !== "" ? terms.head : null;
-        } catch {
-          signedHead = null;
-        }
-        if (signedHead === null) {
-          store.closeAuthorization(attendedDispatch.id, "refused:stale-authorization", clock());
-          throw new StaleAuthorization(`${id}: the attended authorization ${attendedDispatch.id} signs no readable head — nothing opens under it`);
-        }
-        const headRead = await git("git", ["rev-parse", "HEAD"], { cwd: leased.worktree.path });
-        const headNow = headRead.code === 0 ? headRead.stdout.trim() : "";
-        if (headNow !== signedHead) {
-          store.closeAuthorization(attendedDispatch.id, "refused:stale-authorization", clock());
-          throw new StaleAuthorization(`${id}: the head moved since the attended authorization ${attendedDispatch.id} was signed (${signedHead.slice(0, 12)} → ${headNow === "" ? "unreadable" : headNow.slice(0, 12)}) — no run opened, no attempt spent; authorize it again at today's head`);
-        }
-        const admittedAttended = store.admitAttended({
-          taskRef: ref.id,
-          leaseId: lease,
-          runner,
-          branch,
-          worktree: leased.worktree.path,
-          provider: spec.provider,
-          ...(spec.model === null ? {} : { model: spec.model }),
-          authorization: { id: attendedDispatch.id, runner: attendedDispatch.runner, generation: attendedDispatch.runnerGeneration },
-          now: clock(),
-          route: buildStamp,
-        });
-        if (!admittedAttended.ok) throw new Error(admittedAttended.problem);
-        runId = admittedAttended.runId;
-      } else if (leased.resumedFromRun !== undefined) {
+      if (leased.resumedFromRun !== undefined) {
         // THE RECOVERED-DRAFT ADMISSION (atomic authority closure): the
         // fresh attempt inherits the interrupted attempt's draft, proved
         // this task's own interrupted builder in this very worktree.
@@ -4376,7 +3470,6 @@ async function tickCommand(
           recoveredFrom: leased.resumedFromRun,
           now: clock(),
           route: buildStamp,
-          custody: parkedChainTail !== null && liveCycle !== null ? { kind: "resume" as const, parkedRun: parkedChainTail.id } : { kind: "base" as const },
         });
         if (!admittedRecovered.ok) throw new Error(admittedRecovered.problem);
         runId = admittedRecovered.runId;
@@ -4391,13 +3484,12 @@ async function tickCommand(
           ...(spec.model === null ? {} : { model: spec.model }),
           now: clock(),
           ...(buildStamp === null ? {} : { route: buildStamp }),
-          custody: parkedChainTail !== null && liveCycle !== null ? { kind: "resume" as const, parkedRun: parkedChainTail.id } : { kind: "base" as const },
         });
       }
     } catch (error) {
       await worktrees.release(leased.worktree.path, clock());
       release(store, lease, clock());
-      dispatched.push({ id, outcome: "skipped", reason: error instanceof StaleAuthorization ? "stale-authorization" : "admission-refused", detail: error instanceof Error ? error.message : String(error) });
+      dispatched.push({ id, outcome: "skipped", reason: "admission-refused", detail: error instanceof Error ? error.message : String(error) });
       continue;
     }
     if (leased.resumedFromRun !== undefined) {
@@ -4419,11 +3511,9 @@ async function tickCommand(
     const budgetLeft = budgeted.remainingMicrousd !== null && MONEY_CAPABILITIES[spec.provider].nativeDollarCapFlag !== null ? Math.max(1, budgeted.remainingMicrousd) : null;
     const capMicrousd = [scopeBudget, backstop, budgetLeft].reduce<number | null>((least, one) => one === null ? least : least === null ? one : Math.min(least, one), null);
     if (capMicrousd !== null && MONEY_CAPABILITIES[spec.provider].nativeDollarCapFlag === null) {
-      // The run row and any chain cycle already exist — FINISH and RESOLVE
-      // them (E3d verify, R6): a refused-but-open run would defer a chain
-      // task forever and read as a vanished attempt everywhere else.
+      // The run row already exists — FINISH it: a refused-but-open run
+      // would read as a vanished attempt everywhere else.
       store.finishRun(runId, { outcome: "refused", reason: "budget-unenforceable", now: clock() });
-      store.resolveChainOnRunEnd(ref.id, id, repo, runId, clock());
       release(store, lease, clock());
       await worktrees.release(leased.worktree.path, clock());
       dispatched.push({ id, outcome: "skipped", reason: "budget-unenforceable" });
@@ -4462,30 +3552,7 @@ async function tickCommand(
       ...(context.shouldStop === undefined ? {} : { shouldStop: context.shouldStop }),
       ...(leased.resumedFromRun === undefined ? {} : { recoveredDraftRun: leased.resumedFromRun }),
       ...(leased.recoveryKind === undefined ? {} : { recoveredDraftKind: leased.recoveryKind }),
-      ...(attendedDispatch === null || context.heldCoordinator === undefined
-        ? {}
-        : {
-            attended: {
-              authorization: attendedDispatch,
-              coordinator: context.heldCoordinator,
-              upIncarnation: context.upIncarnation ?? "unknown",
-              socketDir: context.heldSocketDir ?? tmpdir(),
-              releaseWorktree: async (path: string) => worktrees.release(path, clock()),
-              dispose: { repo, origin: ref.origin, provider: spec.provider, model: spec.model },
-              ...(context.heldStarter === undefined ? {} : { starter: context.heldStarter }),
-              ...(context.heldGraceMs === undefined ? {} : { graceMs: context.heldGraceMs }),
-              ...(context.maxHeldSessions === undefined ? {} : { maxHeldSessions: context.maxHeldSessions }),
-            },
-          }),
     });
-
-    // THE HELD HANDOFF (Phase 2, v2 S0d): ownership transferred — the
-    // coordinator owns run, lease, and worktree; this pass releases and
-    // settles NOTHING and moves on. Nonblocking is the whole point.
-    if (result.ok && result.parked === undefined && result.held === true) {
-      dispatched.push({ id, outcome: "held", branch, worktree: leased.worktree.path });
-      continue;
-    }
 
     // Handed back either way; a tree with somebody's work in it comes back
     // unverified rather than cleaned, same as `build`.
@@ -4514,14 +3581,6 @@ async function tickCommand(
       },
       result,
     );
-
-    // The chain step (E3c/E3d): EVERY concluded run resolves its cycle
-    // through the one resolver — success closes, an ordinary end closes, a
-    // parked tail stays open for repair, and a recognized eligible
-    // exhaustion advances to pending-admission (fail-closed at every gate,
-    // the live grant re-proved in its own transaction). Inert unless the
-    // task filed under an explicit chain — no cycle, fast no-op.
-    store.resolveChainOnRunEnd(ref.id, id, repo, runId, clock());
 
     switch (disposition.kind) {
       case "parked":
@@ -4590,422 +3649,6 @@ async function tickCommand(
   }
   untakenTrial?.giveBack();
 
-  // THE CHAIN ADMISSION PASS (E3d): cycles a recognized exhaustion advanced
-  // to pending-admission dispatch their NEXT approved entry here — the ONLY
-  // road that runs a fallback entry. Every authority is re-derived inside
-  // admitNextChainEntry (approved chain standing + digest match + LIVE
-  // paid-fallback grant + the single-use pending edge); this loop carries
-  // only claim, worktree, and rail, and its run then re-proves the
-  // chain-entry dispatch proof inside build() before any money moves.
-  for (const pending of buildsOnly ? [] : store.pendingChainAdmissions(repo)) {
-    settleFinished();
-    if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) break;
-    if (built >= max) break;
-    // v105: a fallback billed to an API key spends dollars: a used-up budget holds it like any new work.
-    const chainEntry = store.approvedChainOf(pending.taskId)?.[pending.cursor];
-    const chainAgents = chainEntry === undefined ? [] : [{ provider: chainEntry.profile.provider, billing: chainEntry.authMode }];
-    // Sprint 8: a fallback entry the organisation policy doesn't allow never starts.
-    const chainPolicy = chainEntry === undefined ? null : policyHold([{ profile: chainEntry.profile }]);
-    if (chainPolicy !== null) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "policy", detail: chainPolicy });
-      continue;
-    }
-    const chainBudget = budgetHold(pending.taskRef, chainAgents);
-    if (chainBudget.over !== null) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "budget", detail: budgetWords(chainBudget) });
-      continue;
-    }
-    const railed = store.reserveModeRail(repo, 1, clock());
-    if (!railed.ok) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: railed.rail, detail: railed.detail });
-      continue;
-    }
-    // A peek proves the entry EXISTS and carries an enforceable budget
-    // BEFORE any claim or run row exists (review findings 4/6); the
-    // admission below re-derives the entry as authority in its transaction.
-    const peek = store.approvedChainOf(pending.taskId)?.[pending.cursor];
-    if (peek === undefined) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "fallback-unadmittable" });
-      continue;
-    }
-    const scopeBudget = store.getScope(pending.taskId)?.budgetMicrousd ?? null;
-    const backstop = store.getSpendDefaults()?.buildPerRunMicrousd ?? null;
-    const capMicrousd =
-      scopeBudget === null ? backstop : backstop === null ? scopeBudget : Math.min(scopeBudget, backstop);
-    if (capMicrousd !== null && MONEY_CAPABILITIES[peek.profile.provider].nativeDollarCapFlag === null) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "budget-unenforceable" });
-      continue;
-    }
-    // The sign-in pause holds a fallback entry too: the admission stays pending until its provider works.
-    const entryGate = signInGate(store, [peek.profile.provider], clock(), pending.taskRef);
-    if (entryGate.waiting !== null) {
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "signed-out", detail: signInWords(entryGate.waiting) });
-      continue;
-    }
-    // The FALLBACK claim (finding 4): every acquireIfReady gate — task
-    // state, non-backoff holds, blockers, approved scope + mode belt,
-    // capability, capacity, and quota keyed by the PINNED credential —
-    // with only the predecessor's backoff exempted.
-    const claimed = acquireFallback(store, pending.taskRef, runner, {
-      now: clock(),
-      token,
-      ttlMs: leaseTtlMs,
-      repo,
-      provider: peek.profile.provider,
-      model: peek.profile.model,
-      authMode: peek.authMode,
-      // The watch incarnation rides the claim (F+G review, finding 3): a
-      // daemon that dies after this claim — admitted or not — must be
-      // recoverable by its successor's incarnation takeover, exactly like
-      // the ordinary road.
-      ...(text(flags, "incarnation") === undefined ? {} : { incarnation: text(flags, "incarnation") as string }),
-      ...(text(flags, "max-open-decisions") === undefined
-        ? {}
-        : { maxOpenDecisions: Number(text(flags, "max-open-decisions")) }),
-    });
-    if (!claimed.ok) {
-      entryGate.giveBack();
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: claimed.reason });
-      continue;
-    }
-    const lease = claimed.claim.leaseId;
-    const branch = await existingOrFirst(taskBranches(pending.taskId), async one => (await git("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${one}`], { cwd: repo })).code === 0);
-    const exists = await git("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repo });
-    const leased = await worktrees.lease({
-      repo,
-      branch,
-      runner,
-      taskRef: pending.taskRef,
-      now: clock(),
-      ...(exists.code === 0 ? {} : { base }),
-      reclaim: { evidenceRoot: context.evidenceRoot },
-    });
-    if (!leased.ok) {
-      release(store, lease, clock());
-      dispatched.push({ id: pending.taskId, outcome: "failed", reason: leased.reason });
-      broke++;
-      continue;
-    }
-    const admitted = store.admitNextChainEntry(
-      pending.cycleId,
-      { leaseId: lease, runner, branch, worktree: leased.worktree.path, ...(leased.resumedFromRun === undefined ? {} : { recoveredFrom: leased.resumedFromRun }) },
-      clock(),
-    );
-    if (!admitted.ok) {
-      await worktrees.release(leased.worktree.path, clock());
-      release(store, lease, clock());
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: `fallback-${admitted.reason}`, ...(admitted.detail === undefined ? {} : { detail: admitted.detail }) });
-      continue;
-    }
-    if (leased.resumedFromRun !== undefined) {
-      store.addRunNote(
-        admitted.runId,
-        "Toolroll",
-        `Recovered the ${leased.recoveryKind === "completed" ? "completed source draft" : "work-in-progress draft"} from interrupted attempt #${leased.resumedFromRun}. This fresh attempt is reviewing and verifying it; the safety patch is retained.`,
-        clock(),
-      );
-    }
-    // The effective cap, RE-DERIVED after admission (E3d verify, R6): the
-    // pre-claim value is a survey; a backstop set while the claim and
-    // worktree awaits ran must govern the spend that actually happens. The
-    // belt then re-proves capability against the ADMITTED provider — and on
-    // refusal the run is FINISHED and its cycle resolved, never abandoned.
-    const scopeBudgetNow = store.getScope(pending.taskId)?.budgetMicrousd ?? null;
-    const backstopNow = store.getSpendDefaults()?.buildPerRunMicrousd ?? null;
-    const budgetNow = chainEntry?.authMode === "api-key" ? budgetHold(pending.taskRef, chainAgents).remainingMicrousd : null;
-    const capNow = [scopeBudgetNow, backstopNow, budgetNow === null ? null : Math.max(1, budgetNow)]
-      .reduce<number | null>((least, one) => one === null ? least : least === null ? one : Math.min(least, one), null);
-    if (capNow !== null && MONEY_CAPABILITIES[admitted.provider as ProviderId].nativeDollarCapFlag === null) {
-      store.finishRun(admitted.runId, { outcome: "refused", reason: "budget-unenforceable", now: clock() });
-      store.resolveChainOnRunEnd(pending.taskRef, admitted.taskId, repo, admitted.runId, clock());
-      release(store, lease, clock());
-      await worktrees.release(leased.worktree.path, clock());
-      dispatched.push({ id: pending.taskId, outcome: "skipped", reason: "budget-unenforceable" });
-      continue;
-    }
-    budgetGate = null; // this build's spend counts toward the next check
-    const result = await build(store, {
-      taskId: pending.taskId,
-      taskRef: pending.taskRef,
-      runner,
-      leaseId: lease,
-      runnerToken: token,
-      runId: admitted.runId,
-      evidenceRoot: context.evidenceRoot,
-      worktree: leased.worktree.path,
-      branch,
-      now: clock(),
-      clock,
-      ...(capNow === null ? {} : { maxBudgetUsd: capNow / 1_000_000 }),
-      onProviderSpawn: pid => {
-        worktrees.recordProviderOccupancy(leased.worktree.path, runner, pid, leased.worktree.leaseEpoch);
-      },
-      provider: admitted.provider as ProviderId,
-      model: admitted.model,
-      ...(context.agentRunner === undefined ? {} : { agent: context.agentRunner }),
-      ...(context.gitRunner === undefined ? {} : { git: context.gitRunner }),
-      ...(context.shouldStop === undefined ? {} : { shouldStop: context.shouldStop }),
-      ...(leased.resumedFromRun === undefined ? {} : { recoveredDraftRun: leased.resumedFromRun }),
-      ...(leased.recoveryKind === undefined ? {} : { recoveredDraftKind: leased.recoveryKind }),
-    });
-    await worktrees.release(leased.worktree.path, clock());
-    const disposition = disposeBuildOutcome(
-      {
-        store,
-        policy: "tick",
-        leaseId: lease,
-        runId: admitted.runId,
-        taskId: pending.taskId,
-        taskRef: pending.taskRef,
-        runner,
-        repo,
-        branch,
-        origin: "ours",
-        provider: admitted.provider as ProviderId,
-        model: admitted.model,
-        worktreePath: leased.worktree.path,
-        evidenceRoot: context.evidenceRoot,
-        clock,
-      },
-      result,
-    );
-    // The same one resolver: a fallback entry that itself exhausts advances
-    // again; one that succeeds or ordinarily ends closes its cycle.
-    store.resolveChainOnRunEnd(pending.taskRef, pending.taskId, repo, admitted.runId, clock());
-    switch (disposition.kind) {
-      case "built":
-        dispatched.push({ id: pending.taskId, outcome: "built", committed: disposition.committed, branch, worktree: leased.worktree.path });
-        built++;
-        break;
-      case "stopped":
-        dispatched.push({ id: pending.taskId, outcome: "stopped", reason: `stop:${disposition.stopRun}`, branch, worktree: leased.worktree.path });
-        break;
-      case "handed-back":
-        dispatched.push({ id: pending.taskId, outcome: "stopped", reason: "service-stop", branch, worktree: leased.worktree.path });
-        break;
-      case "parked":
-        dispatched.push({ id: pending.taskId, outcome: "parked", reason: `decision:${disposition.decisionId}`, worktree: leased.worktree.path });
-        parked++;
-        break;
-      case "skipped":
-        dispatched.push({ id: pending.taskId, outcome: "skipped", reason: disposition.reason });
-        break;
-      default:
-        dispatched.push({ id: pending.taskId, outcome: "failed", reason: "fallback-attempt", worktree: leased.worktree.path });
-        broke++;
-        break;
-    }
-  }
-
-  // THE CONTINUATION PASS (Phase 2E, A4): open continuation authorizations
-  // named to this runner dispatch here — the finished parent task never
-  // re-enters the queue; the authorization is the claimable unit (v3 R7).
-  // Only a co-located coordinator can hold the session, and everything
-  // else (liveness, one attempt, the final proof at the parent's exact
-  // head) is re-proved on the way in.
-  if (context.heldCoordinator !== undefined && !buildsOnly) {
-    for (const continuation of store.openContinuationAuthorizations(runner)) {
-      if (context.shouldStop?.() === true || context.shouldPauseAdmission?.() === true) break;
-      const watching = attendedLivenessState(
-        continuation.lastBeatAt === null ? null : Date.parse(continuation.lastBeatAt),
-        clock().getTime(),
-        Date.parse(continuation.absoluteExpiry),
-      );
-      if (watching !== "live" && watching !== "grace") continue;
-      const parent = continuation.parentRun === null ? null : store.getRun(continuation.parentRun);
-      const parentRef = parent === null ? null : store.refForId(parent.taskRef);
-      if (parent === null || parentRef === null) continue;
-      // A continuation continues WORK: a branchless parent (the reviewer
-      // role, v29) has no workspace to lease and can never be continued —
-      // and this guard is what keeps "null" out of `git worktree add`.
-      if (parent.branch === null) continue;
-      const parentBranch = parent.branch;
-      if (parentRef.repo !== null && parentRef.repo !== repo) continue;
-      const taskId = parentRef.externalId;
-
-      let pinned: { provider: ProviderId; model: string | null; digest: string; profile: ExecutionProfile } | null = null;
-      try {
-        const terms = JSON.parse(continuation.termsJson) as { profileJson?: unknown };
-        const profile = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
-        if (profile !== null) pinned = { provider: profile.provider, model: profile.model, digest: profileDigestOf(profile), profile };
-      } catch {
-        pinned = null;
-      }
-      if (pinned === null) {
-        dispatched.push({ id: taskId, outcome: "skipped", reason: "attended-only", detail: "the continuation's pinned profile cannot be read" });
-        continue;
-      }
-      // Sprint 8: an attended continuation runs at exactly its signed terms, or not at all.
-      const continuationPolicy = policyHold([{ profile: pinned.profile, attended: true }]);
-      if (continuationPolicy !== null) {
-        dispatched.push({ id: taskId, outcome: "skipped", reason: "policy", detail: continuationPolicy });
-        continue;
-      }
-      const continuationBudget = budgetHold(parent.taskRef, store.agentsFor([pinned.provider]));
-      if (continuationBudget.over !== null) {
-        dispatched.push({ id: taskId, outcome: "skipped", reason: "budget", detail: budgetWords(continuationBudget) });
-        continue;
-      }
-      // The sign-in pause holds a continuation too: its authorization stays open and it starts once the sign-in works.
-      const continuationGate = signInGate(store, [pinned.provider], clock(), parent.taskRef);
-      if (continuationGate.waiting !== null) {
-        dispatched.push({ id: taskId, outcome: "skipped", reason: "signed-out", detail: signInWords(continuationGate.waiting) });
-        continue;
-      }
-
-      const claimed = acquireContinuation(store, continuation, runner, { now: clock(), token, ttlMs: leaseTtlMs });
-      if (!claimed.ok) {
-        continuationGate.giveBack();
-        dispatched.push({ id: taskId, outcome: "skipped", reason: claimed.reason, ...("message" in claimed ? { detail: claimed.message } : {}) });
-        continue;
-      }
-      const lease = claimed.claim.leaseId;
-      // The parent's branch, at the head the terms signed — a moved branch
-      // fails the final proof with words naming the head.
-      const leased = await worktrees.lease({ repo, branch: parentBranch, runner, taskRef: parent.taskRef, now: clock() });
-      if (!leased.ok) {
-        release(store, lease, clock());
-        dispatched.push({ id: taskId, outcome: "failed", reason: leased.reason });
-        broke++;
-        continue;
-      }
-      // THE SIGNED HEAD, BEFORE THE ATTEMPT IS SPENT (final admission
-      // closure): the continuation's terms signed the exact commit the
-      // parent finished at, and the leased worktree's HEAD is read here
-      // and held to it BEFORE admitAttended — the same order the queue's
-      // attended road keeps. A head the terms do not sign, or one that
-      // moved, opens no run, spends no attempt, invokes no provider: the
-      // worktree and claim are released and the authorization closes in
-      // the refusal's words — one terminal refusal, recorded once — so
-      // the operator authorizes again at today's head.
-      let signedContinuationHead: string | null = null;
-      try {
-        const terms = JSON.parse(continuation.termsJson) as { head?: unknown };
-        signedContinuationHead = typeof terms.head === "string" && terms.head !== "" ? terms.head : null;
-      } catch {
-        signedContinuationHead = null;
-      }
-      const continuationHeadRead = signedContinuationHead === null ? null : await git("git", ["rev-parse", "HEAD"], { cwd: leased.worktree.path });
-      if (continuationHeadRead !== null && continuationHeadRead.code !== 0) {
-        // The worktree's HEAD could not be READ — the head did not move,
-        // so nothing terminal is said about the authorization: custody is
-        // released and this tick records the failure; the next one reads
-        // again under the same open authorization.
-        await worktrees.release(leased.worktree.path, clock());
-        release(store, lease, clock());
-        dispatched.push({ id: taskId, outcome: "failed", reason: "head-unreadable", detail: `${taskId}: the leased worktree's HEAD could not be read (${continuationHeadRead.stderr.trim() || `git exited ${continuationHeadRead.code}`}) — the continuation authorization ${continuation.id} stays open; no run opened, no attempt spent` });
-        broke++;
-        continue;
-      }
-      const continuationHeadNow = continuationHeadRead === null ? "" : continuationHeadRead.stdout.trim();
-      if (signedContinuationHead === null || continuationHeadNow !== signedContinuationHead) {
-        await worktrees.release(leased.worktree.path, clock());
-        release(store, lease, clock());
-        store.closeAuthorization(continuation.id, "refused:stale-authorization", clock());
-        dispatched.push({
-          id: taskId,
-          outcome: "skipped",
-          reason: "stale-authorization",
-          detail:
-            signedContinuationHead === null
-              ? `${taskId}: the continuation authorization ${continuation.id} signs no readable head — nothing opens under it; no run opened, no attempt spent`
-              : `${taskId}: the head moved since the continuation authorization ${continuation.id} was signed (${signedContinuationHead.slice(0, 12)} → ${continuationHeadNow === "" ? "empty" : continuationHeadNow.slice(0, 12)}) — no run opened, no attempt spent; authorize it again at today's head`,
-        });
-        continue;
-      }
-      // The continuation spends under the authorization's pinned profile
-      // and says so at insert (v48 integrity).
-      // THE ATTENDED ADMISSION (atomic authority closure): the continuation
-      // opens under exactly this authorization — id, runner, generation —
-      // continuing the finished parent it names; the insert consumes the
-      // one attempt and binds the row to it.
-      const admittedContinuation = store.admitAttended({
-        taskRef: parent.taskRef,
-        leaseId: lease,
-        runner,
-        branch: parentBranch,
-        worktree: leased.worktree.path,
-        parentRun: parent.id,
-        provider: pinned.provider,
-        ...(pinned.model === null ? {} : { model: pinned.model }),
-        authorization: { id: continuation.id, runner: continuation.runner, generation: continuation.runnerGeneration },
-        now: clock(),
-        route: { routeDigest: `profile:${pinned.digest}`, phase: "build", provider: pinned.provider, model: pinned.model, chosen: "legacy" },
-      });
-      if (!admittedContinuation.ok) {
-        await worktrees.release(leased.worktree.path, clock());
-        release(store, lease, clock());
-        dispatched.push({ id: taskId, outcome: "skipped", reason: "admission-refused", detail: admittedContinuation.problem });
-        continue;
-      }
-      const runId = admittedContinuation.runId;
-      budgetGate = null; // this build's spend counts toward the next check
-      const result = await build(store, {
-        taskId,
-        taskRef: parent.taskRef,
-        runner,
-        leaseId: lease,
-        runnerToken: token,
-        runId,
-        evidenceRoot: context.evidenceRoot,
-        worktree: leased.worktree.path,
-        branch: parentBranch,
-        now: clock(),
-        clock,
-        provider: pinned.provider,
-        ...(pinned.model === null ? {} : { model: pinned.model }),
-        ...(context.agentRunner === undefined ? {} : { agent: context.agentRunner }),
-        ...(context.gitRunner === undefined ? {} : { git: context.gitRunner }),
-        ...(context.shouldStop === undefined ? {} : { shouldStop: context.shouldStop }),
-        attended: {
-          authorization: continuation,
-          coordinator: context.heldCoordinator,
-          upIncarnation: context.upIncarnation ?? "unknown",
-          socketDir: context.heldSocketDir ?? tmpdir(),
-          releaseWorktree: async (path: string) => worktrees.release(path, clock()),
-          dispose: { repo, origin: parentRef.origin, provider: pinned.provider, model: pinned.model, policy: "continuation" },
-          ...(context.heldStarter === undefined ? {} : { starter: context.heldStarter }),
-          ...(context.heldGraceMs === undefined ? {} : { graceMs: context.heldGraceMs }),
-              ...(context.maxHeldSessions === undefined ? {} : { maxHeldSessions: context.maxHeldSessions }),
-        },
-      });
-      if (result.ok && result.parked === undefined && result.held === true) {
-        dispatched.push({ id: taskId, outcome: "held", branch: parentBranch, worktree: leased.worktree.path });
-        continue;
-      }
-      // A refusal before the hold (stale proof, spawn failure): record it
-      // through the continuation policy — taskless, always — and release.
-      await worktrees.release(leased.worktree.path, clock());
-      const disposition = disposeBuildOutcome(
-        {
-          store,
-          policy: "continuation",
-          leaseId: lease,
-          runId,
-          taskId,
-          taskRef: parent.taskRef,
-          runner,
-          repo,
-          branch: parentBranch,
-          origin: parentRef.origin,
-          provider: pinned.provider,
-          model: pinned.model,
-          worktreePath: leased.worktree.path,
-          evidenceRoot: context.evidenceRoot,
-          clock,
-        },
-        result,
-      );
-      dispatched.push({
-        id: taskId,
-        outcome: disposition.kind === "built" ? "built" : disposition.kind === "stopped" ? "stopped" : "failed",
-        ...(disposition.kind === "stopped" ? { reason: `stop:${disposition.stopRun}` } : result.ok ? {} : { reason: result.reason }),
-        worktree: leased.worktree.path,
-      });
-      if (disposition.kind !== "built" && disposition.kind !== "stopped") broke++;
-    }
-  }
-
   // The one automatic review each finished build gets when its project's
   // switch is on, before the result is handed on below. Other queued review
   // asks close unrun. Reauthenticated first; only admitted projects.
@@ -5029,13 +3672,6 @@ async function tickCommand(
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
-    for (const entry of routines) {
-      lines.push(
-        entry.outcome === "fired"
-          ? `  routine ${entry.routine.padEnd(16)} fired  ${entry.taskId ?? ""}`.trimEnd()
-          : `  routine ${entry.routine.padEnd(16)} skipped  ${entry.detail ?? entry.outcome}`,
-      );
-    }
     for (const entry of dispatched) {
       const detail =
         entry.outcome === "built"
@@ -5062,17 +3698,15 @@ async function tickCommand(
     return fail(write, json, "tick", "build-failed", `${broke} of ${dispatched.length} dispatched tasks broke`, EXIT.failed, {
       considered,
       dispatched,
-      routines,
     });
   }
-  if (built > 0 || parked > 0 || dispatched.some(one => one.outcome === "planned" || one.outcome === "reported" || one.outcome === "held" || one.outcome === "reviewed" || one.outcome === "not-reviewed")) {
-    return succeed(write, json, "tick", { considered, dispatched, routines, ...flows }, summary);
+  if (built > 0 || parked > 0 || dispatched.some(one => one.outcome === "planned" || one.outcome === "reported" || one.outcome === "reviewed" || one.outcome === "not-reviewed")) {
+    return succeed(write, json, "tick", { considered, dispatched, ...flows }, summary);
   }
   if (considered === 0) {
     return fail(write, json, "tick", "empty", "nothing is ready", EXIT.refused, {
       considered,
       dispatched,
-      routines,
       ...flows,
     });
   }
@@ -5083,7 +3717,7 @@ async function tickCommand(
     "nothing-dispatched",
     "everything ready is waiting on a person or held by somebody else",
     EXIT.refused,
-    { considered, dispatched, routines, ...flows },
+    { considered, dispatched, ...flows },
   );
 }
 
@@ -5684,7 +4318,6 @@ async function startConsole(options: {
   registryPath?: string;
   upConsole?: boolean;
   editorLinks?: "vscode";
-  attended?: import("./serve.js").ServeOptions["attended"];
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
   const server = createDecisionServer({
@@ -5711,7 +4344,6 @@ async function startConsole(options: {
     ...(options.registryPath === undefined ? {} : { registryPath: options.registryPath }),
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
-    ...(options.attended === undefined ? {} : { attended: options.attended }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -5840,8 +4472,6 @@ async function requeueTask(
   if (id === undefined) {
     return fail(write, json, "task requeue", "usage", "`toolroll task requeue <id> --as <you> --token <t>`", EXIT.usage);
   }
-  const racingGuard = refuseWhileRacing(context, "task requeue", id);
-  if (racingGuard !== null) return racingGuard;
   const acting = await askCredentials(flags, context);
   if (acting === null) {
     return fail(write, json, "task requeue", "usage", "requeueing takes `--as <you> --token <t>` — who overrode the stall is recorded, not asserted", EXIT.usage);
@@ -6193,12 +4823,6 @@ async function providersCommand(
     const lastSuccess = store.providerLastSuccess(id);
     const keyPresent = facts.requiresEnv === null ? null : (process.env[facts.requiresEnv] ?? "") !== "";
     const installedVersion = installed ? (version.stdout.trim().split("\n")[0] ?? "") : null;
-    const authMode = readAuthMode(id);
-    const attestation = attestationOf(id);
-    const versionProvenAtSpawn =
-      installedVersion !== null && attestation !== null && versionInRange(installedVersion, attestation);
-    const exhaustionRecognized =
-      versionProvenAtSpawn && recognizesEligible(id, installedVersion, authMode);
     report.push({
       provider: id,
       binary: facts.binary,
@@ -6209,19 +4833,6 @@ async function providersCommand(
       ...(keyPresent === null ? {} : { keyPresent, keyEnv: facts.requiresEnv }),
       measuresCost: facts.measuresCost,
       configuredPhases: configured.get(id) ?? [],
-      fallbackReadiness: {
-        authMode,
-        versionProvenAtSpawn,
-        exhaustionRecognized,
-        automaticSwitchArmed: exhaustionRecognized,
-        reason: exhaustionRecognized
-          ? "this build can recognize an exhausted credential for the installed provider version"
-          : attestation === null
-            ? "this provider does not yet prove its version at spawn, so exhaustion classification fails closed"
-            : !versionProvenAtSpawn
-              ? "the installed provider version is not inside this build's attested range"
-              : "no reviewed exhaustion fixture recognizes this auth mode at the installed provider version",
-      },
       // The audit: facts about the harness, reported before any of them is
       // enforced. What transport we read, whether a session can resume,
       // which init signal exists, what hermetic flag we deliberately do NOT
@@ -6285,20 +4896,9 @@ async function providersCommand(
     if (one["keyEnv"] !== undefined) {
       write(`  ${String(one["keyEnv"])}  ${one["keyPresent"] === true ? "present (not validated — presence is not authorization)" : "ABSENT — runs will fail until the runner exports it"}`);
     }
-    write(`  cost           ${one["measuresCost"] === true ? "measured in dollars per run" : "tokens only — runs land as UNMEASURED; ceilinged routines fail closed on them"}`);
+    write(`  cost           ${one["measuresCost"] === true ? "measured in dollars per run" : "tokens only — runs land as UNMEASURED; schedules with a weekly limit fail closed on them"}`);
     const phases = one["configuredPhases"] as string[];
     if (phases.length > 0) write(`  configured     ${phases.join(", ")} (installation)`);
-    const fallback = one["fallbackReadiness"] as {
-      automaticSwitchArmed: boolean;
-      reason: string;
-    };
-    write(
-      `  auto fallback  ${
-        fallback.automaticSwitchArmed
-          ? "armed — a configured and approved chain may advance after proven exhaustion"
-          : `not armed — ${fallback.reason}`
-      }`,
-    );
     const audit = one["audit"] as ProviderAudit;
     write(`  transport      ${audit.transport}${audit.initSignal === "none" ? " — no init signal; a failed run cannot say whether the harness came up" : ` — init signal: ${audit.initSignal}`}`);
     write(`  resume         ${audit.resume}`);
@@ -6652,9 +5252,6 @@ async function modeCommand(
   if (terms.planAuto && !terms.autoApproveFiling) {
     return fail(write, json, "mode set", "invalid", "--plan-auto requires automatic filing approval", EXIT.refused);
   }
-  // The paid-fallback grant (R8): NEVER a preset default — only this
-  // explicit flag lets an exhausted subscription switch to another account.
-  if (flag(flags, "allow-paid-fallback")) terms.allowPaidFallback = true;
   // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
   if (flag(flags, "chat-approve")) terms.chatApprove = true;
   // Automerge requires a live merge-capable grant on the repo (D1).
@@ -6697,9 +5294,8 @@ async function configCommand(
           : { problem: answer.problem }),
       };
     });
-    const fallback = scope === INSTALLATION_SCOPE ? [] : store.fallbackConfig(scope);
     // The STRONG tier (v47): the named strongest agent per phase, which
-    // high-risk, strict, evidence-sensitive, and publication-sensitive
+    // large, strict, evidence-sensitive, and publication-sensitive
     // routes reach for. Never inferred — absent means "the default, said".
     const candidates = resolveRouteCandidates(store, scope === INSTALLATION_SCOPE ? null : scope);
     const strong = (["plan", "build", "repair", "review"] as const).map(one => ({
@@ -6710,7 +5306,7 @@ async function configCommand(
     // A light planner from before light became build-only is never used: said, with how to clear it.
     const unusedLight = [INSTALLATION_SCOPE, ...(scope === INSTALLATION_SCOPE ? [] : [scope])].filter(one => store.phaseTierConfig(one, "plan", "light") !== null);
     if (json) {
-      write(envelopeJson({ ok: true, command: "config show", installation, project, resolved, fallback, strong, installationStrong: store.listPhaseTierConfig(INSTALLATION_SCOPE), projectStrong: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierConfig(scope), installationAlso: store.listPhaseTierAlternates(INSTALLATION_SCOPE), projectAlso: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierAlternates(scope) }));
+      write(envelopeJson({ ok: true, command: "config show", installation, project, resolved, strong, installationStrong: store.listPhaseTierConfig(INSTALLATION_SCOPE), projectStrong: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierConfig(scope), installationAlso: store.listPhaseTierAlternates(INSTALLATION_SCOPE), projectAlso: scope === INSTALLATION_SCOPE ? [] : store.listPhaseTierAlternates(scope) }));
       return EXIT.ok;
     }
     write(`Effective phase agents${scope === INSTALLATION_SCOPE ? "" : ` for ${scope}`}:`);
@@ -6722,7 +5318,7 @@ async function configCommand(
       }
     }
     write("");
-    write("  strong tier (high-risk, strict, screenshot-proof, and automerge routes reach for these):");
+    write("  strong tier (large or risky, strict, screenshot-proof, and automerge routes reach for these):");
     for (const one of strong) {
       write(`  ${one.phase.padEnd(8)} ${one.strong === null ? "none configured — such routes keep the default above and say so" : `${one.strong.provider}${one.strong.model === null ? " (harness default model)" : ` · ${one.strong.model}`}  [${one.strong.source}]`}`);
     }
@@ -6743,14 +5339,6 @@ async function configCommand(
       }
     }
     write("  repair note: the repair PROVIDER always inherits the build it mends — only its model is configurable.");
-    if (fallback.length > 0) {
-      write("");
-      write("  if the build agent's subscription runs out, NEW approvals bind this fallback chain:");
-      fallback.forEach((one, i) => {
-        write(`    ${i + 1}. ${one.provider} (${one.model}) — ${one.authMode === "subscription" ? "its subscription login" : "your API key"}`);
-      });
-      write("  it fires only when a signed mode allows the paid fallback (`mode set --allow-paid-fallback`).");
-    }
     if (installation.length === 0 && project.length === 0) {
       write("  nothing configured — every phase runs the default (claude).");
       write("  toolroll config set build --provider claude --model sonnet --as <you> --token <t>");
@@ -6775,7 +5363,7 @@ async function configCommand(
       return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
     }
     if (action === "clear") {
-      store.setSpendDefaults({ buildPerRunMicrousd: null, racePerAgentMicrousd: null, raceTotalMicrousd: null }, acting.name, clock());
+      store.setSpendDefaults({ buildPerRunMicrousd: null }, acting.name, clock());
       return succeed(write, json, "config clear", { budgets: null }, () => ["Spend defaults cleared — filings state their own numbers again."]);
     }
     const parseUsd = (flag: string): number | null | false => {
@@ -6785,120 +5373,13 @@ async function configCommand(
       return Number.isFinite(value) && value > 0 ? Math.round(value * 1_000_000) : false;
     };
     const build = parseUsd("build-usd");
-    const racePer = parseUsd("race-per-usd");
-    const raceTotal = parseUsd("race-total-usd");
-    // Name the flag that was bad — "budgets are positive dollar amounts"
-    // over four candidates left the caller diffing their own command line.
-    const badFlag = build === false ? "--build-usd" : racePer === false ? "--race-per-usd" : raceTotal === false ? "--race-total-usd" : null;
-    if (badFlag !== null || build === false || racePer === false || raceTotal === false) {
-      return fail(write, json, "config set", "usage", `${badFlag ?? "--build-usd"} is a positive dollar amount`, EXIT.usage);
+    if (build === false) {
+      return fail(write, json, "config set", "usage", "--build-usd is a positive dollar amount", EXIT.usage);
     }
-    // The default competing-agent count (operator request): applied only
-    // where a filing names one agent and no explicit count; a race digest
-    // always binds the actual lineup.
-    const agentsGiven = text(flags, "race-agents");
-    const raceAgents = agentsGiven === undefined ? null : Number(agentsGiven);
-    if (raceAgents !== null && (!Number.isInteger(raceAgents) || raceAgents < 2 || raceAgents > 4)) {
-      return fail(write, json, "config set", "usage", "--race-agents is how many agents compete by default: a whole number from 2 to 4", EXIT.usage);
-    }
-    store.setSpendDefaults({ buildPerRunMicrousd: build, racePerAgentMicrousd: racePer, raceTotalMicrousd: raceTotal, raceAgents }, acting.name, clock());
+    store.setSpendDefaults({ buildPerRunMicrousd: build }, acting.name, clock());
     return succeed(write, json, "config set", { budgets: store.getSpendDefaults() }, () => [
       "Spend defaults set. New filings pre-fill from these; every approval still restates its own numbers:",
       ...(build === null ? [] : [`  each ordinary build attempt: $${(build / 1_000_000).toFixed(2)} (also the installation backstop)`]),
-      ...(racePer === null ? [] : [`  each tournament agent: $${(racePer / 1_000_000).toFixed(2)}`]),
-      ...(raceTotal === null ? [] : [`  each tournament total: $${(raceTotal / 1_000_000).toFixed(2)}`]),
-      ...(raceAgents === null ? [] : [`  tournaments race ${raceAgents} agents unless a filing says otherwise`]),
-    ]);
-  }
-
-  // The FALLBACK CHAIN (Layer F): the ordered entries a repository's NEW
-  // approvals bind after the base agent. Per-repo only — a chain names
-  // credentials for one project's work — and inert on its own: it only
-  // ever fires when a signed mode also allows the paid fallback.
-  if (phase === "fallback") {
-    const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `config ${action}`, "usage", "configuring fallbacks takes `--as <you> --token <t>`", EXIT.usage);
-    }
-    const authedFallback = authenticateApprover(store, acting.name, acting.token);
-    if (!authedFallback.ok) {
-      return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
-    }
-    if (scope === INSTALLATION_SCOPE) {
-      return fail(write, json, `config ${action}`, "usage", "fallbacks are per repository — say --repo <path>", EXIT.usage);
-    }
-    if (action === "clear") {
-      const had = store.clearFallbackConfig(scope);
-      return succeed(write, json, "config clear", { repo: scope, fallback: null }, () => [
-        had
-          ? `${scope}: fallback chain cleared — new approvals bind the single configured agent again.`
-          : `${scope}: no fallback chain was configured.`,
-      ]);
-    }
-    const entriesGiven = text(flags, "entries");
-    if (entriesGiven === undefined) {
-      return fail(
-        write, json, "config set", "usage",
-        "`config set fallback --repo <path> --entries provider:model:auth-mode[,…]` — auth-mode is subscription or api-key; 1 to 3 entries",
-        EXIT.usage,
-      );
-    }
-    const entries: { provider: ProviderId; model: string; authMode: "subscription" | "api-key" }[] = [];
-    for (const one of entriesGiven.split(",")) {
-      // First and LAST colon split the three parts (F+G review, finding 1):
-      // model ids legitimately carry colons (openrouter's ":free" suffixes),
-      // so the model is everything between the provider and the auth mode.
-      const trimmed = one.trim();
-      const firstColon = trimmed.indexOf(":");
-      const lastColon = trimmed.lastIndexOf(":");
-      if (firstColon === -1 || lastColon === firstColon) {
-        return fail(write, json, "config set", "usage", `"${trimmed}" is not provider:model:auth-mode`, EXIT.usage);
-      }
-      const provider = trimmed.slice(0, firstColon);
-      const model = trimmed.slice(firstColon + 1, lastColon);
-      const authMode = trimmed.slice(lastColon + 1);
-      if (!isProviderId(provider)) {
-        return fail(write, json, "config set", "usage", `unknown provider "${provider}" — one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
-      }
-      if (authMode !== "subscription" && authMode !== "api-key") {
-        return fail(write, json, "config set", "usage", `auth-mode is subscription or api-key, not "${authMode}"`, EXIT.usage);
-      }
-      if (authMode === "subscription" && !SUBSCRIPTION_CAPABLE[provider]) {
-        return fail(write, json, "config set", "usage", `${provider} has no subscription login — this entry must use api-key`, EXIT.usage);
-      }
-      // The model rides provider argv: the SAME argv-safety validation every
-      // other sealed model passes (never a leading dash or control bytes).
-      const argvSafe = validateSpec({ provider, model: model === "" ? null : model });
-      if (model === "" || !argvSafe.ok) {
-        return fail(write, json, "config set", "usage", model === "" ? "each entry names an exact model — approvals bind exact routing" : argvSafe.ok ? "invalid entry" : argvSafe.problem, EXIT.usage);
-      }
-      entries.push({ provider, model, authMode });
-    }
-    if (entries.length < 1 || entries.length > 3) {
-      return fail(write, json, "config set", "usage", "1 to 3 fallback entries (the approval binds the whole chain)", EXIT.usage);
-    }
-    // The WHOLE chain must file against the CURRENT base (F+G review,
-    // finding 4): a fallback that duplicates the base — or another entry —
-    // refuses NOW, in words, not at some future filing. Set, prove through
-    // the same resolver filing uses, and restore the old config on refusal.
-    const previous = store.fallbackConfig(scope);
-    store.setFallbackConfig(scope, entries, acting.name, clock());
-    const baseAgent = resolvePhaseAgent(store, "build", scope, {});
-    if (baseAgent.ok) {
-      const proven = resolveScopeChain(store, scope, undefined, {}, readAuthMode(baseAgent.spec.provider));
-      // An UNRESOLVED base (no explicit routing configured yet) cannot be
-      // duplicate-checked — the filing-time resolver holds that line; only
-      // a chain that provably cannot file refuses here.
-      if (!proven.ok && proven.reason !== "base-unresolved") {
-        if (previous.length > 0) store.setFallbackConfig(scope, previous, acting.name, clock());
-        else store.clearFallbackConfig(scope);
-        return fail(write, json, "config set", "usage", `this chain cannot file: ${proven.problem}`, EXIT.usage);
-      }
-    }
-    return succeed(write, json, "config set", { repo: scope, fallback: entries }, () => [
-      `${scope}: fallback chain set — NEW approvals bind it; existing approvals are untouched.`,
-      ...entries.map((one, i) => `  ${i + 1}. ${one.provider} (${one.model}) — ${one.authMode === "subscription" ? "its subscription login" : "your API key"}`),
-      "  it fires only when a signed mode allows the paid fallback: `toolroll mode set --allow-paid-fallback …`",
     ]);
   }
 
@@ -6990,7 +5471,7 @@ async function configCommand(
   }
 
   // The STRONG tier (v47): a second, named row per phase the routing policy
-  // reaches for when risk, quality, evidence, or publication demand it.
+  // reaches for when size, quality, evidence, or publication demand it.
   // Authenticated and audited exactly like the routine row; existing
   // approvals are untouched — a sealed route never re-resolves.
   // The LIGHT tier (v2): the fast agent a small change builds on.
@@ -7086,7 +5567,7 @@ async function configCommand(
     store.setPhaseTierConfig(scope, phase, "strong", providerGiven, modelGiven, acting.name, clock());
     return succeed(write, json, "config set", { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
       `strong ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
-      "  high-risk, strict, screenshot-proof, and automerge routes filed from now on reach for it; sealed routes are untouched.",
+      "  large or risky, strict, screenshot-proof, and automerge routes filed from now on reach for it; sealed routes are untouched.",
       ...(phase === "repair" ? ["  a strong repair agent applies only when its provider is the build's — cross-provider repair does not exist."] : []),
     ]);
   }
@@ -7099,7 +5580,7 @@ async function configCommand(
     warnings.push("OPENROUTER_API_KEY is not present in this environment — runs will fail until the runner exports it.");
   }
   if (providerGiven !== "claude") {
-    warnings.push(`${providerGiven} does not report dollar cost: its runs land as UNMEASURED, and any routine with a cost ceiling fails closed on them by design.`);
+    warnings.push(`${providerGiven} does not report dollar cost: its runs land as UNMEASURED, and any schedule with a weekly limit fails closed on them by design.`);
   }
   return succeed(write, json, "config set", { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
     `${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} now runs ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
@@ -7750,82 +6231,11 @@ async function intakeCommand(
 
 
 /**
- * `toolroll contest …` — the tournament from the terminal: `show`
- * for the machine-readable state, `exclude` to stop a racing agent whose
- * question you will not answer (authenticated: it cancels paid-for work
- * and un-sticks the race). The pick itself stays a console ceremony.
- */
-function contestCommand(
-  positional: readonly string[],
-  flags: Map<string, string | true>,
-  context: Context,
-): Promise<number> | number {
-  const { store, write, json, clock } = context;
-  const [action, idGiven, ordinalGiven] = positional;
-  if (action === undefined || !(CONTEST_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "contest", "usage", `unknown \`contest ${action ?? ""}\` — try ${CONTEST_ACTIONS.join(", ")}`, EXIT.usage);
-  }
-  if (action === "show") {
-    const contest = store.getContest(Number(idGiven));
-    if (contest === null) return fail(write, json, "contest show", "unknown", "no tournament or comparison with that id", EXIT.refused);
-    const agents = store.contestants(contest.id);
-    if (json) {
-      write(envelopeJson({ ok: true, command: "contest show", contest, agents }));
-      return EXIT.ok;
-    }
-    write(`${contestNoun(contest.kind)} #${contest.id} — ${contest.state}`);
-    for (const racer of agents) {
-      const money =
-        contest.kind === "comparison"
-          ? racer.unknownSpend
-            ? "spend unmeasured (tokens only)"
-            : `$${(racer.measuredMicrousd / 1_000_000).toFixed(2)} measured`
-          : `charged $${(racer.accountedMicrousd / 1_000_000).toFixed(2)}${racer.unknownSpend ? " (exact figure unknown — charged the reserved worst case)" : ""}`;
-      write(`  agent ${racer.ordinal}: ${racer.provider} · ${racer.model} — ${racer.state} · ${money}`);
-    }
-    return EXIT.ok;
-  }
-  if (action === "exclude") {
-    return (async () => {
-      const contest = store.getContest(Number(idGiven));
-      const ordinal = Number(ordinalGiven);
-      if (contest === null || !Number.isInteger(ordinal)) {
-        return fail(write, json, "contest exclude", "usage", "`toolroll contest exclude <tournament-id> <agent-number> --as <you> --token <t>`", EXIT.usage);
-      }
-      const acting = await askCredentials(flags, context);
-      if (acting === null) {
-        return fail(write, json, "contest exclude", "usage", "stopping a racing agent takes `--as <you> --token <t>`", EXIT.usage);
-      }
-      const authed = authenticateApprover(store, acting.name, acting.token);
-      if (!authed.ok) {
-        return fail(write, json, "contest exclude", "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
-      }
-      const racer = store.contestants(contest.id).find(one => one.ordinal === ordinal);
-      if (racer === undefined || racer.state !== "parked") {
-        return fail(write, json, "contest exclude", "not-waiting", "that agent is not waiting on an answer", EXIT.refused);
-      }
-      const question = store.openDecisionForContestant(racer.id);
-      const moved = store.transact(() => {
-        if (question !== null && !store.excludeDecision(question, acting.name, clock())) return false;
-        if (!store.casContestantState(racer.id, ["parked"], "stopped", racer.generation)) return false;
-        contestMaybeAggregate(store, contest.id, clock());
-        return true;
-      });
-      if (!moved) return fail(write, json, "contest exclude", "changed", "the tournament moved while you were reading — look again", EXIT.refused);
-      const after = store.getContest(contest.id);
-      return succeed(write, json, "contest exclude", { contest: after }, () => [
-        `Agent ${ordinal} stopped; its question is closed as excluded. The tournament is now ${after?.state ?? "?"}.`,
-      ]);
-    })();
-  }
-  return fail(write, json, "contest", "usage", "`toolroll contest show <id> | exclude <id> <agent-number>`", EXIT.usage);
-}
-
-/**
- * `toolroll template …` — the shipped library of common standing
- * orders (adoption track, step 2). A template is a pre-filled form:
- * `apply` PREVIEWS by default and files only under `--file`, through the
- * same one door as every manual filing, landing UNAPPROVED. Recipes
+ * `toolroll template …` — the shipped library of common work (adoption
+ * track, step 2). A template is a pre-filled form: `apply` PREVIEWS by
+ * default and files only under `--file`, landing UNAPPROVED — a task through
+ * the same one door as every manual filing, or a scheduled flow whose
+ * schedule starts paused. Recipes
  * (issue-intake, ci-babysitter) display existing ceremonies and cannot be
  * applied — the authority they would need is a separate authenticated act
  * a template must never perform (adoption review, finding 10).
@@ -7847,7 +6257,7 @@ function templateCommand(
       }));
       return EXIT.ok;
     }
-    write("Templates — common routines you edit to fit. Nothing a template");
+    write("Templates — common work you edit to fit. Nothing a template");
     write("files is approved; recipes only show existing ceremonies.");
     write("");
     for (const one of TEMPLATES) {
@@ -7890,8 +6300,8 @@ function templateCommand(
       write(`  files      one task (unapproved until you approve its scope)`);
       write(`  title      ${template.title}`);
     } else {
-      write(`  files      one routine (cannot fire until you approve its terms)`);
-      write(`  name       ${template.routineName}`);
+      write(`  makes      a scheduled flow (nothing repeats until you turn the schedule on)`);
+      write(`  name       ${template.title}`);
       write(`  schedule   ${template.schedule}`);
     }
     write(`  goal       ${template.goal}`);
@@ -7976,288 +6386,45 @@ function templateCommand(
     );
   }
 
-  const routineName = text(flags, "name") ?? template.routineName;
-  const schedule = text(flags, "schedule") ?? template.schedule;
+  const flowName = text(flags, "name") ?? template.title;
+  const scheduleGiven = text(flags, "schedule") ?? template.schedule;
+  const schedule = parseSchedule(scheduleGiven) !== null ? scheduleGiven : scheduleFromWords(scheduleGiven) ?? scheduleGiven;
   const ceilingGiven = text(flags, "ceiling");
   const costCeilingUsd = ceilingGiven === undefined ? template.costCeilingUsd : Number(ceilingGiven);
+  const repo = canonicalProject(repoGiven) ?? resolve(repoGiven);
+  const terms = { goal, outOfScope, touches, requirements: template.requirements, acceptance: template.acceptance, budgetPerRunMicrousd: null, costCeilingUsd };
   if (!flags.has("file")) {
-    const draft = {
-      kind: "routine" as const,
-      name: routineName,
-      repo: canonicalProject(repoGiven) ?? resolve(repoGiven),
-      goal,
-      outOfScope,
-      touches,
-      acceptance: template.acceptance,
-      requirements: template.requirements,
-      schedule,
-      costCeilingUsd,
-      filedVia: `template:${template.name}`,
-    };
+    const draft = { kind: "scheduled flow" as const, name: flowName, repo, schedule, ...terms, filedVia: `template:${template.name}` };
     if (json) {
       write(envelopeJson({ ok: false, command: "template apply", reason: "unconfirmed", draft }));
       return 3;
     }
-    write("Would file, exactly (edit with --name/--goal/--not/--touches/--schedule/--ceiling):");
+    const readable = parseSchedule(schedule);
+    write("Would make this scheduled flow (edit with --name/--goal/--not/--touches/--schedule/--ceiling):");
     write("");
-    write(`  routine  ${draft.name}`);
+    write(`  flow     ${draft.name}`);
     write(`  repo     ${draft.repo}`);
-    write(`  schedule ${draft.schedule}${draft.schedule.startsWith("every:10080") ? "  (weekly)" : ""}`);
+    write(`  schedule ${readable === null ? schedule : describeSchedule(readable)}`);
     write(`  goal     ${draft.goal}`);
     if (draft.outOfScope !== null) write(`  not      ${draft.outOfScope}`);
     if (draft.touches.length > 0) write(`  touches  ${draft.touches.join(", ")}`);
-    if (draft.costCeilingUsd !== null) write(`  ceiling  $${draft.costCeilingUsd}/week`);
+    if (draft.costCeilingUsd !== null) write(`  ceiling  $${draft.costCeilingUsd} every 7 days`);
     write("");
-    write("Nothing was filed. Re-run with --file to file it — UNAPPROVED either way; it cannot fire until you approve it.");
+    write("Nothing was made. Re-run with --file to make it. Nothing repeats until you turn the schedule on.");
     return 3;
   }
-  const made = fileRoutineProposal(
-    store,
-    {
-      name: routineName,
-      repo: repoGiven,
-      goal,
-      outOfScope,
-      touches,
-      acceptance: template.acceptance,
-      requirements: template.requirements,
-      schedule,
-      costCeilingUsd,
-      filedVia: `template:${template.name}`,
-    },
-    clock(),
-  );
-  if (!made.ok) return fail(write, json, "template apply", made.reason, made.message, made.reason === "duplicate" ? EXIT.refused : EXIT.usage);
-  return succeed(write, json, "template apply", { filed: "routine", id: made.id, approved: false }, () => [
-    `Filed routine ${routineName} from template ${template.name}.`,
+  const made = createScheduledFlow(store, { repo, name: flowName, stem: template.name, schedule, terms, by: context.principal?.account ?? "toolroll", filedBy: context.principal?.account ?? null }, clock());
+  if (!made.ok) return fail(write, json, "template apply", "bad-terms", made.message, EXIT.usage);
+  const flowLink = consoleLinkFor(context, `/flows/${made.flow}`);
+  return succeed(write, json, "template apply", { filed: "scheduled flow", flow: made.flow, trigger: made.trigger, on: false, ...(flowLink === null ? {} : { links: { flow: flowLink } }) }, () => [
+    `Made ${flowName}, flow #${made.flow}, from template ${template.name}.`,
     "",
-    "UNAPPROVED — NO AUTHORITY GRANTED. It cannot fire until you approve the standing order:",
-    `  toolroll routine approve ${routineName}`,
+    "Nothing repeats until you turn the schedule on; each run then waits for approval under the project's rules:",
+    `  toolroll flows trigger resume ${made.flow} ${made.trigger}`,
+    ...(flowLink === null ? [] : [`  ${flowLink}`]),
   ]);
 }
 
-/**
- * `toolroll routine …` — standing orders. Filing one is cheap; the
- * expensive act is the approval, which restates every term including "each
- * firing builds without asking" and takes the approver's credential, same
- * as a scope. Pausing needs no ceremony because stopping spend never does.
- */
-async function routineCommand(
-  positional: readonly string[],
-  flags: Map<string, string | true>,
-  context: Context,
-): Promise<number> {
-  const { store, write, json, clock } = context;
-  const [action, name] = positional;
-  if (action !== undefined && !(ROUTINE_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "routine", "usage", `unknown \`routine ${action}\` — try ${ROUTINE_ACTIONS.join(", ")}`, EXIT.usage);
-  }
-
-  if (action === undefined || action === "list") {
-    const repoFilter = text(flags, "repo");
-    const routines = store.listRoutines(
-      repoFilter === undefined ? null : canonicalProject(repoFilter) ?? resolve(repoFilter),
-    );
-    if (json) {
-      write(envelopeJson({ ok: true, command: "routine list", routines }));
-      return EXIT.ok;
-    }
-    if (routines.length === 0) {
-      write("No routines. `toolroll routine add <name> --repo <path> --goal <text> --schedule every:60` files one.");
-      return EXIT.ok;
-    }
-    for (const routine of routines) {
-      const approved = routine.approvedAt !== null && routine.approvedDigest === routine.digest;
-      const status = routine.paused ? "paused" : approved ? "live" : "awaiting approval";
-      write(`  ${routine.name.padEnd(20)} ${status.padEnd(18)} ${routine.schedule.padEnd(14)} ${routine.repo}`);
-    }
-    return EXIT.ok;
-  }
-
-  if (action === "add") {
-    if (name === undefined || !ROUTINE_NAME.test(name)) {
-      return fail(write, json, "routine add", "usage", "a routine's name is lowercase letters, digits, and dashes — it becomes each instance's id", EXIT.usage);
-    }
-    const repoGiven = text(flags, "repo");
-    const goal = text(flags, "goal");
-    const schedule = text(flags, "schedule");
-    if (repoGiven === undefined || goal === undefined || schedule === undefined) {
-      return fail(write, json, "routine add", "usage", "`toolroll routine add <name> --repo <path> --goal <text> --schedule every:<min>|daily:<HH:MM>[@Zone]|weekly:<0-6>:<HH:MM>[@Zone] --acceptance <rubric> [--not <text>] [--touches a,b] [--require kind:name,…] [--ceiling <usd>] [--budget-usd <n>]`", EXIT.usage);
-    }
-    const acceptanceGiven = text(flags, "acceptance");
-    if (acceptanceGiven === undefined) {
-      return fail(
-        write, json, "routine add", "acceptance-required",
-        "a standing order needs at least one signed acceptance criterion — `--acceptance \"<statement>|<evidence,kinds>\"`, `;`-separated for more than one; evidence kinds are check, screenshot, changed-path, manual-review",
-        EXIT.usage,
-      );
-    }
-    const ceilingGiven = text(flags, "ceiling");
-    // --budget-usd on a routine caps EACH instance (v16): it becomes the
-    // instance scope's digest-bound budget term, enforced by the same
-    // native-cap plumbing as any other scope budget.
-    const perRunGiven = text(flags, "budget-usd");
-    if (perRunGiven !== undefined && (!Number.isFinite(Number(perRunGiven)) || Number(perRunGiven) <= 0)) {
-      return fail(write, json, "routine add", "bad-budget", "--budget-usd is a positive dollar amount — what each firing may spend", EXIT.usage);
-    }
-    // One filing door for every surface (Codex adoption review, finding 7):
-    // validation, canonicalization, digest, and provenance live in the
-    // service, not here.
-    const created = fileRoutineProposal(
-      store,
-      {
-        name,
-        repo: repoGiven,
-        goal,
-        outOfScope: text(flags, "not") ?? null,
-        touches: (text(flags, "touches") ?? "").split(",").map(one => one.trim()).filter(one => one !== ""),
-        acceptance: acceptanceLinesToInput(splitAcceptanceRubric(acceptanceGiven)),
-        requirements: (text(flags, "require") ?? "").split(",").map(one => one.trim()).filter(one => one !== ""),
-        schedule,
-        costCeilingUsd: ceilingGiven === undefined ? null : Number(ceilingGiven),
-        ...(perRunGiven === undefined ? {} : { budgetPerRunMicrousd: Math.round(Number(perRunGiven) * 1_000_000) }),
-        filedVia: "cli",
-      },
-      clock(),
-    );
-    if (!created.ok) {
-      return fail(write, json, "routine add", created.reason, created.message, created.reason === "duplicate" ? EXIT.refused : EXIT.usage);
-    }
-    const routine = store.getRoutine(created.id);
-    return succeed(write, json, "routine add", { routine }, () => [
-      `Filed ${name}. Nothing fires until somebody approves the standing order:`,
-      ...(routine === null ? [] : describeRoutine(routine)),
-      "",
-      `  toolroll routine approve ${name}`,
-    ]);
-  }
-
-  if (name === undefined) {
-    return fail(write, json, `routine ${action}`, "usage", "which routine? give its name", EXIT.usage);
-  }
-  const routine = store.routineByName(name);
-  if (routine === null) {
-    return fail(write, json, `routine ${action}`, "unknown", `no routine named ${name}`, EXIT.refused);
-  }
-
-  switch (action) {
-    case "show": {
-      const fires = store.routineFires(routine.id, 14);
-      if (json) {
-        write(envelopeJson({ ok: true, command: "routine show", routine, fires }));
-        return EXIT.ok;
-      }
-      const approved = routine.approvedAt !== null && routine.approvedDigest === routine.digest;
-      write(`${routine.name} — ${routine.paused ? "paused" : approved ? "live" : "awaiting approval"}`);
-      for (const line of describeRoutine(routine)) write(line);
-      if (routine.nextFireAt !== null && !routine.paused && approved) write(`  next fire    ${routine.nextFireAt}`);
-      if (fires.length > 0) {
-        write("");
-        write("  recent firings, newest first:");
-        for (const fire of fires) {
-          const said =
-            fire.outcome === "fired"
-              ? `${fire.instanceTaskId ?? "instance"}${fire.instanceState === null ? "" : ` (${fire.instanceState})`}${fire.reason === "manual" ? "  (run now)" : ""}`
-              : `skipped — ${fire.reason ?? ""}`;
-          write(`    ${fire.scheduledFor.replace(/^manual:/, "")}  ${said}`);
-        }
-      }
-      return EXIT.ok;
-    }
-    case "approve": {
-      let saw = text(flags, "digest");
-      let { name: asWho, token } = credentialsFrom(flags, context);
-      let confirmedAloud = false;
-      if ((!flags.has("yes") || saw === undefined || asWho === undefined || token === undefined) && interactive() && !json) {
-        write(`Approving ${name} makes it a STANDING order:`);
-        write("");
-        for (const line of describeRoutine(routine)) write(line);
-        write("");
-        const agreed = await confirm("Approve exactly this standing order?");
-        if (!agreed) {
-          write("Nothing approved.");
-          return EXIT.refused;
-        }
-        saw ??= routine.digest;
-        const acting = await askCredentials(flags, context);
-        if (acting === null) return fail(write, json, "routine approve", "usage", "approval needs who is agreeing", EXIT.usage);
-        asWho = acting.name;
-        token = acting.token;
-        confirmedAloud = true;
-      }
-      const armed = (flags.has("yes") || confirmedAloud) && saw !== undefined && asWho !== undefined && token !== undefined;
-      if (!armed) {
-        if (json) {
-          write(envelopeJson({ ok: false, command: "routine approve", reason: "unconfirmed", routine }));
-          return EXIT.refused;
-        }
-        write(`Would approve this standing order — every firing of it builds without asking:`);
-        write("");
-        for (const line of describeRoutine(routine)) write(line);
-        write("");
-        write("Nothing has been approved. Agree to exactly this with:");
-        write(`  toolroll routine approve ${name} --yes --digest ${routine.digest} --as <you> --token <your password>`);
-        // A preview reached by omitting --yes is the answer "no, not yet" —
-        // exit 3 in both modes, matching the JSON path (round-4 finding 10).
-        return EXIT.refused;
-      }
-      const approved = approveRoutine(store, routine.id, asWho as string, clock(), saw as string, token as string);
-      if (!approved.ok) {
-        return fail(write, json, "routine approve", approved.reason, describeApproveFailure(approved.reason, name), EXIT.refused);
-      }
-      return succeed(write, json, "routine approve", { routine: approved.routine }, () => [
-        `Approved. ${name} fires on its schedule from now on; first at ${approved.routine.nextFireAt}.`,
-        `Pause it any time: toolroll routine pause ${name}`,
-      ]);
-    }
-    case "refresh": {
-      // THE RECOVERY ROAD (v48): re-resolve the agents from today's
-      // configuration and file them as the order's working agents. Nothing
-      // is approved here — the refreshed order waits for the yes.
-      const before = routineAgentsState(routine);
-      const refreshed = refreshRoutineAgents(store, routine.id, clock());
-      if (!refreshed.ok) {
-        return fail(write, json, "routine refresh", refreshed.reason, `${name}: ${refreshed.problem}`, EXIT.refused);
-      }
-      return succeed(write, json, "routine refresh", { routine: refreshed.routine, changed: refreshed.changed, before: before.state }, () => [
-        refreshed.changed
-          ? `Refreshed ${name}'s agents from today's configuration. Nothing is approved yet — read them and agree:`
-          : `${name} already names exactly these agents; nothing changed.`,
-        ...describeRoutine(refreshed.routine),
-        "",
-        `  toolroll routine approve ${name}`,
-      ]);
-    }
-    case "pause":
-    case "resume": {
-      store.setRoutinePaused(routine.id, action === "pause", clock());
-      return succeed(write, json, `routine ${action}`, { name }, () => [
-        action === "pause"
-          ? `${name} is paused — no firing until you resume it. Already-running instances finish.`
-          : `${name} resumed — the next due slot fires again.`,
-      ]);
-    }
-    case "run-now": {
-      const acting = await askCredentials(flags, context);
-      if (acting === null) {
-        return fail(write, json, "routine run-now", "usage", "run-now takes `--as <you> --token <t>` — it dispatches work that spends", EXIT.usage);
-      }
-      const authenticated = authenticateApprover(store, acting.name, acting.token);
-      if (!authenticated.ok) {
-        return fail(write, json, "routine run-now", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-      }
-      const outcome = fireRoutine(store, routine.id, clock(), { manual: true });
-      if (!outcome.ok) {
-        return fail(write, json, "routine run-now", outcome.reason, outcome.detail ?? outcome.reason, EXIT.refused);
-      }
-      return succeed(write, json, "routine run-now", { taskId: outcome.taskId }, () => [
-        `Spawned ${outcome.taskId} — it builds on the next pass. The regular schedule is untouched.`,
-      ]);
-    }
-    default:
-      return fail(write, json, "routine", "usage", "`toolroll routine [add|list|show|approve|refresh|pause|resume|run-now]`", EXIT.usage);
-  }
-}
 
 /** A credential from a 0600 file, for units that must not carry it inline. */
 function readTokenFile(path: string | undefined): string | undefined {
@@ -8699,7 +6866,6 @@ async function runWatchLoop(args: {
   const slackFollower = followSlack({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
     ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
-    ...(context.heldCoordinator ? {held:context.heldCoordinator} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="slack",
   }).catch(()=>progress("watch: Slack stopped. Check Slack settings before reconnecting."));
@@ -8707,7 +6873,6 @@ async function runWatchLoop(args: {
   const teamsFollower = followTeams({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
     ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
-    ...(context.heldCoordinator ? {held:context.heldCoordinator} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="teams",
   }).catch(()=>progress("watch: Teams stopped. Check Teams settings before reconnecting."));
@@ -8715,7 +6880,6 @@ async function runWatchLoop(args: {
   const discordFollower = followDiscord({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
     ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
-    ...(context.heldCoordinator ? {held:context.heldCoordinator} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="discord",
   }).catch(()=>progress("watch: Discord stopped. Check Discord settings before reconnecting."));
@@ -9586,7 +7750,6 @@ async function upCommand(
   if ("error" in loadedRegistry) {
     return fail(write, json, "up", "registry", loadedRegistry.error, EXIT.refused);
   }
-  let sweptHeldOrphans = false;
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
 
   const rootInputs = (text(flags, "project-root") ?? "")
@@ -9723,16 +7886,6 @@ async function upCommand(
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const suffix = attempt === 1 ? "" : `-${attempt}`;
       const name = attempt === 1 ? base : `${base.slice(0, RUNNER_NAME_MAX - suffix.length)}${suffix}`;
-      // The held orphan fence runs BEFORE any recovery road (v6 W6): a
-      // crashed predecessor's held session is seized, killed through its
-      // supervisor, and settled — or paged — before registration's
-      // recovery may touch its run or worktree.
-      if (!sweptHeldOrphans) {
-        sweptHeldOrphans = true;
-        const swept = await sweepHeldOrphans(store, `up:${hostname()}:${process.pid}`, clock);
-        if (swept.fenced > 0) progress(`fenced ${swept.fenced} orphaned held session(s) from a previous up`);
-        if (swept.paged > 0) progress(`${swept.paged} held session(s) could not be stopped — see the inbox`);
-      }
       // The runner's authority is BOUND to the canonical roots this up
       // serves (MCP spec v6): the claim gate enforces membership, so an
       // unbound registration would deny-all its own dispatches.
@@ -9785,28 +7938,6 @@ async function upCommand(
     await new Promise<void>(done => probe.close(() => done()));
   }
 
-  // 6b. The held-session coordinator (Phase 2): one per up process, shared
-  // by the console and every watch loop through the context. Its socket
-  // directory is deliberately SHORT and flat — sun_path is unforgiving.
-  const heldDir = namedPath(homedir(), ["held"], { dot: true });
-  try {
-    mkdirSync(heldDir, { recursive: true, mode: 0o700 });
-  } catch {
-    // The launch's own path check refuses with words if this failed.
-  }
-  context.heldCoordinator = new HeldSessionCoordinator();
-  context.upIncarnation = randomUUID();
-  context.heldSocketDir = heldDir;
-  // v28: sessions are unbounded unless the operator caps them.
-  const heldCap = text(flags, "max-held-sessions");
-  if (heldCap !== undefined) {
-    const cap = Number(heldCap);
-    if (!Number.isInteger(cap) || cap < 1) {
-      return fail(write, json, "up", "usage", "--max-held-sessions is a whole number of concurrent attended sessions, at least 1", EXIT.usage);
-    }
-    context.maxHeldSessions = cap;
-  }
-
   // 7. The console, on the just-released port. The tiny window between the
   // probe closing and this bind can lose a race; that failure tears down
   // cleanly below instead of leaving identities half-claimed silently.
@@ -9829,14 +7960,6 @@ async function upCommand(
       currentRepos: () => [...activeRepos],
       admittedRepos: () => [...activeRepos],
       upConsole: true,
-      attended: {
-        runner: runnerName,
-        coordinator: context.heldCoordinator,
-        headOf: async (repo: string) => {
-          const answer = await gitRun("git", ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: repo });
-          return answer.code === 0 ? answer.stdout.trim() : null;
-        },
-      },
       registryPath,
       projectRoots,
       ...(text(flags, "public-url") === undefined ? {} : { publicUrl: text(flags, "public-url") as string }),
@@ -10165,26 +8288,6 @@ async function upCommand(
   if (graceTimer !== undefined) clearTimeout(graceTimer);
   process.removeListener("SIGINT", stop);
   process.removeListener("SIGTERM", stop);
-  // Held sessions fence before the runner retires (v2 S0f): bounded, and
-  // every controller settles conservatively or is paged.
-  if (context.heldCoordinator !== undefined) {
-    const unsettled = await context.heldCoordinator.close();
-    for (const runId of unsettled) {
-      // The shutdown deadline won: say so durably — the orphan sweep of
-      // the NEXT up owns the cleanup, and silence would contradict
-      // "settled conservatively or paged".
-      store.enqueueNotification(
-        {
-          source: { run: runId },
-          dedupeKey: `held-shutdown-unsettled:${runId}`,
-          kind: "attended-unsettled",
-          subject: `an attended session did not settle before shutdown (run #${runId})`,
-          body: `The shutdown deadline passed before run #${runId}'s session finished fencing. The next \`toolroll up\` will fence and settle it; its worktree is preserved.`,
-        },
-        clock(),
-      );
-    }
-  }
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
   await new Promise<void>(done => console_.server.close(() => done()));
 
@@ -11902,7 +10005,6 @@ function showTask(positional: readonly string[], context: Context): number {
     claim: currentClaim(store, ref.id, now),
     scope,
     approval: approvalOf(scope),
-    risk: ref.riskLevel ?? scope?.riskLevel ?? "routine",
     route: taskRouteView(routed, readiness),
     runs: runs.map(one => ({ ...one, route: store.runRoute(one.id) })),
     deliverable: ref.deliverable,
@@ -12317,8 +10419,6 @@ function blockTask(
       return fail(write, json, "task block", "unknown-task", `no task \`${each}\``, EXIT.refused);
     }
   }
-  const racingGuard = refuseWhileRacing(context, "task block", id);
-  if (racingGuard !== null) return racingGuard;
 
   const result = store.addEdge(id, on, mutationFrom(flags, context.now));
   if (!result.ok) return fail(write, json, "task block", "rejected", result.reason, EXIT.refused);
@@ -12362,9 +10462,7 @@ async function steerTask(
         ? `no task \`${id}\``
         : filed.reason === "task-finished"
           ? `${id} is finished — a note has no next attempt to reach`
-          : filed.reason === "contest-open"
-            ? "agents are racing on this task — steering waits until the tournament settles"
-            : (filed.problem ?? "that note will not store");
+          : (filed.problem ?? "that note will not store");
     return fail(write, json, "task steer", filed.reason, detail, EXIT.refused);
   }
   return succeed(write, json, "task steer", { task: id, note: filed.id }, () => [
@@ -12387,8 +10485,6 @@ function unblockTask(
   if (store.getTask(id) === null) {
     return fail(write, json, "task unblock", "unknown-task", `no task \`${id}\``, EXIT.refused);
   }
-  const racingGuard = refuseWhileRacing(context, "task unblock", id);
-  if (racingGuard !== null) return racingGuard;
 
   const result = store.removeEdge(id, on, mutationFrom(flags, context.now));
   if (!result.ok) {
@@ -12430,9 +10526,7 @@ function nextTask(
           ? `${id} is not queued — only queued work can move up`
           : moved.reason === "claimed"
             ? `${id} is being built right now — it needs no place in line`
-            : moved.reason === "contest-open"
-              ? "a tournament is running on this task — let it finish, then pick or abandon it from the tournament screen in the console (the task's page links to it)"
-              : "the queue rank could not be raised any further";
+            : "the queue rank could not be raised any further";
     return fail(write, json, "task next", moved.reason, message, EXIT.refused);
   }
   return succeed(write, json, "task next", { task: id, priority: moved.priority }, () => [
@@ -12470,13 +10564,11 @@ function assignTask(
           ? `${id} is not queued — only queued work can be reserved`
           : moved.reason === "claimed"
             ? `${id} is being built right now — it needs no reservation`
-            : moved.reason === "contest-open"
-              ? "a tournament is running on this task — let it finish, then pick or abandon it from the tournament screen in the console (the task's page links to it)"
-              : moved.reason === "no-such-worker"
-                ? `no worker named \`${runner}\` — \`toolroll runner list\` names them`
-                : moved.reason === "worker-retired"
-                  ? `${runner} is retired — register the name again, or reserve for another worker`
-                  : "the queue did not accept the move";
+            : moved.reason === "no-such-worker"
+              ? `no worker named \`${runner}\` — \`toolroll runner list\` names them`
+              : moved.reason === "worker-retired"
+                ? `${runner} is retired — register the name again, or reserve for another worker`
+                : "the queue did not accept the move";
     return fail(write, json, "task assign", moved.reason, message, EXIT.refused);
   }
   return succeed(write, json, "task assign", { task: id, reservedFor: runner ?? null }, () => [
@@ -12512,7 +10604,6 @@ async function reopenTask(
       "not-latched": `${id} was never closed on its tracker — there is nothing to reopen`,
       "not-seen-open": "the tracker has not been SEEN open again since the close — reopen it there, then `toolroll sync`",
       claimed: `${id} is being built right now`,
-      "contest-open": "a tournament is open on this task — decide it first",
       held: "a hold stands — lift it first (`task unhold`, or wait out the timer)",
       "question-open": "an unanswered question stands — answer or close it first (it is on the task page)",
       "incident-open": "an unresolved incident stands — resolve it first",
@@ -12581,7 +10672,7 @@ async function scopeTask(
   const id = positional[0];
   const goal = text(flags, "goal");
   if (id === undefined || goal === undefined) {
-    return fail(write, json, "task scope", "usage", "`toolroll task scope <id> --goal <what success is> --acceptance <rubric> [--not <text>] [--touches a,b] [--candidate <commit>] [--budget-usd <n>] [--race provider:model[,provider:model…]] [--race-count 2..4] [--race-per-usd <n>] [--race-total-usd <n>]`", EXIT.usage);
+    return fail(write, json, "task scope", "usage", "`toolroll task scope <id> --goal <what success is> --acceptance <rubric> [--not <text>] [--touches a,b] [--candidate <commit>] [--budget-usd <n>]`", EXIT.usage);
   }
   if (store.getTask(id) === null) {
     return fail(write, json, "task scope", "unknown-task", `no task \`${id}\``, EXIT.refused);
@@ -12602,10 +10693,6 @@ async function scopeTask(
     return fail(write, json, "task scope", "bad-acceptance",
       `${acceptanceParse.problems.map(p => p.message).join("; ")} — each criterion is \`<statement>|<evidence,kinds>\`, criteria are \`;\`-separated, and \`--acceptance plan\` asks the planner to write the rubric`, EXIT.usage);
   }
-  const riskGiven = text(flags, "risk");
-  if (riskGiven !== undefined && !isRiskLevel(riskGiven)) {
-    return fail(write, json, "task scope", "usage", `--risk is one of ${RISK_LEVELS.join(", ")}`, EXIT.usage);
-  }
   // v69: a prepared commit. The machine checks it out as the attempt and
   // runs the gate and the review; no agent is dispatched for it.
   const candidateGiven = text(flags, "candidate");
@@ -12621,9 +10708,6 @@ async function scopeTask(
   const badText = validateScopeText({ goal, outOfScope: text(flags, "not") ?? null, touches });
   if (badText !== null) return fail(write, json, "task scope", badText.reason, badText.message, EXIT.usage);
 
-  // A tournament rides the same filing (stage 3): --race names the agents,
-  // the dollar terms are REQUIRED, and everything lands unapproved — the
-  // one yes later covers scope AND race terms as a single fingerprint.
   const budgetGiven = text(flags, "budget-usd");
   const defaults = store.getSpendDefaults();
   const budgetUsd =
@@ -12635,83 +10719,6 @@ async function scopeTask(
   if (budgetGiven !== undefined && (!Number.isFinite(Number(budgetGiven)) || Number(budgetGiven) <= 0)) {
     return fail(write, json, "task scope", "bad-budget", "--budget-usd is a positive dollar amount", EXIT.usage);
   }
-  const raceGiven = text(flags, "race");
-  const raceCountGiven = text(flags, "race-count");
-  // The comparison road (Phase 3 slice B): labeled lanes, no dollar terms,
-  // any registered provider — refused outright when every lane could hold
-  // a real budget (the discipline gate: race those instead).
-  const compareGiven = text(flags, "compare");
-  const permissionMode = store.refFor(BUILT_IN, id).permissionMode ?? store.permissionDefault().mode;
-  let plannedComparison: ReturnType<typeof planComparison> | null = null;
-  if (compareGiven !== undefined) {
-    if (raceGiven !== undefined || raceCountGiven !== undefined || text(flags, "race-per-usd") !== undefined || text(flags, "race-total-usd") !== undefined) {
-      return fail(write, json, "task scope", "usage", "--compare and the --race flags are different ceremonies — file one or the other", EXIT.usage);
-    }
-    if (store.mirrorByTask(id) !== null) {
-      return fail(write, json, "task scope", "external-race", "external work compares in a follow-up release — file the comparison on a local task", EXIT.refused);
-    }
-    const lanes = compareGiven.split(",").map(one => {
-      const [provider = "", model = ""] = one.trim().split(":");
-      return { provider, model, permissionMode };
-    });
-    plannedComparison = planComparison({ agents: lanes });
-    if (!plannedComparison.ok) {
-      return fail(write, json, "task scope", plannedComparison.reason, plannedComparison.message, EXIT.refused);
-    }
-  }
-  let plannedRace: ReturnType<typeof planTournament> | null = null;
-  if (raceCountGiven !== undefined && raceGiven === undefined) {
-    return fail(write, json, "task scope", "usage", "--race-count needs --race to name the competing agent, e.g. `--race claude:claude-sonnet-5 --race-count 3`", EXIT.usage);
-  }
-  if (raceGiven !== undefined) {
-    // Explicit flags win; absent ones fall back to the configured defaults
-    // (operator request) — the digest binds the ACTUAL numbers either way,
-    // and the approval restates them. A budget that is simply MISSING is
-    // named as the missing flag here, before planTournament's generic
-    // positive-amount backstop turns it into a riddle (round-4 finding 11).
-    if (text(flags, "race-per-usd") === undefined && defaults?.racePerAgentMicrousd == null) {
-      return fail(write, json, "task scope", "bad-budget", "--race-per-usd is missing and no default is set — pass it, or set one with `toolroll config set budgets --race-per-usd <n>`", EXIT.usage);
-    }
-    if (text(flags, "race-total-usd") === undefined && defaults?.raceTotalMicrousd == null) {
-      return fail(write, json, "task scope", "bad-budget", "--race-total-usd is missing and no default is set — pass it, or set one with `toolroll config set budgets --race-total-usd <n>`", EXIT.usage);
-    }
-    const perUsd = Number(text(flags, "race-per-usd") ?? (defaults?.racePerAgentMicrousd == null ? Number.NaN : defaults.racePerAgentMicrousd / 1_000_000));
-    const totalUsd = Number(text(flags, "race-total-usd") ?? (defaults?.raceTotalMicrousd == null ? Number.NaN : defaults.raceTotalMicrousd / 1_000_000));
-    if (store.mirrorByTask(id) !== null) {
-      return fail(write, json, "task scope", "external-race", "external work races in a follow-up release — file the tournament on a local task", EXIT.refused);
-    }
-    let agents = raceGiven.split(",").map(one => {
-      const [provider = "", model = ""] = one.trim().split(":");
-      return { provider, model, permissionMode };
-    });
-    // The competing-agent COUNT (operator request): an explicit --race-count
-    // replicates a single named agent; with several named agents it may only
-    // agree with the list — a count that contradicts an explicit lineup is a
-    // question, not an instruction. Absent both, the configured default
-    // count replicates a single agent; an explicit list is always itself.
-    if (raceCountGiven !== undefined) {
-      const count = Number(raceCountGiven);
-      if (!Number.isInteger(count) || count < 2 || count > 4) {
-        return fail(write, json, "task scope", "usage", "--race-count is how many agents compete: a whole number from 2 to 4", EXIT.usage);
-      }
-      if (agents.length === 1) {
-        agents = Array.from({ length: count }, () => ({ ...(agents[0] as { provider: string; model: string; permissionMode: typeof permissionMode }) }));
-      } else if (agents.length !== count) {
-        return fail(write, json, "task scope", "usage", `--race names ${agents.length} agents but --race-count says ${count} — make them agree, or name one agent and let the count replicate it`, EXIT.usage);
-      }
-    } else if (agents.length === 1 && defaults?.raceAgents != null) {
-      agents = Array.from({ length: defaults.raceAgents }, () => ({ ...(agents[0] as { provider: string; model: string; permissionMode: typeof permissionMode }) }));
-    }
-    plannedRace = planTournament({
-      agents,
-      perAgentBudgetUsd: perUsd,
-      totalBudgetUsd: totalUsd,
-    });
-    if (!plannedRace.ok) {
-      return fail(write, json, "task scope", plannedRace.reason, plannedRace.message, EXIT.refused);
-    }
-  }
-
   // v24 routing flags (foundations finding 5 — these used to be silently
   // swallowed by the global parser): explicit flags resolve HERE, and an
   // explicit ask that cannot resolve refuses rather than filing unresolved.
@@ -12731,11 +10738,6 @@ async function scopeTask(
     }
     explicitProfile = resolvedRouting.profile;
   }
-  // The race branch shares ONE transaction with the scope save (round-6
-  // finding 5): the attended exclusion refuses BEFORE anything writes, and
-  // a filing failure rolls the proposal back — a refused race never leaves
-  // a rewritten scope behind it.
-  //
   // C1/M3, the credentialed-CLI road: when --as/--token authenticate the
   // MODE'S SIGNER and their live mode auto-approves filings, the scope
   // seals in the same transaction it files — plain scopes only, and the
@@ -12754,8 +10756,7 @@ async function scopeTask(
     const previous = store.getScope(id);
     if (ref === null || ref.deliverable === "report" || candidateGiven !== undefined ||
         ref.sizing?.source === "person" || approvalOf(previous).approved ||
-        previous?.proposedVia === "coordinator" || store.filedViaOf(id)?.startsWith("mcp:") ||
-        ((plannedRace !== null || plannedComparison !== null) && store.openAuthorizationFor(ref.id) !== null)) return null;
+        previous?.proposedVia === "coordinator" || store.filedViaOf(id)?.startsWith("mcp:")) return null;
     const input = { title: store.getTask(id)!.title, goal, outOfScope: text(flags, "not") ?? null, touches };
     const sized = store.applySizing(id, heuristicSizing(input), { followPlanning: true }, now);
     if (sized.ok) refinement = refineFiledSizing(store, id, input, true, context.clock);
@@ -12764,26 +10765,16 @@ async function scopeTask(
   // Wait for bounded classification before filing so any approval in the
   // transaction below binds the final size and route.
   await refinement;
-  // ONE replayed composite (surfaces round 1, finding 3): the filing, any
-  // race/comparison terms, AND the mode seal record as a single operation —
+  // ONE replayed composite (surfaces round 1, finding 3): the filing AND
+  // the mode seal record as a single operation —
   // a replayed key returns the FIRST answer whole instead of re-sealing
   // whatever scope happens to be current.
   const filed = store.replay(mutationFrom(flags, now), "task-scope-filed", () =>
     store.transact(():
     | { ok: true; scope: ReturnType<typeof propose>; sealedUnderMode: boolean; modeRefusedCoordinator?: boolean }
     | { ok: false; reason: string; message: string } => {
-    if (plannedRace !== null && plannedRace.ok) {
-      const raceRef = store.refFor(BUILT_IN, id);
-      if (store.openAuthorizationFor(raceRef.id) !== null) {
-        return {
-          ok: false,
-          reason: "attended-open",
-          message: "an attended authorization is open on this task — revoke it before filing a tournament",
-        };
-      }
-    }
     const coverage =
-      plannedRace === null && plannedComparison === null && actor !== null
+      actor !== null
         ? modeFilingCoverage(store, store.refFor(BUILT_IN, id).repo, actor, now)
         : null;
     const proposed = propose(store, {
@@ -12793,8 +10784,6 @@ async function scopeTask(
       outOfScope: text(flags, "not") ?? null,
       touches,
       acceptance: acceptanceParse.criteria,
-      // v47: the declared risk — a durable task choice the route reads.
-      ...(riskGiven === undefined ? {} : { riskLevel: riskGiven }),
       ...(budgetUsd !== null
         ? { budgetMicrousd: Math.round(budgetUsd * 1_000_000) }
         : coverage?.defaultBudgetMicrousd != null
@@ -12820,48 +10809,6 @@ async function scopeTask(
       sealedUnderMode = store.sealScopeApproval(id, actor as string, now, {}, { kind: "mode", modeDigest: coverage.digest });
       modeRefusedCoordinator = !sealedUnderMode;
     }
-    if (plannedRace !== null && plannedRace.ok) {
-      const plan = plannedRace.plan;
-      const raceRef = store.refFor(BUILT_IN, id);
-      store.fileTournamentTerms(
-        {
-          taskRef: raceRef.id,
-          raceDigest: plan.raceDigest,
-          agents: plan.agents,
-          perAgentBudgetMicrousd: plan.perAgentBudgetMicrousd,
-          overrunReserveMicrousd: plan.overrunReserveMicrousd,
-          totalBudgetMicrousd: plan.totalBudgetMicrousd,
-          priceVersion: plan.priceVersion,
-          publicationPolicy: plan.publicationPolicy,
-        },
-        now,
-      );
-    }
-    if (plannedComparison !== null && plannedComparison.ok) {
-      const plan = plannedComparison.plan;
-      const compareRef = store.refFor(BUILT_IN, id);
-      if (store.openAuthorizationFor(compareRef.id) !== null) {
-        return {
-          ok: false,
-          reason: "attended-open",
-          message: "an attended authorization is open on this task — revoke it before filing a comparison",
-        };
-      }
-      store.fileTournamentTerms(
-        {
-          taskRef: compareRef.id,
-          kind: "comparison",
-          raceDigest: plan.comparisonDigest,
-          agents: plan.agents,
-          perAgentBudgetMicrousd: 0,
-          overrunReserveMicrousd: 0,
-          totalBudgetMicrousd: 0,
-          priceVersion: 0,
-          publicationPolicy: plan.publicationPolicy,
-        },
-        now,
-      );
-    }
     return { ok: true, scope: proposed, sealedUnderMode, modeRefusedCoordinator };
   }));
   if (!filed.ok) {
@@ -12878,35 +10825,6 @@ async function scopeTask(
     return succeed(write, json, "task scope", { scope, approvedUnderMode: true }, () => [
       `Scope written AND approved for ${id} — your operating mode covered it; it dispatches on the next pass.`,
       ...describeScope(scope),
-    ]);
-  }
-
-  if (plannedComparison !== null && plannedComparison.ok) {
-    const plan = plannedComparison.plan;
-    return succeed(write, json, "task scope", { scope, comparison: plan }, () => [
-      `Scope and comparison written for ${id}. Nothing builds until somebody approves BOTH, with one yes:`,
-      ...describeScope(scope),
-      "",
-      ...plan.laneWords.map(lane => `  ${lane}`),
-      "  no dollar caps exist on a comparison — each agent runs until it finishes or stops making progress;",
-      "  spend lands measured only where the harness reports dollars",
-      "",
-      `  toolroll task approve ${id} --yes`,
-    ]);
-  }
-
-  if (plannedRace !== null && plannedRace.ok) {
-    const plan = plannedRace.plan;
-    const worst = plan.perAgentReserveMicrousd.reduce((sum, reserve) => sum + plan.perAgentBudgetMicrousd + reserve, 0);
-    return succeed(write, json, "task scope", { scope, race: plan }, () => [
-      `Scope and tournament written for ${id}. Nothing builds until somebody approves BOTH, with one yes:`,
-      ...describeScope(scope),
-      "",
-      `  tournament: ${plan.agents.map(agent => `${agent.provider} · ${agent.model}`).join("  vs  ")}`,
-      `  each agent may spend $${(plan.perAgentBudgetMicrousd / 1_000_000).toFixed(2)}, plus its stated overrun reserve;` +
-        ` worst case $${(worst / 1_000_000).toFixed(2)} total`,
-      "",
-      `  toolroll task approve ${id} --yes`,
     ]);
   }
 
@@ -12929,8 +10847,8 @@ async function scopeTask(
 /**
  * `toolroll task route <id>` (v47): the explainable phase route —
  * shown from the ONE projection every surface renders, and edited only by
- * an approver: `--risk <routine|elevated|high>` declares the task's risk;
- * `--phase <p> --provider <p> --model <m>` records a per-phase override
+ * an approver: `--size <small|medium|large>` and `--risky yes|no` set the
+ * task's size; `--phase <p> --provider <p> --model <m>` records a per-phase override
  * (an exact pair — approvals bind exact routing) with attribution;
  * `--clear-phase <p>` removes one; `--digest <d>` names the scope digest
  * you read, so the edit lands only on what you saw. The edit is ONE
@@ -12948,13 +10866,12 @@ async function routeTaskCommand(
   const { store, write, json, clock } = context;
   const id = positional[0];
   if (id === undefined) {
-    return fail(write, json, "task route", "usage", "`toolroll task route <id> [--risk <level>] [--phase <p> --provider <p> --model <m> | --clear-phase <p>] [--digest <d>] --as <you> --token <t>`", EXIT.usage);
+    return fail(write, json, "task route", "usage", "`toolroll task route <id> [--size <s>] [--risky yes|no] [--phase <p> --provider <p> --model <m> | --clear-phase <p>] [--digest <d>] --as <you> --token <t>`", EXIT.usage);
   }
   if (store.getTask(id) === null) {
     return fail(write, json, "task route", "unknown-task", `no task \`${id}\``, EXIT.refused);
   }
   const ref = store.refFor(BUILT_IN, id);
-  const riskGiven = text(flags, "risk");
   const phaseGiven = text(flags, "phase");
   const clearGiven = text(flags, "clear-phase");
   const providerGiven = text(flags, "provider");
@@ -12962,7 +10879,7 @@ async function routeTaskCommand(
   const digestGiven = text(flags, "digest");
   const sizeGiven = text(flags, "size");
   const riskyGiven = text(flags, "risky");
-  const editing = riskGiven !== undefined || phaseGiven !== undefined || clearGiven !== undefined || sizeGiven !== undefined || riskyGiven !== undefined;
+  const editing = phaseGiven !== undefined || clearGiven !== undefined || sizeGiven !== undefined || riskyGiven !== undefined;
 
   const show = (): number => {
     const scope = store.getScope(id);
@@ -12975,7 +10892,7 @@ async function routeTaskCommand(
       write,
       json,
       "task route",
-      { id, risk: current.riskLevel ?? scope?.riskLevel ?? "routine", riskConsequence: riskConsequence(current.riskLevel ?? scope?.riskLevel ?? "routine"), size: current.sizing ?? null, source: routed !== null && routed.kind === "route" ? routed.source : routed?.kind ?? null, route: view, overrides: current.routeOverrides ?? [], digest: scope?.digest ?? null, approval: approvalOf(scope) },
+      { id, size: current.sizing ?? null, source: routed !== null && routed.kind === "route" ? routed.source : routed?.kind ?? null, route: view, overrides: current.routeOverrides ?? [], digest: scope?.digest ?? null, approval: approvalOf(scope) },
       () =>
         routed === null
           ? [`${id}: no route can be recommended yet — ${scope === null ? "place the task in a repository and file a scope" : scope.unresolvedReason ?? "the phase configuration cannot resolve"}`]
@@ -12985,10 +10902,8 @@ async function routeTaskCommand(
                 : [
                     `${id}: route ${routed.kind === "route" && routed.source === "approved" ? "SEALED by the approval" : routed.kind === "route" && routed.source === "proposed" ? "proposed — the next approval seals it" : "recommended live — no scope filed yet"}`,
                     ...routeWords(projection),
-                    // The declared risk, in the words the console and chat
-                    // use — and the one CLI hint that belongs here, not in
-                    // the route's own reasons: how a stronger tier is named.
-                    `  risk         ${current.riskLevel ?? scope?.riskLevel ?? "routine"} — ${riskConsequence(current.riskLevel ?? scope?.riskLevel ?? "routine")}`,
+                    // The one CLI hint that belongs here, not in the
+                    // route's own reasons: how a stronger tier is named.
                     ...(projection.legs.some(leg => leg.reasons.some(reason => reason.startsWith("no stronger")))
                       ? [`               name a stronger agent once with \`config set <phase> --tier strong --provider … --model …\``]
                       : []),
@@ -13011,9 +10926,6 @@ async function routeTaskCommand(
   const acting = await askCredentials(flags, context);
   if (acting === null) {
     return fail(write, json, "task route", "usage", "changing a route takes `--as <you> --token <t>` — it reroutes spend", EXIT.usage);
-  }
-  if (riskGiven !== undefined && !isRiskLevel(riskGiven)) {
-    return fail(write, json, "task route", "usage", `--risk is one of ${RISK_LEVELS.join(", ")}`, EXIT.usage);
   }
   if (sizeGiven !== undefined && !isTaskSize(sizeGiven)) {
     return fail(write, json, "task route", "usage", `--size is one of ${TASK_SIZES.join(", ")}`, EXIT.usage);
@@ -13053,7 +10965,6 @@ async function routeTaskCommand(
         const authenticated = authenticateApprover(store, acting.name, acting.token);
         return authenticated.ok ? { ok: true } : { ok: false, reason: authenticated.reason };
       },
-      ...(riskGiven === undefined ? {} : { risk: riskGiven as RiskLevel }),
       ...(sizeEdit === undefined ? {} : { size: sizeEdit }),
       ...(phase === undefined
         ? {}
@@ -13066,7 +10977,7 @@ async function routeTaskCommand(
     if (edited.reason === "unauthenticated") {
       return fail(write, json, "task route", edited.detail, describeApproveFailure(edited.detail as "no-approvers" | "not-an-approver", id), EXIT.refused);
     }
-    const code: Record<typeof edited.reason, string> = { "no-task": "unknown-task", "live-claim": "claimed", "contest-open": "contest-open", changed: "changed", nothing: "usage", "not-configured": "not-configured" };
+    const code: Record<typeof edited.reason, string> = { "no-task": "unknown-task", "live-claim": "claimed", changed: "changed", nothing: "usage", "not-configured": "not-configured" };
     return fail(write, json, "task route", code[edited.reason], `${id}: ${edited.detail}`, edited.reason === "nothing" ? EXIT.usage : EXIT.refused);
   }
   const code = show();
@@ -13112,14 +11023,6 @@ async function approveTask(
     write("");
     for (const line of describeScope(scope)) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
-    const interactiveRace = store.activeTournamentTerms(store.refFor(BUILT_IN, id).id);
-    if (interactiveRace !== null) {
-      write("");
-      write(`  AND it starts a tournament: ${interactiveRace.n} agents build this independently —`);
-      write(`  ${interactiveRace.agents.map(agent => `${agent.provider} · ${agent.model}`).join("  vs  ")}`);
-      write(`  each may spend $${(interactiveRace.perAgentBudgetMicrousd / 1_000_000).toFixed(2)} plus its overrun reserve;`);
-      write(`  the whole tournament is capped at $${(interactiveRace.totalBudgetMicrousd / 1_000_000).toFixed(2)}. You pick the winner; only the winner publishes.`);
-    }
     write("");
     const agreed = await confirm("Approve exactly this?");
     if (!agreed) {
@@ -13147,17 +11050,9 @@ async function approveTask(
     for (const line of describeScope(scope)) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
     write("");
-    const previewRace = store.activeTournamentTerms(store.refFor(BUILT_IN, id).id);
-    if (previewRace !== null) {
-      write(`  AND the tournament: ${previewRace.agents.map(agent => `${agent.provider} · ${agent.model}`).join("  vs  ")}`);
-      write(`  each capped at $${(previewRace.perAgentBudgetMicrousd / 1_000_000).toFixed(2)} + reserve, total $${(previewRace.totalBudgetMicrousd / 1_000_000).toFixed(2)}`);
-      write("");
-    }
     write("Nothing has been approved. Agree to this exact scope with:");
     write(
-      `  toolroll task approve ${id} --yes --digest ${
-        previewRace === null ? scope.digest : jointApprovalDigest(scope.digest, previewRace.raceDigest)
-      } --as <you> --token <your password>`,
+      `  toolroll task approve ${id} --yes --digest ${scope.digest} --as <you> --token <your password>`,
     );
     // Unconfirmed is "no, not yet" — exit 3 in both modes (round-4 finding 10).
     return EXIT.refused;
@@ -13171,38 +11066,6 @@ async function approveTask(
   // The credential is required for a different reason: an agent that can run
   // these commands can read the digest out of `task show`, and an approval
   // nobody has to authenticate would let it agree to its own brief.
-  //
-  // A tournament task's yes covers BOTH documents (finding 31): the named
-  // digest is tournament-approval/v1 = H(scope, race), and the scope and
-  // the race terms approve together, in one transaction, or not at all.
-  const raceTerms = store.activeTournamentTerms(store.refFor(BUILT_IN, id).id);
-  if (raceTerms !== null) {
-    const joint = jointApprovalDigest(scope.digest, raceTerms.raceDigest);
-    if (saw !== joint && saw !== scope.digest) {
-      return fail(write, json, "task approve", "changed", `this task races a tournament — approve the JOINT fingerprint: ${joint}`, EXIT.refused);
-    }
-    if (saw === scope.digest && !confirmedAloud) {
-      return fail(write, json, "task approve", "changed", `this task races a tournament — the yes must name the joint fingerprint ${joint}, which covers the race terms too`, EXIT.refused);
-    }
-    const both = store.transact(() => {
-      const scopeApproved = approve(store, id, asWho as string, now, scope.digest, token as string, mutationFrom(flags, now));
-      if (!scopeApproved.ok) return scopeApproved;
-      if (!store.approveTournamentTerms(raceTerms.id, asWho as string, raceTerms.raceDigest, now)) {
-        throw new Error("the race terms changed while you were reading — nothing was approved");
-      }
-      return scopeApproved;
-    });
-    if (!both.ok) {
-      return fail(write, json, "task approve", both.reason, both.reason === "policy" ? `${id}: ${both.message}` : describeApproveFailure(both.reason, id), EXIT.refused);
-    }
-    return succeed(write, json, "task approve", { scope: both.scope, race: raceTerms }, () => [
-      `Approved — scope AND tournament, with one yes. ${raceTerms.n} agents will build ${id} independently:`,
-      ...describeScope(both.scope),
-      `  ${raceTerms.agents.map(agent => `${agent.provider} · ${agent.model}`).join("  vs  ")}`,
-      `  each may spend $${(raceTerms.perAgentBudgetMicrousd / 1_000_000).toFixed(2)} plus its overrun reserve; total cap $${(raceTerms.totalBudgetMicrousd / 1_000_000).toFixed(2)}`,
-    ]);
-  }
-
   const approved = approve(store, id, asWho, now, saw, token, mutationFrom(flags, now));
   if (!approved.ok) {
     if (approved.reason === "policy") return fail(write, json, "task approve", "policy", `${id}: ${approved.message}`, EXIT.refused);
@@ -13219,14 +11082,14 @@ function describeApproveFailure(reason: string, id: string): string {
   if (reason === "changed") return "the scope changed since you read it — look again before approving";
   // v102: the project's approval rules.
   if (reason === "requester") return `you filed ${id}, and this project needs someone else to approve it`;
-  if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a routine or an AI teammate`;
+  if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or an AI teammate`;
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";
   }
   if (reason === "not-an-approver") return "that is not an approver, or the token does not match";
   if (reason === "unrouted") return `${id} was filed before agent routing and its old approval no longer stands — an approval now names exactly which agent plans, builds, repairs, and reviews: file the scope again (\`task scope ${id} …\`) so it is routed under today's agents, then approve it`;
-  if (reason === "profile-unresolved") return `${id} cannot name an exact agent for every role — configure the project's agents (\`config set <phase> --provider … --model …\`), then \`routine refresh ${id}\` and approve it again`;
+  if (reason === "profile-unresolved") return `${id} cannot name an exact agent for every role — configure the project's agents (\`config set <phase> --provider … --model …\`), then file the scope again (\`task scope ${id} …\`) and approve it`;
   return `${id} has no scope to approve`;
 }
 
@@ -13602,8 +11465,6 @@ function unholdTask(
   if (store.getTask(id) === null) {
     return fail(write, json, "task unhold", "unknown-task", `no task \`${id}\``, EXIT.refused);
   }
-  const racingGuard = refuseWhileRacing(context, "task unhold", id);
-  if (racingGuard !== null) return racingGuard;
 
   const lifted = store.unhold(store.refFor(BUILT_IN, id).id, mutationFrom(flags, context.now));
   if (!lifted) return fail(write, json, "task unhold", "not-held", `${id} was not on hold`, EXIT.refused);
@@ -14497,21 +12358,6 @@ function flag(flags: Map<string, string | true>, name: string): boolean {
   return flags.get(name) === true || flags.get(name) === "true";
 }
 
-/** A running tournament owns its task (round-1 finding 5): the generic
- * doors refuse until it finishes, is picked, or is abandoned. */
-function refuseWhileRacing(context: Context, command: string, taskId: string): number | null {
-  const ref = context.store.lookupRef(taskId);
-  if (ref === null || context.store.openContestFor(ref.id) === null) return null;
-  return fail(
-    context.write,
-    context.json,
-    command,
-    "contest-open",
-    "a tournament is running on this task — let it finish, then pick or abandon it from the tournament screen in the console (the task's page links to it)",
-    EXIT.refused,
-  );
-}
-
 /**
  * The demo fence (Codex adoption review, finding 8): a database stamped as
  * a demo sandbox NEVER spends money or touches the world outside — no
@@ -14521,9 +12367,8 @@ function refuseWhileRacing(context: Context, command: string, taskId: string): n
  * is the enforcement.
  */
 /**
- * Deep links (attended A5): when a console URL is configured (`webhook set
- * console-url`), CLI answers print it beside ids so the attended eye can
- * jump. Absent configuration prints nothing — a link nobody configured is
+ * Deep links: when a console URL is configured (`webhook set
+ * console-url`), CLI answers print it beside ids so a reader can jump. Absent configuration prints nothing — a link nobody configured is
  * a guess, and stale guesses are worse than none.
  */
 function consoleLinkFor(context: Context, path: string): string | null {

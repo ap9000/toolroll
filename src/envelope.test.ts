@@ -54,7 +54,6 @@ describe("the machine envelope", () => {
       ["providers", "--json"],
       ["grants", "--json"],
       ["incident", "list", "--json"],
-      ["routine", "list", "--json"],
       ["outbox", "list", "--json"],
       ["webhook", "status", "--json"],
     ];
@@ -178,7 +177,6 @@ describe("the machine envelope", () => {
       publish: ["status", "--json"],
       reconcile: ["--json"],
       run: ["settle", "--json"],
-      routine: ["list", "--json"],
       config: ["show", "--json"],
       mode: ["show", "--repo", "/nope", "--json"],
       people: ["list", "--json"],
@@ -189,7 +187,6 @@ describe("the machine envelope", () => {
       intake: ["show", "--json"],
       providers: ["--json"],
       template: ["list", "--json"],
-      contest: ["show", "999", "--json"],
       webhook: ["status", "--json"],
       coordinator: ["list", "--json"],
       chat: ["--json"],

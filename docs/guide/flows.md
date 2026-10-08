@@ -70,6 +70,17 @@ public form), a schedule, GitHub (new issues, a label, new pull requests,
 failed checks), Linear, another flow's cards reaching a zone, a webhook, an
 **email inbox**, a **chat channel**, or a **plane review**.
 
+**Repeating work** is a scheduled flow: a Build task step and a schedule
+whose **standing order** holds the task to file each time — goal, what to
+leave alone, allowed paths, requirements, success checks, a per-run budget
+and an optional rolling 7-day cost ceiling. It runs one at a time and skips
+while the last task is unfinished. Each task waits for approval under the
+project's rules like any other. The nightly-deps, test-coverage and
+docs-drift templates, and recipes with a schedule, make one with its schedule
+paused: nothing repeats until you turn it on (**Resume** on the canvas, or
+`toolroll flows trigger resume <flow> <trigger>`). `toolroll flows show`
+prints a standing order's terms.
+
 A **plane review** reads Toolroll's own last 24 hours every day at a set time
 (07:30 in your time zone unless you choose another) and makes one card per
 problem worth fixing: failed or no-change runs grouped by cause (provider

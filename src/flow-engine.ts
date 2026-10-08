@@ -1,6 +1,6 @@
 /**
  * The flow engine: moves cards through their flow's zones. Deterministic
- * and model-free — it runs in a worker's pass beside routines, files work
+ * and model-free — it runs in a worker's pass beside builds, files work
  * through the ordinary task door (so every approval and check a task needs
  * still applies), reads task state, posts messages through the outbox, and
  * waits for people. See flows.ts for what each zone does.

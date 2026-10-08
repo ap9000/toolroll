@@ -214,10 +214,6 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
                 `<option value="">approve plans and merges here, with my password (the default)</option>` +
                 `<option value="1">approve plans and merge ready pull requests from my paired chat, two taps each</option>` +
                 `</select><span class="meta">Plans that widen permissions, exceed the attempt cap or touch protected paths still open Toolroll.</span></label>`,
-              `<label>If a subscription runs out<select name="allow-paid-fallback">` +
-                `<option value="">never switch to a paid API key on its own (the default, every preset)</option>` +
-                `<option value="1">allow the approved fallback — spend moves to that account</option>` +
-                `</select></label>`,
               `<button type="submit">Read the full terms</button>`,
               `</form>`,
               `</div>`,
@@ -1762,9 +1758,6 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
         planAuto: body.get("plan-auto") === "1",
         reviewAuto: false,
         reviewRetryAuto: false,
-        // The paid-fallback grant is NEVER a preset default (R8): unchecked
-        // stays false on every preset — only the explicit box grants it.
-        allowPaidFallback: body.get("allow-paid-fallback") === "1",
         // The repair-auto grant is the SAME rule (v40): unchecked stays
         // false on every preset — only the explicit box grants it, and the
         // attempt cap it carries is meaningless without it.
@@ -1795,7 +1788,7 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
           `<input type="hidden" name="csrf" value="${escape(who.session.csrf)}">` +
           `<input type="hidden" name="nonce" value="${escape(nonce)}">` +
           `<input type="hidden" name="digest" value="${escape(digest)}">` +
-          (["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "allow-paid-fallback"] as const)
+          (["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve"] as const)
             .map(field => `<input type="hidden" name="${field}" value="${escape(body.get(field) ?? "")}">`)
             .join("") +
           `<input type="hidden" name="expiry" value="${escape(expiry)}">` +

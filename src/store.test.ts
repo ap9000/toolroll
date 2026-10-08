@@ -5,25 +5,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { SCHEMA_VERSION, databasePath, isLifecycleNotification, openStore, BUILT_IN, type Capability, type Store } from "./store.js";
 import { acquire } from "./claim.js";
 import { register } from "./runner.js";
-import { canonicalProfileJson, profileDigestOf, digestOf } from "./scope.js";
-
-/** The profile an attended authorization pins in these fixtures, and the
- * legacy stamp an attended attempt presents for it (atomic authority
- * closure): the admission requires a readable pin, and consumes the one
- * attempt inside the insert. */
-const ATTENDED_PROFILE = { provider: "claude" as const, model: "sonnet", permissionArgv: "acceptEdits" as const, maxTurns: 40, repairMaxTurns: 4, timeoutSeconds: 1800, repairTimeoutSeconds: 300, repairModel: "inherit" };
-const attendedTerms = (): string => JSON.stringify({ profileJson: canonicalProfileJson(ATTENDED_PROFILE) });
-const attendedStamp = (phase: "build" | "repair" = "build") => ({
-  route: { routeDigest: `profile:${profileDigestOf(ATTENDED_PROFILE)}`, phase, provider: "claude", model: "sonnet", chosen: "legacy" as const },
-});
-const attendedRun = (
-  s: Store,
-  run: { taskRef: number; leaseId: string; runner: string; branch: string; worktree: string; authorization: { id: string; runner: string; generation: number }; now: Date; parentRun?: number; sessionId?: string },
-): number => {
-  const admitted = s.admitAttended({ ...run, provider: "claude", model: "sonnet", ...attendedStamp() });
-  if (!admitted.ok) throw new Error(admitted.problem);
-  return admitted.runId;
-};
+import { digestOf } from "./scope.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -188,13 +170,12 @@ const presented = (
   s: Pick<import("./store.js").Store, "routeAuthorityFor">,
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
-  bound: { index: number; entryDigest: string } | null = null,
   spend: { provider: string; model: string | null } = { provider: "claude", model: null },
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
   // A task with no scope presents the bare word `legacy` for the pair it
   // spends as (atomic authority closure): the default claude pair, or the
   // exact pair a fixture names.
-  const authority = s.routeAuthorityFor(taskRef, role, bound) ?? s.routeAuthorityFor(taskRef, role, bound, spend);
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, spend);
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -1909,21 +1890,10 @@ describe("migration from a v6 database (planning, v7)", () => {
       const ref = store.handle.prepare("SELECT plan, plan_strikes FROM task_ref WHERE id = 1").get();
       expect(ref).toMatchObject({ plan: null, plan_strikes: 0 });
 
-      // v8 rode the same open: the routine tables exist, the instance link
-      // is present and honestly NULL, and a standing order can be filed on
-      // the migrated database.
+      // v8 rode the same open: the instance link (history since v115) is
+      // present and honestly NULL.
       const ref8 = store.handle.prepare("SELECT routine_id FROM task_ref WHERE id = 1").get();
       expect(ref8).toMatchObject({ routine_id: null });
-      const created = store.createRoutine(
-        {
-          name: "deps", repo: "/work/repo", goal: "refresh", outOfScope: null,
-          touches: [], acceptance: [], requirements: [], schedule: "every:60",
-          singleFlight: true, costCeilingUsd: null, digest: "d".repeat(32),
-        },
-        new Date("2026-08-12T03:00:00.000Z"),
-      );
-      expect(created.ok).toBe(true);
-      expect(store.routineByName("deps")?.paused).toBe(false);
 
       // v9 rode the same open: history reads provider 'claude' truthfully
       // (nothing else ever spawned), a new run records its own, the agent
@@ -1933,7 +1903,7 @@ describe("migration from a v6 database (planning, v7)", () => {
       const codexRun = store.startRun({
         taskRef: 1, leaseId: "l-9", runner: "b", branch: "br", worktree: "/w9",
         provider: "codex", now: new Date("2026-08-12T04:00:00.000Z"),
-        ...presented(store, 1, "builder", null, { provider: "codex", model: null }),
+        ...presented(store, 1, "builder", { provider: "codex", model: null }),
       });
       expect(store.getRun(codexRun)?.provider).toBe("codex");
       const pin = store.handle.prepare("SELECT agent_provider, agent_model FROM task_ref WHERE id = 1").get();
@@ -2151,62 +2121,9 @@ describe("the v24 migration (Parity II foundations, rulings 10/11)", () => {
     store.close();
     rmSync(dirname(file), { recursive: true, force: true });
   });
-
-  test("an approved routine that cannot resolve is PARKED — approval demoted, said in provenance", () => {
-    const file = legacyDb(db => {
-      db.raw()
-        .prepare(
-          `INSERT INTO routine (name, repo, goal, touches, requirements, schedule, digest, approved_at, approved_by, approved_digest, next_fire_at, created_at, updated_at)
-           VALUES ('nightly', '/repo/x', 'check things', '[]', '[]', 'every:60', 'cafecafecafecafecafecafecafecafe', ?, 'alex', 'cafecafecafecafecafecafecafecafe', ?, ?, ?)`,
-        )
-        .run(T0.toISOString(), T0.toISOString(), T0.toISOString(), T0.toISOString());
-    });
-    const store = openStore(file);
-    const routine = store.listRoutines(null).find(one => one.name === "nightly");
-    expect(routine?.approvedAt).toBeNull();
-    expect(routine?.approvedDigest).toBeNull();
-    expect(routine?.nextFireAt).toBeNull();
-    store.close();
-    rmSync(dirname(file), { recursive: true, force: true });
-  });
-
-  test("legacy contestants get snapshots under race semantics 1; the stored fingerprint bytes survive", () => {
-    const file = legacyDb(db => {
-      db.createTask({ id: "t-race", title: "raced" }, T0);
-      const ref = db.refFor("built-in", "t-race").id;
-      db.raw()
-        .prepare(
-          `INSERT INTO tournament_terms (task_ref, generation, race_digest, agents, n, per_agent_budget_microusd, overrun_reserve_microusd, total_budget_microusd, price_version, retries, publication_policy, created_at)
-           VALUES (?, 1, 'feedfacefeedface', '[]', 2, 1000, 100, 5000, 1, 0, 'none', ?)`,
-        )
-        .run(ref, T0.toISOString());
-      const terms = Number(db.raw().prepare("SELECT id FROM tournament_terms").get()!["id"]);
-      db.raw()
-        .prepare(
-          `INSERT INTO contest (task_ref, terms, state, scope_digest, race_digest, created_at)
-           VALUES (?, ?, 'pick-wait', 'aaaa', 'feedfacefeedface', ?)`,
-        )
-        .run(ref, terms, T0.toISOString());
-      const contest = Number(db.raw().prepare("SELECT id FROM contest").get()!["id"]);
-      db.raw()
-        .prepare(
-          `INSERT INTO contestant (contest, ordinal, provider, model, repair_model, branch, budget_microusd, reserve_microusd)
-           VALUES (?, 1, 'claude', 'claude-sonnet-5', 'inherit', 'race/a', 1000, 100)`,
-        )
-        .run(contest);
-    });
-    const store = openStore(file);
-    const contestRow = store.raw().prepare("SELECT race_semantics, race_digest FROM contest").get()!;
-    expect(Number(contestRow["race_semantics"])).toBe(1);
-    expect(String(contestRow["race_digest"])).toBe("feedfacefeedface");
-    const contestant = store.raw().prepare("SELECT profile_json FROM contestant").get()!;
-    expect(String(contestant["profile_json"])).toContain("claude-sonnet-5");
-    store.close();
-    rmSync(dirname(file), { recursive: true, force: true });
-  });
 });
 
-describe("the v25 attended core: migration, authorizations, the turn ledger, custody", () => {
+describe("the v25 migration: many decisions per run", () => {
   const T0 = new Date("2026-08-25T22:00:00.000Z");
   const later = (seconds: number): Date => new Date(T0.getTime() + seconds * 1000);
 
@@ -2219,50 +2136,6 @@ describe("the v25 attended core: migration, authorizations, the turn ledger, cus
     store.raw().prepare("UPDATE schema_version SET version = 24").run();
     store.close();
     return file;
-  };
-
-  /** A live held run: task, claim, run bound to a minted authorization,
-   * open custody row — the shape every ledger gate assumes. */
-  const heldFixture = (store: ReturnType<typeof openStore>) => {
-    store.createTask({ id: "t-held", title: "watched work" }, T0);
-    const ref = store.refFor("built-in", "t-held");
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at)
-         VALUES ('lease-held', ?, 1, 'mac-a', ?, ?, ?)`,
-      )
-      .run(ref.id, T0.toISOString(), later(900).toISOString(), T0.toISOString());
-    const minted = store.mintAttendedAuthorization({
-      id: "auth-1",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "mac-a",
-      runnerGeneration: 1,
-      compositeDigest: "d".repeat(32),
-      termsJson: attendedTerms(),
-      maxSessionTurns: 4,
-      budgetMicrousd: 1_000_000,
-      absoluteExpiry: later(3600).toISOString(),
-      now: T0,
-    });
-    expect(minted.ok).toBe(true);
-    // The attended admission binds the row and consumes the one attempt
-    // in its own insert (atomic authority closure).
-    const run = attendedRun(store, { taskRef: ref.id, leaseId: "lease-held", runner: "mac-a", branch: "so/t-held", worktree: "/tmp/wt", authorization: { id: "auth-1", runner: "mac-a", generation: 1 }, now: T0 });
-    expect(store.readAuthorization("auth-1")?.attemptRun).toBe(run);
-    const custody = store.openHeldSession({
-      run,
-      authorizationId: "auth-1",
-      runner: "mac-a",
-      leaseId: "lease-held",
-      upIncarnation: "inc-1",
-      cookie: "c".repeat(32),
-      socketPath: "/tmp/so.sock",
-      now: T0,
-    });
-    expect(custody.ok).toBe(true);
-    return { ref, run };
   };
 
   test("a v24 database reaches v25: the decision table admits many decisions per run, runs admit 'interrupted', existing rows survive byte-for-byte", () => {
@@ -2343,389 +2216,7 @@ describe("the v25 attended core: migration, authorizations, the turn ledger, cus
     store.close();
     rmSync(dirname(file), { recursive: true, force: true });
   });
-
-  test("authorization lifecycle: an expired predecessor is closed inside the mint; a live one refuses; consume is once", () => {
-    const store = openStore(":memory:");
-    store.createTask({ id: "t-a", title: "authorized" }, T0);
-    const ref = store.refFor("built-in", "t-a");
-    const first = store.mintAttendedAuthorization({
-      id: "auth-old",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "mac-a",
-      runnerGeneration: 1,
-      compositeDigest: "a".repeat(32),
-      termsJson: "{}",
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      absoluteExpiry: later(60).toISOString(),
-      now: T0,
-    });
-    expect(first.ok).toBe(true);
-    // still live: a second mint refuses — revoke, never silently supersede
-    const refused = store.mintAttendedAuthorization({
-      id: "auth-refused",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "mac-a",
-      runnerGeneration: 1,
-      compositeDigest: "b".repeat(32),
-      termsJson: "{}",
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      absoluteExpiry: later(3600).toISOString(),
-      now: later(10),
-    });
-    expect(refused).toMatchObject({ ok: false, reason: "authorization-open" });
-    // past expiry the mint closes the corpse itself, in its own transaction
-    const second = store.mintAttendedAuthorization({
-      id: "auth-new",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "mac-a",
-      runnerGeneration: 1,
-      compositeDigest: "c".repeat(32),
-      termsJson: attendedTerms(),
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      absoluteExpiry: later(3600).toISOString(),
-      now: later(120),
-    });
-    expect(second.ok).toBe(true);
-    expect(store.readAuthorization("auth-old")?.endReason).toBe("expired");
-    expect(store.openAuthorizationFor(ref.id)?.id).toBe("auth-new");
-    // the one attempt: a second consumer loses the CAS
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at)
-         VALUES ('lease-a', ?, 1, 'mac-a', ?, ?, ?)`,
-      )
-      .run(ref.id, T0.toISOString(), later(900).toISOString(), T0.toISOString());
-    // The attempt is consumed and bound by the admission itself (atomic
-    // authority closure): the generic road opens nothing beside an open
-    // authorization; a wrong runner, generation, or id opens nothing and
-    // leaves the authorization unspent; the exact one binds both sides in
-    // one insert, and a second admission or consume loses.
-    const rows = () => Number((store.raw().prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n);
-    const before = rows();
-    expect(() => store.startRun({ taskRef: ref.id, leaseId: "lease-a", runner: "mac-a", branch: "b", worktree: "/w", now: later(130), ...presented(store, ref.id, "builder") })).toThrow(/an attended attempt is admitted by admitAttended/);
-    const attempt = (over: Partial<Parameters<Store["admitAttended"]>[0]>) =>
-      store.admitAttended({ taskRef: ref.id, leaseId: "lease-a", runner: "mac-a", branch: "b", worktree: "/w", provider: "claude", model: "sonnet", authorization: { id: "auth-new", runner: "mac-a", generation: 1 }, now: later(130), ...attendedStamp(), ...over });
-    expect(attempt({ runner: "other-machine", authorization: { id: "auth-new", runner: "other-machine", generation: 1 } })).toMatchObject({ ok: false, problem: expect.stringMatching(/names runner mac-a — an attempt on other-machine/) });
-    expect(attempt({ authorization: { id: "auth-new", runner: "mac-a", generation: 999 } })).toMatchObject({ ok: false, problem: expect.stringMatching(/minted for mac-a at generation 1, not 999/) });
-    expect(attempt({ authorization: { id: "auth-old", runner: "mac-a", generation: 1 } })).toMatchObject({ ok: false, problem: expect.stringMatching(/open attended authorization is auth-new, not auth-old/) });
-    expect(attempt({ route: { routeDigest: "legacy", phase: "build", provider: "claude", model: "sonnet", chosen: "legacy" } })).toMatchObject({ ok: false, problem: expect.stringMatching(/spends under the authorization's pinned profile/) });
-    expect(rows()).toBe(before);
-    expect(store.readAuthorization("auth-new")?.attemptRun).toBeNull();
-    // INJECTED WRITE FAILURES (final authority closure): the admission is
-    // one transaction — a failure on the run_route insert, on the
-    // authorization's CAS, or on the run insert itself rolls every write
-    // back: no run row, `attempt_run` still null, nothing half-bound.
-    const raw = store.raw();
-    const realPrepare = raw.prepare.bind(raw);
-    for (const doomed of ["INSERT INTO run_route", "UPDATE attended_authorization SET attempt_run", "INSERT INTO run ("]) {
-      raw.prepare = ((sql: string) => {
-        if (sql.includes(doomed)) throw new Error(`injected: ${doomed}`);
-        return realPrepare(sql);
-      }) as typeof raw.prepare;
-      try {
-        expect(() => attempt({})).toThrow(/injected/);
-      } finally {
-        raw.prepare = realPrepare;
-      }
-      expect(rows()).toBe(before);
-      expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run_route").get()).toEqual({ n: 0 });
-      expect(store.readAuthorization("auth-new")).toMatchObject({ attemptRun: null, consumedAt: null, closedAt: null });
-    }
-    const admitted = attempt({});
-    expect(admitted.ok).toBe(true);
-    const run = admitted.ok ? admitted.runId : -1;
-    expect(store.getRun(run)?.attendedAuthorization).toBe("auth-new");
-    expect(store.readAuthorization("auth-new")).toMatchObject({ attemptRun: run, consumedAt: later(130).toISOString() });
-    expect(attempt({ leaseId: "lease-b", now: later(131) })).toMatchObject({ ok: false, problem: expect.stringMatching(/already spent its one attempt on run #\d+/) });
-    // NO POST-INSERT CONSUME ROAD (final authority closure): the two-write
-    // path that once bound any run — a cross-task, wrong-runner one
-    // included — to an authorization after the fact does not exist; the
-    // one attempt binds inside admitAttended or not at all.
-    expect((store as unknown as Record<string, unknown>)["consumeAuthorization"]).toBeUndefined();
-    expect(rows()).toBe(before + 1);
-    store.close();
-  });
-
-  test("the beat is durable with 5-second duplicate suppression, and closure stops it", () => {
-    const store = openStore(":memory:");
-    store.createTask({ id: "t-b", title: "beaten" }, T0);
-    const ref = store.refFor("built-in", "t-b");
-    store.mintAttendedAuthorization({
-      id: "auth-b",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "mac-a",
-      runnerGeneration: 1,
-      compositeDigest: "a".repeat(32),
-      termsJson: "{}",
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      absoluteExpiry: later(3600).toISOString(),
-      now: T0,
-    });
-    expect(store.beatAuthorization("auth-b", later(15))).toBe(true);
-    // a duplicate tab inside the 5s window is suppressed — the clock does not regress or churn
-    expect(store.beatAuthorization("auth-b", later(17))).toBe(false);
-    // the scheduled next beat lands
-    expect(store.beatAuthorization("auth-b", later(30))).toBe(true);
-    expect(store.readAuthorization("auth-b")?.lastBeatAt).toBe(later(30).toISOString());
-    expect(store.closeAuthorization("auth-b", "revoked", later(40))).toBe(true);
-    expect(store.beatAuthorization("auth-b", later(50))).toBe(false);
-    store.close();
-  });
-
-  test("the turn ledger's happy path: recorded → written → accepted → settled, with marginal-delta accounting advancing the baseline and the run aggregates", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    const first = store.recordSessionTurn({ run, sourceKind: "brief", text: "the brief", now: later(1) });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    // reservation = the whole remaining budget
-    expect(first.turn.reservedMicrousd).toBe(1_000_000);
-    expect(store.markTurnWritten(first.turn.id, later(2))).toBe(true);
-    expect(store.markTurnAccepted(first.turn.id, later(3))).toBe(true);
-    const settled = store.settleTurn(first.turn.id, { cumulativeMicrousd: 30_000, outputTokens: 40, now: later(8) });
-    expect(settled).toMatchObject({ ok: true, measuredMicrousd: 30_000 });
-    // a second turn: reservation shrank by exactly the measured spend
-    const second = store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "now the tests", now: later(9) });
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.turn.reservedMicrousd).toBe(970_000);
-    // cumulative totals: turn 2's measured charge is the DELTA, not the total
-    store.markTurnWritten(second.turn.id, later(10));
-    store.markTurnAccepted(second.turn.id, later(11));
-    const settled2 = store.settleTurn(second.turn.id, { cumulativeMicrousd: 34_000, outputTokens: 10, now: later(15) });
-    expect(settled2).toMatchObject({ ok: true, measuredMicrousd: 4_000 });
-    const runRow = store.getRun(run)!;
-    expect(runRow.costUsd).toBeCloseTo(0.034, 6);
-    expect(runRow.tokensOut).toBe(50);
-    store.close();
-  });
-
-  test("the recording gates: single-flight, the cap, budget exhaustion, and the open-decision rule each refuse typed", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    const first = store.recordSessionTurn({ run, sourceKind: "brief", text: "one", now: later(1) });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    // single flight: the last turn is unsettled
-    expect(store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "two", now: later(2) })).toMatchObject({
-      ok: false,
-      reason: "turn-open",
-    });
-    store.settleTurnTerminal(first.turn.id, "cancelled", later(3));
-    // an open decision outranks free-form speech
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO decision (run, urgency, state, recap, question, options, recommendation, created_at)
-         VALUES (?, 'blocking', 'open', 'r', 'q', '[]', 'rec', ?)`,
-      )
-      .run(run, later(4).toISOString());
-    expect(store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "three", now: later(5) })).toMatchObject({
-      ok: false,
-      reason: "decision-open",
-    });
-    store.raw().prepare("UPDATE decision SET state = 'answered', answered_at = ?, answered_by = 'alex' WHERE run = ?").run(later(6).toISOString(), run);
-    // budget: an uncertain turn charged its whole reservation exhausts the authorization
-    const burner = store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "four", now: later(7) });
-    expect(burner.ok).toBe(true);
-    if (!burner.ok) return;
-    store.markTurnWritten(burner.turn.id, later(8));
-    store.settleTurnTerminal(burner.turn.id, "uncertain", later(9));
-    expect(store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "five", now: later(10) })).toMatchObject({
-      ok: false,
-      reason: "budget-exhausted",
-    });
-    store.close();
-  });
-
-  test("the turn cap counts EVERY injection and refuses past it", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    for (let i = 0; i < 4; i += 1) {
-      const turn = store.recordSessionTurn({ run, sourceKind: "brief", text: `t${i}`, now: later(i + 1) });
-      expect(turn.ok).toBe(true);
-      if (turn.ok) {
-        store.markTurnWritten(turn.turn.id, later(i + 1));
-        store.markTurnAccepted(turn.turn.id, later(i + 1));
-        expect(store.settleTurn(turn.turn.id, { cumulativeMicrousd: (i + 1) * 1000, outputTokens: 1, now: later(i + 2) }).ok).toBe(true);
-      }
-    }
-    expect(store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "past the cap", now: later(20) })).toMatchObject({
-      ok: false,
-      reason: "turn-cap",
-    });
-    store.close();
-  });
-
-  test("answers deliver exactly once, attach only at ACCEPTANCE, and revert when the turn never got there", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO decision (run, urgency, state, recap, question, options, recommendation, created_at, answered_at, answered_by, choice)
-         VALUES (?, 'blocking', 'answered', 'r', 'q', '[]', 'rec', ?, ?, 'alex', 'option-a')`,
-      )
-      .run(run, later(1).toISOString(), later(2).toISOString());
-    const decision = Number(store.raw().prepare("SELECT id FROM decision WHERE run = ?").get(run)!["id"]);
-    const answer = store.recordSessionTurn({ run, sourceKind: "answer", sourceId: decision, text: "alex chose option-a", now: later(3) });
-    expect(answer.ok).toBe(true);
-    if (!answer.ok) return;
-    // the delivery-CAS is taken: a duplicate injection refuses
-    expect(store.recordSessionTurn({ run, sourceKind: "answer", sourceId: decision, text: "again", now: later(4) })).toMatchObject({
-      ok: false,
-      reason: "turn-open",
-    });
-    // written but the process died before this turn's init: terminal, and the
-    // delivery claim REVERTS so the ordinary road can deliver later
-    store.markTurnWritten(answer.turn.id, later(5));
-    expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run_decision WHERE decision = ?").get(decision)!["n"]).toBe(0);
-    store.settleTurnTerminal(answer.turn.id, "uncertain", later(6));
-    expect(store.raw().prepare("SELECT delivered_turn FROM decision WHERE id = ?").get(decision)!["delivered_turn"]).toBeNull();
-    expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run_decision WHERE decision = ?").get(decision)!["n"]).toBe(0);
-    // the uncertain charge consumed the WHOLE reservation — which was the
-    // whole remaining budget — so the session cannot retry in-place: that is
-    // the conservative arithmetic, not a bug. The decision is redeliverable
-    // by the ORDINARY road: state answered, no run_decision row, delivery
-    // claim cleared — exactly what attachAnswers consumes on the next attempt.
-    const retry = store.recordSessionTurn({ run, sourceKind: "answer", sourceId: decision, text: "again", now: later(7) });
-    expect(retry).toMatchObject({ ok: false, reason: "budget-exhausted" });
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at)
-         VALUES ('lease-next', (SELECT task_ref FROM run WHERE id = ?), 2, 'mac-a', ?, ?, ?)`,
-      )
-      .run(run, later(8).toISOString(), later(1000).toISOString(), later(8).toISOString());
-    // The attended session ended with its one attempt spent: an OPEN
-    // authorization whose attempt is spent admits nothing else (raw
-    // authority repair) — the next attempt is unattended, after closure.
-    const heldRef = Number(store.raw().prepare("SELECT task_ref FROM run WHERE id = ?").get(run)!["task_ref"]);
-    expect(() => store.startRun({
-      taskRef: heldRef,
-      leaseId: "lease-next", runner: "mac-a", branch: "so/t-held", worktree: "/tmp/wt2", now: later(9),
-      ...presented(store, heldRef, "builder"),
-    })).toThrow(/an attended attempt is admitted by admitAttended, and nothing else builds beside it/);
-    expect(store.admitAttended({ taskRef: heldRef, leaseId: "lease-next", runner: "mac-a", branch: "so/t-held", worktree: "/tmp/wt2", provider: "claude", model: "sonnet", authorization: { id: "auth-1", runner: "mac-a", generation: 1 }, now: later(9), ...attendedStamp() })).toMatchObject({ ok: false, problem: expect.stringMatching(/already spent its one attempt on run #\d+/) });
-    expect(store.closeAuthorization("auth-1", "run-ended", later(8))).toBe(true);
-    const resumed = store.startRun({
-      taskRef: Number(store.raw().prepare("SELECT task_ref FROM run WHERE id = ?").get(run)!["task_ref"]),
-      leaseId: "lease-next",
-      runner: "mac-a",
-      branch: "so/t-held",
-      worktree: "/tmp/wt2",
-      now: later(9),
-      ...presented(store, Number(store.raw().prepare("SELECT task_ref FROM run WHERE id = ?").get(run)!["task_ref"]), "builder"),
-    });
-    const attached = store.attachAnswers(resumed, Number(store.raw().prepare("SELECT task_ref FROM run WHERE id = ?").get(run)!["task_ref"]));
-    expect(attached.map(one => one.id)).toContain(decision);
-    store.close();
-  });
-
-  test("a regressing cumulative total is a TELEMETRY failure: reservation charged, baseline kept, never silently zero", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    const first = store.recordSessionTurn({ run, sourceKind: "brief", text: "one", now: later(1) });
-    if (!first.ok) throw new Error("fixture");
-    store.markTurnWritten(first.turn.id, later(2));
-    store.markTurnAccepted(first.turn.id, later(3));
-    expect(store.settleTurn(first.turn.id, { cumulativeMicrousd: 50_000, outputTokens: 5, now: later(4) }).ok).toBe(true);
-    const second = store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "two", now: later(5) });
-    if (!second.ok) throw new Error("fixture");
-    store.markTurnWritten(second.turn.id, later(6));
-    store.markTurnAccepted(second.turn.id, later(7));
-    const settled = store.settleTurn(second.turn.id, { cumulativeMicrousd: 10_000, outputTokens: 1, now: later(8) });
-    expect(settled).toMatchObject({ ok: false, reason: "telemetry" });
-    const turn = store.readSessionTurn(second.turn.id)!;
-    expect(turn.state).toBe("uncertain");
-    expect(turn.accountedMicrousd).toBe(turn.reservedMicrousd);
-    // the baseline did not regress
-    expect(store.heldSessionOf(run)?.cumulativeMicrousd).toBe(50_000);
-    store.close();
-  });
-
-  test("a result whose init was missed still settles — and back-fills the acceptance it proves", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    const turn = store.recordSessionTurn({ run, sourceKind: "brief", text: "one", now: later(1) });
-    if (!turn.ok) throw new Error("fixture");
-    store.markTurnWritten(turn.turn.id, later(2));
-    const settled = store.settleTurn(turn.turn.id, { cumulativeMicrousd: 9_000, outputTokens: 2, now: later(6) });
-    expect(settled.ok).toBe(true);
-    const after = store.readSessionTurn(turn.turn.id)!;
-    expect(after.state).toBe("settled");
-    expect(after.acceptedAt).not.toBeNull();
-    store.close();
-  });
-
-  test("custody: sessions coexist per runner (v28), seize fences the lease inside ONE transaction, takeover waits for the deadline", () => {
-    const store = openStore(":memory:");
-    const { ref, run } = heldFixture(store);
-    // the runner's second hold refuses typed
-    store.createTask({ id: "t-second", title: "another" }, T0);
-    const ref2 = store.refFor("built-in", "t-second");
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at)
-         VALUES ('lease-2', ?, 1, 'mac-a', ?, ?, ?)`,
-      )
-      .run(ref2.id, T0.toISOString(), later(900).toISOString(), T0.toISOString());
-    const run2 = store.startRun({ taskRef: ref2.id, leaseId: "lease-2", runner: "mac-a", branch: "b2", worktree: "/w2", now: T0, ...presented(store, ref2.id, "builder") });
-    expect(
-      store.openHeldSession({
-        run: run2,
-        authorizationId: "auth-1",
-        runner: "mac-a",
-        leaseId: "lease-2",
-        upIncarnation: "inc-1",
-        cookie: "d".repeat(32),
-        socketPath: "/tmp/so2.sock",
-        now: later(1),
-      }),
-    ).toMatchObject({ ok: true }); // v28: a second session on the same runner HOLDS — the per-runner bound is withdrawn
-    expect(store.openHeldSessionCount("mac-a")).toBe(2);
-    store.endHeldSession(run2, "finished", later(2));
-    // seize: CAS open→fencing AND the lease dies in the same transaction
-    const seized = store.seizeHeldSession(run, "fencer-a", later(120), later(10));
-    expect(seized.ok).toBe(true);
-    expect(store.currentLiveLease(ref.id, later(11))).toBeNull();
-    // a fenced coordinator's next injection fails INSIDE the recording transaction
-    expect(store.recordSessionTurn({ run, sourceKind: "operator", author: "alex", text: "late", now: later(12) })).toMatchObject({
-      ok: false,
-      reason: "fenced",
-    });
-    // a second fencer loses while the first is live…
-    expect(store.seizeHeldSession(run, "fencer-b", later(240), later(13)).ok).toBe(false);
-    expect(store.takeoverHeldFencing(run, "fencer-b", later(240), later(14))).toBe(false);
-    // …and takes over once the deadline expires
-    expect(store.takeoverHeldFencing(run, "fencer-b", later(300), later(130))).toBe(true);
-    // only the CURRENT owner closes
-    expect(store.closeHeldFencing(run, "fencer-a", "orphaned", later(131))).toBe(false);
-    expect(store.closeHeldFencing(run, "fencer-b", "orphaned", later(132))).toBe(true);
-    expect(store.heldSessionOf(run)?.endReason).toBe("orphaned");
-    store.close();
-  });
-
-  test("a held claim does not occupy the runner's capacity slot; an ended one does again", () => {
-    const store = openStore(":memory:");
-    const { run } = heldFixture(store);
-    expect(store.liveClaimCount("mac-a", later(1))).toBe(0);
-    store.endHeldSession(run, "finished", later(2));
-    expect(store.liveClaimCount("mac-a", later(3))).toBe(1);
-    store.close();
-  });
 });
-
 
 describe("the v26 attested runtime: phase_config admits gemini", () => {
   const T0 = new Date("2026-08-26T18:00:00.000Z");
@@ -2798,166 +2289,7 @@ describe("the v26 attested runtime: phase_config admits gemini", () => {
   });
 });
 
-
-describe("the v27 comparison migration: tournament_terms rebuilt, kind-aware money CHECKs", () => {
-  const T0 = new Date("2026-08-26T20:00:00.000Z");
-
-  const V26_TERMS_DDL = `CREATE TABLE tournament_terms (
-  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref                  INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  generation                INTEGER NOT NULL,
-  active                    INTEGER NOT NULL DEFAULT 1,
-  race_digest               TEXT NOT NULL,
-  -- The ordered agents, JSON: [{provider, model, repairModel}] — exact
-  -- model ids, resolved at filing, priced at price_version.
-  agents                    TEXT NOT NULL,
-  n                         INTEGER NOT NULL CHECK (n BETWEEN 2 AND 4),
-  per_agent_budget_microusd INTEGER NOT NULL CHECK (per_agent_budget_microusd > 0),
-  overrun_reserve_microusd  INTEGER NOT NULL CHECK (overrun_reserve_microusd > 0),
-  total_budget_microusd     INTEGER NOT NULL CHECK (total_budget_microusd > 0),
-  price_version             INTEGER NOT NULL,
-  retries                   INTEGER NOT NULL CHECK (retries = 0),
-  -- 'none', or the JSON of the publication grant constraints in force.
-  publication_policy        TEXT NOT NULL,
-  created_at                TEXT NOT NULL,
-  approved_at               TEXT,
-  approved_by               TEXT,
-  approved_digest           TEXT
-)`;
-
-  test("a v26 terms table is rebuilt: stored races keep kind='race' byte-for-byte, comparisons become filable", () => {
-    const dir = mkdtempSync(join(tmpdir(), "so-v27-migr-"));
-    const file = join(dir, "db.sqlite");
-    let store = openStore(file);
-    store.createTask({ id: "t-v27", title: "raced before v27" }, T0);
-    const taskRef = store.refFor("built-in", "t-v27").id;
-    const db = store.raw();
-    db.exec("DROP TABLE tournament_terms");
-    db.exec(V26_TERMS_DDL);
-    db.prepare(
-      `INSERT INTO tournament_terms (task_ref, generation, active, race_digest, agents, n, per_agent_budget_microusd,
-        overrun_reserve_microusd, total_budget_microusd, price_version, retries, publication_policy, created_at)
-       VALUES (?, 1, 1, 'digest-x', '[{"provider":"claude","model":"m","repairModel":"m"}, {"provider":"claude","model":"n","repairModel":"n"}]', 2, 5000000, 1760000, 20000000, 1, 0, 'none', ?)`,
-    ).run(taskRef, T0.toISOString());
-    db.exec("DROP TABLE service_cursor");
-    db.prepare("UPDATE schema_version SET version = 26").run();
-    store.close();
-
-    store = openStore(file);
-    const terms = store.activeTournamentTerms(taskRef);
-    expect(terms).toMatchObject({ kind: "race", raceDigest: "digest-x", perAgentBudgetMicrousd: 5_000_000 });
-    // the widened shape files comparisons now
-    store.createTask({ id: "t-v27b", title: "compared after v27" }, T0);
-    const otherRef = store.refFor("built-in", "t-v27b").id;
-    const filed = store.fileTournamentTerms(
-      {
-        taskRef: otherRef,
-        kind: "comparison",
-        raceDigest: "f".repeat(64),
-        agents: [
-          { provider: "claude", model: "m", repairModel: "m" },
-          { provider: "gemini", model: "g", repairModel: "g" },
-        ],
-        perAgentBudgetMicrousd: 0,
-        overrunReserveMicrousd: 0,
-        totalBudgetMicrousd: 0,
-        priceVersion: 0,
-        publicationPolicy: "none",
-      },
-      T0,
-    );
-    expect(filed).toBeGreaterThan(0);
-    expect(store.activeTournamentTerms(otherRef)).toMatchObject({ kind: "comparison" });
-    // The rebuild recreates the one-active partial unique (Codex slice-B
-    // finding 4): DROP TABLE dropped it, and startup's IF NOT EXISTS ran
-    // BEFORE the migration - the rebuild itself must restore the backstop.
-    const index = store
-      .raw()
-      .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'index' AND name = 'tournament_terms_one_active'")
-      .get();
-    expect(index).not.toBeUndefined();
-    expect(() =>
-      store.raw().prepare(
-        "INSERT INTO tournament_terms (task_ref, generation, active, kind, race_digest, agents, n, per_agent_budget_microusd, overrun_reserve_microusd, total_budget_microusd, price_version, retries, publication_policy, created_at) VALUES (?, 9, 1, 'race', 'dup', '[]', 2, 1, 1, 1, 1, 0, 'none', ?)",
-      ).run(otherRef, T0.toISOString()),
-    ).toThrow(/UNIQUE/);
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("a doctored terms table refuses — containing the old CHECK text is not being the old shape", () => {
-    const dir = mkdtempSync(join(tmpdir(), "so-v27-doct-"));
-    const file = join(dir, "db.sqlite");
-    const store = openStore(file);
-    const db = store.raw();
-    db.exec("DROP TABLE tournament_terms");
-    db.exec(V26_TERMS_DDL.replace("price_version             INTEGER NOT NULL,", "price_version             INTEGER NOT NULL, smuggled TEXT,"));
-    db.exec("DROP TABLE service_cursor");
-    db.prepare("UPDATE schema_version SET version = 26").run();
-    store.close();
-    expect(() => openStore(file)).toThrow(/not a shape this migration knows/);
-    rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-
-describe("the v28 parallel-sessions migration: the per-runner bound is withdrawn", () => {
-  const T0 = new Date("2026-08-26T22:00:00.000Z");
-
-  test("a migrated database drops one_held_session_per_runner; two custody rows on one runner coexist; run-held still refuses", () => {
-    const dir = mkdtempSync(join(tmpdir(), "so-v28-migr-"));
-    const file = join(dir, "db.sqlite");
-    let store = openStore(file);
-    // simulate the v27 world: recreate the old index, wind the version back
-    store.raw().exec("CREATE UNIQUE INDEX IF NOT EXISTS one_held_session_per_runner ON held_session (runner) WHERE ended_at IS NULL");
-    store.raw().exec("DROP TABLE service_cursor");
-    store.raw().prepare("UPDATE schema_version SET version = 27").run();
-    store.close();
-
-    store = openStore(file);
-    const gone = store
-      .raw()
-      .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'index' AND name = 'one_held_session_per_runner'")
-      .get();
-    expect(gone).toBeUndefined();
-
-    // two open sessions, one runner — the v28 point
-    const openSession = (tag: string, run: number) =>
-      store.openHeldSession({
-        run,
-        authorizationId: `auth-${tag}`,
-        runner: "mac-a",
-        leaseId: `lease-${tag}`,
-        upIncarnation: "inc",
-        cookie: "c".repeat(32),
-        socketPath: `/tmp/so-${tag}.sock`,
-        now: T0,
-      });
-    store.createTask({ id: "t-v28a", title: "a" }, T0);
-    store.createTask({ id: "t-v28b", title: "b" }, T0);
-    const refA = store.refFor("built-in", "t-v28a").id;
-    const refB = store.refFor("built-in", "t-v28b").id;
-    for (const [tag, ref] of [["a", refA], ["b", refB]] as const) {
-      const minted = store.mintAttendedAuthorization({
-        id: `auth-${tag}`, taskRef: ref, approver: "alex", runner: "mac-a", runnerGeneration: 1,
-        compositeDigest: "d".repeat(32), termsJson: attendedTerms(), maxSessionTurns: 4, budgetMicrousd: 1,
-        absoluteExpiry: new Date(T0.getTime() + 3_600_000).toISOString(), now: T0,
-      });
-      expect(minted.ok).toBe(true);
-    }
-    const runA = attendedRun(store, { taskRef: refA, leaseId: "lease-a", runner: "mac-a", branch: "a", worktree: "/w1", authorization: { id: "auth-a", runner: "mac-a", generation: 1 }, now: T0 });
-    const runB = attendedRun(store, { taskRef: refB, leaseId: "lease-b", runner: "mac-a", branch: "b", worktree: "/w2", authorization: { id: "auth-b", runner: "mac-a", generation: 1 }, now: T0 });
-    expect(openSession("a", runA)).toMatchObject({ ok: true });
-    expect(openSession("b", runB)).toMatchObject({ ok: true });
-    expect(store.openHeldSessionCount("mac-a")).toBe(2);
-    // the per-RUN singular still holds
-    expect(openSession("b2", runB)).toMatchObject({ ok: false, reason: "run-held" });
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-describe("migration to v30 (fallback chains) from an AUTHENTIC v29 fixture", () => {
+describe("migration to v30 (credential identity) from an AUTHENTIC v29 fixture", () => {
   let dir: string;
   let db: string;
   beforeEach(() => {
@@ -2974,9 +2306,7 @@ describe("migration to v30 (fallback chains) from an AUTHENTIC v29 fixture", () 
     const seed = openStore(db); // opens AT current version
     const r = seed.raw();
     r.exec("PRAGMA foreign_keys = OFF");
-    // Rebuild the three v30-affected tables DOWN to their exact v29 shapes.
-    r.exec("DROP TABLE fallback_transition");
-    r.exec("DROP TABLE fallback_cycle");
+    // Rebuild the v30-affected quota table DOWN to its exact v29 shape.
     r.exec(`CREATE TABLE quota_v29 (
   runner      TEXT NOT NULL,
   provider    TEXT NOT NULL,
@@ -2996,8 +2326,8 @@ describe("migration to v30 (fallback chains) from an AUTHENTIC v29 fixture", () 
     seed.createTask({ id: "t-mig", title: "the work" }, new Date("2026-08-01T00:00:00.000Z"));
     seed.close();
 
-    // Stamp v29 and reopen — migrate() re-adds fallback tables, quota PK,
-    // any missing columns, and must not rewrite the seeded rows.
+    // Stamp v29 and reopen — migrate() re-adds the quota PK and any missing
+    // columns, and must not rewrite the seeded rows.
     const back = openStore(db);
     back.raw().exec("DROP TABLE service_cursor; UPDATE schema_version SET version = 29");
     back.close();
@@ -3005,8 +2335,8 @@ describe("migration to v30 (fallback chains) from an AUTHENTIC v29 fixture", () 
     const up = openStore(db);
     const u = up.raw();
     expect(u.prepare("SELECT version FROM schema_version").get()).toMatchObject({ version: SCHEMA_VERSION });
-    // The fallback tables returned; quota carries the identity PK.
-    expect(["fallback_cycle", "fallback_transition"].every(t => Number((u.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name=?").get(t) as { n: number }).n) === 1)).toBe(true);
+    // The fallback tables (removed in v115) never return; quota carries the identity PK.
+    expect(["fallback_cycle", "fallback_transition", "fallback_config"].some(t => Number((u.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name=?").get(t) as { n: number }).n) > 0)).toBe(false);
     const quotaPk = u.prepare("PRAGMA table_info(quota)").all().filter((c: Record<string, unknown>) => Number(c["pk"]) > 0).map((c: Record<string, unknown>) => String(c["name"]));
     expect(quotaPk).toContain("auth_mode");
     expect(quotaPk).toContain("credential_fp");
@@ -3015,8 +2345,6 @@ describe("migration to v30 (fallback chains) from an AUTHENTIC v29 fixture", () 
     expect(q).toMatchObject({ auth_mode: "subscription", credential_fp: "", state: "exhausted" });
     // The seeded task survived.
     expect(up.getTask("t-mig")).not.toBeNull();
-    // The uniqueness backstop exists (finding 1).
-    expect(Number((u.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='index' AND name='fallback_transition_step'").get() as { n: number }).n)).toBe(1);
     up.close();
     // Reopen: no churn, no throw.
     const again = openStore(db);
@@ -3040,61 +2368,14 @@ describe("malformed authority fails closed and never shrinks (v48)", () => {
   });
   afterEach(() => store.close());
 
-  test("a corrupt fallback configuration row files the scope UNRESOLVED in its words — never as a single-profile approval the operator did not configure", async () => {
-    const { propose, approve } = await import("./scope.js");
-    store.raw().prepare("INSERT INTO fallback_config (scope, phase, entries_json, updated_at, updated_by) VALUES (?, 'build', ?, ?, 'alex')").run(REPO, "[{\"provider\":\"codex\"", T0.toISOString());
-    expect(store.fallbackConfig(REPO)).toEqual([]);
-    expect(store.fallbackConfigProblem(REPO)).toContain("not valid JSON");
-    propose(store, { taskId: "t", goal: "guard", now: T0 });
-    const scope = store.getScope("t")!;
-    expect(scope.profileState).toBe("unresolved");
-    expect(scope.unresolvedReason).toContain("the configured fallback chain cannot file");
-    expect(scope.proposedChainJson).toBeNull();
-    expect(approve(store, "t", "alex", T0, scope.digest, token).ok).toBe(false);
-    // A well-formed list with a malformed entry reads the same way.
-    store.raw().prepare("UPDATE fallback_config SET entries_json = ? WHERE scope = ?").run(JSON.stringify([{ provider: "codex", model: "gpt-5-codex" }]), REPO);
-    expect(store.fallbackConfigProblem(REPO)).toContain("malformed");
-    propose(store, { taskId: "t", goal: "guard", now: T0 });
-    expect(store.getScope("t")?.profileState).toBe("unresolved");
-    // STRICT (raw authority repair): an entry carrying a key this code
-    // never writes, an unknown provider, a model that is not an exact id,
-    // a repair model that is not one, or an entry that is not an object —
-    // each is a stated problem, never "the known part of the entry".
-    for (const [label, entries, words] of [
-      ["an unknown key", [{ provider: "codex", model: "gpt-5-codex", authMode: "api-key", note: "x" }], /carries a key this code never writes/],
-      ["an unknown provider", [{ provider: "bard", model: "gpt-5-codex", authMode: "api-key" }], /names an unknown provider/],
-      ["a model that is not an id", [{ provider: "codex", model: "--dangerous", authMode: "api-key" }], /not an exact model id/],
-      ["an empty model", [{ provider: "codex", model: "", authMode: "api-key" }], /not an exact model id/],
-      ["a repair model that is not an id", [{ provider: "codex", model: "gpt-5-codex", authMode: "api-key", repairModel: "a b" }], /not an exact model id/],
-      ["a bogus auth mode", [{ provider: "codex", model: "gpt-5-codex", authMode: "maybe" }], /malformed/],
-      ["a list entry", [["codex", "gpt-5-codex"]], /not an object/],
-    ] as const) {
-      store.raw().prepare("UPDATE fallback_config SET entries_json = ? WHERE scope = ?").run(JSON.stringify(entries), REPO);
-      expect(store.fallbackConfigProblem(REPO), label).toMatch(words);
-      expect(store.fallbackConfig(REPO), label).toEqual([]);
-      propose(store, { taskId: "t", goal: "guard", now: T0 });
-      expect(store.getScope("t")?.profileState, label).toBe("unresolved");
-      expect(store.getScope("t")?.unresolvedReason, label).toContain("the configured fallback chain cannot file");
-    }
-    // Repaired configuration: the chain files whole, and the approval binds it.
-    store.setFallbackConfig(REPO, [{ provider: "codex", model: "gpt-5-codex", authMode: "api-key" }], "alex", T0);
-    propose(store, { taskId: "t", goal: "guard", now: T0 });
-    const chained = store.getScope("t")!;
-    expect(chained.profileState).toBe("resolved");
-    expect(chained.proposedChainJson).not.toBeNull();
-    expect(approve(store, "t", "alex", T0, chained.digest, token).ok).toBe(true);
-    expect(store.approvedChainOf("t")).toHaveLength(2);
-  });
-
-  test("corrupt route, profile, or chain JSON on an approved scope reads as unreadable — no sealed route, no chain, no run, no nonce-worthy approval", async () => {
+  test("corrupt route or profile JSON on an approved scope reads as unreadable — no sealed route, no run, no nonce-worthy approval", async () => {
     const { propose, approve } = await import("./scope.js");
     const { routeOfTask } = await import("./agentconfig.js");
-    store.setFallbackConfig(REPO, [{ provider: "codex", model: "gpt-5-codex", authMode: "api-key" }], "alex", T0);
     propose(store, { taskId: "t", goal: "guard", now: T0 });
     expect(approve(store, "t", "alex", T0, store.getScope("t")!.digest, token).ok).toBe(true);
     const taskRef = store.refFor(BUILT_IN, "t").id;
     const admit = () => store.startRun({ taskRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: T0, ...presented(store, taskRef, "builder") });
-    const snapshot = store.raw().prepare("SELECT approved_route_json AS r, approved_profile_json AS p, approved_chain_json AS c FROM task_scope WHERE task_id = 't'").get() as { r: string; p: string; c: string };
+    const snapshot = store.raw().prepare("SELECT approved_route_json AS r, approved_profile_json AS p FROM task_scope WHERE task_id = 't'").get() as { r: string; p: string };
     // Corrupt route bytes.
     store.raw().prepare("UPDATE task_scope SET approved_route_json = '{\"version\":1' WHERE task_id = 't'").run();
     expect(store.sealedRouteOf("t")).toMatchObject({ ok: false, reason: "unreadable" });
@@ -3106,13 +2387,6 @@ describe("malformed authority fails closed and never shrinks (v48)", () => {
     expect(store.sealedRouteOf("t")).toMatchObject({ ok: false, reason: "unreadable" });
     expect(() => admit()).toThrow();
     store.raw().prepare("UPDATE task_scope SET approved_route_json = ? WHERE task_id = 't'").run(snapshot.r);
-    // Corrupt chain bytes: the chain approval has NO chain — it does not
-    // quietly become a single-profile approval.
-    store.raw().prepare("UPDATE task_scope SET approved_chain_json = '[{' WHERE task_id = 't'").run();
-    expect(store.approvedChainOf("t")).toBeNull();
-    expect(store.sealedRouteOf("t")).toMatchObject({ ok: false, reason: "unreadable" });
-    expect(() => admit()).toThrow(/sealed route/);
-    store.raw().prepare("UPDATE task_scope SET approved_chain_json = ? WHERE task_id = 't'").run(snapshot.c);
     // Corrupt profile bytes.
     store.raw().prepare("UPDATE task_scope SET approved_profile_json = 'nope' WHERE task_id = 't'").run();
     expect(store.getScope("t")?.approvedProfile ?? null).toBeNull();
@@ -3120,7 +2394,6 @@ describe("malformed authority fails closed and never shrinks (v48)", () => {
     store.raw().prepare("UPDATE task_scope SET approved_profile_json = ? WHERE task_id = 't'").run(snapshot.p);
     // Restored: the authority stands again, whole.
     expect(store.sealedRouteOf("t").ok).toBe(true);
-    expect(store.approvedChainOf("t")).toHaveLength(2);
     expect(store.runsFor(taskRef)).toHaveLength(0);
   });
 });
@@ -3146,7 +2419,7 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     store.createTask({ id: "t", title: "t" }, T0);
     taskRef = store.refFor(BUILT_IN, "t").id;
     store.placeTask(taskRef, REPO);
-    propose(store, { taskId: "t", goal: "guard", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], riskLevel: "elevated", now: T0 });
+    propose(store, { taskId: "t", goal: "guard", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check", "manual-review"] }], now: T0 });
     expect(approve(store, "t", "alex", T0, store.getScope("t")!.digest, added.token).ok).toBe(true);
     sealed = store.approvedRouteOf("t")!;
     digest = routeDigestOf(sealed);
@@ -3182,7 +2455,7 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     expect(() => admit({ route: { ...build, provider: "codex", model: "gpt-5-codex" }, provider: "codex", model: "gpt-5-codex" })).toThrow(/build leg is claude · sonnet \[recommended\], not codex · gpt-5-codex \[recommended\]/);
     expect(() => admit({ route: { ...build, chosen: "override" } })).toThrow(/\[recommended\], not claude · sonnet \[override\]/);
     // `fallback` never enters the generic admission (approved or not); legacy under a sealed route
-    expect(() => admit({ route: { ...build, chosen: "fallback" } })).toThrow(/admitted only through admitFallback/);
+    expect(() => admit({ route: { ...build, chosen: "fallback" } })).toThrow(/nothing opens as `fallback`/);
     expect(() => admit({ route: { ...build, routeDigest: "legacy", chosen: "legacy" } })).toThrow(/a sealed agent route governs this task — nothing spends as legacy/);
     // a parent that does not exist
     expect(() => admit({ role: "reviewer", parentRun: 1, branch: undefined, worktree: undefined, route: build })).toThrow(/run #1 does not exist — nothing continues it/);
@@ -3291,7 +2564,7 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     store.createTask({ id: "bare-task", title: "no scope" }, T0);
     const bareRef = store.refFor(BUILT_IN, "bare-task").id;
     expect(store.routeAuthorityFor(bareRef, "builder")).toBeNull();
-    expect(store.routeAuthorityFor(bareRef, "builder", null, { provider: "claude", model: null })).toMatchObject({ ok: true, stamp: { routeDigest: "legacy", chosen: "legacy", provider: "claude", model: null } });
+    expect(store.routeAuthorityFor(bareRef, "builder", { provider: "claude", model: null })).toMatchObject({ ok: true, stamp: { routeDigest: "legacy", chosen: "legacy", provider: "claude", model: null } });
     expect(() => store.startRun({ taskRef: bareRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: T0 })).toThrow(/this task has no scope and the caller presented no route authority — a run on such a task presents the bare word legacy/);
     expect(() => store.startRun({ taskRef: bareRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", provider: "codex", ...bareLegacy("build", "claude", null), now: T0 })).toThrow(/the stamp names claude but the run would spend as codex/);
     expect(() => store.startRun({ taskRef: bareRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "profile:" + "0".repeat(32), phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: T0 })).toThrow(/a task with no scope spends as the word legacy, not under a profile digest/);
@@ -3344,149 +2617,9 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     expect(store.runRoute(bareWord)).toMatchObject({ routeDigest: "legacy" });
   });
 
-  test("an ATTENDED session presents the authorization's pinned profile, exactly (v48 integrity): a foreign digest, the bare word, or another pair opens nothing on a scoped task", async () => {
-    const { canonicalProfileJson, profileDigestOf, propose } = await import("./scope.js");
-    // A filed, unapproved scope — the attended road's ordinary shape.
-    store.createTask({ id: "t-att", title: "watched" }, T0);
-    const attRef = store.refFor(BUILT_IN, "t-att").id;
-    store.placeTask(attRef, REPO);
-    propose(store, { taskId: "t-att", goal: "watched work", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: T0 });
-    const pinned = { provider: "claude" as const, model: "opus", permissionArgv: "auto" as const, maxTurns: 40, repairMaxTurns: 4, timeoutSeconds: 1800, repairTimeoutSeconds: 300, repairModel: "inherit" };
-    const minted = store.mintAttendedAuthorization({
-      id: "auth-exact", taskRef: attRef, approver: "alex", runner: "mac-a", runnerGeneration: 1, compositeDigest: "d".repeat(32),
-      termsJson: JSON.stringify({ profileJson: canonicalProfileJson(pinned) }), maxSessionTurns: 10, budgetMicrousd: 1_000_000, absoluteExpiry: later(3_600_000).toISOString(), now: T0,
-    });
-    expect(minted.ok).toBe(true);
-    const exact = `profile:${profileDigestOf(pinned)}`;
-    // Through the attended admission (atomic authority closure): the
-    // generic road opens nothing beside an open authorization at all.
-    const open = (over: Record<string, unknown>) => {
-      const admitted = store.admitAttended({ taskRef: attRef, leaseId: "l", runner: "mac-a", branch: "b", worktree: "/w", provider: "claude", model: "opus", authorization: { id: "auth-exact", runner: "mac-a", generation: 1 }, now: T0, ...over } as Parameters<Store["admitAttended"]>[0]);
-      if (!admitted.ok) throw new Error(admitted.problem);
-      return admitted.runId;
-    };
-    expect(() => store.startRun({ taskRef: attRef, leaseId: "l", runner: "mac-a", branch: "b", worktree: "/w", now: T0, route: { routeDigest: exact, phase: "build", provider: "claude", model: "opus", chosen: "legacy" } })).toThrow(/an attended attempt is admitted by admitAttended/);
-    expect(() => open({ route: { routeDigest: "legacy", phase: "build", provider: "claude", model: "opus", chosen: "legacy" } })).toThrow(/spends under the authorization's pinned profile/);
-    expect(() => open({ route: { routeDigest: "profile:" + "0".repeat(32), phase: "build", provider: "claude", model: "opus", chosen: "legacy" } })).toThrow(/spends under the authorization's pinned profile/);
-    expect(() => open({ route: { routeDigest: exact, phase: "build", provider: "claude", model: "sonnet", chosen: "legacy" }, model: "sonnet" })).toThrow(/pins claude · opus, not claude · sonnet/);
-    expect(() => open({ route: { routeDigest: exact, phase: "build", provider: "claude", model: "opus", chosen: "recommended" } })).toThrow(/an attended builder spends under the authorization's pinned profile \(a legacy stamp\), not as a recommended leg/);
-    // LIVENESS (raw authority repair): an expired authorization, or one
-    // whose single attempt is spent, admits nothing — proved in the insert.
-    store.raw().prepare("UPDATE attended_authorization SET absolute_expiry = ? WHERE id = 'auth-exact'").run(T0.toISOString());
-    expect(() => open({ route: { routeDigest: exact, phase: "build", provider: "claude", model: "opus", chosen: "legacy" } })).toThrow(/expired at .* — nothing spends under it/);
-    store.raw().prepare("UPDATE attended_authorization SET absolute_expiry = ? WHERE id = 'auth-exact'").run(later(3_600_000).toISOString());
-    expect(() => open({ route: { routeDigest: exact, phase: "build", provider: "claude", model: "opus", chosen: "legacy" }, custody: { kind: "base" } })).toThrow(/attended session spends under its own authority — it takes no chain custody/);
-    expect(store.runsFor(attRef)).toHaveLength(0);
-    const run = open({ route: { routeDigest: exact, phase: "build", provider: "claude", model: "opus", chosen: "legacy" } });
-    expect(store.getRun(run)).toMatchObject({ provider: "claude", model: "opus", chainCycle: null });
-    expect(store.runRoute(run)).toMatchObject({ routeDigest: exact, chosen: "legacy" });
-    // A repair turn under it names the pinned repair pair (inherit = the
-    // build model), through the repair road, mending the bound attempt —
-    // under the task's current live claim (final authority closure).
-    store.raw().prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at) VALUES ('l', ?, 1, 'mac-a', ?, ?, ?)").run(attRef, T0.toISOString(), later(900_000).toISOString(), T0.toISOString());
-    const repairVia = (model: string) =>
-      store.admitRepair({ taskRef: attRef, leaseId: "l", runner: "mac-a", branch: "b", worktree: "/w", provider: "claude", model, parentRun: run, now: T0, route: { routeDigest: exact, phase: "repair", provider: "claude", model, chosen: "legacy" } });
-    expect(repairVia("sonnet")).toMatchObject({ ok: false, problem: expect.stringMatching(/pins claude · opus/) });
-    const repaired = repairVia("opus");
-    expect(repaired.ok).toBe(true);
-    if (repaired.ok) expect(store.runRoute(repaired.runId)).toMatchObject({ phase: "repair", routeDigest: exact });
-  });
-
-  test("a fallback stamp binds the run to ONE exact chain entry: two entries sharing a provider and model but differing in auth mode or repair model are different authorities", async () => {
-    const { entryDigestOf, approve, chainDigestOf } = await import("./scope.js");
-    // Approve a chain whose two fallback entries are the same pair under
-    // different auth modes (api-key vs subscription) — legal, distinct.
-    store.setFallbackConfig(REPO, [
-      { provider: "codex", model: "gpt-5-codex", authMode: "api-key" },
-      { provider: "codex", model: "gpt-5-codex", authMode: "subscription" },
-    ], "alex", T0);
-    const { propose } = await import("./scope.js");
-    propose(store, { taskId: "t", goal: "guard", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], riskLevel: "elevated", now: T0 });
-    const added = store.getScope("t")!;
-    expect(added.proposedChainJson).not.toBeNull();
-    const yes = approve(store, "t", "alex", T0, added.digest, token);
-    expect(yes.ok).toBe(true);
-    const chain = store.approvedChainOf("t")!;
-    expect(chain).toHaveLength(3);
-    const sealedNow = store.approvedRouteOf("t")!;
-    const { routeDigestOf } = await import("./phase-routing.js");
-    const fallback = { routeDigest: routeDigestOf(sealedNow), phase: "build", provider: "codex", model: "gpt-5-codex", chosen: "fallback" } as const;
-    // The generic admission never opens `fallback`, bound or not (v48 integrity).
-    expect(() => admit({ provider: "codex", model: "gpt-5-codex", route: fallback })).toThrow(/admitted only through admitFallback/);
-    expect(runs()).toBe(0);
-    // The base takes the chain's custody in its insert; the fallback
-    // admission then binds the exact entry at the cycle's cursor + digest —
-    // a forged entry digest, a wrong pair, or the primary opens nothing.
-    const baseLeg = store.routeAuthorityFor(taskRef, "builder");
-    if (baseLeg === null || !baseLeg.ok) throw new Error("base leg");
-    // Under the task's current live claim (final admission closure): the
-    // base that opens the cycle, and the entry admitted after it, each
-    // open only under the lease that holds the task now.
-    store.raw().prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at) VALUES ('l', ?, 1, 'r', ?, ?, ?)").run(taskRef, T0.toISOString(), later(900_000).toISOString(), T0.toISOString());
-    const base = admit({ route: baseLeg.stamp, custody: { kind: "base" } });
-    const opened = store.fallbackCycleFor(taskRef)!;
-    store.beginFallbackSanitize(opened.id, 0, base, T0);
-    const adv = store.advanceFallbackFenced({ cycleId: opened.id, expectGeneration: 1, fromIndex: 0, chainLength: 3, predecessorRun: base, terminalClass: "usage-exhausted", evidence: { provider: "claude", version: "1.0.0", authMode: "subscription", fp: "" } }, T0);
-    if (!adv.ok) throw new Error("advance");
-    store.releaseFallbackToPending(opened.id, 2, T0);
-    store.raw().prepare("UPDATE claim SET released_at = ? WHERE lease_id = 'l'").run(T0.toISOString());
-    store.raw().prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at) VALUES ('lf', ?, 2, 'r', ?, ?, ?)").run(taskRef, T0.toISOString(), later(900_000).toISOString(), T0.toISOString());
-    const runArgs = { taskRef, leaseId: "lf", runner: "r", branch: "b", worktree: "/w", provider: "codex", model: "gpt-5-codex" };
-    const approvedFacts = { chainDigest: chainDigestOf(chain), profile: store.getScope("t")!.approvedProfile! };
-    const entryFacts = { kind: "entry" as const, cycleId: opened.id, expectGeneration: 3, expectCursor: 1, expectTail: null, transitionId: adv.transitionId, approved: approvedFacts };
-    const forged = store.admitFallback({ ...entryFacts, run: runArgs, entryDigest: entryDigestOf(chain[2]!), authMode: "subscription", repairModel: "gpt-5-codex", route: fallback }, T0);
-    expect(forged).toMatchObject({ ok: false, problem: expect.stringContaining("is not the approved entry 1's") });
-    const wrongPair = store.admitFallback({ ...entryFacts, run: { ...runArgs, model: "o3" }, entryDigest: entryDigestOf(chain[1]!), authMode: "api-key", repairModel: "gpt-5-codex", route: { ...fallback, model: "o3" } }, T0);
-    expect(wrongPair).toMatchObject({ ok: false, problem: expect.stringContaining("runs on codex · gpt-5-codex, not codex · o3") });
-    expect(runs()).toBe(1);
-    const admitted = store.admitFallback({ ...entryFacts, run: runArgs, entryDigest: entryDigestOf(chain[1]!), authMode: "api-key", repairModel: "gpt-5-codex", route: fallback }, T0);
-    expect(admitted.ok).toBe(true);
-    if (!admitted.ok) return;
-    expect(store.runRoute(admitted.runId)).toMatchObject({ chosen: "fallback", provider: "codex", model: "gpt-5-codex" });
-    expect(store.getRun(admitted.runId)).toMatchObject({ chainIndex: 1, entryDigest: entryDigestOf(chain[1]!), authMode: "api-key" });
-    // A repair turn under the bound run spends as the same entry's repair
-    // model — `fallback`, entry 1 — and is admitted by the fallback road
-    // alone, with the bound run as the live tail; the generic admission
-    // refuses it, and the sealed repair leg admits nothing here.
-    const boundRepair = store.routeAuthorityFor(taskRef, "repair", { index: 1, entryDigest: entryDigestOf(chain[1]!) });
-    expect(boundRepair).toMatchObject({ ok: true, stamp: { phase: "repair", chosen: "fallback", provider: "codex", model: "gpt-5-codex" } });
-    if (boundRepair === null || !boundRepair.ok) return;
-    const sealedRepair = store.routeAuthorityFor(taskRef, "repair");
-    if (sealedRepair === null || !sealedRepair.ok) throw new Error("repair leg");
-    // Under the task's current live claim `lf` (final authority closure),
-    // so the refusal proved here is the fallback road's, not the claim's.
-    const repairVia = (route: import("./phase-routing.js").RouteStamp) =>
-      store.admitRepair({ taskRef, leaseId: "lf", runner: "r", branch: "b", worktree: "/w", provider: "codex", model: "gpt-5-codex", parentRun: admitted.runId, now: T0, route });
-    expect(repairVia(sealedRepair.stamp)).toMatchObject({ ok: false, problem: expect.stringMatching(/admitted only through admitFallback/) });
-    expect(repairVia(boundRepair.stamp)).toMatchObject({ ok: false, problem: expect.stringMatching(/admitted only through admitFallback/) });
-    expect(runs()).toBe(2);
-    const repairFacts = { kind: "repair" as const, parentRun: admitted.runId, cycleId: opened.id, expectCursor: 1, expectTail: admitted.runId, entryDigest: entryDigestOf(chain[1]!), authMode: "api-key" as const, repairModel: "gpt-5-codex", approved: approvedFacts };
-    expect(store.admitFallback({ ...repairFacts, run: { ...runArgs, leaseId: "lr" }, route: sealedRepair.stamp }, T0)).toMatchObject({ ok: false, problem: expect.stringContaining("spends as `fallback`") });
-    expect(store.admitFallback({ ...repairFacts, run: { ...runArgs, leaseId: "lr" }, route: { ...boundRepair.stamp, phase: "build" } }, T0)).toMatchObject({ ok: false, problem: expect.stringContaining("a repair run spends as the repair leg") });
-    // The tail's own lease, the task's current live claim (final authority
-    // closure): a foreign lease admits no fallback repair turn either.
-    expect(store.admitFallback({ ...repairFacts, run: { ...runArgs, leaseId: "lr" }, route: boundRepair.stamp }, T0)).toMatchObject({ ok: false, problem: expect.stringMatching(/holds lease lf — a repair turn under lease lr is not its own/) });
-    expect(runs()).toBe(2);
-    const repaired = store.admitFallback({ ...repairFacts, run: { ...runArgs, leaseId: "lf" }, route: boundRepair.stamp }, T0);
-    expect(repaired.ok).toBe(true);
-    if (!repaired.ok) return;
-    const repair = repaired.runId;
-    expect(store.getRun(repair)).toMatchObject({ role: "repair", parentRun: admitted.runId, chainCycle: opened.id, chainIndex: 1, entryDigest: entryDigestOf(chain[1]!), authMode: "api-key" });
-    expect(store.runRoute(repair)).toMatchObject({ phase: "repair", chosen: "fallback", provider: "codex", model: "gpt-5-codex" });
-    expect(store.fallbackCycleFor(taskRef)!.tailRun).toBe(admitted.runId);
-    // A REVIEWER after the fallback spawns normally: under the review leg,
-    // taking no custody of the chain.
-    const reviewLeg = store.routeAuthorityFor(taskRef, "reviewer");
-    if (reviewLeg === null || !reviewLeg.ok) throw new Error("review leg");
-    store.finishRun(repair, { outcome: "failed", reason: "x", now: T0 });
-    const review = admit({ role: "reviewer", parentRun: admitted.runId, ...reviewable(admitted.runId), branch: undefined, worktree: undefined, provider: reviewLeg.stamp.provider, model: reviewLeg.stamp.model ?? undefined, route: reviewLeg.stamp });
-    expect(store.getRun(review)).toMatchObject({ role: "reviewer", chainCycle: null, chainIndex: null, entryDigest: null });
-    expect(store.runRoute(review)).toMatchObject({ phase: "review", chosen: reviewLeg.stamp.chosen });
-  });
-
   test("a stamp is proved against the authority the task holds NOW: a re-filed scope unseals the route, and the old digest no longer admits anything", async () => {
     const build = { routeDigest: digest, phase: "build", provider: "claude", model: "sonnet", chosen: "recommended" } as const;
-    const edited = store.editTaskRoute(taskRef, { by: "alex", authenticate: () => ({ ok: true }), risk: "high" }, T0);
+    const edited = store.editTaskRoute(taskRef, { by: "alex", authenticate: () => ({ ok: true }), size: { size: "large", risky: false } }, T0);
     expect(edited.ok).toBe(true);
     expect(() => admit({ route: build })).toThrow(/nothing spends as a recommended build leg without a sealed route/);
     expect(runs()).toBe(0);
@@ -3499,65 +2632,12 @@ describe("run admission proves route provenance before any row exists (v48)", ()
   });
 });
 
-describe("authority-integrity: a run row's chain binding and auth mode are read strictly", () => {
-  test("a corrupt auth mode, a fractional or empty chain index, or an empty entry digest reads as NO binding — every custody proof refuses, and an ended tail with an unreadable auth mode closes as an ordinary end, never as a subscription run", async () => {
-    const { addApprover, approve, propose } = await import("./scope.js");
-    const store = openStore(":memory:");
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", T0);
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", T0);
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "test", T0);
-    const added = addApprover(store, "alex", T0);
-    if (!added.ok) throw new Error("approver");
-    store.createTask({ id: "t", title: "t" }, T0);
-    const taskRef = store.refFor(BUILT_IN, "t").id;
-    store.placeTask(taskRef, REPO);
-    propose(store, { taskId: "t", goal: "guard", now: T0 });
-    expect(approve(store, "t", "alex", T0, store.getScope("t")!.digest, added.token).ok).toBe(true);
-    const leg = store.routeAuthorityFor(taskRef, "builder");
-    if (leg === null || !leg.ok) throw new Error("leg");
-    store.raw().prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at) VALUES ('l', ?, 1, 'r', ?, ?, ?)").run(taskRef, T0.toISOString(), later(900_000).toISOString(), T0.toISOString());
-    const run = store.startRun({ taskRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: T0, route: leg.stamp, custody: { kind: "base" } });
-    const sound = store.getRun(run)!;
-    expect(sound).toMatchObject({ chainIndex: 0, authMode: "subscription" });
-    expect(sound.chainCycle).not.toBeNull();
-    expect(store.proveChainCustodyForSpawn(run, T0)).toBe(true);
-    const set = (column: string, value: unknown) => store.raw().prepare(`UPDATE run SET ${column} = ? WHERE id = ?`).run(value as string, run);
-    // Auth mode: only the two words read; a third reads as null and the
-    // spawn proof refuses (the approved entry is pinned to a mode).
-    set("auth_mode", "bogus");
-    expect(store.getRun(run)!.authMode).toBeNull();
-    expect(store.proveChainCustodyForSpawn(run, T0)).toBe(false);
-    set("auth_mode", "subscription");
-    // Chain index: a fraction, text, or the empty string is no index — never 0.
-    for (const bad of [0.5, "zero", ""]) {
-      set("chain_index", bad);
-      expect(store.getRun(run)!.chainIndex).toBeNull();
-      expect(store.proveChainCustodyForSpawn(run, T0)).toBe(false);
-    }
-    set("chain_index", 0);
-    set("entry_digest", "");
-    expect(store.getRun(run)!.entryDigest).toBeNull();
-    expect(store.proveChainCustodyForSpawn(run, T0)).toBe(false);
-    set("entry_digest", sound.entryDigest);
-    expect(store.proveChainCustodyForSpawn(run, T0)).toBe(true);
-    // An ended tail whose auth mode no longer reads: an ordinary end.
-    store.stampTerminalClass(run, "subscription", "usage-exhausted");
-    store.finishRun(run, { outcome: "failed", reason: "exhausted", now: T0 });
-    set("auth_mode", "bogus");
-    expect(store.resolveChainOnRunEnd(taskRef, "t", REPO, run, T0)).toEqual({ kind: "closed", reason: "entry-ended" });
-    expect(store.fallbackCycleFor(taskRef)).toBeNull();
-    store.close();
-  });
-});
-
 describe("migration-recovery: authentic v47 and interrupted −47 databases upgrade without rerunning older data passes, changing ids, backfilling authority, or auto-approving", () => {
   /** A v47-shaped file with rows the OLDER data passes would touch if they
-   * ran again, a task steer the v24 pass would quarantine, and a routine
-   * approved under v47 (no route columns). Returns the ids to re-prove. */
+   * ran again, and a task steer the v24 pass would quarantine. Returns the
+   * ids to re-prove. (Routines are gone since v115: migration-v115-routines.test.ts.) */
   const seedV47 = async (dir: string, startVersion: number) => {
     const { addApprover } = await import("./scope.js");
-    const { routineDigestOf } = await import("./routine.js");
     const db = join(dir, "orders.db");
     const seeded = openStore(db);
     const raw = seeded.raw();
@@ -3575,42 +2655,22 @@ describe("migration-recovery: authentic v47 and interrupted −47 databases upgr
     ).run(T0.toISOString());
     // A steer note the v24 pass would supersede as 'unverified-author'.
     raw.prepare("INSERT INTO task_steer (task_ref, author, note, created_at, authorship_state) VALUES (?, 'alex', 'keep the old formatter', ?, 'unverified-legacy')").run(ref, T0.toISOString());
-    const profile = { provider: "claude" as const, model: "sonnet", permissionArgv: "acceptEdits" as const, maxTurns: 40, repairMaxTurns: 4, timeoutSeconds: 1800, repairTimeoutSeconds: 300, repairModel: "inherit" };
-    const rubric = [{ id: "c1", statement: "the lockfile is refreshed", how: null, evidence: ["check" as const] }];
-    const terms = { repo: REPO, goal: "refresh the lockfile", outOfScope: null, touches: ["package.json"], acceptance: rubric, requirements: [], schedule: "every:60", singleFlight: true, costCeilingUsd: null, budgetPerRunMicrousd: null };
-    const routineDigest = routineDigestOf(terms, profile);
-    const created = seeded.createRoutine({ name: "nightly-deps", ...terms, digest: routineDigest, profile }, T0);
-    if (!created.ok) throw new Error("routine");
-    raw.prepare("UPDATE routine SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approved_profile_json = profile_json, next_fire_at = ? WHERE id = ?").run(T0.toISOString(), new Date(T0.getTime() + 3_600_000).toISOString(), created.id);
-    // A routine approved BEFORE rubrics existed (final authority closure):
-    // its acceptance_json is NULL, exactly as the v39 migration left it.
-    const legacyTerms = { ...terms, acceptance: [] };
-    const legacyDigest = routineDigestOf(legacyTerms, profile);
-    const legacy = seeded.createRoutine({ name: "legacy-deps", ...legacyTerms, digest: legacyDigest, profile }, T0);
-    if (!legacy.ok) throw new Error("legacy routine");
-    raw.prepare("UPDATE routine SET acceptance_json = NULL, approved_at = ?, approved_by = 'alex', approved_digest = digest, approved_profile_json = profile_json, next_fire_at = ? WHERE id = ?").run(T0.toISOString(), new Date(T0.getTime() + 3_600_000).toISOString(), legacy.id);
-    raw.exec("ALTER TABLE routine DROP COLUMN route_json");
-    raw.exec("ALTER TABLE routine DROP COLUMN approved_route_json");
     const before = {
       scope: raw.prepare("SELECT * FROM task_scope WHERE task_id = 't-old'").get() as Record<string, unknown>,
       steer: raw.prepare("SELECT * FROM task_steer").all() as Record<string, unknown>[],
-      routine: raw.prepare("SELECT id, name, digest, approved_at, approved_by, approved_digest, approved_profile_json, next_fire_at FROM routine WHERE id = ?").get(created.id) as Record<string, unknown>,
       taskRefIds: (raw.prepare("SELECT id, external_id FROM task_ref ORDER BY id").all() as Record<string, unknown>[]),
-      routineDigest,
     };
     raw.exec("DROP TABLE service_cursor");
     raw.prepare("UPDATE schema_version SET version = ?").run(startVersion);
     seeded.close();
-    return { db, token: added.token, routineId: created.id, legacyRoutineId: legacy.id, rubric, before };
+    return { db, before };
   };
 
   for (const [label, startVersion] of [["an authentic v47", 47], ["an interrupted −47 epoch", -47]] as const) {
-    test(`${label} upgrades in place: the v24 data pass does not rerun, ids and digests stay, nothing is backfilled or auto-approved — and refresh → explicit reapproval → exact fire then succeed`, async () => {
-      const { approveRoutine, fireRoutine, refreshRoutineAgents, routineAgentsState, routineDigestOf } = await import("./routine.js");
-      const { routeDigestOf } = await import("./phase-routing.js");
+    test(`${label} upgrades in place: the v24 data pass does not rerun, ids and digests stay, nothing is backfilled or auto-approved`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "standing-orders-mig-"));
       try {
-        const { db, token, routineId, legacyRoutineId, rubric, before } = await seedV47(dir, startVersion);
+        const { db, before } = await seedV47(dir, startVersion);
         const up = openStore(db);
         const raw = up.raw();
         expect(raw.prepare("SELECT version FROM schema_version").get()).toMatchObject({ version: SCHEMA_VERSION });
@@ -3620,74 +2680,9 @@ describe("migration-recovery: authentic v47 and interrupted −47 databases upgr
         expect(raw.prepare("SELECT * FROM task_scope WHERE task_id = 't-old'").get()).toEqual({ ...before.scope, risk_level: "routine", proposed_route_json: null, approved_route_json: null, route_era: null });
         expect(raw.prepare("SELECT * FROM task_steer").all()).toEqual(before.steer);
         expect((raw.prepare("SELECT * FROM task_steer").get() as Record<string, unknown>)["superseded_at"]).toBeNull();
-        // Ids stay: task refs and the routine.
+        // Ids stay.
         expect(raw.prepare("SELECT id, external_id FROM task_ref ORDER BY id").all()).toEqual(before.taskRefIds);
-        // The routine's approval columns are exactly as v47 left them —
-        // no route backfilled, no fresh approval, the same digest.
-        expect(raw.prepare("SELECT id, name, digest, approved_at, approved_by, approved_digest, approved_profile_json, next_fire_at FROM routine WHERE id = ?").get(routineId)).toEqual(before.routine);
-        expect(raw.prepare("SELECT route_json, approved_route_json FROM routine WHERE id = ?").get(routineId)).toEqual({ route_json: null, approved_route_json: null });
-        const migrated = up.getRoutine(routineId)!;
-        expect(routineAgentsState(migrated)).toMatchObject({ state: "unfrozen", approvable: false, refresh: true });
-        // It fires nothing, and creates nothing, until a person acts.
-        expect(fireRoutine(up, routineId, new Date(T0.getTime() + 2 * 3_600_000))).toMatchObject({ ok: false, reason: "route-unfrozen" });
         expect(up.listTasks().filter(one => one.id !== "t-old")).toHaveLength(0);
-        // Refresh (withdraws the unfrozen approval, approves nothing), then
-        // the explicit reapproval, then the exact fire under the new snapshot.
-        up.setPhaseConfig("installation", "plan", "claude", "sonnet", "alex", T0);
-        up.setPhaseConfig("installation", "build", "claude", "sonnet", "alex", T0);
-        up.setPhaseConfig("installation", "review", "claude", "opus", "alex", T0);
-        expect(refreshRoutineAgents(up, routineId, new Date(T0.getTime() + 2 * 3_600_000))).toMatchObject({ ok: true, changed: true });
-        const pending = up.getRoutine(routineId)!;
-        expect(pending).toMatchObject({ id: routineId, approvedDigest: null, approvedRoute: null, nextFireAt: null });
-        expect(pending.digest).not.toBe(before.routineDigest);
-        expect(fireRoutine(up, routineId, new Date(T0.getTime() + 2 * 3_600_000))).toMatchObject({ ok: false, reason: "not-approved" });
-        expect(approveRoutine(up, routineId, "alex", new Date(T0.getTime() + 2 * 3_600_000), pending.digest, token).ok).toBe(true);
-        const frozen = up.getRoutine(routineId)!;
-        expect(routineAgentsState(frozen)).toMatchObject({ state: "frozen" });
-        const fired = fireRoutine(up, routineId, new Date(T0.getTime() + 4 * 3_600_000));
-        expect(fired.ok).toBe(true);
-        if (!fired.ok) return;
-        const sealed = up.sealedRouteOf(fired.taskId);
-        expect(sealed.ok).toBe(true);
-        if (sealed.ok) expect(routeDigestOf(sealed.route)).toBe(routeDigestOf(frozen.approvedRoute!));
-        // THE MIGRATED EMPTY RUBRIC (final authority closure): a routine
-        // approved before rubrics existed reads back with NO criterion,
-        // and that is invalid on a stored row exactly as it is at the
-        // filing door — not approvable, not refreshable, not live. The
-        // refresh, the yes, and the manual and scheduled firings all
-        // refuse in the rubric's words and write NOTHING: no routine
-        // column, slot, ledger row, task, notification, or next-fire time
-        // moves until valid terms are filed again.
-        const at = new Date(T0.getTime() + 5 * 3_600_000);
-        const legacyBefore = {
-          row: raw.prepare("SELECT * FROM routine WHERE id = ?").get(legacyRoutineId),
-          fires: up.routineFires(legacyRoutineId),
-          tasks: up.listTasks().map(one => one.id),
-          notifications: up.listNotifications("all").length,
-        };
-        expect((legacyBefore.row as Record<string, unknown>)["acceptance_json"]).toBeNull();
-        const rubricWords = /acceptance: a standing order needs at least one signed acceptance criterion/;
-        expect(routineAgentsState(up.getRoutine(legacyRoutineId)!)).toMatchObject({ state: "unverified", approvable: false, refresh: false, problem: expect.stringMatching(rubricWords) });
-        expect(refreshRoutineAgents(up, legacyRoutineId, at)).toMatchObject({ ok: false, reason: "unresolved", problem: expect.stringMatching(rubricWords) });
-        expect(approveRoutine(up, legacyRoutineId, "alex", at, up.getRoutine(legacyRoutineId)!.digest, token).ok).toBe(false);
-        for (const manual of [false, true]) {
-          expect(fireRoutine(up, legacyRoutineId, at, { manual })).toMatchObject({ ok: false, reason: "not-approved", detail: expect.stringMatching(rubricWords) });
-        }
-        expect(raw.prepare("SELECT * FROM routine WHERE id = ?").get(legacyRoutineId)).toEqual(legacyBefore.row);
-        expect(up.routineFires(legacyRoutineId)).toEqual(legacyBefore.fires);
-        expect(up.listTasks().map(one => one.id)).toEqual(legacyBefore.tasks);
-        expect(up.listNotifications("all").length).toBe(legacyBefore.notifications);
-        // Valid terms re-filed — a rubric with at least one criterion —
-        // and only then does the recovery road open: refresh, the
-        // explicit yes, and an exact firing.
-        const legacyRow = up.getRoutine(legacyRoutineId)!;
-        const refiled = { goal: legacyRow.goal, outOfScope: legacyRow.outOfScope, touches: legacyRow.touches, acceptance: rubric, requirements: legacyRow.requirements, schedule: legacyRow.schedule, singleFlight: true, costCeilingUsd: legacyRow.costCeilingUsd, budgetPerRunMicrousd: legacyRow.budgetPerRunMicrousd };
-        up.updateRoutineTerms(legacyRoutineId, { ...refiled, digest: routineDigestOf({ repo: legacyRow.repo, ...refiled }, legacyRow.profile ?? null, null) }, at);
-        expect(refreshRoutineAgents(up, legacyRoutineId, at)).toMatchObject({ ok: true, changed: true });
-        const legacyPending = up.getRoutine(legacyRoutineId)!;
-        expect(routineAgentsState(legacyPending)).toMatchObject({ state: "pending", approvable: true });
-        expect(approveRoutine(up, legacyRoutineId, "alex", at, legacyPending.digest, token).ok).toBe(true);
-        expect(fireRoutine(up, legacyRoutineId, new Date(T0.getTime() + 7 * 3_600_000)).ok).toBe(true);
         up.close();
         // A second open is a plain no-op: the version stands, nothing moves.
         const again = openStore(db);
@@ -3700,15 +2695,13 @@ describe("migration-recovery: authentic v47 and interrupted −47 databases upgr
   }
 });
 
-describe("migration to v48: the routine freezes its route; `agents` joins the proposal kinds", () => {
-  test("a v47-shaped database gains the two routine columns and the widened proposal CHECK, rows and ids intact; the version marker lands", async () => {
+describe("migration to v48: `agents` joins the proposal kinds", () => {
+  test("a v47-shaped database gains the widened proposal CHECK, rows and ids intact; the version marker lands", async () => {
     const dir = mkdtempSync(join(tmpdir(), "standing-orders-v48-"));
     const db = join(dir, "orders.db");
     const seeded = openStore(db);
-    // Roll the file back to the v47 shape: no routine route columns, the v43 proposal CHECK.
+    // Roll the file back to the v47 shape: the v43 proposal CHECK.
     const raw = seeded.raw();
-    raw.exec("ALTER TABLE routine DROP COLUMN route_json");
-    raw.exec("ALTER TABLE routine DROP COLUMN approved_route_json");
     raw.exec(`CREATE TABLE mate_proposal_v43 (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
@@ -3733,12 +2726,9 @@ describe("migration to v48: the routine freezes its route; `agents` joins the pr
     const store = openStore(db);
     expect(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(48);
-    const columns = (store.raw().prepare("PRAGMA table_info(routine)").all() as { name: string }[]).map(one => one.name);
-    expect(columns).toEqual(expect.arrayContaining(["route_json", "approved_route_json"]));
     // The old row survived with its id; the new kind is admitted.
     expect(store.raw().prepare("SELECT id, kind, state FROM mate_proposal").all()).toEqual([{ id: 7, kind: "steer", state: "pending" }]);
     expect(() => store.raw().prepare("INSERT INTO mate_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (1, 1, 'agents', '{}', 'c', 'pending', '2026-09-01T00:00:00.000Z')").run()).not.toThrow();
-    // A pre-v48 routine reads back with no route: unapprovable and unfireable until filed again (routine.test.ts proves both roads).
     store.close();
     const again = openStore(db);
     expect(again.raw().prepare("SELECT version FROM schema_version").get()).toMatchObject({ version: SCHEMA_VERSION });

@@ -1309,7 +1309,6 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
       "Board /board",
       "Task list /tasks",
       "Recipes /recipes",
-      "Routines /routines",
       "Portfolio /workbench",
       "Action ledger /ledger",
       "Spend /spend",
@@ -1346,7 +1345,7 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     expect(menu).toContain('<h2 class="menu-group-label">Work tools</h2>');
     expect(menu).toContain('<h2 class="menu-group-label">Settings</h2>');
     const rows = [...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1]);
-    expect(rows).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/routines", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
+    expect(rows).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
   });
 
   test("every retired destination still answers: the queue redirects to the board's order view; done, review, and activity are views of builds", async () => {

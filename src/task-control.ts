@@ -16,7 +16,7 @@
  * the preserved draft with fresh proof.
  *
  * Nothing here is a second engine: the stop rides the existing run, claim,
- * hold, recovery, invocation-gateway, and held-session machinery. This
+ * hold, recovery, and invocation-gateway machinery. This
  * module only names the door and the fence.
  */
 
@@ -118,23 +118,18 @@ export type StopRequest = {
   runId: number;
   by: string;
   via: "cli" | "web" | "telegram" | "slack" | "discord" | "teams";
-  /** The held-session supervisor in this process, when there is one: a
-   * held attempt is fenced through its own handle the moment the request
-   * is durable (the lapse interval would take the same road within
-   * seconds for a request filed elsewhere). */
-  held?: { stop(runId: number): Promise<void> } | undefined;
   /** A composing confirmation transaction runs this effect only after it commits. */
   deferSignal?: ((signal: () => void) => void) | undefined;
 };
 
 export type StopOutcome =
   | { ok: true; stop: RunStop; repeated: boolean; terminated: number; taskId: string }
-  | { ok: false; reason: "no-task" | "no-run" | "wrong-task" | "finished" | "not-live" | "tournament" | "publication"; detail: string };
+  | { ok: false; reason: "no-task" | "no-run" | "wrong-task" | "finished" | "not-live" | "publication"; detail: string };
 
 /**
  * The shared stop door. Records the durable request first (one fenced
  * transaction: exact run, still open, this task's current claim, no
- * tournament, no admitted publication), THEN signals every child this
+ * admitted publication), THEN signals every child this
  * process holds for the attempt. A worker in another process observes the
  * same row through its stop watch within STOP_WATCH_MS.
  */
@@ -148,11 +143,6 @@ export function requestTaskStop(store: Store, request: StopRequest, now: Date): 
   let terminated = 0;
   const signal = (): void => {
     terminated = terminateStoppedAttempt(store, request.runId);
-    if (request.held !== undefined && store.heldSessionOf(request.runId) !== null) {
-      void request.held.stop(request.runId).catch(() => {
-        // The lapse interval retries the same fence; the durable row stands.
-      });
-    }
   };
   if (request.deferSignal) request.deferSignal(signal);
   else signal();

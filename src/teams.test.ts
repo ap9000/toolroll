@@ -212,7 +212,7 @@ describe("Teams shared chat", () => {
     propose(store, { taskId: "sample", goal: "Clear progress", touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "Progress is clear", how: null, evidence: ["check"] }], now });
     const scope = store.getScope("sample")!;
     expect(approve(store, "sample", "alex", now, scope.digest, password).ok).toBe(true);
-    const route = store.routeAuthorityFor(ref, "builder", null); if (!route?.ok) throw Error("route");
+    const route = store.routeAuthorityFor(ref, "builder"); if (!route?.ok) throw Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: "l", runner: "fixture", branch: "fixture", worktree: repo, route: route.stamp, now });
     store.stampRun(run, { scopeDigest: scope.digest, baseRevision: "b".repeat(40) });
     store.recordOutcomeFacts(run, { headRevision: "a".repeat(40), handoff: "Done." });

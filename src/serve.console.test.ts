@@ -1,5 +1,5 @@
 /**
- * The console server: the operations console, board, routines, fleet and
+ * The console server: the operations console, board, fleet and
  * queue-clearing pages over real HTTP.
  */
 
@@ -13,11 +13,9 @@ import { openStore, type Store } from "./store.js";
 import { acquire, release } from "./claim.js";
 import { register, hashToken } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
-import { approveRoutine, fireRoutine, refreshRoutineAgents, routineDigestOf } from "./routine.js";
-import { planTournament, admitContest } from "./contest.js";
 import { createDecisionServer } from "./serve.js";
 import { parseExecutionPlanDocument, milestonesOf } from "./plan.js";
-import { resolveRoutineAuthority } from "./agentconfig.js";
+import { resolveAgentAuthority } from "./agentconfig.js";
 import { Window } from "happy-dom";
 import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
 import { handoffBytes } from "../test/handoff-fixture.js";
@@ -131,7 +129,7 @@ describe("the operations console", () => {
     const claudeRun = store.startRun({ taskRef: ref, leaseId: "l-s1", runner: "b-1", branch: "b", worktree: "/w", now: T0, ...presented(store, ref, "builder") });
     store.recordUsage(claudeRun, { tokensIn: 41_000, tokensOut: 3_000, costUsd: 1.23 });
     store.finishRun(claudeRun, { outcome: "built", now: T0 });
-    const codexRun = store.startRun({ taskRef: ref, leaseId: "l-s2", runner: "b-1", branch: "b", worktree: "/w", provider: "codex", now: T0, ...presented(store, ref, "builder", null, { provider: "codex", model: null }) });
+    const codexRun = store.startRun({ taskRef: ref, leaseId: "l-s2", runner: "b-1", branch: "b", worktree: "/w", provider: "codex", now: T0, ...presented(store, ref, "builder", { provider: "codex", model: null }) });
     store.recordUsage(codexRun, { tokensIn: 80_000, tokensOut: 9_000 });
     store.finishRun(codexRun, { outcome: "failed", reason: "agent", now: T0 });
 
@@ -239,7 +237,7 @@ describe("the operations console", () => {
     expect(page2).not.toContain("Approve this scope");
   });
 
-  test("a high-risk, strict revision keeps its terms on the task page, the approval card, and chat after the installation's defaults change; the CI draft reads the same (contract handoff task 2)", async () => {
+  test("a strict revision keeps its terms on the task page, the approval card, and chat after the installation's defaults change; the CI draft reads the same (contract handoff task 2)", async () => {
     const { propose } = await import("./scope.js");
     store.createTask({ id: "t-strict", title: "careful work" }, T0);
     const ref = store.refFor("built-in", "t-strict").id;
@@ -251,7 +249,6 @@ describe("the operations console", () => {
       touches: ["src/payments/"],
       acceptance: [{ id: "c1", statement: "The guard refuses a negative payout.", evidence: ["check"] }, { id: "c2", statement: "The dashboard shows the refusal.", evidence: ["screenshot"] }],
       budgetMicrousd: 2_000_000,
-      riskLevel: "high",
       qualityMode: "strict",
       permissionMode: "auto",
       now: T0,
@@ -292,10 +289,10 @@ describe("the operations console", () => {
 
     // The child's ACTUAL terms: the source's, not today's defaults.
     const child = store.getScope(childId);
-    expect(child).toMatchObject({ riskLevel: "high", qualityMode: "strict", budgetMicrousd: 2_000_000, outOfScope: "authentication", touches: ["src/payments/"], approvedAt: null });
+    expect(child).toMatchObject({ qualityMode: "strict", budgetMicrousd: 2_000_000, outOfScope: "authentication", touches: ["src/payments/"], approvedAt: null });
     expect(child?.acceptance.map(one => one.id)).toEqual(["c1", "c2"]);
     expect(child?.profile).toMatchObject({ provider: "claude", permissionArgv: "auto" });
-    expect(store.lookupRef(childId)).toMatchObject({ revisionOf: "t-strict", riskLevel: "high", qualityMode: "strict", permissionMode: "auto" });
+    expect(store.lookupRef(childId)).toMatchObject({ revisionOf: "t-strict", qualityMode: "strict", permissionMode: "auto" });
     plannerKeptTerms(store, childId);
 
     // The task page: the approval card restates the terms, and the lineage
@@ -303,9 +300,9 @@ describe("the operations console", () => {
     const page = await (await fetch(url(target), { headers: { cookie } })).text();
     const lineage = `revises t-strict (build #${run})`;
     expect(page).toContain(lineage);
-    expect(page).toContain("inherited terms, as they stand now: High risk · Strict / release quality · auto permissions · $2.00 attempt cap · its exclusions · 1 path limit · 2 criteria");
-    expect(page).toContain("never inherited: the source&#39;s approval, attended sessions, publication and merge grants");
-    expect(page).toContain("re-resolved for this approval: the agents route and the fallback chain");
+    expect(page).toContain("inherited terms, as they stand now: Strict / release quality · auto permissions · $2.00 attempt cap · its exclusions · 1 path limit · 2 criteria");
+    expect(page).toContain("never inherited: the source&#39;s approval, publication and merge grants");
+    expect(page).toContain("re-resolved for this approval: the agents route");
     expect(page).toContain("Checks level: Strict / release · Auto permissions");
     // Who builds in one line; what the yes allows, plainly, right above Approve.
     expect(page).toContain('<p class="approval-who">Builder Claude Sonnet · Planner Claude Sonnet</p>');
@@ -316,7 +313,7 @@ describe("the operations console", () => {
     // One sentence in view; the lineage and inherited terms in Details.
     expect(approveForm).toContain(`<p class="approval-revision">Fixes what build #${run} missed: `);
     const details = approveForm.slice(approveForm.indexOf('<details class="approval-details">'));
-    expect(details).toContain("High risk");
+    expect(details).toContain("Strict / release quality");
     expect(details).toContain(lineage);
     expect(details).toContain("never inherited");
     expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details">'))).not.toContain("inherited");
@@ -324,7 +321,7 @@ describe("the operations console", () => {
     // Chat: the same words, from the same projection.
     const chat = await (await fetch(url(`/chat?task=${encodeURIComponent(childId)}`), { headers: { cookie } })).text();
     expect(chat).toContain(lineage);
-    expect(chat).toContain("inherited terms, as they stand now: High risk · Strict / release quality");
+    expect(chat).toContain("inherited terms, as they stand now: Strict / release quality");
     expect(chat).toContain("never inherited: the source&#39;s approval");
     expect(chat).toContain("also refuse zero");
     expect(chat).toContain("Checks level: Strict / release · Auto permissions");
@@ -344,11 +341,11 @@ describe("the operations console", () => {
       redirect: "manual",
     });
     expect(drafted.status).toBe(303);
-    expect(store.getScope("t-strict-ci-103")).toMatchObject({ riskLevel: "high", qualityMode: "strict", budgetMicrousd: 2_000_000, approvedAt: null });
+    expect(store.getScope("t-strict-ci-103")).toMatchObject({ qualityMode: "strict", budgetMicrousd: 2_000_000, approvedAt: null });
     const ciPage = await (await fetch(url("/t/t-strict-ci-103"), { headers: { cookie } })).text();
     expect(ciPage).toContain("CI repair");
     expect(ciPage).toContain(lineage);
-    expect(ciPage).toContain("inherited terms, as they stand now: High risk · Strict / release quality · auto permissions · $2.00 attempt cap");
+    expect(ciPage).toContain("inherited terms, as they stand now: Strict / release quality · auto permissions · $2.00 attempt cap");
     expect(ciPage).toContain(`<p class="approval-revision">Fixes the checks that failed in build #${run}.</p>`);
     expect(ciPage).toContain("Checks level: Strict / release · Auto permissions");
     expect(ciPage).not.toMatch(/<p class="approval-who">[^<]*Full access/);
@@ -866,8 +863,7 @@ describe("the operations console", () => {
       ["a fractional clock", () => raw.prepare("UPDATE task_scope SET profile_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ ...profile, profile: { ...profile.profile, repairTimeoutSeconds: 1.5 } })), "cannot be read exactly"],
       ["a route with an extra key", () => raw.prepare("UPDATE task_scope SET proposed_route_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ ...route, extra: 1 })), "cannot be read exactly"],
       ["a route whose build leg is not the profile", () => raw.prepare("UPDATE task_scope SET proposed_route_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ ...route, legs: (route["legs"] as Record<string, unknown>[]).map(leg => (leg["phase"] === "build" ? { ...leg, model: "somewhere-else" } : leg)) })), "but the agent profile says"],
-      ["a chain with a malformed auth mode", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: profile.profile, authMode: "whatever" }] })), "fallback chain cannot be read exactly"],
-      ["a chain whose entry zero is not the profile", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: { ...profile.profile, model: "somewhere-else" }, authMode: "subscription" }] })), "not its fallback chain&#39;s first entry"],
+      ["a fallback filing from before v115", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 't-s'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: profile.profile, authMode: "subscription" }] })), "named fallback agents"],
       ["a digest that does not re-derive", () => raw.prepare("UPDATE task_scope SET digest = ? WHERE task_id = 't-s'").run("0".repeat(32)), "does not re-derive"],
     ];
     for (const [label, corrupt, words] of cases) {
@@ -1708,8 +1704,7 @@ describe("the board — the pipeline as lanes, live in place", () => {
     const inbox = await fetch(url("/inbox"), { headers: { cookie } });
     const inboxCsp = inbox.headers.get("content-security-policy") ?? "";
     expect(inboxCsp).toMatch(/script-src 'nonce-/);
-    // v28: the chrome layer itself fetches (the attended beat), so every
-    // chrome page carries connect-src 'self' — still same-origin only.
+    // Every chrome page carries connect-src 'self' — still same-origin only.
     expect(inboxCsp).toContain("connect-src 'self'");
   });
 
@@ -2236,7 +2231,7 @@ describe("the rolled-up board — every project, one ceiling", () => {
   });
 });
 
-describe("routines on the console", () => {
+describe("old routine links on the console (v115: routines became scheduled flows)", () => {
   let store: Store;
   let server: Server;
   let base: string;
@@ -2255,37 +2250,12 @@ describe("routines on the console", () => {
     return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
   };
 
-  const TERMS = {
-    repo: "/repo/main",
-    goal: "Refresh the notes",
-    outOfScope: null,
-    touches: [] as string[],
-    acceptance: [{ id: "c1", statement: "The notes are refreshed.", how: null, evidence: ["manual-review"] as const }],
-    requirements: [] as string[],
-    schedule: "every:60",
-    singleFlight: true,
-    costCeilingUsd: null,
-  };
-
-  const file = (name: string, terms = TERMS): number => {
-    // v24/v48: filing binds the profile AND the four-role route the
-    // configuration resolves, like the real door.
-    const authority = resolveRoutineAuthority(store, terms.repo, terms.acceptance, T0);
-    if (!authority.ok) throw new Error(authority.problem);
-    const created = store.createRoutine(
-      { name, ...terms, digest: routineDigestOf(terms, authority.profile, authority.route), profile: authority.profile, route: authority.route },
-      T0,
-    );
-    if (!created.ok) throw new Error("duplicate in setup");
-    return created.id;
-  };
-
   beforeEach(async () => {
     store = openStore(":memory:");
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
-    evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-routine-ev-"));
+    evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-routine-links-ev-"));
     const added = addApprover(store, "alex", T0);
     if (!added.ok) throw new Error("bootstrap failed");
     approverToken = added.token;
@@ -2302,292 +2272,16 @@ describe("routines on the console", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("the ceiling rules every routine read and verb, whatever the request names", async () => {
-    const mine = file("mine");
-    const foreign = file("foreign", { ...TERMS, repo: "/repo/secret" });
+  test("/routines and /routines/<id> land on the flows page, where schedules now live", async () => {
     const cookie = await login();
-
-    const list = await (await fetch(url("/routines"), { headers: { cookie } })).text();
-    expect(list).toContain("mine");
-    expect(list).not.toContain("foreign");
-
-    expect((await fetch(url(`/routines/${foreign}`), { headers: { cookie } })).status).toBe(404);
-    // The verb refuses independently of authorizeMutation (finding 7): a
-    // CSRF-valid, authenticated POST naming an out-of-ceiling routine is 404.
-    const screen = await (await fetch(url(`/routines/${mine}`), { headers: { cookie } })).text();
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(screen)?.[1] as string;
-    const denied = await fetch(url(`/routines/${foreign}/pause`), {
-      method: "POST",
-      headers: { cookie, origin: base },
-      body: new URLSearchParams({ csrf }),
-    });
-    expect(denied.status).toBe(404);
-    expect(store.getRoutine(foreign)?.paused).toBe(false);
-  });
-
-  test("routine approval refuses a password bearer even with the password re-stated", async () => {
-    const id = file("bearer-approval");
-    const before = store.getRoutine(id);
-    const response = await fetch(url(`/routines/${id}/approve`), {
-      method: "POST", headers: { authorization: `Bearer alex:${approverToken}` },
-      body: new URLSearchParams({ digest: before!.digest, token: approverToken }), redirect: "manual",
-    });
-    expect(response.status).toBe(403);
-    expect(store.getRoutine(id)).toEqual(before);
-  });
-
-  test("approving is step-up: the restated order, the nonce, and the password again", async () => {
-    const id = file("deps");
-    const cookie = await login();
-
-    const screen = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(screen).toContain("BUILDS IT WITHOUT ASKING");
-    expect(screen).toContain("every 1 hour(s)");
-    // routine-freeze (v48): the exact four-role agents the yes freezes are
-    // restated before the password, in the same block a task's ceremony uses.
-    const ceremony = /<form method="post" action="\/routines\/\d+\/approve"(.*?)<\/form>/s.exec(screen)?.[1] ?? "";
-    expect(ceremony).toContain('<p class="approval-label">agents</p>');
-    expect(ceremony).toContain('<p class="agents-summary">claude · sonnet plans, builds, and repairs</p>');
-    expect(ceremony).toContain('<span class="badge">frozen when you approve</span>');
-    expect(ceremony).toContain("a configuration change afterwards cannot re-route one");
-    expect(ceremony.indexOf('<p class="approval-label">agents</p>')).toBeLessThan(ceremony.indexOf('name="token"'));
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(screen)?.[1] as string;
-    const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(screen)?.[1] as string;
-    const digest = /name="digest" value="([0-9a-f]{32})"/.exec(screen)?.[1] as string;
-    expect(nonce).toBeDefined();
-
-    // The session alone cannot agree: a wrong password refuses.
-    const wrong = await fetch(url(`/routines/${id}/approve`), {
-      method: "POST",
-      headers: { cookie, origin: base },
-      body: new URLSearchParams({ csrf, nonce, digest, token: "not-the-password" }),
-    });
-    expect(wrong.status).toBe(403);
-    expect(store.getRoutine(id)?.approvedAt).toBeNull();
-
-    // A fresh form (the nonce was spent either way), the real credential.
-    const again = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    const nonce2 = /name="nonce" value="([0-9a-f]{32})"/.exec(again)?.[1] as string;
-    const approved = await fetch(url(`/routines/${id}/approve`), {
-      method: "POST",
-      headers: { cookie, origin: base },
-      body: new URLSearchParams({ csrf, nonce: nonce2, digest, token: approverToken }),
-      redirect: "manual",
-    });
-    expect(approved.status).toBe(303);
-    const routine = store.getRoutine(id);
-    expect(routine?.approvedBy).toBe("alex");
-    expect(routine?.approvedRoute).not.toBeNull();
-    const after = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(after).toContain('<span class="badge">frozen by the approval</span>');
-    expect(after).toContain("Every firing runs on exactly these agents; a configuration change cannot re-route it.");
-    expect(routine?.nextFireAt).not.toBeNull();
-  });
-
-  test("pause, resume, and run-now from the screen; run-now refuses while blocked", async () => {
-    const id = file("audit");
-    const cookie = await login();
-    const screen = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(screen)?.[1] as string;
-    const post = (verb: string, extra: Record<string, string> = {}) =>
-      fetch(url(`/routines/${id}/${verb}`), {
-        method: "POST",
-        headers: { cookie, origin: base },
-        body: new URLSearchParams({ csrf, ...extra }),
-        redirect: "manual",
-      });
-
-    expect((await post("pause")).status).toBe(303);
-    expect(store.getRoutine(id)?.paused).toBe(true);
-    expect((await post("resume")).status).toBe(303);
-    expect(store.getRoutine(id)?.paused).toBe(false);
-
-    // run-now is spend outside the schedule: the session alone cannot ask
-    // (Codex Phase C review, M3) — no password, no fire; wrong password,
-    // no fire.
-    expect((await post("run-now")).status).toBe(400);
-    expect((await post("run-now", { token: "not-it" })).status).toBe(403);
-
-    // Credentialed but unapproved: refuses with the reason on the screen.
-    const refusedPage = await post("run-now", { token: approverToken });
-    expect(refusedPage.status).toBe(409);
-
-    const approvedNow = approveRoutine(store, id, "alex", T0, store.getRoutine(id)?.digest ?? "", approverToken);
-    expect(approvedNow.ok).toBe(true);
-    expect((await post("run-now", { token: approverToken })).status).toBe(303);
-    // One instance exists, linked and approved; a second run-now hits
-    // single-flight and refuses to the person's face.
-    const instances = store.listTasks().filter(one => one.id.startsWith("audit-"));
-    expect(instances).toHaveLength(1);
-    expect((await post("run-now", { token: approverToken })).status).toBe(409);
-  });
-
-  test("the board keeps instances in their track row, except when they need a person", async () => {
-    const id = file("notes");
-    approveRoutine(store, id, "alex", T0, store.getRoutine(id)?.digest ?? "", approverToken);
-    const fired = fireRoutine(store, id, new Date(T0.getTime() + 2 * 60 * 60_000));
-    expect(fired.ok).toBe(true);
-    if (!fired.ok) return;
-
-    const cookie = await login();
-    const board = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    // The track row renders: name, a dot, the week's spend.
-    expect(board).toContain("routines");
-    expect(board).toContain("notes");
-    expect(board).toContain("track-strip");
-    expect(board).toContain("this week");
-    // The queued instance does NOT sit in the main lanes...
-    expect(board).not.toContain(`lane-card" href="/t/${fired.taskId}`);
-    // ...and the board's polled region stays form-free, tracks included.
-    expect(board.slice(board.indexOf('<div id="board-region">'), board.indexOf('id="board-region-stamp"'))).not.toContain("<form");
-
-    // Now the instance needs a person: it fails. It surfaces in attention,
-    // wearing the routine's name.
-    store.setTaskState(fired.taskId, "failed", new Date(T0.getTime() + 3 * 60 * 60_000));
-    const after = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    expect(after).toContain(`href="/t/${encodeURIComponent(fired.taskId)}"`);
-    expect(after).toContain("failed");
-  });
-
-  test("filing from the console lands on the approval ceremony; a bad definition names every problem", async () => {
-    const cookie = await login();
-    const screen = await (await fetch(url("/routines"), { headers: { cookie } })).text();
-    expect(screen).toContain("File a standing order");
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(screen)?.[1] as string;
-    const revision = /name="projectRevision" value="([0-9]+)"/.exec(screen)?.[1] as string;
-
-    // Every problem at once, stored nothing.
-    const bad = await fetch(url("/routines/add"), {
-      method: "POST",
-      headers: { cookie, origin: base },
-      body: new URLSearchParams({ acceptance: "c1: ok | manual-review", csrf, projectRevision: revision, name: "Bad Name", goal: "", schedule: "hourly" }),
-    });
-    expect(bad.status).toBe(400);
-    const badHtml = await bad.text();
-    expect(badHtml).toContain("name:");
-    expect(badHtml).toContain("goal:");
-    expect(badHtml).toContain("schedule:");
-    expect(store.listRoutines(null)).toHaveLength(0);
-
-    // A good one lands on its screen — where the step-up already waits.
-    const made = await fetch(url("/routines/add"), {
-      method: "POST",
-      headers: { cookie, origin: base },
-      body: new URLSearchParams({ acceptance: "c1: ok | manual-review",
-        csrf, projectRevision: revision,
-        name: "weekly-notes", goal: "Refresh the notes", schedule: "daily:03:30",
-      }),
-      redirect: "manual",
-    });
-    expect(made.status).toBe(303);
-    const where = made.headers.get("location") as string;
-    const detail = await (await fetch(url(where), { headers: { cookie } })).text();
-    expect(detail).toContain("BUILDS IT WITHOUT ASKING");
-    expect(detail).toContain("daily at 03:30 UTC");
-    // Filed into the OPEN project, not a typed path.
-    expect(store.routineByName("weekly-notes")?.repo).toBe("/repo/main");
-  });
-
-  test("/routines names the empty state and shows the ledger once firings exist", async () => {
-    const cookie = await login();
-    const empty = await (await fetch(url("/routines"), { headers: { cookie } })).text();
-    expect(empty).toContain("No routines");
-    // The empty state points at the filing form on this very page — not at
-    // the terminal (round-5 copy fix).
-    expect(empty).toContain("file one");
-    expect(empty).not.toContain("from the terminal");
-
-    const id = file("weekly");
-    approveRoutine(store, id, "alex", T0, store.getRoutine(id)?.digest ?? "", approverToken);
-    fireRoutine(store, id, new Date(T0.getTime() + 2 * 60 * 60_000));
-    const list = await (await fetch(url("/routines"), { headers: { cookie } })).text();
-    expect(list).toContain("weekly");
-    expect(list).toContain("live");
-    const screen = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(screen).toContain("Firings");
-    expect(screen).toContain("weekly-");
-  });
-
-  test("consent-closed (routines): a legacy unfrozen or unreadable order shows no password and mints no nonce — the refresh act is the road, and only the re-approval unlocks the password", async () => {
-    const cookie = await login();
-    const csrfOf = (html: string) => /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
-    const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]*)"/.exec(html)?.[1] ?? null;
-    // An authentic pre-v48 approval: the columns say approved, no route was ever sealed.
-    const id = file("legacy");
-    store.raw().prepare("UPDATE routine SET route_json = NULL, digest = ?, approved_at = ?, approved_by = 'alex', approved_digest = ?, approved_profile_json = profile_json, next_fire_at = ? WHERE id = ?")
-      .run(routineDigestOf(TERMS, store.getRoutine(id)!.profile), T0.toISOString(), routineDigestOf(TERMS, store.getRoutine(id)!.profile), new Date(T0.getTime() + 3_600_000).toISOString(), id);
-    let page = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(page).toContain("agents not frozen — refresh and approve again");
-    expect(page).toContain("approved before agents were frozen");
-    expect(page).toContain('id="agents-recovery"');
-    expect(page).toContain("Refresh agents");
-    expect(page).not.toContain('type="password"');
-    expect(nonceOf(page)).toBeNull();
-    // Firing it from the page refuses in words (no run-now form either).
-    expect(page).not.toContain("Run now");
-    // Corrupt snapshot bytes read the same way: closed, with their own words.
-    store.raw().prepare("UPDATE routine SET approved_route_json = '{\"version\":1' WHERE id = ?").run(id);
-    page = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(page).toContain("cannot be read");
-    expect(page).not.toContain('type="password"');
-    expect(nonceOf(page)).toBeNull();
-    // The recovery is ONE plain-language act with accessible, neutral
-    // controls: a labelled, described button — never a danger verb, never
-    // a password — and no seeded transcript anywhere near it.
-    expect(page).toMatch(/<form method="post" action="\/routines\/\d+\/refresh" class="card approve-form agents-recovery" id="agents-recovery" aria-labelledby="agents-recovery-title">/);
-    expect(page).toContain('<p id="agents-recovery-why" class="recap">');
-    expect(page).toContain('<button type="submit" aria-describedby="agents-recovery-why">Refresh agents</button>');
-    expect(page.slice(page.indexOf('id="agents-recovery"'), page.indexOf("</form>", page.indexOf('id="agents-recovery"')))).not.toContain('class="danger"');
-    expect(page).not.toContain("demoTranscript");
-    // A snapshot that READS but no longer hashes to the approval (a rewritten
-    // review leg): not live either — closed in its own words, same road.
-    const routed = refreshRoutineAgents(store, id, T0);
-    expect(routed.ok).toBe(true);
-    const verify = approveRoutine(store, id, "alex", T0, store.getRoutine(id)!.digest, approverToken);
-    expect(verify.ok).toBe(true);
-    const approvedJson = String((store.raw().prepare("SELECT approved_route_json AS j FROM routine WHERE id = ?").get(id) as { j: string }).j);
-    store.raw().prepare("UPDATE routine SET approved_route_json = ? WHERE id = ?").run(approvedJson.replace('"model":"sonnet","phase":"review"', '"model":"opus","phase":"review"'), id);
-    page = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(page).toContain("do not verify");
-    expect(page).not.toContain('type="password"');
-    expect(page).not.toContain("Run now");
-    expect(nonceOf(page)).toBeNull();
-    expect(page).toContain('id="agents-recovery"');
-    // The refresh act: a session's own POST, nothing approved by it.
-    const refreshed = await fetch(url(`/routines/${id}/refresh`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: csrfOf(page) }),
-      redirect: "manual",
-    });
-    expect(refreshed.status).toBe(303);
-    const after = store.getRoutine(id)!;
-    expect(after.route).not.toBeNull();
-    // The unverified approval was WITHDRAWN by the refresh, working data unchanged.
-    expect(after).toMatchObject({ approvedDigest: null, approvedRoute: null, nextFireAt: null });
-    expect(fireRoutine(store, id, new Date(T0.getTime() + 2 * 3_600_000))).toMatchObject({ ok: false, reason: "not-approved" });
-    // Now the exact agents are restated above a password, under a fresh nonce.
-    page = await (await fetch(url(`/routines/${id}`), { headers: { cookie } })).text();
-    expect(page).toContain("edited — approve again");
-    expect(page).toContain("claude · sonnet plans, builds, and repairs");
-    expect(page).toContain('type="password"');
-    expect(nonceOf(page)).toMatch(/^[0-9a-f]{32}$/);
-    expect(page).not.toContain('id="agents-recovery"');
-    const approved = await fetch(url(`/routines/${id}/approve`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: csrfOf(page), nonce: nonceOf(page) as string, digest: after.digest, token: approverToken }),
-      redirect: "manual",
-    });
-    expect(approved.status).toBe(303);
-    const frozen = store.getRoutine(id)!;
-    expect(frozen.approvedDigest).toBe(frozen.digest);
-    expect(frozen.approvedRoute).not.toBeNull();
-    // (The console approved under the wall clock, so the slot is not yet
-    // due — run-now proves the seal the same way.)
-    const fired = fireRoutine(store, id, new Date(), { manual: true });
-    expect(fired.ok).toBe(true);
-    if (fired.ok) expect(store.sealedRouteOf(fired.taskId).ok).toBe(true);
+    for (const path of ["/routines", "/routines/7"]) {
+      const response = await fetch(url(path), { headers: { cookie }, redirect: "manual" });
+      expect(response.status, path).toBe(303);
+      expect(response.headers.get("location"), path).toBe("/flows");
+    }
+    for (const path of ["/routines/add", "/routines/7/approve", "/routines/7/run-now"]) {
+      expect((await fetch(url(path), { method: "POST", headers: { cookie }, redirect: "manual" })).status, path).toBe(404);
+    }
   });
 });
 
@@ -3101,7 +2795,7 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
       taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1",
       branch: "standing-orders/t-live", worktree: "/pool/t-live",
       model: "claude", now: new Date(now.getTime() - 5 * 60_000),
-      ...presented(store, ref, "builder", null, { provider: "claude", model: "claude" }),
+      ...presented(store, ref, "builder", { provider: "claude", model: "claude" }),
     });
     // A queued reservation on builder-2.
     store.createTask({ id: "t-queued", title: "reserved work" }, T0);
@@ -3518,17 +3212,12 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     expect(board).toContain(`href="/t/orphan"`);
   });
 
-  test("unknown task and tournament pages refuse on the console's own page, not bare text", async () => {
+  test("an unknown task page refuses on the console's own page, not bare text", async () => {
     const cookie = await login();
     const task = await fetch(url("/t/definitely-not-here"), { headers: { cookie } });
     expect(task.status).toBe(404);
     expect(task.headers.get("content-type") ?? "").toContain("text/html");
     expect(await task.text()).toContain("no such task");
-
-    const contest = await fetch(url("/contest/424242"), { headers: { cookie } });
-    expect(contest.status).toBe(404);
-    expect(contest.headers.get("content-type") ?? "").toContain("text/html");
-    expect(await contest.text()).toContain("no such tournament");
   });
 
   test("chains from the console: wait for, stop waiting, and a loop refused in plain words", async () => {
@@ -3649,67 +3338,5 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     const keptPage = await kept.text();
     expect(keptPage).toContain("the task was created, but could not be made to wait for nope-gone");
     expect(await (await fetch(url("/t/t-kept"), { headers: { cookie } })).text()).toContain("kept anyway");
-  });
-
-  test("an interrupted tournament's agents read as stopped, never as still working", async () => {
-    // Recovery marks the contest interrupted but leaves the agents' run
-    // records unfinished (round-4 finding 16) — the comparison screen must
-    // prove liveness rather than map a null outcome to "still working".
-    store.createTask({ id: "race-int", title: "raced then interrupted" }, T0);
-    const taskRef = store.refFor("built-in", "race-int", "ours").id;
-    const planned = planTournament({
-      agents: [{ provider: "claude", model: "claude-sonnet-5" }, { provider: "claude", model: "claude-haiku-4-5" }],
-      perAgentBudgetUsd: 5,
-      totalBudgetUsd: 20,
-    });
-    if (!planned.ok) throw new Error(planned.reason);
-    const termsId = store.fileTournamentTerms(
-      {
-        taskRef, raceDigest: planned.plan.raceDigest, agents: planned.plan.agents,
-        perAgentBudgetMicrousd: planned.plan.perAgentBudgetMicrousd,
-        overrunReserveMicrousd: planned.plan.overrunReserveMicrousd,
-        totalBudgetMicrousd: planned.plan.totalBudgetMicrousd,
-        priceVersion: planned.plan.priceVersion, publicationPolicy: "none",
-      },
-      T0,
-    );
-    store.approveTournamentTerms(termsId, "alex", planned.plan.raceDigest, T0);
-    // The runner gate (MCP spec v6): registered, repo-bound, token-proved.
-    store.placeTask(taskRef, "/repo/main");
-    register(store, { name: "night-shift-3", host: "here", capacity: 8, repos: ["/repo/main"], now: T0, newToken: () => "tok-night-shift-3" });
-    // The lease died with the machine: acquired two hours ago, one-hour TTL.
-    const taken = acquire(store, taskRef, "night-shift-3", { token: "tok-night-shift-3", now: new Date(Date.now() - 7_200_000), ttlMs: 3_600_000 });
-    if (!taken.ok) throw new Error("claim");
-    const admitted = admitContest(
-      store,
-      {
-        taskId: "race-int", taskRef, runner: "night-shift-3", leaseId: taken.claim.leaseId,
-        incarnation: null, scopeDigest: "scope-d", scopeApproved: true, capacity: 8, quotaBlocked: () => null,
-      } as never,
-      T0,
-    );
-    if (!admitted.ok) throw new Error(admitted.reason);
-    store.stampContestDispatch(admitted.contestId, "base-sha-000", null);
-    const contest = store.getContest(admitted.contestId);
-    if (contest === null) throw new Error("contest");
-    for (const agent of store.contestants(admitted.contestId)) store.casContestantState(agent.id, ["pending"], "ready", agent.generation);
-    store.casContestState(admitted.contestId, ["dispatching"], "racing", contest.generation);
-    for (const agent of store.contestants(admitted.contestId)) {
-      store.casContestantState(agent.id, ["ready"], "building", agent.generation);
-      const lane = store.admitContestLane({
-        taskRef, leaseId: taken.claim.leaseId, runner: "night-shift-3", incarnation: null,
-        branch: agent.branch, worktree: `/pool/int-${agent.id}`, contestant: agent.id, route: store.laneAuthorityFor(agent.id)!, now: new Date(Date.now() - 7_200_000),
-      });
-      if (!lane.ok) throw new Error(lane.problem);
-    }
-    const racing = store.getContest(admitted.contestId);
-    if (racing === null) throw new Error("contest");
-    store.casContestState(admitted.contestId, ["racing"], "interrupted", racing.generation);
-
-    const cookie = await login();
-    const html = await (await fetch(url(`/contest/${admitted.contestId}`), { headers: { cookie } })).text();
-    expect(html).toContain("interrupted");
-    expect(html).toContain("stopped without finishing");
-    expect(html).not.toContain("still working");
   });
 });

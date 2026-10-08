@@ -11,8 +11,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { classifyTerminal, isFallbackEligible, isAuthFailure } from "./exhaustion.js";
-import { acquire, finalizeFailureFenced, finalizePlanFailureFenced } from "./claim.js";
+import { classifyTerminal, isAuthFailure } from "./exhaustion.js";
+import { acquire, finalize } from "./claim.js";
 import { register } from "./runner.js";
 import { invokeAgent } from "./invoke.js";
 import { addApprover } from "./scope.js";
@@ -34,7 +34,7 @@ const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }
 const ASK = { phase: "build" as const, brief: "hi", maxTurns: 10, permissionMode: "acceptEdits", skipPermissions: false, resumeSession: null };
 const legacy = (provider: string, phase: "build" | "plan" = "build") => ({ route: { routeDigest: "legacy", phase, provider, model: null, chosen: "legacy" as const } });
 const CLAUDE_EXPIRED = "Failed to authenticate: OAuth session expired and could not be refreshed";
-const claude = (text: string | null, failed = true) => classifyTerminal({ provider: "claude", version: null, authMode: "subscription", terminal: { failed, text, code: failed ? "error_during_execution" : "success" } });
+const claude = (text: string | null, failed = true) => classifyTerminal({ terminal: { failed, text, code: failed ? "error_during_execution" : "success" } });
 
 describe("c1: the auth-expired class", () => {
   test("Claude, Codex, Gemini and API-key sign-in failures classify as auth-expired for any provider or version", () => {
@@ -43,22 +43,21 @@ describe("c1: the auth-expired class", () => {
     expect(claude("OAuth token has expired. Please obtain a new token or refresh your existing token.")).toBe("auth-expired");
     // An API key the provider refuses, on an API-key account.
     const revoked = ["API Error: 401", JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } })].join(" ");
-    expect(classifyTerminal({ provider: "claude", version: "2.1.0", authMode: "api-key", terminal: { failed: true, text: revoked, code: null } })).toBe("auth-expired");
-    expect(classifyTerminal({ provider: "openrouter", version: null, authMode: "api-key", terminal: { failed: true, text: "The API key is revoked", code: null } })).toBe("auth-expired");
+    expect(classifyTerminal({ terminal: { failed: true, text: revoked, code: null } })).toBe("auth-expired");
+    expect(classifyTerminal({ terminal: { failed: true, text: "The API key is revoked", code: null } })).toBe("auth-expired");
     // Codex's typed failure terminal and its plain 401.
-    expect(classifyTerminal({ provider: "codex", version: "0.145.0", authMode: "subscription", terminal: { failed: true, text: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header", code: null } })).toBe("auth-expired");
+    expect(classifyTerminal({ terminal: { failed: true, text: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header", code: null } })).toBe("auth-expired");
     // A CLI that is not logged in exits within seconds before its stream starts: its stderr counts.
-    expect(classifyTerminal({ provider: "codex", version: null, authMode: "subscription", terminal: null, earlyExit: "Not logged in. Run `codex login` first." })).toBe("auth-expired");
-    expect(isFallbackEligible("auth-expired")).toBe(false);
+    expect(classifyTerminal({ terminal: null, earlyExit: "Not logged in. Run `codex login` first." })).toBe("auth-expired");
   });
 
   test("an ordinary failure still classifies exactly as before", () => {
     expect(claude("The tests failed: 3 assertions did not hold.")).toBe("not-exhausted");
-    expect(classifyTerminal({ provider: "codex", version: "1.0.0", authMode: "subscription", terminal: { failed: true, text: "You've hit your usage limit. Try again later.", code: "usage_limit_reached" } })).toBe("not-exhausted");
+    expect(classifyTerminal({ terminal: { failed: true, text: "You've hit your usage limit. Try again later.", code: "usage_limit_reached" } })).toBe("not-exhausted");
     expect(claude("anything", false)).toBe("unknown");
-    expect(classifyTerminal({ provider: "claude", version: null, authMode: "subscription", terminal: null })).toBe("unknown");
+    expect(classifyTerminal({ terminal: null })).toBe("unknown");
     // Early-exit words that are not about signing in change nothing.
-    expect(classifyTerminal({ provider: "claude", version: null, authMode: "subscription", terminal: null, earlyExit: "error: unknown option --frobnicate" })).toBe("unknown");
+    expect(classifyTerminal({ terminal: null, earlyExit: "error: unknown option --frobnicate" })).toBe("unknown");
     expect(isAuthFailure("process exited with code 1 after 401 lines of output were written")).toBe(false);
   });
 
@@ -69,7 +68,7 @@ describe("c1: the auth-expired class", () => {
       expect(isAuthFailure(text), text).toBe(false);
     }
     // Early exit reads stderr and plain lines, never a JSON event's command output.
-    expect(classifyTerminal({ provider: "codex", version: null, authMode: "subscription", terminal: null, earlyExit: "3 failed: Please log in expected" })).toBe("unknown");
+    expect(classifyTerminal({ terminal: null, earlyExit: "3 failed: Please log in expected" })).toBe("unknown");
   });
 });
 
@@ -99,7 +98,7 @@ describe("sign-in pauses", () => {
   const failAuth = (taskId: string, provider = "claude", now = at(1_000)) => {
     const one = attempt(taskId, provider);
     store.stampTerminalClass(one.runId, "subscription", "auth-expired");
-    const sealed = finalizeFailureFenced(store, { leaseId: one.lease, runId: one.runId, taskId, failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now });
+    const sealed = finalize(store, one.lease, { kind: "failure", runId: one.runId, taskId, failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now });
     return { ...one, sealed };
   };
   const authNotices = () => store.handle.prepare("SELECT dedupe_key, kind, subject, body FROM notification WHERE kind IN ('auth-expired', 'auth-restored') ORDER BY id").all();
@@ -120,12 +119,12 @@ describe("sign-in pauses", () => {
     // The same failure on a planner is not a planning strike either.
     const plan = attempt("t-plan", "claude", "planner");
     store.stampTerminalClass(plan.runId, "subscription", "auth-expired");
-    expect(finalizePlanFailureFenced(store, { leaseId: plan.lease, runId: plan.runId, taskId: "t-plan", kind: "failure", message: CLAUDE_EXPIRED, now: at(1_500) })).toMatchObject({ ok: true, disposition: "auth-expired" });
+    expect(finalize(store, plan.lease, { kind: "plan-failure", runId: plan.runId, taskId: "t-plan", failure: "failure", message: CLAUDE_EXPIRED, now: at(1_500) })).toMatchObject({ ok: true, disposition: "auth-expired" });
     expect(store.refForId(plan.ref)?.planStrikes ?? 0).toBe(0);
 
     // An ordinary failure beside it still strikes and backs off, as before.
     const other = attempt("t-2", "codex");
-    const ordinary = finalizeFailureFenced(store, { leaseId: other.lease, runId: other.runId, taskId: "t-2", failureClass: "unknown", message: "tests failed", worktree: "/w", now: at(1_000) });
+    const ordinary = finalize(store, other.lease, { kind: "failure", runId: other.runId, taskId: "t-2", failureClass: "unknown", message: "tests failed", worktree: "/w", now: at(1_000) });
     expect(ordinary).toMatchObject({ ok: true, disposition: "backoff", strikes: 1 });
   });
 
@@ -207,7 +206,7 @@ describe("sign-in pauses", () => {
     await invokeAgent(store, plain.runId, { provider: "claude", model: null }, ASK, { keyHome, runner: async () => ({ ...OK, code: 1, stderr: "segmentation fault" }) });
     expect(store.getRun(plain.runId)?.terminalClass).not.toBe("auth-expired");
 
-    finalizeFailureFenced(store, { leaseId: first.lease, runId: first.runId, taskId: "t-1", failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now: at(1_000) });
+    finalize(store, first.lease, { kind: "failure", runId: first.runId, taskId: "t-1", failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now: at(1_000) });
     expect(authPauseOf(store, "claude")).not.toBeNull();
     const worked = attempt("t-4");
     await invokeAgent(store, worked.runId, { provider: "claude", model: null }, ASK, {
@@ -344,7 +343,7 @@ describe("c3: the one notification reaches Telegram and Slack", () => {
       if (!took.ok) throw new Error(took.reason);
       const runId = store.startRun({ taskRef: ref, leaseId: lease, runner: RUNNER, branch: "b", worktree: "/w", provider: "claude", ...legacy("claude"), now: T0 });
       store.stampTerminalClass(runId, "subscription", "auth-expired");
-      finalizeFailureFenced(store, { leaseId: lease, runId, taskId, failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now: at(index * 1_000) });
+      finalize(store, lease, { kind: "failure", runId, taskId, failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now: at(index * 1_000) });
     }
   };
   const signInTexts = (texts: string[]) => texts.filter(text => text.includes("needs you to sign in again"));

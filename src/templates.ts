@@ -1,6 +1,6 @@
 /**
- * The template library (adoption track, step 2) — common standing orders
- * shipped as STATIC DATA that renders into editable, UNAPPROVED drafts.
+ * The template library (adoption track, step 2) — common work shipped as
+ * STATIC DATA that renders into editable, UNAPPROVED drafts.
  *
  * What a template is: a pre-filled form. What it is not: automation with
  * authority. Applying one produces exactly the rows a manual filing
@@ -9,7 +9,10 @@
  * capitals, because `--file` must never read as a yes.
  *
  * The Codex adoption review (finding 10) drew the v1 line: templates may
- * express ONLY what a task or routine proposal can carry today. The two
+ * express ONLY what a task proposal or a scheduled flow can carry today. A
+ * repeating template (v115: what a routine template was) makes a scheduled
+ * flow whose schedule starts paused, and whose every firing waits for
+ * approval under the project's rules. The two
  * use cases that imply separate authenticated authority — GitHub issue
  * intake (a grant) and CI babysitting (publish + the repair button) —
  * ship as RECIPES: they display the existing ceremonies, and cannot be
@@ -38,11 +41,12 @@ export type TaskTemplate = {
   edit: string[];
 };
 
-export type RoutineTemplate = {
-  kind: "routine";
+export type ScheduledTemplate = {
+  kind: "scheduled";
   name: string;
   purpose: string;
-  routineName: string;
+  /** The flow's name. */
+  title: string;
   goal: string;
   outOfScope: string | null;
   touches: string[];
@@ -62,14 +66,14 @@ export type RecipeTemplate = {
   steps: { say: string; run: string }[];
 };
 
-export type Template = TaskTemplate | RoutineTemplate | RecipeTemplate;
+export type Template = TaskTemplate | ScheduledTemplate | RecipeTemplate;
 
 export const TEMPLATES: readonly Template[] = [
   {
-    kind: "routine",
+    kind: "scheduled",
     name: "nightly-deps",
     purpose: "keep dependencies fresh without surprise majors",
-    routineName: "nightly-deps",
+    title: "Keep dependencies current",
     goal:
       "Update dependencies conservatively: refresh the lockfile within existing semver ranges, run the full test suite, and summarize what moved in the handoff — plus anything notable you saw (majors now available, security advisories, packages that look abandoned). If the suite fails after the refresh, park with the failure rather than pinning things until it passes.",
     outOfScope:
@@ -84,10 +88,10 @@ export const TEMPLATES: readonly Template[] = [
     edit: ["schedule", "goal (name your package manager if it is unusual)", "ceiling (a weekly dollar cap)"],
   },
   {
-    kind: "routine",
+    kind: "scheduled",
     name: "test-coverage",
     purpose: "grow the test suite one module at a time",
-    routineName: "test-coverage",
+    title: "Test one overlooked module",
     goal:
       "Pick ONE module that is under-tested — no tests at all beats thin tests — and write focused tests for its observable behavior: inputs, outputs, and failure paths, not implementation details. One module per firing, then stop. If the module cannot be tested without refactoring it, do not refactor: park with a note naming the obstacle so a human can decide.",
     outOfScope: "No refactoring of the code under test. No snapshot tests. No changes outside the chosen module's test file(s).",
@@ -101,10 +105,10 @@ export const TEMPLATES: readonly Template[] = [
     edit: ["schedule", "touches (pin the test directory layout if yours is unusual)"],
   },
   {
-    kind: "routine",
+    kind: "scheduled",
     name: "docs-drift",
     purpose: "keep the README and docs telling the truth weekly",
-    routineName: "docs-drift",
+    title: "Keep documentation accurate",
     goal:
       "Read the README and any docs/ pages against the code as it is today. Fix what has drifted: commands that moved, flags that changed, features that shipped undocumented, claims that stopped being true. Prefer deleting a stale claim over guessing a new one. Summarize every correction in the handoff.",
     outOfScope: "No restructuring or rewriting for style. No new documentation pages. No changes to code.",

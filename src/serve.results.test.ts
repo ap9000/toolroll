@@ -744,7 +744,6 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(before).not.toContain('maxlength="2000"');
     expect(before).not.toContain(`action="/r/${run}/revise"`);
     expect(before).not.toContain("draft-repair");
-    expect(before).not.toContain("/contest/");
     // Every form carries the token, and the annotate script rides along.
     // The two forms: the note, and Add tests under Checks (this project has no check to run).
     const forms = [...mainOf(before).matchAll(/<form[^>]*>(.*?)<\/form>/gs)];

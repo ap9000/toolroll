@@ -20,14 +20,12 @@ import { learningHtml } from "../workspace-ui.js";
 
 import { randomBytes } from "node:crypto";
 import { type ServerResponse } from "node:http";
-import { agentChoicesFor,INSTALLATION_SCOPE,routeOfTask } from "../agentconfig.js";
+import { agentChoicesFor,routeOfTask } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
-import { nonceHashOf } from "../contest.js";
 import { hasForbiddenControls } from "../decision.js";
 import { diagnoseTaskDispatch } from "../dispatch.js";
 import { readVerifiedArtifact,readVerifiedReport } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
-import { modeTermsFromJson } from "../modes.js";
 import { projectRoute } from "../phase-routing.js";
 import { milestonesOf,parseExecutionPlanDocument } from "../plan.js";
 import { contractChangesOf,decodePlanContractRecord,describeContractChanges } from "../planner-source.js";
@@ -43,7 +41,7 @@ import {
 approvalOf,
 type Scope
 } from "../scope.js";
-import { approvalFormDigest,attendedWatchWords,chatResultHref,completionReceiptView,consentDoorOf,decisionsFor,diffFileAnchor,escape,evidenceLinksFor,followUpsFor,oneLineOf,orderChangedFiles,parseReviewDiff,proofBundleView,publicationFactsOf,receiptStatusOf,refuse,resumeCeremonyPage,resumeDigestOf,reviewHref,screen,taskBody,taskChatHref,taskHref,taskPage,withinSignedTouches,type Chrome,type CompletionReceiptView,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type ProjectPeek,type ResultDetail,type RevisionDocView,type RevisionView,type RouteView,type Screen,type ServeOptions,type TaskChatFocus,type TaskPullRequest,type Who,type WorkRow } from "./shared.js";
+import { approvalFormDigest,nonceHashOf,chatResultHref,completionReceiptView,consentDoorOf,decisionsFor,diffFileAnchor,escape,evidenceLinksFor,followUpsFor,oneLineOf,orderChangedFiles,parseReviewDiff,proofBundleView,publicationFactsOf,receiptStatusOf,refuse,resumeCeremonyPage,resumeDigestOf,reviewHref,screen,taskBody,taskChatHref,taskHref,taskPage,withinSignedTouches,type Chrome,type CompletionReceiptView,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type ProjectPeek,type ResultDetail,type RevisionDocView,type RevisionView,type RouteView,type Screen,type ServeOptions,type TaskChatFocus,type TaskPullRequest,type Who,type WorkRow } from "./shared.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
 import {
@@ -280,13 +278,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // A broken revision brief blocks the whole approval surface (audit
     // IV-3): no nonce is minted over a batch nobody can verify.
     const revisionBroken = revision !== null && "problem" in revision;
-    // A tournament task's yes covers BOTH documents (finding 31): where
-    // race terms are filed, the digest being shown — and bound by the
-    // nonce — is the joint fingerprint, never the scope's alone.
-    const raceTerms = ref === null ? null : runtime.store.activeTournamentTerms(ref.id);
     const planView = ref === null ? null : planViewOf(ref.id);
     const approvalDigest =
-      scope === null ? null : approvalFormDigest(scope.digest, raceTerms?.raceDigest ?? null, planView?.sha256 ?? null);
+      scope === null ? null : approvalFormDigest(scope.digest, planView?.sha256 ?? null);
     // The nonce is minted at render, per viewer, bound to the digest being
     // shown — the browser approval flow starts here and nowhere else.
     // …and only through an OPEN consent door (v48): an unreadable route,
@@ -369,9 +363,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         budgetHold: (() => {
           if (ref === null || found.state !== "queued") return null;
           // Only work billed to an API key waits on a budget (its approved agent's, or Claude's by default).
-          const base = runtime.store.approvedChainOf(taskId)?.[0];
           const hold = runtime.store.budgetGate(now)({ ...runtime.store.budgetSubject(ref.id),
-            agents: base !== undefined ? [{ provider: base.profile.provider, billing: base.authMode }] : runtime.store.agentsFor([runtime.store.getScope(taskId)?.approvedProfile?.provider ?? "claude"]) });
+            agents: runtime.store.agentsFor([runtime.store.getScope(taskId)?.approvedProfile?.provider ?? "claude"]) });
           if (hold.over === null) return null;
           return hold.why === "unpriced" ? `${budgetHoldWords(hold, monthOf(now).name)}; this waits until then`
             : `${budgetLabel(hold.over)} monthly budget is used up, so this waits until next month or a higher budget`;
@@ -379,7 +372,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         // Sprint 8: a waiting task the organisation policy stops says which rule, or that it runs lowered.
         policyHold: (() => {
           if (ref === null || found.state !== "queued") return null;
-          const base = runtime.store.approvedChainOf(taskId)?.[0]?.profile ?? runtime.store.getScope(taskId)?.approvedProfile ?? null;
+          const base = runtime.store.getScope(taskId)?.approvedProfile ?? null;
           if (base === null) return null;
           const verdict = runtime.store.runPolicy(base);
           return !verdict.ok ? `${verdict.message.replace(/ An instance operator can change it in Settings → Policy\.$/, "")} It waits until the policy allows it.` : verdict.lowered;
@@ -425,11 +418,6 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           return { label: who.label, filedAgo: ago };
         })(),
         holds: ref === null ? [] : runtime.store.activeHolds(ref.id, now),
-        contest: (() => {
-          if (ref === null) return null;
-          const open = runtime.store.contestNeedingOperator(ref.id);
-          return open === null ? null : { id: open.id, state: open.state, agents: runtime.store.contestants(open.id).length, kind: open.kind };
-        })(),
         claimed: ref === null ? false : runtime.store.hasLiveClaim(ref.id, now),
         // The chain, both directions of trust: blockers outside the ceiling
         // are named but wear no state and no link (same redaction the board
@@ -484,7 +472,6 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         position: runtime.store.queuePosition(taskId),
         mirror: runtime.store.mirrorByTask(taskId),
         scope,
-        raceTerms,
         approvalDigest,
         // The phase route (v47): one projection for the card, the ceremony,
         // and the focused chat, with the readiness this task's runners report.
@@ -524,56 +511,6 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         csrf: who.via === "cookie" ? who.session.csrf : "",
         nonce,
         problem,
-        attended: (() => {
-          if (runtime.restricted() || runtime.options.attended === undefined || ref === null || who.via !== "cookie" || runtime.store.isDemo()) return null;
-          const open = runtime.store.openAuthorizationFor(ref.id);
-          if (open !== null) {
-            const spent = runtime.store.authorizationSpendMicrousd(open.id);
-            const turnsUsed =
-              open.attemptRun === null ? 0 : runtime.store.sessionTurnsOf(open.attemptRun).length;
-            const state = attendedWatchWords(open.lastBeatAt, now, open.absoluteExpiry);
-            return {
-              canMint: false,
-              open: {
-                id: open.id,
-                state,
-                expiresAt: open.absoluteExpiry,
-                turnsUsed,
-                cap: open.maxSessionTurns,
-                spentMicrousd: spent,
-                budgetMicrousd: open.budgetMicrousd,
-                running: open.attemptRun !== null,
-              },
-            };
-          }
-          const canMint =
-            scope !== null &&
-            !approvalOf(scope).approved &&
-            scope.profileState === "resolved" &&
-            (scope.profile?.provider ?? "") === "claude" &&
-            ref.repo !== null &&
-            runtime.store.activeTournamentTerms(ref.id) === null &&
-            runtime.store.getTask(taskId)?.state === "queued";
-          if (!canMint) return { canMint, open: null };
-          const pinnedModel = scope?.profile?.provider === "claude" ? scope.profile.model : "";
-          const configured = ["plan", "build", "repair", "review"]
-            .map(phase => runtime.store.phaseConfig(INSTALLATION_SCOPE, phase))
-            .filter((row): row is NonNullable<typeof row> => row !== null && row.provider === "claude" && row.model !== null)
-            .map(row => row.model as string);
-          const models = [...new Set([pinnedModel, ...configured])].filter(model => model !== "");
-          const liveMode = ref.repo === null ? null : runtime.store.activeMode(ref.repo, now);
-          const modeTerms = liveMode === null ? null : modeTermsFromJson(liveMode.termsJson);
-          return {
-            canMint,
-            mint: {
-              models,
-              pinnedModel,
-              posture: modeTerms?.permissionDefault === "escalated" ? ("bypassPermissions" as const) : ("auto" as const),
-              quick: modeTerms?.quickMint === true && liveMode !== null && liveMode.signedBy === who.name,
-            },
-            open: null,
-          };
-        })(),
         now,
       };
   }
@@ -589,12 +526,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const routed = routeOfTask(runtime.store, taskId, ref, now);
     if (routed === null) return null;
     const live = runtime.store.hasLiveClaim(ref.id, now);
-    const raced = runtime.store.activeTournamentTerms(ref.id) !== null;
     const shared = {
-      riskLevel: ref.riskLevel ?? scope?.riskLevel ?? "routine",
       overrides: ref.routeOverrides ?? [],
-      editable: who.role === "approver" && !live && !raced,
-      editableWhy: who.role !== "approver" ? "your login can watch — choosing agents is an approver's act" : live ? "this task is running — its agents cannot change under a live claim" : raced ? "tournament terms are on file — its lanes decide the agents" : null,
+      editable: who.role === "approver" && !live,
+      editableWhy: who.role !== "approver" ? "your login can watch — choosing agents is an approver's act" : live ? "this task is running — its agents cannot change under a live claim" : null,
       replanOnPlanChange: ref.plan === "drafted" && scope !== null && !approvalOf(scope).approved,
       digest: scope?.digest ?? null,
       choices: agentChoicesFor(runtime.store, ref.repo, routed.kind === "route" ? routed.route : null),
@@ -619,7 +554,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const ref = runtime.store.lookupRef(taskId)!;
     const scope = runtime.store.getScope(taskId);
     // The focused chat is a lens over the task page's own assembled facts.
-    // Reusing that projection keeps approval nonces, joint race digests,
+    // Reusing that projection keeps approval nonces, joint approval digests,
     // revision verification, decisions, and result evidence on one source
     // of truth instead of growing a chat-only lifecycle.
     const view = who === undefined || family.problem !== null ? null : taskViewData(taskId, who, null, options);
@@ -665,7 +600,6 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               planDocument: view.planDocument,
               planContract: view.planContract ?? null,
               deliverable: view.deliverable ?? "branch",
-              raceTerms: view.raceTerms ?? null,
               revision: view.revision ?? null,
               coordinator: view.coordinator ?? null,
               repairChain: view.repairChain ?? null,
@@ -1000,7 +934,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
    * The review cockpit's projection of ONE completed task (Priority 5):
    * approved intent from the scope and plan already on file, the result
    * run's sealed artifacts through the same verified readers the run page
-   * uses, the stored verdict and matrix, the contest and publication
+   * uses, the stored verdict and matrix, the publication
    * rows. Nothing here is a new record: a manual completion (no run), a
    * legacy result (no proof verdict), and a broken artifact each read as
    * exactly what they are. Only the selected result is enriched — the

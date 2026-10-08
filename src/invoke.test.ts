@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { resetAttestationCache } from "./attest.js";
 import { dirname, join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { invokeAgent, invokeHeldAgent, type InvokeResult } from "./invoke.js";
+import { invokeAgent, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
 import { acquire } from "./claim.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -35,7 +35,6 @@ const T0 = new Date("2026-08-12T06:00:00.000Z");
 const TTL = 10 * 365 * 24 * 3600 * 1000;
 const REPO = "/repo/invoke";
 const RUNNER = "builder-1";
-const SUPERVISOR = fakePid(1), AGENT_GROUP = fakePid(2);
 
 /** The runner gate's spawn leg (MCP spec v6) re-proves custody immediately
  * before any provider process exists: the runner registered and bound to
@@ -175,78 +174,6 @@ describe("the invocation gateway", () => {
     });
 
     expect(childDb).toBeDefined();
-    expect(existsSync(dirname(childDb!))).toBe(false);
-  });
-
-  test("v105: a held session on the plan stays on the plan when a later turn reports no windows (they come only when they move)", async () => {
-    const home = mkdtempSync(join(tmpdir(), "so-held-billing-"));
-    mkdirSync(join(home, ".standing-orders", "keys"), { recursive: true });
-    writeFileSync(join(home, ".standing-orders", "keys", "claude.auth"), "subscription");
-    let stream: ((event: Record<string, unknown>) => void) | undefined;
-    try {
-      const started = await invokeHeldAgent(store, runId, CLAUDE, ["--held"], {
-        socketPath: "/tmp/standing-orders-held-billing.sock", cookie: "cookie", keyHome: home,
-        starter: async (_file, _args, options) => {
-          stream = options.events?.onStreamEvent;
-          return { ok: true, handle: { supervisorPid: SUPERVISOR, agentPgid: AGENT_GROUP, writeTurn: () => true, endInput: () => {}, terminate: () => {}, killHard: () => {}, exited: new Promise(() => {}) } };
-        },
-      });
-      expect(started.ok).toBe(true);
-      const init = { type: "system", subtype: "init", apiKeySource: "none", model: "claude-sonnet-5" };
-      const windows = { type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.2 } } } };
-      const result = { type: "result", subtype: "success", result: "ok", total_cost_usd: 8 };
-      for (const event of [init, windows, result, init, result, init, windows, result]) stream!(event);
-      store.recordUsage(runId, { costUsd: 8 });
-      expect(store.handle.prepare("SELECT microusd, billing FROM run_spend WHERE run = ?").get(runId)).toEqual({ microusd: 0, billing: "subscription" });
-      expect(store.handle.prepare("SELECT billing FROM provider_account WHERE provider = 'claude'").get()?.["billing"]).toBe("subscription");
-      // A named key source later in the session does make it a key.
-      stream!({ ...init, apiKeySource: "apiKeyHelper" });
-      stream!(result);
-      expect(store.handle.prepare("SELECT billing FROM run_spend WHERE run = ?").get(runId)?.["billing"]).toBe("api-key");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("a held provider keeps its disposable database only until the session exits", async () => {
-    let childDb: string | undefined;
-    let finish: (value: { code: number | null }) => void = () => {};
-    const exited = new Promise<{ code: number | null }>(resolve => {
-      finish = resolve;
-    });
-
-    const started = await invokeHeldAgent(store, runId, CLAUDE, ["--held"], {
-      socketPath: "/tmp/standing-orders-held-test.sock",
-      cookie: "cookie",
-      env: { STANDING_ORDERS_DB: "/operator/live/orders.db" },
-      starter: async (_file, _args, options) => {
-        childDb = options.env?.["STANDING_ORDERS_DB"];
-        options.onObservationFailure?.({ phase: "final-exit", operation: "snapshot", code: "EMFILE", rootPid: SUPERVISOR, at: T0.toISOString(), identityUnknown: false });
-        return {
-          ok: true,
-          handle: {
-            supervisorPid: SUPERVISOR,
-            agentPgid: AGENT_GROUP,
-            writeTurn: () => true,
-            endInput: () => {},
-            terminate: () => {},
-            killHard: () => {},
-            exited,
-          },
-        };
-      },
-    });
-
-    expect(started.ok).toBe(true);
-    const observation = store.actionLedger({ repos: null }).find(one => one.action === "process observation failed");
-    expect(JSON.parse(observation!.outcome)).toMatchObject({ phase: "final-exit", code: "EMFILE", rootPid: SUPERVISOR });
-    expect(childDb).toBeDefined();
-    expect(childDb).not.toBe("/operator/live/orders.db");
-    expect(existsSync(dirname(childDb!))).toBe(true);
-
-    finish({ code: 0 });
-    await exited;
-    await Promise.resolve();
     expect(existsSync(dirname(childDb!))).toBe(false);
   });
 
@@ -897,7 +824,7 @@ describe("the attested gateway (Phase 3): gemini refusals are values", () => {
   });
 });
 
-describe("the fallback taxonomy stamp (E2): honest disposal, fail closed", () => {
+describe("the terminal-class stamp (E2): honest disposal", () => {
   let store: Store;
   beforeEach(() => {
     store = openStore(":memory:");
@@ -918,14 +845,14 @@ describe("the fallback taxonomy stamp (E2): honest disposal, fail closed", () =>
     const jsonl = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fine" } });
     await invokeRan(store, id, { provider: "codex", model: null }, ASK, { runner: async () => ({ ...OK, stdout: jsonl }) });
     // Codex defaults to the subscription; a clean turn carries NO structural
-    // failure terminal, so it classifies 'unknown' — never eligible.
+    // failure terminal, so it classifies 'unknown'.
     expect(store.getRun(id)).toMatchObject({ authMode: "subscription", terminalClass: "unknown" });
   });
 
-  test("a codex FAILED turn stamps not-exhausted — a definite failure, but no fixture makes it eligible", async () => {
+  test("a codex FAILED turn stamps not-exhausted — a usage-limit message is an ordinary failure", async () => {
     const id = codexRunFor("e2-fail");
     // A structural failure terminal (turn.failed) shaped exactly like a real
-    // usage-limit message — but with the recognizers empty, it is NOT eligible.
+    // usage-limit message: an ordinary failure, nothing switches provider.
     const jsonl = [
       JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "You've hit your usage limit." } }),
       JSON.stringify({ type: "turn.failed", error: { message: "You've hit your usage limit. Try again later." } }),
@@ -935,7 +862,6 @@ describe("the fallback taxonomy stamp (E2): honest disposal, fail closed", () =>
     });
     const run = store.getRun(id);
     expect(run?.terminalClass).toBe("not-exhausted");
-    // The safety property spelled out: a definite failure never authorizes a paid fallback.
     expect(run?.terminalClass).not.toBe("usage-exhausted");
     expect(run?.terminalClass).not.toBe("credits-depleted");
   });
@@ -979,54 +905,6 @@ describe("the fallback taxonomy stamp (E2): honest disposal, fail closed", () =>
   });
 });
 
-describe("the chain-bound gateway (E3d review findings 1/3)", () => {
-  let store: Store;
-  beforeEach(() => {
-    store = openStore(":memory:");
-    registerBuilder(store);
-  });
-  afterEach(() => store.close());
-
-  /** A run bound to a chain entry, with a REAL cycle row backing the FK. */
-  const chainBoundRun = (authMode: "subscription" | "api-key") => {
-    store.createTask({ id: "t-chain", title: "w" }, T0);
-    const ref = claimTask(store, "t-chain", "lease-ch");
-    const runId = store.startRun({
-      taskRef: ref, leaseId: "lease-ch", runner: "builder-1",
-      branch: "b", worktree: "/w", provider: "claude", ...bareLegacy("build", "claude", null), now: T0,
-    });
-    const opened = store.openFallbackCycle(ref, "digest-x", runId, T0) as { ok: true; id: number };
-    store
-      .raw()
-      .prepare("UPDATE run SET chain_cycle = ?, chain_index = 0, entry_digest = 'e0', auth_mode = ? WHERE id = ?")
-      .run(opened.id, authMode, runId);
-    return runId;
-  };
-
-  test("a pinned api-key entry with NO key anywhere is REFUSED before any stamp — never the cached login (finding 1)", async () => {
-    const runId = chainBoundRun("api-key");
-    const saved = process.env["ANTHROPIC_API_KEY"];
-    delete process.env["ANTHROPIC_API_KEY"];
-    try {
-      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => OK, keyHome: "/nonexistent-keyhome" });
-      expect(result).toMatchObject({ kind: "refused", reason: "chain-credential" });
-      // No spend was implied: the start stamp never landed.
-      expect(store.getRun(runId)?.providerStartedAt ?? null).toBeNull();
-    } finally {
-      if (saved !== undefined) process.env["ANTHROPIC_API_KEY"] = saved;
-    }
-  });
-
-  test("a chain-bound run whose custody no longer proves is REFUSED at the spawn stamp (finding 3)", async () => {
-    // The run carries a binding, but the task has NO chain approval to
-    // re-derive — the pre-spawn custody proof must refuse, stamping nothing.
-    const runId = chainBoundRun("subscription");
-    const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => OK });
-    expect(result).toMatchObject({ kind: "refused", reason: "chain-custody" });
-    expect(store.getRun(runId)?.providerStartedAt ?? null).toBeNull();
-  });
-});
-
 describe("the architecture rule", () => {
   /**
    * The zero-token invariant is only enforceable if there is exactly one
@@ -1054,24 +932,5 @@ describe("the architecture rule", () => {
     expect(spawners).toEqual([]);
     // build-review.ts: the one automatic read-only review per build, admitted through admitReview's run and budget.
     expect(invokers.sort()).toEqual(["build-review.ts", "builder.ts", "planner.ts", "scout.ts"]);
-  });
-});
-
-describe("a held session's project tools", () => {
-  test("a research run gets none of them; a build gets them as launched", async () => {
-    const { heldReadOnly } = await import("./invoke.js");
-    const legacy = { route: { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const } };
-    const store = openStore(":memory:");
-    try {
-      const now = new Date("2026-10-04T12:00:00Z");
-      store.createTask({ id: "look", title: "Look" }, now);
-      const ref = store.refFor("built-in", "look").id;
-      const scout = store.startRun({ taskRef: ref, leaseId: "l-look", runner: "w", branch: "so-scout/look", worktree: "/w/look", role: "scout", ...legacy, now });
-      store.createTask({ id: "make", title: "Make" }, now);
-      const buildRef = store.refFor("built-in", "make").id;
-      const build = store.startRun({ taskRef: buildRef, leaseId: "l-make", runner: "w", branch: "so/make", worktree: "/w/make", ...legacy, now });
-      expect(heldReadOnly(store, scout)).toEqual({});
-      expect(heldReadOnly(store, build)).toBeUndefined();
-    } finally { store.close(); }
   });
 });

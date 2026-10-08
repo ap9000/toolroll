@@ -221,7 +221,7 @@ export const PUSH_WORDS: Record<NonNullable<Notification["pushClass"]>, { title:
   progress: { title: "Toolroll", body: "checks in progress" },
 };
 
-const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/contest\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/];
+const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/];
 const CLASS_FALLBACK: Record<NonNullable<Notification["pushClass"]>, string> = {
   decision: "/next",
   pick: "/next",

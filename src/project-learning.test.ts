@@ -38,7 +38,7 @@ describe('quiet learning', () => {
       propose(store,{ taskId:id, goal:'Preserve boundary behavior', touches:Array.from({length:8},(_,i)=>`f${i}.ts`), acceptance:[], now });
       approve(store,id,'alex',now,store.getScope(id)!.digest,password);
     }
-    const route = store.routeAuthorityFor(ref,role,null,{provider:'claude',model:'sonnet'}); if (!route?.ok) throw Error(JSON.stringify({route,scope:store.getScope(id)}));
+    const route = store.routeAuthorityFor(ref, role, {provider:'claude',model:'sonnet'}); if (!route?.ok) throw Error(JSON.stringify({route,scope:store.getScope(id)}));
     const run = store.startRun({ taskRef:ref, leaseId:`lease-${id}`, runner:'runner', role, branch:`standing-orders/${id}`, worktree:repo, provider:'claude',model:'sonnet', now, route:route.stamp });
     store.stampRun(run,{baseRevision:head,scopeDigest:store.getScope(id)?.digest ?? ''});
     return run;

@@ -190,28 +190,8 @@ describe("delivery and receipts (finding 8)", () => {
   });
 });
 
-describe("tournaments stay closed in both directions", () => {
-  test("filing refuses while a contest is open", () => {
-    // A contest row in a racing state, fabricated minimally (FKs are ON,
-    // so the terms row comes first).
-    const db = (store as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): { lastInsertRowid: number | bigint } } } }).db;
-    const terms = db.prepare(
-      `INSERT INTO tournament_terms (task_ref, generation, race_digest, agents, n,
-         per_agent_budget_microusd, overrun_reserve_microusd, total_budget_microusd,
-         price_version, retries, publication_policy, created_at)
-       VALUES (?, 1, 'digest', '[]', 2, 1, 1, 1, 1, 0, 'none', ?)`,
-    ).run(refOf("t-1"), T0.toISOString());
-    db.prepare(
-      `INSERT INTO contest (task_ref, terms, state, scope_digest, race_digest, created_at)
-       VALUES (?, ?, 'racing', 'scope-d', 'digest', ?)`,
-    ).run(refOf("t-1"), Number(terms.lastInsertRowid), T0.toISOString());
-    expect(store.fileSteerNote("t-1", "alex", "no racing notes", later(1_000))).toMatchObject({
-      ok: false,
-      reason: "contest-open",
-    });
-  });
-
-  test("pendingSteerCount is the admitContest predicate", () => {
+describe("pending notes", () => {
+  test("pendingSteerCount counts notes not yet settled", () => {
     store.fileSteerNote("t-1", "alex", "pending", T0);
     expect(store.pendingSteerCount(refOf("t-1"))).toBe(1);
   });

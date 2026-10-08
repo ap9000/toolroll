@@ -200,7 +200,7 @@ export function scopeApprovedForDispatch(store: Store, taskRef: number, now: Dat
 }
 
 /** The phase the ordinary dispatch loop would choose before it resolves an
- * agent. Attended authorization is deliberately outside this ordinary path. */
+ * agent. */
 export function dispatchRoleFor(store: Store, taskRef: number, now: Date): "builder" | "planner" | "scout" {
   const ref = store.refForId(taskRef);
   const approved = scopeApprovedForDispatch(store, taskRef, now);

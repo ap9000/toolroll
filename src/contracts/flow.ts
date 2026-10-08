@@ -366,11 +366,37 @@ export const leadTriggerSchema = z.discriminatedUnion("kind", [
 ]);
 
 const ZONE_OR_NULL = { zone: zoneId.nullable() };
+/**
+ * v115: the exact task a schedule files each time — what a routine was before routines became scheduled flows. Its
+ * terms are copied into each firing's scope unchanged; `costCeilingUsd` caps what its tasks spend in a rolling 7 days
+ * and a firing waits while the last task is unfinished. `approval` is a routine's approval carried over whole (the
+ * digest the approver signed over these terms, this schedule and project, and the agents it froze): while it still
+ * verifies, each firing is approved as the routine's were; otherwise each firing is an ordinary proposal under the
+ * project's approval rules. Only the v115 migration carries an approval; a template or a recipe makes one with none
+ * (createScheduledFlow), and no trigger settings a person or a flow file gives can carry one.
+ */
+export const standingOrderSchema = z.strictObject({
+  stem: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/),
+  // The terms exactly as they were approved: each firing's filing checks them again, as every filing is checked.
+  goal: z.string().max(8_000),
+  outOfScope: z.string().max(8_000).nullable(),
+  touches: z.array(z.string().max(800)).max(200),
+  requirements: z.array(z.string().max(400)).max(100),
+  acceptance: z.array(z.unknown()),
+  budgetPerRunMicrousd: z.int().nullable(),
+  costCeilingUsd: z.number().nullable(),
+  singleFlight: z.literal(true),
+  filedBy: z.string().min(1).nullable(),
+  /** The routine it came from: that routine's earlier tasks still count toward one-at-a-time and the ceiling. */
+  routine: z.int().nullable(),
+  approval: z.strictObject({ digest: z.string().min(1), by: z.string().nullable(), at: z.string().min(1), profileJson: z.string().min(1), routeJson: z.string().min(1) }).nullable(),
+});
+export type StandingOrder = z.infer<typeof standingOrderSchema>;
 /** A trigger as it is saved (`configJson`), one schema per kind. */
 export const triggerConfigSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("button"), label: z.string().min(1).max(TEXT_LIMITS.triggerButton), questions: z.array(z.string().min(1).max(TEXT_LIMITS.triggerQuestion)).min(1).max(6), ...ZONE_OR_NULL }),
   /** `script`: run this project script on the schedule and make a card of each item it prints, instead of one card titled `title`. */
-  z.strictObject({ kind: z.literal("schedule"), schedule: z.string().min(1), title: z.string().min(1).max(TEXT_LIMITS.triggerTitle), description: z.string().max(TEXT_LIMITS.triggerDescription).nullable(), ...ZONE_OR_NULL, script: scriptName.optional(), secrets: z.array(secretName).min(1).max(SECRETS_MAX).optional() }),
+  z.strictObject({ kind: z.literal("schedule"), schedule: z.string().min(1), title: z.string().min(1).max(TEXT_LIMITS.triggerTitle), description: z.string().max(TEXT_LIMITS.triggerDescription).nullable(), ...ZONE_OR_NULL, script: scriptName.optional(), secrets: z.array(secretName).min(1).max(SECRETS_MAX).optional(), order: standingOrderSchema.optional() }),
   z.strictObject({ kind: z.literal("github"), repo: z.string().min(1).max(TEXT_LIMITS.triggerGithubRepo), watch: z.enum(["issues", "pulls", "checks"]), label: z.string().max(TEXT_LIMITS.triggerLabel).nullable(), branch: z.string().max(TEXT_LIMITS.triggerBranch).nullable(), from: z.enum(["team", "anyone"]), delivery, ...ZONE_OR_NULL }),
   z.strictObject({ kind: z.literal("linear"), team: z.string().max(TEXT_LIMITS.triggerTeam).nullable(), state: z.string().max(TEXT_LIMITS.triggerState).nullable(), label: z.string().max(TEXT_LIMITS.triggerLabel).nullable(), delivery, ...ZONE_OR_NULL }),
   z.strictObject({ kind: z.literal("flow"), flow: z.int().min(1), when: zoneId, ...ZONE_OR_NULL }),

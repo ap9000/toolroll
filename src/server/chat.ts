@@ -39,7 +39,7 @@ import { verifyApproverByPassword,verifyApproverStanding,type VerifiedApprover }
 import {
 projectName
 } from "../project.js";
-import { fileRoutineProposal,fileTaskProposal } from "../proposal.js";
+import { fileTaskProposal } from "../proposal.js";
 import { providerName } from "../provider-auth.js";
 import { validModelId } from "../provider.js";
 import { loadOrCreateVapidKeys,validatePushEndpoint } from "../push.js";
@@ -740,7 +740,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         if (!dismissed) noteMate(who.session.csrf, null, "that proposal was already acted on");
         return redirect(response, chatReturnWithLatest(back));
       }
-      const outcome = confirmMateProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, held: options.attended?.coordinator, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+      const outcome = confirmMateProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
       if (cardJson) {
         if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
         return cardAnswer(200, true, outcome.said, outcome.taskId);
@@ -974,49 +974,22 @@ export function createChatHandlers(runtime: ServerRuntime) {
       // Re-validated at the act: the door runs every field check again, and
       // the fields are scanned for secrets before they become durable.
       const acceptanceFields = candidate.draft.acceptance.flatMap(c => [c.statement, ...(c.how === null ? [] : [c.how])]);
-      const fields = candidate.draft.kind === "task"
-        ? [candidate.draft.title, candidate.draft.goal, candidate.draft.outOfScope ?? "", ...candidate.draft.touches, ...acceptanceFields]
-        : [candidate.draft.name, candidate.draft.goal, candidate.draft.outOfScope ?? "", ...candidate.draft.touches, ...acceptanceFields];
+      const fields = [candidate.draft.title, candidate.draft.goal, candidate.draft.outOfScope ?? "", ...candidate.draft.touches, ...acceptanceFields];
       if (scanForSecrets(fields.join("\n")).length > 0) {
         chat.candidates.delete(key);
         return refuse(response, who, 400, "that draft contains something credential-shaped — discarded", "/chat");
       }
       const filedVia = `chat:${enabled.config.provider}`;
-      if (candidate.draft.kind === "task") {
-        const made = fileTaskProposal(
-          store,
-          {
-            title: candidate.draft.title,
-            repo: candidate.repoPath,
-            goal: candidate.draft.goal,
-            outOfScope: candidate.draft.outOfScope,
-            touches: candidate.draft.touches,
-            acceptance: candidate.draft.acceptance,
-            filedVia, filedBy: { name: who.name, kind: "person" as const },
-            admittedRepos: managedRepos(),
-          },
-          now,
-        );
-        if (!made.ok) {
-          candidate.state = "pending";
-          return refuse(response, who, 400, `the door refused it: ${made.message}`, "/chat");
-        }
-        chat.candidates.delete(key);
-        return redirect(response, taskHref(made.id));
-      }
-      const made = fileRoutineProposal(
+      const made = fileTaskProposal(
         store,
         {
-          name: candidate.draft.name,
+          title: candidate.draft.title,
           repo: candidate.repoPath,
           goal: candidate.draft.goal,
           outOfScope: candidate.draft.outOfScope,
           touches: candidate.draft.touches,
           acceptance: candidate.draft.acceptance,
-          requirements: [],
-          schedule: candidate.draft.schedule,
-          costCeilingUsd: null,
-          filedVia, createdBy: who.name,
+          filedVia, filedBy: { name: who.name, kind: "person" as const },
           admittedRepos: managedRepos(),
         },
         now,
@@ -1026,7 +999,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         return refuse(response, who, 400, `the door refused it: ${made.message}`, "/chat");
       }
       chat.candidates.delete(key);
-      return redirect(response, `/routines/${made.id}`);
+      return redirect(response, taskHref(made.id));
     }
 
     const chatAckPost = /^\/chat\/ack\/([0-9]{1,15})$/.exec(url.pathname);

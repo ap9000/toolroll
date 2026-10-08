@@ -20,7 +20,6 @@ import { warmTurn, type WarmHooks } from "./chat-warmth.js";
 import {
   confirmMateProposal,
   dismissMateProposal,
-  type DoorOptions,
 } from "./mate-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import {
@@ -68,7 +67,6 @@ export type ChatDeliveryOptions = {
   current: () => boolean;
   origin: () => string | null;
   subscriptionRunner?: SubscriptionMateRunner;
-  held?: DoorOptions["held"];
   canNotify?: () => boolean;
   clock?: () => Date;
   partSize?: number;
@@ -714,7 +712,6 @@ export function applyChatAction(
           via: options.state.channel,
           evidenceRoot: options.evidenceRoot,
           confirm: phase === "yes",
-          ...(options.held ? { held: options.held } : {}),
           deferSignal: (signal) => signals.push(signal),
         },
       );

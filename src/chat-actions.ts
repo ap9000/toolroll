@@ -47,7 +47,7 @@ import { chooseFlowCard, flowPersonOf } from "./flow-send.js";
 import type { FlowCardRow, FlowRow, FlowTriggerRow } from "./store.js";
 import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCard } from "./flow-people.js";
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, scheduleFromWords, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
-import { describeSchedule, parseSchedule } from "./routine.js";
+import { describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { dirname } from "node:path";
 import { handleOf, parseSoul, SOUL_CHARS, TEAMMATE_TEMPLATES, teammateLabel } from "./teammates.js";
 import { createTeammateFrom, labelOf, nameOf, renamedSoul, saveSoul, setTeammateState } from "./teammate-admin.js";
@@ -793,8 +793,6 @@ export function prepareSharedAction(
       family = store.taskFamilyOf(task!, who.repos, false);
     if (!row || !family || family.problem || family.current.id !== task)
       throw Error("Choose the current task.");
-    if (store.openContestFor(ref.id) !== null)
-      throw Error("Wait for the agent comparison to finish.");
     const scope = store.getScope(task!);
     state = {
       task,
@@ -816,8 +814,6 @@ export function prepareSharedAction(
       });
       if (!authority.ok) throw Error(authority.problem);
       state["authMode"] = authority.authMode;
-      const race = store.activeTournamentTerms(ref.id);
-      state["race"] = race;
       terms.push(
         ...describeScope(scope)
           .filter((line) => !/^\s*(reference|approved)\s/.test(line))
@@ -828,17 +824,8 @@ export function prepareSharedAction(
               .replace(/^not this\s+/, "Excluded: ")
               .replace(/^touches\s+/, "Allowed files: "),
           ),
-        ...(
-          authority.chain ?? [
-            { profile: authority.profile, authMode: authority.authMode },
-          ]
-        ).map(
-          (entry, index) =>
-            `${index === 0 ? "Agent permissions and limits" : "Fallback " + index}\n${runtimeTerms(entry.profile)}\n${entry.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : entry.authMode === "subscription" ? "Uses your subscription login." : ""}`,
-        ),
+        `Agent permissions and limits\n${runtimeTerms(authority.profile)}\n${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`,
       );
-      if (race)
-        terms.push(`Agent comparison terms:\n${JSON.stringify(race, null, 2)}`);
       const plan = store.latestPlanArtifact(ref.id),
         revision =
           ref.revisionBriefArtifact === null
@@ -1230,8 +1217,7 @@ export function executeSharedAction(
           now,
         );
       else if (payload.operation === "scope_approve") {
-        const scope = store.getScope(task!)!,
-          race = store.activeTournamentTerms(store.lookupRef(task!)!.id);
+        const scope = store.getScope(task!)!;
         const result = approve(
           store,
           task!,
@@ -1247,11 +1233,6 @@ export function executeSharedAction(
           if (result.reason === "policy") throw Error(result.message);
           throw Error(`Approval refused: ${result.reason}.`);
         }
-        if (
-          race &&
-          !store.approveTournamentTerms(race.id, actor, race.raceDigest, now)
-        )
-          throw Error("The comparison terms changed. Nothing was approved.");
       } else if (payload.operation === "result_accept") {
         // Accept and finish, as on the result page: whether a check only the person makes is accepted
         // too is decided inside the same transaction, against the receipt as it stands.

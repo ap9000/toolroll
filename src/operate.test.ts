@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { openStore } from "./store.js";
 import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
 import { DEFAULT_LIVENESS_MS, register } from "./runner.js";
-import { completeFenced } from "./claim.js";
+import { finalize } from "./claim.js";
 import { addApprover } from "./scope.js";
 import { legOf, routeFromJson } from "./phase-routing.js";
 import { SIZING_BUDGET_MS, type SizeAnswer, type Sizer } from "./task-sizing.js";
@@ -23,13 +23,12 @@ const presented = (
   s: Pick<import("./store.js").Store, "routeAuthorityFor">,
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
-  bound: { index: number; entryDigest: string } | null = null,
   spend: { provider: string; model: string | null } = { provider: "claude", model: null },
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
   // A task with no scope presents the bare word `legacy` for the pair it
   // spends as (atomic authority closure): the default claude pair, or the
   // exact pair a fixture names.
-  const authority = s.routeAuthorityFor(taskRef, role, bound) ?? s.routeAuthorityFor(taskRef, role, bound, spend);
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, spend);
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -370,7 +369,7 @@ describe("operating the queue from the command line", () => {
       await claim(["claim", "t-1", "--runner", "next", "--json"], later(2_000));
       const nextLease = payload().lease.leaseId as string;
       const successor = openStore(db);
-      expect(completeFenced(successor, nextLease, "done", later(3_000))).toMatchObject({ ok: true });
+      expect(finalize(successor, nextLease, { kind: "complete", state: "done", now: later(3_000) })).toMatchObject({ ok: true });
       successor.close();
       const dead = later(DEFAULT_LIVENESS_MS + 60_000);
       await run(["runner", "heartbeat", "next", "--token", await tokenFor("next")], dead);
@@ -1047,141 +1046,6 @@ describe("agreeing to a scope from the command line", () => {
   });
 });
 
-describe("routine — from the command line", () => {
-  let dir: string;
-  let db: string;
-  let lines: string[];
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "standing-orders-routine-cli-"));
-    db = join(dir, "orders.db");
-    lines = [];
-  });
-
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  const run = (argv: string[], now: Date = T0) => {
-    const [command = "", ...rest] = argv;
-    lines = [];
-    return runOperate(command, rest, line => lines.push(line), { databaseFile: db, now });
-  };
-  const out = () => lines.join("\n");
-  const payload = () => JSON.parse(out());
-
-  test("file, refuse to fire unapproved, approve with the credential, run now", async () => {
-    await run(["approver", "add", "alex", "--json"]);
-    const token = payload().token as string;
-    // v24: approvals bind exact routing — the install names its model once.
-    await run(["config", "set", "build", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]);
-    await run(["config", "set", "plan", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]); // v47: every phase names an exact model
-    await run(["config", "set", "review", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]);
-
-    const filed = await run([
-      "routine", "add", "nightly-deps",
-      "--repo", dir, "--goal", "Refresh the lockfile", "--acceptance", "It is fixed and verified.|manual-review",
-      "--schedule", "daily:03:30", "--ceiling", "5",
-    ]);
-    expect(filed).toBe(EXIT.ok);
-    expect(out()).toContain("Nothing fires until somebody approves");
-    expect(out()).toContain("BUILDS WITHOUT ASKING");
-
-    // Unarmed approve prints the order and the exact command — approves nothing.
-    const unarmed = await run(["routine", "approve", "nightly-deps", "--json"]);
-    expect(unarmed).toBe(EXIT.refused);
-    expect(payload().reason).toBe("unconfirmed");
-    const digest = payload().routine.digest as string;
-
-    // run-now before approval refuses: there is no standing order yet.
-    const early = await run(["routine", "run-now", "nightly-deps", "--as", "alex", "--token", token, "--json"]);
-    expect(early).toBe(EXIT.refused);
-    expect(payload().reason).toBe("not-approved");
-
-    const approved = await run([
-      "routine", "approve", "nightly-deps", "--yes", "--digest", digest, "--as", "alex", "--token", token, "--json",
-    ]);
-    expect(approved).toBe(EXIT.ok);
-    expect(payload().routine.approvedBy).toBe("alex");
-
-    const fired = await run(["routine", "run-now", "nightly-deps", "--as", "alex", "--token", token, "--json"]);
-    expect(fired).toBe(EXIT.ok);
-    expect(payload().taskId).toContain("nightly-deps-");
-
-    const shown = await run(["routine", "show", "nightly-deps"]);
-    expect(shown).toBe(EXIT.ok);
-    expect(out()).toContain("live");
-    expect(out()).toContain("$5.00 per rolling 7 days");
-    expect(out()).toContain("recent firings");
-
-    await run(["routine", "pause", "nightly-deps"]);
-    const listed = await run(["routine", "list"]);
-    expect(listed).toBe(EXIT.ok);
-    expect(out()).toContain("paused");
-  });
-
-  test("migration-recovery (CLI): `routine refresh` re-resolves a legacy unfrozen order's agents, approves nothing, and `routine approve` then freezes exactly what was shown", async () => {
-    await run(["approver", "add", "alex", "--json"]);
-    const token = payload().token as string;
-    for (const phase of ["build", "plan", "review"]) {
-      await run(["config", "set", phase, "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]);
-    }
-    await run(["routine", "add", "nightly-deps", "--repo", dir, "--goal", "Refresh the lockfile", "--acceptance", "It is fixed and verified.|manual-review", "--schedule", "daily:03:30"]);
-    // Roll the row back to a v47 approval: approved on terms + profile, no route.
-    const { openStore: open } = await import("./store.js");
-    const { routineDigestOf: digestOf, termsOf } = await import("./routine.js");
-    const legacy = open(db);
-    const row = legacy.routineByName("nightly-deps")!;
-    const v47Digest = digestOf(termsOf(row), row.profile);
-    legacy.raw().prepare("UPDATE routine SET route_json = NULL, digest = ?, approved_at = ?, approved_by = 'alex', approved_digest = ?, approved_profile_json = profile_json, next_fire_at = ? WHERE id = ?")
-      .run(v47Digest, T0.toISOString(), v47Digest, T0.toISOString(), row.id);
-    legacy.close();
-
-    // Shown honestly, and run-now refuses in words that name the road.
-    expect(await run(["routine", "show", "nightly-deps"])).toBe(EXIT.ok);
-    expect(out()).toContain("not frozen");
-    expect(out()).toContain("routine refresh");
-    expect(await run(["routine", "run-now", "nightly-deps", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.refused);
-    expect(payload()).toMatchObject({ reason: "route-unfrozen" });
-
-    // Refresh: the working agents move, the approval goes stale, nothing fires.
-    expect(await run(["routine", "refresh", "nightly-deps", "--json"])).toBe(EXIT.ok);
-    expect(payload()).toMatchObject({ changed: true, before: "unfrozen" });
-    const refreshedDigest = payload().routine.digest as string;
-    expect(refreshedDigest).not.toBe(v47Digest);
-    // The unfrozen approval is withdrawn by the refresh (v48 authority repair): no digest,
-    // no snapshot, no armed slot — only the history of who once agreed.
-    expect(payload().routine).toMatchObject({ approvedDigest: null, approvedRoute: null, nextFireAt: null, approvedBy: "alex" });
-    expect(await run(["routine", "run-now", "nightly-deps", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.refused);
-    expect(payload()).toMatchObject({ reason: "not-approved" });
-    expect(await run(["routine", "refresh", "nightly-deps", "--json"])).toBe(EXIT.ok);
-    expect(payload()).toMatchObject({ changed: false });
-
-    // The yes, against the digest the refresh printed — then a firing seals it.
-    expect(await run(["routine", "approve", "nightly-deps", "--yes", "--digest", refreshedDigest, "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
-    expect(payload().routine.approvedRoute).not.toBeNull();
-    expect(await run(["routine", "run-now", "nightly-deps", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
-    const taskId = payload().taskId as string;
-    const check = open(db);
-    expect(check.sealedRouteOf(taskId).ok).toBe(true);
-    check.close();
-  });
-
-  test("a bad definition names every problem at once and stores nothing", async () => {
-    const bad = await run([
-      "routine", "add", "bad-one",
-      "--repo", dir, "--goal", "", "--acceptance", "It is fixed and verified.|manual-review", "--schedule", "hourly", "--ceiling", "-3",
-    ]);
-    expect(bad).toBe(EXIT.usage);
-    expect(out()).toContain("goal");
-    expect(out()).toContain("schedule");
-    expect(out()).toContain("costCeilingUsd");
-    const listed = await run(["routine", "list", "--json"]);
-    expect(payload().routines).toEqual([]);
-    expect(listed).toBe(EXIT.ok);
-  });
-});
-
 describe("config — spend routing is authenticated authority", () => {
   let dir: string;
   let db: string;
@@ -1674,22 +1538,13 @@ describe("providers — identification without spend", () => {
     const report = JSON.parse(lines.join("\n")).providers as Record<string, unknown>[];
     const codex = report.find(one => one["provider"] === "codex");
     expect(codex).toMatchObject({ installed: true, identity: "Logged in using ChatGPT", measuresCost: false });
-    expect(codex?.["fallbackReadiness"]).toMatchObject({
-      authMode: "subscription",
-      versionProvenAtSpawn: false,
-      exhaustionRecognized: false,
-      automaticSwitchArmed: false,
-    });
+    // Automatic fallback is gone (v115): the report no longer speaks of it.
+    expect(codex).not.toHaveProperty("fallbackReadiness");
     const claude = report.find(one => one["provider"] === "claude");
     // No non-spending auth probe exists for claude: identity stays null,
     // history stands in ("never" on a fresh database).
     expect(claude).toMatchObject({ identity: null, lastSuccessfulRun: null, measuresCost: true });
-    expect(claude?.["fallbackReadiness"]).toMatchObject({
-      authMode: "subscription",
-      versionProvenAtSpawn: false,
-      exhaustionRecognized: false,
-      automaticSwitchArmed: false,
-    });
+    expect(claude).not.toHaveProperty("fallbackReadiness");
     const openrouter = report.find(one => one["provider"] === "openrouter");
     expect(openrouter).toHaveProperty("keyPresent");
     // Only --version and login status were ever run — nothing that spends.
@@ -2053,7 +1908,7 @@ describe("coordinator ceremonies (MCP spec v6)", () => {
 
 describe("the CLI router", () => {
   test("every verb the operate dispatcher knows is reachable from the binary", async () => {
-    // routine/config/providers shipped reachable only through runOperate —
+    // config/providers shipped reachable only through runOperate —
     // the real `toolroll` binary refused them (found by the console
     // polish pass). The two lists must never drift again.
     const { readFileSync } = await import("node:fs");
@@ -2368,30 +2223,38 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload().route).toMatchObject({ risk: "routine", riskTitle: "Risky", size: { risky: true } });
   });
 
-  test("task route shows one projection with reasons; --risk and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
+  test("task route shows one projection with reasons; --size and per-phase overrides are approver-only, recorded, and stale a sealed approval", async () => {
     await run(["config", "set", "build", "--tier", "strong", "--provider", "claude", "--model", "opus", "--as", "alex", "--token", token, "--json"]);
     // Before a scope: a live recommendation.
     expect(await run(["task", "route", "payouts", "--json"])).toBe(0);
-    expect(payload()).toMatchObject({ ok: true, source: "live", risk: "routine" });
+    expect(payload()).toMatchObject({ ok: true, source: "live" });
+    expect(payload()).not.toHaveProperty("risk");
     expect(payload().route.legs.map((leg: { phase: string; provider: string; model: string | null }) => [leg.phase, leg.provider, leg.model])).toEqual([
       ["plan", "claude", "sonnet"],
       ["build", "claude", "sonnet"],
       ["repair", "claude", "sonnet"],
     ]);
-    // Filing with a declared risk routes the strong tier and says why.
-    expect(await run(["task", "scope", "payouts", "--goal", "Harden the payouts flow", "--acceptance", "pay: never double-sends | check,screenshot", "--risk", "high", "--json"])).toBe(0);
+    // A large change routes the strong tier and says why; a declared risk level is no longer a flag.
+    {
+      // Sized large by a person before filing (the size edit would also ask for a plan, which this test does not want).
+      const store = openStore(db);
+      store.writeSizing(store.refFor("built-in", "payouts").id, { size: "large", risky: false, source: "person", reason: "set by alex" });
+      store.close();
+    }
+    expect(await run(["task", "scope", "payouts", "--goal", "Harden the payouts flow", "--acceptance", "pay: never double-sends | check,screenshot", "--risk", "high", "--json"])).not.toBe(0);
+    expect(await run(["task", "scope", "payouts", "--goal", "Harden the payouts flow", "--acceptance", "pay: never double-sends | check,screenshot", "--json"])).toBe(0);
     await run(["task", "route", "payouts"]);
     expect(text()).toContain("payouts: route proposed — the next approval seals it");
-    expect(text()).toContain("route        high risk · stronger configured agents");
+    expect(text()).toContain("route        routine · stronger configured agents");
     expect(text()).toContain("claude · sonnet plans; claude · opus builds and repairs");
     expect(text()).toContain("build  claude · opus  [recommended · strong] — readiness unknown");
-    expect(text()).toContain("risk is high — every role uses the strongest configured agent");
+    expect(text()).toContain("a large change — planning and building use the strongest configured agent");
     expect(text()).toContain("acceptance requires screenshots");
     expect(text()).not.toContain(" reviews");
     // Editing is an approver's act.
     expect(await run(["task", "route", "payouts", "--phase", "build", "--provider", "claude", "--model", "sonnet", "--json"])).toBe(2);
     expect(await run(["task", "route", "payouts", "--phase", "build", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", "wrong", "--json"])).toBe(3);
-    expect(await run(["task", "route", "payouts", "--risk", "extreme", "--as", "alex", "--token", token, "--json"])).toBe(2);
+    expect(await run(["task", "route", "payouts", "--size", "extreme", "--as", "alex", "--token", token, "--json"])).toBe(2);
     expect(await run(["task", "route", "payouts", "--phase", "review", "--provider", "gemini", "--model", "g", "--as", "alex", "--token", token, "--json"])).toBe(3);
     expect(await run(["task", "route", "payouts", "--phase", "build", "--provider", "codex", "--as", "alex", "--token", token, "--json"])).toBe(2);
     // Every override names an exact model — a planner or reviewer too.
@@ -2415,12 +2278,12 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload()).toMatchObject({ source: "proposed", approval: { approved: false, reason: "changed" } });
     expect(payload().overrides).toEqual([expect.objectContaining({ phase: "build", provider: "claude", model: "sonnet", by: "alex", at: T0.toISOString() })]);
     expect(payload().route.legs.find((leg: { phase: string }) => leg.phase === "build")).toMatchObject({ chosen: "override", recommended: { provider: "claude", model: "opus", tier: "strong" } });
-    // task show carries the same projection and the risk.
+    // task show carries the same projection, and no declared risk.
     await run(["task", "show", "payouts", "--json"]);
-    expect(payload().risk).toBe("high");
+    expect(payload()).not.toHaveProperty("risk");
     expect(payload().route.legs.find((leg: { phase: string }) => leg.phase === "build").words).toContain("[overridden]");
     await run(["task", "show", "payouts"]);
-    expect(text()).toContain("  risk         high");
+    expect(text()).not.toContain("  risk         ");
     expect(text()).toContain("build  claude · sonnet  [overridden]");
     // Clearing an override re-files again.
     expect(await run(["task", "route", "payouts", "--clear-phase", "build", "--as", "alex", "--token", token, "--json"])).toBe(0);

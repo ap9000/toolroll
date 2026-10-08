@@ -200,7 +200,7 @@ describe("shared dependencies through the builder", () => {
     propose(store, { taskId: id, goal: "add a guard", now: T0, ...(candidate ? { candidate } : {}) });
     approve(store, id, "alex", T0, store.getScope(id)!.digest, approverToken);
     acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: T0, ttlMs: 60 * 60_000, newLeaseId: () => `lease-${id}` });
-    const authority = store.routeAuthorityFor(taskRef, "builder", null) ?? store.routeAuthorityFor(taskRef, "builder", null, { provider: "claude", model: null });
+    const authority = store.routeAuthorityFor(taskRef, "builder") ?? store.routeAuthorityFor(taskRef, "builder", { provider: "claude", model: null });
     const route = authority === null || !authority.ok ? {} : { route: authority.stamp };
     return { taskId: id, taskRef, runner: "builder-1", worktree, leaseId: `lease-${id}`, branch: `feat/${id}`, now: T0, evidenceRoot: join(state, "evidence"),
       runId: store.startRun({ taskRef, leaseId: `lease-${id}`, runner: "builder-1", branch: `feat/${id}`, worktree, now: T0, ...route }) };

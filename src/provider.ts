@@ -62,7 +62,7 @@ export type Invocation = {
   skipPermissions: boolean;
   /** Resume this session (repair). Meaningless across providers. */
   resumeSession: string | null;
-  /** Claude's native dollar cap (tournament stage 3b) — the harness stops
+  /** Claude's native dollar cap — the harness stops
    * itself when spend reaches this. Ignored by providers without one. */
   maxBudgetUsd?: number;
   /** A plane-minted session identity, for providers that can START under a
@@ -155,9 +155,10 @@ export type ParsedEnvelope = {
   diagnostic: string | null;
   /**
    * The structural FAILURE terminal, when the harness emitted a typed one
-   * (codex turn.failed, a gemini error terminal) — retained for the
-   * fallback taxonomy AND to block success ingestion on a failed-but-exit-0
-   * run (fallback chains, C5). null = no structural failure terminal seen.
+   * (codex turn.failed, a gemini error terminal) — retained to classify
+   * how the attempt ended (a sign-in that no longer works) AND to block
+   * success ingestion on a failed-but-exit-0 run (C5). null = no structural
+   * failure terminal seen.
    */
   structuralTerminal: import("./exhaustion.js").StructuralTerminal | null;
 };
@@ -198,31 +199,6 @@ function toml(value: string): string {
 const OPENROUTER_PROVIDER_KEY = "standing-orders_openrouter";
 export const OPENROUTER_ENV_KEY = "OPENROUTER_API_KEY";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-
-/**
- * The held-session argv (Parity II Phase 2): the same family as
- * claudeArgv MINUS the positional prompt — every turn, the brief
- * included, rides stdin as stream-json — plus the input format flag.
- * maxBudgetUsd is the Probe-6 backstop: the CLI's cap is cumulative
- * across the whole process, so the remaining authorization budget rides
- * the argv and later turns cannot spend past it.
- */
-export const claudeHeldArgv = (invocation: Omit<Invocation, "brief">): string[] => [
-  "-p",
-  ...(invocation.resumeSession === null ? [] : ["--resume", invocation.resumeSession]),
-  "--input-format",
-  "stream-json",
-  "--output-format",
-  "stream-json",
-  "--verbose",
-  "--max-turns",
-  String(invocation.maxTurns),
-  ...(invocation.skipPermissions
-    ? ["--dangerously-skip-permissions"]
-    : ["--permission-mode", invocation.permissionMode]),
-  ...(invocation.model === null ? [] : ["--model", invocation.model]),
-  ...(invocation.maxBudgetUsd === undefined ? [] : ["--max-budget-usd", String(invocation.maxBudgetUsd)]),
-];
 
 /**
  * Reviewer isolation (fail-closed for the phase that must never mutate):
@@ -660,8 +636,8 @@ function codexParse(stdout: string): ParsedEnvelope {
         if (typeof text === "string") finalMessage = text;
       }
     } else if (type === "turn.failed") {
-      // RETAIN the structural failure terminal (Codex fallback verify,
-      // finding 1): a turn.failed carries the usage-limit signal, and
+      // RETAIN the structural failure terminal (Codex verify, finding 1):
+      // a turn.failed carries the usage-limit or sign-in signal, and
       // dropping it here is where the evidence used to die. The error
       // object's message + typed code ride into the taxonomy; its mere
       // presence blocks success ingestion downstream.
@@ -1059,12 +1035,10 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
 /** Read-only facts about a provider — safe anywhere, spawns nothing. */
 
 /**
- * The tournament capability matrix (design v3 finding 14): what each
- * harness can PROVE about money, stated as data. Eligibility is derived,
- * never asserted: a provider races only when its own machinery can hold
- * a dollar cap. Codex and OpenRouter report billable usage only at turn
- * end (cumulative across resumed sessions), so no mid-run cap exists to
- * hold — ineligible until their harnesses grow one.
+ * The money capability matrix (design v3 finding 14): what each harness
+ * can PROVE about money, stated as data. Codex and OpenRouter report
+ * billable usage only at turn end (cumulative across resumed sessions),
+ * so no mid-run cap exists to hold.
  */
 export type ProviderMoneyCapabilities = {
   /** Usage events arrive during the run, not only at the end. */
@@ -1072,10 +1046,6 @@ export type ProviderMoneyCapabilities = {
   /** The harness's own dollar-cap flag, when one exists. */
   nativeDollarCapFlag: string | null;
   usageSemantics: "per-invocation" | "cumulative-session";
-  /** Whether this harness may race in a dollar-capped tournament. */
-  tournamentEligible: boolean;
-  /** Said in words on refusal screens. */
-  whyIneligible: string | null;
 };
 
 export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> = {
@@ -1083,22 +1053,16 @@ export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> =
     incrementalUsage: true,
     nativeDollarCapFlag: "--max-budget-usd",
     usageSemantics: "per-invocation",
-    tournamentEligible: true,
-    whyIneligible: null,
   },
   codex: {
     incrementalUsage: false,
     nativeDollarCapFlag: null,
     usageSemantics: "cumulative-session",
-    tournamentEligible: false,
-    whyIneligible: "codex reports billable usage only when a turn completes — no mid-run dollar cap exists to enforce",
   },
   openrouter: {
     incrementalUsage: false,
     nativeDollarCapFlag: null,
     usageSemantics: "cumulative-session",
-    tournamentEligible: false,
-    whyIneligible: "openrouter rides the codex harness here and shares its turn-end-only usage reporting",
   },
   gemini: {
     incrementalUsage: false,
@@ -1106,8 +1070,6 @@ export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> =
     // Stats come from a per-process telemetry service: an invocation's
     // numbers cover that invocation only (conformance fixture j).
     usageSemantics: "per-invocation",
-    tournamentEligible: false,
-    whyIneligible: "gemini reports tokens, never dollars — no native cap exists to hold",
   },
 };
 
@@ -1115,7 +1077,7 @@ export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> =
  * The fail-closed budget-flag probe (finding 24's amendment): resolve
  * the EXACT executable that will spawn, read its version, and prove the
  * flag exists in that binary's own help — presence is a feature check
- * and nothing more; pricing and semantics stay pinned in pricing.ts.
+ * and nothing more.
  */
 export async function probeBudgetCap(
   provider: ProviderId,
@@ -1165,7 +1127,7 @@ export function validateSpec(spec: AgentSpec): { ok: true } | { ok: false; probl
 }
 
 /**
- * Whether this provider reports dollar cost. The routine budget interacts:
+ * Whether this provider reports dollar cost. A schedule's weekly limit interacts:
  * a ceiling against an unmeasured provider fails closed by design, so the
  * approval surfaces refuse the combination outright.
  */

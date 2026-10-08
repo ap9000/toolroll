@@ -33,7 +33,7 @@ describe('project knowledge',()=>{
   function start(role:'builder'|'planner'='builder',title='Improve mobile design'){
     const id=`knowledge-${serial++}`;store.createTask({id,title},now);const ref=store.refFor('built-in',id).id;store.placeTask(ref,repo);
     if(role==='planner')store.requestPlan(ref,now);else{propose(store,{taskId:id,goal:title,touches:['mobile.md'],acceptance:[],now});approve(store,id,'alex',now,store.getScope(id)!.digest,password);}
-    const route=store.routeAuthorityFor(ref,role,null,{provider:'claude',model:'sonnet'});if(!route?.ok)throw Error('route');
+    const route=store.routeAuthorityFor(ref, role, {provider:'claude',model:'sonnet'});if(!route?.ok)throw Error('route');
     const run=store.startRun({taskRef:ref,leaseId:`lease-${id}`,runner:'runner',role,branch:`standing-orders/${id}`,worktree:repo,provider:'claude',model:'sonnet',now,route:route.stamp});store.stampRun(run,{baseRevision:head,scopeDigest:store.getScope(id)?.digest??''});return run;
   }
   test('instructions and references are versioned, reversible, project-bound and immutable in history',()=>{

@@ -155,7 +155,7 @@ function cardSource(store: Store, root: string): { run: number } | { taskRef: nu
   const refs = familyOf(store, root).ids.map(id => store.lookupRef(id)).filter(ref => ref !== null).sort((a, b) => b.id - a.id);
   const newest = refs[0];
   if (newest === undefined) return null;
-  const runs = refs.flatMap(ref => store.runsFor(ref.id)).filter(one => one.role === "builder" && one.contestant === null);
+  const runs = refs.flatMap(ref => store.runsFor(ref.id)).filter(one => one.role === "builder");
   const run = runs.reduce<number | null>((top, one) => top === null || one.id > top ? one.id : top, null);
   return run === null ? { taskRef: newest.id } : { run };
 }

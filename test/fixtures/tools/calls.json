@@ -89,7 +89,7 @@
     "propose_steer": [{ "task": "t-42", "note": "Keep the old link as a redirect." }],
     "propose_dependency_repair": [{ "task": "t-42", "blocker": "t-41", "operation": "retry" }, { "task": "t-42", "blocker": "t-41", "operation": "replace", "replacement": "t-43" }],
     "propose_scope": [{ "task": "t-42", "goal": "Rename the link and add a redirect.", "not": "", "touches": ["src/footer.tsx"], "acceptance": [{ "id": "c1", "statement": "Old links redirect", "evidence": ["check"], "how": null }] }],
-    "propose_agents": [{ "task": "t-42", "risk": "elevated", "why": "It touches billing." }, { "task": "t-42", "role": "builder", "agent": { "provider": "claude", "model": "opus" } }, { "task": "t-42", "role": "repair", "clear": true }, { "task": "t-42", "size": "small", "risky": false }],
+    "propose_agents": [{ "task": "t-42", "size": "large", "why": "It touches billing." }, { "task": "t-42", "role": "builder", "agent": { "provider": "claude", "model": "opus" } }, { "task": "t-42", "role": "repair", "clear": true }, { "task": "t-42", "size": "small", "risky": false }],
     "propose_answer": [{ "decision": 1, "option": "a", "rationale": "The reversible one first." }],
     "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }]
   },

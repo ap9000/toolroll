@@ -24,7 +24,7 @@ export { channelRepos as telegramConversationRepos, resolveChannelMate as resolv
  */
 import { createHash, randomBytes } from "node:crypto";
 import { MATE_MESSAGE_MAX_CHARS, mateFailureText, runMateTurn, type MateChannelProblem } from "./mate.js";
-import { confirmMateProposal, dismissMateProposal, type DoorOptions, type DoorOutcome } from "./mate-doors.js";
+import { confirmMateProposal, dismissMateProposal, type DoorOutcome } from "./mate-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { MATE_ASK_OTHER, type MateAsk, type MateProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
@@ -53,8 +53,6 @@ export type TelegramConversationOptions = {
   evidenceRoot: string;
   /** Injected by tests; production invokes the isolated local harness. */
   subscriptionRunner?: SubscriptionMateRunner;
-  /** The held-session supervisor in this process, when there is one (a stop fences through it). */
-  held?: DoorOptions["held"];
   /**
    * The https origin a phone link may open, read again on EVERY call (a
    * card is linked immediately before it is sent or edited, never from a
@@ -322,7 +320,6 @@ export function applyProposalTap(
     via: "telegram",
     evidenceRoot: options.evidenceRoot,
     confirm: action.phase === "yes",
-    ...(options.held === undefined ? {} : { held: options.held }),
     deferSignal: signal => effects.push({ kind: "signal", run: signal }),
   });
   if (!outcome.ok && outcome.reason === "needs-confirm") {
