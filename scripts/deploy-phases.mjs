@@ -119,6 +119,12 @@ export function browserDeployment({
     for (const table of before) { const after = digest(db, table.name, table.columns); requireTrue(after.count === table.count && after.hash === table.hash, `Historical rows changed: ${table.name}`); }
     requireTrue(db.prepare("PRAGMA integrity_check").get().integrity_check === "ok" && db.prepare("PRAGMA foreign_key_check").all().length === 0, "Database integrity or foreign-key failure.");
   }
+  /** After a schema change: history differs only as the new runtime's update rules allow (the same check `toolroll update` makes). */
+  function assertMigrated(db, history, before) {
+    const changed = history.changedHistory(db, before);
+    requireTrue(changed.length === 0, `Historical rows changed: ${changed.join(", ")}`);
+    requireTrue(db.prepare("PRAGMA integrity_check").get().integrity_check === "ok" && db.prepare("PRAGMA foreign_key_check").all().length === 0, "Database integrity or foreign-key failure.");
+  }
 
   // A failed deployment must not leave the plane paused or down. A refusal before the swap stopped
   // anything (a rehearsal that fails, a backup that doesn't verify) lifts this deployment's own
@@ -279,12 +285,13 @@ export function browserDeployment({
     if (released) { save(r, "stopped"); say(`• released the stopped service's coding record (process ${released.pid})`); }
     // Migrate the live database with the new runtime (a no-op for a same-schema build).
     let db = openDeploymentDatabase(database);
-    let before;
-    try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.schema && oldRt.gate.updateGateOwned(db, r.id), "Expected the owned gate on the live database."); quiet(db); assertCodingDeploymentStopped(oldRt.coding, database, db, r); before = snapshot(db); } finally { db.close(); }
+    let before, beforeHistory;
+    const history = r.schema === r.nextSchema ? null : await load(nextDist, "toolroll-update.js");
+    try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.schema && oldRt.gate.updateGateOwned(db, r.id), "Expected the owned gate on the live database."); quiet(db); assertCodingDeploymentStopped(oldRt.coding, database, db, r); before = snapshot(db); beforeHistory = history?.historySnapshot(db); } finally { db.close(); }
     save(r, "migrating");
     (await load(nextDist, "store.js")).openStore(database).close();
     db = openDeploymentDatabase(database, { readOnly: true });
-    try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Migration or gate mismatch."); assertPreserved(db, before); } finally { db.close(); }
+    try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Migration or gate mismatch."); if (r.schema === r.nextSchema) assertPreserved(db, before); else assertMigrated(db, history, beforeHistory); } finally { db.close(); }
     r.migration = { from: r.schema, to: r.nextSchema, preservedTables: before.length, preservedRows: before.reduce((n, t) => n + t.count, 0) };
     save(r, "migrated");
     // Install the new service definition: same arguments, new runtime and log home.
@@ -372,5 +379,5 @@ export function browserDeployment({
     say({ deployed: candidateHead, runtime: nextDist, at: r.deployedAt, projects: r.leases.length, remote, stagedRemoved: stagedRemoved.length });
   }
 
-  return { readJournal, save, loadPhase, assertPreserved, ensureCodingBackup, verifyPreparedDatabase, prepare, swap, finish, recoverJournal };
+  return { readJournal, save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, verifyPreparedDatabase, prepare, swap, finish, recoverJournal };
 }

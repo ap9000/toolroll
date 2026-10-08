@@ -205,14 +205,17 @@ async function rehearse() {
   await ensureCodingBackup(oldRt.coding, r);
   copyFileSync(r.backup, target); chmodSync(target, 0o600);
   const next = await load(nextDist, "store.js");
+  const history = r.schema === r.nextSchema ? null : await load(nextDist, "toolroll-update.js");
   let db = openDeploymentDatabase(target, { readOnly: true });
-  const before = snapshot(db); db.close();
+  const before = snapshot(db), beforeHistory = history?.historySnapshot(db); db.close();
   next.openStore(target).close(); next.openStore(target).close();
   db = openDeploymentDatabase(target, { readOnly: true });
   let upgraded, upgradedSchema;
   try {
     requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Rehearsal schema or gate mismatch.");
-    assertPreserved(db, before); upgraded = snapshot(db, true); upgradedSchema = schemaDigest(db);
+    // A schema change may reshape history only as the new runtime's own update rules allow; same schema keeps every row.
+    if (r.schema === r.nextSchema) assertPreserved(db, before); else assertMigrated(db, history, beforeHistory);
+    upgraded = snapshot(db, true); upgradedSchema = schemaDigest(db);
   } finally { db.close(); }
   if (r.schema === r.nextSchema) {
     oldRt.store.openStore(target).close();
@@ -233,7 +236,7 @@ async function pruneStaged(keep) {
 }
 
 // The journaled phases and their recovery, run with the real services, runtimes and records.
-const { save, loadPhase, assertPreserved, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
+const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt,
   facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 });
