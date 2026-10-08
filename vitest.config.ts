@@ -8,9 +8,9 @@ export default defineConfig({
     setupFiles: ["./test/setup-state.ts"],
     // The run's own temp root first (every worker inherits it; the teardown removes it), then the build.
     globalSetup: ["./test/temp-root.ts", "./test/ensure-build.ts"],
-    // These files launch real processes (git, the CLI, SQLite writers): 8 at once, fewer on a machine with fewer cores.
+    // These files launch real processes (git, the CLI, SQLite writers): leave one core free, with 2–8 workers.
     // VITEST_MAX_WORKERS sets it.
-    maxWorkers: Number(process.env["VITEST_MAX_WORKERS"]) || Math.min(8, availableParallelism()),
+    maxWorkers: Number(process.env["VITEST_MAX_WORKERS"]) || Math.min(8, Math.max(2, availableParallelism() - 1)),
     // Forks with per-file isolation stay: setup-state.ts points each file's
     // process.env at its own database, and modules keep per-process caches
     // (attestations, prepared statements) that must not leak between files.

@@ -25,6 +25,12 @@ import { setLimitOverride, SOURCE_BUDGET_DEFAULTS } from "./request-budget.js";
 import type { RunOperateAs } from "./cli-http.js";
 import type { TeamResponse } from "./team-contract.js";
 
+// Record the function imported by the server before its modules load, and preserve real password verification.
+vi.mock('./scope.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./scope.js')>();
+  return { ...actual, authenticateApprover: vi.fn(actual.authenticateApprover) };
+});
+
 let dir: string, A: string, B: string, store: Store, server: Server, base: string, password: string, now: number;
 let ran: { argv: string[]; scope: string; projects: string[] | null }[];
 
@@ -290,18 +296,30 @@ describe("bearer step-up and in-flight revocation", () => {
       });
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
+    expect(browserOnly).toHaveLength(68);
+    const checked = vi.mocked(approvers.authenticateApprover);
+    checked.mockClear();
+    // Prove this recorder sees an actual browser password ceremony before asserting silence for bearer requests.
+    const login = await fetch(`${base}/login`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ name: 'alex', token: password }) });
+    expect(login.status).toBe(303);
+    const cookie = login.headers.getSetCookie().map(one => one.split(';')[0]!).find(one => one.startsWith('standing-orders_session='))!;
+    const page = await fetch(`${base}/tasks`, { headers: { cookie } });
+    expect(page.status).toBe(200);
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await page.text())![1]!;
+    const control = await fetch(`${base}/people/invite`, { method: 'POST', redirect: 'manual', headers: { cookie, origin: base },
+      body: new URLSearchParams({ csrf, token: 'incorrect-control-password', role: 'approver', access: 'all' }) });
+    expect(control.status).toBe(403);
+    await control.arrayBuffer();
+    expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alex', 'incorrect-control-password', undefined);
+    checked.mockClear();
     const before = snapshot();
-    // At least the 53 rows the hand-kept password-site list covered before the table generated it.
-    expect(browserOnly.length).toBeGreaterThanOrEqual(53);
-    // Refused before any password is examined.
-    const checked = vi.spyOn(approvers, "authenticateApprover");
     for (const row of browserOnly) {
       const response = await formPost(bearer, row.sample, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A });
       expect([row.id, row.sample, response.status]).toEqual([row.id, row.sample, 403]);
+      await response.arrayBuffer();
       expect(snapshot(), row.id).toEqual(before);
     }
     expect(checked).not.toHaveBeenCalled();
-    checked.mockRestore();
   });
 
   test.each(["console", "team"].flatMap(route => ["revoked", "read", "projects", "generation", "expired"].map(change => [route, change])))("%s refuses a token changed to %s during body delivery", async (route, change) => {

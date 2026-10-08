@@ -3,6 +3,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSharedGuards, type GuardsRuntime } from './guards.js';
 import { matchRoute, type ProjectResolver } from './route-table.js';
 import { requestContext, type Who } from './shared.js';
+import { authenticateApprover as checkPassword } from '../scope.js';
+
+vi.mock('../scope.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../scope.js')>();
+  return { ...actual, authenticateApprover: vi.fn(actual.authenticateApprover) };
+});
 
 function fixture(projects: string[] | null = null) {
   const store = {
@@ -21,6 +27,21 @@ function fixture(projects: string[] | null = null) {
   const response = { getHeader: vi.fn(), writeHead: vi.fn(), end: vi.fn(), setHeader: vi.fn() } as unknown as ServerResponse;
   return { store, runtime, guards, who, request, response };
 }
+
+test('the shared password helper refuses a bearer before checking its password', () => {
+  const { guards, who, store } = fixture();
+  // A successful password checker makes a missing caller guard observable, even for a valid approver password.
+  const checked = vi.mocked(checkPassword).mockReturnValue({ ok: true });
+  try {
+    expect(guards.authenticateApprover(who, 'valid-password', '/allowed')).toEqual({ ok: true });
+    expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alice', 'valid-password', '/allowed');
+    checked.mockClear();
+    const bearer: Who = { name: 'alice', via: 'bearer', role: 'approver', generation: 1,
+      principal: { kind: 'person', account: 'alice', generation: 1, scope: 'act', projects: null } };
+    expect(guards.authenticateApprover(bearer, 'valid-password', '/allowed')).toEqual({ ok: false, reason: 'not-an-approver' });
+    expect(checked).not.toHaveBeenCalled();
+  } finally { checked.mockReset(); }
+});
 
 test('project columns resolve saved resource identities, forms and session context', () => {
   const { guards, who, request, store } = fixture();
