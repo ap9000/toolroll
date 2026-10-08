@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { deployStateDir, loadNames, stagedPackageName } from '../scripts/deploy-paths.mjs';
+import { deployStateDir, loadNames, stagedPackageName, stagedRuntimePaths } from '../scripts/deploy-paths.mjs';
 import * as names from './names.js';
 
 const roots: string[] = [];
@@ -45,9 +45,10 @@ test('a deploy staged before the rename resumes at its older runtime path; a fre
   expect(stagedPackageName(stage, 'toolroll', names)).toBe('toolroll');
 });
 
-test('deploy-browser uses these paths for its state folder and staged runtime', () => {
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  expect(source).toContain('const stateDir = flag("state") ?? deployStateDir(names, process.env, homedir());');
-  expect(source).toContain('const nextDist = join(stageDir, "runtime", "node_modules", stagedName, "dist");');
-  expect(source).toContain('self = join(runtime, "node_modules", stagedName)');
+test('the staged runtime paths deploy-browser uses follow the staged package name', () => {
+  const stage = root(), modules = join(stage, 'runtime', 'node_modules');
+  expect(stagedRuntimePaths(stage, 'toolroll', names)).toEqual({ name: 'toolroll', runtime: join(stage, 'runtime'), self: join(modules, 'toolroll'), dist: join(modules, 'toolroll', 'dist') });
+  mkdirSync(join(modules, 'standing-orders'), { recursive: true });
+  writeFileSync(join(modules, 'standing-orders', 'package.json'), '{}');
+  expect(stagedRuntimePaths(stage, 'toolroll', names)).toMatchObject({ name: 'standing-orders', self: join(modules, 'standing-orders'), dist: join(modules, 'standing-orders', 'dist') });
 });

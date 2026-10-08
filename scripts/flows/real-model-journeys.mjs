@@ -12,17 +12,15 @@
  *
  * It builds, then runs every group of scripts/flows-e2e.mjs and of
  * scripts/app-e2e.mjs with --journeys all (real models), each group a suite in
- * a world of its own, as many at once as the memory available allows
- * (check-memory.mjs). --suites prints the suites and exits. A suite with a
+ * a world of its own, 4 at once. --suites prints the suites and exits. A suite with a
  * failed journey runs once more, in a fresh world, with just the failed
  * journeys and what they need (their setup journeys); a journey that passes
  * then was a flaky model. Everything stops at the time cap.
  *
- * The build, each suite and each retry start only when the machine has room:
- * memory, macOS kernel pressure (Linux swap) and a slot under the cap on real provider turns
- * (default at most 4; scripts/check-memory.mjs; TOOLROLL_CHECK_PROVIDERS overrides it). Time spent
- * waiting for room moves that suite's cap on by as much, so a busy machine
- * makes the run slower, never a timeout.
+ * Each suite and each retry starts only with a slot under the cap on real provider
+ * turns (default at most 4; scripts/provider-gate.mjs; TOOLROLL_CHECK_PROVIDERS
+ * overrides it). Time spent waiting for a slot moves that suite's cap on by as
+ * much, so a busy machine makes the run slower, never a timeout.
  *
  * Its progress goes to stderr (the step's log). What it prints on stdout is
  * the step's result: a short summary — each journey that failed twice, its
@@ -35,7 +33,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BROWSER_CHECK, exactly, here, retryCleared, retrySet } from "../e2e-kit.mjs";
-import { admissionWords, browserSlots, DEMAND, limiter, openGate } from "../check-memory.mjs";
+import { gateWords, limiter, openGate } from "../provider-gate.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
@@ -65,14 +63,14 @@ try { gate = openGate({ log }); } catch (error) { log(error.message); process.ex
 const { TOOLROLL_CHECK_GATE: _gate, ...inherited } = process.env;
 
 /**
- * Run one command in its own process group, its output to the log, once the gate has room for `demand`; at the cap the
- * whole group (console, worker, browser) stops. `late` ({ ms }) is how long this suite has waited for room so far: its
- * cap moves on by that much.
+ * Run one command in its own process group, its output to the log, once the gate has a provider slot for it; at the cap
+ * the whole group (console, worker, browser) stops. `late` ({ ms }) is how long this suite has waited for a slot so
+ * far: its cap moves on by that much.
  */
-function run(label, file, argv, demand = DEMAND.group, late = { ms: 0 }) {
-  return gate.hold(label, demand, ({ waitedMs }) => { late.ms += waitedMs; return start(label, file, argv, late); });
+function run(label, file, argv, late) {
+  return gate.hold(label, ({ waitedMs }) => { late.ms += waitedMs; return start(label, file, argv, late); });
 }
-function start(label, file, argv, late) {
+function start(label, file, argv, late = { ms: 0 }) {
   return new Promise(done => {
     const child = spawn(file, argv, { cwd: here, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, NODE_OPTIONS: "" } });
     running.add(child.pid);
@@ -93,13 +91,13 @@ function start(label, file, argv, late) {
 }
 const reportOf = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
 const report = folder => reportOf(folder)?.results ?? null;
-// As many suites at once as the memory allows: each holds a console, a worker and a browser, its retry too.
-const slot = limiter(browserSlots());
+// 4 suites at once: each holds a console, a worker and a browser, its retry too.
+const slot = limiter(4);
 
 /** One suite: its run, and when a journey failed, one more with just those journeys and what they need. */
 async function suite({ name, argv }) {
-  const late = { ms: building.ms };
-  const first = await run(name, process.execPath, [...argv, ...(only === null ? [] : ["--only", only]), "--output", join(out, name)], DEMAND.group, late);
+  const late = { ms: 0 };
+  const first = await run(name, process.execPath, [...argv, ...(only === null ? [] : ["--only", only]), "--output", join(out, name)], late);
   const before = report(name);
   const failedBefore = (before ?? []).filter(one => one.state === "failed");
   if (first.code === 0 && failedBefore.length === 0) return { name, ok: true, final: before ?? [], flaky: [] };
@@ -110,7 +108,7 @@ async function suite({ name, argv }) {
   // The retry's own --only replaces the first run's, and a suite's own (its journeys are a subset of them).
   const again = journeys === null ? only === null ? [] : ["--only", only] : ["--only", exactly([...new Set([...journeys, BROWSER_CHECK])])];
   const own = journeys === null ? argv : argv.filter((one, at) => one !== "--only" && argv[at - 1] !== "--only");
-  const second = await run(`${name}-retry`, process.execPath, [...own, ...again, "--output", join(out, `${name}-retry`)], DEMAND.group, late);
+  const second = await run(`${name}-retry`, process.execPath, [...own, ...again, "--output", join(out, `${name}-retry`)], late);
   const after = report(`${name}-retry`);
   const cleared = second.code === 0 && (before === null || retryCleared(before, after));
   // What each journey came to: the second try's result for those it ran again.
@@ -136,8 +134,7 @@ mkdirSync(out, { recursive: true });
 log(`Real-model journeys: ${SUITES.map(one => one.name).join(", ")}, up to ${cap / 60_000} minutes — ${out}`);
 const summary = [];
 let ok = true;
-const building = { ms: 0 };
-const built = args.includes("--no-build") ? { code: 0 } : await run("build", "npm", ["run", "build"], DEMAND.build, building);
+const built = args.includes("--no-build") ? { code: 0 } : await start("build", "npm", ["run", "build"]);
 if (built.code !== 0) {
   ok = false;
   summary.push(`Toolroll didn't build${built.timedOut ? " in time" : ` (exit ${built.code})`}: ${clip(built.tail.trim().split("\n").slice(-3).join(" | "), 400)}`);
@@ -160,7 +157,7 @@ if (built.code !== 0) {
   if (skipped.length > 0) summary.push(`Skipped: ${clip(skipped.join("; "), 400)}`);
   summary.push(`Real model turns: ${turns}`);
 }
-log(admissionWords(gate.facts(process.pid), "suites"));
+log(gateWords(gate.facts(process.pid)));
 gate.close();
 summary.push(`Reports: ${out}`, `goto: ${ok ? "pass" : "fail"}`);
 process.stdout.write(`${summary.join("\n")}\n`);

@@ -38,15 +38,12 @@ process.exitCode = failed.size > 0 ? 1 : 0;
 `;
 
 describe("real-model-journeys.mjs", () => {
-  const GB = 1024 ** 3;
-  const IDLE = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 };
-  /** The script on the stand-in suite (or `suites` of it), on the machine's readings given (an idle machine unless said). */
-  const journeys = (env: Record<string, string>, extra: string[] = [], { machine = IDLE, suites = ["flows"] }: { machine?: object; suites?: string[] } = {}) => {
+  /** The script on the stand-in suite (or `suites` of it). */
+  const journeys = (env: Record<string, string>, extra: string[] = [], { suites = ["flows"] }: { suites?: string[] } = {}) => {
     const at = folder();
     writeFileSync(join(at, "stand-in-e2e.mjs"), STAND_IN);
-    writeFileSync(join(at, "machine.json"), JSON.stringify(machine));
     const ran = spawnSync(process.execPath, [resolve("scripts/flows/real-model-journeys.mjs"), "--no-build", ...suites.flatMap(name => ["--suite", `${name}=${join(at, "stand-in-e2e.mjs")}`]), "--output", join(at, "out"), ...extra],
-      { encoding: "utf8", env: { ...process.env, STAND_IN_DIR: at, TOOLROLL_CHECK_MACHINE: join(at, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "", ...env }, timeout: 60_000 });
+      { encoding: "utf8", env: { ...process.env, STAND_IN_DIR: at, TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "", ...env }, timeout: 60_000 });
     const lines = (file: string) => existsSync(join(at, file)) ? readFileSync(join(at, file), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
     return { code: ran.status, stdout: ran.stdout, stderr: ran.stderr, runs: lines("runs.jsonl") as string[][], spans: lines("spans.jsonl") as { start: number; end: number }[] };
   };
@@ -89,22 +86,13 @@ describe("real-model-journeys.mjs", () => {
     expect(lines.at(-1)).toBe("goto: fail");
   });
 
-  test("an idle machine: both suites start together, as before", () => {
-    const { code, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "500", TOOLROLL_CHECK_PROVIDERS: "4" }, ["--only", "^Independent$"], { suites: ["flows", "lead"] });
-    expect(code).toBe(0);
-    const [a, b] = spans.sort((x, y) => x.start - y.start);
-    expect(b!.start).toBeLessThan(a!.end);
-    expect(stderr).not.toContain("waiting for room");
-    expect(stderr).toMatch(/^admission: ran up to 2 suites at a time: lowest 32\.0 GB free, swap up to 0% used; up to 2 provider turns of ours, 0 other sessions \(cap \d+, from [^)]+\); nothing waited for room$/m);
-  });
-
-  test("a busy machine: the second suite waits for room, and its wait doesn't count against its time cap", () => {
-    // A 0.05-minute (3 s) cap; each suite takes 2 s, so the second, waiting 2 s for room, ends after the first's cap.
-    const { code, stdout, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "2000" }, ["--only", "^Independent$", "--minutes", "0.05"], { suites: ["flows", "lead"], machine: { platform: "linux", pressure: null, available: 1.5 * GB, swapUsed: 97, swapTotal: 100, providers: 3 } });
+  test("a provider cap of 1: the second suite waits for a slot, and its wait doesn't count against its time cap", () => {
+    // A 0.05-minute (3 s) cap; each suite takes 2 s, so the second, waiting 2 s for a slot, ends after the first's cap.
+    const { code, stdout, stderr, spans } = journeys({ STAND_IN_HOLD_MS: "2000", TOOLROLL_CHECK_PROVIDERS: "1" }, ["--only", "^Independent$", "--minutes", "0.05"], { suites: ["flows", "lead"] });
     const [a, b] = spans.sort((x, y) => x.start - y.start);
     expect(b!.start).toBeGreaterThanOrEqual(a!.end);
-    expect(stderr).toMatch(/^waiting for room to start (flows|lead): 1\.5 GB free, swap 97% used; it needs [0-9.]+ GB$/m);
-    expect(stderr).toMatch(/^admission: ran up to 1 suite at a time: lowest 1\.5 GB free, swap up to 97% used; up to 1 provider turn of ours, 3 other sessions \(cap \d+, from [^)]+\); 1 start waited [0-9.]+ s in all for room/m);
+    expect(stderr).toMatch(/^waiting for room to start (flows|lead): 1 provider turn of ours and \d+ other sessions? running, at the cap of 1$/m);
+    expect(stderr).toMatch(/^provider gate: up to 1 real turn at once, \d+ other sessions? \(cap 1, TOOLROLL_CHECK_PROVIDERS\); 1 start waited [0-9.]+ s in all for a slot/m);
     expect(stdout).toContain("Every real-model journey passed (flows 1, lead 1)");
     expect(code).toBe(0);
   });

@@ -8,7 +8,6 @@ import { expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import paper from "paper";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BRAND_ICONS, type BrandIcon } from "./brand-icons.js";
@@ -37,14 +36,49 @@ function shown(html: string): { icon: string | null; letter: string | null; conn
 }
 const marks = (html: string) => [...html.matchAll(/<span class="brand-mark"[\s\S]*?<\/span>/g)].map(([one]) => one);
 
+/**
+ * The exact box around path data as the generator writes it: absolute M, then relative c, l, h, v and z.
+ * A curve reaches past its end points only where its derivative is zero, so those points are added too.
+ */
+function bounds(d: string): { width: number; height: number; center: { x: number; y: number } } {
+  const tokens = d.match(/[a-zA-Z]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?/g) ?? [];
+  const xs: number[] = [], ys: number[] = [];
+  const take = () => Number(tokens[i++]);
+  /** Where a cubic from p0 to p3 turns, along one axis. */
+  const turns = (p0: number, p1: number, p2: number, p3: number, into: number[]) => {
+    const a = p1 - p0, b = p2 - p1, c = p3 - p2, qa = a - 2 * b + c, qb = 2 * (b - a);
+    const roots = Math.abs(qa) < 1e-12 ? (qb === 0 ? [] : [-a / qb]) : (() => {
+      const disc = qb * qb - 4 * qa * a;
+      return disc < 0 ? [] : [(-qb + Math.sqrt(disc)) / (2 * qa), (-qb - Math.sqrt(disc)) / (2 * qa)];
+    })();
+    for (const t of roots) if (t > 0 && t < 1) into.push((1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t ** 2 * p2 + t ** 3 * p3);
+  };
+  let i = 0, x = 0, y = 0, startX = 0, startY = 0, command = "";
+  while (i < tokens.length) {
+    if (/[a-zA-Z]/.test(tokens[i]!)) command = tokens[i++]!;
+    if (command === "M") { x = startX = take(); y = startY = take(); }
+    else if (command === "l") { x += take(); y += take(); }
+    else if (command === "h") x += take();
+    else if (command === "v") y += take();
+    else if (command === "c") {
+      const [x1, y1, x2, y2, dx, dy] = [take(), take(), take(), take(), take(), take()];
+      turns(x, x + x1, x + x2, x + dx, xs); turns(y, y + y1, y + y2, y + dy, ys);
+      x += dx; y += dy;
+    } else if (command === "z") { x = startX; y = startY; command = ""; }
+    else throw Error(`unexpected path command ${command || tokens[i]}`);
+    xs.push(x); ys.push(y);
+  }
+  const [left, right, top, bottom] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  return { width: right - left, height: bottom - top, center: { x: (left + right) / 2, y: (top + bottom) / 2 } };
+}
+
 test("every icon is one 24x24 currentColor path, centred at one optical size, from Simple Icons or svgl", () => {
   expect(Object.keys(BRAND_ICONS).sort()).toEqual([...SIMPLE_ICONS, ...SVGL].sort());
-  paper.setup(new paper.Size(24, 24));
   for (const [id, icon] of Object.entries(BRAND_ICONS) as [string, BrandIcon][]) {
     expect(icon.source, id).toBe(SVGL.includes(id) ? "svgl" : "Simple Icons");
     expect(icon.title.length, id).toBeGreaterThan(0);
     expect(icon.path, id).toMatch(/^M[-+.,\deMmLlHhVvCcSsQqTtAaZz ]+$/);
-    const box = new paper.CompoundPath(icon.path).bounds;
+    const box = bounds(icon.path);
     // The area of a 20x20 square, unless that would pass the box (a wide wordmark fills its width).
     const long = Math.max(box.width, box.height);
     if (long < 23.99) expect(Math.sqrt(box.width * box.height), id).toBeCloseTo(20, 1);
@@ -62,8 +96,7 @@ test("every icon is one 24x24 currentColor path, centred at one optical size, fr
 });
 
 test("a wide wordmark reads at its neighbours' size, and Zapier is its asterisk", () => {
-  paper.setup(new paper.Size(24, 24));
-  const box = (id: keyof typeof BRAND_ICONS) => new paper.CompoundPath(BRAND_ICONS[id].path).bounds;
+  const box = (id: keyof typeof BRAND_ICONS) => bounds(BRAND_ICONS[id].path);
   expect(box("wix").width).toBeCloseTo(24, 1);
   expect(box("wix").height).toBeGreaterThan(8.5);
   // The asterisk is about square; the boxed wordmark it replaces is not.

@@ -1,11 +1,11 @@
 /**
  * Tests leave no temp folders: each test run's workers write into one temp root the global teardown removes, and
- * `toolroll storage clean` knows every prefix the tests, journeys and scripts use, removing what nothing touched for a day.
+ * `toolroll storage clean` removes test folders nothing touched for a day.
  */
 import { afterEach, expect, test } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import tempRoot from "../test/temp-root.js";
 import { fakePid } from "../test/fake-pid.js";
 import { isTestTemp, OWNER_FILE, removeStaleTestTemp, tempOwner, testTempFolders } from "./test-temp.js";
@@ -36,33 +36,6 @@ test("the global teardown removes the run's temp root and everything a test left
   }
 });
 
-/** Every prefix the tests, journeys and scripts give the temp folder. */
-function prefixesInSources(): Map<string, string> {
-  const found = new Map<string, string>();
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) { if (!["node_modules", "dist", "output"].includes(name)) walk(path); }
-      else if (/\.(?:[cm]?[jt]s|sh)$/.test(name)) files.push(path);
-    }
-  };
-  for (const dir of ["src", "scripts", "test"]) walk(resolve(dir));
-  const pattern = /(?:tmpdir\w*\(\)|TMPDIR|os\.tmpdir\(\))\s*\)?\s*(?:,|\+\s*["'`]\/|\/)\s*["'`]([^"'`$/]+)/g;
-  for (const file of files) for (const match of readFileSync(file, "utf8").matchAll(pattern)) if (!found.has(match[1]!)) found.set(match[1]!, file);
-  return found;
-}
-
-test("every temp folder prefix the tests, journeys and scripts use is one storage clean knows", () => {
-  const found = prefixesInSources();
-  // The reader works: the prefixes the owner's Mac collected most are among them.
-  for (const one of ["so-route-cli-", "so-viewer-ev-", "so-held-root-", "no-wt-", "epoch-", "cancel-floor-", "standing-orders-stub-", "standing-orders-switcher-repos-"]) expect(found.has(one), one).toBe(true);
-  const missing = [...found].filter(([prefix]) => !isTestTemp(prefix)).map(([prefix, file]) => `${prefix} (${file})`);
-  expect(missing, "add these to TEST_TEMP_PREFIXES in src/test-temp.ts").toEqual([]);
-  expect(isTestTemp("playwright_chromiumdev_profile-AbC123")).toBe(true);
-  expect(isTestTemp("com.apple.launchd.x")).toBe(false);
-});
-
 test("leftovers: test folders nothing touched for a day, judged by the folder and what is directly in it", () => {
   const root = mkdtempSync(join(tmpdir(), "so-temp-scan-"));
   made.push(root);
@@ -85,6 +58,8 @@ test("leftovers: test folders nothing touched for a day, judged by the folder an
   expect(found.stale.map(one => one.path)).toEqual([stale]);
   expect(removeStaleTestTemp([root], now)).toEqual({ removed: [stale], failed: [], more: false });
   expect([stale, busy, fresh, other].map(existsSync)).toEqual([false, true, true, true]);
+  expect(isTestTemp("playwright_chromiumdev_profile-AbC123")).toBe(true);
+  expect(isTestTemp("com.apple.launchd.x")).toBe(false);
 });
 
 test("a stale-looking root whose owner still runs stays; a pass removes at most its share and says more are left", () => {

@@ -63,3 +63,9 @@ export function exitOnSignals(proc = process) {
     proc.on(signal, () => { console.error(`Stopping: ${signal} received.`); proc.exit(code); });
   }
 }
+
+/** A deployment that ends in failure, by an error, a refusal or a signal, recovers on its way out. */
+export function recoverOnExit(recover, proc = process) {
+  proc.on("exit", code => { if (code !== 0) recover(); });
+  exitOnSignals(proc);
+}

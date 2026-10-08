@@ -1,14 +1,15 @@
 import { test, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import { copyFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { recoverFailedDeployment, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
-import { ledgerStaleCodingRelease } from '../scripts/deploy-coding.mjs';
+import { recoverFailedDeployment, recoverOnExit, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
+import { codingBackupBeforeSwap, restoreDeploymentBackup, stopProved } from '../scripts/deploy-phases.mjs';
 import { fakePid } from '../test/fake-pid.js';
 
 /** The effects a failed browser deployment may take, recorded in order. */
@@ -113,16 +114,20 @@ test('Ctrl-C or a kill runs the same exit recovery, and a second signal waits fo
   }
 });
 
-/** deploy-browser's exact backup restore, run against scratch files without its launchd entry point. */
-function backupRestore(stageDir: string, database: string, name = 'restoreDeploymentBackup') {
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  const body = source.slice(source.indexOf('function restoreDeploymentBackup('), source.indexOf('/** The previous definition, loaded again'));
-  const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-  const open = (file: string, options = {}) => new DatabaseSync(file, options);
-  return new Function('fs', 'sha', 'join', 'dirname', 'randomUUID', 'stageDir', 'database', 'openDeploymentDatabase', 'ledgerStaleCodingRelease',
-    `const { existsSync, lstatSync, readFileSync, copyFileSync, chmodSync, rmSync, renameSync, openSync, fsyncSync, closeSync } = fs;\n${body}\nreturn ${name};`)(
-    fs, sha, join, dirname, randomUUID, stageDir, database, open, ledgerStaleCodingRelease) as (r: object) => string;
-}
+test('a deployment that exits in failure, or on a signal, recovers on its way out', () => {
+  const proc = Object.assign(new EventEmitter(), { exit: (code: number) => { proc.emit('exit', code); } });
+  let recovered = 0;
+  recoverOnExit(() => { recovered++; }, proc);
+  proc.emit('exit', 0);
+  expect(recovered).toBe(0);
+  proc.emit('exit', 1);
+  expect(recovered).toBe(1);
+  proc.emit('SIGTERM');
+  expect(recovered).toBe(2);
+});
+
+/** deploy-browser's backup restore for a scratch database and stage. */
+const backupRestore = (stageDir: string, database: string) => (r: object) => restoreDeploymentBackup(r, { database, stageDir }) as string;
 
 test('a migrated database is replaced by the verified backup, and what it held is kept aside', () => {
   const dir = mkdtempSync(join(tmpdir(), 'deploy-restore-')), database = join(dir, 'orders.db'), backupFile = join(dir, 'orders.backup.db');
@@ -156,14 +161,9 @@ test('a migrated database is replaced by the verified backup, and what it held i
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-/** deploy-browser's exact stop proof, with the processes still running and launchd's answer supplied. */
-function stopProof(running: number[], launchdHasLabel: boolean) {
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  const body = source.slice(source.indexOf('function stopProved('), source.indexOf('/** The verified backups, taken before the swap'));
-  const spawnSync = () => ({ status: launchdHasLabel ? 0 : 113 });
-  return new Function('alive', 'spawnSync', 'uid', 'label', `${body}\nreturn stopProved;`)(
-    (pid: number) => running.includes(pid), spawnSync, 501, 'com.toolroll.browser') as (r: object) => boolean;
-}
+/** deploy-browser's stop proof, with the processes still running and launchd's answer supplied. */
+const stopProof = (running: number[], launchdHasLabel: boolean) => (r: object) =>
+  stopProved(r, { alive: (pid: number) => running.includes(pid), loaded: () => launchdHasLabel }) as boolean;
 
 test('a stop is proved from whichever service record the journal holds, never from none', () => {
   // Review of build #2234: a journal with only one record put undefined in the pid set and never proved the stop.
@@ -229,7 +229,7 @@ test('a coding database the stopped service left without a backup is left alone,
     db.exec('CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(3)');
     db.close();
     copyFileSync(backupFile, database);
-    const beforeSwap = backupRestore(dir, database, 'codingBackupBeforeSwap') as (r: object) => string | null | undefined;
+    const beforeSwap = (r: object) => codingBackupBeforeSwap(r, database) as string | null | undefined;
     const restore = backupRestore(dir, database);
     // No coding database before the swap: one found at restore was the candidate's.
     expect(beforeSwap({})).toBeNull();
