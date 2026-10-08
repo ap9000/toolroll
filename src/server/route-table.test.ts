@@ -11,7 +11,57 @@ const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
 const ids = (routes: readonly RouteDeclaration[]): string[] => routes.map(route => route.id);
 const methodOf = (route: RouteDeclaration): string => route.method === "POST" ? "POST" : "GET";
 
+// Hand-kept access decisions, independent of ROUTES. Equality catches additions and policy changes as well as removals;
+// a deny row must not disappear from the HTTP refusal matrix by silently becoming unscoped/collection/resource.
+const LIMITED_ACCESS = {
+  'code.page': 'self', 'projects.page': 'unscoped',
+  'home': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
+  'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
+  'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection',
+  'task.live': 'resource', 'task.page': 'resource', 'task.evidence': 'resource',
+  'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',
+  'run.page': 'resource', 'run.evidence': 'resource',
+  'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
+  'flow.read': 'resource', 'flow.export': 'resource', 'flow.live': 'resource', 'flow.page': 'resource',
+  'recipes': 'collection', 'recipes.run': 'collection', 'recipes.start': 'collection',
+  'recipes.new': 'collection', 'recipes.edit': 'collection', 'recipes.from-task': 'collection',
+  'recipes.preview': 'collection', 'recipes.export': 'collection', 'routines': 'collection',
+  'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
+  'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
+  'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
+  'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act': 'self',
+  'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
+  'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
+  'flow.act': 'resource', 'flow.triggers': 'resource', 'flow.card': 'resource',
+  'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
+  'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
+  'flow.trigger.secret': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
+  'settings.flows-on': 'collection', 'settings.knowledge-refresh': 'unscoped',
+  'settings.knowledge-change': 'unscoped', 'settings.learning-change': 'unscoped',
+  'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
+  'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
+  'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
+  'projects.select': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
+  'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
+  'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
+  'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',
+  'task.act.reopen': 'resource', 'task.act.steer': 'resource', 'task.act.accept-proof': 'resource',
+  'task.act.accept-revision': 'resource', 'task.act.reject-revision': 'resource', 'task.act.route': 'resource',
+  'task.act.retry-review': 'resource', 'task.act.complete': 'resource', 'task.act.merge': 'resource',
+  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource',
+  'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal': 'proposal',
+  'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
+  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'routines.add': 'collection',
+  'routine.act.approve': 'resource', 'routine.act.refresh': 'resource', 'routine.act.pause': 'resource',
+  'routine.act.resume': 'resource', 'routine.act.run-now': 'resource', 'run.act': 'resource',
+} satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
+
 describe("the route table", () => {
+  test('project-limited access matches the independent per-route decisions exactly', () => {
+    expect(Object.fromEntries(ROUTES.filter(row => row.limited !== 'deny').map(row => [row.id, row.limited])))
+      .toEqual(LIMITED_ACCESS);
+  });
+
   test("is well formed: unique ids and rows, each row wins its own sample", () => {
     expect(() => assertRouteTable()).not.toThrow();
     expect(() => assertRouteTable([...ROUTES, { ...ROUTES[0]!, id: "copy" }])).toThrow(/duplicate route/);

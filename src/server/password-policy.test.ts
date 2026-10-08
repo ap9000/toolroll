@@ -1,5 +1,31 @@
 import { expect, test } from 'vitest';
-import { matchRoute } from './route-table.js';
+import { matchRoute, ROUTES } from './route-table.js';
+
+// Independent of both ROUTES and the password list: eight browser-only actions do not ask for a password.
+const COOKIE_ONLY_POSTS = [
+  'edge.oauth-consent', 'session.attended-beats', 'code.act', 'flow.instance-act', 'flow.trigger.secret',
+  'spend.budget', 'settings.project-delete', 'settings.policy-send', 'settings.approval-send',
+  'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
+  'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',
+  'settings.storage-send', 'settings.storage-clean-send', 'settings.storage-discard-send',
+  'settings.pull-requests-send', 'settings.checks-send', 'settings.backups-send', 'settings.data-send',
+  'settings.monitoring-send', 'settings.tools-connect-send', 'settings.tools-change-send',
+  'control.setup-approve', 'control.instructions-approve', 'settings.slack-send', 'settings.teams-send',
+  'settings.discord-send', 'settings.telegram-retry', 'settings.chat-approval-confirm',
+  'settings.chat-approval-save', 'settings.chat-approval-off', 'settings.telegram-pair', 'settings.telegram-unpair',
+  'fleet.register', 'mode.confirm', 'mode.sign', 'people.projects', 'people.invite', 'people.invite-revoke',
+  'people.revoke', 'fleet.retire', 'contest.act.pick', 'contest.act.abandon',
+  'task.attend.attend-preview', 'task.attend.attend', 'task.attend.attend-revoke',
+  'task.act.approve', 'task.act.reopen', 'task.act.accept-revision', 'task.act.reject-revision',
+  'task.act.confirm-stopped', 'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
+  'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
+  'chat.send', 'chat.file', 'chat.ack-send', 'routine.act.approve', 'routine.act.run-now',
+];
+
+test('cookie-only POST routes match the independent browser-only list exactly', () => {
+  expect(ROUTES.filter(row => row.method === 'POST' && row.callers.length === 1 && row.callers[0] === 'cookie')
+    .map(row => row.id).sort()).toEqual([...COOKIE_ONLY_POSTS].sort());
+});
 
 /** Every address that asks for the operator's password, kept by hand and independently of the route table, so a row
  * quietly downgraded from step-up (and so open to bearers) fails here. serve.bearer-scope.test.ts proves over HTTP that
