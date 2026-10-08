@@ -1,6 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
-import { passwordGuardOf } from "./sign-in-guard.js";
+import { currentPasswordSource, passwordGuardOf } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { projectAuthority } from "./project-access.js";
@@ -1030,15 +1030,16 @@ export function authenticateAccount(
     if (lead === null || lead.owner !== by || acting.account !== by || account === null) return { ok: false, reason: "unknown" };
     return { ok: true, role: account.role, generation: account.generation };
   }
-  // v99: wrong passwords in a row lock the name for a while, whatever road they came by.
-  const guard = passwordGuardOf(store), now = Date.now();
-  if (guard.lockedFor(by, now) > 0) return { ok: false, reason: "locked" };
+  // v99: wrong passwords in a row lock the name for a while from where they came, whatever road they came by. A
+  // locked or held-back source is refused before the password is checked.
+  const guard = passwordGuardOf(store), now = Date.now(), source = currentPasswordSource();
+  if (guard.lockedFor(by, now, source) > 0) return { ok: false, reason: "locked" };
   const account = store.accountOf(by);
   if (account === null || !verifyCredential(account.credentialHash, secret)) {
-    guard.failed(by, now);
+    guard.failed(by, now, source, account !== null);
     return { ok: false, reason: "unknown" };
   }
-  guard.succeeded(by);
+  guard.succeeded(by, source);
   if (account.revokedAt !== null) return { ok: false, reason: "revoked" };
   // Inside a command, the person who signed in is who acted (their own acts never ping them).
   claimActor(by);

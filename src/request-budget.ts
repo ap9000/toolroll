@@ -15,6 +15,7 @@
  */
 import type { Database, Store } from "./store.js";
 import type { TokenAccess } from "./api-tokens.js";
+import { sourceKey } from "./source-key.js";
 
 export const REQUEST_BUDGET_SCHEMA = `
 CREATE TABLE IF NOT EXISTS request_budget_limit (
@@ -271,7 +272,8 @@ export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken:
 /**
  * A sliding minute per source or proved account, with bounded in-memory LRU history. Expired entries are
  * pruned first; at capacity the least recently used entry is evicted so new callers are never globally locked out.
- * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above.
+ * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above. An address
+ * key counts by sourceKey (a native IPv6 caller by its /64); other keys are unchanged by it.
  */
 export class SourceAdmission {
   private readonly perMinute: number;
@@ -287,8 +289,8 @@ export class SourceAdmission {
 
   get size(): number { return this.usage.size; }
 
-  admit(source: string): Admission {
-    const now = this.clock();
+  admit(key: string): Admission {
+    const now = this.clock(), source = sourceKey(key);
     let times = this.usage.get(source);
     if (times === undefined) {
       if (this.usage.size >= this.tracked) {

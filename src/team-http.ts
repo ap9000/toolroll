@@ -4,6 +4,9 @@ import { TEAM_OPERATIONS, TEAM_MUTATIONS, teamScopeAllows, type TeamActor, type 
 import { limitWords, type Admission } from './request-budget.js';
 
 export const TEAM_REQUEST_BYTES = 64 * 1024;
+/** How long a password bearer's proof stands on a long /api/team/events stream before its password is checked again.
+ * The account, its revocation and its credential generation are still rechecked on every tick. */
+export const TEAM_PASSWORD_REVERIFY_MS = 5 * 60_000;
 /** Account role belongs to HTTP authentication; API tokens carry their own scope. */
 export type TeamHttpActor = TeamActor & { role?: 'approver' | 'viewer' };
 export type TeamHttpOptions = {
