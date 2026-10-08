@@ -142,7 +142,7 @@ import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { beatScript,BODY_CAP,chromeScript,decisionsFor,DEMO_BANNER,DEMO_BANNER_SHORT,escape,focusDocument,form,KBD_HELP,LEAD_BY_DEFAULT_FACT,loginHref,matchTaskPath,mateBrowserMessages,mateChatVersion,NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,page,PersistentSessions,pinnedTheme,projectChatHref,QUEUE_VIEW,redactedPath,redirect,refuse,requestContext,respond,safeReturn,screen,SENSITIVE_INPUT,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,shell,SHUTDOWN_WAIT_MS,sidebarScript,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,ssoStepUps,TASK_FORM_BODY_CAP,taskChatHref,teamProposalCardParts,wrongHostPage,type ApprovalNonce,type ChatEnablement,type Chrome,type DecisionServer,type LiveTurn,type ProjectPeek,type ReplacedThread,type Screen,type ServeOptions,type SsoIntent,type TaskChatFocus,type Who } from "./server/shared.js";
 import { createTasksHandlers } from './server/tasks.js';
-import { DEFAULT_GUARD_POLICY,passwordGuardOf,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
+import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
 import { readSsoSettings } from "./sso-settings.js";
 import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateTurn,SubscriptionChatProviderId } from "./store.js";
@@ -472,7 +472,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // Unproved password attempts share a source budget. Only successful proof spends an account budget.
   const sourceClock = options.requestBudgetClock === undefined ? {} : { clock: options.requestBudgetClock };
   const passwordSourceBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.password, ...sourceClock });
-  const passwordAccountBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.password, ...sourceClock });
+  const passwordAccountBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.password, keyMode: "exact", ...sourceClock });
   const teamsSourceBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.teamsSource, ...sourceClock });
   const teamsTenantBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.teamsTenant, ...sourceClock });
   const oauthTokenBudget = new SourceAdmission({ perMinute: SOURCE_BUDGET_DEFAULTS.oauthToken, ...sourceClock });
@@ -660,7 +660,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
-    if (edgeRoute?.domain === 'people') return dispatchEdge(edgeRoute, { url, who, request, response, method });
+    const passwordProof = who?.via === 'cookie' ? { name: who.name, generation: who.session.generation } : null;
+    if (edgeRoute?.domain === 'people') return provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method }));
 
 
     if (who === null) {
@@ -690,7 +691,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       workspaceRequest: url.searchParams.get('request'),
     };
     // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
-    if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => requestContext.run(requestFacts, async () => {
+    if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       const taskTextForm = url.pathname === "/tasks/add" || /^\/t\/[^/]+\/scope$/.test(url.pathname);
       const body = method === "POST" ? await form(request, url.pathname === "/settings/skills/import" ? 2 * 1024 * 1024 : url.pathname === "/flows/import" ? 1024 * 1024 : taskTextForm ? TASK_FORM_BODY_CAP : BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
@@ -756,7 +757,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         store.recordAction({ ...entry, at: clock().toISOString(), outcome: "error" });
         throw error;
       }
-    }));
+    })));
     return respond(response, 405, "text/plain; charset=utf-8", "no such method here");
   }
 

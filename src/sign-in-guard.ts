@@ -2,28 +2,21 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { sourceKey } from "./source-key.js";
 
 /**
- * Password guessing (v99). Five wrong passwords in a row for one account from one source lock that account for that
- * source for 15 minutes, doubling with each further lock up to a day; a right one clears the count. Every password
- * check counts: signing in, a request that carries a password, and each step-up inside the console. Unknown names
- * count too, so guessing names gains nothing.
- *
- * A source is where the request came from (serve.ts's joinSourceOf, a native IPv6 caller by its /64); anything not
- * answering a request (the CLI on this computer) is LOCAL_SOURCE, as is a request from this computer itself. Someone
- * who knows a name can lock only their own source out, never its owner elsewhere. Across sources, wrong passwords for
- * an account that exists slow it down: from the fifth on, each holds back every source that has already got that
- * account wrong, for a minute doubling up to a day. A source that hasn't failed is always checked, so the owner's
- * right password still works; someone rotating sources gets one guess per fresh source while the slowdown runs, and
- * a held-back source is refused before its password is checked, so it costs the server no key derivation.
- *
- * Kept in memory, per database, bounded: a restart forgives. Made-up names are let go before any real account's
- * state, so flooding the table with them can't wash out a lock. The console reports each lock to the action ledger
- * through onLock.
+ * Five failures lock a source/account pair, with exponential backoff. Across sources, failures slow an account and
+ * admit only a few unproven checks per minute before password derivation. A validated same-account browser session
+ * bypasses that shared admission budget, never a source's own lock. Fabricated names follow the same admission path.
+ * Source records expire by time and have a capacity bound; fabricated entries are evicted first. Real account
+ * slowdowns are separate, bounded by the database's accounts, so source/name churn cannot reset their budgets.
  */
 export type GuardPolicy = { failuresBeforeLock: number; firstLockMs: number; maxLockMs: number; firstSlowMs: number };
 export const DEFAULT_GUARD_POLICY: GuardPolicy = { failuresBeforeLock: 5, firstLockMs: 15 * 60_000, maxLockMs: 24 * 60 * 60_000, firstSlowMs: 60_000 };
 const TRACKED = 10_000;
-/** The source of a password checked outside any request, and of a request from this computer. */
+/** Default/loopback source for callers without an explicit native CLI context. */
 export const LOCAL_SOURCE = "local";
+/** Native CLI only: no HTTP peer or forwarded header can select this source. */
+export const CLI_PASSWORD_SOURCE = "local-cli";
+export const ACCOUNT_PASSWORD_TRIES = 3;
+export const ACCOUNT_PASSWORD_WINDOW_MS = 60_000;
 const LOCAL_PEERS: ReadonlySet<string> = new Set(["127.0.0.1", "::1"]);
 
 const passwordSource = new AsyncLocalStorage<string>();
@@ -32,8 +25,11 @@ export const withPasswordSource = <T>(source: string, work: () => T): T => passw
 /** Where the password being checked now came from (LOCAL_SOURCE outside a request). */
 export const currentPasswordSource = (): string => passwordSource.getStore() ?? LOCAL_SOURCE;
 
-type Tries = { failures: number; lockedUntil: number; locks: number };
-type Slowdown = { failures: number; until: number; lastAt: number };
+/** Set only after the server validates a browser session, never from submitted form fields. */
+export const provenPasswordAccount = new AsyncLocalStorage<{ name: string; generation: number } | null>();
+
+type Tries = { failures: number; lockedUntil: number; locks: number; lastAt: number };
+type Slowdown = { failures: number; until: number; lastAt: number; admissions: number[] };
 
 export class PasswordGuard {
   /** Per source and account that exists. */
@@ -42,6 +38,9 @@ export class PasswordGuard {
   private readonly guesses = new Map<string, Tries>();
   /** Per account that exists, across sources. */
   private readonly slowdowns = new Map<string, Slowdown>();
+  /** Disposable look-alike state: cannot evict a real account's shared budget. */
+  private readonly guessedSlowdowns = new Map<string, Slowdown>();
+  private nextPruneAt = Infinity;
   /** Told once per lock: the account (as typed), and for how long. */
   onLock: ((account: string, lockMs: number) => void) | null = null;
   constructor(readonly policy: GuardPolicy = DEFAULT_GUARD_POLICY) {}
@@ -52,8 +51,22 @@ export class PasswordGuard {
     return `${LOCAL_PEERS.has(key) ? LOCAL_SOURCE : key}\u0000${PasswordGuard.key(account)}`;
   }
 
-  /** Milliseconds this account stays locked for this source (0: it may try). */
+  /** Prune by the supplied time, even below capacity; retain a lock's escalation history for a day. */
+  private prune(now: number): void {
+    if (now < this.nextPruneAt) return;
+    this.nextPruneAt = Infinity;
+    for (const entries of [this.accounts, this.guesses, this.slowdowns, this.guessedSlowdowns]) {
+      for (const [key, entry] of entries) {
+        const expires = entry.lastAt + this.policy.maxLockMs;
+        if (expires <= now) entries.delete(key);
+        else this.nextPruneAt = Math.min(this.nextPruneAt, expires);
+      }
+    }
+  }
+
+  /** Source-local snapshot for existing callers. Authentication must use preflight to spend the shared budget. */
   lockedFor(account: string, now: number, source: string = currentPasswordSource()): number {
+    this.prune(now);
     const pair = PasswordGuard.pair(account, source);
     const tries = this.accounts.get(pair) ?? this.guesses.get(pair);
     if (tries === undefined) return 0;
@@ -61,13 +74,34 @@ export class PasswordGuard {
     return Math.max(0, tries.lockedUntil - now, slowdown === undefined ? 0 : slowdown.until - now);
   }
 
-  /** A wrong password; `exists` when the name is a real account (only those are slowed down across sources). */
+  /** Reserve one password check, or return its wait. No password derivation may precede this call. */
+  preflight(account: string, now: number, source: string = currentPasswordSource(), proven = false): number {
+    this.prune(now);
+    const tries = this.accounts.get(PasswordGuard.pair(account, source)) ?? this.guesses.get(PasswordGuard.pair(account, source));
+    const key = PasswordGuard.key(account);
+    const slowdown = this.slowdowns.get(key) ?? this.guessedSlowdowns.get(key);
+    const sourceWait = Math.max(0, (tries?.lockedUntil ?? 0) - now,
+      tries === undefined ? 0 : (slowdown?.until ?? 0) - now);
+    if (sourceWait > 0) return sourceWait;
+    if (proven || slowdown === undefined || slowdown.until <= now) return 0;
+    slowdown.admissions = slowdown.admissions.filter(at => at > now - ACCOUNT_PASSWORD_WINDOW_MS);
+    if (slowdown.admissions.length >= ACCOUNT_PASSWORD_TRIES) {
+      return slowdown.admissions[0]! + ACCOUNT_PASSWORD_WINDOW_MS - now;
+    }
+    slowdown.admissions.push(now);
+    return 0;
+  }
+
+  /** A wrong password; only a database lookup may establish `exists`. */
   failed(account: string, now: number, source: string = currentPasswordSource(), exists = false): void {
+    this.prune(now);
     const pair = PasswordGuard.pair(account, source);
-    const tries = this.accounts.get(pair) ?? this.guesses.get(pair) ?? { failures: 0, lockedUntil: 0, locks: 0 };
+    const tries = this.accounts.get(pair) ?? this.guesses.get(pair) ?? { failures: 0, lockedUntil: 0, locks: 0, lastAt: now };
     this.accounts.delete(pair);
     this.guesses.delete(pair);
     tries.failures += 1;
+    tries.lastAt = now;
+    this.nextPruneAt = Math.min(this.nextPruneAt, now + this.policy.maxLockMs);
     if (tries.failures >= this.policy.failuresBeforeLock) {
       const lockMs = Math.min(this.policy.maxLockMs, this.policy.firstLockMs * 2 ** tries.locks);
       tries.lockedUntil = now + lockMs;
@@ -81,17 +115,17 @@ export class PasswordGuard {
       const from = this.guesses.size > 0 ? this.guesses : this.accounts;
       from.delete(from.keys().next().value!);
     }
-    if (!exists) return;
     const key = PasswordGuard.key(account);
-    const kept = this.slowdowns.get(key);
-    const slowdown = kept === undefined || now - kept.lastAt > this.policy.maxLockMs ? { failures: 0, until: 0, lastAt: now } : kept;
-    this.slowdowns.delete(key);
+    const slowdowns = exists ? this.slowdowns : this.guessedSlowdowns;
+    const kept = slowdowns.get(key);
+    const slowdown = kept === undefined || now - kept.lastAt > this.policy.maxLockMs ? { failures: 0, until: 0, lastAt: now, admissions: [] } : kept;
+    slowdowns.delete(key);
     slowdown.failures += 1;
     slowdown.lastAt = now;
     const over = slowdown.failures - this.policy.failuresBeforeLock;
     if (over >= 0) slowdown.until = now + Math.min(this.policy.maxLockMs, this.policy.firstSlowMs * 2 ** Math.min(over, 32));
-    this.slowdowns.set(key, slowdown);
-    while (this.slowdowns.size > TRACKED) this.slowdowns.delete(this.slowdowns.keys().next().value!);
+    slowdowns.set(key, slowdown);
+    while (this.guessedSlowdowns.size > TRACKED) this.guessedSlowdowns.delete(this.guessedSlowdowns.keys().next().value!);
   }
 
   /** The right password: this source's count clears, and so does the account's slowdown. */
@@ -100,6 +134,7 @@ export class PasswordGuard {
     this.accounts.delete(pair);
     this.guesses.delete(pair);
     this.slowdowns.delete(PasswordGuard.key(account));
+    this.guessedSlowdowns.delete(PasswordGuard.key(account));
   }
 
   /** How many source-and-name entries are tracked now (never more than the bound). */

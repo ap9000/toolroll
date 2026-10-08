@@ -1,6 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
-import { currentPasswordSource, passwordGuardOf } from "./sign-in-guard.js";
+import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { projectAuthority } from "./project-access.js";
@@ -1013,7 +1013,7 @@ export function authenticateAccount(
   store: Store,
   by: string,
   secret: string,
-): { ok: true; role: "approver" | "viewer"; generation: number } | { ok: false; reason: "no-approvers" | "unknown" | "revoked" | "locked" } {
+): { ok: true; role: "approver" | "viewer"; generation: number } | { ok: false; reason: "no-approvers" | "unknown" | "revoked" | "locked"; retryAfterMs?: number } {
   if (store.listApprovers().length === 0) return { ok: false, reason: "no-approvers" };
   // A remote run (runOperateAs) is its token's person: only that run's own credential names them, no password is
   // checked or counted, and a read token stands as a viewer.
@@ -1033,9 +1033,17 @@ export function authenticateAccount(
   // v99: wrong passwords in a row lock the name for a while from where they came, whatever road they came by. A
   // locked or held-back source is refused before the password is checked.
   const guard = passwordGuardOf(store), now = Date.now(), source = currentPasswordSource();
-  if (guard.lockedFor(by, now, source) > 0) return { ok: false, reason: "locked" };
-  const account = store.accountOf(by);
-  if (account === null || !verifyCredential(account.credentialHash, secret)) {
+  const account = store.accountOf(by), proof = provenPasswordAccount.getStore();
+  const proven = proof?.name === by && account !== null && account.revokedAt === null && proof.generation === account.generation;
+  const wait = guard.preflight(by, now, source, proven);
+  if (wait > 0) return { ok: false, reason: "locked", retryAfterMs: wait };
+  // Unknown names and legacy minted-token/SSO accounts do the same one KDF as a password account. Throttled
+  // attempts above do none, for either name class; never disclose account existence through password work.
+  const dummy = `scrypt$${"0".repeat(32)}$${"0".repeat(64)}`;
+  const hash = account?.credentialHash ?? dummy;
+  if (!hash.startsWith("scrypt$")) verifyCredential(dummy, secret);
+  const matches = verifyCredential(hash, secret);
+  if (account === null || !matches) {
     guard.failed(by, now, source, account !== null);
     return { ok: false, reason: "unknown" };
   }

@@ -24,7 +24,6 @@ import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAutho
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { hashPassword } from "../scope.js";
-import { passwordGuardOf } from "../sign-in-guard.js";
 import { form,HANDOFF_STYLE,joinDeadPage,joinFormPage,loginHref,loginPage,loginReturn,page,SESSION_COOKIE,SIGN_IN_COOKIE,SIGN_IN_LINK_PATH,signInSpent,signupPage,startedHere,type SsoIntent } from "./shared.js";
 export function createPeopleHandlers(runtime: ServerRuntime) {
   const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
@@ -470,7 +469,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         name !== null && token !== null ? authenticateAccount(store, name, token) : null;
       if (authenticated === null || !authenticated.ok) {
         if (authenticated?.reason === "locked") {
-          const locked = passwordGuardOf(store).lockedFor(name ?? "", at);
+          const locked = authenticated.retryAfterMs!;
           recordSignIn(signInActor(name), "sign-in refused", "locked");
           response.setHeader("Retry-After", String(Math.ceil(locked / 1000)));
           return page(response, 429, loginPage(`Too many wrong passwords. Try again in ${minutesWords(locked)}.`, returnTo));
