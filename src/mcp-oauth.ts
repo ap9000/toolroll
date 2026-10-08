@@ -26,6 +26,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Store } from "./store.js";
 import { hashSecret, mintApiToken, type TokenAccess } from "./api-tokens.js";
 import { limitWords, type Admission } from "./request-budget.js";
+import { sourceKey } from "./source-key.js";
 import { PKCE_CHALLENGE, readOAuthRegistration, readOAuthTokenRequest } from "./contracts/mcp-oauth.js";
 
 /** How long each piece lives. A code is spent at once; a grant ends after 30 days and the person consents again. */
@@ -69,7 +70,7 @@ export type OAuthHttpOptions = {
   clock: () => Date;
   /** This console's canonical origin for the request (the https public address, or this computer's loopback one); null: no sign-in here. */
   originOf: (request: IncomingMessage) => string | null;
-  /** Trusted direct peer, or the last hop appended by the console's loopback proxy. */
+  /** Trusted direct peer, or the last hop appended by the console's loopback proxy (native IPv6 counted by its /64). */
   requesterKey: (request: IncomingMessage) => string;
   /** The browser session signed in by cookie, or null. A bearer never consents. */
   session: (request: IncomingMessage) => OAuthSession | null;
@@ -209,7 +210,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     const name = clean(read.value.client_name ?? "") || "MCP client";
     const now = options.clock();
     prune(now.getTime());
-    const kept = store.registerOAuthClient({ id: randomBytes(16).toString("hex"), name, redirectUris: redirects, source: sha256(options.requesterKey(request)) }, now, OAUTH_LIMITS.clients, OAUTH_LIMITS.clientsPerSource,
+    const kept = store.registerOAuthClient({ id: randomBytes(16).toString("hex"), name, redirectUris: redirects, source: sha256(sourceKey(options.requesterKey(request))) }, now, OAUTH_LIMITS.clients, OAUTH_LIMITS.clientsPerSource,
       [...waiting.values()].map(one => one.client));
     if (kept === null) {
       response.setHeader("retry-after", "600");
@@ -243,7 +244,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (params.get("resource") !== `${origin}${RESOURCE_PATH}`) return fail("The client requested access to a different server.");
     const scopes = (params.get("scope") ?? "").split(" ").filter(one => one !== "");
     if (!scopes.every(one => (OAUTH_SCOPES as readonly string[]).includes(one))) return fail("The client requested access Toolroll doesn't offer.");
-    const source = sha256(options.requesterKey(request));
+    const source = sha256(sourceKey(options.requesterKey(request)));
     if (waiting.size >= OAUTH_LIMITS.requests || [...waiting.values()].filter(one => one.source === source).length >= OAUTH_LIMITS.requestsPerSource) {
       response.setHeader("retry-after", "600");
       return problemPage(response, 429, "Too many sign-ins waiting", "Try again in ten minutes from your MCP client.");

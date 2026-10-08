@@ -120,6 +120,7 @@ import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync, mkdirSync } from "node:fs";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
 import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
+import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
@@ -961,8 +962,17 @@ export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet
   return { positional, flags, repoList };
 }
 
-/** Route an `operate` command. Returns the process exit code. */
+/** Route a native command and return its exit code. Its password source cannot be selected by an HTTP request. */
 export async function runOperate(
+  command: string,
+  argv: readonly string[],
+  write: Write,
+  options: OperateOptions = {},
+): Promise<number> {
+  return withPasswordSource(CLI_PASSWORD_SOURCE, () => runOperateLocal(command, argv, write, options));
+}
+
+async function runOperateLocal(
   command: string,
   argv: readonly string[],
   write: Write,

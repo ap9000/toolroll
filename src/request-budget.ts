@@ -15,6 +15,7 @@
  */
 import type { Database, Store } from "./store.js";
 import type { TokenAccess } from "./api-tokens.js";
+import { sourceKey } from "./source-key.js";
 
 export const REQUEST_BUDGET_SCHEMA = `
 CREATE TABLE IF NOT EXISTS request_budget_limit (
@@ -271,15 +272,18 @@ export const SOURCE_BUDGET_DEFAULTS = Object.freeze({ password: 120, oauthToken:
 /**
  * A sliding minute per source or proved account, with bounded in-memory LRU history. Expired entries are
  * pruned first; at capacity the least recently used entry is evicted so new callers are never globally locked out.
- * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above.
+ * Unverified account names must never be keys. Person API tokens use the persisted RequestBudget above. An address
+ * key counts by sourceKey (a native IPv6 caller by its /64). Verified identities must explicitly use exact keys.
  */
 export class SourceAdmission {
   private readonly perMinute: number;
   private readonly clock: () => number;
   private readonly tracked: number;
   private readonly usage = new Map<string, number[]>();
+  private readonly keyMode: "source" | "exact";
 
-  constructor(options: { perMinute: number; clock?: () => number; tracked?: number }) {
+  constructor(options: { perMinute: number; clock?: () => number; tracked?: number; keyMode?: "source" | "exact" }) {
+    this.keyMode = options.keyMode ?? "source";
     this.perMinute = Math.max(1, Math.min(PER_MINUTE_MAX, options.perMinute));
     this.clock = options.clock ?? Date.now;
     this.tracked = Math.max(1, options.tracked ?? TRACKED_TOKENS);
@@ -287,8 +291,8 @@ export class SourceAdmission {
 
   get size(): number { return this.usage.size; }
 
-  admit(source: string): Admission {
-    const now = this.clock();
+  admit(key: string): Admission {
+    const now = this.clock(), source = this.keyMode === "exact" ? key : sourceKey(key);
     let times = this.usage.get(source);
     if (times === undefined) {
       if (this.usage.size >= this.tracked) {

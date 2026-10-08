@@ -16,7 +16,7 @@ import {
 type Store
 } from "../store.js";
 import type { TeamResponse } from '../team-contract.js';
-import { handleTeamHttp } from '../team-http.js';
+import { handleTeamHttp, TEAM_PASSWORD_REVERIFY_MS } from '../team-http.js';
 import { handleTeamsHttp } from "../teams.js";
 import type { EdgeContext } from './handler-context.js';
 import { flowHook,telegramHook,type RemoteHookContext } from "./remote-hooks.js";
@@ -61,6 +61,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     return who?.via === "bearer" ? who.principal ?? null : null;
   };
   const presentsToken = (request: IncomingMessage): boolean => /^Bearer so_\S+$/.test(request.headers.authorization ?? "");
+  /** When each live request's password bearer last proved its password: kept only while the request is. */
+  const passwordProvedAt = new WeakMap<IncomingMessage, number>();
   const teamEndpoint = (request: IncomingMessage, response: ServerResponse) => handleTeamHttp(request, response, {
     authenticate: request => {
       if (presentsToken(request)) {
@@ -69,7 +71,9 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       }
       const who = identify(request, request.method === 'POST');
       const account = who === null ? null : store.accountOf(who.name);
-      return who && account && account.revokedAt === null ? { name: who.name, generation: account.generation, role: account.role } : null;
+      if (!who || !account || account.revokedAt !== null) return null;
+      if (who.via === 'bearer') passwordProvedAt.set(request, clock().getTime());
+      return { name: who.name, generation: account.generation, role: account.role };
     },
     admit: admitPasswordSource,
     admitAuthenticated: admitBearer,
@@ -84,9 +88,17 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
         actor.principal = { ...actor.principal, scope: live.scope };
         return true;
       }
-      // A password bearer was proved when this connection opened. Cookie expiry/revocation
+      // A password bearer was proved when this connection opened, and is proved again (the password checked, through
+      // the same per-source tries and locks) once TEAM_PASSWORD_REVERIFY_MS has passed since. Cookie expiry/revocation
       // is rechecked without allowing a passive stream to extend its lifetime.
-      if (request.headers.authorization) return true;
+      if (request.headers.authorization) {
+        const now = clock().getTime(), provedAt = passwordProvedAt.get(request);
+        if (provedAt !== undefined && now - provedAt < TEAM_PASSWORD_REVERIFY_MS) return true;
+        const who = identify(request, false);
+        if (who?.via !== 'bearer' || who.name !== actor.name || who.generation !== actor.generation) return false;
+        passwordProvedAt.set(request, now);
+        return true;
+      }
       const who = identify(request, false);
       return who?.name === actor.name && who.via === 'cookie' && who.session.generation === actor.generation;
     },

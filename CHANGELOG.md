@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.51 — 2026-10-07
+
+- **No lockout by username.** Wrong passwords slow the source that sent them,
+  not the account. A device you've signed in on always gets through.
+- **Guessing stays bounded.** Rotating addresses can't buy more guesses at an
+  account, and IPv6 addresses count per /64.
+- **Usernames stay private.** Real and made-up names answer the same way,
+  even after a flood.
+
 ## 0.9.50 — 2026-10-07
 
 - **One route policy table.** Every route's access rules live in one table,
