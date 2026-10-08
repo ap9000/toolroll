@@ -46,14 +46,14 @@ export type ExportManifest = {
 export type FullExport = { root: string; files: ExportFile[]; manifest: ExportManifest; tables: number; packs: number };
 
 /** Tables that hold nothing but secrets or short-lived sign-in material, and derived search indexes. */
-const SECRET_TABLES = new Set(["web_session", "ceremony_nonce", "telegram_pairing", "slack_pair", "discord_pair", "teams_pair", "oauth_code", "oauth_refresh"]);
+const SECRET_TABLES = new Set(["web_session", "ceremony_nonce", "chat_pair", "oauth_code", "oauth_refresh"]);
 const DERIVED_TABLE = /^(sqlite_|memory_search)/;
 
 /** Columns that hold a secret (or what stands in for one): never exported. */
 const SECRET_COLUMNS = new Set([
   "api_token.secret_hash", "lead_credential.secret_hash", "approver.credential_hash", "coordinator_credential.credential_hash", "runner.credential_hash", "invite.token_hash",
   "flow_trigger.hook_hash", "held_session.cookie", "push_subscription.endpoint", "push_subscription.p256dh", "push_subscription.auth",
-  "chat_turn.credential_key", "mate_session.credential_key", "mate_turn.credential_key", "bridge_lease.push_url", "workflow_preview.token",
+  "chat_turn.credential_key", "mate_session.credential_key", "mate_turn.credential_key", "chat_runtime.push_url", "workflow_preview.token",
   "quota.credential_fp", "oauth_grant.renew_hash", "oauth_client.source_hash",
 ]);
 
@@ -61,7 +61,7 @@ const SECRET_COLUMNS = new Set([
 const SECRET_NAME = /hash|secret|token|passw|cookie|csrf|credential|p256dh|^auth$|key|nonce|endpoint|url/i;
 /** Reviewed: named like a secret, but it isn't one (a seal, a digest, a lookup name, an address with no key). */
 const REVIEWED_COLUMNS = new Set([
-  "artifact.key", "budget.scope_key", "mate_thread.scope_key", "diff_comment.source_key", "discord_meta.key", "slack_meta.key", "teams_meta.key",
+  "artifact.key", "budget.scope_key", "mate_thread.scope_key", "diff_comment.source_key", "chat_meta.key",
   "flow_trigger_event.key", "installation_fact.key", "mcp_idempotency.key", "memory_gap.key", "mutation.idempotency_key", "notification.dedupe_key",
   "service_cursor.key", "ledger_checkpoint.hash", "ledger_seal.hash", "merge_intent.grant_terms_hash", "plan_revision.parent_hash",
   "publication.body_hash", "publication.pr_url", "team_message.payload_hash", "team_request.payload_hash", "backend_grant.credential_scope",
@@ -75,7 +75,7 @@ export function categoryOf(table: string): string {
     [/^(action_ledger|ledger_seal|ledger_checkpoint|sync_ledger)$/, "ledger"],
     [/^teammate/, "teammates"],
     [/^(flow|routine|workflow_)/, "flows"],
-    [/^(chat_|mate_|team_|telegram_|slack_|discord_|teams_|notification|push_|bridge_lease)/, "chats"],
+    [/^(chat_|mate_|team_|notification|push_)/, "chats"],
     [/^(approver|api_token|lead_credential|invite|sso_identity|coordinator_|oauth_)/, "people"],
     [/^(run|artifact|claim|worktree$|execution_slot|contest|tournament_terms|fallback_cycle|fallback_transition|held_session|session_turn|attended_authorization|criterion_review|diff_comment|proof_|review_request|repair_chain|incident|publication$|merge_|side_spend|knowledge_snapshot|learning_snapshot|skill_snapshot)/, "runs"],
     [/^(task|hold$|plan_|scope_|tool_seal|decision|external_|skill_test)/, "tasks"],

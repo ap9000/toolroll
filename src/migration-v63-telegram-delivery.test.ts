@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { addLegacyChatTables, windChatsBack } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
@@ -25,8 +26,8 @@ describe("v63 Telegram durable replies", () => {
   let store: Store | undefined;
   afterEach(() => { store?.close(); store = undefined; if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
 
-  /** A paired chat with one queued message and one live card token: the rows a deployed v62 candidate holds mid-flight. */
-  const seed = (db: Store): { conversation: Record<string, unknown>[]; actions: Record<string, unknown>[] } => {
+  /** A paired chat with one queued message: the rows a deployed v62 candidate holds mid-flight. */
+  const seed = (db: Store): void => {
     for (const phase of ["build", "plan", "review"]) db.setPhaseConfig("installation", phase, "claude", "sonnet", "ops", NOW);
     const alex = addApprover(db, "alex", NOW);
     if (!alex.ok) throw new Error("bootstrap");
@@ -36,15 +37,13 @@ describe("v63 Telegram durable replies", () => {
     if (!paired.ok) throw new Error("pair");
     const binding = db.liveTelegramBinding(BOT)!;
     db.enqueueTelegramConversation({ binding, updateId: 2, messageId: "1002", replyTo: null, request: telegramRequestId(BOT, binding.id, 2), text: "what needs me?", context: null, taskId: null, sourceRun: null }, NOW);
-    return {
-      conversation: db.handle.prepare("SELECT * FROM telegram_conversation ORDER BY id").all() as Record<string, unknown>[],
-      actions: db.handle.prepare("SELECT * FROM telegram_proposal_action ORDER BY token").all() as Record<string, unknown>[],
-    };
   };
 
-  /** The exact deployed v61 shape, or the v62 candidate shape (its rows kept), or either's mid-flight sentinel. */
-  const windBack = (file: string, version: number): void => {
+  /** The exact deployed v61 shape, or the v62 candidate shape (its rows kept, in the old Telegram tables), or either's mid-flight sentinel. */
+  const windBack = (file: string, version: number): { conversation: Record<string, unknown>[] } => {
     const old = new DatabaseSync(file);
+    windChatsBack(old);
+    const conversation = old.prepare("SELECT * FROM telegram_conversation ORDER BY id").all() as Record<string, unknown>[];
     old.exec("DROP TABLE telegram_conversation_part");
     if (Math.abs(version) === 61) {
       for (const table of V62_TABLES) old.exec(`DROP TABLE ${table}`);
@@ -54,33 +53,33 @@ describe("v63 Telegram durable replies", () => {
     old.exec("DROP TABLE service_cursor");
     old.prepare("UPDATE schema_version SET version = ?").run(version);
     old.close();
+    return { conversation };
   };
 
-  test.each([62, -62, 61, -61])("v%s upgrades through v63 to the current schema keeping every conversation row and token, adds the empty parts table, and reopens idempotently", version => {
+  test.each([62, -62, 61, -61])("v%s upgrades through v63 to the current schema keeping every conversation row, and reopens idempotently", version => {
     dir = mkdtempSync(join(tmpdir(), "so-v63-"));
     const file = join(dir, "orders.db");
     store = openStore(file);
-    const before = seed(store);
-    expect(before.conversation).toHaveLength(1);
+    seed(store);
+    const seen = store.listTelegramConversations(BOT);
+    expect(seen).toHaveLength(1);
     store.close(); store = undefined;
-    windBack(file, version);
+    const before = windBack(file, version);
+    expect(before.conversation).toHaveLength(1);
     const fromV62 = Math.abs(version) === 62;
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(116);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-    expect(store.handle.prepare("SELECT * FROM telegram_conversation ORDER BY id").all()).toEqual(fromV62 ? before.conversation : []);
-    expect(store.handle.prepare("SELECT * FROM telegram_proposal_action ORDER BY token").all()).toEqual(fromV62 ? before.actions : []);
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_conversation_part").get()?.["n"]).toBe(0);
+    // Every conversation row carried into the shared chat tables (v114), read back exactly as it was written.
+    expect(store.listTelegramConversations(BOT)).toEqual(fromV62 ? seen : []);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_part WHERE provider = 'telegram'").get()?.["n"]).toBe(0);
     expect(String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'run_stop'").get()?.["sql"])).toContain("'cli','web','telegram'");
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    // The constraints are real: a part is sent only with a message id, and only for a conversation that exists.
-    const ddl = String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'telegram_conversation_part'").get()?.["sql"]);
-    expect(ddl).toContain("CHECK ((state = 'sent') = (message_id IS NOT NULL))");
-    expect(() => store!.handle.prepare("INSERT INTO telegram_conversation_part (conversation, ordinal, kind, text, state, created_at) VALUES (999, 0, 'reply', 'x', 'pending', ?)").run(NOW.toISOString())).toThrow(/FOREIGN KEY|constraint/);
+    // A part only belongs to a message that exists.
+    expect(() => store!.handle.prepare("INSERT INTO chat_part (provider, id, event, ordinal, payload, created) VALUES ('telegram', 1, 'm999', 0, '{}', ?)").run(NOW.toISOString())).toThrow(/FOREIGN KEY|constraint/);
     if (fromV62) {
-      const id = Number(before.conversation[0]!["id"]);
-      expect(() => store!.handle.prepare("INSERT INTO telegram_conversation_part (conversation, ordinal, kind, text, state, created_at) VALUES (?, 0, 'reply', 'x', 'sent', ?)").run(id, NOW.toISOString())).toThrow(/CHECK|constraint/);
+      const id = seen[0]!.id;
       expect(store.claimTelegramConversation(BOT, "owner", 60_000, NOW)).toMatchObject({ id, state: "running" });
       expect(store.planTelegramConversationParts(id, "owner", { session: 1, turn: 1 }, [{ kind: "reply", text: "hello", replyTo: "1002" }], NOW)).toBe(true);
       expect(store.listTelegramConversationParts(id)).toEqual([expect.objectContaining({ ordinal: 0, kind: "reply", text: "hello", state: "pending", messageId: null, attempts: 0, uncertain: 0 })]);
@@ -93,17 +92,17 @@ describe("v63 Telegram durable replies", () => {
       expect(store.getTelegramConversation(id)?.replyMessageId).toBe("7");
       expect(store.settleTelegramConversationPart(id, 0, "owner", { ok: true, messageId: "8" }, NOW)).toBe(false);
     }
-    const after = store.handle.prepare("SELECT * FROM telegram_conversation ORDER BY id").all();
+    const after = store.listTelegramConversations(BOT);
     store.close(); store = openStore(file);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-    expect(store.handle.prepare("SELECT * FROM telegram_conversation ORDER BY id").all()).toEqual(after);
+    expect(store.listTelegramConversations(BOT)).toEqual(after);
   });
 
-  test("a current database missing the parts table fails closed instead of recreating it", () => {
+  test("a v113 database missing the parts table fails closed instead of recreating it", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v63-missing-"));
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
-    const db = new DatabaseSync(file); db.exec("DROP TABLE telegram_conversation_part"); db.close();
+    const db = new DatabaseSync(file); addLegacyChatTables(db); db.exec("DROP TABLE telegram_conversation_part; UPDATE schema_version SET version = 113"); db.close();
     expect(() => openStore(file)).toThrow("Telegram reply history is missing");
   });
 
@@ -111,9 +110,9 @@ describe("v63 Telegram durable replies", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v63-rollback-"));
     const file = join(dir, "orders.db");
     store = openStore(file);
-    const before = seed(store);
+    seed(store);
     store.close(); store = undefined;
-    windBack(file, 62);
+    const before = windBack(file, 62);
     const db = new DatabaseSync(file);
     expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(62);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'telegram_conversation_part'").get()).toBeUndefined();

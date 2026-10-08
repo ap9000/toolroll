@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { openStore, SCHEMA_VERSION, TELEGRAM_CONVERSATION_PART_V63_COLUMNS, type Store } from "./store.js";
+import { addLegacyChatTables, windChatsBack } from "../test/legacy-chat.js";
+import { openStore, SCHEMA_VERSION, TELEGRAM_CONVERSATION_PART_V63_COLUMNS, type Store, type TelegramConversationPart } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
 import { telegramRequestId } from "./telegram-mate.js";
@@ -39,7 +40,7 @@ describe("v64 Telegram result images", () => {
   afterEach(() => { store?.close(); store = undefined; if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
 
   /** A paired chat whose reply went out in two parts — one confirmed, one still pending after a lost answer — plus a finished run an image could name. */
-  const seed = (db: Store): { conversation: number; run: number; taskRef: number; parts: Record<string, unknown>[] } => {
+  const seed = (db: Store): { conversation: number; run: number; taskRef: number; parts: TelegramConversationPart[] } => {
     for (const phase of ["build", "plan", "review"]) db.setPhaseConfig("installation", phase, "claude", "sonnet", "ops", NOW);
     const alex = addApprover(db, "alex", NOW);
     if (!alex.ok) throw new Error("bootstrap");
@@ -64,12 +65,13 @@ describe("v64 Telegram result images", () => {
     if (!db.planTelegramConversationParts(claimed.id, "owner", { session: 1, turn: 1 }, [{ kind: "reply", text: "first", replyTo: "1002" }, { kind: "reply", text: "second" }], NOW)) throw new Error("plan");
     if (!db.settleTelegramConversationPart(claimed.id, 0, "owner", { ok: true, messageId: "100" }, NOW)) throw new Error("settle");
     if (!db.settleTelegramConversationPart(claimed.id, 1, "owner", { ok: false, error: "lost", uncertain: true, retryAt: NOW.toISOString() }, NOW)) throw new Error("settle");
-    return { conversation: claimed.id, run, taskRef, parts: db.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[] };
+    return { conversation: claimed.id, run, taskRef, parts: db.listTelegramConversationParts(claimed.id) };
   };
 
-  /** The exact deployed v63 shape: the parts table without media identity, no turn-evidence table, stamped v63 (or its mid-flight sentinel). */
-  const windBack = (file: string, version: number): void => {
+  /** The exact deployed v63 shape: the parts table (in the old Telegram tables) without media identity, no turn-evidence table, stamped v63 (or its mid-flight sentinel). */
+  const windBack = (file: string, version: number): Record<string, unknown>[] => {
     const old = new DatabaseSync(file);
+    windChatsBack(old);
     old.exec("PRAGMA foreign_keys = OFF");
     old.exec(V63_PARTS.replace("telegram_conversation_part (", "telegram_conversation_part_v63 ("));
     const columns = TELEGRAM_CONVERSATION_PART_V63_COLUMNS.join(", ");
@@ -79,7 +81,9 @@ describe("v64 Telegram result images", () => {
     old.exec("DROP TABLE mate_turn_evidence");
     old.exec("DROP TABLE service_cursor");
     old.prepare("UPDATE schema_version SET version = ?").run(version);
+    const parts = old.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[];
     old.close();
+    return parts;
   };
   const v63Columns = (row: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(TELEGRAM_CONVERSATION_PART_V63_COLUMNS.map(column => [column, row[column]]));
 
@@ -88,9 +92,10 @@ describe("v64 Telegram result images", () => {
     const file = join(dir, "orders.db");
     store = openStore(file);
     const before = seed(store);
-    expect(before.parts.map(row => [row["ordinal"], row["state"], row["message_id"], row["attempts"], row["uncertain"]])).toEqual([[0, "sent", "100", 1, 0], [1, "pending", null, 1, 1]]);
+    expect(before.parts.map(row => [row.ordinal, row.state, row.messageId, row.attempts, row.uncertain])).toEqual([[0, "sent", "100", 1, 0], [1, "pending", null, 1, 1]]);
     store.close(); store = undefined;
-    windBack(file, version);
+    const legacy = windBack(file, version);
+    expect(legacy.map(row => [row["ordinal"], row["state"], row["message_id"], row["attempts"], row["uncertain"]])).toEqual([[0, "sent", "100", 1, 0], [1, "pending", null, 1, 1]]);
     {
       const old = new DatabaseSync(file);
       expect(String(old.prepare("SELECT sql FROM sqlite_master WHERE name = 'telegram_conversation_part'").get()?.["sql"])).not.toContain("artifact");
@@ -100,21 +105,19 @@ describe("v64 Telegram result images", () => {
     }
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(116);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-    const after = store.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[];
-    expect(after.map(v63Columns)).toEqual(before.parts.map(v63Columns));
-    expect(after.map(row => [row["task_id"], row["source_run"], row["artifact"], row["sha256"]])).toEqual([[null, null, null, null], [null, null, null, null]]);
+    // Every part, receipt, attempt and uncertain count carried into the shared chat tables (v114), read back as it was.
+    expect(store.listTelegramConversationParts(before.conversation)).toEqual(before.parts);
+    expect(before.parts.map(row => [row.taskId, row.run, row.artifact, row.sha256])).toEqual([[null, null, null, null], [null, null, null, null]]);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn_evidence").get()?.["n"]).toBe(0);
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    const ddl = String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'telegram_conversation_part'").get()?.["sql"]);
-    expect(ddl).toContain("kind IN ('reply','card','image')");
-    expect(ddl).toContain("CHECK ((kind = 'image') = (task_id IS NOT NULL AND source_run IS NOT NULL AND artifact IS NOT NULL AND sha256 IS NOT NULL))");
-    // Typed identity is a constraint, not a convention: an image needs every column, and nothing else may carry one.
-    const insert = "INSERT INTO telegram_conversation_part (conversation, ordinal, kind, text, state, created_at, task_id, source_run, artifact, sha256) VALUES (?, 9, ?, 'x', 'pending', ?, ?, ?, ?, ?)";
-    expect(() => store!.handle.prepare(insert).run(before.conversation, "image", NOW.toISOString(), "alpha", before.run, null, "a".repeat(64))).toThrow(/CHECK|constraint/);
-    expect(() => store!.handle.prepare(insert).run(before.conversation, "reply", NOW.toISOString(), "alpha", before.run, 7, "a".repeat(64))).toThrow(/CHECK|constraint/);
-    expect(() => store!.handle.prepare(insert).run(before.conversation, "image", NOW.toISOString(), "alpha", 999_999, 7, "a".repeat(64))).toThrow(/FOREIGN KEY|constraint/);
+    // Typed identity is a contract, not a convention: an image that misses any of it is refused when read, never guessed.
+    const insert = store.handle.prepare("INSERT INTO chat_part (provider, id, event, ordinal, payload, created) VALUES ('telegram', 99, ?, 9, ?, ?)");
+    insert.run(`m${before.conversation}`, JSON.stringify({ version: 1, text: "x", image: { taskId: "alpha", run: before.run, sha256: "a".repeat(64) } }), NOW.toISOString());
+    expect(() => store!.listTelegramConversationParts(before.conversation)).toThrow(/can't be read/);
+    store.handle.prepare("DELETE FROM chat_part WHERE provider = 'telegram' AND id = 99").run();
+    expect(() => insert.run("m999999", JSON.stringify({ version: 1, text: "x" }), NOW.toISOString())).toThrow(/FOREIGN KEY|constraint/);
     // The mid-flight row resumes exactly where it was: the confirmed part is not re-planned, the pending one is still owed.
     const claimed = store.claimTelegramConversation(BOT, "owner", 60_000, new Date(NOW.getTime() + 120_000));
     expect(claimed).toMatchObject({ id: before.conversation, state: "running" });
@@ -139,13 +142,13 @@ describe("v64 Telegram result images", () => {
     // An image part never becomes the row's reply id; a dropped image is history with its reason.
     expect(store.getTelegramConversation(next.id)?.replyMessageId).toBeNull();
     expect(store.dropTelegramConversationPart(next.id, 1, "owner", "late", NOW)).toBe(false);
-    const rows = store.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY conversation, ordinal").all();
+    const rows = store.handle.prepare("SELECT * FROM chat_part WHERE provider = 'telegram' ORDER BY event, ordinal").all();
     store.close(); store = openStore(file);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-    expect(store.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY conversation, ordinal").all()).toEqual(rows);
+    expect(store.handle.prepare("SELECT * FROM chat_part WHERE provider = 'telegram' ORDER BY event, ordinal").all()).toEqual(rows);
   });
 
-  test("a current database missing the turn-evidence table or the typed columns fails closed instead of recreating them", () => {
+  test("a database missing the turn-evidence table, or a v113 one missing the typed columns, fails closed instead of recreating them", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v64-missing-"));
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
@@ -153,6 +156,8 @@ describe("v64 Telegram result images", () => {
     expect(() => openStore(file)).toThrow("Telegram image history is missing");
     db = new DatabaseSync(file);
     db.exec("CREATE TABLE IF NOT EXISTS mate_turn_evidence (turn INTEGER, ordinal INTEGER)");
+    addLegacyChatTables(db);
+    db.exec("UPDATE schema_version SET version = 113");
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec(V63_PARTS.replace("telegram_conversation_part (", "telegram_conversation_part_v63 ("));
     db.exec("DROP TABLE telegram_conversation_part");
@@ -165,12 +170,12 @@ describe("v64 Telegram result images", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v64-rollback-"));
     const file = join(dir, "orders.db");
     store = openStore(file);
-    const before = seed(store);
+    seed(store);
     store.close(); store = undefined;
-    windBack(file, 63);
+    const legacy = windBack(file, 63);
     const db = new DatabaseSync(file);
     expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(63);
-    expect(db.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all()).toEqual(before.parts.map(v63Columns));
+    expect(db.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all()).toEqual(legacy.map(v63Columns));
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
     // The older reader's fence on this file is the version gate itself (migration-v50-review-retries.test.ts proves it refuses a newer stamp before any write).

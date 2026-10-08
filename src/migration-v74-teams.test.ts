@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, DECISION_V68_DDL_FOR_TESTS, RUN_STOP_V68_DDL_FOR_TESTS, type Store } from "./store.js";
-import { chatTables } from "./chat-delivery-state.js";
+import { addLegacyChatTables } from "../test/legacy-chat.js";
+import { legacyAppTables } from "./chat-migration.js";
 
 describe("v74 Teams joins the recorded surfaces", () => {
   let dir: string, store: Store | undefined;
@@ -22,11 +23,12 @@ describe("v74 Teams joins the recorded surfaces", () => {
     store.close(); store = undefined;
     const db = new DatabaseSync(file);
     db.exec("PRAGMA foreign_keys=OFF");
+    addLegacyChatTables(db);
     // The v68..v73 shape: Discord named, Teams not yet.
     db.exec("DROP TABLE decision; DROP TABLE run_stop;");
     db.exec(DECISION_V68_DDL_FOR_TESTS("decision"));
     db.exec(RUN_STOP_V68_DDL_FOR_TESTS("run_stop"));
-    for (const name of [...chatTables("teams")].reverse()) db.exec(`DROP TABLE IF EXISTS ${name}`);
+    for (const name of [...legacyAppTables("teams")].reverse()) db.exec(`DROP TABLE IF EXISTS ${name}`);
     db.exec("DROP TABLE IF EXISTS teams_room; DROP TABLE IF EXISTS teams_meta");
     db.prepare("INSERT INTO run_stop(run,task_ref,requested_by,requested_via,requested_at) VALUES(?,?,'operator','discord','2026-09-21')").run(run, ref);
     db.prepare("INSERT INTO decision(run,urgency,state,recap,question,options,recommendation,created_at,answered_via) VALUES(?,'blocking','answered','recap','question','[]','one','2026-09-21','discord')").run(run);
@@ -39,7 +41,7 @@ describe("v74 Teams joins the recorded surfaces", () => {
   test.each([73, -73])("upgrades v%s without changing existing rows and records Teams separately", version => {
     const f = fixture(version);
     store = openStore(f.file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(116);
     expect(store.handle.prepare("SELECT * FROM run_stop").all()).toEqual(f.stops);
     expect(store.handle.prepare("SELECT * FROM decision").all()).toEqual(f.decisions);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
@@ -47,8 +49,9 @@ describe("v74 Teams joins the recorded surfaces", () => {
     store.handle.prepare("UPDATE decision SET answered_via='teams' WHERE run=?").run(f.run);
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name='run_stop_by_task'").get()).toBeDefined();
-    for (const name of chatTables("teams")) expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name=?").get(name)).toBeDefined();
-    expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name='teams_room'").get()).toBeDefined();
+    // Teams' chats live in the shared chat tables (v114), as every app's do; no per-app table is left.
+    for (const name of legacyAppTables("teams")) expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name=?").get(name)).toBeUndefined();
+    expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name='chat_room'").get()).toBeDefined();
     store.close(); store = openStore(f.file);
     expect(store.handle.prepare("SELECT requested_via FROM run_stop").get()?.requested_via).toBe("teams");
   });

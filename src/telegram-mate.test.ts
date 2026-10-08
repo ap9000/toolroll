@@ -313,7 +313,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ updateId: 2, messageId: "1002", state: "done", outcome: "answered", request: telegramRequestId(BOT, binding().id, 2), approver: "alex", text: "Please tighten the payout guard so an over-limit payout is refused" });
     expect(rows[0]!.turn).not.toBeNull();
-    expect(Number(store.handle.prepare("SELECT cursor FROM bridge_lease WHERE bot_id = ?").get(BOT)?.["cursor"])).toBe(2);
+    expect(Number(store.handle.prepare("SELECT cursor FROM chat_runtime WHERE provider = 'telegram' AND installation = ?").get(BOT)?.["cursor"])).toBe(2);
     // The engine ran three times (a capabilities read, a tool step, then text); the session is a membership session over the enrolled ceiling.
     expect(requests).toHaveLength(3);
     expect(requests[0]!.history.filter(one => one.role === "operator").at(-1)).toMatchObject({ role: "operator", text: "Please tighten the payout guard so an over-limit payout is refused" });
@@ -599,9 +599,11 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
     queueOnly.mockRestore();
     expect(store.listTelegramConversations(BOT)[0]?.state).toBe("queued");
+    // Unpairing ends what the chat could still do, in every chat app: the queued message is dropped with its words.
     store.unpairTelegram(BOT, "alex", now);
-    expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
-    expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "unpaired" });
+    expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "revoked", text: "" });
+    expect(await pass()).toMatchObject({ ok: true, report: { sent: 0 } });
+    expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "revoked" });
     expect(requests).toEqual([]);
     expect(script.sends()).toEqual([]);
   });
@@ -1409,7 +1411,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       ]);
       // Navigation, never authority: no callback token was minted for a handoff card, and its text says the step finishes in the console once.
       expect(cards.every(one => (one.params["reply_markup"] as { inline_keyboard: { callback_data?: string }[][] }).inline_keyboard.flat().every(button => button.callback_data === undefined))).toBe(true);
-      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_proposal_action").get()!["n"]).toBe(0);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_action WHERE provider = 'telegram' AND proposal IS NOT NULL").get()!["n"]).toBe(0);
       for (const one of cards) {
         expect(String(one.params["text"])).toContain("This step finishes in Toolroll.");
         expect(String(one.params["text"])).not.toContain("No phone link");
@@ -1864,8 +1866,9 @@ describe("Telegram conversation: the same chat, from the phone", () => {
         ["image", "pending", `payout · result #${run} · screenshot 1 of 2`],
         ["image", "pending", `payout · result #${run} · screenshot 2 of 2`],
       ]);
-      store.handle.prepare("UPDATE telegram_conversation_part SET text = ? WHERE conversation = ? AND ordinal = 1").run(`${tokenShaped} · result #${run} · screenshot 1 of 2`, row().id);
-      store.handle.prepare("UPDATE telegram_conversation_part SET text = ? WHERE conversation = ? AND ordinal = 2").run(`${tokenShaped} · result #${run} · screenshot 2 of 2`, row().id);
+      const caption = store.handle.prepare("UPDATE chat_part SET payload = json_set(payload, '$.text', ?) WHERE provider = 'telegram' AND event = ? AND ordinal = ?");
+      caption.run(`${tokenShaped} · result #${run} · screenshot 1 of 2`, `m${row().id}`, 1);
+      caption.run(`${tokenShaped} · result #${run} · screenshot 2 of 2`, `m${row().id}`, 2);
       // The first file also changes on disk: its refusal notice is rebuilt as well. Restart and retry.
       writeFileSync(join(evidenceRoot, String(run), "screenshot-home.png"), Buffer.concat([PNG, Buffer.from([1])]));
       store.close(); store = openStore(file);
@@ -2090,7 +2093,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const observer = openStore(file);
       const holders: string[] = [];
       const traced: TelegramTransport = async (method, params, signal, upload) => {
-        if (method.startsWith("send")) holders.push(String(observer.handle.prepare("SELECT owner FROM bridge_lease WHERE bot_id = ?").get(BOT)?.["owner"]));
+        if (method.startsWith("send")) holders.push(String(observer.handle.prepare("SELECT owner FROM chat_runtime WHERE provider = 'telegram' AND installation = ?").get(BOT)?.["owner"]));
         return script.transport(method, params, signal, upload);
       };
       answers.push({ text: "Toolroll 0.9.9: lighter tests, shared dependencies, a clear Needs you." });
@@ -2166,7 +2169,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(lines.join("\n")).toContain("Telegram: not connecting from here — this process runs inside a Codex sandbox, which blocks its network. Replies and notifications go out from the Toolroll service.");
       expect(script.calls).toEqual([]);
       store = openStore(file);
-      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM bridge_lease").get()?.["n"]).toBe(0);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_runtime WHERE provider = 'telegram'").get()?.["n"]).toBe(0);
     });
   });
 });

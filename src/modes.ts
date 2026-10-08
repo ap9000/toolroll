@@ -15,6 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { CHAT_PROVIDERS, isChatProvider, type ChatProvider } from "./contracts/chat-tables.js";
 
 export type ModeName = "standard" | "hands-off";
 
@@ -69,12 +70,16 @@ export type ModeTerms = {
    * `repairAuto` is also true — a mode may sign a cap without signing the
    * authority, but never the reverse. */
   repairMaxAttempts: number;
-  /** Explicit opt-in: the signer's paired Telegram chat may approve this
+  /** Explicit opt-in: the signer's paired chat may approve this
    * repository's plans and merge its ready pull requests with two taps,
    * for the mode's lifetime. A plan that widens permissions, exceeds the
    * per-attempt budget or touches protected paths still opens Toolroll.
    * Legacy modes read FALSE — never inherited, only freshly signed. */
   chatApprove: boolean;
+  /** The chat apps `chatApprove` names, signed with it. Absent on a mode signed before chat apps other than Telegram
+   * could approve: its words said "your paired Telegram chat", so it stays Telegram only (chatApproveChatsOf). A wider
+   * grant is only ever a fresh signature naming the apps. */
+  chatApproveChats?: readonly ChatProvider[];
   absoluteExpiry: string;
 };
 
@@ -189,6 +194,10 @@ export function modeTermsFromJson(json: string | null): ModeTerms | null {
     (t["repairMaxAttempts"] === undefined ||
       (typeof t["repairMaxAttempts"] === "number" && Number.isInteger(t["repairMaxAttempts"]) && t["repairMaxAttempts"] >= 0 && t["repairMaxAttempts"] <= 3)) &&
     (t["chatApprove"] === undefined || typeof t["chatApprove"] === "boolean") &&
+    // chatApproveChats: absent (a Telegram-only grant, or none), or the apps a chatApprove term names, each once.
+    (t["chatApproveChats"] === undefined ||
+      (t["chatApprove"] === true && Array.isArray(t["chatApproveChats"]) && t["chatApproveChats"].length > 0 &&
+        t["chatApproveChats"].every(isChatProvider) && new Set(t["chatApproveChats"]).size === t["chatApproveChats"].length)) &&
     typeof t["absoluteExpiry"] === "string" &&
     !Number.isNaN(Date.parse(t["absoluteExpiry"]))
   ) {
@@ -208,11 +217,26 @@ export function modeTermsFromJson(json: string | null): ModeTerms | null {
       repairAuto: t["repairAuto"] === true,
       repairMaxAttempts: typeof t["repairMaxAttempts"] === "number" ? t["repairMaxAttempts"] : 0,
       chatApprove: t["chatApprove"] === true,
+      ...(Array.isArray(t["chatApproveChats"]) ? { chatApproveChats: [...(t["chatApproveChats"] as ChatProvider[])] } : {}),
       absoluteExpiry: t["absoluteExpiry"],
     };
   }
   return null;
 }
+
+/** The chat apps a mode lets its signer approve from: none without chatApprove; Telegram alone for a grant signed
+ * before it named its apps (that is what its words said); otherwise exactly the apps it names. */
+export function chatApproveChatsOf(terms: Pick<ModeTerms, "chatApprove" | "chatApproveChats">): readonly ChatProvider[] {
+  return !terms.chatApprove ? [] : terms.chatApproveChats ?? ["telegram"];
+}
+
+/** What a new chatApprove signature names: every chat app, said in its words. */
+export const CHAT_APPROVE_ALL: readonly ChatProvider[] = CHAT_PROVIDERS;
+
+const CHAT_NAMES: Record<ChatProvider, string> = { telegram: "Telegram", slack: "Slack", discord: "Discord", teams: "Teams" };
+/** "Telegram", "Telegram or Slack", "Telegram, Slack, Discord or Teams". */
+export const chatNames = (chats: readonly ChatProvider[]): string =>
+  chats.length <= 1 ? chats.map(one => CHAT_NAMES[one]).join("") : `${chats.slice(0, -1).map(one => CHAT_NAMES[one]).join(", ")} or ${CHAT_NAMES[chats[chats.length - 1]!]}`;
 
 /** Every term in words — what the ceremony renders and the password
  * signs. The reversal sentence is verbatim from the chain (C1). */
@@ -253,7 +277,7 @@ export function modeWords(terms: ModeTerms): string[] {
     ...(terms.repairAuto
       ? ["historical automatic repair grants are retained on record but no longer schedule work"] : []),
     ...(terms.chatApprove
-      ? ["your paired Telegram chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password; a plan that widens permissions, exceeds the per-attempt cap above or touches protected paths still opens Toolroll"] : []),
+      ? [`your paired ${chatNames(chatApproveChatsOf(terms))} chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password; a plan that widens permissions, exceeds the per-attempt cap above or touches protected paths still opens Toolroll`] : []),
     `everything above ends at ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} — revoking it earlier is one click, and every act it covered falls back to its own ceremony`,
   ];
 }

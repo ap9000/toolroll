@@ -273,7 +273,7 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
     }
     if (periods.notifications !== null) {
       const deliveries = db.prepare("DELETE FROM notification_delivery WHERE notification = ?");
-      const outbound = db.prepare("DELETE FROM telegram_outbound_message WHERE notification = ?");
+      const outbound = db.prepare("DELETE FROM chat_message_ref WHERE notification = ?");
       const pushes = db.prepare("DELETE FROM push_delivery WHERE notification = ?");
       const notification = db.prepare("DELETE FROM notification WHERE id = ?");
       for (const one of plan.items.notifications) {

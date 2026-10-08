@@ -748,7 +748,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(edits).toHaveLength(1);
     expect(edits[0]?.params["text"]).toBe(script.texts().at(-1));
     expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Open task", url: `${ORIGIN}/chat?task=alpha-1` }]);
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_outbound_message WHERE task_id = 'alpha-1'").get()?.["n"]).toBe(3);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification' AND task_id = 'alpha-1'").get()?.["n"]).toBe(3);
   });
 
   test("a failed Telegram delivery stays pending for attention until it recovers", async () => {

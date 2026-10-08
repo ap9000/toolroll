@@ -13,6 +13,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { windChatsBack } from "../test/legacy-chat.js";
 import { openStore, openStoreNoMigrate, REVIEW_ROOT_ATTEMPTS, SCHEMA_VERSION, type Database, type Store } from "./store.js";
 import { storeEvidence } from "./evidence.js";
 import { register } from "./runner.js";
@@ -497,7 +498,7 @@ describe("schema 62 compatibility without manual refresh", () => {
     const root = mkdtempSync(join(tmpdir(), "refresh-migration-")), file = join(root, "test.db");
     try {
       let store = openStore(file); seed(store, join(root, "evidence"));
-      expect(SCHEMA_VERSION).toBe(114);
+      expect(SCHEMA_VERSION).toBe(116);
       expect(store.raw().prepare("PRAGMA table_info(run)").all().some(row => row["name"] === "review_refresh")).toBe(false);
       expect(store.raw().prepare("PRAGMA table_info(review_request)").all().some(row => row["name"] === "refresh_json")).toBe(false);
       // The retired schema-62 draft (a refresh request ledger, a second
@@ -520,6 +521,7 @@ describe("schema 62 compatibility without manual refresh", () => {
       // sentinel): no v61/v62 tables, no provenance columns, the v52 stop
       // audit — or to the deployed v61 shape, which keeps the v61 tables.
       const raw = new DatabaseSync(file);
+      windChatsBack(raw);
       for (const table of V62_TABLES) raw.exec(`DROP TABLE ${table}`);
       raw.exec("DROP TABLE run_stop");
       raw.exec(`CREATE TABLE run_stop (
@@ -537,7 +539,10 @@ describe("schema 62 compatibility without manual refresh", () => {
       raw.close();
       store = openStore(file);
       expect(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-      for (const table of [...V61_TABLES, ...V62_TABLES]) expect(store.raw().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+      // The Telegram tables moved into the shared chat tables (v114): none of their rows, and none of them, remain.
+      expect(store.raw().prepare("SELECT COUNT(*) AS n FROM notification_delivery").get()?.["n"]).toBe(0);
+      for (const table of ["chat_event", "chat_part", "chat_action", "chat_message_ref", "chat_runtime"]) expect(store.raw().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+      for (const table of [...V61_TABLES.slice(1), ...V62_TABLES]) expect(store.raw().prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table)).toBeUndefined();
       for (const column of V61_COLUMNS) expect(store.raw().prepare("PRAGMA table_info(notification)").all().some(row => row["name"] === column)).toBe(true);
       expect(String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE name = 'run_stop'").get()?.["sql"])).toContain("'cli','web','telegram'");
       tables.forEach((t, index) => expect(store.raw().prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()).toEqual(before[index]));

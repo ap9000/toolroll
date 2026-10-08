@@ -107,14 +107,15 @@ test('the statement reader names quiet columns, omitted tables and transaction b
 });
 
 test('cursor, wake and ordinary heartbeats stay quiet; real runner changes and revival invalidate', () => {
+  store.raw().prepare("INSERT INTO chat_runtime(provider,installation) VALUES ('telegram','bot')").run();
   runner(at(-160_000)); const before = revision.current();
   expect(revision.expiresAt(NOW)).toBe(NOW.getTime() + 20_000);
   expect(revision.expiresAt(new Date(at(20_000)))).toBe(NOW.getTime() + 20_000);
   store.setServiceCursor('other-maintenance', 4, NOW);
   store.raw().exec('UPDATE wake SET seq=seq+1');
-  store.raw().prepare("INSERT INTO telegram_retry(bot_id,next_attempt_at) VALUES ('bot',?)").run(at(5_000));
-  store.raw().prepare('UPDATE telegram_retry SET next_attempt_at=?').run(at(10_000));
-  store.raw().exec('DELETE FROM telegram_retry');
+  // A chat worker's rate-limit wait, lease renewal and poll cursor are its own bookkeeping.
+  store.raw().prepare("UPDATE chat_runtime SET retry_at=? WHERE provider='telegram'").run(at(5_000));
+  store.raw().prepare("UPDATE chat_runtime SET owner='worker', lease_until=?, generation=generation+1, cursor=cursor+1, heartbeat=? WHERE provider='telegram'").run(at(10_000), at(0));
   store.raw().prepare("UPDATE runner SET heartbeat_at=?").run(at(-150_000));
   expect(revision.current()).toBe(before);
   expect(revision.expiresAt(NOW)).toBe(NOW.getTime() + 30_000);

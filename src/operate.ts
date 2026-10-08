@@ -283,7 +283,7 @@ import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordina
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, profileFromJson, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
-import { presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
+import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
 import { worktreeAdoptionNotice } from "./worktree-notices.js";
@@ -6656,7 +6656,8 @@ async function modeCommand(
   // explicit flag lets an exhausted subscription switch to another account.
   if (flag(flags, "allow-paid-fallback")) terms.allowPaidFallback = true;
   // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
-  if (flag(flags, "chat-approve")) terms.chatApprove = true;
+  // The signature names every chat app it covers: a grant signed before that named Telegram alone, and stays so.
+  if (flag(flags, "chat-approve")) { terms.chatApprove = true; terms.chatApproveChats = CHAT_APPROVE_ALL; }
   // Automerge requires a live merge-capable grant on the repo (D1).
   if (terms.publication === "automerge" && !store.hasMergeCapableGrant(repo, now)) {
     return fail(write, json, "mode set", "no-grant", "automerge needs a merge-capable publication grant on this repo — file one first", EXIT.refused);

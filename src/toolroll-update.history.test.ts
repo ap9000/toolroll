@@ -119,3 +119,26 @@ test("v114's populated delivery columns may go only when legacy receipts carry e
   expect(transfer(carried().replace("'legacy:single-destination'", "'slack:abc'") + DROP)).toEqual(["notification", "notification_delivery"]);
   expect(transfer(carried())).toEqual(["notification_delivery"]);
 });
+
+test("v116: an old chat table may go only when every row arrived in the shared table, each fan-in source counted on its own", () => {
+  const OLD = `CREATE TABLE telegram_decision_message(binding INTEGER, chat_id TEXT, message_id TEXT, decision INTEGER, created_at TEXT);
+    CREATE TABLE telegram_outbound_message(binding INTEGER, chat_id TEXT, message_id TEXT, notification INTEGER, created_at TEXT);
+    CREATE TABLE slack_binding(id INTEGER PRIMARY KEY, member TEXT);
+    INSERT INTO telegram_decision_message VALUES(1,'c','m1',7,'t');
+    INSERT INTO telegram_outbound_message VALUES(1,'c','m2',1,'t'),(1,'c','m3',2,'t'),(1,'c','m4',2,'t');
+    INSERT INTO slack_binding VALUES(1,'U1')`;
+  const SHARED = `CREATE TABLE chat_message_ref(provider TEXT, binding INTEGER, chat TEXT, message TEXT, kind TEXT, notification INTEGER, decision INTEGER);
+    CREATE TABLE chat_binding(provider TEXT, id INTEGER, member TEXT);`;
+  const DROP = "DROP TABLE telegram_decision_message; DROP TABLE telegram_outbound_message; DROP TABLE slack_binding;";
+  const move = (copy: string) => { const db = saved(); try { db.exec(OLD); const before = historySnapshot(db); db.exec(SHARED + copy + DROP); return changedHistory(db, before); } finally { db.close(); } };
+  const decision = "INSERT INTO chat_message_ref VALUES('telegram',1,'c','m1','decision',NULL,7);";
+  const outbound = "INSERT INTO chat_message_ref SELECT 'telegram',binding,chat_id,message_id,'notification',notification,NULL FROM telegram_outbound_message;";
+  const slack = "INSERT INTO chat_binding SELECT 'slack',id,member FROM slack_binding;";
+  expect(move(decision + outbound + slack)).toEqual([]);
+  // A lost row, a row filed under the wrong app, or a fan-in source whose rows never arrived: each is refused.
+  expect(move(decision + outbound.replace("FROM telegram_outbound_message", "FROM telegram_outbound_message WHERE message_id <> 'm4'") + slack)).toEqual(["telegram_outbound_message"]);
+  expect(move(decision + outbound + slack.replace("'slack'", "'discord'"))).toEqual(["slack_binding"]);
+  expect(move(outbound + slack)).toEqual(["telegram_decision_message"]);
+  // A table with no rule still may not disappear.
+  expect(changes("DROP TABLE task")).toEqual(["task"]);
+});

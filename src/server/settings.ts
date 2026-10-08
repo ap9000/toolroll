@@ -75,7 +75,7 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
-import { MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
+import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
 import { monitoringChange,readMonitoring,saveMonitoring } from "../monitoring-settings.js";
 import { monitoringHtml,signingSecretHtml } from "../monitoring-ui.js";
 import { openRouterPickerScript } from "../openrouter-models.js";
@@ -105,7 +105,6 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { SlackState } from "../slack-state.js";
 import { spendCsv,spendHtml } from "../spend-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,teammateNames as teammateNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
@@ -1368,7 +1367,7 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     if (["connect","pair","unpair","disconnect","alerts"].some(action=>url.pathname===`/settings/slack/${action}`)) {
       const body = readForm(posted, CONSOLE_FORMS.slack);
       if (who.via !== "cookie" || who.role !== "approver" || restricted() || !options.configDir) return refuse(response,who,403,"An installation approver can connect Slack.","/settings");
-      const dir=options.configDir, state=new SlackState(store), action=url.pathname.split("/").at(-1);
+      const dir=options.configDir, state=new ChatState(store,"slack"), action=url.pathname.split("/").at(-1);
       const show=(problem:string,status=400)=>sendScreen(response,status,screen("Slack",slackSettingsHtml(store,dir,who.session.csrf,{problem,who:who.name}),{chrome:chromeFor(projectOf(who,request)??null,"settings")}));
       if ((["password","app-token","bot-token"] as const).some(key=>body.getAll(key).length>1)) return show("Submit one value for each field.");
       const credentials=loadSlackCredentials(dir);
@@ -1770,8 +1769,10 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
         // attempt cap it carries is meaningless without it.
         repairAuto: false,
         repairMaxAttempts: 0,
-        // Approving from the paired chat: only the explicit choice grants it.
+        // Approving from the paired chat: only the explicit choice grants it, naming every chat app it covers (a grant
+        // signed before it named them stays Telegram only).
         chatApprove: body.get("chat-approve") === "1",
+        ...(body.get("chat-approve") === "1" ? { chatApproveChats: CHAT_APPROVE_ALL } : {}),
         publication: body.get("publication") === "automerge" ? "automerge" : "notify",
       };
       if ((["review-auto", "review-retry-auto", "repair-auto"] as const).some(field => body.get(field) === "1")) {

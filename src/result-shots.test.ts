@@ -15,7 +15,6 @@ import { RETENTION_NOTE, storeEvidence } from "./evidence.js";
 import { bridgePass, hashPairingCode, mintPairingCode, multipartOf, PAIRING_TTL_MS, type TelegramTransport, type TelegramUpload } from "./telegram.js";
 import { resultShotLimit, resultShotsFor } from "./result-shots.js";
 import { ChatState, chatHash, type ChatContent } from "./chat-delivery-state.js";
-import { SlackState, slackHash } from "./slack-state.js";
 import { SlackError, type SlackApi } from "./slack-api.js";
 import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
 import { DISCORD_REFUSED, DiscordError, type DiscordApi } from "./discord-api.js";
@@ -343,7 +342,7 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
   const MEMBER = "UTEST", CHANNEL = "DTEST";
 
   function slack(refuse?: string, failPosts = 0) {
-    const state = new SlackState(store);
+    const state = new ChatState(store, "slack");
     const calls: { method: string; args: Record<string, unknown> }[] = [];
     let sent = 100;
     const api: SlackApi = async (method, args = {}) => {
@@ -364,7 +363,7 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
       current: () => true, origin: () => "https://console.example", clock: () => now, upload: vi.fn(async () => {}) };
     state.lease(SLACK_ID.installation, "test", now);
     const code = state.pairing(SLACK_ID.installation, "alex", store.accountOf("alex")!.generation, now);
-    state.pair(SLACK_ID, slackHash(code), MEMBER, CHANNEL, now);
+    state.pair(SLACK_ID, chatHash(code), MEMBER, CHANNEL, now);
     const drain = async () => { for (let i = 0; i < 30 && (await deliverSlackPart(options)); i++); };
     return { state, calls, options, drain };
   }
@@ -517,7 +516,7 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     expect(state.pair(identity, chatHash(code), "29:member-abcdefghij", "a:conversation-1", now)).not.toBeNull();
     await planTeamsNotifications({ store, identity, api: async () => ({}), owner: "test", current: () => true, readProjects: async () => [ALPHA],
       evidenceRoot: root, origin: () => "https://console.example", clock: () => now });
-    const parts = state.prepare("SELECT payload FROM chat_part").all().map(one => JSON.parse(String(one.payload)) as ChatContent);
+    const parts = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider").all().map(one => JSON.parse(String(one.payload)) as ChatContent);
     expect(parts.find(one => one.text.includes("Checked every page."))).toMatchObject({ link: { label: "Result", path: "/t/flow-slack" }, also: [{ label: "Card", path: "/flows/1?card=1" }] });
     expect(parts.filter(one => one.image !== undefined).map(one => one.text)).toEqual(["Is the site current? · the home page on a phone · 3 screenshots"]);
   });
@@ -532,7 +531,7 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     result("teams-1", THREE);
     await planTeamsNotifications({ store, identity, api: async () => ({}), owner: "test", current: () => true, readProjects: async () => [ALPHA],
       evidenceRoot: root, origin: () => "https://console.example", clock: () => now });
-    const shots = state.prepare("SELECT payload FROM chat_part").all().map(one => JSON.parse(String(one.payload)) as ChatContent).filter(one => one.image !== undefined);
+    const shots = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider").all().map(one => JSON.parse(String(one.payload)) as ChatContent).filter(one => one.image !== undefined);
     expect(shots).toHaveLength(1);
     expect(shots[0]!.text).toBe("Is the site current? · the home page on a phone · 3 screenshots");
   });

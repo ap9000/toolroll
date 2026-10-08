@@ -51,7 +51,7 @@ describe("the lasting setting", () => {
     on(alpha, { fullAccess: true, capMicrousd: null });
     expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: true, capMicrousd: null } });
     // No expiry: a month on, the same answer (a signed mode lasts at most seven days).
-    expect(chatApproveMode(store, alpha, "owner", new Date(NOW.getTime() + 30 * DAY))).toMatchObject({ ok: true, source: "setting" });
+    expect(chatApproveMode(store, alpha, "owner", new Date(NOW.getTime() + 30 * DAY), "slack")).toMatchObject({ ok: true, source: "setting" });
     expect(ledger()).toEqual([
       { actor: "owner", repo: null, action: "chat approval setting", outcome: "on", detail: "all projects · plans that ask for full access open in Toolroll · attempts up to $5.00 · via test" },
       { actor: "owner", repo: beta, action: "chat approval setting", outcome: "off", detail: "this project · via test" },
@@ -99,7 +99,7 @@ describe("the lasting setting", () => {
     const file = (extra: Partial<Parameters<typeof propose>[1]> = {}) => propose(store, { taskId: "plan-1", goal: "Refuse over-limit payouts.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now: NOW, ...extra });
     file();
-    const why = () => { const plan = planInChat(store, "plan-1", "owner", NOW); return plan.ok ? "in chat" : plan.why; };
+    const why = () => { const plan = planInChat(store, "plan-1", "owner", NOW, "slack"); return plan.ok ? "in chat" : plan.why; };
     expect(why()).toBe("Approving from chat isn't turned on for this project.");
     on(alpha, { fullAccess: false, capMicrousd: 1_000_000 });
     expect(why()).toBe("This plan has a $2.00 attempt limit, more than your chat approval limit of $1.00.");

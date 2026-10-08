@@ -742,7 +742,7 @@ function decideKeyboard(phoneOrigin: (() => string | null) | undefined, rows: re
 function decideOfferFor(store: Store, binding: TelegramBinding, target: DecideTarget | null | undefined, projects: readonly string[], now: Date, root?: string): DecideOffer | null {
   if (target === null || target === undefined) return null;
   const principal = verifyApproverStanding(store, binding.approver, binding.approverGeneration, telegramConversationRepos(store, binding.approver, projects));
-  return principal.ok ? decideOffer(store, target, principal.who, now, root, "telegram") : null;
+  return principal.ok ? decideOffer(store, target, principal.who, now, "telegram", root) : null;
 }
 
 /** Team-conversation traffic to the chats that follow one — after the outbox, under the same delivery switch, never a problem to raise when nothing follows anything. */
@@ -2534,10 +2534,10 @@ function noteDigestOf(note: string): string {
  * machine — "never silently answer without the expected note").
  */
 function expiredDraftGuard(store: Store, binding: TelegramBinding, decisionId: number, now: Date): boolean {
-  const expired = store.handle
+  const expired = store.telegramChat()
     .prepare(
-      `SELECT id FROM telegram_note_draft
-        WHERE binding = ? AND decision = ? AND state IN ('pending','armed') AND expires_at <= ?`,
+      `SELECT id FROM chat_note_draft
+        WHERE provider = :provider AND binding = ? AND decision = ? AND state IN ('pending','armed') AND expires <= ?`,
     )
     .get(binding.id, decisionId, now.toISOString());
   if (expired === undefined) return false;

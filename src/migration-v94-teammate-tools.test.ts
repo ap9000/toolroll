@@ -31,8 +31,8 @@ test.each([93, -93])("v%s: a teammate's questions carry over whole, and a visit 
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(114);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(114);
+  expect(SCHEMA_VERSION).toBe(116);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(116);
   expect(store.teammateQuestion(question)).toMatchObject({ state: "answered", question: "Refund all $200?", choice: "o1", toolCall: null });
   // A second question of its own on the same visit is still refused; an approval for a tool call is not.
   expect(store.openTeammateQuestion({ teammate: mate, card, entry: 1, question: "Again?", options: [], askedOf: "alex" }, now)).toBeNull();

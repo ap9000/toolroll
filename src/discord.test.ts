@@ -143,7 +143,7 @@ async function tap(
 function card() {
   const row = state
     .prepare(
-      "SELECT * FROM chat_part WHERE json_extract(payload,'$.proposal') IS NOT NULL ORDER BY id DESC LIMIT 1",
+      "SELECT * FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') IS NOT NULL ORDER BY id DESC LIMIT 1",
     )
     .get()!;
   return {
@@ -153,7 +153,7 @@ function card() {
     token: String(
       state
         .prepare(
-          "SELECT token FROM chat_action WHERE part=? AND phase='confirm' AND consumed IS NULL",
+          "SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='confirm' AND consumed IS NULL",
         )
         .get(Number(row.id))?.token,
     ),
@@ -200,15 +200,15 @@ test.each([
   ['{"text":42}', "text:"], ["not JSON", "payload:"], ['{"version":2,"text":"Later version"}', "version:"],
 ])("an unreadable saved part stops retrying and keeps its problem: %s", async (payload, path) => {
   const event = plan([{ text: "Saved reply" }]);
-  state.prepare("UPDATE chat_part SET payload=? WHERE event=?").run(payload, event);
+  state.prepare("UPDATE chat_part SET payload=? WHERE provider=:provider AND event=?").run(payload, event);
   expect(await deliverDiscordPart(options)).toBe(true);
-  const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event);
+  const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event=?").get(event);
   expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
   expect(sends()).toEqual([]);
   now = new Date(now.getTime() + 60_000);
   state.lease(ID.installation, "test", now);
   expect(await deliverDiscordPart(options)).toBe(false);
-  expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event=?").get(event)).toEqual(row);
+  expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event=?").get(event)).toEqual(row);
 });
 
 function plan(parts: ChatContent[]) {
@@ -393,7 +393,7 @@ test("pairing is one use, hashed, private and bound to the current account", asy
   );
   expect(receive(`pair ${code}`)).toBe(true);
   expect(
-    JSON.stringify(state.prepare("SELECT * FROM chat_event").all()),
+    JSON.stringify(state.prepare("SELECT * FROM chat_event WHERE provider=:provider").all()),
   ).not.toContain(code);
   await processDiscordEvent(options);
   await drain();
@@ -471,7 +471,7 @@ test("replayed DM creates one model turn and lost send receipt reconciles by non
   };
   await deliverDiscordPart(options);
   state
-    .prepare("UPDATE chat_part SET payload=?")
+    .prepare("UPDATE chat_part SET payload=? WHERE provider=:provider")
     .run(JSON.stringify({ text: "Updated while delivery was uncertain" }));
   now = new Date(now.getTime() + 6000);
   state.lease(ID.installation, "test", now);
@@ -482,7 +482,7 @@ test("replayed DM creates one model turn and lost send receipt reconciles by non
   expect(sends().filter((c) => c.method === "POST")).toHaveLength(1);
   expect(sends().at(-1)?.method).toBe("PATCH");
   expect(sentText()).toContain("Updated while delivery was uncertain");
-  expect(state.prepare("SELECT state FROM chat_part").get()?.state).toBe(
+  expect(state.prepare("SELECT state FROM chat_part WHERE provider=:provider").get()?.state).toBe(
     "sent",
   );
 });
@@ -521,7 +521,7 @@ test("knowledge proposals confirm once and edit the same message with Discord au
   await tap(c.token, c.message);
   expect(knowledgeView(store, repo, "alex").revision).toBe(1);
   expect(
-    JSON.stringify(state.prepare("SELECT payload FROM chat_event").all()),
+    JSON.stringify(state.prepare("SELECT payload FROM chat_event WHERE provider=:provider").all()),
   ).not.toContain("interaction-credential");
 });
 test.each([
@@ -651,7 +651,7 @@ test("irreversible answers need a second confirmation and record Discord", async
   const yes = String(
     state
       .prepare(
-        "SELECT token FROM chat_action WHERE part=? AND phase='yes' AND consumed IS NULL",
+        "SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL",
       )
       .get(c.id)?.token,
   );
@@ -723,7 +723,7 @@ test("progress edits one message; switching primary excludes pending notices but
   options.canNotify = () => true;
   await drain();
   expect(sends().at(-1)?.method).toBe("PATCH");
-  expect(state.prepare("SELECT count(*) n FROM chat_progress").get()?.n).toBe(
+  expect(state.prepare("SELECT count(*) n FROM chat_progress WHERE provider=:provider").get()?.n).toBe(
     1,
   );
 });
@@ -741,7 +741,7 @@ test("incoming attachments are explained without a provider call; rate limits an
   };
   await deliverDiscordPart(options);
   expect(
-    state.prepare("SELECT retry_at FROM chat_runtime").get()?.retry_at,
+    state.prepare("SELECT retry_at FROM chat_runtime WHERE provider=:provider").get()?.retry_at,
   ).toBe(new Date(now.getTime() + 123000).toISOString());
   state.revoke(ID.installation, now);
   options.api = api;
@@ -885,7 +885,7 @@ test("HTTP setup requires CSRF, same origin and password and never echoes the to
 
 test("Gateway validates READY and persists a button before acknowledging without storing its token", async () => {
   saveDiscordCredentials(dir, { ...ID, botToken: TOKEN });
-  state.prepare("UPDATE chat_runtime SET owner=NULL,lease_until=NULL").run();
+  state.prepare("UPDATE chat_runtime SET owner=NULL,lease_until=NULL WHERE provider=:provider").run();
   const controller = new AbortController(),
     raw = interaction("a".repeat(32), snow());
   vi.spyOn(Client.prototype, "login").mockImplementation(async function () {
@@ -898,7 +898,7 @@ test("Gateway validates READY and persists a button before acknowledging without
   });
   const wire = vi.fn(async (url: unknown, init: RequestInit) => {
     expect(String(url)).toContain("/callback");
-    expect(state.prepare("SELECT kind FROM chat_event").get()?.kind).toBe(
+    expect(state.prepare("SELECT kind FROM chat_event WHERE provider=:provider").get()?.kind).toBe(
       "action",
     );
     expect(JSON.parse(String(init.body))).toEqual({ type: 6 });
@@ -914,7 +914,7 @@ test("Gateway validates READY and persists a button before acknowledging without
   });
   expect(wire).toHaveBeenCalledTimes(1);
   expect(
-    JSON.stringify(state.prepare("SELECT payload FROM chat_event").all()),
+    JSON.stringify(state.prepare("SELECT payload FROM chat_event WHERE provider=:provider").all()),
   ).not.toContain(raw.token);
 });
 
@@ -969,7 +969,7 @@ test("a recovered screenshot remains one upload when its repaint receipt is also
   await drain();
   expect(sends().filter((c) => c.file)).toHaveLength(1);
   expect(sends().filter((c) => c.method === "POST")).toHaveLength(1);
-  expect(state.prepare("SELECT state FROM chat_part").get()?.state).toBe(
+  expect(state.prepare("SELECT state FROM chat_part WHERE provider=:provider").get()?.state).toBe(
     "sent",
   );
 });
@@ -978,7 +978,7 @@ test("a reply to a result message carries its exact saved result into the shared
   plan([{ text: "Result is ready", task: "sample", run }]);
   await drain();
   const parent = String(
-    state.prepare("SELECT message FROM chat_part").get()?.message,
+    state.prepare("SELECT message FROM chat_part WHERE provider=:provider").get()?.message,
   );
   answers.push({ text: "I am reviewing this exact result." });
   receive("What needs changing?", {
@@ -1057,7 +1057,7 @@ test("mark complete confirms behind a second tap in Discord and records the assi
   expect(sentText()).toContain("This records that you handled this exact result. Confirm?");
   expect(JSON.stringify(sends().at(-1)?.body.components)).toContain("Yes, accept and finish");
   expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))?.state).toBe("ready-to-check");
-  const yes = state.prepare("SELECT token FROM chat_action WHERE part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
+  const yes = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
   await tap(String(yes.token), c.message);
   expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
   expect(store.proofAcceptance(run)).toBeNull();
@@ -1125,7 +1125,7 @@ test("a flow decision in Discord: the draft with Approve / Edit / Send back, Edi
   await drain();
   type Button = { label: string; custom_id?: string; style: number };
   const buttonsOf = (call: { body: Record<string, unknown> }) => ((call.body.components as Array<{ components: Button[] }>)[0]?.components ?? []);
-  const flowPart = () => state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.flow') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
+  const flowPart = () => state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.flow') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
   const notice = sends().at(-1)!;
   expect(sentText()).toContain("Hi Priya,\\nwe refunded it.");
   const first = buttonsOf(notice);
@@ -1162,8 +1162,8 @@ test("a flow choice in Discord: the flow's own options as buttons, a reply to th
   ], null)) }, now);
   type Button = { label: string; custom_id?: string; style: number };
   const buttonsOf = (call: { body: Record<string, unknown> }) => ((call.body.components as Array<{ components: Button[] }>)[0]?.components ?? []);
-  const choicePart = () => String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
-  const notePart = () => String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+  const choicePart = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+  const notePart = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
   const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
   advanceFlows(store, repo, now);
   await planDiscordNotifications(options);
@@ -1259,7 +1259,7 @@ test("the lead's question arrives as buttons with Something else, and a tap is t
   expect(sentText()).toContain("Ship it today or Friday?");
   const buttons = buttonsOf(sends().at(-1)!);
   expect(buttons.map(one => one.label)).toEqual(["Today", "Friday", "Something else"]);
-  const askId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+  const askId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
   answers.push({ text: "Friday it is." });
   await tap(buttons[1]!.custom_id!.slice(3), askId);
   expect(sentText()).toContain("You chose: Friday");

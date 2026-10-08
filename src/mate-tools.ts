@@ -548,7 +548,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     description: "When the owner asks to approve one thing (a plan waiting on them, or a flow card waiting at a Person decides step), send that item's own Approve and Send back buttons to their paired chat right away. Their tap there is the approval (two taps, as on any decision card); you never approve. Give task for a plan, or card for a flow card (its number from get_flows). When it can't be approved in chat, the answer says why: say that in one line and open show_control approval (a plan) or the flow, never that you can't approve.",
     handle: (ctx, args) => {
       const pairedHere = ctx.channel === "telegram";
-      const paired = ctx.store.handle.prepare("SELECT 1 FROM telegram_binding WHERE approver = ? AND approver_generation = ? AND revoked_at IS NULL LIMIT 1")
+      const paired = ctx.store.handle.prepare("SELECT 1 FROM chat_binding WHERE provider = 'telegram' AND approver = ? AND generation = ? AND revoked IS NULL LIMIT 1")
         .get(ctx.who.name, ctx.store.accountOf(ctx.who.name)?.generation ?? -1) !== undefined;
       const stamp = ctx.now.getTime();
       if (args["card"] !== undefined) {
@@ -569,7 +569,8 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const task = taskIdOf(args);
       if (task === null || admittedRef(ctx, task) === null) return notFound();
       const current = ctx.store.taskFamilyOf(task, ctx.who.repos, false)?.current.id ?? task;
-      const plan = planInChat(ctx.store, current, ctx.who.name, ctx.now, ctx.evidenceRoot);
+      // Its buttons go to the paired Telegram chat (pairedHere), so it is that chat's authority that counts.
+      const plan = planInChat(ctx.store, current, ctx.who.name, ctx.now, "telegram", ctx.evidenceRoot);
       if (!plan.ok) return { ok: true, body: { offered: false, task: current, why: plan.why, control: "approval" } };
       if (!pairedHere || !paired) return { ok: true, body: { offered: false, task: current, why: pairedHere ? "Your chat isn't paired for decisions." : "Buttons go to your paired chat; here, approve it on its card.", control: "approval" } };
       ctx.store.enqueueNotification({ dedupeKey: `plan-ready:${current}:ask:${stamp}`, kind: "plan-ready", recipient: ctx.who.name, subject: `${current}: plan ready for review`,

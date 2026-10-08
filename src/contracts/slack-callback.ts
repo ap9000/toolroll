@@ -7,13 +7,14 @@
 
 import { z } from "zod";
 import { parseContract, type ContractResult } from "./contract.js";
+import { CHAT_BUTTON_TOKEN } from "./chat-content.js";
 
 /** Toolroll's buttons: toolroll_* since the rename; standing_orders_* buttons on older messages still work. */
-export const SLACK_BUTTON_ACTION = /^(?:toolroll|standing_orders)_(?:confirm|dismiss|yes|cancel|flow_approve|flow_edit|flow_send_back|flow_choose_[0-3]|flow_note_(?:yes|no)|question_choice|question_words)$/;
+export const SLACK_BUTTON_ACTION = /^(?:toolroll|standing_orders)_(?:confirm|dismiss|yes|cancel|flow_approve|flow_edit|flow_send_back|flow_choose_[0-3]|flow_note_(?:yes|no)|question_choice|question_words|decide_[0-9]{1,2})$/;
 /** A link button opens its page in Slack's own client; Slack still reports the tap, and there is nothing to do. */
 export const SLACK_LINK_ACTION = /^(?:toolroll|standing_orders)_link(?:_[0-9]+)?$/;
 
-const token = z.string().regex(/^[a-f0-9]{32}$/, { error: "must be a Toolroll button token" });
+const token = z.string().regex(CHAT_BUTTON_TOKEN, { error: "must be a Toolroll button token" });
 
 /** The interaction around a tap: who, and the message the button is on. */
 export const slackBlockActionsSchema = z.object({

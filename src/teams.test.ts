@@ -76,15 +76,15 @@ describe("Teams shared chat", () => {
     const binding = pairAs("alex", ALEX, DM_ALEX)!;
     state.enqueue({ id: "bad-part", installation: credentials.installation, binding: binding.id, kind: "notice", channel: DM_ALEX, member: ALEX, ts: "", thread: "", payload: {}, created: now.toISOString() });
     state.plan("bad-part", [{ text: "Saved reply" }], now);
-    state.prepare("UPDATE chat_part SET payload=? WHERE event='bad-part'").run(payload);
+    state.prepare("UPDATE chat_part SET payload=? WHERE provider=:provider AND event='bad-part'").run(payload);
     expect(await deliverTeamsPart(options)).toBe(true);
-    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get();
+    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get();
     expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
     expect(sends()).toEqual([]);
     now = new Date(now.getTime() + 60_000);
     state.lease(credentials.installation, "test", now);
     expect(await deliverTeamsPart(options)).toBe(false);
-    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get()).toEqual(row);
+    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get()).toEqual(row);
   });
 
   /** A pending card on alex's own Teams thread, planned as a part, without a model turn. */
@@ -149,13 +149,13 @@ describe("Teams shared chat", () => {
       expect((await post(token({ aud: "other" }), activity(DM_ALEX, ALEX, "hello"))).status).toBe(401);
       const code = state.pairing(credentials.installation, "alex", store.accountOf("alex")!.generation, now);
       expect((await post(token({}), activity(DM_ALEX, ALEX, `pair ${code}`))).status).toBe(200);
-      const events = state.prepare("SELECT * FROM chat_event").all();
+      const events = state.prepare("SELECT * FROM chat_event WHERE provider=:provider").all();
       expect(events).toHaveLength(1);
       expect(JSON.stringify(events)).not.toContain(code);
       expect(JSON.stringify(events)).not.toContain("Bearer");
       // A token whose service URL differs from the activity's is refused.
       expect((await post(token({ serviceurl: "https://other.example/" }), activity(DM_ALEX, ALEX, "hello"))).status).toBe(200);
-      expect(state.prepare("SELECT count(*) n FROM chat_event").get()?.n).toBe(1);
+      expect(state.prepare("SELECT count(*) n FROM chat_event WHERE provider=:provider").get()?.n).toBe(1);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
@@ -180,14 +180,14 @@ describe("Teams shared chat", () => {
       const tenantDenied = await post("203.0.113.99", auth, body);
       expect(tenantDenied.status).toBe(429);
       expect(tenantDenied.headers.get("retry-after")).toBe("60");
-      expect(state.prepare("SELECT * FROM chat_event").all()).toEqual([]);
+      expect(state.prepare("SELECT * FROM chat_event WHERE provider=:provider").all()).toEqual([]);
       // A different configured tenant has independent admission; body tenant claims never choose a budget.
       saveTeamsCredentials(dir, { ...credentials, ...teamsIdentity(APP, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), tenant: "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
       expect((await post("203.0.113.99", auth)).status).toBe(400);
       saveTeamsCredentials(dir, credentials);
       at += 61_000;
       expect((await post("203.0.113.1", auth, body)).status).toBe(200);
-      expect(state.prepare("SELECT * FROM chat_event").all()).toHaveLength(1);
+      expect(state.prepare("SELECT * FROM chat_event WHERE provider=:provider").all()).toHaveLength(1);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
@@ -224,7 +224,7 @@ describe("Teams shared chat", () => {
     await drain();
     expect(lastText()).toContain("Accept and finish: Clear Teams progress");
     const confirm = lastActions().find(action => action.title === "Confirm")!;
-    const cardId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.proposal')=?").get(proposal)?.message);
+    const cardId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal')=?").get(proposal)?.message);
     const tap = (data: Record<string, unknown>) => receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: data });
     // A button whose data Toolroll didn't make is answered with why; a stale one says so; neither does anything.
     expect(tap({ so: "not-a-token" })).toBe(true);
@@ -334,7 +334,7 @@ describe("Teams shared chat", () => {
     expect(lastText()).toContain("Which customers first?");
     expect(lastActions().map(action => action["title"])).toEqual(["Paid", "Trial", "All", "Something else"]);
     const paid = lastActions()[0] as { data: Record<string, unknown> };
-    const askId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.ask') IS NOT NULL").get()?.message);
+    const askId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.ask') IS NOT NULL").get()?.message);
     answers.push({ text: "Paid customers first." });
     expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: askId, value: paid.data })).toBe(true);
     await processTeamsEvent(options); await drain();
@@ -362,7 +362,7 @@ describe("Teams shared chat", () => {
     expect(lastText()).toContain("We refunded it.");
     expect(lastActions().map(action => action["title"])).toEqual(["Approve", "Edit", "Send back", "Open"]);
     const back = lastActions().find(action => action["title"] === "Send back") as { data: Record<string, unknown> };
-    const cardId = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.flow') IS NOT NULL").get()?.message);
+    const cardId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.flow') IS NOT NULL").get()?.message);
     expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: back.data })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("Your next message here is the note");
@@ -403,7 +403,7 @@ describe("Teams shared chat", () => {
       { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
       { id: "ship", title: "Ship", kind: "inbox" },
     ], null)) }, now);
-    const choiceCard = () => String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
+    const choiceCard = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
     const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options); await drain();
@@ -426,13 +426,13 @@ describe("Teams shared chat", () => {
     expect(lastActions().map(action => action["title"])).toEqual(["Yes", "No"]);
     expect(store.getFlowCard(second)).toMatchObject({ stage: "choose" });
     const yes = lastActions().find(action => action["title"] === "Yes") as { data: Record<string, unknown> };
-    const asked = String(state.prepare("SELECT message FROM chat_part WHERE json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
+    const asked = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
     expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: asked, value: yes.data })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(store.getFlowCard(second)).toMatchObject({ stage: "build", note: "Use 16px, not 12px." });
     expect(sends().some(call => call.method === "PUT" && JSON.stringify(call.body).includes("↩️ Sent to Build with your note."))).toBe(true);
     // Its words aren't kept once answered.
-    expect(state.prepare("SELECT count(*) AS n FROM chat_flow_note WHERE words IS NOT NULL").get()?.n).toBe(0);
+    expect(state.prepare("SELECT count(*) AS n FROM chat_flow_note WHERE provider=:provider AND words IS NOT NULL").get()?.n).toBe(0);
     expect(store.flowEvents(second).at(-1)).toMatchObject({ outcome: "sent-back", actor: "alex" });
   });
 });

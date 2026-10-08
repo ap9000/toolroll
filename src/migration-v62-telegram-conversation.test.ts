@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { addLegacyChatTables } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { register } from "./runner.js";
@@ -28,6 +29,7 @@ describe("v62 Telegram conversation queue", () => {
   /** A v61-shaped file holding one real stop: the v52 audit CHECK, no v62 tables, version 61. */
   const windBack = (file: string, version: number): Record<string, unknown>[] => {
     const old = new DatabaseSync(file);
+    addLegacyChatTables(old);
     for (const table of tables) old.exec(`DROP TABLE ${table}`);
     const stops = old.prepare("SELECT * FROM run_stop ORDER BY run").all() as Record<string, unknown>[];
     old.exec("DROP TABLE run_stop");
@@ -66,11 +68,12 @@ describe("v62 Telegram conversation queue", () => {
     expect(before).toHaveLength(1);
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(116);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(store.handle.prepare("SELECT * FROM run_stop ORDER BY run").all()).toEqual(before);
     expect(String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'run_stop'").get()?.["sql"])).toContain("'cli','web','telegram'");
-    for (const table of tables) expect(store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+    // The queue, its parts and its buttons now live in the shared chat tables (v114): still none.
+    for (const table of ["chat_event", "chat_part", "chat_action"]) expect(store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE provider = 'telegram'`).get()?.["n"]).toBe(0);
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     // The widened audit is real: a second stop on another run names the phone.
     expect(() => store!.handle.prepare("INSERT INTO run_stop (run, task_ref, requested_by, requested_via, requested_at) VALUES (?, ?, 'alex', 'telegram', ?)").run(run + 1, ref, NOW.toISOString())).toThrow(/FOREIGN KEY|constraint/);
@@ -79,11 +82,11 @@ describe("v62 Telegram conversation queue", () => {
     expect(store.handle.prepare("SELECT * FROM run_stop ORDER BY run").all()).toEqual(before);
   });
 
-  test("a current database missing the conversation queue fails closed instead of recreating it", () => {
+  test("a v113 database missing the conversation queue fails closed instead of recreating it", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v62-missing-"));
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
-    const db = new DatabaseSync(file); db.exec("DROP TABLE telegram_conversation"); db.close();
+    const db = new DatabaseSync(file); addLegacyChatTables(db); db.exec("DROP TABLE telegram_conversation; UPDATE schema_version SET version = 113"); db.close();
     expect(() => openStore(file)).toThrow("Telegram conversation history is missing");
   });
 
@@ -92,6 +95,7 @@ describe("v62 Telegram conversation queue", () => {
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
     const db = new DatabaseSync(file);
+    addLegacyChatTables(db);
     for (const table of tables) db.exec(`DROP TABLE ${table}`);
     db.exec("DROP TABLE run_stop");
     // Every column of v52, but a CHECK list no build ever wrote: plausible, and unknown.
