@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveConsoleUrl, loadConsoleUrl, effectivePrimary, savePrimary, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
+import { loadWebhookTargets, activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, saveConsoleUrl, loadConsoleUrl, effectivePrimary, savePrimary, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
 import { saveSlackCredentials, slackCredentialFile } from "./slack-api.js";
 
 describe("the primary — one service pages, chosen or sensibly implied", () => {
@@ -39,9 +39,9 @@ describe("the primary — one service pages, chosen or sensibly implied", () => 
     expect(effectivePrimary({}, dir, true)).toMatchObject({ channel: "telegram" });
   });
 
-  test("a leftover notification-only webhook URL is not a connected service", () => {
+  test("legacy notification-only settings remain selectable for this release", () => {
     writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/T/B/x\n", { mode: 0o600 });
-    expect(effectivePrimary({ TOOLROLL_DISCORD_WEBHOOK: "https://discord.com/api/webhooks/1/y" }, dir, false)).toEqual({ channel: null, implicit: false, configured: [] });
+    expect(effectivePrimary({ TOOLROLL_DISCORD_WEBHOOK: "https://discord.com/api/webhooks/1/y" }, dir, false)).toEqual({ channel: "slack", implicit: true, configured: ["slack", "discord"], legacyWarning: LEGACY_WEBHOOK_WARNING });
   });
 
   test("the console URL saves normalized", () => {
@@ -112,4 +112,41 @@ describe("the phone origin: the same console-url setting, held to an https origi
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+
+test("legacy discovery, destination receipts, retry and adapter suppression", async () => {
+  const { openStore } = await import("./store.js");
+  const dir = mkdtempSync(join(tmpdir(), "standing-orders-legacy-webhooks-")), store = openStore(":memory:");
+  const now = new Date("2026-10-08T00:00:00Z");
+  try {
+    writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/file-secret");
+    writeFileSync(join(dir, "discord-webhook"), "https://discord.com/api/webhooks/file-secret");
+    const env = { TOOLROLL_SLACK_WEBHOOK: "https://hooks.slack.com/services/env-secret" };
+    const targets = loadWebhookTargets(env, dir);
+    expect(targets.map(t => t.url)).toEqual([env.TOOLROLL_SLACK_WEBHOOK, "https://discord.com/api/webhooks/file-secret"]);
+    expect(activeWebhookTargets(env, dir, "telegram")).toEqual([]);
+    expect(activeWebhookTargets(env, dir, "slack")).toEqual([targets[0]]);
+    saveSlackCredentials(dir, { team: "T0", app: "A0", bot: "B0", installation: "I0", workspace: "w", appToken: "xapp-fixture", botToken: "xoxb-fixture" });
+    expect(activeWebhookTargets(env, dir, "slack")).toEqual([]);
+    store.enqueueNotification({ source: { installation: true }, dedupeKey: "legacy", kind: "test", subject: "Plan ready", body: "Review the saved plan." }, now);
+    store.enqueueNotification({ source: { installation: true }, dedupeKey: "resolved", kind: "test", subject: "Resolved", body: "Done" }, now);
+    const [first, resolved] = store.listNotifications().map(row => row.id);
+    store.resolveEpisode("resolved", now);
+    let failed = true;
+    const requests: string[] = [];
+    const fetcher = (async (url: string | URL | Request) => { requests.push(String(url)); if (String(url).includes("discord") && failed) throw Error(String(url)); return new Response("ok"); }) as typeof fetch;
+    const pass = () => webhookPass(store, { targets, consoleUrl: null, fetcher, clock: () => now });
+    expect(await pass()).toEqual({ sent: 1, problems: [`notification ${first}: discord delivery failed`] });
+    failed = false;
+    expect(await pass()).toEqual({ sent: 1, problems: [] });
+    expect(await pass()).toEqual({ sent: 0, problems: [] });
+    expect(requests).toHaveLength(3);
+    const rows = store.handle.prepare("SELECT notification, destination, attempts, delivered_at, last_error FROM notification_delivery ORDER BY destination").all();
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row["notification"] === first && row["notification"] !== resolved && row["delivered_at"] !== null)).toBe(true);
+    expect(rows.map(row => row["attempts"])).toEqual([2, 1]);
+    expect(JSON.stringify(rows)).not.toContain("secret");
+    expect(store.handle.prepare("SELECT name FROM pragma_table_info('notification') WHERE name = 'delivered_at'").all()).toEqual([]);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1697,7 +1697,7 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
         const existing = loadBotToken({}, options.telegramTokenFile);
         const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
         const csrf = who.via === "cookie" ? who.session.csrf : "";
-        return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : defaultProject, "settings"), existing, hasEnv, csrf, saved.message, null, null, null, null, {
+        return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
           ...store.permissionDefault(),
           canManage: who.role === "approver",
         }));

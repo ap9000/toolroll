@@ -1,3 +1,4 @@
+import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
 import { checkPublicCommand } from "./public-check.js";
@@ -116,7 +117,7 @@ import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectR
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync, mkdirSync } from "node:fs";
-import { BRANCH_PREFIX, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
+import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
 import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -311,7 +312,7 @@ import { isRiskLevel, isTaskSize, legOf, projectRoute, riskConsequence, routeDig
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
+import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import { recognizesEligible } from "./exhaustion.js";
@@ -768,6 +769,7 @@ The outbox — facts that want a person, durably
                                         the first time you add a second)
   toolroll webhook status
   toolroll outbox list [--all]          pending facts (--all: resolved too)
+  toolroll outbox deliver --cmd <cmd>   deliver through an operator command
 
 Runners — the machines that may be given work
   toolroll runner register <name> [--capacity <n>] [--token-file <path>]
@@ -8740,6 +8742,7 @@ async function runWatchLoop(args: {
   let lastTick = 0;
   let lastBridge = 0;
   let lastPush = 0;
+  let lastWebhook = 0;
   let ticks = 0;
   let built = 0;
   let brokeCount = 0;
@@ -9020,6 +9023,14 @@ async function runWatchLoop(args: {
         }
       }
 
+      if (now - lastWebhook >= bridgeEveryMs) {
+        lastWebhook = now;
+        const dir = dirname(context.databaseFile);
+        const primary = effectivePrimary(process.env, dir, loadBotToken(process.env, context.telegramTokenFile) !== null);
+        const targets = activeWebhookTargets(process.env, dir, primary.channel);
+        if (targets.length > 0) await webhookPass(store, { targets, consoleUrl: loadConsoleUrl(process.env, dir), clock: context.clock });
+      }
+
       // The embedded follower owns the wire while it lives; the timer-driven
       // pass is the fallback shape for a watch started before a token existed.
       if (follower === null && now - lastBridge >= bridgeEveryMs) {
@@ -9031,6 +9042,7 @@ async function runWatchLoop(args: {
         // replies even when another service is primary: answering is its
         // job whether or not paging is.
         const primary = effectivePrimary(process.env, dir, source !== null);
+
         if (source !== null) {
           quiet.length = 0;
           await bridgeCommand(
@@ -9057,6 +9069,7 @@ async function runWatchLoop(args: {
         Math.min(
           lastTick + tickEveryMs,
           lastBridge + bridgeEveryMs,
+          lastWebhook + bridgeEveryMs,
           deadline ?? Number.MAX_SAFE_INTEGER,
         ) - Date.now();
       // Doze for the WHOLE idle window, waking early only for a signal or a
@@ -10822,15 +10835,15 @@ async function peekCommand(
 
 /**
  * `toolroll outbox list [--all]` — read the durable outbox: the facts that
- * want a person, pending until resolved. Delivery happens per destination
- * (chats, phone push), never from here.
+ * want a person, pending until resolved. An operator command can also deliver
+ * them with its own destination receipts.
  */
 async function outboxCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
 ): Promise<number> {
-  const { store, write, json } = context;
+  const { store, write, json, clock } = context;
   const [action] = positional;
 
   if (action === "list" || action === undefined) {
@@ -10851,7 +10864,66 @@ async function outboxCommand(
     return EXIT.ok;
   }
 
-  return fail(write, json, "outbox", "usage", `unknown \`outbox ${action}\` — try list`, EXIT.usage);
+  if (action === "deliver") {
+    const demoFence = refuseDemo(context, "outbox deliver");
+    if (demoFence !== null) return demoFence;
+    const command = text(flags, "cmd");
+    if (command === undefined) {
+      return fail(write, json, "outbox deliver", "usage", "--cmd says how: it runs once per notification, reading $TOOLROLL_KIND, $TOOLROLL_SUBJECT, $TOOLROLL_BODY", EXIT.usage);
+    }
+
+    // The exact command owns a leased destination receipt, including across concurrent CLI invocations.
+    const owner = `outbox-${randomUUID()}`;
+    // Push delivery has independent receipts and must keep working if this command fails.
+    let pushed = 0;
+    try {
+      pushed = (await pushPass(store, { configDir: dirname(context.databaseFile), clock })).accepted;
+    } catch {
+      // additive; the shell delivery below still runs
+    }
+    const pending = claimNotifications(store, notificationDestination("command", command), owner, clock());
+    if (pending.length === 0) {
+      return succeed(write, json, "outbox deliver", { delivered: 0, failed: 0, pushed }, () => [
+        pushed > 0 ? `Nothing for the shell command; ${pushed} push(es) accepted.` : "Nothing waiting to be delivered.",
+      ]);
+    }
+
+    let delivered = 0;
+    let failed = 0;
+    for (const one of pending) {
+      if (!notificationClaimHeld(store, one, owner, clock())) { failed++; continue; }
+      const sent = await run("sh", ["-lc", command], {
+        timeoutMs: 30_000,
+        env: {
+          ...envTwins("KIND", one.kind),
+          ...envTwins("SUBJECT", one.subject),
+          ...envTwins("BODY", one.body),
+          ...envTwins("DEDUPE_KEY", one.dedupeKey),
+        },
+      });
+      if (sent.code === 0) {
+        const receipt = sent.stdout.split("\n")[0]?.trim() ?? "";
+        if (finalizeNotification(store, one, owner, { ok: true, receipt: receipt === "" ? null : receipt }, clock())) delivered++;
+        else failed++;
+      } else {
+        const error = sent.timedOut
+          ? "timed out"
+          : sent.stderr.split("\n")[0]?.trim() || `exit ${sent.code}`;
+        finalizeNotification(store, one, owner, { ok: false, error }, clock());
+        failed++;
+      }
+    }
+
+    const code = failed > 0 ? EXIT.failed : EXIT.ok;
+    if (json) {
+      write(envelopeJson({ ok: failed === 0, command: "outbox deliver", delivered, failed }));
+      return code;
+    }
+    write(`Delivered ${delivered}, failed ${failed}.`);
+    return code;
+  }
+
+  return fail(write, json, "outbox", "usage", `unknown \`outbox ${action}\` — try list, deliver`, EXIT.usage);
 }
 
 // ---- write access ---------------------------------------------------------
@@ -11101,6 +11173,7 @@ async function statusCommand(
   // An update waiting, on what, and the action: before anything else, as it holds up new work.
   const waiting = waitingUpdate(context.databaseFile, run => context.store.stopQuiescenceProblem(run) !== null, context.clock());
   const updateWaiting = waiting === null ? {} : { updateWaiting: { app: waiting.app, version: waiting.version, stopped: waiting.stopped, run: waiting.run, on: waiting.on, action: waiting.action } };
+  const legacyWebhookWarning = loadWebhookTargets(process.env, dirname(context.databaseFile)).length > 0 ? LEGACY_WEBHOOK_WARNING : null;
   const projects = projectBuildsStatus(context);
   const projectsLine = projects.length === 0 ? null
     : `Builds by project: ${projects.slice(0, 8).map(one => `${one.name} ${one.running} of ${one.limit}`).join(", ")}${projects.length > 8 ? ", …" : ""}`;
@@ -11108,7 +11181,7 @@ async function statusCommand(
   const unsent = context.store.unsentTelegramReplies(null, null, new Date(context.clock().getTime() - UNSENT_REPLY_MS));
   const unsentLine = unsentRepliesLine(unsent);
   const unsentReplies = unsent.length === 0 ? {} : { unsentReplies: unsent.map(one => ({ ...one, retry: "toolroll bridge telegram retry" })) };
-  return succeed(context.write, context.json, command, { ...status, projects, ...update, ...integrations, ...updateWaiting, ...unsentReplies }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine])]);
+  return succeed(context.write, context.json, command, { ...status, projects, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
 function unsentRepliesLine(unsent: readonly { since: string; error: string | null }[]): string | null {

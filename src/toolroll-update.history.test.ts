@@ -85,3 +85,17 @@ test("v114 run_process compaction passes only when the summary accounts for ever
     expect(changedHistory(db, before)).toEqual(["run_process", "run_process_summary"]);
   } finally { db.close(); }
 });
+
+
+test("an approved column drop refuses every non-null saved value, including zero and empty text", () => {
+  for (const [column, value] of [["attempts", "0"], ["receipt", "''"], ["last_error", "'failed'"]]) {
+    const db = saved();
+    try {
+      db.exec(`UPDATE notification SET ${column} = ${value} WHERE id = 1`);
+      const before = historySnapshot(db);
+      expect(before.find(t => t.name === "notification")!.nonNull?.[column!]).toBe(1);
+      db.exec(`ALTER TABLE notification DROP COLUMN ${column}`);
+      expect(changedHistory(db, before)).toEqual(["notification"]);
+    } finally { db.close(); }
+  }
+});

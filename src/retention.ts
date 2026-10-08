@@ -1,3 +1,4 @@
+import { reclaimDatabase } from "./database-reclaim.js";
 /**
  * Retention (v105): how long Toolroll keeps run evidence and logs,
  * finished checkouts' records, chat messages and notifications. Until an
@@ -285,6 +286,7 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
   const counts = plan.counts.map(one => ({ ...one, count: done[one.kind].count, bytes: done[one.kind].bytes }));
   const freed = counts.reduce((sum, one) => sum + one.bytes, 0);
   const ledgerId = store.recordAction({ at: now.toISOString(), actor, repo: null, taskId: null, runId: null, action: "retention sweep", outcome: freed > 0 || counts.some(one => one.count > 0) ? "removed" : "nothing due", source: "policy", detail: sweepWords(counts, freed) });
+  reclaimDatabase(store.handle, "retention");
   return { at: now.toISOString(), counts, freed, ledgerId };
 }
 

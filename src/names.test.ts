@@ -11,7 +11,7 @@ import { childDatabaseEnv } from "./child-database.js";
 import { evidenceRoot } from "./evidence.js";
 import { keysDir } from "./keys.js";
 import { loadBotToken } from "./telegram.js";
-import { loadConsoleUrl } from "./webhooks.js";
+import { loadWebhookTargets, loadConsoleUrl } from "./webhooks.js";
 import { oneClickServices } from "./mcp-connect.js";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, headWithin, isOwnBranch, taskBranch, taskBranches } from "./names.js";
 import { configPath } from "./repos.js";
@@ -97,6 +97,9 @@ describe("TOOLROLL_* variables", () => {
     const dir = home();
     expect(loadConsoleUrl({ TOOLROLL_CONSOLE_URL: "https://new.example", STANDING_ORDERS_CONSOLE_URL: "https://old.example" }, dir)).toBe("https://new.example");
     expect(loadConsoleUrl({ STANDING_ORDERS_CONSOLE_URL: "https://old.example" }, dir)).toBe("https://old.example");
+
+    expect(loadWebhookTargets({ TOOLROLL_SLACK_WEBHOOK: "https://new.example/slack", STANDING_ORDERS_SLACK_WEBHOOK: "https://old.example/slack" }, dir)).toEqual([{ kind: "slack", url: "https://new.example/slack" }]);
+    expect(loadWebhookTargets({ STANDING_ORDERS_DISCORD_WEBHOOK: "https://old.example/discord" }, dir)).toEqual([{ kind: "discord", url: "https://old.example/discord" }]);
 
     const stripe = (env: Record<string, string>) => oneClickServices(env).find(one => one.id === "stripe")?.url;
     expect(stripe({ TOOLROLL_TEST_CONNECT: "stripe|Stripe|http://127.0.0.1:1/mcp", STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|http://127.0.0.1:2/mcp" })).toBe("http://127.0.0.1:1/mcp");

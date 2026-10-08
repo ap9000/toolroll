@@ -461,6 +461,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
   useEffect(() => { if (said) toast(said.charAt(0).toUpperCase() + said.slice(1)); }, [said]);
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 phone:gap-3">
     <h1 className="sr-only">Settings</h1>
+    {view.legacyWebhookWarning && <p data-legacy-webhooks className="text-sm text-foreground">Legacy webhooks are deprecated. Connect <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/slack">Slack</a> or <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/discord">Discord</a> in Chat settings.</p>}
     <nav aria-label="Settings sections" className="grid gap-4 phone:gap-3">
       {view.groups.map(group => <section key={group.title} aria-labelledby={`settings-${slug(group.title)}`} className="grid gap-2 phone:gap-1.5">
         <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>

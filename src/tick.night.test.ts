@@ -73,21 +73,40 @@ describe("the outbox", () => {
     store.close();
   });
 
-  test("the outbox only lists: pending facts by default, resolved ones with --all; there is no shell deliverer", async () => {
+  test("the outbox delivers unresolved notifications once per command and lists resolved facts with --all", async () => {
     const store = openStore(db);
     store.enqueueNotification({ dedupeKey: "n-1", kind: "build-failed", subject: "first", body: "…" }, T0);
     store.enqueueNotification({ dedupeKey: "decision:2", kind: "decision", subject: "second", body: "…" }, T0);
     store.resolveEpisode("decision:2", T0);
     store.close();
 
-    expect(await run(["outbox", "deliver", "--cmd", "true", "--json"])).toBe(EXIT.usage);
-    expect(payload()).toMatchObject({ ok: false, command: "outbox", reason: "usage" });
+    expect(await run(["outbox", "deliver", "--cmd", "true", "--json"])).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ ok: true, command: "outbox deliver", delivered: 1, failed: 0 });
+    expect(await run(["outbox", "deliver", "--cmd", "true", "--json"])).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ delivered: 0, failed: 0 });
+    expect(await run(["outbox", "deliver", "--cmd", "exit 1", "--json"])).toBe(EXIT.failed);
+    expect(payload()).toMatchObject({ delivered: 0, failed: 1 });
 
     expect(await run(["outbox", "list", "--json"])).toBe(EXIT.ok);
     expect((payload().notifications as { dedupeKey: string }[]).map(one => one.dedupeKey).filter(key => !key.startsWith("life:"))).toEqual(["n-1"]);
     expect(await run(["outbox", "list", "--all"])).toBe(EXIT.ok);
     expect(lines.join("\n")).toContain("      pending");
     expect(lines.join("\n")).toContain(`      resolved ${T0.toISOString()}`);
+  });
+
+  test("outbox commands receive notification text as data and refuse a demo database", async () => {
+    const store = openStore(db);
+    const subject = 'Ready: $(echo unsafe) `echo unsafe` "quoted"';
+    store.enqueueNotification({ source: { installation: true }, dedupeKey: "safe-text", kind: "test", subject, body: "Review the plan." }, T0);
+    store.close();
+    const command = 'printf "%s" "$TOOLROLL_SUBJECT"';
+    expect(await run(["outbox", "deliver", "--cmd", command, "--json"])).toBe(EXIT.ok);
+    const after = openStore(db);
+    expect(after.handle.prepare("SELECT receipt FROM notification_delivery").get()?.["receipt"]).toBe(subject);
+    after.recordInstallationFact("demo", "synthetic", T0);
+    after.close();
+    expect(await run(["outbox", "deliver", "--cmd", command, "--json"])).toBe(EXIT.refused);
+    expect(payload()).toMatchObject({ ok: false, command: "outbox deliver", reason: "demo-database" });
   });
 
   test("a failing build leaves a durable notification with the canonical reason", async () => {

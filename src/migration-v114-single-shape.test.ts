@@ -2,7 +2,7 @@
  * one-time upgrade drops the workspace triggers, rebuilds notification without its unused delivery columns and compacts
  * every settled run's exited process witnesses into one summary. Isolated fixtures only. */
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -15,7 +15,7 @@ afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recu
 const NOW = new Date("2026-10-07T09:00:00.000Z");
 const at = (ms: number) => new Date(NOW.getTime() + ms).toISOString();
 const legacy = { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const };
-const DROPPED = ["attempts INTEGER NOT NULL DEFAULT 0", "last_attempt_at TEXT", "last_error TEXT", "delivered_at TEXT", "receipt TEXT", "claim_owner TEXT", "claim_expires_at TEXT"];
+const DROPPED = ["attempts INTEGER", "last_attempt_at TEXT", "last_error TEXT", "delivered_at TEXT", "receipt TEXT", "claim_owner TEXT", "claim_expires_at TEXT"];
 
 /** Every statement a connection is asked to run, in order. */
 function traced(): { connect: (path: string) => Database; statements: string[] } {
@@ -35,7 +35,7 @@ function traced(): { connect: (path: string) => Database; statements: string[] }
     },
   };
 }
-const writes = (statements: string[]) => statements.filter(sql => /^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE|BEGIN|SAVEPOINT)\b/i.test(sql));
+const writes = (statements: string[]) => statements.filter(sql => /^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE|BEGIN|SAVEPOINT|VACUUM)\b/i.test(sql));
 
 /** A v113 file as the previous build left it: notification with its delivery columns, the per-table workspace
  * triggers, and the raw witnesses of a settled run, an unsettled finished run and an open run. */
@@ -154,4 +154,35 @@ test("the worker's reconcile pass compacts a run once it settles, once, and the 
   store.handle.prepare("UPDATE run SET provider_started_at = ? WHERE id = ?").run(at(1), run);
   expect(store.stopQuiescenceFact(run)).toBeNull();
   expect(store.runCustodyProvenGone(run)).toBe(true);
+});
+
+
+test("compaction shrinks a large file; a failed reclaim keeps the epoch and retries without duplicating summaries", () => {
+  const { file, settled } = v113();
+  const db = new DatabaseSync(file);
+  db.exec("BEGIN");
+  const insert = db.prepare("INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, ?, ?, 1, ?, ?)");
+  for (let i = 0; i < 12000; i++) insert.run(settled, 10000 + i, "fixture-host-".repeat(20), at(0), at(1));
+  db.exec("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)");
+  const before = historySnapshot(db); db.close();
+  const bytes = statSync(file).size;
+  const trace = traced();
+  expect(() => openStore(file, { connect: path => {
+    const connection = trace.connect(path), exec = connection.exec.bind(connection);
+    return new Proxy(connection, { get(target, key) {
+      if (key === "exec") return (sql: string) => { if (sql === "VACUUM") throw Error("reclaim failed"); return exec(sql); };
+      return Reflect.get(target, key);
+    } });
+  } })).toThrow("reclaim failed");
+  const interrupted = new DatabaseSync(file);
+  expect(interrupted.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-113);
+  expect(interrupted.prepare("SELECT witnesses FROM run_process_summary WHERE run = ?").get(settled)?.["witnesses"]).toBe(12050);
+  interrupted.close();
+  store = openStore(file);
+  expect(statSync(file).size).toBeLessThan(bytes / 2);
+  expect(store.handle.prepare("PRAGMA freelist_count").get()?.["freelist_count"]).toBe(0);
+  expect(store.handle.prepare("SELECT witnesses FROM run_process_summary WHERE run = ?").get(settled)?.["witnesses"]).toBe(12050);
+  expect(store.ledgerChain({ full: true }).ok).toBe(true);
+  const after = new DatabaseSync(file, { readOnly: true });
+  try { expect(changedHistory(after, before)).toEqual([]); } finally { after.close(); }
 });
