@@ -659,7 +659,7 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v112 keeps request budgets for API tokens: owner overrides (request_budget_limit) and saved usage (request_budget_usage).
 // v113 keeps MCP sign-ins (OAuth): registered clients, one-time codes, and each grant's binding to its API token.
 // v114 names one exact shape, migrated once: a settled run keeps one process summary instead of its exited witnesses,
-// notification loses its unused single-destination delivery columns, and the workspace revision triggers are gone
+// notification's single-destination delivery columns move into legacy receipts, and the workspace revision triggers are gone
 // (the write wrapper bumps the revision). Every later DDL change bumps the version.
 export const SCHEMA_VERSION = 114;
 
@@ -678,8 +678,9 @@ export const SCHEMA_VERSION = 114;
  * v113 adds MCP sign-in tables and API-token purpose metadata.
  * v114 is the one declared exception to "only adds", and the rehearsal checks
  * it as such: a settled run's exited process witnesses become one summary row
- * (rows removed equal the witnesses summarized), and notification drops
- * delivery columns that were never written (rows and ids carried whole).
+ * (rows removed equal the witnesses summarized), and notification drops its
+ * delivery columns only after every value moves into one legacy receipt per row
+ * (rows and ids carried whole; legacy receipts added equal the rows carried).
  */
 export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113, 114]);
 
@@ -6990,7 +6991,7 @@ function reviewRequestOriginOf(row: Record<string, unknown>): ReviewRequestOrigi
 /**
  * v114, once, on the way up (the sentinel is already stamped): the workspace
  * revision triggers go (the write wrapper bumps the revision now), notification
- * is rebuilt without the never-written delivery columns, and every settled
+ * is rebuilt without its delivery columns once their values are legacy receipts, and every settled
  * run's exited witnesses become its process summary. Each step is idempotent,
  * so a resumed upgrade finishes it.
  */
@@ -7013,6 +7014,7 @@ function migrateToV114(db: Database): void {
         // The AUTOINCREMENT bookkeeping comes back as it was (rebuildExact's rule): the counter, never the surviving
         // max id, in the original row order, and no row the predecessor never wrote.
         const sequence = db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY rowid").all() as { name: string; seq: number | bigint }[];
+        carryLegacyDelivery(db, columns);
         db.exec(NOTIFICATION_DDL("notification_next"));
         const names = NOTIFICATION_COLUMNS.join(", ");
         db.exec(`INSERT INTO notification_next (${names}) SELECT ${names} FROM notification ORDER BY id`);
@@ -7177,8 +7179,8 @@ function V38_INCIDENT_DDL(name: string): string {
 /** The durable outbox (§6). A notification is a fact that something wants a
  * person, recorded next to the record that made it true. dedupe_key is an
  * episode identity: a gap nags once per occurrence. Where it went is
- * notification_delivery's, per destination (v114 dropped the unused
- * single-destination attempt, receipt and claim columns). */
+ * notification_delivery's, per destination (v114 moved the old
+ * single-destination attempt, receipt and claim columns into legacy receipts). */
 function NOTIFICATION_DDL(name: string): string {
   return `CREATE TABLE IF NOT EXISTS ${name} (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7202,8 +7204,32 @@ function NOTIFICATION_DDL(name: string): string {
 }
 const NOTIFICATION_COLUMNS = ["id", "dedupe_key", "kind", "subject", "body", "created_at", "push_class", "link", "resolved_at",
   "provenance_scope", "project", "task_ref", "task_id", "source_run", "recipient"] as const;
-/** What v114 drops from notification: written only by the removed shell/webhook delivery, null on every real install. */
+/** What v114 drops from notification: the removed single-destination delivery's columns. Their values move first. */
 const NOTIFICATION_DROPPED = ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"] as const;
+/** The receipt v114 keeps a notification's old single-destination delivery under. No sender claims it: every real
+ * destination is a kind and a 64-character hash, or a Telegram binding. */
+export const LEGACY_NOTIFICATION_DESTINATION = "legacy:single-destination";
+
+/**
+ * v114, inside the notification rebuild's transaction: every row with any saved delivery value (attempts is never
+ * null, so every row the old schema wrote) gets one legacy receipt holding exactly those values, then the copy is
+ * proved field for field. A reserved receipt that differs, or one with nothing to carry, refuses the upgrade.
+ */
+function carryLegacyDelivery(db: Database, columns: readonly string[]): void {
+  const present = NOTIFICATION_DROPPED.filter(column => columns.includes(column));
+  if (present.length === 0) return;
+  const value = (column: string) => present.includes(column as never) ? `n.${column}` : column === "attempts" ? "0" : "NULL";
+  const populated = present.map(column => `n.${column} IS NOT NULL`).join(" OR ");
+  db.prepare(`INSERT OR IGNORE INTO notification_delivery (notification, destination, ${NOTIFICATION_DROPPED.join(", ")})
+    SELECT n.id, ?, ${NOTIFICATION_DROPPED.map(value).join(", ")} FROM notification n WHERE ${populated} ORDER BY n.id`).run(LEGACY_NOTIFICATION_DESTINATION);
+  const expected = Number(db.prepare(`SELECT COUNT(*) AS n FROM notification n WHERE ${populated}`).get()?.["n"]);
+  const matched = Number(db.prepare(`SELECT COUNT(*) AS n FROM notification n JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
+    WHERE (${populated}) AND ${NOTIFICATION_DROPPED.map(column => `d.${column} IS ${value(column)}`).join(" AND ")}`).get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]);
+  const reserved = Number(db.prepare("SELECT COUNT(*) AS n FROM notification_delivery WHERE destination = ?").get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]);
+  if (matched !== expected || reserved !== expected) {
+    throw new Error(`notification delivery history did not copy whole (${matched} of ${expected} rows match, ${reserved} legacy receipts) — refusing to drop its columns`);
+  }
+}
 
 /**
  * One exact copy-rename (v4 review, finding 7 — substrings are not
@@ -19071,9 +19097,13 @@ export class Store {
    * forever would be a gap the operator hears about exactly once per lifetime.
    */
   clearGapEpisode(repo: string, kind: string, name: string): void {
-    this.db
-      .prepare("DELETE FROM notification WHERE dedupe_key = ?")
-      .run(`gap:${repo}:${kind}:${name}`);
+    const key = `gap:${repo}:${kind}:${name}`;
+    this.transact(() => {
+      // Its v114 legacy receipt goes with it, as the old columns went with the row.
+      this.db.prepare("DELETE FROM notification_delivery WHERE destination = ? AND notification IN (SELECT id FROM notification WHERE dedupe_key = ?)")
+        .run(LEGACY_NOTIFICATION_DESTINATION, key);
+      this.db.prepare("DELETE FROM notification WHERE dedupe_key = ?").run(key);
+    });
   }
 
   /**

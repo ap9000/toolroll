@@ -331,16 +331,22 @@ export function durableRename(temp: string, target: string): void {
 
 /** How a rehearsed migration may change each saved table. An unlisted table keeps every column, its row count and
  * its last rowid (a WITHOUT ROWID table, all small, keeps the hash of its rows). `appendOnly`: every row through the
- * last one before hashes the same, in rowid order; new rows may follow. `dropped`: columns the new schema may remove only when every saved value is null.
- * `compacted`: rows may go only into summary rows, whose `sum` grows by exactly as many. */
-const HISTORY_RULES: Record<string, { appendOnly?: true; dropped?: string[]; compacted?: { into: string; sum: string } }> = {
+ * last one before hashes the same, in rowid order; new rows may follow. `dropped`: columns the new schema may remove
+ * only when every saved value is null, or, with `carried`, when the receiving table gained exactly one receipt under
+ * that destination per row holding a value, and as many non-null values per column as the dropped columns held.
+ * `receives`: the only rows the table may gain are those receipts. `compacted`: rows may go only into summary rows,
+ * whose `sum` grows by exactly as many. */
+const LEGACY_DESTINATION = "legacy:single-destination";
+const HISTORY_RULES: Record<string, { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string } }> = {
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
   // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
   run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
-  // v114: single-destination delivery columns may be dropped only after proving they are empty.
-  notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"] },
+  // v114: single-destination delivery columns may be dropped only once their values are legacy receipts.
+  notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"], carried: { into: "notification_delivery", destination: LEGACY_DESTINATION } },
+  notification_delivery: { receives: LEGACY_DESTINATION },
 };
-export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number> };
+export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number>; carry?: number;
+  received?: { count: number; nonNull: Record<string, number> } };
 const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
 const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
 /** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
@@ -351,6 +357,11 @@ function rowsHash(db: DatabaseSync, name: string, columns: string[], through?: n
   const hash = createHash("sha256"); let count = 0;
   for (const row of rows) { hash.update(JSON.stringify(Object.values(row), plainValue) + "\n"); count++; }
   return { count, hash: hash.digest("hex") };
+}
+/** Rows under one receipt destination, and each column's non-null values among them: counted, never read. */
+function receipts(db: DatabaseSync, name: string, destination: string, columns: string[]): { count: number; nonNull: Record<string, number> } {
+  const r = db.prepare("SELECT count(*) AS n" + columns.map(column => ",count(" + quote(column) + ") AS " + quote(column)).join("") + " FROM " + quote(name) + " WHERE destination = ?").get(destination)!;
+  return { count: Number(r["n"]), nonNull: Object.fromEntries(columns.map(column => [column, Number(r[column])])) };
 }
 const summed = (db: DatabaseSync, into: { into: string; sum: string }) =>
   db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(into.into) ? Number(db.prepare("SELECT coalesce(sum(" + quote(into.sum) + "),0) AS n FROM " + quote(into.into)).get()!["n"]) : 0;
@@ -367,7 +378,9 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
       if (droppable.length > 0) {
         const occupancy = db.prepare("SELECT " + droppable.map(column => "count(" + quote(column) + ") AS " + quote(column)).join(",") + " FROM " + quote(name)).get()!;
         t.nonNull = Object.fromEntries(droppable.map(column => [column, Number(occupancy[column])]));
+        t.carry = Number(db.prepare("SELECT count(*) AS n FROM " + quote(name) + " WHERE " + droppable.map(column => quote(column) + " IS NOT NULL").join(" OR ")).get()!["n"]);
       }
+      if (rule?.receives) t.received = receipts(db, name, rule.receives, columns.filter(column => column !== "notification" && column !== "destination"));
       if (rule?.appendOnly) t.hash = rowsHash(db, name, columns, t.last).hash;
       if (rule?.compacted) t.summed = summed(db, rule.compacted);
       return t;
@@ -376,15 +389,34 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
 /** The tables whose saved history the migration changed beyond what HISTORY_RULES declares. */
 export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[] {
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r["name"])));
+  // Receipts each receiving table gained, and the dropped values a carrying table owes it.
+  const gained = new Map<string, { count: number; nonNull: Record<string, number> }>(), owed = new Map<string, { count: number; nonNull: Record<string, number> }>();
+  for (const t of before) {
+    if (t.received && tables.has(t.name)) {
+      const after = receipts(db, t.name, HISTORY_RULES[t.name]!.receives!, Object.keys(t.received.nonNull));
+      gained.set(t.name, { count: after.count - t.received.count, nonNull: Object.fromEntries(Object.entries(after.nonNull).map(([c, n]) => [c, n - (t.received!.nonNull[c] ?? 0)])) });
+    }
+    const carried = HISTORY_RULES[t.name]?.carried;
+    if (carried && t.carry && tables.has(t.name)) {
+      const present = new Set(tableColumns(db, t.name)), lost = t.columns.filter(c => !present.has(c) && HISTORY_RULES[t.name]!.dropped!.includes(c));
+      if (lost.length > 0) owed.set(carried.into, { count: t.carry, nonNull: Object.fromEntries(lost.map(c => [c, t.nonNull![c]!])) });
+    }
+  }
+  const accounted = (rule: (typeof HISTORY_RULES)[string] | undefined, t: TableDigest) => {
+    if (!rule?.carried) return false;
+    const got = gained.get(rule.carried.into), want = owed.get(rule.carried.into);
+    return got !== undefined && want !== undefined && got.count === want.count && Object.entries(want.nonNull).every(([c, n]) => got.nonNull[c] === n) && t.carry === want.count;
+  };
   return before.filter(t => {
     if (!tables.has(t.name)) return true;
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
-    if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || t.nonNull?.[c] !== 0))) return true;
+    if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
     if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }
     const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(t.name)).get()!, count = Number(r["n"]), last = Number(r["last"]);
     if (rule?.compacted) return count > t.count || last > t.last || t.count - count !== summed(db, rule.compacted) - (t.summed ?? 0);
+    if (rule?.receives) { const added = gained.get(t.name)?.count ?? 0; return count - t.count !== added || (added > 0 && added !== owed.get(t.name)?.count) || last < t.last; }
     return count !== t.count || last !== t.last;
   }).map(t => t.name);
 }

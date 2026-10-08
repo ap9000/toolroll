@@ -14,6 +14,8 @@ function saved(): DatabaseSync {
     CREATE TABLE run(id INTEGER PRIMARY KEY, finished_at TEXT);
     CREATE TABLE run_process(id INTEGER PRIMARY KEY, run INTEGER REFERENCES run(id), pid INTEGER, observed_at TEXT, exited_at TEXT);
     CREATE TABLE notification(id INTEGER PRIMARY KEY, kind TEXT, attempts INTEGER, last_attempt_at TEXT, last_error TEXT, delivered_at TEXT, receipt TEXT, claim_owner TEXT, claim_expires_at TEXT);
+    CREATE TABLE notification_delivery(notification INTEGER NOT NULL REFERENCES notification(id), destination TEXT NOT NULL, claim_owner TEXT, claim_generation INTEGER NOT NULL DEFAULT 0,
+      claim_expires_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_attempt_at TEXT, last_error TEXT, delivered_at TEXT, receipt TEXT, PRIMARY KEY (notification, destination));
     INSERT INTO action_ledger VALUES(1,'a','started','h1'),(2,'b','finished','h2');
     INSERT INTO ledger_seal VALUES(1,2,'sig');
     INSERT INTO task VALUES('T-1','Keep my work'),('T-2','And this');
@@ -98,4 +100,22 @@ test("an approved column drop refuses every non-null saved value, including zero
       expect(changedHistory(db, before)).toEqual(["notification"]);
     } finally { db.close(); }
   }
+});
+
+const LEGACY_STATES = "UPDATE notification SET attempts = 0; UPDATE notification SET attempts = 1, delivered_at = 'd1', receipt = '' WHERE id = 1; UPDATE notification SET attempts = 2, last_error = 'failed', claim_owner = 'w', claim_expires_at = 'c2' WHERE id = 2;";
+const COLUMNS = "attempts, last_attempt_at, last_error, delivered_at, receipt, claim_owner, claim_expires_at";
+const DROP = COLUMNS.split(", ").map(c => `ALTER TABLE notification DROP COLUMN ${c};`).join("");
+const carried = (where = "") => `INSERT INTO notification_delivery (notification, destination, ${COLUMNS}) SELECT id, 'legacy:single-destination', ${COLUMNS} FROM notification ${where};`;
+const transfer = (edit: string) => { const db = saved(); try { db.exec(LEGACY_STATES); const before = historySnapshot(db); db.exec(edit); return changedHistory(db, before); } finally { db.close(); } };
+
+test("v114's populated delivery columns may go only when legacy receipts carry every value", () => {
+  // Zero, empty text, a delivery, a failure and a claim: all carried, so the drop keeps history.
+  expect(transfer(carried() + DROP)).toEqual([]);
+  // A direct drop, a receipt missing for a row, or a value lost in the copy still changes history.
+  expect(transfer(DROP)).toEqual(["notification"]);
+  expect(transfer(carried("WHERE id = 1") + DROP)).toEqual(["notification", "notification_delivery"]);
+  expect(transfer(carried() + "UPDATE notification_delivery SET last_error = NULL WHERE destination = 'legacy:single-destination';" + DROP)).toEqual(["notification"]);
+  // Receipts under any other destination, or legacy ones with no drop, are not a transfer.
+  expect(transfer(carried().replace("'legacy:single-destination'", "'slack:abc'") + DROP)).toEqual(["notification", "notification_delivery"]);
+  expect(transfer(carried())).toEqual(["notification_delivery"]);
 });

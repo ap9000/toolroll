@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { openStore, SCHEMA_VERSION, type Database, type Store } from "./store.js";
+import { LEGACY_NOTIFICATION_DESTINATION, openStore, SCHEMA_VERSION, type Database, type Store } from "./store.js";
+import { claimNotifications, notificationDestination } from "./notification-delivery.js";
 import { changedHistory, historySnapshot } from "./toolroll-update.js";
 
 let dir: string, store: Store | undefined;
@@ -15,7 +16,7 @@ afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recu
 const NOW = new Date("2026-10-07T09:00:00.000Z");
 const at = (ms: number) => new Date(NOW.getTime() + ms).toISOString();
 const legacy = { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const };
-const DROPPED = ["attempts INTEGER", "last_attempt_at TEXT", "last_error TEXT", "delivered_at TEXT", "receipt TEXT", "claim_owner TEXT", "claim_expires_at TEXT"];
+const DROPPED = ["attempts INTEGER NOT NULL DEFAULT 0", "last_attempt_at TEXT", "last_error TEXT", "delivered_at TEXT", "receipt TEXT", "claim_owner TEXT", "claim_expires_at TEXT"];
 
 /** Every statement a connection is asked to run, in order. */
 function traced(): { connect: (path: string) => Database; statements: string[] } {
@@ -37,8 +38,9 @@ function traced(): { connect: (path: string) => Database; statements: string[] }
 }
 const writes = (statements: string[]) => statements.filter(sql => /^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE|BEGIN|SAVEPOINT|VACUUM)\b/i.test(sql));
 
-/** A v113 file as the previous build left it: notification with its delivery columns, the per-table workspace
- * triggers, and the raw witnesses of a settled run, an unsettled finished run and an open run. */
+/** A v113 file as the previous build left it: notification with its delivery columns (one delivered with an empty
+ * receipt, one failed and still claimed, one never tried), the per-table workspace triggers, and the raw witnesses of
+ * a settled run, an unsettled finished run and an open run. */
 function v113(): { file: string; settled: number; lingering: number; open: number } {
   dir = mkdtempSync(join(tmpdir(), "so-v114-"));
   const file = join(dir, "state.db");
@@ -54,9 +56,12 @@ function v113(): { file: string; settled: number; lingering: number; open: numbe
   first.finishRun(lingering, { outcome: "failed", now: new Date(at(60_000)) });
   first.enqueueNotification({ source: { installation: true }, dedupeKey: "one", kind: "test", subject: "One", body: "first" }, NOW);
   first.enqueueNotification({ source: { installation: true }, dedupeKey: "two", kind: "test", subject: "Two", body: "second" }, NOW);
+  first.enqueueNotification({ source: { installation: true }, dedupeKey: "three", kind: "test", subject: "Three", body: "third" }, NOW);
   first.close();
   const db = new DatabaseSync(file);
   for (const column of DROPPED) db.exec(`ALTER TABLE notification ADD COLUMN ${column}`);
+  db.prepare("UPDATE notification SET attempts = 1, last_attempt_at = ?, delivered_at = ?, receipt = '' WHERE dedupe_key = 'one'").run(at(1000), at(1000));
+  db.prepare("UPDATE notification SET attempts = 2, last_attempt_at = ?, last_error = 'HTTP 500', claim_owner = 'old-worker', claim_expires_at = ? WHERE dedupe_key = 'two'").run(at(2000), at(62000));
   db.exec("CREATE TRIGGER workspace_revision_v1_task_insert_0123456789abcdef AFTER INSERT ON task BEGIN UPDATE service_cursor SET value = value + 1 WHERE key = 'workspace-content:v1'; END");
   const witness = db.prepare("INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at, boot_id) VALUES (?, ?, ?, ?, ?, ?, 'boot')");
   // A settled run: many short-lived witnesses, every one exited.
@@ -99,9 +104,16 @@ test("the upgrade runs once: settled witnesses become one summary, notification 
   // Unsettled custody keeps every row: the finished run with an unproven exit, and the open run.
   expect(db.prepare("SELECT run, COUNT(*) AS n FROM run_process GROUP BY run ORDER BY run").all()).toEqual([{ run: lingering, n: 2 }, { run: open, n: 1 }]);
   expect(store.processesSummarized(lingering) || store.processesSummarized(open)).toBe(false);
+  // Every old delivery value is a legacy receipt, field for field, including the zero and the empty receipt.
+  expect(db.prepare(`SELECT n.dedupe_key, d.attempts, d.last_attempt_at, d.last_error, d.delivered_at, d.receipt, d.claim_owner, d.claim_expires_at
+    FROM notification_delivery d JOIN notification n ON n.id = d.notification WHERE d.destination = ? ORDER BY n.id`).all(LEGACY_NOTIFICATION_DESTINATION)).toEqual([
+    { dedupe_key: "one", attempts: 1, last_attempt_at: at(1000), last_error: null, delivered_at: at(1000), receipt: "", claim_owner: null, claim_expires_at: null },
+    { dedupe_key: "two", attempts: 2, last_attempt_at: at(2000), last_error: "HTTP 500", delivered_at: null, receipt: null, claim_owner: "old-worker", claim_expires_at: at(62000) },
+    { dedupe_key: "three", attempts: 0, last_attempt_at: null, last_error: null, delivered_at: null, receipt: null, claim_owner: null, claim_expires_at: null },
+  ]);
   store.close(); store = undefined;
 
-  // The update rehearsal accepts exactly this: rows removed equal witnesses summarized, notification lost only the declared columns.
+  // The update rehearsal accepts exactly this: rows removed equal witnesses summarized, notification's dropped values are legacy receipts.
   const after = new DatabaseSync(file, { readOnly: true });
   try { expect(changedHistory(after, before)).toEqual([]); } finally { after.close(); }
 
@@ -110,7 +122,11 @@ test("the upgrade runs once: settled witnesses become one summary, notification 
   store = openStore(file, { connect: second.connect });
   expect(writes(second.statements)).toEqual([]);
   expect(second.statements.filter(sql => /^\s*PRAGMA\s+(?:journal_mode|foreign_keys|busy_timeout)\b/i.test(sql)).length).toBeGreaterThan(0);
-  expect(store.handle.prepare("SELECT witnesses FROM run_process_summary WHERE run = ?").get(settled)?.["witnesses"]).toBe(50);
+  expect(store.handle.prepare("SELECT witnesses FROM run_process_summary WHERE run = ?").get(settled)?.["witnesses"]).toBe(50);  // The legacy receipt is no sender's: a configured webhook and a delivery command each still claim every unresolved row, once.
+  for (const destination of [notificationDestination("slack", "https://hooks.slack.com/services/T/B/x"), notificationDestination("command", "notify-me")]) {
+    expect(claimNotifications(store, destination, "worker", NOW).map(row => row.dedupeKey)).toEqual(["one", "two", "three"]);
+    expect(claimNotifications(store, destination, "worker", NOW)).toEqual([]);
+  }
 });
 
 test("a fresh file is the exact shape the upgrade reaches, and opening it again runs no DDL", () => {
@@ -183,7 +199,33 @@ test("compaction shrinks a large file; a failed reclaim keeps the epoch and retr
   expect(statSync(file).size).toBeLessThan(bytes / 2);
   expect(store.handle.prepare("PRAGMA freelist_count").get()?.["freelist_count"]).toBe(0);
   expect(store.handle.prepare("SELECT witnesses FROM run_process_summary WHERE run = ?").get(settled)?.["witnesses"]).toBe(12050);
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification_delivery WHERE destination = ?").get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]).toBe(3);
   expect(store.ledgerChain({ full: true }).ok).toBe(true);
   const after = new DatabaseSync(file, { readOnly: true });
   try { expect(changedHistory(after, before)).toEqual([]); } finally { after.close(); }
+});
+
+test("a legacy receipt that disagrees with the saved columns refuses the upgrade and leaves them in place", () => {
+  const { file } = v113();
+  const db = new DatabaseSync(file);
+  db.prepare("INSERT INTO notification_delivery (notification, destination, attempts, receipt) SELECT id, ?, 1, 'other' FROM notification WHERE dedupe_key = 'one'").run(LEGACY_NOTIFICATION_DESTINATION);
+  db.close();
+  expect(() => openStore(file)).toThrow(/did not copy whole/);
+  const after = new DatabaseSync(file, { readOnly: true });
+  try {
+    expect(after.prepare("SELECT receipt FROM notification WHERE dedupe_key = 'one'").get()?.["receipt"]).toBe("");
+    expect(after.prepare("SELECT receipt FROM notification_delivery WHERE destination = ?").all(LEGACY_NOTIFICATION_DESTINATION)).toEqual([{ receipt: "other" }]);
+  } finally { after.close(); }
+});
+
+test("a gap episode with a legacy receipt still clears, taking its receipt with it", () => {
+  const { file } = v113();
+  const db = new DatabaseSync(file);
+  db.prepare("INSERT INTO notification (dedupe_key, kind, subject, body, created_at) VALUES ('gap:repo:tool:git', 'gap', 'Gap', 'missing', ?)").run(at(0));
+  db.close();
+  store = openStore(file);
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification_delivery WHERE destination = ?").get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]).toBe(4);
+  store.clearGapEpisode("repo", "tool", "git");
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification WHERE dedupe_key LIKE 'gap:%'").get()?.["n"]).toBe(0);
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification_delivery WHERE destination = ?").get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]).toBe(3);
 });
