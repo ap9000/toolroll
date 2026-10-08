@@ -1,0 +1,405 @@
+{
+  "settings.sessions": {
+    "domain": "people"
+  },
+  "code.act": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "flow.instance-act": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "flow.trigger.secret": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "spend.budget": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.project-delete": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "settings.policy-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.approval-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.request-limits-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.sessions-send": {
+    "domain": "people",
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.sign-in-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.updates-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.updates-seen-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.updates-cancel-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.retention-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.storage-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.storage-clean-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.storage-discard-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.pull-requests-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.checks-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.backups-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.data-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.monitoring-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.tools-connect-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.tools-change-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "control.setup-approve": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "control.instructions-approve": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.slack-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.teams-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.discord-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.telegram-retry": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "settings.chat-approval-confirm": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "settings.chat-approval-save": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "settings.chat-approval-off": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "settings.telegram-pair": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "settings.telegram-unpair": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "fleet.register": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "mode.confirm": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "mode.sign": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "people.projects": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "people.invite": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "people.invite-revoke": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "people.revoke": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "fleet.retire": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "decision.answer": {
+    "scope": "act"
+  },
+  "contest.act.pick": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.attend.attend-preview": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "task.attend.attend": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.attend.attend-revoke": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "task.act.approve": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.act.reopen": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.act.accept-revision": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.act.reject-revision": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.act.confirm-stopped": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "task.act.resume": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "projects.onboard-confirm": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up",
+    "project": "none"
+  },
+  "push.subscribe": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "chat.config": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "chat.mate-mint": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "chat.mate-follow": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "chat.mate-end": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "chat.mate-stop": {
+    "callers": [
+      "cookie"
+    ]
+  },
+  "chat.send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "chat.file": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "chat.ack-send": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "routine.act.approve": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "routine.act.run-now": {
+    "callers": [
+      "cookie"
+    ],
+    "scope": "step-up"
+  },
+  "projects.onboard-preview": {
+    "project": "none"
+  },
+  "session.attended-beats": {
+    "scopeRefusal": "your login can watch, not keep sessions alive"
+  },
+  "contest.act.abandon": {
+    "scope": "step-up",
+    "callers": [
+      "cookie"
+    ]
+  },
+  "projects.select": {
+    "project": "form-path"
+  },
+  "projects.open": {
+    "project": "form-path"
+  }
+}

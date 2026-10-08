@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
 import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
@@ -1188,12 +1189,13 @@ export async function runOperateAs(
   if ("error" in parsed) return refuse("usage", parsed.error);
   // The parser's positionals must spell the same row (a value flag can't hide a subcommand).
   if (remoteRowOf(root, parsed.positional)?.invocation !== row.invocation) return refuse("not-remote", REMOTE_MESSAGES.unknown);
-  if (proved.scope === "read" && row.mutation !== "none") return refuse("read-only", REMOTE_MESSAGES.read);
+  if (!adapterPolicy({ caller: "bearer", capability: proved.scope, token: true }, row.mutation !== "none" ? "act" : "read").ok || proved.scope === "read" && row.mutation !== "none") return refuse("read-only", REMOTE_MESSAGES.read);
   if ([...parsed.flags.keys()].some(name => REMOTE_REFUSED_FLAGS.has(name))) return refuse("usage", REMOTE_MESSAGES.credential);
 
   const allows = (repo: string | null) => remoteAllows(store, principal, repo);
   const project = remoteProjectOf(store, { allows }, scope, parsed.positional, parsed.repoList, row.invocation, parsed.flags, opts.files ?? {});
   if (!project.ok) return refuse(project.reason, project.message);
+  if (!adapterPolicy({ caller: "bearer", capability: proved.scope, token: true }, undefined, source => source === "adapter" && (project.repo === null || allows(project.repo))).ok) return refuse("forbidden", REMOTE_MESSAGES.no);
   // The local mutation cache has a global key namespace. A token must not use a chosen key to read
   // another person's/project's cached result. Revision keys already bind the actor and result in
   // task-outcome-cli.ts, which also validates their public 32-hex format; leave those intact.

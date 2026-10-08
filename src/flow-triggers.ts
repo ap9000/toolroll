@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 /**
  * Flow triggers (v82): what starts cards in a flow without someone adding
  * them by hand.
@@ -870,6 +871,7 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   const trigger = store.flowTriggerByHook(hookHash(token));
   const config = trigger === null ? null : triggerConfigOf(trigger);
   if (trigger === null || config === null || !takesDeliveries(config)) return { status: 404, said: "No such address." };
+  if (!adapterPolicy({ caller: "service", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, said: "No access to this flow." };
   if (delivery.body.length > HOOK_BYTES) return { status: 413, said: "Too large." };
   const note = (said: string) => { store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: said }, now); };
   let payload: unknown;
@@ -982,6 +984,7 @@ export function flowFormPage(store: Store, token: string, now: Date): FormAnswer
   const trigger = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? store.flowTriggerByHook(hookHash(token)) : null;
   const config = trigger === null ? null : triggerConfigOf(trigger);
   if (trigger === null || config?.kind !== "button") return { status: 404, html: formHtml("Not found", "<p>This form isn't available. Ask whoever shared it for a new link.</p>") };
+  if (!adapterPolicy({ caller: "anonymous", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, html: "" };
   const fields = config.questions.map((question, index) => `<label>${esc(question)}${index === 0 ? `<input name="a${index}" required maxlength="200" autocomplete="off">` : `<textarea name="a${index}" maxlength="3000"></textarea>`}</label>`).join("");
   return { status: 200, html: formHtml(config.label, `<form method="post">${fields}<div class="trap" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div><input type="hidden" name="t" value="${now.getTime()}"><button>Send</button></form>`) };
 }
@@ -991,6 +994,7 @@ export function receiveFlowForm(store: Store, token: string, fields: URLSearchPa
   const trigger = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? store.flowTriggerByHook(hookHash(token)) : null;
   const config = trigger === null ? null : triggerConfigOf(trigger);
   if (trigger === null || config?.kind !== "button") return flowFormPage(store, token, now);
+  if (!adapterPolicy({ caller: "anonymous", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, html: "" };
   const again = `<p><a href="${esc(FORM_PATH + token)}">Send another</a></p>`;
   const thanks = formHtml(config.label, `<p>Thanks — it's been sent.</p>${again}`);
   // A filled trap, or a page posted faster than a person could, gets thanks and makes nothing.

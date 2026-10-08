@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 /**
  * MCP sign-in: OAuth 2.1 for /mcp, as the MCP authorization spec describes, so an engineer's MCP client connects
  * without a pasted token. This console is both the authorization server and the protected resource.
@@ -335,6 +336,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (chosen.length === 0) return again(400, "Choose at least one project.");
     // Never named back: a project outside the person's access is refused without saying whether it exists.
     if (!chosen.every(path => mine.includes(path))) return again(403, "Choose from your own projects.");
+    if (!adapterPolicy({ caller: "cookie", capability: account.role === "approver" ? "act" : "read", viewer: account.role === "viewer" }, "step-up", source => source === "none" && chosen.every(path => mine.includes(path))).ok) return again(403, "Choose from your own projects.");
     if (!options.confirm(session, form.get("password") ?? "")) return again(403, "Enter your Toolroll password to allow access.");
     waiting.delete(id);
     const code = randomBytes(32).toString("base64url");
@@ -361,6 +363,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
       const unsupported = !("repeated" in read) && read.issues.some(one => one.path === "grant_type");
       return unsupported ? oauthError(response, 400, "unsupported_grant_type", "Use authorization_code or refresh_token.") : oauthError(response, 400, "invalid_request", "The token request isn't complete.");
     }
+    if (!adapterPolicy({ caller: "oauth", capability: "none" }).ok) return oauthError(response, 403, "access_denied", "This credential cannot call this route.");
     const ask = read.value;
     const now = options.clock();
     const resource = `${origin}${RESOURCE_PATH}`;

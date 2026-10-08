@@ -1,0 +1,4375 @@
+[
+  {
+    "id": "edge.healthz",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "GET,HEAD",
+    "pattern": "^\\/healthz$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/healthz"
+  },
+  {
+    "id": "edge.telegram-hook",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/hooks\\/telegram$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/hooks/telegram"
+  },
+  {
+    "id": "edge.flow-form",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/hooks\\/form\\/.*$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "flow",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/hooks/form/abc"
+  },
+  {
+    "id": "edge.flow-hook",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/hooks\\/.*$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "flow",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/hooks/flow/abc"
+  },
+  {
+    "id": "edge.mcp",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/mcp$",
+    "callers": [
+      "bearer",
+      "oauth",
+      "coordinator"
+    ],
+    "scope": "read",
+    "project": "adapter",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/mcp"
+  },
+  {
+    "id": "edge.oauth-discovery",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/\\.well-known\\/(oauth-protected-resource(\\/mcp)?|oauth-authorization-server)$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/.well-known/oauth-authorization-server"
+  },
+  {
+    "id": "edge.oauth",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/oauth\\/.*$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/oauth/authorize"
+  },
+  {
+    "id": "edge.google-callback",
+    "domain": "settings",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/settings\\/google\\/callback$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/google/callback"
+  },
+  {
+    "id": "edge.connect-callback",
+    "domain": "settings",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/settings\\/tools\\/connected$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/tools/connected"
+  },
+  {
+    "id": "edge.sessions",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/api\\/sessions(\\/.*)?$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "adapter",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/api/sessions/send"
+  },
+  {
+    "id": "edge.team",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/api\\/team(\\/events)?$",
+    "callers": [
+      "cookie",
+      "bearer",
+      "lead"
+    ],
+    "scope": "read",
+    "project": "adapter",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/api/team/events"
+  },
+  {
+    "id": "edge.cli",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/api\\/cli$",
+    "callers": [
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "adapter",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/api/cli"
+  },
+  {
+    "id": "edge.teams",
+    "domain": "remote",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/teams\\/messages$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teams/messages"
+  },
+  {
+    "id": "edge.browser-asset",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/assets\\/(workspace\\.js|workspace\\.css|THIRD_PARTY_NOTICES\\.txt)$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/assets/workspace.js"
+  },
+  {
+    "id": "edge.workspace-style",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "GET,HEAD",
+    "pattern": "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/assets/workspace-0000000000000000000000000000000000000000000000000000000000000000.css"
+  },
+  {
+    "id": "edge.install-asset",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/sw.js"
+  },
+  {
+    "id": "edge.font",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/fonts\\/geist-(sans|mono)-(400|500|600)\\.woff2$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/fonts/geist-sans-400.woff2"
+  },
+  {
+    "id": "edge.desktop-health",
+    "domain": "pages",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/desktop\\/health$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/desktop/health"
+  },
+  {
+    "id": "edge.login-page",
+    "domain": "people",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/login$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login"
+  },
+  {
+    "id": "edge.login-link",
+    "domain": "people",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/login\\/once\\/.*$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login/once/abc"
+  },
+  {
+    "id": "edge.sso-start",
+    "domain": "people",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/login\\/sso$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login/sso"
+  },
+  {
+    "id": "edge.sso-callback",
+    "domain": "people",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/login\\/sso\\/callback$",
+    "callers": [
+      "service"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login/sso/callback"
+  },
+  {
+    "id": "edge.sso-finish",
+    "domain": "people",
+    "stage": "edge",
+    "method": "GET",
+    "pattern": "^\\/login\\/sso\\/finish$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login/sso/finish"
+  },
+  {
+    "id": "edge.signup",
+    "domain": "people",
+    "stage": "edge",
+    "method": "POST",
+    "pattern": "^\\/signup$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/signup"
+  },
+  {
+    "id": "edge.login",
+    "domain": "people",
+    "stage": "edge",
+    "method": "POST",
+    "pattern": "^\\/login$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/login"
+  },
+  {
+    "id": "edge.logout",
+    "domain": "people",
+    "stage": "edge",
+    "method": "POST",
+    "pattern": "^\\/logout$",
+    "callers": [
+      "anonymous",
+      "cookie"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/logout"
+  },
+  {
+    "id": "edge.join",
+    "domain": "people",
+    "stage": "edge",
+    "method": "ANY",
+    "pattern": "^\\/join\\/[A-Za-z0-9_-]{16,64}$",
+    "callers": [
+      "anonymous"
+    ],
+    "scope": "none",
+    "project": "none",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/join/abcdefghijklmnop"
+  },
+  {
+    "id": "code.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/code(\\/.*)?$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "coding",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/code"
+  },
+  {
+    "id": "projects.browse",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/projects\\/browse$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/browse"
+  },
+  {
+    "id": "projects.github",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/projects\\/github$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/github"
+  },
+  {
+    "id": "projects.page",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/projects$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects"
+  },
+  {
+    "id": "home",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/"
+  },
+  {
+    "id": "inbox",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/inbox$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/inbox"
+  },
+  {
+    "id": "work",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/work$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/work"
+  },
+  {
+    "id": "next",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/next$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/next"
+  },
+  {
+    "id": "morning",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/morning$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/morning"
+  },
+  {
+    "id": "workbench",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/workbench$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/workbench"
+  },
+  {
+    "id": "board",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/board$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/board"
+  },
+  {
+    "id": "review",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/review$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/review"
+  },
+  {
+    "id": "spend",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/spend$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/spend"
+  },
+  {
+    "id": "ledger",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/ledger$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/ledger"
+  },
+  {
+    "id": "activity",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/activity$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/activity"
+  },
+  {
+    "id": "done",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/done$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/done"
+  },
+  {
+    "id": "mode",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/mode$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/mode"
+  },
+  {
+    "id": "people.page",
+    "domain": "people",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/people$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/people"
+  },
+  {
+    "id": "system",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/system$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/system"
+  },
+  {
+    "id": "tasks",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/tasks$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/tasks"
+  },
+  {
+    "id": "queue",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/queue$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/queue"
+  },
+  {
+    "id": "peek",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/peek$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/peek"
+  },
+  {
+    "id": "fleet",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/fleet$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/fleet"
+  },
+  {
+    "id": "tasks.new",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/tasks\\/new$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/tasks/new"
+  },
+  {
+    "id": "task.live",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/t\\/[^/]+\\/live$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "task",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one/live"
+  },
+  {
+    "id": "task.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/t\\/[^/]+$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "task",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one"
+  },
+  {
+    "id": "task.evidence",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/t\\/[^/]+\\/evidence$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "task",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one/evidence"
+  },
+  {
+    "id": "ledger.export",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/ledger\\/export$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/ledger/export"
+  },
+  {
+    "id": "runs",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/runs$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/runs"
+  },
+  {
+    "id": "menu",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/menu$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/menu"
+  },
+  {
+    "id": "run.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/r\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "run",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/r/1"
+  },
+  {
+    "id": "run.evidence",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/r\\/[0-9]{1,15}\\/evidence\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "run",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/r/1/evidence/2"
+  },
+  {
+    "id": "contest.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/contest\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/contest/1"
+  },
+  {
+    "id": "caps",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/caps$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/caps"
+  },
+  {
+    "id": "flows.new",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/new$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/new"
+  },
+  {
+    "id": "flows.gallery",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/new\\/[a-z-]{1,40}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/new/triage"
+  },
+  {
+    "id": "flows.page",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows"
+  },
+  {
+    "id": "kits",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/kits$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/kits"
+  },
+  {
+    "id": "kit.page",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/kits\\/[a-z-]{1,40}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/kits/support"
+  },
+  {
+    "id": "teammates",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/teammates$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teammates"
+  },
+  {
+    "id": "teammate.page",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/teammates\\/[1-9][0-9]{0,9}(\\/soul\\.md)?$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teammates/1/soul.md"
+  },
+  {
+    "id": "flow.read",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/(insights|runs\\/[1-9][0-9]{0,9}\\/[1-9][0-9]{0,9})$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/runs/2/3"
+  },
+  {
+    "id": "flow.export",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/export$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/export"
+  },
+  {
+    "id": "flow.live",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/live$",
+    "callers": [
+      "cookie"
+    ],
+    "scope": "read",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/live",
+    "callerRefusal": {
+      "status": 403,
+      "type": "application/json",
+      "body": "{\"error\":\"session\"}"
+    }
+  },
+  {
+    "id": "flow.page",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1"
+  },
+  {
+    "id": "recipes",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes"
+  },
+  {
+    "id": "recipes.run",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/run$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/run"
+  },
+  {
+    "id": "recipes.start",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/start$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/start"
+  },
+  {
+    "id": "recipes.new",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/new$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/new"
+  },
+  {
+    "id": "recipes.edit",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/edit$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/edit"
+  },
+  {
+    "id": "recipes.from-task",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/from-task$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/from-task"
+  },
+  {
+    "id": "recipes.preview",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/preview$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/preview"
+  },
+  {
+    "id": "recipes.export",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/export$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/export"
+  },
+  {
+    "id": "recipes.other",
+    "domain": "flows",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/recipes\\/.*$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/recipes/unknown"
+  },
+  {
+    "id": "routines",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/routines$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/routines"
+  },
+  {
+    "id": "chat.stream",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/stream$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/stream"
+  },
+  {
+    "id": "chat.mate-status",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/mate\\/status$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/mate/status"
+  },
+  {
+    "id": "chat.demo-live",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/demo\\/live$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/demo/live"
+  },
+  {
+    "id": "chat.page",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "conversation",
+    "limited": "conversation",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat"
+  },
+  {
+    "id": "chat.ack",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/ack\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/chat/ack/1"
+  },
+  {
+    "id": "routine.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/routines\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "routine",
+    "limited": "resource",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/routines/1"
+  },
+  {
+    "id": "control",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/control$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/control"
+  },
+  {
+    "id": "control.connection",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/control\\/connection$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/control/connection"
+  },
+  {
+    "id": "chat.action",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/action\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "proposal",
+    "limited": "proposal",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/action/1"
+  },
+  {
+    "id": "settings.models",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/models$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/models"
+  },
+  {
+    "id": "settings.tools",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/tools$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/tools"
+  },
+  {
+    "id": "settings.project",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/project$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/project"
+  },
+  {
+    "id": "settings.approval",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/approval$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/approval"
+  },
+  {
+    "id": "settings.policy",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/policy$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/policy"
+  },
+  {
+    "id": "settings.sessions",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/sessions$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/sessions"
+  },
+  {
+    "id": "settings.integrations",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/integrations$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/integrations"
+  },
+  {
+    "id": "settings.monitoring",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/monitoring$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/monitoring"
+  },
+  {
+    "id": "settings.updates",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/updates$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates"
+  },
+  {
+    "id": "settings.retention",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/retention$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/retention"
+  },
+  {
+    "id": "settings.storage",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/storage$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/storage"
+  },
+  {
+    "id": "settings.pull-requests",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/pull-requests$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/pull-requests"
+  },
+  {
+    "id": "settings.checks",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/checks$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/checks"
+  },
+  {
+    "id": "settings.backups",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/backups$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/backups"
+  },
+  {
+    "id": "settings.data",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/data$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/data"
+  },
+  {
+    "id": "settings.sign-in",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/sign-in$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/sign-in"
+  },
+  {
+    "id": "settings.lead",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/lead$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/lead"
+  },
+  {
+    "id": "settings.teams",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/teams$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/teams"
+  },
+  {
+    "id": "settings.discord",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/discord$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/discord"
+  },
+  {
+    "id": "settings.slack",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/slack$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/slack"
+  },
+  {
+    "id": "settings.slack/manifest",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/slack\\/manifest$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/slack/manifest"
+  },
+  {
+    "id": "settings.skills",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/skills$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/skills"
+  },
+  {
+    "id": "settings.flows",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/flows$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/flows"
+  },
+  {
+    "id": "settings.knowledge",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/knowledge$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/knowledge"
+  },
+  {
+    "id": "settings.learning",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/learning$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/learning"
+  },
+  {
+    "id": "settings.telegram",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings\\/telegram$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram"
+  },
+  {
+    "id": "settings.page",
+    "domain": "settings",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/settings$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings"
+  },
+  {
+    "id": "health",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/health$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/health"
+  },
+  {
+    "id": "metrics",
+    "domain": "pages",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/metrics$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/metrics"
+  },
+  {
+    "id": "push.key",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/push\\/key$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": true,
+    "viewer": false,
+    "sample": "/push/key"
+  },
+  {
+    "id": "decision.page",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/d\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "decision",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/d/1"
+  },
+  {
+    "id": "lead.status",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/lead\\/status$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/lead/status"
+  },
+  {
+    "id": "chat.task-status",
+    "domain": "chat",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/chat\\/task-status$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/task-status"
+  },
+  {
+    "id": "decision.evidence",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "GET",
+    "pattern": "^\\/d\\/[0-9]{1,15}\\/evidence\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "read",
+    "project": "decision",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/d/1/evidence/2"
+  },
+  {
+    "id": "session.attended-beats",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/session\\/attended-beats$",
+    "callers": [
+      "cookie"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/session/attended-beats",
+    "callerRefusal": {
+      "status": 403,
+      "type": "text/plain; charset=utf-8",
+      "body": "watching is a browser session's act"
+    }
+  },
+  {
+    "id": "chat.demo",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/demo\\/(ask|[0-9]{1,9}\\/(approve|change|revise|complete))$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/demo/ask"
+  },
+  {
+    "id": "provider.resume",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/providers\\/[a-z]+\\/resume$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/providers/codex/resume"
+  },
+  {
+    "id": "settings.updates-dismiss",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/updates\\/dismiss$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates/dismiss"
+  },
+  {
+    "id": "settings.updates-checks",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/updates\\/checks$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates/checks"
+  },
+  {
+    "id": "code.act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/code(\\/.*)?$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "coding",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/code/start"
+  },
+  {
+    "id": "settings.skills-revise",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/skills\\/revise$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/skills/revise"
+  },
+  {
+    "id": "settings.skills-import",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/skills\\/import$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/skills/import"
+  },
+  {
+    "id": "settings.skills-change",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/skills\\/change$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/skills/change"
+  },
+  {
+    "id": "kit.act",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/kits\\/[a-z-]{1,40}\\/(setup|sample|github)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/kits/support/setup"
+  },
+  {
+    "id": "teammate.new",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/teammates\\/new$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teammates/new"
+  },
+  {
+    "id": "teammate.act",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/teammates\\/[1-9][0-9]{0,9}\\/(soul|state|note|settings|summary|tools|memory|routines|week)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teammates/1/soul"
+  },
+  {
+    "id": "teammate.answer",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/teammates\\/questions\\/[1-9][0-9]{0,9}\\/answer$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/teammates/questions/1/answer"
+  },
+  {
+    "id": "flows.gallery-create",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/new\\/[a-z-]{1,40}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/new/triage"
+  },
+  {
+    "id": "flows.create",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/new$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/new"
+  },
+  {
+    "id": "flows.example",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/example$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/example"
+  },
+  {
+    "id": "flows.import",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/import$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/import"
+  },
+  {
+    "id": "flow.act",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/(save|cards|archive|scripts)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/save"
+  },
+  {
+    "id": "flow.instance-act",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/(linear-key|hooks-address|secrets)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/secrets"
+  },
+  {
+    "id": "flow.triggers",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/triggers$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/triggers"
+  },
+  {
+    "id": "flow.card",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/cards\\/[1-9][0-9]{0,9}\\/(move|decide|cancel|comment|assign|watch)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/cards/2/move"
+  },
+  {
+    "id": "flow.card-choose",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/cards\\/[1-9][0-9]{0,9}\\/choose$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/cards/2/choose"
+  },
+  {
+    "id": "flow.trigger",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/flows\\/[1-9][0-9]{0,9}\\/triggers\\/[1-9][0-9]{0,9}\\/(pause|resume|remove|check|press|renew|secret|share|unshare)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "flow",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/flows/1/triggers/2/pause"
+  },
+  {
+    "id": "spend.budget",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/spend\\/budget$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/spend/budget"
+  },
+  {
+    "id": "settings.project-concurrency",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/project\\/concurrency$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/project/concurrency"
+  },
+  {
+    "id": "settings.project-delete",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/project\\/delete$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/project/delete"
+  },
+  {
+    "id": "ledger.checkpoint",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/ledger\\/checkpoint$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/ledger/checkpoint"
+  },
+  {
+    "id": "settings.policy-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/policy$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/policy"
+  },
+  {
+    "id": "settings.approval-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/approval$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/approval"
+  },
+  {
+    "id": "settings.request-limits-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/request-limits$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/request-limits"
+  },
+  {
+    "id": "settings.sessions-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/sessions$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/sessions"
+  },
+  {
+    "id": "settings.sign-in-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/sign-in$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/sign-in"
+  },
+  {
+    "id": "settings.updates-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/updates$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates"
+  },
+  {
+    "id": "settings.updates-seen-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/updates\\/seen$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates/seen"
+  },
+  {
+    "id": "settings.updates-cancel-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/updates\\/cancel$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/updates/cancel"
+  },
+  {
+    "id": "settings.retention-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/retention$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/retention"
+  },
+  {
+    "id": "settings.storage-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/storage$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/storage"
+  },
+  {
+    "id": "settings.storage-clean-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/storage\\/clean$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/storage/clean"
+  },
+  {
+    "id": "settings.storage-discard-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/storage\\/discard$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/storage/discard"
+  },
+  {
+    "id": "settings.pull-requests-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/pull-requests$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/pull-requests"
+  },
+  {
+    "id": "settings.checks-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/checks$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/checks"
+  },
+  {
+    "id": "settings.backups-now-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/backups\\/now$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/backups/now"
+  },
+  {
+    "id": "settings.backups-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/backups$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/backups"
+  },
+  {
+    "id": "settings.data-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/data$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/data"
+  },
+  {
+    "id": "settings.integrations-test-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/integrations\\/test$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/integrations/test"
+  },
+  {
+    "id": "settings.monitoring-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/monitoring$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/monitoring"
+  },
+  {
+    "id": "settings.tools-connect-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/tools\\/connect$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/tools/connect"
+  },
+  {
+    "id": "settings.tools-change-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/tools\\/change$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/tools/change"
+  },
+  {
+    "id": "settings.appearance-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/appearance$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/appearance"
+  },
+  {
+    "id": "settings.flows-on",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/flows\\/on$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/flows/on"
+  },
+  {
+    "id": "settings.models-act",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/models\\/.*$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/models/check"
+  },
+  {
+    "id": "settings.knowledge-refresh",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/knowledge\\/refresh$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/knowledge/refresh"
+  },
+  {
+    "id": "settings.knowledge-proposal",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/knowledge\\/proposal$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/knowledge/proposal"
+  },
+  {
+    "id": "settings.knowledge-decision",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/knowledge\\/decision$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/knowledge/decision"
+  },
+  {
+    "id": "settings.knowledge-change",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/knowledge\\/change$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/knowledge/change"
+  },
+  {
+    "id": "settings.learning-change",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/learning\\/change$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/learning/change"
+  },
+  {
+    "id": "control.setup-preview",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/control\\/setup-preview$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/control/setup-preview"
+  },
+  {
+    "id": "control.setup-approve",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/control\\/setup-approve$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/control/setup-approve"
+  },
+  {
+    "id": "control.instructions-preview",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/control\\/instructions-preview$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/control/instructions-preview"
+  },
+  {
+    "id": "control.instructions-approve",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/control\\/instructions-approve$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/control/instructions-approve"
+  },
+  {
+    "id": "settings.slack-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/slack\\/(connect|pair|unpair|disconnect|alerts)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/slack/pair"
+  },
+  {
+    "id": "settings.teams-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/teams\\/(connect|pair|unpair|disconnect|alerts)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/teams/pair"
+  },
+  {
+    "id": "settings.discord-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/discord\\/(connect|pair|unpair|disconnect|alerts)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/discord/pair"
+  },
+  {
+    "id": "settings.telegram-retry",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/telegram\\/retry$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram/retry"
+  },
+  {
+    "id": "settings.chat-approval-confirm",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/chat-approval\\/confirm$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/chat-approval/confirm"
+  },
+  {
+    "id": "settings.chat-approval-save",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/chat-approval\\/save$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/chat-approval/save"
+  },
+  {
+    "id": "settings.chat-approval-off",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/chat-approval\\/off$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/chat-approval/off"
+  },
+  {
+    "id": "settings.telegram-pair",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/telegram\\/pair$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram/pair"
+  },
+  {
+    "id": "settings.telegram-unpair",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/telegram\\/unpair$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "self",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram/unpair"
+  },
+  {
+    "id": "settings.messaging-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/messaging$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/messaging"
+  },
+  {
+    "id": "settings.permission-default-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/permission-default$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/permission-default"
+  },
+  {
+    "id": "settings.quality-default-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/quality-default$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/quality-default"
+  },
+  {
+    "id": "settings.notifications-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/notifications$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/notifications"
+  },
+  {
+    "id": "settings.notifications-mute-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/notifications\\/mute$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/notifications/mute"
+  },
+  {
+    "id": "settings.telegram-digest-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/telegram-digest$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram-digest"
+  },
+  {
+    "id": "settings.provider-key-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/provider-key$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/provider-key"
+  },
+  {
+    "id": "settings.provider-key-clear-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/provider-key-clear$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/provider-key-clear"
+  },
+  {
+    "id": "settings.telegram-token-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/telegram-token$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/telegram-token"
+  },
+  {
+    "id": "settings.email-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/email$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/email"
+  },
+  {
+    "id": "settings.email-test-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/email-test$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/email-test"
+  },
+  {
+    "id": "settings.email-read-test-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/email-read-test$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/email-read-test"
+  },
+  {
+    "id": "settings.google-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/google$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/google"
+  },
+  {
+    "id": "settings.google-disconnect-send",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/google\\/disconnect$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/google/disconnect"
+  },
+  {
+    "id": "projects.select",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/projects\\/select$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "unscoped",
+    "needsProject": false,
+    "viewer": true,
+    "sample": "/projects/select"
+  },
+  {
+    "id": "projects.remove",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/projects\\/remove$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/remove"
+  },
+  {
+    "id": "projects.open",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/projects\\/open$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/open"
+  },
+  {
+    "id": "tasks.add",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/tasks\\/add$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/tasks/add"
+  },
+  {
+    "id": "queue.move",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/queue\\/move$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/queue/move"
+  },
+  {
+    "id": "queue.note",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/queue\\/note$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/queue/note"
+  },
+  {
+    "id": "fleet.register",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/fleet\\/runner\\/register$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/fleet/runner/register"
+  },
+  {
+    "id": "mode.confirm",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/mode\\/confirm$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/mode/confirm"
+  },
+  {
+    "id": "mode.sign",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/mode\\/sign$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/mode/sign"
+  },
+  {
+    "id": "mode.revoke",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/mode\\/revoke$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/mode/revoke"
+  },
+  {
+    "id": "people.projects",
+    "domain": "people",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/people\\/projects$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/people/projects"
+  },
+  {
+    "id": "people.invite",
+    "domain": "people",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/people\\/invite$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/people/invite"
+  },
+  {
+    "id": "people.invite-revoke",
+    "domain": "people",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/people\\/invite-revoke$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/people/invite-revoke"
+  },
+  {
+    "id": "people.revoke",
+    "domain": "people",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/people\\/revoke$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/people/revoke"
+  },
+  {
+    "id": "fleet.retire",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/fleet\\/runner\\/retire$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/fleet/runner/retire"
+  },
+  {
+    "id": "decision.answer",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/d\\/[0-9]{1,15}\\/answer$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "step-up",
+    "project": "decision",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/d/1/answer"
+  },
+  {
+    "id": "contest.act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/contest\\/[0-9]{1,15}\\/(arm|pick|abandon)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/contest/1/pick"
+  },
+  {
+    "id": "task.attend",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/t\\/[^/]+\\/(attend-preview|attend|attend-revoke)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "task",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one/attend"
+  },
+  {
+    "id": "task.act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/t\\/[^/]+\\/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "task",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one/approve"
+  },
+  {
+    "id": "task.instance-act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/t\\/[^/]+\\/(block|unblock|repair-dependency|follow-up)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "task",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/t/one/block"
+  },
+  {
+    "id": "projects.onboard-preview",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/projects\\/onboard-preview$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/onboard-preview"
+  },
+  {
+    "id": "projects.onboard-confirm",
+    "domain": "pages",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/projects\\/onboard-confirm$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/projects/onboard-confirm"
+  },
+  {
+    "id": "push.subscribe",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/push\\/subscribe$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/push/subscribe"
+  },
+  {
+    "id": "push.remove",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/push\\/remove$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/push/remove"
+  },
+  {
+    "id": "onboarding.phone-dismiss",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/onboarding\\/phone\\/dismiss$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/onboarding/phone/dismiss"
+  },
+  {
+    "id": "settings.lead-identity",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/lead\\/identity$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/lead/identity"
+  },
+  {
+    "id": "settings.lead-about",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/lead\\/about$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/lead/about"
+  },
+  {
+    "id": "settings.lead-promise-cancel",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/lead\\/promise\\/cancel$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/lead/promise/cancel"
+  },
+  {
+    "id": "settings.lead-on",
+    "domain": "settings",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/settings\\/lead\\/on$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/settings/lead/on"
+  },
+  {
+    "id": "chat.config",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/config$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/config"
+  },
+  {
+    "id": "chat.mate-mint",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/mate\\/mint$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/mate/mint"
+  },
+  {
+    "id": "chat.mate-follow",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/mate\\/follow$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/mate/follow"
+  },
+  {
+    "id": "chat.mate-end",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/mate\\/end$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/mate/end"
+  },
+  {
+    "id": "chat.mate-stop",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/mate\\/stop$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/mate/stop"
+  },
+  {
+    "id": "chat.proposal",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/proposal\\/[0-9]{1,15}\\/(confirm|dismiss)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "proposal",
+    "limited": "proposal",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/proposal/1/confirm"
+  },
+  {
+    "id": "coordinator.proposal",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/proposals\\/[0-9]{1,15}\\/(confirm|dismiss)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/proposals/1/confirm"
+  },
+  {
+    "id": "chat.send",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "conversation",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat"
+  },
+  {
+    "id": "chat.file",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/file\\/[0-9a-f]{32}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "id": "chat.ack-send",
+    "domain": "chat",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/chat\\/ack\\/[0-9]{1,15}$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/chat/ack/1"
+  },
+  {
+    "id": "recipes.prepare-send",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/recipes\\/prepare$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes/prepare"
+  },
+  {
+    "id": "recipes.preview-send",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/recipes\\/preview$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes/preview"
+  },
+  {
+    "id": "recipes.import-send",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/recipes\\/import$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes/import"
+  },
+  {
+    "id": "recipes.save-send",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/recipes\\/save$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes/save"
+  },
+  {
+    "id": "recipes.launch-send",
+    "domain": "flows",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/recipes\\/launch$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/recipes/launch"
+  },
+  {
+    "id": "routines.add",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/routines\\/add$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "form",
+    "limited": "collection",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/routines/add"
+  },
+  {
+    "id": "routine.act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/routines\\/[0-9]{1,15}\\/(approve|refresh|pause|resume|run-now)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "routine",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/routines/1/pause"
+  },
+  {
+    "id": "run.act",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/r\\/[0-9]{1,15}\\/(note|comment|revise|draft-repair|checks|add-tests)$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "run",
+    "limited": "resource",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/r/1/note"
+  },
+  {
+    "id": "session.editor-links",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/session\\/editor-links$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "session",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": true,
+    "sample": "/session/editor-links"
+  },
+  {
+    "id": "run.turn",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/r\\/[0-9]{1,15}\\/turn$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "run",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/r/1/turn"
+  },
+  {
+    "id": "incident.resolve",
+    "domain": "tasks",
+    "stage": "console",
+    "method": "POST",
+    "pattern": "^\\/i\\/[0-9]{1,15}\\/resolve$",
+    "callers": [
+      "cookie",
+      "bearer"
+    ],
+    "scope": "act",
+    "project": "incident",
+    "limited": "deny",
+    "needsProject": false,
+    "viewer": false,
+    "sample": "/i/1/resolve"
+  }
+]

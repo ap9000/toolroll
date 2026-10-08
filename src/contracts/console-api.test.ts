@@ -88,8 +88,14 @@ describe("console form contracts", () => {
 });
 
 describe("the inventory", () => {
-  const source = readFileSync(new URL("../serve.ts", import.meta.url), "utf8");
-  const handlePost = source.slice(source.indexOf("  async function handlePost("), source.indexOf("\n  }\n", source.indexOf("  async function handlePost(")));
+  // Source-input adaptation for the domain move; the contract and HTTP assertions stay unchanged.
+  const sources = ["../serve.ts", "../server/tasks.ts", "../server/flows.ts", "../server/chat.ts", "../server/settings.ts", "../server/people-tokens.ts", "../server/pages.ts", "../server/remote.ts", "../server/guards.ts"]
+    .map(path => readFileSync(new URL(path, import.meta.url), "utf8"));
+  const source = sources.join("\n");
+  const handlePost = sources.flatMap(source => ["  async function handlePost(", "  async function post("].flatMap(header => {
+    const start = source.indexOf(header);
+    return start < 0 ? [] : [source.slice(start, source.indexOf("\n  }\n", start))];
+  })).join("\n");
   const routes = [...Object.values(CONSOLE_FORMS).map(one => one.route), ...BODILESS_POSTS];
 
   test("every form contract is the one serve.ts reads its route through", () => {

@@ -1,3 +1,4 @@
+import { adapterPolicy } from "./server/route-policy.js";
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   SESSION_REQUEST_BYTES, SESSION_RESPONSE_BYTES, isSessionResponse, sessionDescriptor, validateSessionRequest,
@@ -125,6 +126,7 @@ export async function handleSessionHttp(request: IncomingMessage, response: Serv
     return reject(401, 'unauthenticated', 'Current operator bearer credentials are required.');
   }
   if (options.admitAuthenticated && refuseAdmission(options.admitAuthenticated(request, actor))) return true;
+  if (!adapterPolicy({ caller: "bearer", capability: "act" }, spec.mutation ? "act" : "read").ok) return reject(403, "forbidden", "Current operator access is required.");
   const media = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
   if (media !== 'application/json') return reject(415, 'unsupported-media-type', 'Send the session request as application/json.');
   const length = request.headers['content-length'];
