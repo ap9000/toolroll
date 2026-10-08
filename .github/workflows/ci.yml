@@ -16,6 +16,9 @@ jobs:
         node: ["22", "24"]
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Migration tests build old releases from git history (git archive <old commit>).
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
