@@ -19,7 +19,7 @@ const args = (positionals = '', values = '', references: Record<string, Kind> = 
  * digest. Neither dereferences a conversation, task or proposal. Creation IDs are never looked up. */
 export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ...['status', 'ready', 'grants', 'gaps', 'sync', 'runner list', 'coordinator list', 'incident list',
-    'routine list', 'intake show', 'intake run', 'template list', 'webhook status', 'webhook test', 'review show',
+    'routine list', 'intake show', 'intake run', 'template list', 'webhook status', 'review show',
     'chat-approval show', 'chat-approval off'].map(row => [row, args()] as const),
   ['integrations', args('', 'saved')],
   // --person and --token-name are names compared inside the reader's own view; --token stays a refused credential.

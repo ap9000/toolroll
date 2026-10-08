@@ -138,15 +138,15 @@ test("chat messages, notifications and finished checkout records older than thei
   const newMessage = store.appendMateMessage({ thread: lead, turn: null, role: "assistant", text: "two builds" }, new Date(NOW.getTime() - DAY));
   const neededMessage = store.appendMateMessage({ thread: openTask, turn: null, role: "operator", text: "keep the old API" }, OLD);
 
-  const notify = (key: string, at: Date, delivered: boolean, source?: { taskRef: number }) => {
+  const notify = (key: string, at: Date, resolved: boolean, source?: { taskRef: number }) => {
     store.enqueueNotification({ dedupeKey: key, kind: "note", subject: key, body: "body", ...(source === undefined ? {} : { source }) }, at);
-    if (delivered) store.handle.prepare("UPDATE notification SET delivered_at = ? WHERE dedupe_key = ?").run(at.toISOString(), key);
+    if (resolved) store.resolveEpisode(key, at);
   };
-  notify("old-delivered", OLD, true);
+  notify("old-resolved", OLD, true);
   notify("old-waiting", OLD, false);
   notify("old-open-task", OLD, false, { taskRef: open.ref });
-  notify("new-delivered", new Date(NOW.getTime() - DAY), true);
-  store.handle.prepare("INSERT INTO notification_delivery (notification, destination, delivered_at) SELECT id, 'telegram:1', ? FROM notification WHERE dedupe_key = 'old-delivered'").run(OLD.toISOString());
+  notify("new-resolved", new Date(NOW.getTime() - DAY), true);
+  store.handle.prepare("INSERT INTO notification_delivery (notification, destination, delivered_at) SELECT id, 'telegram:1', ? FROM notification WHERE dedupe_key = 'old-resolved'").run(OLD.toISOString());
 
   const checkout = (path: string, ref: number, released: Date) => store.handle.prepare("INSERT INTO worktree (path, repo, branch, task_ref, created_at, released_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(path, REPO, `b-${path.length}-${ref}`, ref, released.toISOString(), released.toISOString());
@@ -165,7 +165,7 @@ test("chat messages, notifications and finished checkout records older than thei
   expect(messages).toEqual([newMessage, neededMessage]);
   expect(messages).not.toContain(oldMessage);
   const notifications = store.handle.prepare("SELECT dedupe_key FROM notification WHERE dedupe_key NOT LIKE 'life:%' ORDER BY id").all().map(row => String(row["dedupe_key"]));
-  expect(notifications).toEqual(["old-waiting", "old-open-task", "new-delivered"]);
+  expect(notifications).toEqual(["old-waiting", "old-open-task", "new-resolved"]);
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification_delivery").get()!["n"]).toBe(0);
   const checkouts = store.listWorktrees().map(row => row.path).sort();
   expect(checkouts).toEqual([join(dir, "gone-open"), onDisk].sort());
@@ -248,6 +248,8 @@ test("an older file's retention_setting (7 days or more) is rebuilt for 1 day, k
   insert.run("notifications", 365, OLD.toISOString());
   expect(() => insert.run("checkouts", 1, OLD.toISOString())).toThrow();
   const before = db.prepare("SELECT * FROM retention_setting ORDER BY kind").all();
+  // That build's file reads older than this one (every DDL change bumps the version since v114).
+  db.exec("UPDATE schema_version SET version = 113");
   store.close();
 
   store = openStore(file);

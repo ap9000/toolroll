@@ -55,6 +55,34 @@ test("a backup is an online copy: running work carries on, the copy is checked, 
   expect(store.backupRuns()).toMatchObject([{ id: made.id, trigger: "manual", ok: true, file: made.file, schemaVersion: SCHEMA_VERSION, error: null }]);
 });
 
+test("a backup first checkpoints the verified chain head (the copy carries it), once per head, and never over a broken chain", async () => {
+  const act = (action: string) => store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action, outcome: "done", source: "policy" });
+  const checkpointsIn = (path: string) => { const db = new DatabaseSync(path); try { return db.prepare("SELECT through, hash, by FROM ledger_checkpoint ORDER BY id").all().map(row => ({ ...row })); } finally { db.close(); } };
+  act("one"); act("two");
+  const entries = store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger").get()!["n"];
+  const first = await backupNow(store, file, "manual", () => NOW);
+  if (!first.ok) throw new Error(first.error);
+  const head = store.ledgerChain({ full: true });
+  expect(first.checkpoint).toEqual({ through: head.through, hash: head.head });
+  expect(store.ledgerCheckpoints()).toMatchObject([{ through: head.through, hash: head.head, by: "system" }]);
+  expect(checkpointsIn(first.file)).toEqual([{ through: head.through, hash: head.head, by: "system" }]);
+  // An automatic checkpoint writes no ledger entry: the next backup has nothing new to checkpoint.
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger").get()!["n"]).toBe(entries);
+  const second = await backupNow(store, file, "manual", () => at(1));
+  expect(second).toMatchObject({ ok: true, checkpoint: null });
+  expect(store.ledgerCheckpoints()).toHaveLength(1);
+
+  // A broken chain gets no checkpoint; the backup still goes ahead and says why.
+  act("three");
+  store.handle.exec("DROP TRIGGER action_ledger_no_update");
+  store.handle.exec("UPDATE action_ledger SET actor = 'mallory' WHERE action = 'two'");
+  const third = await backupNow(store, file, "manual", () => at(2));
+  expect(third).toMatchObject({ ok: true, checkpoint: { problem: expect.stringContaining("was changed after it was sealed") } });
+  expect(store.ledgerCheckpoints()).toHaveLength(1);
+  // The manual checkpoint is the same method, and refuses the same way.
+  expect(store.ledgerCheckpoint("alex", at(2))).toMatchObject({ problem: expect.stringContaining("was changed after it was sealed") });
+});
+
 test("the newest N are kept; nothing else in the folder is touched", async () => {
   store.setBackupSettings({ enabled: true, everyHours: 1, keep: 3, folder: null }, "alex", NOW);
   const made: string[] = [];

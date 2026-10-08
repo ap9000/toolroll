@@ -105,6 +105,8 @@ function narrowToV40(file: string): void {
   db.exec(V40_CRITERION_REVIEW_DDL);
   db.exec(`INSERT INTO criterion_review (${V40_COLUMNS.join(", ")}) SELECT ${V40_COLUMNS.join(", ")} FROM criterion_review_wide`);
   db.exec("DROP TABLE criterion_review_wide");
+  // A file in this shape was written before v114: every DDL change bumps the version, and a current file is never repaired.
+  db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION - 1} WHERE version = ${SCHEMA_VERSION}`);
   db.close();
   expect(columnsOf(file).map(one => one.name)).toEqual([...V40_COLUMNS]);
 }
@@ -195,7 +197,7 @@ describe("an existing ten-column criterion_review table gains the review binding
     ).toHaveLength(1);
     fresh.close();
     narrowToV40(file);
-    expect(versionOf(file)).toBe(SCHEMA_VERSION);
+    expect(versionOf(file)).toBe(SCHEMA_VERSION - 1);
     const rows = reviewRowsOf(file);
     expect(rows).toHaveLength(1);
     const historical = rows[0]!;

@@ -445,7 +445,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** One-click connections on their way: the service's sign-in page and back, 15 minutes at most. */
   const connectVisits = new Map<string, ConnectVisit>();
   /** Flows open in a browser (v88): who's here, and a nudge when one changes. */
-  // Live views push on write (live-bus.ts): the revision triggers move, the rooms hear it.
+  // Live views push on write (live-bus.ts): each commit moves the workspace revision, the rooms hear it.
   const liveBus = createLiveBus();
   const liveFollower = followWorkspace(store, () => workspaceRevision.current(), liveBus, { file: store.databaseFile() });
   const flowRooms = createFlowRooms(flow => flowFingerprint(store, flow), { bus: liveBus });

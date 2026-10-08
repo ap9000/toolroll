@@ -73,41 +73,21 @@ describe("the outbox", () => {
     store.close();
   });
 
-  test("deliver hands the text over as environment, records a receipt, and keeps failures pending", async () => {
+  test("the outbox only lists: pending facts by default, resolved ones with --all; there is no shell deliverer", async () => {
     const store = openStore(db);
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
-    store.enqueueNotification(
-      { dedupeKey: "n-1", kind: "build-failed", subject: 'subject with "quotes" and $DOLLARS', body: "line one\nline two" },
-      T0,
-    );
-    store.enqueueNotification(
-      { dedupeKey: "n-2", kind: "gap", subject: "second", body: "…" },
-      T0,
-    );
+    store.enqueueNotification({ dedupeKey: "n-1", kind: "build-failed", subject: "first", body: "…" }, T0);
+    store.enqueueNotification({ dedupeKey: "decision:2", kind: "decision", subject: "second", body: "…" }, T0);
+    store.resolveEpisode("decision:2", T0);
     store.close();
 
-    // The command reads env — nothing from the notification touches the
-    // command line itself. It fails once for n-2 via a marker file trick:
-    // first invocation writes the marker and succeeds; second sees it and fails.
-    const marker = join(base, "seen");
-    const cmd = `if [ -f "${marker}" ]; then echo "already: $STANDING_ORDERS_DEDUPE_KEY" >&2; exit 7; fi; touch "${marker}"; echo "receipt for $STANDING_ORDERS_SUBJECT"`;
+    expect(await run(["outbox", "deliver", "--cmd", "true", "--json"])).toBe(EXIT.usage);
+    expect(payload()).toMatchObject({ ok: false, command: "outbox", reason: "usage" });
 
-    const code = await run(["outbox", "deliver", "--cmd", cmd, "--json"]);
-
-    expect(code).toBe(EXIT.failed);
-    expect(payload()).toMatchObject({ ok: false, delivered: 1, failed: 1 });
-
-    const after = openStore(db);
-    const all = after.listNotifications("all");
-    after.close();
-    expect(all[0]).toMatchObject({
-      dedupeKey: "n-1",
-      receipt: 'receipt for subject with "quotes" and $DOLLARS',
-    });
-    expect(all[0]?.deliveredAt).not.toBeNull();
-    expect(all[1]).toMatchObject({ dedupeKey: "n-2", deliveredAt: null, attempts: 1, lastError: "already: n-2" });
+    expect(await run(["outbox", "list", "--json"])).toBe(EXIT.ok);
+    expect((payload().notifications as { dedupeKey: string }[]).map(one => one.dedupeKey).filter(key => !key.startsWith("life:"))).toEqual(["n-1"]);
+    expect(await run(["outbox", "list", "--all"])).toBe(EXIT.ok);
+    expect(lines.join("\n")).toContain("      pending");
+    expect(lines.join("\n")).toContain(`      resolved ${T0.toISOString()}`);
   });
 
   test("a failing build leaves a durable notification with the canonical reason", async () => {

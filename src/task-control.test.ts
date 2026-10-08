@@ -242,7 +242,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a fresh file is born at the current schema with the run_stop table and a hold that admits the stop owner", () => {
-    expect(SCHEMA_VERSION).toBe(113);
+    expect(SCHEMA_VERSION).toBe(114);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
     expect(store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_stop'").get()).toBeDefined();
     const ddl = String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hold'").get()?.["sql"]);
@@ -575,7 +575,9 @@ describe("a finished run's processes settle by themselves", () => {
       expect(store.recordFinishedRunExits(later(2_000))).toBe(0);
       kill.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
       expect(store.recordFinishedRunExits(later(3_000))).toBe(1);
-      expect(store.raw().prepare("SELECT exited_at FROM run_process WHERE run = ?").get(runId)?.["exited_at"]).toBe(later(3_000).toISOString());
+      // Settled: the exited witness is compacted into the run's summary (v114), which keeps when it exited.
+      expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run_process WHERE run = ?").get(runId)?.["n"]).toBe(0);
+      expect(store.raw().prepare("SELECT witnesses, last_exited_at FROM run_process_summary WHERE run = ?").get(runId)).toMatchObject({ witnesses: 1, last_exited_at: later(3_000).toISOString() });
       expect(store.stopQuiescenceProblem(runId)).toBeNull();
       expect(item("t-outlived").status.label).toBe("Ready for review");
       expect(store.recordFinishedRunExits(later(4_000))).toBe(0);

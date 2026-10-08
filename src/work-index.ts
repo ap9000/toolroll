@@ -120,7 +120,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT r.task_ref FROM held_session h JOIN run r ON r.id=h.run JOIN admitted a ON a.ref_id=r.task_ref WHERE h.ended_at IS NULL
   UNION
   SELECT r.task_ref FROM run r INDEXED BY work_spawned_run JOIN admitted a ON a.ref_id=r.task_ref
-    WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id)
+    WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run=r.id)
   UNION
   SELECT r.task_ref FROM run_process p INDEXED BY work_unsettled_custody JOIN run r ON r.id=p.run JOIN admitted a ON a.ref_id=r.task_ref
     WHERE p.exited_at IS NULL AND p.container_empty_at IS NULL
@@ -331,7 +331,7 @@ function registerValidators(store: Store): string {
  * there, which only the store can read (a held or unreadable workspace). */
 function custodyReadings(store: Store): { readings: Map<number, StopFact | null>; workspace: Set<number> } {
   const refs = store.handle.prepare(`SELECT r.task_ref FROM held_session h JOIN run r ON r.id=h.run WHERE h.ended_at IS NULL
-    UNION SELECT r.task_ref FROM run r WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id)
+    UNION SELECT r.task_ref FROM run r WHERE r.provider_started_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run=r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run=r.id)
     UNION SELECT r.task_ref FROM run_process p JOIN run r ON r.id=p.run WHERE p.exited_at IS NULL AND p.container_empty_at IS NULL`).all().map(row => Number(row['task_ref']));
   const noted = store.handle.prepare(`SELECT r.task_ref,r.worktree FROM task t JOIN task_ref tr ON tr.external_id=t.id
     JOIN run r ON r.id=(SELECT MAX(id) FROM run WHERE task_ref=tr.id AND role IN ('builder','scout') AND finished_at IS NOT NULL)

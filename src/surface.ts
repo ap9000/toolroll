@@ -387,7 +387,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("coordinator revoke", "revoke an MCP filing credential"),
   operator("mcp", "serve the MCP gateway over stdio — the coordinator credential is the only key it accepts"),
   operator("cap add", "record a capability"),
-  operator("outbox deliver", "deliver queued notifications"),
   operator("peek", "watch live agents in the terminal — one pane per open run; --tmux opens a window per run"),
   operator("incident resolve", "resolve an incident"),
   operator("decide", "read and ANSWER parked decisions — answering is a person's act"),
@@ -434,7 +433,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("intake clear", "clear intake configuration"),
   operator("contest exclude", "exclude a contestant from a tournament"),
   operator("webhook primary", "choose which service receives alerts"),
-  operator("webhook test", "send a test message"),
   operator("bridge", "the Telegram bridge (pairing, tokens, the follower)"),
   operator("enroll", "grant a repository authority (backends, dispatch) — its own explicit yes"),
   operator("revoke", "take an authority grant back"),
@@ -470,7 +468,7 @@ const REMOTE_NO: readonly string[] = [
   "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
-  "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
+  "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "peek",
   "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
@@ -500,7 +498,7 @@ const REMOTE_YES: readonly string[] = [
   "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",
   "routine list", "routine show", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
-  "contest show", "contest exclude", "webhook status", "webhook test", "review show", "chat-approval show", "chat-approval off",
+  "contest show", "contest exclude", "webhook status", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
   "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory review", "memory status",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",

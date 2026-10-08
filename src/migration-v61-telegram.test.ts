@@ -17,13 +17,12 @@ describe("v61 Telegram delivery foundation", () => {
   let store: Store | undefined;
   afterEach(() => { store?.close(); store = undefined; if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
 
-  test.each([60, -60])("v%s preserves legacy receipts and unknown provenance, then reopens idempotently", version => {
+  test.each([60, -60])("v%s preserves legacy rows and unknown provenance, then reopens idempotently", version => {
     dir = mkdtempSync(join(tmpdir(), "so-v61-"));
     const file = join(dir, "orders.db");
     store = openStore(file);
     store.enqueueNotification({ dedupeKey: "legacy-task", kind: "decision", subject: "a", body: "private task", link: "/t/a" }, NOW);
     store.enqueueNotification({ dedupeKey: "legacy-sent", kind: "merge", subject: "b", body: "sent" }, NOW);
-    store.recordDelivery(2, { ok: true, receipt: "telegram:old:chat:7" }, NOW);
     store.close(); store = undefined;
     const old = new DatabaseSync(file);
     for (const table of [...laterTables, ...tables]) old.exec(`DROP TABLE ${table}`);
@@ -33,12 +32,11 @@ describe("v61 Telegram delivery foundation", () => {
     const before = old.prepare("SELECT * FROM notification ORDER BY id").all();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(113);
+    expect(SCHEMA_VERSION).toBe(114);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const after = store.handle.prepare("SELECT * FROM notification ORDER BY id").all();
     expect(after.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !columns.includes(key))))).toEqual(before);
     expect(store.listNotifications("all").map(row => row.scope)).toEqual(["unknown", "unknown"]);
-    expect(store.listNotifications("all")[1]?.receipt).toBe("telegram:old:chat:7");
     for (const table of tables) expect(store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
     store.close(); store = openStore(file);
     expect(store.handle.prepare("SELECT * FROM notification ORDER BY id").all()).toEqual(after);

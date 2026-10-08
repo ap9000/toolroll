@@ -49,8 +49,6 @@ import { refreshConnections } from "./mcp-connect.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
 import { followTeams } from "./teams.js";
-import {loadDiscordCredentials} from "./discord-api.js";
-import { loadSlackCredentials } from "./slack-api.js";
 import { followSlack } from "./slack.js";
 import { validateScopeText } from "./task-text.js";
 import { runMemoryCommand } from "./memory-cli.js";
@@ -118,7 +116,7 @@ import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectR
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync, mkdirSync } from "node:fs";
-import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
+import { BRANCH_PREFIX, envValue, existingOrFirst, namedPath, taskBranches } from "./names.js";
 import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -313,7 +311,7 @@ import { isRiskLevel, isTaskSize, legOf, projectRoute, riskConsequence, routeDig
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { clearWebhook, effectivePrimary, isMessagingChannel, loadConsoleUrl, loadPrimary, loadWebhookTargets, phoneOrigin, saveConsoleUrl, savePrimary, saveWebhook, webhookPass, SLACK_ENV, DISCORD_ENV } from "./webhooks.js";
+import { effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import { recognizesEligible } from "./exhaustion.js";
@@ -763,21 +761,13 @@ Agents — which provider and model each phase runs on
                                         says REVIEW was not read)
 
 The outbox — facts that want a person, durably
-  toolroll webhook set slack|discord <url>
-                                        UI-only chat mirrors: every page a
-                                        message with a console link; acting
-                                        stays in the console. Delivers when
-                                        Telegram is not configured.
   toolroll webhook set console-url <http://host:port>
   toolroll webhook primary telegram|slack|discord
                                         which service receives alerts when
                                         several are connected (asked once,
                                         the first time you add a second)
-  toolroll webhook status | test | clear slack|discord
-  toolroll outbox list [--all]
-  toolroll outbox deliver --cmd <c>  runs once per pending row, reading
-                                        $TOOLROLL_KIND / _SUBJECT / _BODY;
-                                        exit 0 delivered receipts, 1 any fail
+  toolroll webhook status
+  toolroll outbox list [--all]          pending facts (--all: resolved too)
 
 Runners — the machines that may be given work
   toolroll runner register <name> [--capacity <n>] [--token-file <path>]
@@ -1354,8 +1344,8 @@ function telegramConversation(context: Context, options: { serverOrigin?: string
     evidenceRoot: context.evidenceRoot,
     ...(context.mateSeams?.subscriptionRunner === undefined ? {} : { subscriptionRunner: context.mateSeams.subscriptionRunner }),
     ...(context.heldCoordinator === undefined ? {} : { held: context.heldCoordinator }),
-    // Re-read on every card and every `/task`: the same console-url the
-    // mirrors use, held to an https origin, and — inside `up`, where this
+    // Re-read on every card and every `/task`: the same console-url chat
+    // links use, held to an https origin, and — inside `up`, where this
     // process also serves the console — equal to that console's own
     // `--public-url`, or no link at all.
     phoneOrigin: () => phoneOrigin(process.env, dirname(context.databaseFile), { serverOrigin: options.serverOrigin ?? null }),
@@ -5488,7 +5478,7 @@ async function briefCommand(
   }
 
   if (pending.length > 0) {
-    lines.push(`  ▸ OUTBOX     ${pending.length} undelivered — toolroll outbox deliver --cmd …`);
+    lines.push(`  ▸ OUTBOX     ${pending.length} undelivered — toolroll outbox list`);
   }
 
   if (decisions.length > 0) {
@@ -6074,24 +6064,22 @@ async function incidentCommand(
 }
 
 /**
- * `toolroll webhook …` — Slack and Discord as UI-ONLY mirrors: every
- * page is a message with a console link; acting stays in the console
- * behind its own authentication. The URL is a credential: 0600 file
- * beside the database, or the environment, never anywhere else.
+ * `toolroll webhook status|primary|set console-url` — messaging settings:
+ * which connected chat service receives alerts, and the console address
+ * chat links open.
  */
 async function webhookCommand(
   positional: readonly string[],
-  flags: Map<string, string | true>,
+  _flags: Map<string, string | true>,
   context: Context,
 ): Promise<number> {
-  const { store, write, json, clock } = context;
+  const { write, json } = context;
   const dir = dirname(context.databaseFile);
   const [action, which, value] = positional;
 
   const telegramConfigured = loadBotToken(process.env, context.telegramTokenFile) !== null;
 
   if (action === undefined || action === "status") {
-    const targets = loadWebhookTargets(process.env, dir);
     const consoleUrl = loadConsoleUrl(process.env, dir);
     const primary = effectivePrimary(process.env, dir, telegramConfigured);
     if (json) {
@@ -6107,32 +6095,7 @@ async function webhookCommand(
       write(`    Choose: toolroll webhook primary telegram|slack|discord`);
     }
     write(`  links    ${consoleUrl ?? "NOT SET — messages will carry no console link; toolroll webhook set console-url http://host:port"}`);
-    if (targets.length === 0) {
-      write("");
-      write("  toolroll webhook set slack https://hooks.slack.com/services/…");
-      write("  toolroll webhook set discord https://discord.com/api/webhooks/…");
-      write(`  (or export ${SLACK_ENV} / ${DISCORD_ENV})`);
-    }
-    write("");
-    write("  Mirrors deliver when Telegram is not configured; with a paired Telegram");
-    write("  chat, Telegram carries the page (it can hold buttons) and mirrors stay quiet.");
     return EXIT.ok;
-  }
-
-  if (action === "test") {
-    const targets = loadWebhookTargets(process.env, dir);
-    if (targets.length === 0) {
-      return fail(write, json, "webhook test", "unconfigured", "no webhook configured — `toolroll webhook set slack|discord <url>`", EXIT.refused);
-    }
-    store.enqueueNotification(
-      { source: { installation: true }, dedupeKey: `webhook-test:${clock().getTime()}`, kind: "test", subject: "toolroll webhook test", body: "If you can read this, the mirror works. Acting happens in the console." },
-      clock(),
-    );
-    const report = await webhookPass(store, { targets, consoleUrl: loadConsoleUrl(process.env, dir), clock });
-    if (report.problems.length > 0) {
-      return fail(write, json, "webhook test", "delivery", report.problems.join("; "), EXIT.failed);
-    }
-    return succeed(write, json, "webhook test", { sent: report.sent }, () => [`Sent ${report.sent} message(s). Check the channel.`]);
   }
 
   if (action === "primary") {
@@ -6149,45 +6112,12 @@ async function webhookCommand(
     ]);
   }
 
-  if (action === "clear" && (which === "slack" || which === "discord")) {
-    clearWebhook(dir, which);
-    return succeed(write, json, "webhook clear", { which }, () => [`${which} mirror cleared.`]);
+  if (action !== "set" || which !== "console-url" || value === undefined) {
+    return fail(write, json, "webhook", "usage", "`toolroll webhook [status|primary <service>|set console-url <url>]`", EXIT.usage);
   }
-
-  if (action !== "set" || which === undefined || value === undefined) {
-    return fail(write, json, "webhook", "usage", "`toolroll webhook [status|test|set slack|discord|console-url <value>|clear slack|discord]`", EXIT.usage);
-  }
-  if (which === "console-url") {
-    const saved = saveConsoleUrl(dir, value);
-    if (!saved.ok) return fail(write, json, "webhook set", "invalid", saved.message, EXIT.usage);
-    return succeed(write, json, "webhook set", { which }, () => [`Console links will open ${value.replace(/\/+$/, "")}.`]);
-  }
-  if (which !== "slack" && which !== "discord") {
-    return fail(write, json, "webhook set", "usage", "set what? slack, discord, or console-url", EXIT.usage);
-  }
-  const saved = saveWebhook(dir, which, value);
+  const saved = saveConsoleUrl(dir, value);
   if (!saved.ok) return fail(write, json, "webhook set", "invalid", saved.message, EXIT.usage);
-
-  // The first moment more than one service exists is the moment to ask
-  // which one pages — once, right here, not at 3am when both fire.
-  const after = effectivePrimary(process.env, dir, telegramConfigured);
-  let chosen: string | null = null;
-  if (after.implicit && loadPrimary(process.env, dir) === null && after.configured.length > 1 && interactive() && !json) {
-    write(`You now have ${after.configured.join(" and ")} connected.`);
-    const answer = (await ask(`Which service should receive alerts? [${after.configured.join("/")}] `)).trim().toLowerCase();
-    if (isMessagingChannel(answer) && after.configured.includes(answer)) {
-      savePrimary(dir, answer);
-      chosen = answer;
-    } else {
-      write(`Left unchosen — ${after.channel} receives alerts by default. Decide any time: toolroll webhook primary <service>`);
-    }
-  }
-  return succeed(write, json, "webhook set", { which, ...(chosen === null ? {} : { primary: chosen }) }, () => [
-    `${which} mirror configured — the URL lives in a private file beside the database.`,
-    ...(chosen === null ? [] : [`${chosen} carries the pages.`]),
-    ...(after.implicit && chosen === null && !interactive() ? [`Several services are configured — choose the pager: toolroll webhook primary <service>`] : []),
-    `Send yourself a proof: toolroll webhook test`,
-  ]);
+  return succeed(write, json, "webhook set", { which }, () => [`Console links will open ${value.replace(/\/+$/, "")}.`]);
 }
 
 /**
@@ -9109,12 +9039,6 @@ async function runWatchLoop(args: {
             quietContext,
           );
         }
-        if (primary.channel !== null && primary.channel !== "telegram") {
-          const targets = loadWebhookTargets(process.env, dir).filter(one => one.kind === primary.channel && (one.kind !== "slack" || loadSlackCredentials(dir) === null) && (one.kind !== "discord" || loadDiscordCredentials(dir) === null));
-          if (targets.length > 0) {
-            await webhookPass(store, { targets, consoleUrl: loadConsoleUrl(process.env, dir), clock: context.clock });
-          }
-        }
       }
 
       // Work-conserving: if the world moved while we worked — or we just
@@ -10843,18 +10767,6 @@ async function publishCommand(
 // ---- the outbox -----------------------------------------------------------
 
 /**
- * `toolroll outbox list|deliver` — reading and draining the durable
- * outbox. Delivery runs an operator-supplied command once per pending row;
- * the notification's text reaches it as environment variables, never
- * substituted into the command line, because subjects and bodies quote
- * things agents and repositories said and a shell must not meet those.
- *
- *   toolroll outbox deliver --cmd 'curl -d "$TOOLROLL_SUBJECT" ntfy.sh/mine'
- *
- * Exit 0 when everything pending delivered (or nothing was pending);
- * 1 when any delivery failed — a broken channel is breakage, not a "no".
- */
-/**
  * `toolroll peek [<run>] [--tmux] [--lines <n>]` — watch live agents
  * in the terminal: one pane per open run with its stage and transcript
  * tail; a run id follows that one until it finishes; --tmux opens a real
@@ -10908,12 +10820,17 @@ async function peekCommand(
   return runPeek(store, context.evidenceRoot, { ...(runId === undefined ? {} : { runId }), io: { stdout: process.stdout, stdin: process.stdin }, clock });
 }
 
+/**
+ * `toolroll outbox list [--all]` — read the durable outbox: the facts that
+ * want a person, pending until resolved. Delivery happens per destination
+ * (chats, phone push), never from here.
+ */
 async function outboxCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
 ): Promise<number> {
-  const { store, write, json, clock } = context;
+  const { store, write, json } = context;
   const [action] = positional;
 
   if (action === "list" || action === undefined) {
@@ -10924,86 +10841,17 @@ async function outboxCommand(
       return EXIT.ok;
     }
     if (notifications.length === 0) {
-      write(wanted === "pending" ? "Nothing waiting to be delivered." : "The outbox is empty.");
+      write(wanted === "pending" ? "Nothing pending." : "The outbox is empty.");
       return EXIT.ok;
     }
     for (const one of notifications) {
-      const state =
-        one.deliveredAt !== null
-          ? `delivered ${one.deliveredAt}`
-          : one.attempts > 0
-            ? `pending, ${one.attempts} failed attempt(s): ${one.lastError ?? ""}`
-            : "pending";
       write(`  #${one.id} ${one.kind.padEnd(18)} ${one.subject}`);
-      write(`      ${state}`);
+      write(`      ${one.resolvedAt === null ? "pending" : `resolved ${one.resolvedAt}`}`);
     }
     return EXIT.ok;
   }
 
-  if (action === "deliver") {
-    const demoFence = refuseDemo(context, "outbox deliver");
-    if (demoFence !== null) return demoFence;
-    const command = text(flags, "cmd");
-    if (command === undefined) {
-      return fail(write, json, "outbox deliver", "usage", "--cmd says how: it runs once per notification, reading $TOOLROLL_KIND, $TOOLROLL_SUBJECT, $TOOLROLL_BODY", EXIT.usage);
-    }
-
-    // Claimed, not merely listed: the Telegram bridge drains this same
-    // outbox, and select-then-send-then-record from two deliverers pages a
-    // person twice. The claim is a short lease on the act of sending; a
-    // deliverer that dies mid-send leaves rows that unclaim by expiry.
-    const owner = `outbox-${randomUUID()}`;
-    // Push first, independently (arc 3 finding 8): its pair ledger does not
-    // depend on globally-undelivered notifications — Telegram or a webhook
-    // may already have stamped delivered_at.
-    let pushed = 0;
-    try {
-      pushed = (await pushPass(store, { configDir: dirname(context.databaseFile), clock })).accepted;
-    } catch {
-      // additive; the shell delivery below still runs
-    }
-    const pending = store.claimDeliveries(owner, 2 * 60_000, clock());
-    if (pending.length === 0) {
-      return succeed(write, json, "outbox deliver", { delivered: 0, failed: 0, pushed }, () => [
-        pushed > 0 ? `Nothing for the shell command; ${pushed} push(es) accepted.` : "Nothing waiting to be delivered.",
-      ]);
-    }
-
-    let delivered = 0;
-    let failed = 0;
-    for (const one of pending) {
-      const sent = await run("sh", ["-lc", command], {
-        timeoutMs: 30_000,
-        env: {
-          ...envTwins("KIND", one.kind),
-          ...envTwins("SUBJECT", one.subject),
-          ...envTwins("BODY", one.body),
-          ...envTwins("DEDUPE_KEY", one.dedupeKey),
-        },
-      });
-      if (sent.code === 0) {
-        const receipt = sent.stdout.split("\n")[0]?.trim() ?? "";
-        store.finalizeDelivery(one.id, owner, { ok: true, receipt: receipt === "" ? null : receipt }, clock());
-        delivered++;
-      } else {
-        const error = sent.timedOut
-          ? "timed out"
-          : sent.stderr.split("\n")[0]?.trim() || `exit ${sent.code}`;
-        store.finalizeDelivery(one.id, owner, { ok: false, error }, clock());
-        failed++;
-      }
-    }
-
-    const code = failed > 0 ? EXIT.failed : EXIT.ok;
-    if (json) {
-      write(envelopeJson({ ok: failed === 0, command: "outbox deliver", delivered, failed }));
-      return code;
-    }
-    write(`Delivered ${delivered}, failed ${failed}.`);
-    return code;
-  }
-
-  return fail(write, json, "outbox", "usage", `unknown \`outbox ${action}\` — try list, deliver`, EXIT.usage);
+  return fail(write, json, "outbox", "usage", `unknown \`outbox ${action}\` — try list`, EXIT.usage);
 }
 
 // ---- write access ---------------------------------------------------------
@@ -14059,6 +13907,7 @@ async function backupCommand(positional: readonly string[], flags: Map<string, s
     if (!made.ok) return fail(context.write, context.json, command, "failed", `The backup failed: ${made.error}`, EXIT.failed, { backup: made.id });
     return succeed(context.write, context.json, command, { backup: made }, () => [
       `Backed up to ${made.file} (${bytesWords(made.bytes)}).${made.removed === 0 ? "" : ` Removed ${made.removed} older ${made.removed === 1 ? "backup" : "backups"}.`}`,
+      ...(made.checkpoint !== null && "problem" in made.checkpoint ? [`The activity log failed its tamper check, so it was not anchored: ${made.checkpoint.problem}`] : []),
     ]);
   }
   const settings = store.backupSettings();

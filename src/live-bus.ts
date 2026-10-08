@@ -1,8 +1,8 @@
 /**
  * Live views push on write. Nothing here polls once a second.
  *
- * - The bus. The database's own revision triggers (workspace-revision.ts)
- *   move one counter on every meaningful write. After each in-process
+ * - The bus. Every connection's write wrapper (workspace-revision.ts)
+ *   moves one counter per committed meaningful write. After each in-process
  *   transact() COMMIT, and whenever another process (the worker, the CLI)
  *   writes the database's write-ahead log, the revision is read once; when
  *   it moved, every subscriber hears `{ revision }`. A rolled-back or quiet
@@ -20,7 +20,7 @@
  *   gets one `reload` and ends so its EventSource can reconnect.
  *
  * Transport seam: a future WebSocket (live cursors) subscribes to the same
- * LiveBus beside these SSE rooms; nothing in the Store or the triggers changes.
+ * LiveBus beside these SSE rooms; nothing in the Store or its write wrapper changes.
  */
 import { watch, type FSWatcher } from "node:fs";
 import type { ServerResponse } from "node:http";

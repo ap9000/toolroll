@@ -751,11 +751,10 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_outbound_message WHERE task_id = 'alpha-1'").get()?.["n"]).toBe(3);
   });
 
-  test("an earlier shell or webhook receipt cannot hide a failed Telegram delivery", async () => {
+  test("a failed Telegram delivery stays pending for attention until it recovers", async () => {
     pair();
     placed("alpha-1", ALPHA, "Guard the payout path");
     const notification = store.listNotifications()[0]!;
-    store.recordDelivery(notification.id, { ok: true, receipt: "shell:fixture" }, now);
     const script = scriptedTransport();
     script.fail({ ok: false, description: "offline" });
     expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 0 } });
@@ -768,8 +767,6 @@ describe("lifecycle facts through the Telegram transport", () => {
     now = later(2_000);
     expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 1, problems: [] } });
     expect(store.pendingForAttention()).toEqual([]);
-    // Neither the failure nor its recovery rewrites the other channel's receipt.
-    expect(store.listNotifications("all")[0]).toMatchObject({ deliveredAt: T0.toISOString(), receipt: "shell:fixture" });
   });
 
   test("a hold's button opens the task's details page under the trusted origin, where the release control lives", async () => {
@@ -858,7 +855,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     const run = store.startRun({ taskRef: a1, leaseId: "l-a1", runner: RUNNER, branch: "so/alpha-1", worktree: "/pool/alpha-1", ...bareLegacy("build"), now });
     expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 0, problems: [] } });
     expect(script.sends()).toHaveLength(1);
-    // The outbox keeps all three (the legacy shell/webhook column is separate from Telegram's receipts).
+    // The outbox keeps all three: they are unresolved, whatever Telegram's receipts say.
     expect(store.listNotifications("pending").filter(isLifecycleNotification)).toHaveLength(3);
     // A re-pairing (a new chat) is not a first pairing: what no phone ever
     // received still waits for it, in order, with nothing settled as history.

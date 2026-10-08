@@ -1583,6 +1583,7 @@ describe("the reviewer role in the store", () => {
       legacy.raw().prepare("INSERT INTO review_request (run, requested_by, requested_at, consumed_at, consumed_reason) VALUES (?, 'alex', ?, ?, 'reviewed')").run(run, T0.toISOString(), T0.toISOString());
       legacy.raw().exec("ALTER TABLE review_request DROP COLUMN mode_digest");
       legacy.raw().exec("ALTER TABLE review_request DROP COLUMN basis");
+      legacy.raw().exec("UPDATE schema_version SET version = 113"); // an older build's file reads older (v114)
       legacy.close();
     }
     const upgraded = openStore(file);

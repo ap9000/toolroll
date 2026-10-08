@@ -217,11 +217,6 @@ export const COMMAND_OUTPUTS = {
   "routine list": answers("routine list", { routines: list }),
   "incident list": answers("incident list", { incidents: list }),
   "outbox list": answers("outbox list", { notifications: rows({ id: int, kind: str, subject: str, createdAt: str }) }),
-  // A pass with failed deliveries answers ok: false with its counts and no reason.
-  "outbox deliver": z.union([
-    z.looseObject({ envelopeVersion: z.literal(ENVELOPE_VERSION), ok: z.boolean(), command: z.literal("outbox deliver"), delivered: int, failed: int }),
-    refusal("outbox deliver"),
-  ]),
   "approver list": answers("approver list", { approvers: list }),
   "coordinator list": answers("coordinator list", { coordinators: list }),
   "cap list": answers("cap list", { repo: str, capabilities: list }),

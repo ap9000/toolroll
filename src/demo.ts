@@ -8,7 +8,7 @@
  *   - The database is stamped `demo` BEFORE any row exists — an append-only
  *     installation fact with no unset API. Every spending or external-effect
  *     command (tick, watch, build, publish, reconcile, daemon, bridge,
- *     outbox deliver, intake) fails closed on the stamp, so a kept sandbox
+ *     intake) fails closed on the stamp, so a kept sandbox
  *     can never be mistaken for real work by a worker pointed at it later.
  *     The console banner is decoration; the fence is enforcement.
  *   - The seeded history is SYNTHETIC and does not pretend otherwise: runs

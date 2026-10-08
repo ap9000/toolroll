@@ -22,8 +22,8 @@ test.each([90, -90])("v%s: flows and their cards stay as they were, and each car
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(113);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
+  expect(SCHEMA_VERSION).toBe(114);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(114);
   expect(store.getFlowCard(card)).toMatchObject({ title: "Refund for order 42?", stage: "inbox", state: "active", entry: 1 });
   expect(store.flowMailOf(card)).toEqual([]);
   expect(store.flowMailWatch()).toEqual({ cursor: null, nextAt: null, failures: 0, lastOutcome: null });

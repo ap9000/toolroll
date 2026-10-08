@@ -4,6 +4,7 @@
  * standing decide the rest; and nothing reaches for this machine's owner — not the saved login beside the
  * database, a prompt, or a lead token in the environment.
  */
+import { WORKSPACE_REVISION_KEY } from "./workspace-revision.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -96,7 +97,8 @@ afterEach(() => {
 function dataSnapshot(): string {
   const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()
     .map(row => String(row["name"])).filter(name => !["action_ledger", "ledger_seal", "sqlite_sequence"].includes(name));
-  return JSON.stringify(tables.map(name => [name, store.handle.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()]));
+  // The workspace revision is cache metadata: the refusal's own ledger entry moves it, like every committed write.
+  return JSON.stringify(tables.map(name => [name, store.handle.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"${name === "service_cursor" ? ` WHERE key <> '${WORKSPACE_REVISION_KEY}'` : ""}`).all()]));
 }
 
 async function notFoundLikeMissing(make: (id: string) => string[], hidden: string, missing = "999999999", who = sam): Promise<void> {
