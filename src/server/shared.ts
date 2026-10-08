@@ -14519,7 +14519,7 @@ export function settingsPage(
   hasEnv: boolean,
   csrf: string,
   problem: string | null,
-  messaging: { channel: string | null; implicit: boolean; configured: string[] } | null = null,
+  messaging: { channel: string | null; implicit: boolean; configured: string[]; legacyWarning?: string } | null = null,
   push: { available: boolean; devices: PushSubscription[] } | null = null,
   providerKeys: { provider: string; envName: string; set: boolean; updatedAt: string | null; ambient: boolean; mode: "subscription" | "api-key"; subscriptionCapable: boolean; connection?: ProviderConnection }[] | null = null,
   digest: { everyMs: number | null; lastSentAt: string | null; held: number } | null = null,
@@ -14754,6 +14754,7 @@ export function settingsPage(
     kind: "settings",
     said: problem,
     groups: settingsGroups(messaging, telegramFailing),
+    ...(messaging?.legacyWarning ? { legacyWebhookWarning: messaging.legacyWarning } : {}),
     theme,
     accent: requestContext.getStore()?.accent ?? DEFAULT_ACCENT,
     accentPresets: ACCENT_PRESETS,
@@ -14787,6 +14788,7 @@ export function settingsPage(
   };
   return screen("Settings", [
     "<h1>Settings</h1>",
+    messaging?.legacyWarning ? `<p data-legacy-webhooks>Legacy webhooks are deprecated. Connect <a href="/settings/slack" style="display:inline-flex;min-height:44px;align-items:center">Slack</a> or <a href="/settings/discord" style="display:inline-flex;min-height:44px;align-items:center">Discord</a> in Chat settings.</p>` : "",
     settingsTiles(view.groups),
     phone === null ? "" : phoneSetupHtml(phone),
     appearanceCard(csrf),

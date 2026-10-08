@@ -6,7 +6,7 @@
  * and what is never deleted: the ledger, and anything a task still needs.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
@@ -349,4 +349,23 @@ test("a completed task's evidence stays while any revision below it is unfinishe
   // Once it's completed too, the whole family's can go.
   store.recordAction({ at: NOW.toISOString(), actor: "operator:alex", repo: REPO, taskId: grandchild.id, runId: grandchild.run, action: COMPLETION_ACTION, outcome: "b".repeat(64), source: "work" });
   expect(retentionPlan(store, root, NOW).items.evidence.map(one => one.run).sort((a, b) => a - b)).toEqual([parent.run, child.run, grandchild.run, lone.run].sort((a, b) => a - b));
+});
+
+
+test("a retention sweep reclaims a file over 25% free without changing kept history or summaries", () => {
+  const kept = work("ready");
+  store.handle.prepare("INSERT INTO run_process(run, pid, host, process_group, observed_at, exited_at) VALUES(?, 1234, 'fixture', 1, ?, ?)").run(kept.run, OLD.toISOString(), OLD.toISOString());
+  store.compactRunProcesses(NOW);
+  store.handle.exec("CREATE TABLE reclaim_fixture(id INTEGER PRIMARY KEY, payload BLOB); INSERT INTO reclaim_fixture VALUES(1, zeroblob(4000000)); PRAGMA wal_checkpoint(TRUNCATE)");
+  const bytes = statSync(file).size;
+  store.handle.exec("DELETE FROM reclaim_fixture");
+  const summaries = store.handle.prepare("SELECT * FROM run_process_summary").all();
+  expect(summaries).toHaveLength(1);
+  const sweep = dailyRetention(store, root, NOW)!;
+  expect(sweep.ledgerId).toBeGreaterThan(0);
+  expect(statSync(file).size).toBeLessThan(bytes / 2);
+  expect(store.handle.prepare("PRAGMA freelist_count").get()?.["freelist_count"]).toBe(0);
+  expect(store.getRun(kept.run)).not.toBeNull();
+  expect(store.handle.prepare("SELECT * FROM run_process_summary").all()).toEqual(summaries);
+  expect(store.ledgerChain({ full: true }).ok).toBe(true);
 });

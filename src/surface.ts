@@ -387,6 +387,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("coordinator revoke", "revoke an MCP filing credential"),
   operator("mcp", "serve the MCP gateway over stdio — the coordinator credential is the only key it accepts"),
   operator("cap add", "record a capability"),
+  operator("outbox deliver", "deliver queued notifications"),
   operator("peek", "watch live agents in the terminal — one pane per open run; --tmux opens a window per run"),
   operator("incident resolve", "resolve an incident"),
   operator("decide", "read and ANSWER parked decisions — answering is a person's act"),
@@ -468,7 +469,7 @@ const REMOTE_NO: readonly string[] = [
   "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
-  "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "peek",
+  "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
   "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",

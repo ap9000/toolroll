@@ -1,3 +1,4 @@
+import { reclaimDatabase } from "./database-reclaim.js";
 import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import { ServerTelemetry } from "./server-telemetry.js";
 import { instrumentDatabase, measureWriteWait } from "./sqlite-telemetry.js";
@@ -5630,7 +5631,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_blocked_revision_per_task
   ON plan_revision (task_ref) WHERE status = 'blocked';
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_run ON run_checkpoint (run, id);
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, id);`);
-  if (preflight !== null) migrateToV114(db);
+  if (preflight !== null) {
+    migrateToV114(db);
+    // Keep the epoch until reclamation succeeds, including a retry after compaction already committed.
+    reclaimDatabase(db, "migration");
+  }
 
   // THE BOOKKEEPING WRITE, checked (raw authority repair): migrate() has
   // already done the work by the time this runs; the row is bookkeeping

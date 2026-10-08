@@ -1,6 +1,6 @@
 import { HEADLINES } from "./task-status.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installationStatus, renderInstallationStatus, renderTaskWait, taskWaitSnapshot } from "./lead-status.js";
@@ -52,6 +52,21 @@ describe("lead status commands", () => {
       VALUES (?, 'Update the labels', ?, 'current-scope', 'resolved', ?, ?, ?)`)
       .run(id, NOW.toISOString(), approved ? NOW.toISOString() : null, approved ? "alex" : null, approved ? "current-scope" : null);
   };
+
+  test("status gives one deprecation warning for both legacy webhooks, without their secrets", async () => {
+    const lines: string[] = [];
+    const options = { databaseFile: db, clock: () => NOW, releaseIo: { fetch: async () => { throw Error("offline"); } } };
+    await runOperate("status", [], line => lines.push(line), options);
+    expect(lines.join("\n")).not.toContain("Legacy webhooks");
+    for (const service of ["slack", "discord"]) await writeFile(join(dir, `${service}-webhook`), `https://fixture.example/${service}-secret`);
+    lines.length = 0;
+    await runOperate("status", [], line => lines.push(line), options);
+    expect(lines.join("\n").split("\n").filter(line => line.includes("Legacy webhooks"))).toEqual(["Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings."]);
+    expect(lines.join("\n")).not.toContain("fixture.example");
+    lines.length = 0;
+    await runOperate("status", ["--json"], line => lines.push(line), options);
+    expect(JSON.parse(lines.join("\n")).legacyWebhookWarning).toBe("Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.");
+  });
 
   test("task wait returns 0 after the attempt it observed becomes ready", async () => {
     const seed = openStore(db);

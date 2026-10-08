@@ -123,6 +123,7 @@ export type BrowserSettingsView = {
     connection: { words: string; facts: string; checkHref: string } | null;
     usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
   }[] | null;
+  legacyWebhookWarning?: string;
   services: { configured: string[]; channel: string | null; implicit: boolean } | null;
   push: { available: boolean; devices: { id: number; words: string; state: string; removable: boolean }[] } | null;
   /** Quiet chat: how chats reach this person, and their evening digest time (null: off). */

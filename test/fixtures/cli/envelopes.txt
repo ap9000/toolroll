@@ -5327,6 +5327,14 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "outbox deliver",
+      "synopsis": "deliver queued notifications",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
       "invocation": "peek",
       "synopsis": "watch live agents in the terminal — one pane per open run; --tmux opens a window per run",
       "audience": "operator",
@@ -6626,6 +6634,15 @@ $ outbox list --json → 0
       "link": "/t/t-login"
     }
   ]
+}
+
+$ outbox deliver --cmd true --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "outbox deliver",
+  "delivered": 3,
+  "failed": 0
 }
 
 $ incident list --json → 0

@@ -64,7 +64,7 @@ describe("the CLI's machine contract", () => {
 
   it("gives every declared command its own answer schema, in guide order, and generates the guide from them", () => {
     expect(COMMAND_GUIDE).toEqual(COMMAND_ENTRIES.map(entry => entry.guide));
-    expect(COMMAND_ENTRIES.length).toBe(225);
+    expect(COMMAND_ENTRIES.length).toBe(226);
     const names = COMMAND_ENTRIES.map(entry => entry.guide.envelopeCommand ?? entry.guide.invocation);
     expect(new Set(names).size, "two rows answer as one command").toBe(names.length);
     for (const [index, entry] of COMMAND_ENTRIES.entries()) {
@@ -181,6 +181,7 @@ describe("the CLI's --json bytes", () => {
       await operate(["runner", "list", "--json"]);
       await operate(["routine", "list", "--json"]);
       await operate(["outbox", "list", "--json"]);
+      await operate(["outbox", "deliver", "--cmd", "true", "--json"]);
       await operate(["incident", "list", "--json"]);
       await operate(["audit", "--json"]);
       await operate(["audit", "--since", "0d", "--json"]);

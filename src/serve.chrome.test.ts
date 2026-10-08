@@ -1,10 +1,13 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SettingsView } from "./browser/views/settings-view.js";
 /**
  * The console server: the chrome layer — sensitivity, motion, editor links,
  * the phone shell, the project switcher and the reduction pass.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -51,6 +54,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
       clock: () => new Date(),
       repo: "/repo/main",
       telegramTokenFile: join(dir, "telegram-token"),
+      configDir: dir,
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
@@ -182,6 +186,30 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(settingsHtml).not.toContain('id="palette-index"');
     expect((settingsHtml.match(/<script nonce=/g) ?? []).length).toBe(1);
     expect(settings.headers.get("content-security-policy") ?? "").toContain("connect-src 'self'");
+  });
+
+  test("Settings shows one legacy webhook warning with replacement links, including both services", async () => {
+    const cookie = await login();
+    const get = async () => (await fetch(url("/settings"), { headers: { cookie } })).text();
+    expect((workspaceOf(await get()).view as import("./browser-workspace.js").BrowserSettingsView).legacyWebhookWarning).toBeUndefined();
+    for (const service of ["slack", "discord"]) writeFileSync(join(dir, `${service}-webhook`), `https://fixture.example/${service}-secret`);
+    const html = await get(), view = workspaceOf(html).view as import("./browser-workspace.js").BrowserSettingsView;
+    expect(view.legacyWebhookWarning).toBe("Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.");
+    expect(html.match(/<p data-legacy-webhooks>/g)).toHaveLength(1);
+    expect(html).toContain('href="/settings/slack"');
+    expect(html).toContain('href="/settings/discord"');
+    expect(html).not.toContain("fixture.example");
+    const rendered = renderToStaticMarkup(createElement(SettingsView, { view, csrf: "" }));
+    expect(rendered.match(/data-legacy-webhooks/g)).toHaveLength(1);
+    expect(rendered).toContain('href="/settings/slack"');
+    expect(rendered).toContain('href="/settings/discord"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)![1]!;
+    const invalid = await fetch(url("/settings/telegram-token"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, token: "invalid" }) });
+    expect(invalid.status).toBe(400);
+    const failed = await invalid.text();
+    expect((workspaceOf(failed).view as import("./browser-workspace.js").BrowserSettingsView).legacyWebhookWarning).toBe(view.legacyWebhookWarning);
+    expect(failed.match(/<p data-legacy-webhooks>/g)).toHaveLength(1);
+
   });
 
   test("settings lists each worker with its capacity and the tasks it is running", async () => {

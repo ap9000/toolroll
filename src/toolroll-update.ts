@@ -331,16 +331,16 @@ export function durableRename(temp: string, target: string): void {
 
 /** How a rehearsed migration may change each saved table. An unlisted table keeps every column, its row count and
  * its last rowid (a WITHOUT ROWID table, all small, keeps the hash of its rows). `appendOnly`: every row through the
- * last one before hashes the same, in rowid order; new rows may follow. `dropped`: columns the new schema removes.
+ * last one before hashes the same, in rowid order; new rows may follow. `dropped`: columns the new schema may remove only when every saved value is null.
  * `compacted`: rows may go only into summary rows, whose `sum` grows by exactly as many. */
 const HISTORY_RULES: Record<string, { appendOnly?: true; dropped?: string[]; compacted?: { into: string; sum: string } }> = {
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
   // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
   run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
-  // v114: the single-destination delivery columns, always null, are dropped.
+  // v114: single-destination delivery columns may be dropped only after proving they are empty.
   notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"] },
 };
-export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number };
+export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number> };
 const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
 const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
 /** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
@@ -363,6 +363,11 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
       if (!rowid) return { name, columns, rowid, last: 0, ...rowsHash(db, name, columns) };
       const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(name)).get()!;
       const t: TableDigest = { name, columns, rowid, count: Number(r["n"]), last: Number(r["last"]) };
+      const droppable = columns.filter(column => rule?.dropped?.includes(column));
+      if (droppable.length > 0) {
+        const occupancy = db.prepare("SELECT " + droppable.map(column => "count(" + quote(column) + ") AS " + quote(column)).join(",") + " FROM " + quote(name)).get()!;
+        t.nonNull = Object.fromEntries(droppable.map(column => [column, Number(occupancy[column])]));
+      }
       if (rule?.appendOnly) t.hash = rowsHash(db, name, columns, t.last).hash;
       if (rule?.compacted) t.summed = summed(db, rule.compacted);
       return t;
@@ -374,7 +379,7 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
   return before.filter(t => {
     if (!tables.has(t.name)) return true;
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
-    if (t.columns.some(c => !present.has(c) && !rule?.dropped?.includes(c))) return true;
+    if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || t.nonNull?.[c] !== 0))) return true;
     const columns = t.columns.filter(c => present.has(c));
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
     if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }
