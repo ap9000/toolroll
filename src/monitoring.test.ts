@@ -69,6 +69,37 @@ test("the webhook gets sealed entries in order, signed, with the chain head; the
   expect(store.monitoringStatus("webhook")[0]).toMatchObject({ sent: 4, failures: 0 });
 });
 
+test("a delivered head becomes an automatic checkpoint once it verifies, at most hourly, and checkpointing sends nothing new", async () => {
+  let clock = new Date("2026-09-28T05:00:00.000Z");
+  const now = () => clock;
+  const entries = () => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger").get()!["n"]);
+  act("one"); act("two");
+  expect(await monitoringPass(store, webhook(), deps("test-holder", now))).toEqual({ webhook: 2 });
+  const chain = (JSON.parse(received[0]!.body) as { chain: { through: number; head: string } }).chain;
+  expect(store.ledgerCheckpoints()).toMatchObject([{ through: chain.through, hash: chain.head, by: "system" }]);
+  // No loop: the checkpoint added no entry, so later passes send nothing and checkpoint nothing.
+  const before = entries();
+  for (let pass = 0; pass < 3; pass++) expect(await monitoringPass(store, webhook(), deps("test-holder", now))).toEqual({ webhook: 0 });
+  expect(entries()).toBe(before);
+  expect(store.ledgerCheckpoints()).toHaveLength(1);
+  // New activity within the hour is sent but waits for the next hourly checkpoint.
+  act("three");
+  expect(await monitoringPass(store, webhook(), deps("test-holder", now))).toEqual({ webhook: 1 });
+  expect(store.ledgerCheckpoints()).toHaveLength(1);
+  clock = new Date(clock.getTime() + 61 * 60_000);
+  act("four");
+  await monitoringPass(store, webhook(), deps("test-holder", now));
+  const sent = (JSON.parse(received[2]!.body) as { chain: { through: number; head: string } }).chain;
+  expect(store.ledgerCheckpoints()).toMatchObject([{ through: sent.through, hash: sent.head, by: "system" }, { through: chain.through }]);
+  // A head sent over a chain that no longer verifies is never checkpointed.
+  clock = new Date(clock.getTime() + 61 * 60_000);
+  store.handle.exec("DROP TRIGGER action_ledger_no_update");
+  store.handle.exec("UPDATE action_ledger SET actor = 'mallory' WHERE action = 'one'");
+  act("five");
+  await monitoringPass(store, webhook(), deps("test-holder", now));
+  expect(store.ledgerCheckpoints()).toHaveLength(2);
+});
+
 test("a failed delivery is retried later from the same place: nothing skipped, nothing twice after it lands", async () => {
   act("one"); act("two");
   answer = 500;

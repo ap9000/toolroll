@@ -1508,7 +1508,7 @@ describe("away mode: the digest cadence (mate arc §10)", () => {
     expect(sent.some(one => one.includes("t-1 merged"))).toBe(false);
     expect(store.countRoutinePending()).toBe(2);
     expect(store.telegramDeliveries(store.liveTelegramBinding(BOT)!).filter(row => row.deliveredAt === null && row.resolvedAt === null).map(one => one.dedupeKey).sort()).toEqual(["merge:1", "report:1:1"]);
-    expect(store.handle.prepare("SELECT claim_owner FROM notification WHERE dedupe_key = 'merge:1'").get()?.["claim_owner"]).toBeNull();
+    expect(store.handle.prepare("SELECT d.claim_owner FROM notification_delivery d JOIN notification n ON n.id = d.notification WHERE n.dedupe_key = 'merge:1'").all().map(row => row["claim_owner"])).toEqual([null]);
     void decisionId;
 
     // Still inside the window: nothing more goes out.

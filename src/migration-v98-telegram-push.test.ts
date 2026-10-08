@@ -23,8 +23,8 @@ test.each([97, -97])("v%s: the poll lease carries over whole, and pushed updates
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(113);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
+  expect(SCHEMA_VERSION).toBe(114);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(114);
   expect(store.telegramPush("777000")).toEqual({ url: null, problem: null, at: null });
   store.setTelegramPush("777000", { url: "https://example.ts.net/hooks/telegram", problem: null }, now);
   expect(store.telegramPush("777000")?.url).toBe("https://example.ts.net/hooks/telegram");

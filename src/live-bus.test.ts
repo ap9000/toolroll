@@ -4,6 +4,9 @@
 import { EventEmitter, once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
@@ -270,5 +273,41 @@ describe("the bounded write path", () => {
     expect(bus.listeners()).toBe(1);
     vi.advanceTimersByTime(30_000);
     expect(page.sent).toHaveLength(1);
+  });
+});
+
+describe("latency, on real timers and a real file", () => {
+  test("a commit here and a commit from another connection both reach the bus within milliseconds; a rollback never does", async () => {
+    vi.useRealTimers();
+    const dir = mkdtempSync(join(tmpdir(), "so-live-latency-"));
+    const file = join(dir, "orders.db");
+    const local = openStore(file), other = openStore(file);
+    const live = flowTaskFixture(local, now);
+    const revision = prepareWorkspaceRevision(local), heard = createLiveBus(), times: number[] = [];
+    let wake: (() => void) | null = null;
+    heard.subscribe(() => { times.push(performance.now()); wake?.(); });
+    const watched = followWorkspace(local, () => revision.current(), heard, { file });
+    const next = (within: number) => new Promise<number>((resolve, reject) => {
+      const at = performance.now();
+      const timer = setTimeout(() => reject(new Error(`nothing heard within ${within} ms`)), within);
+      wake = () => { clearTimeout(timer); wake = null; resolve(performance.now() - at); };
+    });
+    try {
+      // This process: published on the next turn after COMMIT.
+      let waiting = next(1_000);
+      local.transact(() => local.recordRunActivity(live.run, "command", new Date()));
+      expect(await waiting).toBeLessThan(50);
+      // Another process (its own wrapped connection): its commit lands in the WAL and moves data_version here. The OS
+      // file watch takes a moment to start (a live service's watch is long running), so the write waits for it.
+      await new Promise(resolve => setTimeout(resolve, 250));
+      waiting = next(2_000);
+      other.raw().prepare("UPDATE flow_card SET waiting = 'From the worker' WHERE id = ?").run(live.card);
+      expect(await waiting).toBeLessThan(1_000);
+      // A rolled-back write says nothing.
+      const count = times.length;
+      expect(() => other.transact(() => { other.raw().prepare("UPDATE flow_card SET waiting = 'Never' WHERE id = ?").run(live.card); throw new Error("no"); })).toThrow("no");
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(times).toHaveLength(count);
+    } finally { watched.close(); other.close(); local.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

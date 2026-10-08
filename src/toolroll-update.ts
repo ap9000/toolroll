@@ -329,27 +329,58 @@ export function durableRename(temp: string, target: string): void {
 
 // ---- database: snapshot, rehearse, restore --------------------------------
 
-type TableDigest = { name: string; columns: string[]; count: number; hash: string };
-function tableDigest(db: DatabaseSync, name: string, columns: string[]): { count: number; hash: string } {
-  const rows = db.prepare("SELECT " + columns.map(quote).join(",") + " FROM " + quote(name)).all().map(r => JSON.stringify(r)).sort();
-  return { count: rows.length, hash: sha(rows.join("\n")) };
+/** How a rehearsed migration may change each saved table. An unlisted table keeps every column, its row count and
+ * its last rowid (a WITHOUT ROWID table, all small, keeps the hash of its rows). `appendOnly`: every row through the
+ * last one before hashes the same, in rowid order; new rows may follow. `dropped`: columns the new schema removes.
+ * `compacted`: rows may go only into summary rows, whose `sum` grows by exactly as many. */
+const HISTORY_RULES: Record<string, { appendOnly?: true; dropped?: string[]; compacted?: { into: string; sum: string } }> = {
+  action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
+  // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
+  run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
+  // v114: the single-destination delivery columns, always null, are dropped.
+  notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"] },
+};
+export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number };
+const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
+const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
+/** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
+function rowsHash(db: DatabaseSync, name: string, columns: string[], through?: number): { count: number; hash: string } {
+  const select = "SELECT " + (through === undefined ? "" : 'rowid AS "rowid:", ') + columns.map(quote).join(",") + " FROM " + quote(name);
+  const key = () => db.prepare("SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk").all(name).map(r => quote(String(r["name"]))).join(",");
+  const rows = through === undefined ? db.prepare(select + " ORDER BY " + key()).iterate() : db.prepare(select + " WHERE rowid <= ? ORDER BY rowid").iterate(through);
+  const hash = createHash("sha256"); let count = 0;
+  for (const row of rows) { hash.update(JSON.stringify(Object.values(row), plainValue) + "\n"); count++; }
+  return { count, hash: hash.digest("hex") };
 }
-/** Every historical row, table by table (deploy-browser's rehearsal check). */
+const summed = (db: DatabaseSync, into: { into: string; sum: string }) =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(into.into) ? Number(db.prepare("SELECT coalesce(sum(" + quote(into.sum) + "),0) AS n FROM " + quote(into.into)).get()!["n"]) : 0;
+/** Each saved table's columns, row count and last rowid; the append-only ones hashed (deploy-browser's rehearsal check).
+ * Bounded: only the ledger and small tables are read row by row. */
 export function historySnapshot(db: DatabaseSync): TableDigest[] {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_version' ORDER BY name").all()
-    .map(row => String(row["name"])).map(name => {
-      const columns = db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
-      return { name, columns, ...tableDigest(db, name, columns) };
+  return db.prepare("SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type IN ('table','shadow') AND name NOT LIKE 'sqlite_%' AND name <> 'schema_version' ORDER BY name").all()
+    .map(row => {
+      const name = String(row["name"]), rowid = row["wr"] === 0, columns = tableColumns(db, name), rule = HISTORY_RULES[name];
+      if (!rowid) return { name, columns, rowid, last: 0, ...rowsHash(db, name, columns) };
+      const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(name)).get()!;
+      const t: TableDigest = { name, columns, rowid, count: Number(r["n"]), last: Number(r["last"]) };
+      if (rule?.appendOnly) t.hash = rowsHash(db, name, columns, t.last).hash;
+      if (rule?.compacted) t.summed = summed(db, rule.compacted);
+      return t;
     });
 }
+/** The tables whose saved history the migration changed beyond what HISTORY_RULES declares. */
 export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[] {
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r["name"])));
   return before.filter(t => {
     if (!tables.has(t.name)) return true;
-    const present = new Set(db.prepare("PRAGMA table_info(" + quote(t.name) + ")").all().map(r => String(r["name"])));
-    if (t.columns.some(c => !present.has(c))) return true;
-    const after = tableDigest(db, t.name, t.columns);
-    return after.count !== t.count || after.hash !== t.hash;
+    const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
+    if (t.columns.some(c => !present.has(c) && !rule?.dropped?.includes(c))) return true;
+    const columns = t.columns.filter(c => present.has(c));
+    if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
+    if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }
+    const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(t.name)).get()!, count = Number(r["n"]), last = Number(r["last"]);
+    if (rule?.compacted) return count > t.count || last > t.last || t.count - count !== summed(db, rule.compacted) - (t.summed ?? 0);
+    return count !== t.count || last !== t.last;
   }).map(t => t.name);
 }
 
@@ -358,13 +389,16 @@ async function rehearse(j: RuntimeUpdateJournal, system: UpdateSystem, source: s
   copyFileSync(source, copy); chmodSync(copy, 0o600);
   try {
     let db = new (sqlite().DatabaseSync)(copy, { readOnly: true });
-    const before = historySnapshot(db); db.close();
+    // Rows already pointing nowhere before the update are the install's own; only ones the migration makes refuse.
+    const orphans = (): Set<string> => new Set([...db.prepare("PRAGMA foreign_key_check").iterate()].map(row => JSON.stringify(row)));
+    const before = historySnapshot(db), orphaned = orphans(); db.close();
     await system.rehearse(j.to.dist, copy);
     db = new (sqlite().DatabaseSync)(copy, { readOnly: true });
     try {
       const changed = changedHistory(db, before);
       if (changed.length > 0) throw new Refusal(`Toolroll ${j.to.version} would change saved history in ${changed.slice(0, 4).join(", ")}${changed.length > 4 ? ` and ${changed.length - 4} more` : ""}. Nothing was changed.`);
       if (db.prepare("PRAGMA integrity_check").get()?.["integrity_check"] !== "ok") throw new Refusal(`The rehearsed database failed its integrity check under ${j.to.version}. Nothing was changed.`);
+      if ([...orphans()].some(row => !orphaned.has(row))) throw new Refusal(`The rehearsed database has rows pointing at missing rows under ${j.to.version}. Nothing was changed.`);
     } finally { db.close(); }
     return { tables: before.length, rows: before.reduce((n, t) => n + t.count, 0) };
   } finally { for (const suffix of ["", "-wal", "-shm"]) rmSync(copy + suffix, { force: true }); }

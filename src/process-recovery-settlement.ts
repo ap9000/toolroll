@@ -96,6 +96,7 @@ export async function recoverPreparedObserverGap(store: Store, input: {
       const actionId = store.recordAction({ at: new Date().toISOString(), actor: "system", repo: current.binding.run.repo,
         taskId: current.binding.run.taskId, runId: receipt.targetRun, action: "process absence recovered",
         outcome: digest, source: "work" });
+      store.compactRunProcesses(new Date(), receipt.targetRun);
       return { ok: true as const, recorded: true as const, ...result, actionId, certificatePath };
     }));
   } catch {

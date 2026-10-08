@@ -161,10 +161,10 @@ test("c2: an unverifiable package is refused: no provenance, wrong checksum, or 
   expect(() => checkProvenance(provenance({ repository: "https://github.com/ap9000/toolroll-fork" }), "0.7.0", sha512(TARBALL).toString("hex"))).toThrow(/not ap9000\/toolroll/);
 });
 
-test("a rehearsal that would change historical rows is refused and new work resumes", async () => {
+test("a rehearsal that would lose saved rows is refused and new work resumes", async () => {
   const f = fixture();
   try {
-    const outcome = await f.start({ rehearse: async (_dist, copy) => { const d = new DatabaseSync(copy); try { d.exec("UPDATE task SET title='rewritten'"); } finally { d.close(); } } });
+    const outcome = await f.start({ rehearse: async (_dist, copy) => { const d = new DatabaseSync(copy); try { d.exec("DELETE FROM task"); } finally { d.close(); } } });
     expect(outcome.phase).toBe("refused");
     expect(outcome.message).toMatch(/would change saved history in task/);
     expect(f.paused()).toBe(false);

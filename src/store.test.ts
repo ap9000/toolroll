@@ -532,6 +532,8 @@ describe("opening a database that already exists", () => {
     first.createTask({ id: "t-1", title: "before" }, T0);
     // Put the file back the way an older build would have left it.
     first.handle.exec("ALTER TABLE task_ref DROP COLUMN origin");
+    // An older build's file reads older: every DDL change bumps the version since v114, and a current file is never repaired.
+    first.handle.exec("UPDATE schema_version SET version = 113");
     first.close();
 
     const second = openStore(file);
@@ -858,20 +860,19 @@ describe("the M3 schema: owned holds, decisions, evidence, incidents", () => {
     expect(store.resolveIncident(id, "alex", later(2_000))).toBe(false);
   });
 
-  test("a resolved episode stops being pending but keeps its receipts", () => {
+  test("a resolved episode stops being pending but keeps its row", () => {
     store.enqueueNotification(
       { dedupeKey: "decision:1", kind: "decision", subject: "s", body: "b" },
       T0,
     );
     const [row] = store.listNotifications("pending");
     expect(row).toBeDefined();
-    store.recordDelivery(row!.id, { ok: true, receipt: "msg-42" }, later(1_000));
 
     store.resolveEpisode("decision:1", later(2_000));
 
     expect(store.listNotifications("pending")).toHaveLength(0);
     const [kept] = store.listNotifications("all");
-    expect(kept?.receipt).toBe("msg-42");
+    expect(kept?.id).toBe(row!.id);
     expect(kept?.resolvedAt).toBe(later(2_000).toISOString());
   });
 
@@ -1172,8 +1173,8 @@ describe("migration from an M2 database", () => {
       store.finishRun(2, { outcome: "parked", reason: "decision:1", now: T0 });
       expect(store.getRun(2)?.outcome).toBe("parked");
 
-      // The delivered notification kept its receipt through the column add.
-      expect(store.listNotifications("all")[0]).toMatchObject({ receipt: "r-1", resolvedAt: null });
+      // The old notification survived the upgrade.
+      expect(store.listNotifications("all")[0]).toMatchObject({ dedupeKey: "gap:x:env:KEY", resolvedAt: null });
     } finally {
       store.close();
       rmSync(dir, { recursive: true, force: true });

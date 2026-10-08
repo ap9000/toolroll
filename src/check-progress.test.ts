@@ -214,6 +214,7 @@ describe("saved and delivered progress", () => {
       .run(run, T0.toISOString(), run + 50, T0.toISOString());
     old.handle.prepare("INSERT INTO check_progress (run, snapshot, line, final, updated_at, notified_at) VALUES (?, ?, ?, 1, ?, ?)")
       .run(run, JSON.stringify(final), final.line, T0.toISOString(), T0.toISOString());
+    old.handle.exec("UPDATE schema_version SET version = 113"); // an older build's file reads older (v114)
     old.close();
 
     const store = openStore(file);

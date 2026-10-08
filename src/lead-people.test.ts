@@ -133,6 +133,7 @@ describe("the lead knows you and the people you work with", () => {
   test("c1: an older lead_config gains the note on open; its name and persona carry over", () => {
     store.setLeadConfig(who.name, "Maya", "Short.", t0);
     store.handle.exec("ALTER TABLE lead_config DROP COLUMN about_json");
+    store.handle.exec("UPDATE schema_version SET version = 113"); // an older build's file reads older (v114)
     store.close();
     store = openStore(join(root, "state.db"));
     expect(store.leadAbout(who.name)).toEqual([]);

@@ -28,6 +28,7 @@ export const SIGNATURE_HEADER = "x-standing-orders-signature";
 const BATCH = 200;
 const LEASE_MS = 60_000;
 const TIMEOUT_MS = 10_000;
+const CHECKPOINT_EVERY_MS = 60 * 60_000;
 
 /** An audit event: the ledger entry and its seal, as the stream sends it. */
 export function auditEvent(entry: SealedLedgerEntry, instance: string): Record<string, unknown> {
@@ -51,37 +52,57 @@ export type MonitoringDeps = { fetch?: typeof fetch; now?: () => Date; holder: s
 /** One pass over every destination that's set up. Returns what it sent, per destination. */
 export async function monitoringPass(store: Store, settings: MonitoringSettings, deps: MonitoringDeps): Promise<Partial<Record<Sink, number>>> {
   const sent: Partial<Record<Sink, number>> = {};
+  const heads: Delivered["head"][] = [];
+  const audit = (delivered: Delivered) => { if (delivered.head !== null) heads.push(delivered.head); return delivered.count; };
   // A new destination gets the whole audit history; traces start from now.
-  if (settings.webhook !== null) sent.webhook = await deliver(store, "webhook", targetOf(settings.webhook.url), () => 0, deps, entries => postSigned(settings.webhook!, entries, store, deps));
-  if (settings.folder !== null) sent.folder = await deliver(store, "folder", targetOf(settings.folder.path), () => 0, deps, async entries => { appendFolder(settings.folder!.path, entries, deps.instance); return entries.length; });
-  if (settings.traces !== null) sent.traces = await deliver(store, "traces", targetOf(settings.traces.endpoint), () => store.ledgerHeadId(), deps, entries => postTraces(settings.traces!, entries, store, deps));
+  if (settings.webhook !== null) sent.webhook = audit(await deliver(store, "webhook", targetOf(settings.webhook.url), () => 0, deps, entries => postSigned(settings.webhook!, entries, store, deps)));
+  if (settings.folder !== null) sent.folder = audit(await deliver(store, "folder", targetOf(settings.folder.path), () => 0, deps, async entries => { appendFolder(settings.folder!.path, entries, deps.instance); return entries.length; }));
+  if (settings.traces !== null) sent.traces = (await deliver(store, "traces", targetOf(settings.traces.endpoint), () => store.ledgerHeadId(), deps, entries => postTraces(settings.traces!, entries, store, deps))).count;
+  checkpointSent(store, heads, (deps.now ?? (() => new Date()))());
   return sent;
 }
+
+/** The furthest head the audit stream delivered, kept as an automatic checkpoint once the whole chain verifies.
+ * Automatic checkpoints write no ledger entry, so recording one gives the stream nothing new to send (and checkpoint)
+ * next pass. At most one an hour, so a busy stream neither floods the table nor walks the whole chain every pass. */
+function checkpointSent(store: Store, heads: Delivered["head"][], now: Date): void {
+  const head = heads.reduce<Delivered["head"]>((best, one) => best === null || (one !== null && one.through > best.through) ? one : best, null);
+  if (head === null) return;
+  const newest = store.ledgerCheckpoints(1)[0];
+  if (newest !== undefined && (newest.through >= head.through || now.getTime() - Date.parse(newest.at) < CHECKPOINT_EVERY_MS)) return;
+  try { store.ledgerCheckpoint("system", now, { head }); } catch { /* a busy database: the next delivery tries again */ }
+}
+
+/** What one delivery sent: its count, and the sealed head it carried (null when nothing landed). */
+type Delivered = { count: number; head: { through: number; hash: string } | null };
 
 /** A destination's name in its status row: a digest of its address (the address itself may carry a key). */
 export const targetOf = (address: string) => hex(`standing-orders/monitoring/${address}`, 16);
 
 /** Send what's due to one destination: hold it, start it over if it now points elsewhere, read after its cursor,
  * hand the batch over, and move the cursor only when it landed and nothing changed meanwhile. */
-async function deliver(store: Store, sink: Sink, target: string, start: () => number, deps: MonitoringDeps, send: (entries: SealedLedgerEntry[]) => Promise<number>): Promise<number> {
+async function deliver(store: Store, sink: Sink, target: string, start: () => number, deps: MonitoringDeps, send: (entries: SealedLedgerEntry[]) => Promise<number>): Promise<Delivered> {
   const now = deps.now ?? (() => new Date());
   const at = now();
-  if (!store.holdMonitoring(sink, deps.holder, at, new Date(at.getTime() + LEASE_MS))) return 0;
+  const none = { count: 0, head: null };
+  if (!store.holdMonitoring(sink, deps.holder, at, new Date(at.getTime() + LEASE_MS))) return none;
   let status = store.monitoringStatus(sink)[0];
   if (status === undefined || status.target !== target) {
     store.resetMonitoring(sink, target, start());
     status = store.monitoringStatus(sink)[0]!;
   }
-  if (status.nextTryAt != null && Date.parse(status.nextTryAt) > at.getTime()) return 0;
+  if (status.nextTryAt != null && Date.parse(status.nextTryAt) > at.getTime()) return none;
   const from = status.through;
   const entries = store.sealedAfter(from, BATCH);
-  if (entries.length === 0) return 0;
+  if (entries.length === 0) return none;
+  const last = entries[entries.length - 1]!;
   try {
     const count = await send(entries);
-    return store.monitoringDelivered(sink, deps.holder, target, from, entries[entries.length - 1]!.id, count, now()) ? count : 0;
+    if (!store.monitoringDelivered(sink, deps.holder, target, from, last.id, count, now())) return none;
+    return { count, head: last.seal === null ? null : { through: last.id, hash: last.seal.hash } };
   } catch (error) {
     store.monitoringFailed(sink, deps.holder, target, error instanceof Error ? error.message : String(error), now(), new Date(now().getTime() + backoff(status.failures + 1)));
-    return 0;
+    return none;
   }
 }
 
