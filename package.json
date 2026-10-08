@@ -70,8 +70,6 @@
     "@types/react-dom": "19.3.0",
     "esbuild": "0.28.2",
     "happy-dom": "20.14.5",
-    "paper": "0.12.18",
-    "simple-icons": "16.34.0",
     "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "7.0.2",

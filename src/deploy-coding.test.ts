@@ -1,14 +1,17 @@
-import { test, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
+import { test, expect, vi } from 'vitest';
+import { copyFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { basename, join, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { spawn } from 'node:child_process';
 import { openStore } from './store.js';
 import { CodingWorkspace } from './coding-workspace.js';
+import * as gate from './desktop-update-gate.js';
 import { installUpdateGate, freezeUpdateGate, removeUpdateGate, updateGateOwned } from './desktop-update-gate.js';
+import { durableJson } from './desktop-update.js';
 import { loadCodingDeploymentRuntime, observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment } from '../scripts/deploy-coding.mjs';
+import { browserDeployment, openDeploymentDatabase, snapshotBackup } from '../scripts/deploy-phases.mjs';
 import { fakePid } from '../test/fake-pid.js';
 
 function fixture() {
@@ -161,77 +164,305 @@ test('a broken installed coding module is not silently treated as a legacy runti
   } finally { f.close(); }
 });
 
-test('browser phase wiring verifies the coding backup before stop and custody before swap or restore', () => {
-  // The deployment CLI has real launchd effects; verify its orchestration here
-  // without executing it. Catalog behavior above uses real SQLite databases.
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  const prepare = source.slice(source.indexOf('async function prepare('), source.indexOf('async function rehearse('));
-  const frozen = prepare.indexOf('save(r, "frozen")');
-  expect(prepare.lastIndexOf('observeCodingDeployment(', frozen)).toBeGreaterThan(prepare.indexOf('freezeUpdateGate('));
-  expect(frozen).toBeLessThan(prepare.indexOf('await snapshotBackup(original'));
-  expect(prepare.indexOf('await ensureCodingBackup(')).toBeGreaterThan(prepare.indexOf('await snapshotBackup(original'));
-  expect(prepare).not.toContain('BEGIN IMMEDIATE');
-  expect(prepare).toContain('view => verifyPreparedDatabase(view, r)');
-  expect(prepare.indexOf('await ensureCodingBackup(')).toBeLessThan(prepare.lastIndexOf('verifyPreparedDatabase(db, r)'));
-  expect(prepare.lastIndexOf('verifyPreparedDatabase(db, r)')).toBeLessThan(prepare.indexOf('save(r, "backup-verified")'));
-  const swap = source.slice(source.indexOf('async function swap('), source.indexOf('async function finish('));
-  expect(swap.indexOf('await ensureCodingBackup(')).toBeLessThan(swap.indexOf('save(r, "stopping")'));
-  expect(swap.indexOf('r.stoppingService = service(priorDist)')).toBeLessThan(swap.indexOf('save(r, "stopping")'));
-  expect(swap).toContain('r.oldService.supervisor, ...r.oldService.children, r.stoppingService.supervisor, ...r.stoppingService.children');
-  expect(swap.lastIndexOf('await verifyServiceStopped(oldPids)')).toBeGreaterThan(swap.indexOf('(await load(nextDist, "store.js"))'));
-  expect(swap.lastIndexOf('await verifyServiceStopped(oldPids)')).toBeLessThan(swap.lastIndexOf('assertCodingDeploymentStopped(oldRt.coding'));
-  expect(swap.indexOf('await verifyServiceStopped(oldPids)')).toBeLessThan(swap.indexOf('assertCodingDeploymentStopped(oldRt.coding'));
-  expect(swap.indexOf('assertCodingDeploymentStopped(oldRt.coding')).toBeLessThan(swap.indexOf('save(r, "migrating")'));
-  expect(swap.lastIndexOf('assertCodingDeploymentStopped(oldRt.coding')).toBeGreaterThan(swap.indexOf('(await load(nextDist, "store.js"))'));
-  expect(swap.lastIndexOf('assertCodingDeploymentStopped(oldRt.coding')).toBeLessThan(swap.indexOf('writeFileSync(plist, nextPlist)'));
-  const rollback = swap.slice(swap.indexOf('if (live === null)'));
-  expect(rollback.indexOf('await verifyServiceStopped(failedPids)')).toBeLessThan(rollback.indexOf('assertCodingDeploymentStopped(coding'));
-  expect(rollback.lastIndexOf('await verifyServiceStopped(failedPids)')).toBeGreaterThan(rollback.indexOf('await loadCodingDeploymentRuntime(nextDist)'));
-  expect(rollback.lastIndexOf('await verifyServiceStopped(failedPids)')).toBeLessThan(rollback.indexOf('assertCodingDeploymentStopped(coding'));
-  // Custody is proved before the failed start is handed to the exit recovery, which puts the backup and the previous service back.
-  expect(rollback.indexOf('assertCodingDeploymentStopped(coding')).toBeLessThan(rollback.indexOf('save(r, "start-failed")'));
-  expect(rollback).not.toContain('restorePriorService(');
-  const restart = source.slice(source.indexOf('function restorePriorService('), source.indexOf('/** A clean checkout of the commit'));
-  expect(restart.indexOf('version !== r.schema')).toBeLessThan(restart.indexOf('"bootstrap"'));
-  expect(restart.indexOf('"bootstrap"')).toBeLessThan(restart.indexOf('waitUntilHealthy(answers)'));
-  expect(restart).toContain('/healthz');
-  expect(source).toContain('process.on("exit", code => { if (code !== 0) recoverJournal(); });\nexitOnSignals();');
-  const finish = source.slice(source.indexOf('async function finish('));
-  expect(finish.indexOf('await ensureCodingBackup(coding')).toBeLessThan(finish.indexOf('await fetch('));
-  expect(finish.lastIndexOf('await ensureCodingBackup(coding')).toBeGreaterThan(finish.indexOf('await sleep('));
-  expect(finish.lastIndexOf('verifyCodingBackup(coding')).toBeGreaterThan(finish.lastIndexOf('await ensureCodingBackup(coding'));
-  expect(finish.lastIndexOf('verifyCodingBackup(coding')).toBeLessThan(finish.indexOf('removeUpdateGate('));
-  const ensure = source.slice(source.indexOf('async function ensureCodingBackup('), source.indexOf('async function prepare('));
-  expect(ensure.indexOf('save(r, r.phase)')).toBeLessThan(ensure.indexOf('await backupCodingDeployment('));
-  const replace = swap.slice(swap.indexOf('// Migration loads asynchronously'), swap.indexOf('writeFileSync(plist, nextPlist)'));
-  expect(replace.indexOf('await ensureCodingBackup(')).toBeLessThan(replace.indexOf('await verifyServiceStopped('));
-  expect(replace.indexOf('verifyCodingBackup(')).toBeGreaterThan(replace.lastIndexOf('await '));
-  const restore = rollback.slice(0, rollback.indexOf('save(r, "start-failed")'));
-  expect(restore.indexOf('await ensureCodingBackup(')).toBeLessThan(restore.lastIndexOf('await verifyServiceStopped('));
-  expect(restore.indexOf('verifyCodingBackup(')).toBeGreaterThan(restore.lastIndexOf('await '));
-  expect(swap.lastIndexOf('await ensureCodingBackup(await loadCodingDeploymentRuntime(nextDist), r)')).toBeGreaterThan(swap.indexOf('save(r, "started")'));
-  // A stale owner is released only after every old pid is proved gone, by the staged candidate, before the stop is checked.
-  const release = swap.indexOf('releaseStaleCodingDeployment(candidateCoding');
-  expect(release).toBeGreaterThan(swap.indexOf('save(r, "stopped")'));
-  expect(swap.indexOf('await verifyServiceStopped(oldPids)')).toBeLessThan(release);
-  expect(swap.indexOf('loadCodingDeploymentRuntime(nextDist)')).toBeLessThan(release);
-  expect(release).toBeLessThan(swap.indexOf('assertCodingDeploymentStopped(oldRt.coding'));
-  // Any failure after that restores the old service and lifts this deployment's own pause on exit.
-  const exit = source.slice(source.indexOf('function recoverJournal('), source.indexOf('function restorePriorService('));
-  expect(exit).toContain('recoverFailedDeployment(r.phase, {');
-  expect(exit).toContain('restoreBackup: () => restoreDeploymentBackup(r)');
-  expect(exit).toContain('restoreService: () => restorePriorService(r)');
-  expect(exit).toContain('--phase recover');
-  expect(exit).toContain('oldRt.gate.removeUpdateGate(db, r.id)');
+/** A deployment run through deploy-browser's own phases (scripts/deploy-phases.mjs) against a real orders database,
+ * coding catalog, journal and backups in a scratch folder. launchd, ps, pgrep, curl, the installed and staged
+ * runtimes and the plane's records are recorded fakes. `log` holds what happened, in order: each journaled phase
+ * once, and every service, custody, backup, migration and network effect. */
+async function deployment({ codingCatalog = true } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'so-browser-phases-'));
+  const database = join(root, 'orders.db'), stage = join(root, 'stage'), plist = join(root, 'browser.plist');
+  const priorDist = join(root, 'installed', 'dist'), nextDist = join(stage, 'runtime', 'node_modules', 'toolroll', 'dist');
+  const journalFile = join(stage, 'deployment.json'), codingBackup = join(stage, 'coding.backup.sqlite');
+  mkdirSync(stage);
+  openStore(database).close();
+  // A real coding catalog, kept aside so a test can make one appear partway through.
+  const catalog = join(root, 'catalog.sqlite');
+  await new CodingWorkspace({ database: catalog, worktreeRoot: join(root, 'worktrees') }).close();
+  const appearCatalog = () => copyFileSync(catalog, `${database}.coding.sqlite`);
+  if (codingCatalog) appearCatalog();
+  const livePlist = `<string>${priorDist}/cli.js</string><string>--runner</string><string>worker</string>`;
+  writeFileSync(plist, livePlist);
+  writeFileSync(join(root, 'repos.json'), JSON.stringify({ repos: ['/repo'] }));
+  writeFileSync(join(stage, 'candidate.tgz'), 'packed candidate');
+  const schema = (() => { const db = new DatabaseSync(database, { readOnly: true }); try { return Number(db.prepare('SELECT version FROM schema_version').get()?.version); } finally { db.close(); } })();
+
+  const log: string[] = [];
+  const journals: Record<string, Record<string, any>> = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; freeze?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
+  const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
+  const services = {
+    old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
+    new: { supervisor: fakePid(4), children: [fakePid(5)], commands: ['node cli.js up'] },
+    failed: [fakePid(6), fakePid(7)],
+    running: 'old' as 'old' | 'new' | 'failed' | null,
+    starts: true,
+  };
+  const coding = (who: string) => ({
+    backupCodingCatalog: async (from: string, to: string) => { log.push(`${who} backs up coding`); hooks.codingBackup?.(); copyFileSync(from, to); },
+    assertCodingUpdateStopped: () => { log.push(`${who} custody`); },
+    releaseStaleCodingOwner: () => { log.push(`${who} releases stale owner`); return null; },
+  });
+  const installed = coding('installed'), candidate = coding('candidate');
+  const gateEffects = {
+    ...gate,
+    installUpdateGate: (db: DatabaseSync, id: string) => { hooks.install?.(); gate.installUpdateGate(db, id); },
+    freezeUpdateGate: (db: DatabaseSync, id: string) => { const frozen = gate.freezeUpdateGate(db, id); hooks.freeze?.(); return frozen; },
+  };
+  const paused = () => { const db = new DatabaseSync(database); try { return gate.updateAdmissionPaused(db) ? ' while paused' : ''; } finally { db.close(); } };
+  let lastPhase = '';
+  const phases = browserDeployment({
+    database, stageDir: stage, stateDir: root, journalFile, plist, livePlist, priorDist, nextDist, uid: 501, label: 'com.toolroll.browser', servicePort: '4180',
+    runId: 7, candidateHead: 'c'.repeat(40), publicUrl: null, script: 'scripts/deploy-browser.mjs --phase',
+    oldRt: { gate: gateEffects, update: { durableJson }, coding: installed },
+    facts: (db: DatabaseSync) => { hooks.facts?.(db); return structuredClone(current); },
+    quiet: () => {},
+    service: (dist: string) => {
+      if (dist === nextDist && services.running === 'new') return services.new;
+      return dist === priorDist && services.running === 'old' ? services.old : null;
+    },
+    proveStaged: () => ({ distFiles: 1 }),
+    verifyServiceStopped: async (pids: number[]) => { log.push(`proved stopped ${pids.join(' ')}`); hooks.stopped?.(pids); },
+    load: async () => ({ SCHEMA_VERSION: schema, openStore: (file: string) => { log.push('migrate'); const db = new DatabaseSync(file); db.exec('CREATE TABLE candidate_only(value)'); return db; } }),
+    loadCodingDeploymentRuntime: async (dist: string) => dist === nextDist ? candidate : installed,
+    spawnSync: (command: string, args: string[]) => {
+      const name = `${basename(command)} ${args[0]}`;
+      if (name === 'launchctl bootout') { log.push('bootout'); services.running = null; }
+      if (name === 'launchctl bootstrap') {
+        const next = readFileSync(plist, 'utf8').includes(nextDist);
+        log.push(next ? 'bootstrap candidate' : `bootstrap previous${paused()}`);
+        services.running = !next ? 'old' : services.starts ? 'new' : 'failed';
+        return { status: 0, stderr: '' };
+      }
+      if (name === 'launchctl print') return services.running === 'failed' ? { status: 0, stdout: `\n\tpid = ${services.failed[0]}` } : { status: 113, stdout: '' };
+      if (name === 'pgrep -P') return { status: 0, stdout: `${services.failed[1]}\n` };
+      if (name === 'curl -fsS') { log.push(`healthz${paused()}`); return { status: 0, stdout: '{"status":"ok"}' }; }
+      return { status: 1, stdout: '' };
+    },
+    fetch: async (url: string) => { log.push(`fetch ${url}`); hooks.fetch?.(); return { ok: true, status: 200 }; },
+    sleep: async () => { hooks.sleep?.(); },
+    say: (message: unknown) => {
+      if (typeof message !== 'string') { log.push('summary'); return; }
+      const phase = message.replace(/^• /, '');
+      if (phase === lastPhase) return;
+      lastPhase = phase; log.push(phase);
+      journals[phase] ??= JSON.parse(readFileSync(journalFile, 'utf8'));
+    },
+    requireTrue: (okay: unknown, message: string) => { if (!okay) throw Error(message); },
+    pruneStaged: async () => [],
+  });
+  const journal = () => JSON.parse(readFileSync(journalFile, 'utf8')) as Record<string, any>;
+  const orders = () => new DatabaseSync(database);
+  const gateOwned = () => { const db = orders(); try { return gate.updateGateOwned(db, journal().id); } finally { db.close(); } };
+  /** Prepared, then rehearsed as a candidate whose schema the previous runtime cannot be assumed to read. */
+  const rehearsed = async () => {
+    await phases.prepare({ packageSha256: createHash('sha256').update('packed candidate').digest('hex') });
+    const r = journal();
+    durableJson(journalFile, { ...r, phase: 'rehearsed', rehearsal: { integrity: 'ok', previousRuntimeCompatible: false } });
+    log.length = 0; lastPhase = '';
+  };
+  return {
+    root, database, stage, plist, livePlist, nextDist, codingBackup, log, journals, hooks, current, services, phases, journal, orders, gateOwned, rehearsed, appearCatalog,
+    reset: () => { log.length = 0; lastPhase = ''; for (const key of Object.keys(journals)) delete journals[key]; },
+    close: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+const tamper = (file: string) => writeFileSync(file, 'changed after it was verified');
+const quietly = <T>(run: () => T) => { const spy = vi.spyOn(console, 'error').mockImplementation(() => {}); try { return run(); } finally { spy.mockRestore(); } };
+
+test('prepare pauses and freezes admission, observes custody, then backs up and re-verifies before backup-verified', async () => {
+  const d = await deployment({ codingCatalog: false });
+  try {
+    const backupFile = join(d.stage, 'orders.backup.db');
+    // A catalog that first appears as admission freezes is in the frozen record and backed up after the database copy.
+    d.hooks.freeze = d.appearCatalog;
+    d.hooks.facts = () => {
+      d.log.push(`facts ${existsSync(backupFile) ? 'after' : 'before'} backup${existsSync(d.codingBackup) ? ' and coding backup' : ''}`);
+      // The copy holds a read view, never the writer: a worker heartbeat is not refused while it runs.
+      if (!existsSync(backupFile)) { const worker = d.orders(); try { worker.exec("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,'now','later','now')"); } finally { worker.close(); } }
+    };
+    await d.phases.prepare({ packageSha256: 'staged' });
+    expect(d.log).toEqual(['facts before backup', 'preparing', 'admission-paused', 'frozen', 'facts before backup', 'installed backs up coding', 'facts after backup and coding backup', 'backup-verified']);
+    expect(d.journals['admission-paused'].codingCatalogExpected).toBe(false);
+    expect(d.journals.frozen.codingCatalogExpected).toBe(true);
+    expect(d.journal()).toMatchObject({ phase: 'backup-verified', backupSha256: expect.stringMatching(/^[a-f0-9]{64}$/), codingBackupHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(d.gateOwned()).toBe(true);
+  } finally { d.close(); }
 });
 
+test('prepare refuses a result changed while the coding backup was copied, and resumes a preparing journal under its own pause', async () => {
+  const d = await deployment();
+  try {
+    d.hooks.codingBackup = () => { d.current.completion.digest = 'changed'; };
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('changed during backup');
+    expect(d.journal().phase).toBe('frozen');
+  } finally { d.close(); }
+  // Admission could not be paused: the preparing journal is kept and its identity reused, never a second gate.
+  const resumed = await deployment();
+  try {
+    let refusals = 1;
+    resumed.hooks.install = () => { if (refusals-- > 0) throw Error('database is locked'); };
+    const staged = { packageSha256: createHash('sha256').update('packed candidate').digest('hex') };
+    await expect(resumed.phases.prepare(staged)).rejects.toThrow('database is locked');
+    const first = resumed.journal();
+    expect(first.phase).toBe('preparing');
+    await resumed.phases.prepare(staged);
+    expect(resumed.journal()).toMatchObject({ id: first.id, phase: 'backup-verified' });
+    expect(resumed.gateOwned()).toBe(true);
+  } finally { resumed.close(); }
+});
+
+test('a newly observed catalog is journaled before its backup is awaited', async () => {
+  const d = await deployment();
+  try {
+    let journaled: unknown;
+    const runtime = { backupCodingCatalog: async (from: string, to: string) => { journaled = d.journal().codingCatalogExpected; copyFileSync(from, to); } };
+    await d.phases.ensureCodingBackup(runtime, { id: randomUUID(), phase: 'frozen' });
+    expect(journaled).toBe(true);
+    expect(d.journal().codingBackupHash).toMatch(/^[a-f0-9]{64}$/);
+  } finally { d.close(); }
+});
+
+test('swap verifies the backups before the stop, proves the stop and custody before migrating, and again before starting the candidate', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    // A child that appeared since preparation is stopped and proved gone too.
+    d.services.old = { ...d.services.old, children: [fakePid(2), fakePid(3)] };
+    let atStop: Record<string, any> | undefined;
+    d.hooks.stopped = () => { atStop ??= d.journal(); };
+    await d.phases.swap();
+    expect(d.log).toEqual([
+      'rehearsed', 'stopping', 'bootout', `proved stopped ${fakePid(1)} ${fakePid(2)} ${fakePid(3)}`, 'stopped',
+      // Only once every old process is gone does the candidate's own module release a stale owner, before custody is checked.
+      'candidate releases stale owner', 'installed custody', 'migrating', 'migrate', 'migrated',
+      // Migration loads asynchronously: the stop, the backup and custody are proved again before the candidate starts.
+      `proved stopped ${fakePid(1)} ${fakePid(2)} ${fakePid(3)}`, 'installed custody', 'bootstrap candidate', 'starting', 'started',
+    ]);
+    // The identity being stopped was journaled before the stop.
+    expect(atStop).toMatchObject({ phase: 'stopping', stoppingService: { supervisor: fakePid(1), children: [fakePid(2), fakePid(3)] } });
+    expect(d.journals.stopped.codingBackupBeforeSwap).toBe(d.journal().codingBackupHash);
+    expect(readFileSync(d.plist, 'utf8')).toContain(`${d.nextDist}/cli.js`);
+    expect(d.journal()).toMatchObject({ phase: 'started', newService: { supervisor: fakePid(4) } });
+  } finally { d.close(); }
+});
+
+test('a coding catalog that first appears once the candidate runs is backed up after it starts, and journaled', async () => {
+  const d = await deployment({ codingCatalog: false });
+  try {
+    await d.rehearsed();
+    expect(d.journal().codingBackupHash ?? null).toBeNull();
+    // The candidate makes its first catalog while the swap waits for it to answer.
+    d.hooks.sleep = () => { if (!existsSync(`${d.database}.coding.sqlite`)) d.appearCatalog(); };
+    await d.phases.swap();
+    expect(d.log.slice(d.log.indexOf('starting'))).toEqual(['starting', 'started', 'candidate backs up coding']);
+    expect(d.journal()).toMatchObject({ phase: 'started', codingCatalogExpected: true, codingBackupHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  } finally { d.close(); }
+});
+
+test('a backup that no longer verifies refuses the swap before anything is stopped, and only the pause is lifted', async () => {
+  for (const changed of ['orders', 'coding'] as const) {
+    const d = await deployment();
+    try {
+      await d.rehearsed();
+      tamper(changed === 'orders' ? join(d.stage, 'orders.backup.db') : d.codingBackup);
+      await expect(d.phases.swap()).rejects.toThrow(changed === 'orders' ? 'The verified backup or rehearsal changed.' : 'retained coding backup');
+      expect(d.log).not.toContain('bootout');
+      expect(d.journal().phase).toBe('rehearsed');
+      expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+      expect(d.log.filter(one => one.startsWith('bootstrap'))).toEqual([]);
+      expect([d.journal().phase, d.gateOwned()]).toEqual(['released', false]);
+    } finally { d.close(); }
+  }
+});
+
+test('a coding backup changed while the migration loaded leaves the candidate unstarted', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    let stops = 0;
+    d.hooks.stopped = () => { if (++stops === 2) tamper(d.codingBackup); };
+    await expect(d.phases.swap()).rejects.toThrow('retained coding backup');
+    expect(d.log.filter(one => one.startsWith('bootstrap'))).toEqual([]);
+    expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
+    expect(d.journal().phase).toBe('migrated');
+  } finally { d.close(); }
+});
+
+test('a failed start is stopped and its custody proved, then the backup and previous service go back before admission reopens', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    d.services.starts = false;
+    await expect(d.phases.swap()).rejects.toThrow('The new service did not come up.');
+    const failed = `proved stopped ${fakePid(6)} ${fakePid(7)}`;
+    expect(d.log.slice(d.log.indexOf('starting'))).toEqual(['starting', 'bootout', failed, failed, 'candidate custody', 'start-failed']);
+    // The verified backup goes back, then the previous service starts and answers, all while admission stays paused.
+    const recovering = d.log.length;
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect(d.log.slice(recovering)).toEqual(['bootout', 'bootstrap previous while paused', 'healthz while paused']);
+    expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
+    const db = d.orders();
+    try {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='candidate_only'").get()).toBeUndefined();
+      expect(gate.updateGateOwned(db, d.journal().id)).toBe(false);
+    } finally { db.close(); }
+    expect(d.journal().phase).toBe('released');
+  } finally { d.close(); }
+});
+
+test('the previous service is not started on a database it cannot read', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    d.services.starts = false;
+    await expect(d.phases.swap()).rejects.toThrow('did not come up');
+    // Same-schema rehearsal said it reads the result, but the live schema moved on: nothing is started, the pause stays.
+    durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), rehearsal: { integrity: 'ok', previousRuntimeCompatible: true } });
+    const db = d.orders();
+    try { db.exec('UPDATE schema_version SET version=version+1'); } finally { db.close(); }
+    const recovering = d.log.length;
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect(d.log.slice(recovering)).toEqual([]);
+    expect([d.journal().phase, d.gateOwned()]).toEqual(['start-failed', true]);
+  } finally { d.close(); }
+});
+
+/** A started deployment whose project lease is renewed only after finish first waits for it. */
+async function started() {
+  const d = await deployment();
+  await d.rehearsed();
+  await d.phases.swap();
+  const lease = (heartbeat: string) => { const db = d.orders(); try { db.prepare("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,?,?,?)").run(heartbeat, new Date(Date.now() + 3_600_000).toISOString(), heartbeat); } finally { db.close(); } };
+  lease(new Date(Date.now() - 3_600_000).toISOString());
+  d.hooks.sleep = () => { d.log.push('lease wait'); lease(new Date().toISOString()); };
+  d.reset();
+  return d;
+}
+
+test('finish checks custody before the console answers, waits for fresh leases, and verifies the backups again before reopening admission', async () => {
+  const d = await started();
+  try {
+    await d.phases.finish();
+    expect(d.log).toEqual(['started', 'fetch http://127.0.0.1:4180/t/task', 'lease wait', 'healthy', 'deployed', 'summary']);
+    expect(d.journal()).toMatchObject({ phase: 'deployed', leases: [{ repo: '/repo' }] });
+    expect(d.gateOwned()).toBe(false);
+  } finally { d.close(); }
+  for (const when of ['fetch', 'sleep'] as const) {
+    const changed = await started();
+    try {
+      const wait = changed.hooks.sleep;
+      changed.hooks[when] = () => { if (when === 'sleep') wait?.(); tamper(changed.codingBackup); };
+      await expect(changed.phases.finish()).rejects.toThrow('retained coding backup');
+      expect([changed.journal().phase, changed.gateOwned()]).toEqual(['started', true]);
+    } finally { changed.close(); }
+  }
+});
+
+/** deploy-browser's database helpers, with the snapshot and the SQLite copy supplied. */
 function browserDatabaseHelpers(snapshot: (db: DatabaseSync) => unknown = () => [], copy: typeof backup = backup) {
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  // Exercise the CLI's exact helpers without executing its launchd entry point.
-  const functions = source.slice(source.indexOf('function openDeploymentDatabase('), source.indexOf('const args = process.argv.slice(2);'));
-  return new Function('DatabaseSync', 'snapshot', 'backup', functions + '\nreturn { openDeploymentDatabase, snapshotBackup };')(DatabaseSync, snapshot, copy) as {
-    openDeploymentDatabase(file: string, options?: { readOnly?: boolean }, waitMs?: number): DatabaseSync;
-    snapshotBackup(db: DatabaseSync, target: string, validate?: (db: DatabaseSync) => void): Promise<unknown>;
+  return {
+    openDeploymentDatabase: openDeploymentDatabase as (file: string, options?: { readOnly?: boolean }, waitMs?: number) => DatabaseSync,
+    snapshotBackup: (db: DatabaseSync, target: string, validate?: (db: DatabaseSync) => void) => snapshotBackup(db, target, validate, { snapshot, backup: copy }) as Promise<unknown>,
   };
 }
 
@@ -251,11 +482,6 @@ test('browser deployment waits through a competing writer before installing its 
     // A resumed preparing phase reuses its gate identity, rather than replacing it.
     installUpdateGate(db, f.record.id);
     expect(() => installUpdateGate(db, randomUUID())).toThrow('Another or unrecognized update');
-    const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-    expect(source.match(/new DatabaseSync\(/g)).toHaveLength(1);
-    expect(source).toContain('openDeploymentDatabase(database, {}, 10000)');
-    expect(source).toContain('existsSync(journalFile) ? loadPhase("preparing") : null');
-    expect(source).toContain('const r = resumed ??');
   } finally { child.kill(); await ended; db?.close(); f.close(); }
 }, 8000);
 
@@ -295,11 +521,9 @@ test('browser backup preserves its read snapshot across concurrent WAL writes an
 
 
 function preparedDatabaseGuard(facts: (db: DatabaseSync) => unknown, quiet: (db: DatabaseSync) => void) {
-  const source = readFileSync(resolve('scripts/deploy-browser.mjs'), 'utf8');
-  const body = source.slice(source.indexOf('function verifyPreparedDatabase('), source.indexOf('async function prepare('));
-  return new Function('oldRt', 'facts', 'quiet', 'requireTrue', body + '\nreturn verifyPreparedDatabase;')(
-    { gate: { updateGateOwned } }, facts, quiet, (okay: unknown, message: string) => { if (!okay) throw Error(message); },
-  ) as (db: DatabaseSync, record: Record<string, unknown>) => void;
+  return browserDeployment({
+    candidateHead: 'c'.repeat(40), oldRt: { gate: { updateGateOwned } }, facts, quiet, requireTrue: (okay: unknown, message: string) => { if (!okay) throw Error(message); },
+  }).verifyPreparedDatabase as (db: DatabaseSync, record: Record<string, unknown>) => void;
 }
 
 test.each(['gate', 'schema', 'completion', 'check', 'scope', 'active-work'])('browser backup refuses a changed %s after copying without reserving the writer', async change => {

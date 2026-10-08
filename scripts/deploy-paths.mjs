@@ -19,3 +19,10 @@ export function deployStateDir(names, env, home) {
 export function stagedPackageName(stageDir, packageName, names) {
   return [packageName, ...names.NAMES].find(name => existsSync(join(stageDir, "runtime", "node_modules", name, "package.json"))) ?? packageName;
 }
+
+/** Where a staged runtime holds the candidate: the runtime folder, the package
+ * inside it (under stagedPackageName) and that package's dist. */
+export function stagedRuntimePaths(stageDir, packageName, names) {
+  const name = stagedPackageName(stageDir, packageName, names), runtime = join(stageDir, "runtime"), self = join(runtime, "node_modules", name);
+  return { name, runtime, self, dist: join(self, "dist") };
+}
