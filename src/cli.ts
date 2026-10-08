@@ -300,7 +300,6 @@ export const OPERATE_COMMANDS = new Set([
   "publish",
   "reconcile",
   "run",
-  "routine",
   "flows",
   "config", "chat", "proposals", "mode", "chat-approval", "people", "tokens", "keys",
   "setup",
@@ -308,7 +307,6 @@ export const OPERATE_COMMANDS = new Set([
   "intake",
   "providers",
   "template",
-  "contest",
   "webhook",
   "sync",
 ]);
@@ -452,11 +450,22 @@ export async function main(
   return code;
 }
 
+/** What every former `toolroll routine …` command says now (v115; kept for this release only). */
+export const ROUTINES_MOVED = "Routines are now scheduled flows: see `toolroll flows list` (your routines were moved there).";
+
+function routinesMoved(argv: readonly string[], write: Write): number {
+  write(argv.includes("--json") ? envelopeJson({ ok: true, command: "routine", message: ROUTINES_MOVED }) : ROUTINES_MOVED);
+  return 0;
+}
+
 async function dispatch(
   argv: readonly string[],
   write: Write,
   mainOptions: MainOptions,
 ): Promise<number> {
+  // v115: routines became scheduled flows. Every old `routine …` invocation answers with one line pointing there —
+  // hidden from help and the contract, before anything remote or local opens, changing nothing.
+  if (argv[0] === "routine") return routinesMoved(argv, write);
   // A saved API token sends commands marked remote to the central server, before anything local opens.
   if (argv[0] === 'health') return runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
   const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);

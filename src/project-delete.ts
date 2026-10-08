@@ -63,7 +63,7 @@ function doomed(db: Database, repo: string): Doomed {
 const SETTINGS: [table: string, column: string][] = [
   ["approval_policy", "repo"], ["verify_command", "repo"], ["worktree_setup", "repo"], ["backend_grant", "repo"], ["publication_grant", "repo"],
   ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"], ["phase_config", "scope"], ["phase_tier_config", "scope"],
-  ["fallback_config", "scope"], ["learning_policy", "repo"], ["operating_mode", "repo"], ["routine", "repo"], ["project_knowledge", "repo"],
+  ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"],
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
 ];
 
@@ -102,7 +102,6 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const at = now.toISOString();
   const count = (sql: string, ...params: unknown[]) => Number(db.prepare(sql).get(...params)?.["n"] ?? 0);
   const building = count(`SELECT COUNT(DISTINCT task_ref) AS n FROM claim WHERE released_at IS NULL AND expires_at > ? AND task_ref IN (SELECT value FROM json_each(?))`, at, json(d.refs));
-  const sessions = count("SELECT COUNT(*) AS n FROM held_session WHERE ended_at IS NULL AND run IN (SELECT value FROM json_each(?))", json(d.runs));
   const slots = count("SELECT COUNT(*) AS n FROM execution_slot WHERE state IN ('reserved','running') AND run IN (SELECT value FROM json_each(?))", json(d.runs));
   const chats = count("SELECT COUNT(*) AS n FROM mate_turn WHERE state IN ('queued','running') AND id IN (SELECT value FROM json_each(?))", json(d.turns));
   const steps = count("SELECT COUNT(*) AS n FROM flow_step_run WHERE state = 'running' AND card IN (SELECT value FROM json_each(?))", json(d.cards));
@@ -111,7 +110,7 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const checkouts = count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ? AND runner IS NOT NULL AND released_at IS NULL", repo);
   return [
     ...(building > 0 ? [`${plural(building, "task")} ${building === 1 ? "is" : "are"} being built`] : []),
-    ...(sessions > 0 || slots > 0 ? ["an agent is working"] : []),
+    ...(slots > 0 ? ["an agent is working"] : []),
     ...(chats > 0 ? ["a chat is answering"] : []),
     ...(steps > 0 ? ["a flow step is running"] : []),
     ...(calls > 0 ? ["a teammate is working"] : []),
@@ -139,7 +138,6 @@ async function removeCheckoutsAndBranches(store: Store, repo: string, d: Doomed,
   const named = [
     ...d.tasks.flatMap(id => OWN_BRANCHES.map(prefix => `${prefix}${id}`)), ...recorded.map(row => row.branch),
     ...list(db, "SELECT DISTINCT branch FROM run WHERE branch IS NOT NULL AND id IN (SELECT value FROM json_each(?))", json(d.runs)),
-    ...list(db, "SELECT DISTINCT c.branch FROM contestant c JOIN contest k ON k.id = c.contest WHERE c.branch IS NOT NULL AND k.task_ref IN (SELECT value FROM json_each(?))", json(d.refs)),
     ...list(db, "SELECT DISTINCT head FROM publication WHERE head IS NOT NULL AND task_ref IN (SELECT value FROM json_each(?))", json(d.refs)),
   ].map(String).filter(isOwnBranch);
   const ours = new Set(named);
@@ -271,7 +269,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("diff_comment", `${IN("run")} OR ${IN("reviewer_run")} OR ${IN("artifact")}`, R, R, A);
   del("review_request", `${IN("run")} OR ${IN("reviewer_run")}`, R, R);
   del("repair_chain", IN("source_run"), R);
-  for (const table of ["incident", "held_session", "proof_acceptance", "proof_verdict", "run_process", "run_route", "run_spend", "run_tool", "run_note", "run_stop", "run_checkpoint", "session_turn", "execution_slot"]) del(table, IN("run"), R);
+  for (const table of ["incident", "proof_acceptance", "proof_verdict", "run_process", "run_route", "run_spend", "run_tool", "run_note", "run_stop", "run_checkpoint", "execution_slot"]) del(table, IN("run"), R);
   del("knowledge_snapshot", `repo = ? OR ${IN("run")}`, repo, R);
   del("learning_snapshot", `repo = ? OR ${IN("run")}`, repo, R);
   del("learning_capture", `repo = ? OR ${IN("source")} OR ${IN("reviewer")}`, repo, R, R);
@@ -285,18 +283,9 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("artifact", IN("id"), A);
 
   // Tasks and their versions.
-  const cycles = json(ids(db, `SELECT id FROM fallback_cycle WHERE ${IN("task_ref")}`, T));
-  del("fallback_transition", `${IN("cycle")} OR ${IN("predecessor_run")} OR ${IN("consumed_by")}`, cycles, R, R);
-  del("fallback_cycle", IN("id"), cycles);
-  const contests = json(ids(db, `SELECT id FROM contest WHERE ${IN("task_ref")}`, T));
-  del("contestant", IN("contest"), contests);
-  del("contest", IN("id"), contests);
-  del("tournament_terms", IN("task_ref"), T);
-  del("attended_authorization", IN("task_ref"), T);
   del("run", IN("id"), R);
   del("plan_revision", IN("task_ref"), T);
   for (const table of ["claim", "hold", "task_steer"]) del(table, IN("task_ref"), T);
-  del("routine_fire", IN("instance_task_ref"), T);
   const mirrors = json(list(db, `SELECT local_task_id FROM external_mirror WHERE ${IN("local_task_id")}`, K));
   del("external_intent", IN("mirror"), mirrors);
   del("external_mirror", IN("local_task_id"), mirrors);
@@ -327,7 +316,6 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("operating_mode_event", "mode IN (SELECT id FROM operating_mode WHERE repo = ?)", repo);
   del("decision_change", "decision IN (SELECT id FROM project_decision WHERE repo = ?)", repo);
   del("memory_sighting", "gap IN (SELECT id FROM memory_gap WHERE repo = ?) OR session IN (SELECT id FROM memory_session WHERE repo = ?)", repo, repo);
-  del("routine_fire", "routine_id IN (SELECT id FROM routine WHERE repo = ?)", repo);
   for (const [table, column] of SETTINGS) del(table, `${column} = ?`, repo);
   del("project_mute", "repo = ?", repo);
   for (const table of ["knowledge_change", "project_identity_carry", "project_skill_change", "memory_gap", "memory_proposal", "memory_rejection", "memory_session", "memory_search", "mode_rail", "side_spend", "watch_episode", "worktree", "coordinator_proposal", "lead_commitment"]) del(table, "repo = ?", repo);

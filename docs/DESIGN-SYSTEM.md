@@ -150,7 +150,7 @@ top-down and every long thing folds.
    value.
 6. **Sections that fold**, each with its count: decisions, incidents,
    attempts (open), spend (folded), steering (open only when notes exist),
-   scope (open; the edit form and the tournament fields fold inside it),
+   scope (open; the edit form folds inside it),
    waits for (folded when empty), holds.
 7. **Full evidence and revision** — the result receipt links to the run's
    immutable record. Its diff opens in View mode: folding file rows, old/new
@@ -182,7 +182,7 @@ primary act before the backlog. The rules:
   never the "not in view" problem banner, which is reserved for tasks that
   are not done, not admitted, or do not exist.
 - **One primary act** (`.cockpit-next`), chosen from the state: review
-  missing or conflicting evidence, compare a tournament, draft a CI repair, seal ready annotations,
+  missing or conflicting evidence, draft a CI repair, seal ready annotations,
   open the pull request, or plainly "nothing waits on you". Every other road
   stays in its own section. A bearer session sees the act named, never a form.
 - **Sections in one scan path**, with approved scope, the evidence bundle,

@@ -11,20 +11,14 @@ import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
 import {
   acquire,
-  acquireFallback,
   acquireIfReady,
-  completeFenced,
-  finalizeFailureFenced,
-  finalizeMalformedFenced,
-  finalizeParkFenced,
-  finalizePlanFenced,
-  finalizeRevisionFenced,
   type FailureClass,
   heartbeat,
   release,
   reap,
   currentClaim,
   DEFAULT_LEASE_MS,
+  finalize,
 } from "./claim.js";
 
 
@@ -36,13 +30,12 @@ const presented = (
   s: Pick<import("./store.js").Store, "routeAuthorityFor">,
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
-  bound: { index: number; entryDigest: string } | null = null,
   spend: { provider: string; model: string | null } = { provider: "claude", model: null },
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
   // A task with no scope presents the bare word `legacy` for the pair it
   // spends as (atomic authority closure): the default claude pair, or the
   // exact pair a fixture names.
-  const authority = s.routeAuthorityFor(taskRef, role, bound) ?? s.routeAuthorityFor(taskRef, role, bound, spend);
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, spend);
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -560,7 +553,12 @@ describe("acquireIfReady", () => {
   });
 });
 
-describe("completeFenced", () => {
+test("an attempt ends through one door: claim.ts exports finalize and no per-ending finalizer", async () => {
+  const claim = await import("./claim.js");
+  expect(Object.keys(claim).filter(name => /finali[sz]e|Fenced$|^complete/i.test(name))).toEqual(["finalize"]);
+});
+
+describe("finalize: complete", () => {
   let store: Store;
   let task: number;
 
@@ -578,7 +576,7 @@ describe("completeFenced", () => {
   test("releases the lease and writes the terminal state together", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
 
-    const result = completeFenced(store, "lease-a", "done", later(1_000));
+    const result = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(1_000) });
 
     expect(result).toMatchObject({ ok: true });
     expect(store.getTask("t-1")?.state).toBe("done");
@@ -591,7 +589,7 @@ describe("completeFenced", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60_000 });
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(61_000), newLeaseId: ids("lease-b") });
 
-    const result = completeFenced(store, "lease-a", "failed", later(62_000));
+    const result = finalize(store, "lease-a", { kind: "complete", state: "failed", now: later(62_000) });
 
     expect(result).toEqual({ ok: false, reason: "fenced" });
     expect(store.getTask("t-1")?.state).toBe("queued");
@@ -599,9 +597,9 @@ describe("completeFenced", () => {
 
   test("a duplicate completion reports duplicate and does not change the answer", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    completeFenced(store, "lease-a", "done", later(1_000));
+    finalize(store, "lease-a", { kind: "complete", state: "done", now: later(1_000) });
 
-    const retry = completeFenced(store, "lease-a", "failed", later(2_000));
+    const retry = finalize(store, "lease-a", { kind: "complete", state: "failed", now: later(2_000) });
 
     expect(retry).toMatchObject({ ok: true, duplicate: true });
     expect(store.getTask("t-1")?.state).toBe("done");
@@ -613,7 +611,7 @@ describe("completeFenced", () => {
     // task is done the same instant the lease lets go, so a later claim finds
     // it not-ready rather than dispatching a second builder.
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    completeFenced(store, "lease-a", "done", later(1_000));
+    finalize(store, "lease-a", { kind: "complete", state: "done", now: later(1_000) });
 
     const second = acquireIfReady(store, task, "runner-b", { token: tok("runner-b"), now: later(2_000) });
 
@@ -643,7 +641,7 @@ describe("release provenance", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60_000 });
     reap(store, later(61_000));
 
-    const late = completeFenced(store, "lease-a", "done", later(120_000));
+    const late = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(120_000) });
 
     expect(late).toEqual({ ok: false, reason: "fenced" });
     expect(store.getTask("t-1")?.state).toBe("queued");
@@ -653,7 +651,7 @@ describe("release provenance", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60 * 60_000 });
     store.releaseClaimsOf("runner-a", later(1_000));
 
-    const late = completeFenced(store, "lease-a", "done", later(2_000));
+    const late = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(2_000) });
 
     expect(late).toEqual({ ok: false, reason: "fenced" });
     expect(store.getTask("t-1")?.state).toBe("queued");
@@ -668,9 +666,9 @@ describe("release provenance", () => {
 
   test("a completion retried after a genuine completion is still a duplicate", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    completeFenced(store, "lease-a", "done", later(1_000));
+    finalize(store, "lease-a", { kind: "complete", state: "done", now: later(1_000) });
 
-    const retry = completeFenced(store, "lease-a", "done", later(2_000));
+    const retry = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(2_000) });
 
     expect(retry).toMatchObject({ ok: true, duplicate: true });
   });
@@ -682,7 +680,7 @@ describe("release provenance", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
     release(store, "lease-a", later(1_000));
 
-    const late = completeFenced(store, "lease-a", "done", later(2_000));
+    const late = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(2_000) });
 
     expect(late).toEqual({ ok: false, reason: "fenced" });
     expect(store.getTask("t-1")?.state).toBe("queued");
@@ -877,8 +875,8 @@ describe("sealing a park", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60 * 60_000 });
     const runId = openRun("lease-a");
 
-    const sealed = finalizeParkFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "park",
       runId,
       taskId: "t-1",
       decision,
@@ -907,7 +905,7 @@ describe("sealing a park", () => {
   test.each(["omitted", "swapped", "tampered", "amendment", "preserved"])("recorded planner source: %s at the ingestion boundary", (mode) => {
     const evidenceRoot = mkdtempSync(join(tmpdir(), "so-plan-boundary-"));
     try {
-      propose(store, { taskId: "t-1", goal: "Keep every filed term", outOfScope: "billing", budgetMicrousd: 1_500_000, riskLevel: "high", qualityMode: "strict", acceptance: [{ id: "c1", statement: "Tests pass", how: null, evidence: ["check"] }], now: T0 });
+      propose(store, { taskId: "t-1", goal: "Keep every filed term", outOfScope: "billing", budgetMicrousd: 1_500_000, qualityMode: "strict", acceptance: [{ id: "c1", statement: "Tests pass", how: null, evidence: ["check"] }], now: T0 });
       acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60 * 60_000 });
       const { root, child } = openPlannerRepair("lease-a");
       const sourced = plannerSourceOf(store, evidenceRoot, "t-1", []);
@@ -924,11 +922,12 @@ describe("sealing a park", () => {
       }
       if (mode === "tampered") writeFileSync(join(evidenceRoot, store.getArtifact(sourceArtifact)!.key), "{}");
       const expected = store.getScope("t-1")!.digest;
-      const result = finalizePlanFenced(store, { leaseId: "lease-a", runId: root, taskId: "t-1", plan: { ...initial, goal: mode === "amendment" ? "Ignore the original contract" : initial.goal, plan: "Implement the specified change" }, artifact: null, repairRunId: child,
-        ...(mode === "omitted" ? {} : { source, sourceArtifact, evidenceRoot }), now: later(1000) });
+      const result = finalize(store, "lease-a", {
+        kind: "plan", runId: root, taskId: "t-1", plan: { ...initial, goal: mode === "amendment" ? "Ignore the original contract" : initial.goal, plan: "Implement the specified change" }, artifact: null, repairRunId: child,
+        ...(mode === "omitted" ? {} : { source, sourceArtifact, evidenceRoot }), now: later(1000)  });
       if (mode === "preserved") {
         expect(result).toMatchObject({ ok: true, changes: 0 });
-        expect(store.getScope("t-1")).toMatchObject({ digest: initial.digest, budgetMicrousd: 1_500_000, riskLevel: "high", qualityMode: "strict", approvedAt: null });
+        expect(store.getScope("t-1")).toMatchObject({ digest: initial.digest, budgetMicrousd: 1_500_000, qualityMode: "strict", approvedAt: null });
       } else {
         expect(result).toMatchObject({ ok: false, reason: "source-invalid" });
         expect(store.getScope("t-1")!.digest).toBe(expected);
@@ -939,10 +938,10 @@ describe("sealing a park", () => {
     } finally { rmSync(evidenceRoot, { recursive: true, force: true }); }
   });
 
-  test.each(["unchanged", "amended", "revoked", "expired", "renewed", "tampered-plan", "missing-plan", "wrong-source", "changed-terms", "legacy-mode", "different-actor", "no-paths", "mate", "contest-added", "fenced", "rollback"])("bounded plan auto-approval: %s", scenario => {
+  test.each(["unchanged", "amended", "revoked", "expired", "renewed", "tampered-plan", "missing-plan", "wrong-source", "changed-terms", "legacy-mode", "different-actor", "no-paths", "mate", "fenced", "rollback"])("bounded plan auto-approval: %s", scenario => {
     const evidenceRoot = mkdtempSync(join(tmpdir(), "so-plan-auto-"));
     try {
-      const initial = propose(store, { taskId: "t-1", goal: "Keep every filed term", outOfScope: "No billing changes", touches: scenario === "no-paths" ? [] : ["src/example.ts"], budgetMicrousd: 1_500_000, riskLevel: "high", qualityMode: "strict", acceptance: [{ id: "c1", statement: "Tests pass", how: null, evidence: ["check"] }], now: T0 });
+      const initial = propose(store, { taskId: "t-1", goal: "Keep every filed term", outOfScope: "No billing changes", touches: scenario === "no-paths" ? [] : ["src/example.ts"], budgetMicrousd: 1_500_000, qualityMode: "strict", acceptance: [{ id: "c1", statement: "Tests pass", how: null, evidence: ["check"] }], now: T0 });
       if (scenario === "mate") store.raw().prepare("UPDATE task_scope SET proposed_via='mate' WHERE task_id='t-1'").run();
       expect(store.requestPlan(task, T0).ok).toBe(true);
       const terms = { ...presetTerms("standard", later(60_000).toISOString()), autoApproveFiling: true, planAuto: scenario !== "legacy-mode" };
@@ -965,22 +964,21 @@ describe("sealing a park", () => {
       if (scenario === "renewed") { terms.absoluteExpiry = later(120_000).toISOString(); sign(); }
       if (scenario === "wrong-source") store.raw().prepare("UPDATE plan_authorization SET source_digest='stale'").run();
       if (scenario === "changed-terms") propose(store, { taskId: "t-1", goal: "Changed while planning", now: later(1) });
-      if (scenario === "contest-added") store.fileTournamentTerms({ taskRef: task, raceDigest: "race-digest", agents: Array.from({ length: 2 }, () => ({ provider: "claude", model: "sonnet", repairModel: "sonnet" })), perAgentBudgetMicrousd: 1000000, overrunReserveMicrousd: 1000000, totalBudgetMicrousd: 3000000, priceVersion: 1, publicationPolicy: "notify" }, T0);
       if (scenario === "fenced") {
         release(store, "lease-a", later(10));
         acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(20), newLeaseId: ids("lease-b") });
       }
-      const finalize = () => finalizePlanFenced(store, { leaseId: "lease-a", runId: root, taskId: "t-1", plan: { ...initial, goal: scenario === "amended" ? "Wider goal" : initial.goal, amendment: scenario === "amended" ? "Request a larger change" : null, plan: document }, artifact: scenario === "missing-plan" ? null : artifact, repairRunId: child, source: sourced.source, sourceArtifact, evidenceRoot, now: later(scenario === "expired" ? 61_000 : 1_000) });
+      const seal = () => finalize(store, "lease-a", { kind: "plan", runId: root, taskId: "t-1", plan: { ...initial, goal: scenario === "amended" ? "Wider goal" : initial.goal, amendment: scenario === "amended" ? "Request a larger change" : null, plan: document }, artifact: scenario === "missing-plan" ? null : artifact, repairRunId: child, source: sourced.source, sourceArtifact, evidenceRoot, now: later(scenario === "expired" ? 61_000 : 1_000) });
       if (scenario === "rollback") {
-        expect(() => store.transact(() => { expect(finalize().ok).toBe(true); expect(store.scopeSealed("t-1")).toBe(true); throw new Error("rollback"); })).toThrow("rollback");
+        expect(() => store.transact(() => { expect(seal().ok).toBe(true); expect(store.scopeSealed("t-1")).toBe(true); throw new Error("rollback"); })).toThrow("rollback");
         expect(store.raw().prepare("SELECT 1 FROM plan_authorization").get()).toBeDefined();
       } else {
-        const result = finalize();
+        const result = seal();
         expect(result.ok).toBe(!["fenced", "changed-terms"].includes(scenario));
       }
       expect(store.scopeSealed("t-1")).toBe(scenario === "unchanged");
       if (scenario === "unchanged") {
-        expect(store.getScope("t-1")).toMatchObject({ digest: initial.digest, approvalBasis: "mode", approvedBy: "alex", budgetMicrousd: 1_500_000, riskLevel: "high", qualityMode: "strict" });
+        expect(store.getScope("t-1")).toMatchObject({ digest: initial.digest, approvalBasis: "mode", approvedBy: "alex", budgetMicrousd: 1_500_000, qualityMode: "strict" });
         expect(store.modeApprovalLive(task, later(1000))).toBe(true);
         expect(store.actionLedger({ repos: [REPO] })).toEqual(expect.arrayContaining([expect.objectContaining({ action: "plan auto-approval", outcome: "approved", actor: "alex", runId: root })]));
         store.revokeMode(REPO, "alex", "operator", later(2000));
@@ -994,8 +992,8 @@ describe("sealing a park", () => {
     const { root, child } = openPlannerRepair("lease-a");
     expect(store.getRun(child)?.outcome).toBeNull();
 
-    const sealed = finalizeParkFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "park",
       runId: root,
       taskId: "t-1",
       decision,
@@ -1015,8 +1013,8 @@ describe("sealing a park", () => {
     // The lease expires and the task is retaken: the world moved on.
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(120_000), newLeaseId: ids("lease-b") });
 
-    const sealed = finalizeParkFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "park",
       runId,
       taskId: "t-1",
       decision,
@@ -1040,8 +1038,8 @@ describe("sealing a park", () => {
     const { root, child } = openPlannerRepair("lease-a");
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(120_000), newLeaseId: ids("lease-b") });
 
-    const sealed = finalizeParkFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "park",
       runId: root,
       taskId: "t-1",
       decision,
@@ -1068,8 +1066,8 @@ describe("sealing a park", () => {
     };
     expect(store.getRun(child)?.outcome).toBeNull();
 
-    const sealed = finalizePlanFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "plan",
       runId: root,
       taskId: "t-1",
       plan,
@@ -1108,8 +1106,8 @@ describe("sealing a park", () => {
     const { root, child } = openPlannerRepair("lease-a");
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(120_000), newLeaseId: ids("lease-b") });
 
-    const sealed = finalizePlanFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "plan",
       runId: root,
       taskId: "t-1",
       plan: {
@@ -1144,8 +1142,8 @@ describe("sealing a park", () => {
   test("a park's late release retry is fenced, never a duplicate", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60 * 60_000 });
     const runId = openRun("lease-a");
-    finalizeParkFenced(store, {
-      leaseId: "lease-a", runId, taskId: "t-1", decision, artifactIds: [], now: later(1_000),
+    finalize(store, "lease-a", {
+      kind: "park", runId, taskId: "t-1", decision, artifactIds: [], now: later(1_000),
     });
 
     // The runner retries its release after the park already sealed. The task
@@ -1158,8 +1156,8 @@ describe("sealing a park", () => {
     const runId = openRun("some-other-lease");
 
     expect(() =>
-      finalizeParkFenced(store, {
-        leaseId: "lease-a", runId, taskId: "t-1", decision, artifactIds: [], now: later(1_000),
+      finalize(store, "lease-a", {
+        kind: "park", runId, taskId: "t-1", decision, artifactIds: [], now: later(1_000),
       }),
     ).toThrow(/open attempt/);
   });
@@ -1168,8 +1166,8 @@ describe("sealing a park", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60 * 60_000 });
     const runId = openRun("lease-a");
 
-    const sealed = finalizeMalformedFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "malformed",
       runId,
       taskId: "t-1",
       problems: [{ reason: "missing-recap", message: "recap is required" }],
@@ -1196,8 +1194,8 @@ describe("sealing a park", () => {
     const runId = openRun("lease-a");
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(120_000), newLeaseId: ids("lease-b") });
 
-    const sealed = finalizeMalformedFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "malformed",
       runId,
       taskId: "t-1",
       problems: [],
@@ -1243,8 +1241,8 @@ describe("the resume and the attention budget", () => {
       newLeaseId: ids("lease-park"),
     });
     const runId = openRun("lease-park");
-    const sealed = finalizeParkFenced(store, {
-      leaseId: currentClaim(store, task, T0)!.leaseId,
+    const sealed = finalize(store, currentClaim(store, task, T0)!.leaseId, {
+      kind: "park",
       runId,
       taskId: "t-1",
       decision: {
@@ -1385,8 +1383,8 @@ describe("the failure taxonomy, fenced", () => {
   };
 
   const failIt = (leaseId: string, runId: number, at: Date, failureClass: FailureClass = "unknown") =>
-    finalizeFailureFenced(store, {
-      leaseId, runId, taskId: "t-1", failureClass, message: "boom", worktree: "/w", now: at,
+    finalize(store, leaseId, {
+      kind: "failure", runId, taskId: "t-1", failureClass, message: "boom", worktree: "/w", now: at,
     });
 
   test("one failure: a strike, a doubling backoff, the task still queued", () => {
@@ -1661,8 +1659,8 @@ describe("sealing a plan revision", () => {
     const runId = openRun("lease-a");
     const artifact = planArtifact(runId);
 
-    const sealed = finalizeRevisionFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "revision",
       runId,
       taskId: "t-1",
       taskRef: task,
@@ -1705,8 +1703,8 @@ describe("sealing a plan revision", () => {
     const runId = openRun("lease-a");
     const artifact = planArtifact(runId);
 
-    const sealed = finalizeRevisionFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "revision",
       runId,
       taskId: "t-1",
       taskRef: task,
@@ -1744,8 +1742,8 @@ describe("sealing a plan revision", () => {
     // runner the world moved past does not get to rewrite the road.
     acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(120_000), newLeaseId: ids("lease-b") });
 
-    const sealed = finalizeRevisionFenced(store, {
-      leaseId: "lease-a",
+    const sealed = finalize(store, "lease-a", {
+      kind: "revision",
       runId,
       taskId: "t-1",
       taskRef: task,
@@ -1768,8 +1766,8 @@ describe("sealing a plan revision", () => {
     const artifact = planArtifact(runId);
 
     expect(() =>
-      finalizeRevisionFenced(store, {
-        leaseId: "lease-a",
+      finalize(store, "lease-a", {
+        kind: "revision",
         runId,
         taskId: "t-1",
         taskRef: task,
@@ -1795,8 +1793,8 @@ describe("sealing a plan revision", () => {
     const artifact = planArtifact(runId);
 
     expect(() =>
-      finalizeRevisionFenced(store, {
-        leaseId: "lease-a",
+      finalize(store, "lease-a", {
+        kind: "revision",
         runId,
         taskId: "t-1",
         taskRef: task,
@@ -1846,15 +1844,5 @@ describe("provider readiness, at the claim (v47): an unavailable provider never 
     store.recordProviderReadiness("runner-a", [{ provider: "claude", state: "unknown", reason: "installed; no non-spending login check exists", probe: "version" }], later(2_000));
     expect(store.runnerReadinessOf("runner-a", "claude")?.state).toBe("unknown");
     expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(3_000), provider: "claude" })).toMatchObject({ ok: true });
-  });
-
-  test("the fallback-admission claim refuses a pinned entry whose provider this runner reports unavailable", () => {
-    store.recordProviderReadiness("runner-a", [{ provider: "gemini", state: "unavailable", reason: "installed gemini 0.40.0 is outside this build's attested range", probe: "version" }], T0);
-    const refused = acquireFallback(store, a, "runner-a", { token: tok("runner-a"), now: later(1_000), provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" });
-    expect(refused).toMatchObject({ ok: false, reason: "provider-unavailable" });
-    if (refused.ok === false && refused.reason === "provider-unavailable") {
-      expect(refused.message).toContain("the fallback entry cannot run here");
-    }
-    expect(currentClaim(store, a, later(1_000))).toBeNull();
   });
 });

@@ -151,7 +151,7 @@ describe("managed project skills", () => {
       approve(store, id, "alex", now, store.getScope(id)!.digest, password);
     }
     const ref = store.refFor("built-in", id).id;
-    const route = store.routeAuthorityFor(ref, "builder", null, {
+    const route = store.routeAuthorityFor(ref, "builder", {
       provider: "claude",
       model: "sonnet",
     });
@@ -391,7 +391,7 @@ describe("managed project skills", () => {
       password,
     );
     const ref = store.lookupRef(task.id)!,
-      route = store.routeAuthorityFor(ref.id, "scout", null, {
+      route = store.routeAuthorityFor(ref.id, "scout", {
         provider: "claude",
         model: "sonnet",
       });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { acquireIfReady, finalizeFailureFenced } from "./claim.js";
+import { acquireIfReady, finalize } from "./claim.js";
 import {
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
@@ -254,13 +254,13 @@ describe("Never Stuck dispatch diagnosis", () => {
     enroll(store);
     const claimed = acquireIfReady(store, ref, "worker", { token: TOKEN, repo: REPO, now: T0 });
     if (!claimed.ok) throw new Error(claimed.message);
-    const authority = store.routeAuthorityFor(ref, "builder", null, { provider: "claude", model: null });
+    const authority = store.routeAuthorityFor(ref, "builder", { provider: "claude", model: null });
     const runId = store.startRun({
       taskRef: ref, leaseId: claimed.claim.leaseId, runner: "worker", branch: "feat/handoff", worktree: "/tmp/wt-handoff", now: T0,
       ...(authority === null || !authority.ok ? {} : { route: authority.stamp }),
     });
-    const sealed = finalizeFailureFenced(store, {
-      leaseId: claimed.claim.leaseId, runId, taskId: "t-handoff", failureClass: "no-handoff",
+    const sealed = finalize(store, claimed.claim.leaseId, {
+      kind: "failure", runId, taskId: "t-handoff", failureClass: "no-handoff",
       message: "The agent stopped before handing off; its work was kept and it is being resumed.", worktree: "/tmp/wt-handoff", now: T0,
     });
     expect(sealed).toMatchObject({ ok: true, disposition: "backoff" });

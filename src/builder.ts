@@ -49,10 +49,10 @@ import { witnessedRunner } from "./process-custody.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
-import { approvalOf, digestOf, profileDigestOf, chainDigestOf, entryDigestOf, routeParityProblem, type ExecutionProfile, type Scope, profileFromJson } from "./scope.js";
+import { approvalOf, digestOf, profileDigestOf, routeParityProblem, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
-import { currentClaim, finalizeRevisionFenced, heartbeat, SYNC_MAX_AGE_MS } from "./claim.js";
+import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
 import { missingCapability } from "./dispatch.js";
 import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
@@ -165,25 +165,7 @@ export function verificationExecutableMissing(
   );
 }
 
-/** The attended dispatch (Parity II Phase 2): the authorization is the
- * authority, the coordinator takes ownership at the spawn point, and the
- * builder returns `held` without settling. */
-export type AttendedDispatch = {
-  authorization: import("./store.js").AttendedAuthorization;
-  coordinator: import("./held.js").HeldSessionCoordinator;
-  upIncarnation: string;
-  socketDir: string;
-  releaseWorktree: (path: string) => Promise<unknown>;
-  dispose: { repo: string; origin: string; provider: string; model: string | null; policy?: import("./dispose.js").DisposePolicy };
-  starter?: import("./exec.js").HeldSessionStart extends never ? never : typeof import("./exec.js").startClaudeHeldSession;
-  graceMs?: number;
-  /** v28: the operator's session cap, enforced in the custody transaction. */
-  maxHeldSessions?: number;
-  onDisposed?: import("./held.js").HeldLaunchArgs["onDisposed"];
-};
-
 export type BuildRequest = {
-  attended?: AttendedDispatch;
   taskId: string;
   taskRef: number;
   runner: string;
@@ -202,10 +184,6 @@ export type BuildRequest = {
    * back to the unauthenticated touch, exactly as before.
    */
   runnerToken?: string;
-  /** A tournament contestant's OWN approved profile (v24): under the joint
-   * race approval, this — not the scope's single snapshot — is what the
-   * dispatch proof holds the invocation to. */
-  contestProfile?: ExecutionProfile;
   /**
    * Real time, read repeatedly. `now` is one instant and a build is not: a
    * lease heartbeated with the timestamp the build started at is a lease that
@@ -223,8 +201,8 @@ export type BuildRequest = {
    * gateway refuses a paid call whose run is missing or already finished.
    */
   runId: number;
-  /** Claude's native dollar cap for this attempt (tournaments): the
-   * harness stops itself at this figure. Absent = uncapped, as today. */
+  /** Claude's native dollar cap for this attempt: the harness stops
+   * itself at this figure. Absent = uncapped. */
   maxBudgetUsd?: number;
   /** Fires with the provider's process-group id the moment it exists —
    * the worker-process ledger records it (v14). */
@@ -269,7 +247,7 @@ export type BuildRequest = {
 /**
  * What the agent handed over when it parked: the validated decision and the
  * evidence rows already written for it. The caller seals it with
- * `finalizeParkFenced` — nothing here has touched the claim or the task.
+ * `finalize` (a `park` ending) — nothing here has touched the claim or the task.
  */
 export type ParkPackage = {
   decision: ParsedDecision;
@@ -283,9 +261,6 @@ export type BuildResult =
       committed: boolean;
       /** The agent said no-change and the tree proves it: done, nothing to publish. */
       noChange?: boolean;
-      /** The session is HELD (attended road): the coordinator owns run,
-       * lease, and worktree from here — the caller settles NOTHING. */
-      held?: true;
       branch: string;
       summary: string;
     }
@@ -300,13 +275,6 @@ export type BuildRefusal =
   | "scope-changed"
   | "stale-approval"
   | "mode-ended"
-  | "stale-authorization"
-  | "attended-only"
-  | "session-cap"
-  | "attended-held"
-  | "attended-unsupported"
-  | "run-held"
-  | "spawn-failed"
   | "capability"
   | "no-claim"
   | "not-yours"
@@ -334,7 +302,7 @@ export type BuildRefusal =
   // committing because the plan it was given was wrong. Neither is a
   // failure and neither earns a strike — the first re-plans and resumes,
   // the second waits for a person because authority moved underneath it.
-  // Both are sealed inside `finalizeRevisionFenced`, which has ALREADY
+  // Both are sealed inside `finalize` (a `revision` ending), which has ALREADY
   // released the lease and finished the run by the time dispose sees them.
   | "plan-revised"
   | "plan-revision-blocked"
@@ -344,10 +312,6 @@ export type BuildRefusal =
   // its own terminal or identity contract on a zero exit.
   | "provider-unattested"
   | "provider-protocol"
-  // The chain-custody refusal family (E3d): no spend happened, no strike —
-  // both dispose through the invariant arm, released and refused in words.
-  | "chain-credential"
-  | "chain-custody"
   // The runner gate's spawn leg (MCP spec v6): custody lapsed between the
   // claim and the spawn — same no-spend, no-strike disposal.
   | "runner-custody"
@@ -436,7 +400,7 @@ export function redactSecretAssignments(text: string): string {
 
 /**
  * The last-mile profile proof (v24, foundations findings 6/17): given the
- * scope (or a contestant's own race-approved profile), verify the approval
+ * scope (or a profile pinned beside it), verify the approval
  * record and hold the invocation to EXACTLY the sealed terms. Returns the
  * effective parameters — the snapshot's values — so an unset request field
  * can never float, and refuses divergence in words.
@@ -481,7 +445,6 @@ function providerVersionOf(provider: string): string | null {
 
 export function proveApprovedProfile(
   scope: Scope | null,
-  contestProfile: ExecutionProfile | null,
   given: {
     provider: string;
     model: string | undefined;
@@ -494,10 +457,10 @@ export function proveApprovedProfile(
   | { ok: false; message: string } {
   // The raw terms first (raw authority repair): a scope whose stored terms
   // do not read back exactly proves nothing — not the filtered reading.
-  if (contestProfile === null && scope !== null && scope.termsProblem != null) {
+  if (scope !== null && scope.termsProblem != null) {
     return { ok: false, message: `the scope's stored terms cannot be read exactly (${scope.termsProblem}) — re-file the scope and approve it again (stale-approval)` };
   }
-  const snapshot = contestProfile ?? scope?.approvedProfile ?? null;
+  const snapshot = scope?.approvedProfile ?? null;
   if (snapshot === null) {
     return {
       ok: false,
@@ -509,7 +472,7 @@ export function proveApprovedProfile(
   // the column is bookkeeping, the recomputation is the proof. Grandfathered
   // v1 approvals rederive without the profile (their signed bytes) and are
   // held to the snapshot pinned at migration.
-  if (contestProfile === null && scope !== null) {
+  if (scope !== null) {
     const rederived =
       (scope.digestVersion ?? 1) >= 2
         ? digestOf(
@@ -609,16 +572,8 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   } = request;
 
   const scope = store.getScope(taskId);
-  // The run row, for the chain-entry binding (E3d): a run created by the
-  // cycle roads carries chain_cycle/chain_index/entry_digest/auth_mode, and
-  // the dispatch proof below re-derives every one of them.
-  const chainRun = store.getRun(request.runId);
   const approval = approvalOf(scope);
-  const attended =
-    request.attended !== undefined && request.attended.authorization.taskRef === taskRef
-      ? request.attended
-      : undefined;
-  if (!approval.approved && attended === undefined) {
+  if (!approval.approved) {
     return approval.reason === "changed"
       ? {
           ok: false,
@@ -635,7 +590,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // finding 2): a mode-sealed approval re-proves its signature still
   // stands here too — the claim roads already refuse, and this covers a
   // custom driver calling build directly with a stale claim.
-  if (approval.approved && attended === undefined && !store.modeApprovalLive(taskRef, request.now)) {
+  if (!store.modeApprovalLive(taskRef, request.now)) {
     return {
       ok: false,
       reason: "mode-ended",
@@ -648,113 +603,24 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // permissions, limits — with the approved digest REDERIVED from the live
   // fields plus the snapshot, never trusted as a column. The profile is
   // the authority: request fields left unset take its values; request
-  // fields that DIVERGE refuse, typed, naming what moved. A contestant
-  // proves against its own race-approved profile.
+  // fields that DIVERGE refuse, typed, naming what moved.
   let effective: { model: string; maxTurns: number | undefined; timeoutMs: number; skipPermissions: boolean; profile: ExecutionProfile };
-  if (attended !== undefined) {
-    // The attended road: the authorization's PINNED profile is the authority
-    // (ruling 12); the final byte-compare against these values happens in
-    // the coordinator's proof transaction, at the actual HEAD.
-    let pinnedJson: string | null = null;
-    try {
-      const terms = JSON.parse(attended.authorization.termsJson) as { profileJson?: unknown };
-      pinnedJson = typeof terms.profileJson === "string" ? terms.profileJson : null;
-    } catch {
-      pinnedJson = null;
-    }
-    const pinned = profileFromJson(pinnedJson);
-    if (pinned === null) {
-      return { ok: false, reason: "stale-authorization", message: `${taskId}: the authorization's pinned profile cannot be rehydrated` };
-    }
-    effective = {
-      model: pinned.model,
-      maxTurns: pinned.provider === "claude" ? pinned.maxTurns : request.maxTurns,
-      timeoutMs: pinned.timeoutSeconds * 1000,
-      skipPermissions: profileWantsSkip(pinned),
-      profile: pinned,
-    };
-  } else if (chainRun !== null && chainRun.chainCycle != null) {
-    // THE CHAIN-ENTRY DISPATCH PROOF (E3d, review findings 5/6): a run bound
-    // to a fallback-chain entry proves against the IMMUTABLE approved chain,
-    // never the single-profile snapshot. Everything is RE-DERIVED here, none
-    // of it trusted from the caller: the chain approval must still stand
-    // (approvedChainOf proves digest freshness), the LIVE cycle must be this
-    // run's cycle — same id, open, cursor at this run's index, this run as
-    // its tail, digest matching the approved chain — and the run's pinned
-    // entry digest + auth mode must equal the approved entry at that index.
-    // Only then does the entry's WHOLE profile (and nothing else) run.
-    const chain = store.approvedChainOf(taskId);
-    if (chain === null) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: the chain approval no longer stands — re-approve (stale-approval)` };
-    }
-    // The run must belong to THE TASK being built (finding 7 + verify R7):
-    // a chain digest excludes scope text, so two tasks can share one. The
-    // task_ref equality alone is not enough — the caller supplies BOTH
-    // taskRef and taskId, so the pairing itself is re-derived from the
-    // store: the ref row's own external id must name exactly the task whose
-    // scope authorizes this build.
-    const chainOwner = store.refForId(taskRef);
-    if (
-      chainRun.taskRef !== taskRef ||
-      chainOwner === null ||
-      chainOwner.backend !== "built-in" ||
-      chainOwner.externalId !== taskId
-    ) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: this run belongs to a different task than its dispatch claims (stale-approval)` };
-    }
-    const cycle = store.fallbackCycleFor(taskRef);
-    if (
-      cycle === null ||
-      cycle.id !== chainRun.chainCycle ||
-      cycle.state !== "open" ||
-      cycle.cursor !== chainRun.chainIndex ||
-      cycle.tailRun !== request.runId ||
-      cycle.chainDigest !== chainDigestOf(chain)
-    ) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: this run is not the live custody of its fallback cycle — nothing spends outside the cycle (stale-approval)` };
-    }
-    const entry = chain[chainRun.chainIndex ?? -1];
-    if (entry === undefined || entryDigestOf(entry) !== chainRun.entryDigest || entry.authMode !== chainRun.authMode) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: the run's pinned entry does not match the approved chain at its index (stale-approval)` };
-    }
-    const proof = proveApprovedProfile(scope, entry.profile, {
-      provider,
-      model: request.model,
-      maxTurns: request.maxTurns,
-      timeoutMs: request.timeoutMs,
-      skipPermissions,
-    });
-    if (!proof.ok) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: ${proof.message}` };
-    }
-    effective = proof.effective;
-  } else {
-    // A CHAIN approval dispatches ONLY through its cycle (finding 6): an
-    // ordinary (non-contest) run on a chain scope that carries no cycle
-    // binding must never fall through to the single-profile proof — that
-    // proof cannot verify a chain digest, and a run outside the cycle would
-    // spend outside its custody.
-    if (request.contestProfile === undefined && scope?.approvalKind === "chain") {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: a chain approval dispatches only through its fallback cycle — this run carries no cycle binding (stale-approval)` };
-    }
-    const proof = proveApprovedProfile(scope, request.contestProfile ?? null, {
-      provider,
-      model: request.model,
-      maxTurns: request.maxTurns,
-      timeoutMs: request.timeoutMs,
-      skipPermissions,
-    });
-    if (!proof.ok) {
-      return { ok: false, reason: "stale-approval", message: `${taskId}: ${proof.message}` };
-    }
-    effective = proof.effective;
+  const dispatchProof = proveApprovedProfile(scope, {
+    provider,
+    model: request.model,
+    maxTurns: request.maxTurns,
+    timeoutMs: request.timeoutMs,
+    skipPermissions,
+  });
+  if (!dispatchProof.ok) {
+    return { ok: false, reason: "stale-approval", message: `${taskId}: ${dispatchProof.message}` };
   }
+  effective = dispatchProof.effective;
   // The dispatch stamps (finding 21's order): written the moment the proof
   // passes, before anything provider-shaped happens — the run row then says
   // exactly which sealed terms this invocation was held to, and warm
   // resume below can match on them honestly.
-  const provenScopeDigest =
-    request.contestProfile !== undefined || attended !== undefined ? (scope?.digest ?? "") : (scope?.approvedDigest ?? "");
+  const provenScopeDigest = scope?.approvedDigest ?? "";
   const provenProfileDigest = profileDigestOf(effective.profile);
   store.stampRun(request.runId, {
     scopeDigest: provenScopeDigest,
@@ -764,8 +630,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       : {}),
   });
   // ROUTE PROVENANCE (v47), written once at admission: every run — a
-  // routed dispatch, a fallback admission, a contest lane, an attended
-  // session, a pre-routing row's build — was stamped inside its own
+  // routed dispatch, a pre-routing row's build — was stamped inside its own
   // insert (v48 integrity: there is no late stamp). What is about to
   // spend must BE that stamp — the same provider and exact model — or
   // execution is refused before any spawn; a run that carries none was
@@ -773,7 +638,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // it.
   {
     const existing = store.runRoute(request.runId);
-    const sealed = request.contestProfile !== undefined || attended !== undefined ? null : store.sealedRouteOf(taskId);
+    const sealed = store.sealedRouteOf(taskId);
     if (existing === null) {
       return {
         ok: false,
@@ -810,13 +675,10 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     }
   }
 
-  // THE ORGANISATION POLICY (sprint 8), the last look before money on every build road — the tick, a fallback entry,
-  // a race lane, an attended session: a provider or model it doesn't allow never spawns; terms above its permission
-  // ceiling run lowered (unattended work, said on the run) or, for an attended session the person signed at exactly
-  // these terms, are refused. The sealed terms and their stamps are untouched: only what this invocation runs with.
+  // THE ORGANISATION POLICY (sprint 8), the last look before money on every build road — the tick, a
+  // direct build: a provider or model it doesn't allow never spawns; terms above its permission ceiling run lowered
+  // (said on the run). The sealed terms and their stamps are untouched: only what this invocation runs with.
   {
-    const attendedRefused = attended === undefined ? null : store.attendedPolicyRefusal(effective.profile);
-    if (attendedRefused !== null) return { ok: false, reason: "policy", message: `${taskId}: ${attendedRefused}` };
     const verdict = store.runPolicy(effective.profile);
     if (!verdict.ok) return { ok: false, reason: "policy", message: `${taskId}: ${verdict.message}` };
     if (verdict.lowered !== null) {
@@ -932,7 +794,6 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   try {
     codingHandoff = readCodingHandoff(store, taskId);
     if (codingHandoff !== null) {
-      if (request.attended !== undefined) throw Error("This saved coding result must use its prepared review task.");
       const head = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
       const actual = await git(GIT, ["--no-optional-locks", "symbolic-ref", "--short", "HEAD"], { cwd: worktree });
       if (head.code !== 0 || actual.code !== 0 || actual.stdout.trim() !== branch) throw Error("The coding review checkout no longer matches its assigned branch.");
@@ -1034,7 +895,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     }
     return null;
   };
-  if (preparedCandidate === null || attended !== undefined) {
+  if (preparedCandidate === null) {
     const setupFailure = await runApprovedSetup();
     if (setupFailure !== null) return setupFailure;
   }
@@ -1482,13 +1343,6 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     scope === null ? [] : flowGoalCuts(store, scope.taskId, scope.goal),
   ) + `\nCanonical signed rubric: ${rubric}. Its statement fields are exact; evidence requirements are separate fields. Do not edit this input. The lead or user reads these criteria directly; no restatement is needed.\n` + sharedDepsBrief(store, worktree);
 
-  // THE HELD BRANCH (Phase 2, v2 S0d + v6 W8): ownership transfers to the
-  // coordinator at the spawn point. Everything build() armed that its
-  // finally would have cleared is torn down or handed over HERE — the pulse
-  // interval dies (the coordinator heartbeats from now on; no doubled
-  // writers) and the live-log handle rides the capture (the live window
-  // stays streaming across the whole hold). build() returns WITHOUT
-  // settling: the run, the lease, and the worktree are the coordinator's.
   // THE PREPARED-CANDIDATE ROAD (v69): the scope names a commit, proved
   // above before anything moved. The machine brings the worktree to its exact
   // tree — uncommitted, as an agent would leave it — writes the handoff
@@ -1497,7 +1351,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // gate. No provider is spawned; the lease heartbeat keeps
   // running until settlement returns, exactly as it does around a provider.
   const prepared = scope?.candidate ?? null;
-  if (prepared !== null && attended === undefined) {
+  if (prepared !== null) {
     try {
       if (stopRequestedFor(store, request.runId, request.shouldStop)) return { ok: false, reason: "stopped", message: stopWords(store, request.runId, worktree, "The attempt was stopped before the prepared candidate was loaded.") };
       if (!store.proveRunnerCustodyForSpawn(request.runId, clock())) return { ok: false, reason: "runner-custody", message: "Runner custody lapsed before the prepared candidate was loaded; the checkout is unchanged." };
@@ -1550,55 +1404,6 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       if (pulseTimer !== undefined) clearInterval(pulseTimer);
       liveLog?.close();
     }
-  }
-
-  if (attended !== undefined) {
-    if (pulseTimer !== undefined) clearInterval(pulseTimer);
-    // The follow-up is NEW INSTRUCTION inside the signed terms (v2 S3c):
-    // it rides the brief in an OPERATOR fence, after the scope text —
-    // operator speech, exactly like turns, never widening scope.
-    const followup = attended.authorization.followup;
-    const heldBrief =
-      followup === null || followup === undefined
-        ? briefText
-        : `${briefText}\n\n=== OPERATOR FOLLOW-UP (this session continues finished attempt #${attended.authorization.parentRun ?? "?"}) ===\n${followup}\n=== END OPERATOR FOLLOW-UP ===`;
-    const captured: CapturedBuild = {
-      store, request, agent, git, worktree, branch, baseRevision, taskId, taskRef,
-      runner, provider, scope, effective, answers, timeoutMs, root, mailbox, done, proof, rubric,
-      clock, fenced: () => fencedMidBuild,
-      plan: { proposal, revision: planRevisionNumber, authority, progress: progressState },
-    };
-    const launched = await attended.coordinator.launch({
-      store,
-      captured,
-      authorization: attended.authorization,
-      runId: request.runId,
-      leaseId: request.leaseId ?? "unclaimed",
-      runner,
-      ...(request.runnerToken === undefined ? {} : { runnerToken: request.runnerToken }),
-      upIncarnation: attended.upIncarnation,
-      brief: heldBrief,
-      cwd: worktree,
-      socketDir: attended.socketDir,
-      releaseWorktree: attended.releaseWorktree,
-      liveLog,
-      omitEnv: AGENT_ENV_DENYLIST,
-      dispose: attended.dispose,
-      clock,
-      ...(attended.starter === undefined ? {} : { starter: attended.starter }),
-      ...(attended.graceMs === undefined ? {} : { graceMs: attended.graceMs }),
-      ...(attended.maxHeldSessions === undefined ? {} : { maxHeldSessions: attended.maxHeldSessions }),
-      ...(attended.onDisposed === undefined ? {} : { onDisposed: attended.onDisposed }),
-    });
-    if (!launched.ok) {
-      liveLog?.close();
-      return {
-        ok: false,
-        reason: (launched.reason as BuildRefusal) ?? "attended-only",
-        message: launched.message,
-      };
-    }
-    return { ok: true, held: true, committed: false, branch, summary: "the session is held — the operator is watching" };
   }
 
   let invoked: InvokeResult;
@@ -1688,10 +1493,9 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
 }
 
 /**
- * Everything the post-provider settlement closes over (Parity II Phase 2,
- * v4 Q2 / v6 W8): an explicit record, so the held road's coordinator can
- * run THE SAME settlement the one-shot road runs — one state machine,
- * never a paraphrase. `fenced()` reads the pulse's live flag: settlement
+ * Everything the post-provider settlement closes over: an explicit record,
+ * so the prepared-candidate road runs THE SAME settlement the agent road
+ * runs — one state machine, never a paraphrase. `fenced()` reads the pulse's live flag: settlement
  * decisions are about NOW, not about the moment of capture.
  */
 /** The prepared candidate must be a commit this repository holds and must
@@ -1844,10 +1648,9 @@ function ingestProgress(store: Store, state: ProgressIngestState, now: Date): vo
  * The post-provider state machine, extracted verbatim from build(): the
  * timeout/init/agent classification, the synchronous fence re-proof, park
  * ingestion (with its repair turns), the branch and HEAD laws, handoff
- * validation, evidence capture, and the commit. build() calls it inline —
- * behavior byte-identical — and a held session's coordinator calls it
- * when the stream reaches a terminal handoff. Only this pair of callers:
- * a run completes through THIS function or not at all.
+ * validation, evidence capture, and the commit. build() calls it for the
+ * agent road and the prepared-candidate road: a run completes through THIS
+ * function or not at all.
  */
 /** The handoff's route line (v47): the run's stamped provenance, or nothing
  * for a run that opened before routes existed. */
@@ -1937,7 +1740,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   // before anything commits: a park never commits — whatever work is in
   // progress stays in the worktree, preserved for the resume — and this
   // function only assembles the package. Sealing it against the lease is
-  // `finalizeParkFenced`, one transaction, in the caller's hands.
+  // `finalize` (a `park` ending), one transaction, in the caller's hands.
   store.setRunPhase(request.runId, "validating-handoff");
   if (result.sessionId !== null) {
     store.stampRun(request.runId, { sessionId: result.sessionId });
@@ -2188,7 +1991,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   // result is that commit, sealed below against the task's original base.
   const made = finishesKeptWork
     ? await keptWorkResult(captured, baseRevision, handoff.conclusion)
-    : await commit(git, worktree, branch, taskId, scope as Scope, handoff.conclusion, request.attended === undefined ? scope?.candidate ?? null : null,
+    : await commit(git, worktree, branch, taskId, scope as Scope, handoff.conclusion, scope?.candidate ?? null,
       words => store.addRunNote(request.runId, "Toolroll", words, clock()));
   if (made.ok && made.parked === undefined && made.committed) {
     const newHead = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
@@ -2373,8 +2176,8 @@ function settleRevisionProposal(captured: CapturedBuild, binding: PlanBinding): 
   };
   const classification = classifyRevisionAuthority(binding.authority, now);
 
-  const sealed = finalizeRevisionFenced(store, {
-    leaseId: request.leaseId,
+  const sealed = finalize(store, request.leaseId, {
+    kind: "revision",
     runId: request.runId,
     taskId,
     taskRef,
@@ -2956,8 +2759,8 @@ async function startsFromKeptWork(captured: CapturedBuild, baseRevision: string,
 
 /** The accepted result of an attempt that finished kept work with nothing left to change. An exact prepared candidate must still match it. */
 async function keptWorkResult(captured: CapturedBuild, head: string, summary: string): Promise<BuildResult> {
-  const { git, worktree, branch, request, scope } = captured;
-  const candidate = request.attended === undefined ? scope?.candidate ?? null : null;
+  const { git, worktree, branch, scope } = captured;
+  const candidate = scope?.candidate ?? null;
   if (candidate !== null) {
     const exact = await git(GIT, ["--no-optional-locks", "diff", "--quiet", candidate, head, "--"], { cwd: worktree });
     if (exact.code !== 0) return { ok: false, reason: "commit-failure", message: exact.code === 1
@@ -3010,8 +2813,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
     !existsSync(join(worktree, done)) &&
     !existsSync(join(worktree, mailbox)) &&
     (captured.plan === undefined || !existsSync(join(worktree, captured.plan.proposal)));
-  // A watched (attended) session has an operator; nothing resumes it headless.
-  if (request.attended !== undefined || !waiting() || !canResumeSession(captured, sessionId)) return null;
+  if (!waiting() || !canResumeSession(captured, sessionId)) return null;
   const changes = await unhandedChanges(git, worktree);
   if (changes === null || changes.length === 0) return null;
 
@@ -3106,7 +2908,7 @@ async function keepUnhandedWork(captured: CapturedBuild, sessionId: string | und
   if (!saved.ok) {
     return { ok: false, reason: "no-handoff", message: `${NO_HANDOFF_WORDS} Its changes stay uncommitted in ${worktree}; ${saved.message}.` };
   }
-  if (request.attended === undefined && !canResumeSession(captured, sessionId) && scope !== null && !stopRequestedFor(store, request.runId, request.shouldStop)) {
+  if (!canResumeSession(captured, sessionId) && scope !== null && !stopRequestedFor(store, request.runId, request.shouldStop)) {
     const made = await commit(git, worktree, branch, taskId, scope as Scope, WIP_COMMIT_WORDS);
     if (made.ok && "committed" in made && made.committed) {
       return { ok: false, reason: "no-handoff", message: `${NO_HANDOFF_WORDS} It was saved as a work-in-progress commit on ${branch}.` };
@@ -3230,13 +3032,10 @@ async function ingestPark(args: {
   // approval froze. The repair model comes from the sealed profile
   // ("inherit" = the build's exact model); a disagreement with the sealed
   // route, or an unreadable route on a routed row, refuses the repair in
-  // words rather than mending under an agent nobody approved. Provenance
-  // follows the parent: an approved fallback entry's repair stays
-  // `fallback`; a legacy parent's repair stays `legacy`. Admission (v48)
-  // then proves the stamp again inside the run's own transaction — a
-  // fallback repair against the approved chain entry's exact repair model
-  // under the parent's route digest, the chain binding inherited verbatim
-  // below — so no repair turn can open under a lineage nobody approved.
+  // words rather than mending under an agent nobody approved. A legacy
+  // parent's repair stays `legacy`. Admission (v48) then proves the stamp
+  // again inside the run's own transaction, so no repair turn can open
+  // under a lineage nobody approved.
   const repairModel = repairModelOf(args.profile, request);
   for (let turn = 0; turn < REPAIR_TURNS && (resumableRepair ? sessionId !== undefined : true); turn++) {
     // The lease is re-proved around every repair turn: extended going in,
@@ -3247,18 +3046,13 @@ async function ingestPark(args: {
     }
 
     // v105: a repair turn spends too — a budget used up since the build began stops further turns (billed to a key).
-    // It bills as the attempt it mends did (a pinned chain entry's key included).
+    // It bills as the attempt it mends did.
     if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [{ provider: repairProvider, billing: store.runBilling(request.runId) ?? store.agentsFor([repairProvider])[0]!.billing }] }).over !== null) break;
     // Sprint 8: nor does a repair run on a provider or model the organisation policy doesn't allow.
     if (store.agentPolicyRefusal(repairProvider, repairModel ?? null) !== null) break;
     const admitted = admitProtocolRepair(store, request, args.profile, sessionId, clock);
     if (!admitted.ok) return admitted;
     const repairRun = admitted.runId;
-    // A repair turn inherits its parent's chain binding VERBATIM (Codex E3d
-    // review, finding 2) — inside its own admission (v48 authority repair), so the pinned
-    // entry, auth mode included, follows the custody from the first byte
-    // of the row and the mending turn spends under exactly the credential
-    // the operator approved for this entry.
 
     const spoken = await invokeAgent(
       store,
@@ -3371,8 +3165,8 @@ function admitProtocolRepair(
   const repairScope = store.getScope(request.taskId);
   const repairSealed = repairScope !== null && repairScope.routeEra != null ? store.sealedRouteOf(request.taskId) : null;
   const repairModel = repairModelOf(args.profile, request);
-  let repairChosen: RouteStamp["chosen"] = parentRoute?.chosen === "fallback" ? "fallback" : "legacy";
-  if (repairSealed !== null && parentRoute?.chosen !== "fallback") {
+  let repairChosen: RouteStamp["chosen"] = "legacy";
+  if (repairSealed !== null) {
     if (!repairSealed.ok) {
       return { ok: false, problems: [{ reason: "route-unreadable", message: `the repair cannot run: ${repairSealed.detail}` }] };
     }
@@ -3395,48 +3189,7 @@ function admitProtocolRepair(
     };
     let repairRun: number;
     try {
-      if (repairChosen === "fallback") {
-        // A repair turn under an approved FALLBACK entry is admitted by the
-        // one fallback road (v48 integrity): every fact the parent's
-        // binding states — cycle, index, digest, auth mode, provider, the
-        // exact repair model, the sealed-profile mirror — is presented
-        // and re-proved against the approved chain and the live cycle,
-        // with the parent as the live tail, before any row exists.
-        const parentRun = store.getRun(runId);
-        const chain = store.approvedChainOf(request.taskId);
-        const mirror = repairScope?.approvedProfile ?? null;
-        const entry = parentRun !== null && parentRun.chainIndex != null && chain !== null ? chain[parentRun.chainIndex] : undefined;
-        if (parentRun === null || parentRun.chainCycle == null || parentRun.chainIndex == null || parentRun.entryDigest == null || parentRun.authMode == null || chain === null || mirror === null || entry === undefined || repairModel === null) {
-          return { ok: false, problems: [{ reason: "route-unreadable", message: `the repair cannot run: run #${runId}'s fallback binding cannot be restated against the approved chain — nothing mends outside the cycle` }] };
-        }
-        const admitted = store.admitFallback(
-          {
-            kind: "repair",
-            parentRun: runId,
-            cycleId: parentRun.chainCycle,
-            expectCursor: parentRun.chainIndex,
-            expectTail: runId,
-            entryDigest: parentRun.entryDigest,
-            authMode: parentRun.authMode,
-            repairModel: entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel,
-            approved: { chainDigest: chainDigestOf(chain), profile: mirror },
-            run: {
-              taskRef: request.taskRef,
-              leaseId: request.leaseId ?? "unclaimed",
-              runner: request.runner,
-              branch: request.branch,
-              worktree,
-              provider: repairProvider,
-              model: repairModel,
-              ...(resumableRepair && sessionId !== undefined ? { sessionId } : {}),
-            },
-            route: repairStamp,
-          },
-          clock(),
-        );
-        if (!admitted.ok) return { ok: false, problems: [{ reason: "route-mismatch", message: `the repair cannot run: ${admitted.problem}` }] };
-        repairRun = admitted.runId;
-      } else {
+      {
         // THE REPAIR ADMISSION (atomic authority closure): the turn mends
         // exactly this live build attempt under its own runner and lease —
         // proved in the store, value-shaped, zero rows on refusal.

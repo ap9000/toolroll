@@ -1,5 +1,4 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { randomUUID } from "node:crypto";
 import { openStore, type Store } from "./store.js";
 import {
   mintCoordinator,
@@ -280,34 +279,6 @@ describe("the coordinator quarantine", () => {
     ).toMatchObject({ ok: true });
   });
 
-  test("the ATTENDED road shares the quarantine: an open authorization does not pierce it — and works again after the seal", () => {
-    const minted = store.mintAttendedAuthorization({
-      id: randomUUID(),
-      taskRef,
-      approver: "alex",
-      runner: "b-1",
-      runnerGeneration: 1,
-      compositeDigest: "digest",
-      termsJson: "{}",
-      maxSessionTurns: 10,
-      budgetMicrousd: 1_000_000,
-      absoluteExpiry: later(3_600_000).toISOString(),
-      now: T0,
-    });
-    expect(minted).toMatchObject({ ok: true });
-
-    // The quarantine answers BEFORE the attended gate: the refusal names the
-    // coordinator, never "attended-held" or "attended-only" — an operator's
-    // live authorization is still not a password seal.
-    const refused = acquire(store, taskRef, "b-1", { now: later(1_000), token: "tok-b-1" });
-    expect(refused).toEqual({ ok: false, reason: "coordinator-filed" });
-
-    // After the password seal the SAME open authorization admits its named
-    // runner — the quarantine ends at the seal, nothing else lingers.
-    expect(store.sealScopeApproval(taskId, "alex", later(2_000))).toBe(true);
-    expect(acquire(store, taskRef, "b-1", { now: later(3_000), token: "tok-b-1" })).toMatchObject({ ok: true });
-  });
-
   test("fileAndSealUnderMode refuses a coordinator-filed task in words, while the same live mode covers an ordinary filing", () => {
     const alex = addApprover(store, "alex", T0);
     if (!alex.ok) throw new Error("bootstrap failed");
@@ -389,7 +360,7 @@ describe("coordinator events on machine roads", () => {
   });
 
   test("a disowned completion's machine cancellation writes detail 'disowned-completion'", () => {
-    // completeFenced's disowned arm (claim.ts) drives exactly this call —
+    // finalize's complete ending, disowned arm (claim.ts), drives exactly this call —
     // the floor is the one writer, so pinning the floor pins the road.
     const done = store.applyCancellation(taskId, { kind: "machine", code: "disowned-completion" }, later(1_000), null);
     expect(done).toEqual({ changed: true });

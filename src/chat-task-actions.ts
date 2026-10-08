@@ -37,14 +37,13 @@ export function chatTaskRun(store: Store, task: string, operation: "stop" | "res
   const control = taskControlOf(store, ref.id, now);
   return (operation === "stop" && control.kind === "stop") || (operation === "resume" && control.kind === "paused") ? control.run : null;
 }
-export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "held" | "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string } = {}):
+export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string } = {}):
   { ok: true; taskId: string; said: string } | { ok: false; message: string } {
   const task = payload["task"], operation = payload["operation"];
   if (typeof task !== "string" || !isChatTaskAction(operation)) return { ok: false, message: "This task action is incomplete." };
   const stamp = chatTaskStamp(store, who, task);
   if (stamp === null || stamp !== payload["stamp"]) return { ok: false, message: "This task changed. Review it again before confirming." };
   const ref = store.lookupRef(task)!;
-  if (store.openContestFor(ref.id) !== null) return { ok: false, message: "Wait for the agent comparison to finish." };
   if (operation === "stop" || operation === "resume") {
     if (store.isDemo()) return { ok: false, message: "The demo authorizes nothing." };
     const run = chatTaskRun(store, task, operation, now);

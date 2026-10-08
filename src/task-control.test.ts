@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
-import { acquire, completeFenced, finalizeFailureFenced, finalizeInterruptedFenced, finalizePlanFenced, interruptIfStopped, release } from "./claim.js";
+import { acquire, interruptIfStopped, release, finalize } from "./claim.js";
 import { disposeBuildOutcome } from "./dispose.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf, stopRequestedFor } from "./task-control.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
@@ -34,7 +34,7 @@ const presented = (
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
-  const authority = s.routeAuthorityFor(taskRef, role, null) ?? s.routeAuthorityFor(taskRef, role, null, { provider: "claude", model: null });
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, { provider: "claude", model: null });
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -242,7 +242,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a fresh file is born at the current schema with the run_stop table and a hold that admits the stop owner", () => {
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(115);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
     expect(store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_stop'").get()).toBeDefined();
     const ddl = String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hold'").get()?.["sql"]);
@@ -301,7 +301,7 @@ describe("safe task stop and resume (v52)", () => {
     expect(store.applicableStopFor(repair.runId)?.run).toBe(a.runId);
     expect(stopRequestedFor(store, repair.runId)).toBe(true);
     // The seal ends both rows and settles the one stop; the claim is released as interrupted.
-    const sealed = finalizeInterruptedFenced(store, { leaseId: a.leaseId, runId: a.runId, taskId: "t-own", stopRun: a.runId, now: later(2_000) });
+    const sealed = finalize(store, a.leaseId, { kind: "interrupted", runId: a.runId, taskId: "t-own", stopRun: a.runId, now: later(2_000) });
     expect(sealed).toMatchObject({ ok: true, fenced: false });
     expect(store.getRun(a.runId)).toMatchObject({ outcome: "failed", reason: "interrupted" });
     expect(store.getRun(repair.runId)).toMatchObject({ outcome: "failed", reason: "interrupted" });
@@ -311,7 +311,7 @@ describe("safe task stop and resume (v52)", () => {
     expect(store.refForId(a.taskRef)?.strikes).toBe(0);
     // No writes after settlement: a late release from the dead lease is fenced, and a late completion too.
     expect(release(store, a.leaseId, later(3_000))).toMatchObject({ ok: false, reason: "fenced" });
-    expect(completeFenced(store, a.leaseId, "done", later(3_000))).toMatchObject({ ok: false, reason: "fenced" });
+    expect(finalize(store, a.leaseId, { kind: "complete", state: "done", now: later(3_000) })).toMatchObject({ ok: false, reason: "fenced" });
     expect(store.getTask("t-own")?.state).toBe("queued");
     // Until the exact attempt is resumed, nothing inherits its draft — not even the recovered-draft road.
     const early = store.admitRecoveredBuilder({ taskRef: a.taskRef, leaseId: "lease-early", runner: "runner-b", branch: "standing-orders/t-own", worktree: a.worktree, provider: "claude", model: "sonnet", recoveredFrom: a.runId, ...(presented(store, a.taskRef, "builder") as { route: import("./phase-routing.js").RouteStamp }), now: later(3_500) });
@@ -347,7 +347,7 @@ describe("safe task stop and resume (v52)", () => {
   test("c3: a stop before settlement also beats a park, a failure (no strike, no backoff), and plan ingestion", () => {
     const parked = runningAttempt(store, "t-park");
     expect(requestTaskStop(store, { taskId: "t-park", runId: parked.runId, by: "alex", via: "web" }, later(1_000)).ok).toBe(true);
-    const failed = finalizeFailureFenced(store, { leaseId: parked.leaseId, runId: parked.runId, taskId: "t-park", failureClass: "retryable-infra", message: "killed", worktree: parked.worktree, now: later(2_000) });
+    const failed = finalize(store, parked.leaseId, { kind: "failure", runId: parked.runId, taskId: "t-park", failureClass: "retryable-infra", message: "killed", worktree: parked.worktree, now: later(2_000) });
     expect(failed).toMatchObject({ ok: false, reason: "stopped" });
     expect(store.refForId(parked.taskRef)?.strikes).toBe(0);
     expect(store.activeHolds(parked.taskRef, T0).map(one => one.ownerKind)).toEqual(["stop"]);
@@ -368,7 +368,7 @@ describe("safe task stop and resume (v52)", () => {
       acceptance: [{ id: "c1", statement: "It works.", how: null, evidence: ["manual-review" as const] }],
       plan: "## Approach\nDo the thing.",
     };
-    const sealed = finalizePlanFenced(store, { leaseId: "lease-plan", runId: planRun, taskId: "t-plan", plan, artifact: null, now: later(2_000) });
+    const sealed = finalize(store, "lease-plan", { kind: "plan", runId: planRun, taskId: "t-plan", plan, artifact: null, now: later(2_000) });
     expect(sealed).toMatchObject({ ok: false, reason: "stopped" });
     expect(store.getScope("t-plan")).toBeNull();
     expect(store.getRun(planRun)).toMatchObject({ outcome: "failed", reason: "interrupted" });
@@ -383,7 +383,7 @@ describe("safe task stop and resume (v52)", () => {
       // fence sees no stop and completes.
       const seal = interruptIfStopped(store, { leaseId: first.leaseId, runId: first.runId, taskId: "t-order-1", now: later(1_000) });
       expect(seal).toBeNull();
-      return completeFenced(store, first.leaseId, "done", later(1_000));
+      return finalize(store, first.leaseId, { kind: "complete", state: "done", now: later(1_000) });
     });
     expect(built).toMatchObject({ ok: true, arm: "completed" });
     store.finishRun(first.runId, { outcome: "built", committed: true, now: later(1_000) });
@@ -393,7 +393,7 @@ describe("safe task stop and resume (v52)", () => {
     expect(requestTaskStop(store, { taskId: "t-order-2", runId: second.runId, by: "alex", via: "web" }, later(1_000)).ok).toBe(true);
     const seal = store.transact(() => interruptIfStopped(store, { leaseId: second.leaseId, runId: second.runId, taskId: "t-order-2", now: later(2_000) }));
     expect(seal).toMatchObject({ ok: true, stopRun: second.runId });
-    expect(completeFenced(store, second.leaseId, "done", later(3_000))).toMatchObject({ ok: false, reason: "fenced" });
+    expect(finalize(store, second.leaseId, { kind: "complete", state: "done", now: later(3_000) })).toMatchObject({ ok: false, reason: "fenced" });
     expect(store.getTask("t-order-2")?.state).toBe("queued");
   });
 
@@ -438,7 +438,7 @@ describe("safe task stop and resume (v52)", () => {
     expect(requestTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web" }, later(1_000)).ok).toBe(true);
     // Not yet: the stop is unsettled and the run open.
     expect(resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web" }, later(2_000))).toMatchObject({ ok: false, reason: "stopping" });
-    finalizeInterruptedFenced(store, { leaseId: a.leaseId, runId: a.runId, taskId: "t-resume", stopRun: a.runId, now: later(3_000) });
+    finalize(store, a.leaseId, { kind: "interrupted", runId: a.runId, taskId: "t-resume", stopRun: a.runId, now: later(3_000) });
     // The workspace still held by a live process is a concrete gate.
     expect(resumeTaskStop(store, { taskId: "t-resume", runId: a.runId, by: "alex", via: "web", occupied: () => ({ held: true, by: fakePid(1) }) }, later(4_000))).toMatchObject({ ok: false, reason: "occupied" });
     // Quiescent: resumed, exactly this stop's hold lifted, nothing else touched.
@@ -457,7 +457,7 @@ describe("safe task stop and resume (v52)", () => {
   test("c5: a stale resume names a stopped attempt that a later attempt superseded, and is refused; a live claim refuses too", () => {
     const a = runningAttempt(store, "t-super");
     expect(requestTaskStop(store, { taskId: "t-super", runId: a.runId, by: "alex", via: "web" }, later(1_000)).ok).toBe(true);
-    finalizeInterruptedFenced(store, { leaseId: a.leaseId, runId: a.runId, taskId: "t-super", stopRun: a.runId, now: later(2_000) });
+    finalize(store, a.leaseId, { kind: "interrupted", runId: a.runId, taskId: "t-super", stopRun: a.runId, now: later(2_000) });
     store.releaseOwnedHold("stop", String(a.runId));
     const next = acquire(store, a.taskRef, "runner-b", { token: tok("runner-b"), now: later(3_000), newLeaseId: () => "lease-2" });
     if (!next.ok) throw new Error(next.reason);

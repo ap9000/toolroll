@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startFixture } from './ui-polish-fixture.mjs';
-import { finalizeInterruptedFenced } from '../dist/claim.js';
+import { finalize } from '../dist/claim.js';
 import { taskControlOf } from '../dist/task-control.js';
 
 const capture = process.argv.includes('--capture');
@@ -120,7 +120,7 @@ try {
       const replay = await page.request.post(fixture.url+`/chat/proposal/${stop}/confirm`, { form: { csrf }, maxRedirects: 0 });
       check(name+' repeated confirmation records one stop', replay.status() === 303 && store.stopsForTask(taskRef).length === 1);
       // Synthetic worker acknowledgement, explicitly not a live process or model proof.
-      finalizeInterruptedFenced(store, { taskId: task, leaseId: run.leaseId, runId: run.id, stopRun: run.id, now: new Date() });
+      finalize(store, run.leaseId, { kind: 'interrupted', taskId: task, runId: run.id, stopRun: run.id, now: new Date() });
       await page.waitForSelector('[data-task-control="paused"]', { state: 'attached' });
       await detail.reload();
       check(name+' task-page acknowledgement reaches chat without clearing draft', await page.locator('.composer textarea').inputValue() === draft && await detail.locator('[data-task-control="paused"]').count() === 1);

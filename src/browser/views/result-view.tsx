@@ -317,7 +317,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />{line}</p>}
     {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-[13px]" data-failure-suggestion>
       <span className="font-semibold">What to change.</span> <span className="text-muted-foreground">{selected.failure.suggestion}</span></p>}
-    {/* What comes next (notes ready, CI failing, a contest to compare, no build): one line, whatever the acts. */}
+    {/* What comes next (notes ready, CI failing, no build): one line, whatever the acts. */}
     {next !== null && <p className={cn("max-w-[75ch] text-[13px]", rest)} data-next-action={next.kind}>
       <span className="font-semibold">{next.title}.</span> <span className="text-muted-foreground">{next.detail}</span></p>}
     {shown.length > 0 && <div className={cn("flex flex-wrap items-center gap-2 phone:flex-nowrap phone:items-stretch", reason !== null && "flex-col items-start gap-3 phone:flex-row phone:items-stretch phone:gap-2", more && "phone:flex-wrap")} data-result-acts>
@@ -431,7 +431,6 @@ function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the
         decision itself, so it can never rise over the status or the Summary facts above them. */}
     {selected.panel !== null ? <Panel panel={selected.panel}><div className="flex flex-col gap-4">{checks}{decide}</div></Panel> : <div className="flex flex-col gap-4">{checks}{decide}</div>}
-    {selected.contest !== "" && <Html html={selected.contest} />}
     <Details selected={selected} />
   </>;
 }

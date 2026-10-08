@@ -42,7 +42,7 @@ const PWA_MANIFEST = JSON.stringify({
 // paths — the payload URL is data, revalidated, never handed raw to the
 // browser (arc 3 finding 5).
 const PWA_WORKER = `// Toolroll — push only; deliberately NO fetch handler (no offline cache of an authenticated console).
-const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/contest\\/[0-9]+$/, /^\\/r\\/[0-9]+$/];
+const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/r\\/[0-9]+$/];
 self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}

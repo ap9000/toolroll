@@ -1,7 +1,7 @@
 /**
  * OS process containment (docs/PROCESS_CONTAINMENT_PLAN.md): the policy
  * words, the truthful capability, the pinned requirement that nothing can
- * weaken, and the shared spawn transports — buffered, streaming, held —
+ * weaken, and the shared spawn transports — buffered and streaming —
  * refusing BEFORE any target executes when required containment is not
  * there, and preserving argv, stdin, environment, cwd and exact-run
  * custody when it is. The OS object here is a file-backed stand-in that
@@ -32,7 +32,7 @@ import {
   type Container,
   type ContainmentCapability,
 } from "./containment.js";
-import { CONTAINMENT_REFUSED_CODE, run, runClaudeStreamJsonl, runGeminiStreamJsonl, runStreamJsonl, startClaudeHeldSession } from "./exec.js";
+import { CONTAINMENT_REFUSED_CODE, run, runClaudeStreamJsonl, runGeminiStreamJsonl, runStreamJsonl } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
 import { openStore } from "./store.js";
 
@@ -268,7 +268,7 @@ describe("the shared transports under a required policy", () => {
     }
   });
 
-  test("c1: required + unavailable refuses BEFORE any target executes — buffered, streaming and held alike — with no witness reserved", async () => {
+  test("c1: required + unavailable refuses BEFORE any target executes — buffered and streaming alike — with no witness reserved", async () => {
     pinContainment(effectiveContainment("required", unavailable));
     const mark = join(dir, "ran.txt");
     const script = join(dir, "mark.mjs");
@@ -286,10 +286,6 @@ describe("the shared transports under a required policy", () => {
       expect(streamed.code).toBe(CONTAINMENT_REFUSED_CODE);
       expect(streamed.containment).toEqual({ refused: expect.stringContaining("required but unavailable") });
     }
-    // A short socket path, like the held tests: under a suite's nested temp folder join(dir, …) passes macOS's 103-byte
-    // limit and the session refuses for the path before it reaches the containment policy this test is about.
-    const held = await startClaudeHeldSession(process.execPath, [script], { ...common, socketPath: `/tmp/so-ct-${process.pid}.sock`, cookie: "c", readyTimeoutMs: 2_000 });
-    expect(held).toMatchObject({ ok: false, reason: "spawn-failed", message: expect.stringContaining("required but unavailable") });
 
     expect(existsSync(mark)).toBe(false);
     expect(reserved).toBe(0);

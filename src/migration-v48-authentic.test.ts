@@ -3,8 +3,9 @@
  * build's own code wrote (src/fixtures/v47-authentic.sql, derived by
  * scripts/derive-v47-fixture.mjs from commit 1d0fc900) — and against the
  * same file with the v48 migration half-applied under the −47 epoch
- * sentinel. Every pre-existing row survives byte for byte, the two routine
- * columns arrive NULL, nothing is backfilled or auto-approved, and a second
+ * sentinel. Every pre-existing row survives byte for byte (the routine, as
+ * v115 removed routines, as a paused scheduled flow), nothing is backfilled
+ * or auto-approved, and a second
  * open changes nothing: the full row and schema snapshots are compared.
  * The schema-version preflight is proved here too: exactly one safe,
  * supported integer is read BEFORE any DDL, and anything else refuses with
@@ -16,8 +17,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, type Database } from "./store.js";
-import { routineAgentsState } from "./routine.js";
+import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, V115_DROPPED_TABLES, type Database } from "./store.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "v47-authentic.sql");
 const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -133,36 +133,50 @@ describe("the authentic v47 database upgrades to v48 and stays put", () => {
       expect(rawVersion(file)).toBe(SCHEMA_VERSION);
       const upgraded = snapshot(file);
       // Every table v47 had is still there; every row is byte for byte the
-      // row v47 wrote, plus the two NULL routine columns — no other table
-      // gained or lost a row, no id moved, no digest changed.
-      for (const table of authentic.schema.filter(one => one.type === "table" && one.name !== "schema_version")) {
+      // row v47 wrote — no other table gained or lost a row, no id moved, no
+      // digest changed. (The features v115 removed take their own tables
+      // with them; the routine moves to a scheduled flow, asserted below.)
+      for (const table of authentic.schema.filter(one => one.type === "table" && one.name !== "schema_version" && !V115_DROPPED_TABLES.includes(one.name))) {
         expect(upgraded.rows[table.name], table.name).toBeDefined();
-        expect(upgraded.rows[table.name]!.map(row => withoutNew(table.name, row)), table.name).toEqual(authentic.rows[table.name]);
+        // v115 settles the one unfinished task filed under a fallback chain (asserted below); every other row is as written.
+        // The sequence forgets the removed tables and learns the moved routine's flow and schedule (and, from the
+        // settlement's write under the ledger's trigger, the empty ledger's counter at 0).
+        const settled = (row: Record<string, unknown>) => V115_DROPPED_TABLES.includes(String(row["name"])) || ["flow", "flow_trigger"].includes(String(row["name"])) || (row["name"] === "action_ledger" && Number(row["seq"]) === 0);
+        const kept = (rows: Record<string, unknown>[]) => table.name === "task_scope" ? rows.filter(row => row["task_id"] !== "t-chain")
+          : table.name === "sqlite_sequence" ? rows.filter(row => !settled(row)) : rows;
+        expect(kept(upgraded.rows[table.name]!.map(row => withoutNew(table.name, row))), table.name).toEqual(kept(authentic.rows[table.name]!));
       }
       for (const table of ["approver", "invite"]) for (const row of upgraded.rows[table]!) expect(row["projects_json"]).toBeNull();
-      for (const row of upgraded.rows["routine"]!) expect(row).toMatchObject({ route_json: null, approved_route_json: null });
       for (const row of upgraded.rows["run"]!) expect(row).toMatchObject({ watch_incarnation: null });
-      const routineDdl = upgraded.schema.find(one => one.type === "table" && one.name === "routine")!.sql;
-      expect(routineDdl).toContain("route_json");
-      expect(routineDdl).toContain("approved_route_json");
+      expect(upgraded.schema.some(one => one.type === "table" && one.name === "routine")).toBe(false);
       expect(upgraded.schema.find(one => one.type === "table" && one.name === "mate_proposal")!.sql).toContain("'agents'");
       // The upgraded facts read back exactly: the routed approval still
       // seals its route, the pre-routing row is legacy (never backfilled),
-      // the chain approval stands, the review request is still pending,
+      // the unfinished task approved under a fallback chain (removed in
+      // v115) asks again — its approval withdrawn, its scope saying why —
+      // the review request is still pending,
       // the run keeps its provenance, and the routine — approved under
-      // v47 with no route — is unfrozen: approved but unfireable until a
-      // person refreshes and approves it again.
+      // v47 with no route — arrives as a scheduled flow whose schedule is
+      // paused and carries no approval: nothing fires until a person turns
+      // it on, and then each run waits for approval.
       store = openStore(file);
       expect(store.sealedRouteOf("t-routed")).toMatchObject({ ok: true });
       expect(store.getScope("t-legacy")).toMatchObject({ routeEra: null, approvedRouteJson: null });
       expect(store.sealedRouteOf("t-legacy")).toMatchObject({ ok: false, reason: "legacy" });
       expect(store.getScope("t-pending")?.approvedAt).toBeNull();
-      expect(store.approvedChainOf("t-chain")).not.toBeNull();
+      const chainBefore = authentic.rows["task_scope"]!.find(row => row["task_id"] === "t-chain")!;
+      expect(chainBefore).toMatchObject({ approval_kind: "chain" });
+      expect(store.getScope("t-chain")).toMatchObject({
+        digest: chainBefore["digest"], approvedAt: null, approvedDigest: null, approvedChainJson: null, proposedChainJson: null,
+        approvalKind: "profile", profileState: "unresolved", unresolvedReason: expect.stringContaining("fallback agents"),
+      });
       expect(store.runRoute(1)).toMatchObject({ phase: "build", chosen: "recommended" });
       expect(upgraded.rows["review_request"]![0]).toMatchObject({ consumed_at: null });
-      const routine = store.getRoutine(1)!;
-      expect(routine).toMatchObject({ approvedRoute: null, route: null, approvedProfile: expect.any(Object) });
-      expect(routineAgentsState(routine)).toMatchObject({ state: "unfrozen", approvable: false, refresh: true });
+      const [moved] = store.listFlows([String(authentic.rows["routine"]![0]!["repo"])]);
+      expect(moved?.name).toBe(String(authentic.rows["routine"]![0]!["name"]));
+      const [schedule] = store.flowTriggers(moved!.id);
+      expect(schedule).toMatchObject({ kind: "schedule", state: "paused" });
+      expect(JSON.parse(schedule!.configJson)).toMatchObject({ order: { routine: Number(authentic.rows["routine"]![0]!["id"]), approval: null } });
       store.close();
       store = null;
       // The second open is a no-op: the full row AND schema snapshots are identical.

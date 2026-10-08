@@ -2,8 +2,8 @@
  * Organisation policy (sprint 8): allowed providers, models and project tools,
  * and a permission ceiling, saved behind a step-up with its history in the
  * ledger, and obeyed wherever work is admitted: scope approval, the tick and
- * build() before a run starts, fallback entries, race lanes, attended
- * sessions, chats, teammates and flow steps.
+ * build() before a run starts, race lanes, chats,
+ * teammates and flow steps.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -17,7 +17,7 @@ import { EXIT, runOperate } from "./operate.js";
 import { register } from "./runner.js";
 import { run as exec } from "./exec.js";
 import type { Runner } from "./builder.js";
-import { agentRefusal, attendedRefusal, checkPolicy, levelOfProfile, modelMatches, OPEN_POLICY, parseList, policyProvider, toolRefusal, underCeiling, type OrgPolicy } from "./policy.js";
+import { agentRefusal, checkPolicy, levelOfProfile, modelMatches, OPEN_POLICY, parseList, policyProvider, toolRefusal, underCeiling, type OrgPolicy } from "./policy.js";
 import { teammateReady } from "./teammate-work.js";
 import { makeCall, offeredTools } from "./teammate-tools.js";
 import { toolLaunchFor, validateToolSpec } from "./project-tools.js";
@@ -74,14 +74,6 @@ describe("the rules", () => {
     expect(underCeiling(policy({ ceiling: "safe" }), gemini("yolo"))).toMatchObject({ ok: true, profile: gemini("auto_edit") });
     expect(underCeiling(policy({ ceiling: "safe" }), codex("workspace-write"))).toEqual({ ok: false,
       message: "The organisation policy's permission ceiling is Safe, and Codex can't run that low. An instance operator can change it in Settings → Policy." });
-  });
-
-  test("an attended session runs exactly as signed, or is refused: never lowered", () => {
-    expect(attendedRefusal(policy({ ceiling: "escalated" }), claude("bypassPermissions"))).toBeNull();
-    expect(attendedRefusal(policy({ ceiling: "standard" }), claude("auto"))).toBeNull();
-    expect(attendedRefusal(policy({ ceiling: "standard" }), claude("bypassPermissions"))).toBe(
-      "This session asks for full access, above the organisation policy's permission ceiling (Standard). Authorise it again with a lower permission, or an instance operator can change it in Settings → Policy.");
-    expect(attendedRefusal(policy({ models: ["claude-opus-*"] }), claude("auto"))).toMatch(/doesn't allow the model claude-sonnet-5/);
   });
 
   test("a policy is checked before it's saved", () => {
@@ -186,24 +178,6 @@ describe("in the store", () => {
     const onCodex = file("t-6");
     expect(onCodex.profile).toMatchObject({ provider: "codex", sandboxMode: "workspace-write" });
     expect(approve(store, "t-6", "alex", T0, onCodex.digest, token)).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining("Codex can't run that low") });
-  });
-
-  test("fallback entries and race lanes obey the same policy", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-3-pro", authMode: "api-key" }], "alex", T0);
-    store.setPermissionDefault("bypassPermissions", "alex", T0);
-    store.setOrgPolicy(policy({ ceiling: "standard" }), "alex", T0);
-    const chained = file("t-7");
-    // Every entry files within the ceiling: Gemini's nearest is auto_edit.
-    expect(store.getScope("t-7")!.proposedChainJson).toContain('"approvalArgv":"auto_edit"');
-    expect(store.getScope("t-7")!.proposedChainJson).not.toContain("yolo");
-    store.setOrgPolicy(policy({ providers: ["claude"] }), "alex", T0);
-    expect(approve(store, "t-7", "alex", T0, chained.digest, token)).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining("doesn't allow Gemini") });
-    // A race lane on a disallowed model stops the joint yes.
-    const raced = file("t-8", "/repos/other");
-    store.fileTournamentTerms({ taskRef: store.refFor("built-in", "t-8").id, raceDigest: "race", agents: [{ provider: "claude", model: "claude-sonnet-5", repairModel: "claude-sonnet-5" }, { provider: "claude", model: "claude-opus-5-5", repairModel: "claude-opus-5-5" }],
-      perAgentBudgetMicrousd: 1_000_000, overrunReserveMicrousd: 1_000_000, totalBudgetMicrousd: 3_000_000, priceVersion: 1, publicationPolicy: "notify" }, T0);
-    store.setOrgPolicy(policy({ models: ["claude-sonnet-5"] }), "alex", T0);
-    expect(approve(store, "t-8", "alex", T0, raced.digest, token)).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining("claude-opus-5-5") });
   });
 
   test("teammates: a disallowed model or provider stops their turns; a disallowed tool isn't offered and its calls are refused", async () => {

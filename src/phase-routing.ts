@@ -1,12 +1,12 @@
 /**
- * Explainable, risk-aware phase routing (v47).
+ * Explainable phase routing (v47), sized since v2.
  *
  * WHICH agent plans, builds, repairs, and reviews a task is decided here,
  * once, from signed facts — never guessed from a model's name and never
  * re-decided behind an approval's back. The policy is a small table over
  * explicit inputs:
  *
- *   risk         — the task's declared risk (routine / elevated / high)
+ *   size         — how big a change the task is (small / medium / large, risky or not)
  *   quality      — the evidence policy the scope signs (default / strict)
  *   evidence     — what the acceptance rubric demands (screenshots, …)
  *   publication  — how far the plane may carry the result unattended
@@ -35,8 +35,11 @@
  * is what actually runs. Provider readiness is a runner's observation,
  * not a term — it rides beside the route (ready / unavailable / unknown),
  * it is stated wherever the route is shown, and an unavailable provider
- * is never substituted: admission halts with the reason, and only an
- * already-approved explicit fallback entry may ever run instead.
+ * is never substituted: admission halts with the reason.
+ *
+ * Every route carries `risk: "routine"`: the declared risk level was
+ * removed in v115 (size does that job), and older sealed routes keep
+ * whatever risk they were recommended for, read back exactly.
  *
  * Approval seals the route (`approvedRouteJson`); its digest folds into
  * the scope digest of EVERY route filed since v47 — routine-shaped routes
@@ -103,8 +106,8 @@ export const PHASES: readonly Phase[] = ROUTE_PHASES;
 /** The review leg remains readable in signed history but is no longer scheduled. */
 export const ACTIVE_PHASES: readonly Phase[] = ["plan", "build", "repair"];
 
+/** The risk words a route sealed before v115 may carry (history); every route since says `routine`. */
 export type RiskLevel = (typeof RISKS)[number];
-export const RISK_LEVELS: readonly RiskLevel[] = RISKS;
 
 export function isRiskLevel(value: unknown): value is RiskLevel {
   return value === "routine" || value === "elevated" || value === "high";
@@ -120,8 +123,8 @@ export function isTaskSize(value: unknown): value is TaskSize {
   return value === "small" || value === "medium" || value === "large";
 }
 
-/** Whether a task makes no plan: a small change that is not risky, at
- * routine risk. Elevated or high risk always plans, whatever the size. */
+/** Whether a task makes no plan: a small change that is not risky (on an
+ * older route sealed at elevated or high risk, it always planned). */
 export function makesNoPlan(size: TaskSizing | null | undefined, risk: RiskLevel): boolean {
   return size != null && size.size === "small" && !size.risky && risk === "routine";
 }
@@ -140,20 +143,6 @@ export function parseSizing(raw: unknown): TaskSizing | null {
 export function riskTitle(risk: RiskLevel): string {
   return risk === "high" ? "High risk" : risk === "elevated" ? "Elevated risk" : "Routine";
 }
-
-/**
- * What declaring each risk level DOES, in one plain sentence — derived
- * from the tiering table below, so the explanation a form or a chat gives
- * can never drift from the policy that acts on it. The same words on
- * every surface: the task page's risk control, the chat's answer, the CLI.
- */
-export function riskConsequence(risk: RiskLevel): string {
-  if (risk === "high") return "every active role — planner, builder, and repair — uses the strongest agent you have configured";
-  if (risk === "elevated") return "planning and building use the strongest agent you have configured";
-  return "every role uses the everyday configured agent unless the work itself asks for more (strict quality, screenshots, or a self-merging mode)";
-}
-
-export const RISK_CHOICES: readonly { risk: RiskLevel; title: string; consequence: string }[] = RISK_LEVELS.map(risk => ({ risk, title: riskTitle(risk), consequence: riskConsequence(risk) }));
 
 /** A runner's non-spending observation of one provider. `unknown` is a
  * real answer (claude has no login probe that does not spend) and is never
@@ -272,7 +261,6 @@ function usedOf(room: ProviderRoom): number {
 }
 
 export type RouteInput = {
-  risk: RiskLevel;
   qualityMode: QualityMode;
   evidence: readonly RouteEvidenceKind[];
   publication: PublicationAuthority;
@@ -306,16 +294,6 @@ export function specWords(spec: { provider: string; model: string }): string {
 type Demand = { when: (input: RouteInput) => boolean; phases: readonly Phase[]; reason: string };
 
 const DEMANDS: readonly Demand[] = [
-  {
-    when: input => input.risk === "high",
-    phases: ["plan", "build", "repair", "review"],
-    reason: "risk is high — every role uses the strongest configured agent",
-  },
-  {
-    when: input => input.risk === "elevated",
-    phases: ["plan", "build", "repair", "review"],
-    reason: "risk is elevated — planning and building use the strongest configured agent",
-  },
   {
     when: input => input.size?.size === "large",
     phases: ["plan", "build", "repair"],
@@ -355,7 +333,8 @@ function demandedTier(input: RouteInput, phase: Phase): { tier: CandidateTier; r
 
 function economyReason(input: RouteInput, phase: Phase): string {
   const facts = [
-    `risk is ${input.risk}`,
+    // Said as it always was, so a route's words (and its digest) stay the same.
+    "risk is routine",
     `quality is ${input.qualityMode === "strict" ? "strict" : "default"}`,
     ...(input.publication === "notify" ? ["publication waits for a person"] : []),
   ];
@@ -382,7 +361,6 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
   const overrideFor = (phase: Phase): RouteOverride | null => overrides.find(one => one.phase === phase) ?? null;
 
   const legs: RouteLeg[] = [];
-  // Elevated or high risk lifts both legs through the table, so it never reaches the small branches.
   const small = input.size?.size === "small";
   const pick = (phase: "plan" | "build" | "review"): { spec: RouteCandidate; tier: CandidateTier; reasons: string[]; moved: boolean } => {
     const chosen = pickTier(phase);
@@ -538,7 +516,7 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
 
   return {
     version: ROUTE_VERSION,
-    risk: input.risk,
+    risk: "routine",
     qualityMode: input.qualityMode,
     publication: input.publication,
     evidence: [...new Set(input.evidence)].sort(),
@@ -797,7 +775,7 @@ export function sizeWords(route: Pick<PhaseRoute, "legs" | "size" | "risk">): st
   // Said from the build leg that actually runs: another demand (strict quality, screenshots) can lift it.
   const model = build?.tier === "light" ? "fast model" : build?.tier === "strong" ? "strongest model" : "everyday model";
   if (makesNoPlan(route.size, route.risk)) return `Small change: ${model}, no plan`;
-  // Elevated or high risk plans a small change too.
+  // (A route sealed at elevated or high risk planned a small change too.)
   const label = route.size.size === "large" ? "Large change" : route.size.size === "small" ? (route.size.risky ? "Small but risky change" : "Small change") : route.size.risky ? "Risky change" : "Medium change";
   if (route.size.size !== "large" && !route.size.risky && route.risk === "routine") return build?.tier === "strong" ? "Medium change: strongest agents" : "Medium change: everyday agents";
   return build?.tier === "strong" ? `${label}: strongest agents plan and build` : `${label}: planned first, everyday agents (no stronger agent is configured)`;
@@ -889,9 +867,9 @@ export function routeWords(projection: RouteProjection, indent = "  "): string[]
 export const NO_READINESS: ReadinessLookup = () => null;
 
 /** How a run's provenance names the leg it spent as: the frozen leg's own
- * word, `legacy` for a run governed by a pre-routing approval, a contest
- * lane, or an attended session, and `fallback` for an approved fallback
- * entry (and every repair of one). */
+ * word, and `legacy` for a run governed by a pre-routing approval. Before
+ * v115, `legacy` also named a watched session's run, and `fallback` an
+ * approved fallback entry's; those rows still read back. */
 export type RouteChosen = RouteLeg["chosen"] | "legacy" | "fallback";
 export const ROUTE_CHOSEN: readonly RouteChosen[] = ["recommended", "override", "pinned", "legacy", "fallback"];
 

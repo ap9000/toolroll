@@ -172,15 +172,13 @@ export const CONSOLE_FORMS = {
   tasksAdd: formContract("POST /tasks/add", ["projectRevision", "id", "title", "repo", "goal", "not", "touches", "scout", "permission-mode", "quality-mode", "after", "acceptance", "planning-policy", "plan-first"]),
   queue: formContract("POST /queue/move, /queue/note", ["runner", "note", "from", "projectRevision", "respond", "task", "column", "before", "queueRevision"]),
   runnerRegister: formContract("POST /fleet/runner/register", ["token", "name", "capacity"]),
-  mode: formContract("POST /mode/confirm, /mode/sign", ["name", "days", "auto-approve", "plan-auto", "allow-paid-fallback", "chat-approve", "publication", "expiry", "nonce", "digest", "token", "review-auto", "review-retry-auto", "repair-auto"]),
+  mode: formContract("POST /mode/confirm, /mode/sign", ["name", "days", "auto-approve", "plan-auto", "chat-approve", "publication", "expiry", "nonce", "digest", "token", "review-auto", "review-retry-auto", "repair-auto"]),
   peopleProjects: formContract("POST /people/projects", ["token", "name", "access", "projects"]),
   peopleInvite: formContract("POST /people/invite", ["token", "role", "access", "projects"]),
   peopleInviteRevoke: formContract("POST /people/invite-revoke", ["token", "id"]),
   peopleRevoke: formContract("POST /people/revoke", ["token", "name"]),
   runnerRetire: formContract("POST /fleet/runner/retire", ["token", "name"]),
   decisionAnswer: formContract("POST /d/<id>/answer", ["return", "choice", "confirm", "note"]),
-  contest: formContract("POST /contest/<id>/arm|pick|abandon", ["act", "choice", "token", "nonce"]),
-  attend: formContract("POST /t/<task>/attend|attend-preview|attend-revoke", ["parent", "followup", "minutes", "turns", "budget", "expiry", "model", "posture", "nonce", "digest", "token"]),
   confirmStopped: formContract("POST /t/<task>/confirm-stopped", ["run", "token", "checked", "return"]),
   merge: formContract("POST /t/<task>/merge", ["run", "token", "anyway"]),
   onboard: formContract("POST /projects/onboard-preview, /projects/onboard-confirm", ["repo", "root", "token", "nonce", "big-ok"]),
@@ -202,12 +200,9 @@ export const CONSOLE_FORMS = {
   chatAck: formContract("POST /chat/ack/<id>", ["token", "nonce"]),
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).
   recipes: formContract("POST /recipes/prepare, /recipes/preview, /recipes/import, /recipes/launch, /recipes/save", ["repo", "projectRevision", "recipe", "recipeRevision", "document", "purpose", "source", "sourceRevision", "preview", "next"]),
-  routinesAdd: formContract("POST /routines/add", ["projectRevision", "name", "ceiling", "repeat", "interval", "interval-unit", "time", "timezone", "weekday", "schedule", "goal", "not", "touches", "acceptance"]),
-  routine: formContract("POST /routines/<id>/approve|refresh|pause|resume|run-now", ["digest", "nonce", "token"]),
   runNote: formContract("POST /r/<run>/note", ["note"]),
   diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "note", "path", "line", "request"]),
   editorLinks: formContract("POST /session/editor-links", ["on", "return"]),
-  turn: formContract("POST /r/<run>/turn", ["text"]),
   revise: formContract("POST /r/<run>/revise", ["return", "batch", "source"]),
   followUp: formContract("POST /r/<run>/checks|add-tests", ["return", "level"]),
   resolveIncident: formContract("POST /i/<id>/resolve", ["return"]),
@@ -224,8 +219,8 @@ export const CONSOLE_FORMS = {
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),
   taskCancel: formContract("POST /t/<task>/cancel", ["reason"]),
-  taskRoute: formContract("POST /t/<task>/route", ["risk", "size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "return"]),
-  taskScope: formContract("POST /t/<task>/scope", ["sawDigest", "permission-mode", "quality-mode", "budget-usd", "budget-microusd", "requirement", "requirement-new", "race-count", "race-model", "race-per-usd", "race-total-usd", "goal-brief", "goal", "not", "touches", "acceptance"], { prefixes: ["compare-provider-", "compare-model-"] }),
+  taskRoute: formContract("POST /t/<task>/route", ["size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "return"]),
+  taskScope: formContract("POST /t/<task>/scope", ["sawDigest", "permission-mode", "quality-mode", "budget-usd", "budget-microusd", "requirement", "requirement-new", "goal-brief", "goal", "not", "touches", "acceptance"]),
   taskApprove: formContract("POST /t/<task>/approve", ["return", "digest", "token", "nonce"]),
   taskAcceptProof: formContract("POST /t/<task>/accept-proof", ["run", "note", "return"]),
   taskComplete: formContract("POST /t/<task>/complete", ["receipt", "run", "accept", "note", "publish", "return"]),
@@ -235,7 +230,7 @@ export const CONSOLE_FORMS = {
 
 export type ConsoleFormName = keyof typeof CONSOLE_FORMS;
 
-/** The console POSTs whose handlers read no field (sign-out and the attended beat not even the shared guard): their contract is the empty form. */
+/** The console POSTs whose handlers read no field (sign-out not even the shared guard): their contract is the empty form. */
 export const BODILESS_POSTS = [
   "POST /settings/lead/on",
   "POST /r/<run>/draft-repair",
@@ -244,7 +239,6 @@ export const BODILESS_POSTS = [
   "POST /mode/revoke",
   "POST /settings/telegram/retry",
   "POST /providers/<provider>/resume",
-  "POST /session/attended-beats",
   "POST /logout",
   "POST /t/<task>/unhold",
   "POST /t/<task>/plan",

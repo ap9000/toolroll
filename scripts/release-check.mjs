@@ -63,10 +63,9 @@ function baseOf() {
  * teammates, task sizing and sorting, the provider adapters and how a turn is run and read). */
 const MODEL = [
   /^src\/(mate|mate-[a-z-]+|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
-  /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence|held)\.ts$/,
+  /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence)\.ts$/,
   /^src\/(teammates|teammate-work|task-sizing|flow-sort|flow-draft)\.ts$/,
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
-  /^src\/supervisor\.mjs$/,
 ];
 /** Changes no test reads. */
 const NOTHING = [/\.md$/, /^docs\//, /^evidence\//, /^design\//, /^output\//, /^LICENSE$/, /\.png$/];

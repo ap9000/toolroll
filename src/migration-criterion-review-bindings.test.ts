@@ -118,7 +118,7 @@ const presented = (
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
-  const authority = s.routeAuthorityFor(taskRef, role, null) ?? s.routeAuthorityFor(taskRef, role, null, { provider: "claude", model: null });
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, { provider: "claude", model: null });
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 

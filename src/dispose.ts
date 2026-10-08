@@ -5,9 +5,8 @@ import { originalTaskBase, focusedTestCommandSupported } from "./observations.js
  * operations that actually END an attempt — sealing parks, accepting
  * completions behind the completion fence, recording failures with their
  * strikes and holds, opening publication intents — extracted from tick's
- * and the standalone build command's finalizers into ONE place, so the
- * held-session coordinator can end a run through exactly the machinery
- * every other road uses. The two historical roads differ deliberately
+ * and the standalone build command's finalizers into ONE place. The two
+ * historical roads differ deliberately
  * (the standalone command completes no task, strikes nothing, publishes
  * nothing), and the policy record says so explicitly instead of forking
  * the logic: behavior on both is byte-identical to what the callers
@@ -16,14 +15,10 @@ import { originalTaskBase, focusedTestCommandSupported } from "./observations.js
 
 import { createHash } from "node:crypto";
 import {
-  completeFenced,
-  finalizeFailureFenced,
-  finalizeHandBackFenced,
-  finalizeMalformedFenced,
-  finalizeParkFenced,
   interruptIfStopped,
   release,
   type FailureClass,
+  finalize,
 } from "./claim.js";
 import { bodyHashOf, publicationBody } from "./publish.js";
 import { modeTermsFromJson } from "./modes.js";
@@ -42,10 +37,9 @@ import { headWithin } from "./names.js";
  * Which road is disposing. 'tick' = the unattended loop: full task
  * completion, strikes, quota, publication. 'standalone' = the one-off
  * `build` command: run records only — no task state, no strikes, no
- * publication (its historical shape). The held road reuses 'tick' —
- * an attended session is still the task's real attempt.
+ * publication (its historical shape).
  */
-export type DisposePolicy = "tick" | "standalone" | "continuation";
+export type DisposePolicy = "tick" | "standalone";
 
 export type DisposeContext = {
   store: Store;
@@ -179,8 +173,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
 
   if (result.ok && result.parked !== undefined) {
     if (leaseId === undefined) return { kind: "park-fenced" };
-    const sealed = finalizeParkFenced(store, {
-      leaseId,
+    const sealed = finalize(store, leaseId, {
+      kind: "park",
       runId,
       taskId,
       decision: result.parked.decision,
@@ -195,59 +189,6 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   }
 
   if (result.ok) {
-    if (policy === "continuation") {
-      // The taskless success (v4 Q7 + v5 P5): run finished, claim released,
-      // publication intent under the SAME completion latch the ordinary
-      // road holds — and the parent task untouched in state, strikes,
-      // holds, and derived stats. All one transaction.
-      const sealed = store.transact((): { disowned: boolean } => {
-        const latchOpen = store.mirrorAllowsCompletion(taskId);
-        store.finishRun(runId, {
-          outcome: result.noChange === true ? "no-change" : "built",
-          ...(result.noChange === true ? { reason: "handoff" } : {}),
-          committed: result.committed,
-          now: clock(),
-        });
-        if (leaseId !== undefined) release(store, leaseId, clock());
-        if (!latchOpen) return { disowned: true };
-        if (result.noChange !== true && result.committed) {
-          const grant = store.publicationGrantFor(repo);
-          const headSha = store.getRun(runId)?.headRevision ?? null;
-          if (
-            grant !== null &&
-            grant.publishOn !== "complete" &&
-            headSha !== null &&
-            headWithin(branch, grant.headPrefix) &&
-            (grant.selector === "all" || origin === "ours")
-          ) {
-            const intentId = store.createPublicationIntent(
-              {
-                run: runId,
-                taskRef,
-                githubRepo: grant.githubRepo,
-                remote: grant.remote,
-                base: grant.base,
-                head: branch,
-                headSha,
-                bodyHash: "",
-                draft: grant.draft,
-              },
-              clock(),
-            );
-            const publication = store.publicationForRun(runId);
-            if (publication !== null) {
-              store.handle
-                .prepare("UPDATE publication SET body_hash = ? WHERE id = ?")
-                .run(bodyHashOf(publicationBody(store, publication)), intentId);
-            }
-          }
-        }
-        return { disowned: false };
-      });
-      store.clearQuota(runner, provider, model ?? "");
-      if (sealed.disowned) return { kind: "disowned" };
-      return { kind: "built", committed: result.committed, noChange: result.noChange === true };
-    }
     if (policy === "standalone") {
       store.finishRun(runId, {
         outcome: result.noChange === true ? "no-change" : "built",
@@ -262,7 +203,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     // around the fenced release, the run's outcome, and the publication
     // intent, so "done" and "this must reach a PR" cannot come apart.
     const sealed = store.transact(() => {
-      const fence = completeFenced(store, leaseId, "done", clock());
+      const fence = finalize(store, leaseId, { kind: "complete", state: "done", now: clock() });
       if (!fence.ok) return fence;
       // The disowned arm (external dispatch, v4 §24): the tracker closed
       // this mirror while it was being built.
@@ -353,14 +294,14 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   // THE ALREADY-SEALED ENDINGS (adaptive execution plans). Every other arm
   // below ends the attempt itself — releases the claim, writes the run's
   // outcome, counts what it costs. These two arrive with all of that
-  // already done: `finalizeRevisionFenced` released the lease, appended the
+  // already done: `finalize` (a `revision` ending) released the lease, appended the
   // ledger row, placed the hold when one was owed, finished the run, and
   // paged, all inside ONE fenced transaction — the planner road's shape,
   // where claim.ts owns the ending and dispose only reports it.
   //
   // So this branch exists to do NOTHING, deliberately, and it is placed
-  // above the policy arms so that every road — tick, standalone, held,
-  // continuation — skips them alike.
+  // above the policy arms so that every road — tick and standalone —
+  // skips them alike.
   //
   // Falling through instead would be wrong twice over. `release()` would
   // survive it (an already-released lease whose `released_by` is
@@ -374,20 +315,10 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     return { kind: "skipped", reason: result.reason as never };
   }
 
-  if (policy === "continuation") {
-    // The taskless failure (v4 Q7): the run says what happened, the claim
-    // releases — NO strikes, NO holds, NO done→failed demotion; three
-    // failed continuations still leave the parent exactly as it finished.
-    const outcome = result.reason === "fenced" ? "refused" : "failed";
-    store.finishRun(runId, { outcome, reason: result.reason, now: clock() });
-    if (leaseId !== undefined) release(store, leaseId, clock());
-    return { kind: "recorded", outcome };
-  }
-
   if (policy === "standalone") {
     if (result.reason === "malformed-decision" && leaseId !== undefined) {
-      const sealed = finalizeMalformedFenced(store, {
-        leaseId,
+      const sealed = finalize(store, leaseId, {
+        kind: "malformed",
         runId,
         taskId,
         problems: result.problems ?? [],
@@ -398,21 +329,6 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     const outcome = STANDALONE_BROKE_REASONS.has(result.reason) ? "failed" : "refused";
     store.finishRun(runId, { outcome, reason: result.reason, now: clock() });
     return { kind: "recorded", outcome };
-  }
-
-  // The attended refusal family (v28 sweep): typed, no strike, release and
-  // move on — the pre-claim gates make every one a rare race, and the
-  // invariant arm they used to fall through is for BUGS, not races.
-  if (
-    result.reason === "attended-only" ||
-    result.reason === "attended-held" ||
-    result.reason === "stale-authorization" ||
-    result.reason === "session-cap" ||
-    result.reason === "run-held"
-  ) {
-    if (leaseId !== undefined) release(store, leaseId, clock());
-    store.finishRun(runId, { outcome: "refused", reason: result.reason, now: clock() });
-    return { kind: "skipped", reason: result.reason as never };
   }
 
   if (result.reason === "unapproved" || result.reason === "scope-changed") {
@@ -430,8 +346,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
 
   if (result.reason === "malformed-decision") {
     if (leaseId === undefined) return { kind: "malformed", sealed: false };
-    const sealed = finalizeMalformedFenced(store, {
-      leaseId,
+    const sealed = finalize(store, leaseId, {
+      kind: "malformed",
       runId,
       taskId,
       problems: result.problems ?? [],
@@ -443,7 +359,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   // A stop no operator asked for is the SERVICE stopping (the fence above
   // already settled every task stop): hand the attempt back, never strike it.
   if (result.reason === "stopped" && policy === "tick" && leaseId !== undefined && store.getRun(runId)?.role === "builder") {
-    const handed = finalizeHandBackFenced(store, { leaseId, runId, taskId, message: result.message, now: clock() });
+    const handed = finalize(store, leaseId, { kind: "hand-back", runId, taskId, message: result.message, now: clock() });
     return { kind: "handed-back", requeued: handed.requeued };
   }
 
@@ -472,8 +388,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       store.finishRun(runId, { outcome: "failed", reason: result.reason, now: clock() });
       return { kind: "failed", failureClass, disposition: null, strikes: null, sealed: false };
     }
-    const sealed = finalizeFailureFenced(store, {
-      leaseId,
+    const sealed = finalize(store, leaseId, {
+      kind: "failure",
       runId,
       taskId,
       failureClass,
@@ -646,7 +562,7 @@ export function regateTask(
   return store.transact(() => {
     const proposed = propose(store, {
       taskId, goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd,
-      acceptance: scope.acceptance, qualityMode: scope.qualityMode ?? "default", riskLevel: scope.riskLevel ?? "routine",
+      acceptance: scope.acceptance, qualityMode: scope.qualityMode ?? "default",
       candidate: head, now,
     });
     let sealed = false;

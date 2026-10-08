@@ -13,7 +13,7 @@
 import { flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { flowFromSteps } from "./flows.js";
 import { addFlowTriggerTo, removeFlowTrigger, runScheduleNow, scheduleFromWords, triggerConfigOf } from "./flow-triggers.js";
-import { describeSchedule, parseSchedule } from "./routine.js";
+import { describeSchedule, parseSchedule } from "./flow-schedule.js";
 import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
 import { labelOf, nameOf } from "./teammate-admin.js";
 

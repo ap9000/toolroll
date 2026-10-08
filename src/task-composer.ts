@@ -1,5 +1,5 @@
 /** UI choices translate into the same digest-bound schedules as the CLI. */
-import { parseSchedule, scheduleText, validTimezone, type Schedule } from "./routine.js";
+import { parseSchedule, scheduleText, validTimezone, type Schedule } from "./flow-schedule.js";
 
 export function composerSchedule(fields: URLSearchParams): { ok: true; schedule: string | null } | { ok: false; message: string } {
   const repeat = fields.get("repeat") ?? "once";

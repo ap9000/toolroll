@@ -14,7 +14,7 @@ SQLite failures retain a fixed error code in diagnostics, without paths, argumen
 
 Each spawn reserves its witness before the OS call. When the spawn makes no process (ENOENT, EAGAIN, a throw from the spawn call, or no OS object), the spawn road settles that witness as never started right away, even if the transport throws afterwards.
 
-`reconcile` settles any other PID-less witness only on this host, only for a finished run with no tracked child or open held session, where every other witness has exited and every recorded process group is gone when rechecked. It writes a `process witness settled` ledger entry. A run whose only witness has no PID stays unproven.
+`reconcile` settles any other PID-less witness only on this host, only for a finished run with no tracked child, where every other witness has exited and every recorded process group is gone when rechecked. It writes a `process witness settled` ledger entry. A run whose only witness has no PID stays unproven.
 
 When the evidence can't settle a finished run either way, an approver can use `toolroll run settle <run> --why "<reason>" --as <you> --token <t>`. It refuses while any recorded process of the run is alive, a native object still has members, or a witness belongs to another host. It never sends a signal. It records the reason against the approver in the ledger.
 

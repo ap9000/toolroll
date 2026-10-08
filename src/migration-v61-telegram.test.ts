@@ -32,7 +32,7 @@ describe("v61 Telegram delivery foundation", () => {
     const before = old.prepare("SELECT * FROM notification ORDER BY id").all();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(115);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const after = store.handle.prepare("SELECT * FROM notification ORDER BY id").all();
     expect(after.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !columns.includes(key))))).toEqual(before);

@@ -132,7 +132,7 @@ export type CloseoutOptions = StopOptions & { repo?: string; actor?: string };
 
 /**
  * The worker's pass: every finished run of this host that still has a process witness open is closed out. A run
- * whose transport here still holds a live child, or whose held supervisor hasn't shut down, is left to that road.
+ * whose transport here still holds a live child is left to that road.
  * Returns what each run had stopped.
  */
 export async function closeOutRuns(store: Store, clock: () => Date, options: CloseoutOptions = {}): Promise<{ runId: number; done: Stopped }[]> {
@@ -148,8 +148,6 @@ export async function closeOutRuns(store: Store, clock: () => Date, options: Clo
   for (const runId of runs) {
     store.recordRunProcessExits(runId, clock());
     if (ownedProcessCount(runOwnerTag(store, runId)) > 0) continue;
-    const held = store.heldSessionOf(runId);
-    if (held !== null && held.endedAt === null) continue;
     const witnesses: Witness[] = db.prepare(`SELECT pid, process_group, observed_at FROM run_process
       WHERE run = ? AND exited_at IS NULL AND pid IS NOT NULL AND containment IS NULL AND container IS NULL AND host = ?`).all(runId, hostname())
       .map(row => ({ pid: Number(row["pid"]), group: Number(row["process_group"]) === 1, observedAt: Date.parse(String(row["observed_at"])) }))

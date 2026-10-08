@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveRoutineAuthority } from "../agentconfig.js";
+import { resolveAgentAuthority } from "../agentconfig.js";
 import { checkResponse,CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
 import { stageReferenceProblems } from "../contracts/stage-output.js";
 import { LIMITS } from "../decision.js";
@@ -18,7 +18,7 @@ import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.j
 import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
-import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,renewFlowHook,saveHooksBase,saveLinearKey,saveLinearSigningSecret,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
+import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveLinearSigningSecret,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { keyStatus } from "../keys.js";
@@ -164,11 +164,12 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         const revision = who.via === "cookie" ? who.session.projectRevision : 0;
         const render = (html: string) => sendScreen(response, 200, screen("Workflow recipes", html, { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
         if (url.pathname === "/recipes") {
-          const recent = project === null ? [] : store.handle.prepare("SELECT document,task_id,routine_id FROM workflow_preview WHERE repo=? AND (task_id IS NOT NULL OR routine_id IS NOT NULL) ORDER BY created_at DESC LIMIT 12").all(project).map(row => {
+          const recent = project === null ? [] : store.handle.prepare("SELECT document,task_id,flow_id FROM workflow_preview WHERE repo=? AND (task_id IS NOT NULL OR flow_id IS NOT NULL) ORDER BY created_at DESC LIMIT 12").all(project).map(row => {
             const d = importRecipe(String(row["document"]));
             const task = row["task_id"] === null ? null : store.getTask(String(row["task_id"]));
-            const routine = row["routine_id"] === null ? null : store.getRoutine(Number(row["routine_id"]));
-            return { name: d.name, href: task !== null ? taskHref(task.id) : `/routines/${routine?.id}`, state: task?.state ?? (routine?.approvedAt === null ? "Needs approval" : routine?.paused ? "Paused" : "Scheduled") };
+            const flow = row["flow_id"] === null ? null : store.getFlow(Number(row["flow_id"]));
+            const on = flow !== null && flow.state === "active" && store.flowTriggers(flow.id).some(one => one.kind === "schedule" && one.state === "active");
+            return { name: d.name, href: task !== null ? taskHref(task.id) : `/flows/${Number(row["flow_id"])}`, state: task?.state ?? (flow === null || flow.state !== "active" ? "Archived" : on ? "Scheduled" : "Paused") };
           });
           return render(recipeLibraryHtml(starterRecipes(), project === null ? [] : savedRecipes(store, who.name, project), project, csrf, revision, recent));
         }
@@ -204,7 +205,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         }
         if (url.pathname === "/recipes/preview" && preview !== null) {
           if (preview.document.version === 2 || url.searchParams.get("purpose") === "recipe") return render(recipeDefinitionPreviewHtml(preview, csrf, revision));
-          const agents = resolveRoutineAuthority(store, project, preview.document.acceptance, now);
+          const agents = resolveAgentAuthority(store, project, preview.document.acceptance, now);
           const workers = store.listRunners().filter(one => one.retiredAt === null && one.repos.includes(project) && runnerAlive(one, now));
           const mode = store.activeMode(project, now);
           const readiness = [
@@ -434,7 +435,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         const trigger = store.getFlowTrigger(Number(triggerPost[2]));
         if (trigger === null || trigger.flow !== flow.id || trigger.state === "removed") return answer(404, { ok: false, said: "That trigger isn't on this flow." });
         const verb = triggerPost[3];
-        if (verb === "pause" || verb === "resume") { store.updateFlowTrigger(trigger.id, { state: verb === "pause" ? "paused" : "active" }, now); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
+        if (verb === "pause" || verb === "resume") { setFlowTriggerOn(store, trigger, verb === "resume", now); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
         if (verb === "remove") { removeFlowTrigger(store, trigger, now, dir); return settle("Trigger removed."); }
         if (verb === "share") {
           const shared = shareFlowButton(store, trigger, now, dir);
@@ -598,8 +599,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
           const source = body.get("source") ?? "custom";
           const sourceVersion = body.get("sourceRevision") ?? "1";
           if (!/^[1-9][0-9]{0,8}$/.test(sourceVersion)) throw new RecipeError("Choose a valid recipe version.");
-          const original = ["custom", "imported", "task-copy", "routine-copy"].includes(source) ? null : findRecipe(store, who.name, project, source, Number(sourceVersion));
-          if (original === null && !["custom", "imported", "task-copy", "routine-copy"].includes(source)) throw new RecipeError("That recipe version is not available in this project.", 404);
+          const original = ["custom", "imported", "task-copy"].includes(source) ? null : findRecipe(store, who.name, project, source, Number(sourceVersion));
+          if (original === null && !["custom", "imported", "task-copy"].includes(source)) throw new RecipeError("That recipe version is not available in this project.", 404);
           let document;
           try { document = recipeFromForm(body.sent); }
           catch (error) {
@@ -621,7 +622,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         if (made.taskId !== null) {
           const context = requestContext.getStore(); if (context !== undefined) context.createdTask = made.taskId;
         }
-        return redirect(response, made.taskId === null ? `/routines/${made.routineId}` : taskHref(made.taskId));
+        return redirect(response, made.taskId === null ? `/flows/${made.flowId}` : taskHref(made.taskId));
       } catch (error) {
         if (error instanceof RecipeError) return refuse(response, who, error.status, error.message, "/recipes");
         throw error;

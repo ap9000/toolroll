@@ -17,7 +17,7 @@ import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { LIMITS } from "../decision.js";
 import { CHECK_RESULTS, RUN_OUTCOMES, TASK_STATES } from "../lead-commitments.js";
 import { PERSON_ID } from "../lead-people.js";
-import { RISK_LEVELS, TASK_SIZES } from "../phase-routing.js";
+import { TASK_SIZES } from "../phase-routing.js";
 import { ACCEPTANCE_LIMITS } from "../scope.js";
 import { TEAMMATE_TEMPLATES } from "../teammates.js";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
@@ -140,7 +140,7 @@ export const LEAD_TOOL_INPUTS = {
   propose_dependency_repair: z.strictObject({ task: taskRef, blocker: taskRef, operation: z.enum(["retry", "unlink", "replace"]), replacement: taskRef.optional() }),
   propose_scope: z.strictObject({ task: taskRef, goal: scopeText, not: scopeText.nullable().optional(), touches: touches.optional(), acceptance }),
   propose_agents: z.strictObject({
-    task: taskRef, risk: z.enum(RISK_LEVELS as readonly string[] as ["routine", "elevated", "high"]).optional(),
+    task: taskRef,
     size: z.enum(TASK_SIZES as readonly string[] as ["small", "medium", "large"]).optional(), risky: z.boolean().optional(),
     role: z.enum(["planner", "builder", "repair"]).optional(),
     agent: z.strictObject({ provider: text("agentProvider"), model: text("agentModel") }).optional(),
@@ -255,7 +255,7 @@ export const LEAD_TOOL_OUTPUTS = {
     repo: str, task: str, root: str, currentExecution: str, title: str, state: str, deliverable: str, scope: str,
     queue: nullable(z.looseObject({ position: int, of: int, column: str })), holds: list, attempts: int, decisionsOpen: int, dependencies: list,
   }),
-  get_agents: z.looseObject({ repo: str, task: str, risk: z.looseObject({ level: str }), standing: str, agents: list, choices: z.looseObject({}), approval: str, organisationPolicy: z.looseObject({}) }),
+  get_agents: z.looseObject({ repo: str, task: str, standing: str, agents: list, choices: z.looseObject({}), approval: str, organisationPolicy: z.looseObject({}) }),
   list_decisions: decisionsOutput,
   get_decision: decisionOutput,
   queue: z.looseObject({ repo: str, queueRevision: int, ...queueColumnsOutput }),

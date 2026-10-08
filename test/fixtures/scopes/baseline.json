@@ -380,21 +380,5 @@
       "route": null,
       "approvedRoute": null
     }
-  ],
-  "routine": [
-    {
-      "key": "1",
-      "stored": {
-        "digest": "3e8204133dfa9b42cef04eba98a8848a",
-        "approvedDigest": "3e8204133dfa9b42cef04eba98a8848a"
-      },
-      "digest": "3e8204133dfa9b42cef04eba98a8848a",
-      "approvedDigest": "3e8204133dfa9b42cef04eba98a8848a",
-      "acceptance": "[{\"id\":\"c1\",\"statement\":\"it ships\",\"how\":null,\"evidence\":[\"check\"]}]",
-      "canonicalAcceptance": "[{\"id\":\"c1\",\"statement\":\"it ships\",\"evidence\":[\"check\"]}]",
-      "termsProblem": null,
-      "route": null,
-      "approvedRoute": null
-    }
   ]
 }

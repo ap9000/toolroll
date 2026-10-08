@@ -61,9 +61,6 @@ const savedProgressSchema = z.looseObject({
     id: z.string(), state: z.enum(["pending", "current", "completed", "blocked"]), note: z.string().nullable().optional(),
   })),
 });
-const savedAgentSchema = z.looseObject({
-  provider: z.string(), model: z.string(), repairModel: z.string(), permissionMode: z.string().optional(),
-});
 const savedKeyboardSchema = z.array(z.array(telegramCallbackButtonSchema.extend({ callback_data: z.string() }).loose()));
 const savedMatrixRowSchema = proofCriterionSchema.pick({ id: true, statement: true }).extend({
   id: z.string(), statement: z.string(), requiredEvidence: savedList, state: z.string(), detail: savedList,
@@ -87,9 +84,7 @@ const STORE_COLUMN_VALUES = {
   /** Read by the scope contract's `parseAcceptanceCriteria` (`scope.ts`), which owns the criterion's shape. */
   "task_scope.acceptance_json": storedRubricSchema,
   "operating_mode.terms_json": savedModeTermsSchema,
-  "attended_authorization.terms_json": z.looseObject({ profileJson: z.string().nullable().optional() }),
   "approval_policy.protected_paths": savedList,
-  "fallback_config.entries_json": savedList,
   "runner.repos": savedList,
   "runner.agents": savedList,
   "decision.options": z.array(savedDecisionOptionSchema),
@@ -106,11 +101,6 @@ const STORE_COLUMN_VALUES = {
   "publication_grant.capabilities": z.array(z.enum(["push-branch", "open-pr"])),
   "task_ref.zones": savedList,
   "task_ref.capability_requirements": savedList,
-  "routine.touches": savedList,
-  "routine.requirements": savedList,
-  /** Read by `parseAcceptanceCriteria`, as `task_scope.acceptance_json`. */
-  "routine.acceptance_json": storedRubricSchema,
-  "tournament_terms.agents": z.array(savedAgentSchema),
   "coordinator_proposal.payload_json": savedObject,
   "coordinator_proposal.outcome_json": savedObject,
   // Other proposal kinds have operation-specific fields; the action variant already has a canonical contract.
@@ -136,11 +126,11 @@ export const STORE_PROJECTIONS = ["run_tool.tools_json.fence"] as const;
 export const LEGACY_JSON_COLUMNS: readonly StoreColumn[] = [
   "teammate_suggestion.rule_json", "teammate_suggestion.was_json", "teammate_suggestion.evidence_json",
   "teammate_call.input_json", "teammate_tool.actions_json", "teammate_tool.rules_json", "teammate_question.options_json",
-  "teammate_event.detail_json", "task_scope.touches", "task_scope.acceptance_json", "routine.acceptance_json",
-  "operating_mode.terms_json", "attended_authorization.terms_json", "decision.options", "run_tool.tools_json",
+  "teammate_event.detail_json", "task_scope.touches", "task_scope.acceptance_json",
+  "operating_mode.terms_json", "decision.options", "run_tool.tools_json",
   "run_tool.tools_json.fence", "mate_ask.options_json", "mutation.result", "plan_revision.changed_fields",
   "run_checkpoint.snapshot_json", "telegram_conversation_part.keyboard_json", "publication_grant.capabilities",
-  "tournament_terms.agents", "coordinator_proposal.payload_json", "coordinator_proposal.outcome_json",
+  "coordinator_proposal.payload_json", "coordinator_proposal.outcome_json",
   "mate_proposal.payload_json", "mate_proposal.outcome_json",
 ];
 

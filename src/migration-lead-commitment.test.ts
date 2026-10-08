@@ -34,8 +34,8 @@ test("a store from before lead_commitment gains the table on its next upgrade, k
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(114);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(114);
+  expect(SCHEMA_VERSION).toBe(115);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(115);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lead_commitment%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["lead_commitment", "lead_commitment_due", "lead_commitment_owner"]);
   expect(store.listMateMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
@@ -73,11 +73,11 @@ const count = (sql: string) => Number(store.handle.prepare(sql).get()?.["n"]);
 console.log(JSON.stringify({ speaks: SCHEMA_VERSION, threads: count("SELECT COUNT(*) AS n FROM mate_thread"), promises: count("SELECT COUNT(*) AS n FROM lead_commitment") }));
 store.close();
 `);
-  // v110 and later (the ledger's remote sources, v111's token terms, v112's request budgets, v113's MCP sign-in, v114's single shape) are newer than it speaks: it refuses to open rather than alter what it can't name.
+  // v110 and later (the ledger's remote sources, v111's token terms, v112's request budgets, v113's MCP sign-in, v114's single shape, v115's removals) are newer than it speaks: it refuses to open rather than alter what it can't name.
   expect(() => execFileSync(join(REPO, "node_modules", ".bin", "tsx"), [join(older, "read.ts"), file], { cwd: older, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))
-    .toThrow(/schema v114, written by a newer build/);
+    .toThrow(/schema v115, written by a newer build/);
 
   store = openStore(file);
   expect(getCommitment(store, made.id)).toEqual(made);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(114);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(115);
 }, 60_000);

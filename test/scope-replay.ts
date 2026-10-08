@@ -1,5 +1,5 @@
 /**
- * Saved scopes, standing orders and sealed routes, replayed read-only: every digest re-derived from a row's own
+ * Saved scopes and sealed routes, replayed read-only: every digest re-derived from a row's own
  * stored terms, every stored route read back and re-encoded. test/fixtures/scopes/rows.json holds the rows (from the
  * authentic v47 fixture and from stores this code's releases wrote; synthetic names and paths only), and
  * baseline.json what the hand-written readers before the Zod contracts made of them — recorded before those readers
@@ -11,12 +11,11 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalRouteJson, routeDigestOf, routeFromJson } from "../src/phase-routing.js";
-import { routineDigestOf } from "../src/routine.js";
 import { canonicalAcceptance, chainFromJson, digestOf, parseAcceptanceCriteria, profileFromJson } from "../src/scope.js";
 import { scopeTermsProblem } from "../src/store.js";
 
 export type SavedRow = Record<string, string | number | null>;
-export type SavedRows = { task_scope: SavedRow[]; routine: SavedRow[] };
+export type SavedRows = { task_scope: SavedRow[] };
 
 /** One stored route: what it reads as, its re-encoded bytes (and whether they are the stored bytes), its digest. */
 export type RouteReplay = { read: string | null; canonical: string | null; sameBytes: boolean; digest: string | null };
@@ -34,7 +33,7 @@ export type RowReplay = {
   approvedRoute: RouteReplay | null;
 };
 
-export type Replay = { task_scope: RowReplay[]; routine: RowReplay[] };
+export type Replay = { task_scope: RowReplay[] };
 
 const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
 
@@ -104,52 +103,11 @@ export function replayScopeRow(row: SavedRow): RowReplay {
   };
 }
 
-/** A standing order's row, re-derived the way routine.ts binds it. */
-export function replayRoutineRow(row: SavedRow): RowReplay {
-  const acceptance = acceptanceOf(row["acceptance_json"]);
-  const terms = {
-    repo: String(row["repo"]),
-    goal: String(row["goal"]),
-    outOfScope: text(row["out_of_scope"]),
-    touches: list(row["touches"]),
-    acceptance,
-    requirements: list(row["requirements"]),
-    schedule: String(row["schedule"]),
-    singleFlight: Number(row["single_flight"]) === 1,
-    costCeilingUsd: row["cost_ceiling_usd"] === null ? null : Number(row["cost_ceiling_usd"]),
-    budgetPerRunMicrousd: row["budget_per_run_microusd"] === null || row["budget_per_run_microusd"] === undefined ? null : Number(row["budget_per_run_microusd"]),
-  };
-  const derive = (profileJson: string | null, routeJson: string | null, storedDigest: string | null): string | null => {
-    const route = routeJson === null ? null : routeFromJson(routeJson);
-    if (routeJson !== null && route === null) return null;
-    // updateRoutineTerms can restate a v1 routine with a profile without bumping digest_version. Migration also
-    // pinned profiles beside unchanged fields-only approvals. For an unrouted v1 side, accept that older encoding
-    // only when it re-derives the stored digest; otherwise include the profile, as routine.ts does. Never use this
-    // fallback for routed or v2 rows, and never return the stored digest itself: real disagreements stay visible.
-    if (row["digest_version"] === 1 && route === null) {
-      const legacy = routineDigestOf(terms);
-      if (legacy === storedDigest) return legacy;
-    }
-    return routineDigestOf(terms, profileFromJson(profileJson), route);
-  };
-  return {
-    key: String(row["id"]),
-    stored: { digest: text(row["digest"]), approvedDigest: text(row["approved_digest"]) },
-    digest: derive(text(row["profile_json"]), text(row["route_json"]), text(row["digest"])),
-    approvedDigest: text(row["approved_digest"]) === null ? null : derive(text(row["approved_profile_json"]), text(row["approved_route_json"]) ?? text(row["route_json"]), text(row["approved_digest"])),
-    acceptance: JSON.stringify(acceptance),
-    canonicalAcceptance: JSON.stringify(canonicalAcceptance(acceptance)),
-    termsProblem: null,
-    route: routeReplay(text(row["route_json"])),
-    approvedRoute: routeReplay(text(row["approved_route_json"])),
-  };
-}
-
 export function replayRows(rows: SavedRows): Replay {
-  return { task_scope: rows.task_scope.map(replayScopeRow), routine: rows.routine.map(replayRoutineRow) };
+  return { task_scope: rows.task_scope.map(replayScopeRow) };
 }
 
-/** Every saved scope and standing order in a database file, read through a read-only connection. */
+/** Every saved scope in a database file, read through a read-only connection. */
 export function readSavedRows(file: string): SavedRows {
   const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
   const db = new sqlite.DatabaseSync(file, { readOnly: true });
@@ -158,7 +116,7 @@ export function readSavedRows(file: string): SavedRows {
       const known = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
       return known ? (db.prepare(`SELECT * FROM "${table}" ORDER BY ${order}`).all() as SavedRow[]).map(row => ({ ...row })) : [];
     };
-    return { task_scope: all("task_scope", "task_id"), routine: all("routine", "id") };
+    return { task_scope: all("task_scope", "task_id") };
   } finally {
     db.close();
   }

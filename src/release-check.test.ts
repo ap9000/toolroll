@@ -61,7 +61,7 @@ describe("what a change runs", () => {
   });
 
   test("model-facing code adds the real-model journeys; a test of it doesn't; --real and a full check do", () => {
-    for (const file of ["src/mate.ts", "src/mate-tools.ts", "src/subscription-chat.ts", "src/planner.ts", "src/builder.ts", "src/provider.ts", "src/invoke.ts", "src/teammates.ts", "src/flow-sort.ts", "src/task-sizing.ts", "src/supervisor.mjs"])
+    for (const file of ["src/mate.ts", "src/mate-tools.ts", "src/subscription-chat.ts", "src/planner.ts", "src/builder.ts", "src/provider.ts", "src/invoke.ts", "src/teammates.ts", "src/flow-sort.ts", "src/task-sizing.ts"])
       expect(planFor([file]), file).toEqual({ checks: true, real: true, why: `every unit test and every scripted browser journey; the real-model journeys and what they need (${file} changed: model-facing)` });
     expect(planFor(["src/mate.test.ts"]).real).toBe(false);
     expect(planFor(["src/browser/app.tsx"], { real: true }).why).toBe("every unit test and every scripted browser journey; the real-model journeys and what they need (--real)");

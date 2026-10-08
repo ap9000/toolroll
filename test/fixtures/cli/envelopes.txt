@@ -4082,8 +4082,7 @@ $ contract --commands --json → 0
         }
       ],
       "notableReasons": [
-        "unknown-task",
-        "contest-open"
+        "unknown-task"
       ],
       "remote": "yes"
     },
@@ -4164,8 +4163,7 @@ $ contract --commands --json → 0
       ],
       "notableReasons": [
         "unknown-task",
-        "claimed",
-        "contest-open"
+        "claimed"
       ],
       "remote": "yes"
     },
@@ -4271,16 +4269,10 @@ $ contract --commands --json → 0
           "name": "budget-usd",
           "takesValue": true,
           "meaning": "spend ceiling for the build"
-        },
-        {
-          "name": "risk",
-          "takesValue": true,
-          "meaning": "declared risk: routine, elevated, or high — the route reads it"
         }
       ],
       "notableReasons": [
-        "unknown-task",
-        "contest-open"
+        "unknown-task"
       ],
       "remote": "yes"
     },
@@ -4545,7 +4537,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task route",
-      "synopsis": "which configured agents plan, build and repair this task; phase and risk changes require renewed approval",
+      "synopsis": "which configured agents plan, build and repair this task; phase and size changes require renewed approval",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
@@ -4634,7 +4626,6 @@ $ contract --commands --json → 0
         "unapproved",
         "reserved",
         "external",
-        "contest-open",
         "claimed",
         "not-ready"
       ],
@@ -4958,53 +4949,6 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
-      "invocation": "routine list",
-      "synopsis": "scheduled routines",
-      "audience": "agent",
-      "agentMayInvoke": true,
-      "mutation": "none",
-      "flags": [
-        {
-          "name": "json",
-          "takesValue": false,
-          "meaning": "answer with one machine envelope on stdout"
-        },
-        {
-          "name": "db",
-          "takesValue": true,
-          "meaning": "path to the database file (defaults to the installation's)"
-        }
-      ],
-      "remote": "yes"
-    },
-    {
-      "invocation": "routine show",
-      "synopsis": "one routine in full",
-      "audience": "agent",
-      "agentMayInvoke": true,
-      "mutation": "none",
-      "positionals": [
-        {
-          "name": "id",
-          "required": true,
-          "meaning": "the routine"
-        }
-      ],
-      "flags": [
-        {
-          "name": "json",
-          "takesValue": false,
-          "meaning": "answer with one machine envelope on stdout"
-        },
-        {
-          "name": "db",
-          "takesValue": true,
-          "meaning": "path to the database file (defaults to the installation's)"
-        }
-      ],
-      "remote": "yes"
-    },
-    {
       "invocation": "config show",
       "synopsis": "phase and spend configuration",
       "audience": "agent",
@@ -5126,7 +5070,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "template list",
-      "synopsis": "routine templates",
+      "synopsis": "work templates: tasks and scheduled flows",
       "audience": "agent",
       "agentMayInvoke": true,
       "mutation": "none",
@@ -5155,33 +5099,6 @@ $ contract --commands --json → 0
           "name": "name",
           "required": true,
           "meaning": "the template"
-        }
-      ],
-      "flags": [
-        {
-          "name": "json",
-          "takesValue": false,
-          "meaning": "answer with one machine envelope on stdout"
-        },
-        {
-          "name": "db",
-          "takesValue": true,
-          "meaning": "path to the database file (defaults to the installation's)"
-        }
-      ],
-      "remote": "yes"
-    },
-    {
-      "invocation": "contest show",
-      "synopsis": "a tournament's state and results",
-      "audience": "agent",
-      "agentMayInvoke": true,
-      "mutation": "none",
-      "positionals": [
-        {
-          "name": "id",
-          "required": true,
-          "meaning": "the contest"
         }
       ],
       "flags": [
@@ -5357,54 +5274,6 @@ $ contract --commands --json → 0
       "agentMayInvoke": false,
       "mutation": "unkeyed",
       "remote": "step-up"
-    },
-    {
-      "invocation": "routine add",
-      "synopsis": "file a standing order",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
-    },
-    {
-      "invocation": "routine approve",
-      "synopsis": "approve a standing order",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "step-up"
-    },
-    {
-      "invocation": "routine refresh",
-      "synopsis": "re-resolve the agents a standing order freezes from today's configuration — approves nothing; approve it again afterwards",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
-    },
-    {
-      "invocation": "routine pause",
-      "synopsis": "pause a standing order",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
-    },
-    {
-      "invocation": "routine resume",
-      "synopsis": "resume a standing order",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
-    },
-    {
-      "invocation": "routine run-now",
-      "synopsis": "run a standing order immediately",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
     },
     {
       "invocation": "keys status",
@@ -5685,14 +5554,6 @@ $ contract --commands --json → 0
       "agentMayInvoke": false,
       "mutation": "unkeyed",
       "remote": "step-up"
-    },
-    {
-      "invocation": "contest exclude",
-      "synopsis": "exclude a contestant from a tournament",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
     },
     {
       "invocation": "webhook primary",
@@ -6130,7 +5991,6 @@ $ task show t-readme --json → 0
     "approved": false,
     "reason": "never-proposed"
   },
-  "risk": "routine",
   "route": {
     "kind": "unreadable",
     "source": null,
@@ -6566,14 +6426,6 @@ $ runner list --json → 0
   "command": "runner list",
   "count": 0,
   "runners": []
-}
-
-$ routine list --json → 0
-{
-  "envelopeVersion": 1,
-  "ok": true,
-  "command": "routine list",
-  "routines": []
 }
 
 $ outbox list --json → 0

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
-import { acquire, completeFenced, finalizeFailureFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { SlackState, slackHash } from "./slack-state.js";
 import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
@@ -95,7 +95,7 @@ describe("quiet chat on Telegram", () => {
       await pass(script);
     }
     store.finishRun(run, { outcome: "built", committed: true, now });
-    expect(completeFenced(store, lease, "done", now).ok).toBe(true);
+    expect(finalize(store, lease, { kind: "complete", state: "done", now: now }).ok).toBe(true);
     await pass(script);
     await pass(script);
     return run;
@@ -140,7 +140,7 @@ describe("quiet chat on Telegram", () => {
       now = at(strike * 3_600_000);
       const { lease, run } = attempt(ref);
       await pass(script);
-      finalizeFailureFenced(store, { leaseId: lease, runId: run, taskId: "flaky-build", failureClass: "unknown", message: "tests failed", worktree: "/pool/t", now });
+      finalize(store, lease, { kind: "failure", runId: run, taskId: "flaky-build", failureClass: "unknown", message: "tests failed", worktree: "/pool/t", now });
       await pass(script);
     }
     expect(store.listNotifications("all").filter(row => row.kind === "build-failed")).toHaveLength(2);

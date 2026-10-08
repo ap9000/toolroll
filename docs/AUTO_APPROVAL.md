@@ -28,7 +28,7 @@ The task page shows when unchanged-plan approval is enabled. The action ledger r
 | Agent review | Runs automatically when enabled; review comments requiring a revision keep their existing human action |
 | Drafted repair of named unmet criteria | Optional existing bounded repair policy, at most 3 attempts; integrity and no-progress checks still stop it |
 | Merge | Optional existing automatic merge policy, with a publication grant and green CI on the exact commit |
-| Paid fallback | Separate explicit permission; never enabled by a preset |
+| A provider's plan running out | The attempt fails with its reason and waits; nothing switches to another agent or account |
 
 Expiry, revocation, access changes, mode renewal, source drift, missing or tampered plan evidence, and stale worker leases cannot silently widen approval. The final plan, approval, and ledger event commit under the same fenced transaction. A failed transaction grants nothing. Already-running work retains the existing stop/recovery behavior.
 

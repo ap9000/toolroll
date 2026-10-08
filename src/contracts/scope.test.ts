@@ -7,7 +7,7 @@ import { toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { acceptanceCriterionSchema, planSchema } from "./plan.js";
 import { readAcceptance, readScopeTerms, rubricInputSchema, rubricSchema, savedCriterionSchema, scopeTermsSchema } from "./scope.js";
-import { replayRoutineRow, replayRows, scopeFixtures } from "../../test/scope-replay.js";
+import { replayRows, scopeFixtures } from "../../test/scope-replay.js";
 
 const { rows, baseline } = scopeFixtures();
 
@@ -21,7 +21,7 @@ const termsRead = (input: unknown): SampleVerdict => {
 };
 
 const json = (value: unknown) => (value === null ? null : (JSON.parse(String(value)) as unknown));
-const savedRubrics = [...rows.task_scope, ...rows.routine].map(row => ({ name: `${String(row["task_id"] ?? row["id"])} rubric`, input: json(row["acceptance_json"]) }));
+const savedRubrics = rows.task_scope.map(row => ({ name: `${String(row["task_id"] ?? row["id"])} rubric`, input: json(row["acceptance_json"]) }));
 const savedTerms = rows.task_scope.map(row => ({
   name: `${String(row["task_id"])} terms`,
   input: { goal: row["goal"], outOfScope: row["out_of_scope"], touches: json(row["touches"]), acceptance: json(row["acceptance_json"]) },
@@ -128,47 +128,14 @@ describe("the scope terms contract", () => {
   });
 });
 
-describe("saved scopes and standing orders, replayed read-only", () => {
-  // These copies model both historical v1 forms. Restatement can bind a profile without changing digest_version;
-  // migration can also pin a profile beside an unchanged, fields-only approval. The original saved fixture stays put.
-  const routine = rows.routine[0]!;
-  const fieldsOnlyDigest = "d846f79770879f97f4cd234910de92a6";
-
-  it("replays a restated digest_version 1 routine with its saved profile on both sides", () => {
-    const replay = replayRoutineRow({ ...routine, digest_version: 1 });
-    expect(replay).toEqual(baseline.routine[0]);
-  });
-
-  it("keeps grandfathered digest_version 1 approvals that predate their pinned profiles", () => {
-    const replay = replayRoutineRow({ ...routine, digest_version: 1, digest: fieldsOnlyDigest, approved_digest: fieldsOnlyDigest });
-    expect(replay.digest).toBe(fieldsOnlyDigest);
-    expect(replay.approvedDigest).toBe(fieldsOnlyDigest);
-    // A restated working side can coexist with an old approved side; their digest formats are independent.
-    const restated = replayRoutineRow({ ...routine, digest_version: 1, approved_digest: fieldsOnlyDigest });
-    expect(restated.digest).toBe(routine["digest"]);
-    expect(restated.approvedDigest).toBe(fieldsOnlyDigest);
-  });
-
-  it("still reports changed terms, corrupt digests and v2 digests that omit their profile", () => {
-    for (const row of [
-      { ...routine, digest_version: 1, goal: "Different terms." },
-      { ...routine, digest_version: 1, digest: "0".repeat(32), approved_digest: "0".repeat(32) },
-      { ...routine, digest: fieldsOnlyDigest, approved_digest: fieldsOnlyDigest },
-    ]) {
-      const replay = replayRoutineRow(row);
-      expect(replay.digest).not.toBe(replay.stored.digest);
-      expect(replay.approvedDigest).not.toBe(replay.stored.approvedDigest);
-    }
-  });
-
+describe("saved scopes, replayed read-only", () => {
   it("re-derive every recorded digest, rubric and route byte for byte as before the contracts", () => {
     expect(rows.task_scope.length).toBe(20);
-    expect(rows.routine.length).toBe(1);
     expect(JSON.parse(JSON.stringify(replayRows(rows)))).toEqual(baseline);
   });
 
   it("re-derive the digest each row stores, and every sealed route re-encodes to its stored bytes", () => {
-    for (const row of [...baseline.task_scope, ...baseline.routine]) {
+    for (const row of baseline.task_scope) {
       expect(row.digest, row.key).toBe(row.stored.digest);
       if (row.stored.approvedDigest !== null) expect(row.approvedDigest, row.key).toBe(row.stored.approvedDigest);
       for (const route of [row.route, row.approvedRoute]) if (route !== null) expect(route.sameBytes, row.key).toBe(true);

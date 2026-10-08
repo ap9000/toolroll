@@ -25,8 +25,8 @@ test.each([102, -102])("v%s: the ledger written before is sealed whole on first 
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(114);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(114);
+  expect(SCHEMA_VERSION).toBe(115);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(115);
   // Nothing is sealed until something reads or the worker passes; then everything is, in order.
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM ledger_seal").get()?.n).toBe(0);
   expect(store.ledgerChain()).toMatchObject({ ok: true, entries: before, unsealed: 0, checkpoints: 0 });

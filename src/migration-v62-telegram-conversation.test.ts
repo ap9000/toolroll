@@ -57,7 +57,7 @@ describe("v62 Telegram conversation queue", () => {
     register(store, { name: "worker", host: "test", capacity: 1, repos: [REPO], now: NOW, newToken: () => "worker-token" });
     const claim = acquire(store, ref, "worker", { token: "worker-token", now: NOW });
     if (!claim.ok) throw new Error(claim.reason);
-    const route = store.routeAuthorityFor(ref, "builder", null);
+    const route = store.routeAuthorityFor(ref, "builder");
     if (!route?.ok) throw new Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: "worker", branch: "b", worktree: "/pool/a", route: route.stamp, now: NOW });
     expect(requestTaskStop(store, { taskId: "a", runId: run, by: "alex", via: "web" }, NOW).ok).toBe(true);
@@ -66,7 +66,7 @@ describe("v62 Telegram conversation queue", () => {
     expect(before).toHaveLength(1);
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(115);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(store.handle.prepare("SELECT * FROM run_stop ORDER BY run").all()).toEqual(before);
     expect(String(store.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'run_stop'").get()?.["sql"])).toContain("'cli','web','telegram'");

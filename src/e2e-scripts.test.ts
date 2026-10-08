@@ -344,19 +344,6 @@ describe("the scripted provider", () => {
     expect(thread[0]).toEqual({ type: "thread.started", thread_id: "thread-9" });
   });
 
-  test("an attended session answers each turn on stdin with its init and a result whose cost only grows, until stdin ends", async () => {
-    const provider = make();
-    provider.add("j", { role: "builder", answer: { status: "no-change", conclusion: "Nothing to change." } });
-    const brief = "write ONE file named exactly STANDING-ORDERS-PARK-0123456789abcdef.json ... write ONE file named exactly STANDING-ORDERS-DONE-fedcba9876543210.json";
-    const turn = (text: string) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
-    const ran = call(provider.shims.claude, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--max-budget-usd", "5"], { input: `${turn(brief)}\n${turn(brief)}\n` });
-    expect(ran.status).toBe(0);
-    const results = lines(ran.stdout).filter(one => one["type"] === "result");
-    expect(lines(ran.stdout).filter(one => one["type"] === "system")).toHaveLength(2);
-    expect(results).toHaveLength(2);
-    expect(Number(results[1]!["total_cost_usd"])).toBeGreaterThan(Number(results[0]!["total_cost_usd"]));
-  });
-
   test("a planner writes only the nonce-bound plan file its brief names, one the plan parser accepts; a builder writes its files and a handoff the handoff parser accepts, or parks", () => {
     const provider = make();
     provider.add("j",

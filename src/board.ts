@@ -59,10 +59,7 @@ export type BoardFacts = {
    * starts (the card falls back to the task screen). */
   liveRunId?: number | null;
   /** The top-precedence live hold: operator > backoff > decision > incident. */
-  hold: { ownerKind: "operator" | "decision" | "incident" | "backoff" | "contest"; until: string | null } | null;
-  /** The task's open tournament, when agents raced (v14). Optional so
-   * callers that predate tournaments stay valid; absent reads as none. */
-  contest?: { id: number; state: string; agents: number; kind?: "race" | "comparison" } | null;
+  hold: { ownerKind: "operator" | "decision" | "incident" | "backoff"; until: string | null } | null;
   /** The first blocker that is not done, when one exists. */
   unmetDependency: string | null;
   /** That blocker's state — pre-redacted by the caller to null when the
@@ -71,11 +68,6 @@ export type BoardFacts = {
   blockerState: string | null;
   /** The first required capability not currently verified, as "kind:name". */
   missingRequirement: string | null;
-  /** The standing order this task is an instance of, when it is one. The
-   * board keeps instances in their track row — they enter the main lanes
-   * only when they need a person, wearing the routine's name. */
-  routineId: number | null;
-  routineName: string | null;
   /** Queue rank — 0 is filing order. Scheduling only; ranks compare
    * within one column, never across columns. */
   priority?: number;
@@ -98,8 +90,6 @@ export type BoardCard = {
   /** The live attempt's ordinal when earlier ones failed — building only. */
   attempt: number | null;
   overdue: boolean;
-  /** The routine this card is an instance of — the chip it wears in lanes. */
-  routineName: string | null;
   /** The task's queue rank, carried for the queued lane's sort and badge. */
   priority: number;
   /** The worker this card is reserved for; null = the shared queue. */
@@ -113,16 +103,14 @@ function clockOf(iso: string): string {
 
 /**
  * Plain words for every hold owner — shared with the task page so "who is
- * holding this" reads the same everywhere. The internal owner tokens
- * ("contest") never reach a page; an unknown future owner degrades to the
- * generic word, never to its raw name.
+ * holding this" reads the same everywhere. An unknown or retired owner
+ * degrades to the generic word, never to its raw name.
  */
 export const HOLD_OWNER_WORDS: Record<string, string> = {
   operator: "held by you",
   decision: "waiting on a question",
   incident: "stopped by an incident",
   backoff: "backing off after a failure",
-  contest: "held by a tournament",
   revision: "waiting on a plan-revision decision",
 };
 
@@ -179,7 +167,6 @@ export function attentionCardForUnverifiedDone(facts: UnverifiedDoneFacts): Boar
     stalledSince: facts.completedAt,
     attempt: null,
     overdue: false,
-    routineName: null,
     priority: 0,
     assignedRunner: null,
     reason: (facts.proofVerdict === "refuted" ? "complete — conflicting evidence" : "complete — missing evidence") + matrixWords + repairWords,
@@ -196,31 +183,15 @@ export function classify(facts: BoardFacts, now: Date): BoardCard {
     stalledSince: null as string | null,
     attempt: null as number | null,
     overdue: false,
-    routineName: facts.routineName,
     priority: facts.priority ?? 0,
     assignedRunner: facts.assignedRunner ?? null,
   };
 
-  const contest = facts.contest ?? null;
   if (facts.claim !== null) {
     const doing = facts.claim.role === "planner" ? "planning — " : facts.claim.role === "scout" ? "scouting — " : "";
-    // A racing tournament wears its own chip: the operator should read
-    // "several agents on this" where a lone build would name its runner.
-    if (contest !== null && (contest.state === "dispatching" || contest.state === "racing")) {
-      return {
-        ...base,
-        lane: "building",
-        attempt: null,
-        reason:
-          contest.kind === "comparison"
-            ? `comparison — ${contest.agents} agents building side by side`
-            : `tournament — ${contest.agents} agents racing`,
-      };
-    }
     // A building card lands on the build itself when one exists — the
     // pop-in glance should reach the live page in one click. Before the
-    // run starts (or for a tournament, which has no single run) the task
-    // screen remains the destination.
+    // run starts the task screen remains the destination.
     const liveRunId = facts.liveRunId ?? null;
     return {
       ...base,
@@ -243,26 +214,6 @@ export function classify(facts: BoardFacts, now: Date): BoardCard {
       href: `/d/${facts.openDecisionId}`,
       stalledSince: facts.decisionCreatedAt ?? facts.updatedAt,
     };
-  }
-  // A finished tournament outranks every generic reading of the same rows
-  // (design round 2, finding 6): the claim is gone and the task still says
-  // running, which the generic branches would misread as a vanished build.
-  if (contest !== null) {
-    const link = `/contest/${contest.id}`;
-    if (contest.state === "pick-wait") {
-      return { ...base, lane: "attention", href: link, reason: `${(contest.kind === "comparison" ? "comparison" : "tournament")} finished — ${contest.agents} results to compare`, stalledSince: facts.updatedAt };
-    }
-    if (contest.state === "exhausted") {
-      return { ...base, lane: "attention", href: link, reason: `${(contest.kind === "comparison" ? "comparison" : "tournament")} ended with nothing to pick`, stalledSince: facts.updatedAt };
-    }
-    if (contest.state === "interrupted") {
-      return { ...base, lane: "attention", href: link, reason: `${(contest.kind === "comparison" ? "comparison" : "tournament")} was interrupted — decide what happens next`, stalledSince: facts.updatedAt };
-    }
-    if (contest.state === "decision-wait") {
-      // The open question already classified above; reaching here means it
-      // was answered and an agent resumes on the next pass.
-      return { ...base, lane: "building", reason: `${(contest.kind === "comparison" ? "comparison" : "tournament")} — an agent is resuming` };
-    }
   }
   if (facts.state === "failed" || facts.openIncidents > 0) {
     return {
@@ -304,7 +255,7 @@ export function classify(facts: BoardFacts, now: Date): BoardCard {
             : until <= now.toISOString()
               ? "retrying now"
               : `retrying ${clockOf(until)}`
-          : // A decision, incident, or tournament hold with no open item
+          : // A decision or incident hold with no open item
             // above it is an orphan — say who holds it in plain words,
             // never the internal owner token.
             holdOwnerWords(facts.hold.ownerKind);

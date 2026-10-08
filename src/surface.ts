@@ -13,7 +13,7 @@ import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
  * What the tests DO hold to the code: every root here is a routed verb
  * and every routed verb appears here; every declared flag lives in the
  * parser's global vocabulary with the declared arity; the subcommand
- * inventories for task/publish/config/approver/routine/contest match the
+ * inventories for task/publish/config/approver match the
  * exported action lists their dispatchers consult; keyed mutations
  * declare --key; notableReasons come from DOCUMENTED_REASONS. What they
  * CANNOT prove — that a given flag is read by a given handler — is why
@@ -258,7 +258,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "task block", synopsis: "make one task wait for another", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the waiting task" }],
     flags: [jsonFlag, dbFlag, keyFlag, { name: "on", takesValue: true, meaning: "the blocker's id" }],
-    notableReasons: ["unknown-task", "contest-open"] },
+    notableReasons: ["unknown-task"] },
   { invocation: "task unblock", synopsis: "stop waiting", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the waiting task" }],
     flags: [jsonFlag, dbFlag, keyFlag, { name: "on", takesValue: true, meaning: "the blocker's id" }],
@@ -266,7 +266,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "task next", synopsis: "move a task to the front of ITS queue (scheduling only; approval still required)", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag, { name: "undo", takesValue: false, meaning: "back to filing order" }],
-    notableReasons: ["unknown-task", "claimed", "contest-open"] },
+    notableReasons: ["unknown-task", "claimed"] },
     operator("task steer", "one credentialed note read before the task's next attempt — steering speaks with the operator's voice"),
   { invocation: "task assign", synopsis: "reserve a task for one worker, or return it to the shared queue", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
@@ -280,9 +280,8 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "goal", takesValue: true, meaning: "what success is" },
       { name: "not", takesValue: true, meaning: "explicitly out of scope" },
       { name: "touches", takesValue: true, meaning: "comma-separated paths this may change" },
-      { name: "budget-usd", takesValue: true, meaning: "spend ceiling for the build" },
-      { name: "risk", takesValue: true, meaning: "declared risk: routine, elevated, or high — the route reads it" }],
-    notableReasons: ["unknown-task", "contest-open"] },
+      { name: "budget-usd", takesValue: true, meaning: "spend ceiling for the build" }],
+    notableReasons: ["unknown-task"] },
   { invocation: "task plan", synopsis: "ask for a plan document (a planning session drafts; a person approves)", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag,
@@ -315,7 +314,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     notableReasons: ["usage", "unauthenticated", "not-found"] },
   operator("task accept", "record an explicit acceptance with limitations; does not change checks or prove deployment"),
   operator("task repair", "inspect or approve an existing historical repair draft; use task revise for new feedback"),
-  operator("task route", "which configured agents plan, build and repair this task; phase and risk changes require renewed approval"),
+  operator("task route", "which configured agents plan, build and repair this task; phase and size changes require renewed approval"),
   operator("task reopen", "resume external work its tracker closed and has been SEEN open again"),
   operator("task stop", "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry"),
   operator("run settle", "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive"),
@@ -328,7 +327,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "runner", takesValue: true, meaning: "your registered worker name" },
       { name: "token", takesValue: true, meaning: "the worker's token" },
       { name: "ttl", takesValue: true, meaning: "lease seconds" }],
-    notableReasons: ["held", "fenced", "unapproved", "reserved", "external", "contest-open", "claimed", "not-ready"] },
+    notableReasons: ["held", "fenced", "unapproved", "reserved", "external", "claimed", "not-ready"] },
   { invocation: "heartbeat", synopsis: "still working; extends the lease", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "lease", required: true, meaning: "the lease id" }],
     flags: [jsonFlag, dbFlag], notableReasons: ["not-leased", "fenced"] },
@@ -355,9 +354,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "cap list", synopsis: "recorded capabilities", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
   { invocation: "outbox list", synopsis: "queued notifications", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "incident list", synopsis: "open incidents", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
-  { invocation: "routine list", synopsis: "scheduled routines", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
-  { invocation: "routine show", synopsis: "one routine in full", audience: "agent", agentMayInvoke: true, mutation: "none",
-    positionals: [{ name: "id", required: true, meaning: "the routine" }], flags: [jsonFlag, dbFlag] },
   { invocation: "config show", synopsis: "phase and spend configuration", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
   { invocation: "setup show", synopsis: "installation setup", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "verify show", synopsis: "the repository's check level, its approved full and quick commands, and a suggested quick command", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
@@ -367,11 +363,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "report", takesValue: false, meaning: "record readiness observations under --runner" },
       { name: "runner", takesValue: true, meaning: "the registered worker name reporting" },
       { name: "token", takesValue: true, meaning: "that worker's token" }] },
-  { invocation: "template list", synopsis: "routine templates", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
+  { invocation: "template list", synopsis: "work templates: tasks and scheduled flows", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "template show", synopsis: "one template", audience: "agent", agentMayInvoke: true, mutation: "none",
     positionals: [{ name: "name", required: true, meaning: "the template" }], flags: [jsonFlag, dbFlag] },
-  { invocation: "contest show", synopsis: "a tournament's state and results", audience: "agent", agentMayInvoke: true, mutation: "none",
-    positionals: [{ name: "id", required: true, meaning: "the contest" }], flags: [jsonFlag, dbFlag] },
   { invocation: "webhook status", synopsis: "connected messaging services", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "publish status", synopsis: "publication and merge-grant state", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
 
@@ -391,12 +385,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("peek", "watch live agents in the terminal — one pane per open run; --tmux opens a window per run"),
   operator("incident resolve", "resolve an incident"),
   operator("decide", "read and ANSWER parked decisions — answering is a person's act"),
-  operator("routine add", "file a standing order"),
-  operator("routine approve", "approve a standing order"),
-  operator("routine refresh", "re-resolve the agents a standing order freezes from today's configuration — approves nothing; approve it again afterwards"),
-  operator("routine pause", "pause a standing order"),
-  operator("routine resume", "resume a standing order"),
-  operator("routine run-now", "run a standing order immediately"),
   operatorRead("keys status", "which provider API keys are stored — never the values"),
   operator("keys set", "store a provider's API key as a private file — piped or --key-file, never on the command line"),
   operator("keys clear", "remove a stored provider key (kept only as a fallback; a subscription-mode provider is unaffected)"),
@@ -432,7 +420,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("intake preview", "preview what intake would file"),
   operator("intake pr-comments", "intake review comments from a pull request"),
   operator("intake clear", "clear intake configuration"),
-  operator("contest exclude", "exclude a contestant from a tournament"),
   operator("webhook primary", "choose which service receives alerts"),
   operator("bridge", "the Telegram bridge (pairing, tokens, the follower)"),
   operator("enroll", "grant a repository authority (backends, dispatch) — its own explicit yes"),
@@ -483,7 +470,7 @@ const REMOTE_NO: readonly string[] = [
   "memory propose",
 ];
 const REMOTE_STEP_UP: readonly string[] = [
-  "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "routine approve", "knowledge apply", "memory apply",
+  "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "knowledge apply", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
@@ -497,9 +484,8 @@ const REMOTE_YES: readonly string[] = [
   "task state", "task block", "task unblock", "task next", "task steer", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
   "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
   "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",
-  "routine list", "routine show", "routine add", "routine refresh", "routine pause", "routine resume", "routine run-now",
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
-  "contest show", "contest exclude", "webhook status", "review show", "chat-approval show", "chat-approval off",
+  "webhook status", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
   "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory review", "memory status",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",

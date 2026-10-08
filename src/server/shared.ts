@@ -31,8 +31,6 @@ import { type CliHttpOptions,type RunOperateAs } from '../cli-http.js';
 import { CODING_SHIPPING_CSS } from '../coding-shipping-ui.js';
 import { CODING_CSS } from '../coding-ui.js';
 import { CodingWorkspace } from '../coding-workspace.js';
-import type { AgentView } from "../contest.js";
-import { contestNoun } from "../contest.js";
 import { type FormView } from "../contracts/console-api.js";
 import { connectionWords,hiddenFields } from "../control-ui.js";
 import {
@@ -69,7 +67,6 @@ import { ABOUT_YOU_LINE_MAX,ABOUT_YOU_MAX_LINES } from "../lead-about.js";
 import { LEAD_CONTEXT_CSS } from '../lead-context.js';
 import { LEAD_NAME_MAX,LEAD_PERSONA_MAX,type LeadIdentity } from "../lead-identity.js";
 import { LIMITS_CSS,limitsHtml } from "../limits-ui.js";
-import { attendedLivenessState } from "../liveness.js";
 import { PROPOSAL_WAIT_REASON,proposalActGate } from "../mate-doors.js";
 import type { MateLiveStep } from "../mate-progress.js";
 import { MATE_MESSAGE_MAX_CHARS } from "../mate.js";
@@ -82,11 +79,10 @@ import { cloneGithubRepo,listGithubRepos,previewGithubRepo,type ListOutcome } fr
 import { type Principal } from "../operate-remote.js";
 import { parseBaseTreeSnapshot } from "../peek.js";
 import { PEOPLE_AUDIT_CSS } from "../people-audit-ui.js";
-import { agentsSummary,chosenWords,isRiskLevel,makesNoPlan,postureWords,projectRoute,RISK_CHOICES,RISK_LEVELS,riskConsequence,riskTitle,PHASES as ROUTE_PHASES,TASK_SIZES,type PhaseRoute,type RiskLevel,type RouteOverride,type RouteProjection,type RouteStamp } from "../phase-routing.js";
+import { agentsSummary,chosenWords,makesNoPlan,postureWords,projectRoute,PHASES as ROUTE_PHASES,TASK_SIZES,type PhaseRoute,type RouteOverride,type RouteProjection,type RouteStamp } from "../phase-routing.js";
 import { parseExecutionPlanDocument,type MilestoneState } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
 import { POLICY_CSS } from "../policy-ui.js";
-import { PRICED_BUILD_MODELS } from "../pricing.js";
 import { PROJECT_DELETE_CSS } from "../project-delete-ui.js";
 import {
 projectName
@@ -94,7 +90,7 @@ projectName
 import { coverageStateWords,coverageWords,dispatchStatusToken,GOAL_ASSESSMENT_PENDING,manualReviewCriterionOf,manualReviewOnly,passFraction,personCheckWords,plainReasonWords,reviewConflict,semanticCoverage,type CriterionEvidenceRef,type CriterionMatrixRow,type ProofVerdict } from "../proof.js";
 import { providerName } from "../provider-auth.js";
 import { type ProviderConnection } from "../provider-connection.js";
-import { PROVIDER_IDS,type Phase,type ProviderId } from "../provider.js";
+import { type Phase,type ProviderId } from "../provider.js";
 import type { PublishExec } from '../publish.js';
 import { type PullRequestView } from '../pull-request-flow.js';
 import { PULL_REQUEST_SETTINGS_CSS } from '../pull-request-ui.js';
@@ -125,13 +121,12 @@ type SharedResultFacts
 import { RESULT_SHOT_CHOICES } from "../result-shots.js";
 import { RETENTION_CSS } from "../retention-ui.js";
 import { findingWords,type BuildReviewView } from "../review-switch.js";
-import { describeSchedule,parseSchedule,routineAgentsState } from "../routine.js";
+import { describeSchedule,parseSchedule } from "../flow-schedule.js";
 import type { Runner } from "../runner.js";
 import { isAlive as runnerAlive } from "../runner.js";
 import {
 acceptanceToLines,
 approvalOf,
-chainFromJson,
 scopeAuthorityOf,
 type AcceptanceCriterion,
 type Scope,
@@ -143,7 +138,7 @@ import { SKILLS_CSS } from "../skills-ui.js";
 import { SPEND_CSS } from "../spend-ui.js";
 import { SSO_CSS } from "../sso-ui.js";
 import { STORAGE_CSS } from "../storage-ui.js";
-import type { ChatConfig,ChatProviderId,ChatSnapshot,ChatTurn,Contest,CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateSession,MateTurn,PlanRevisionKind,PlanRevisionStatus,PublicationGrant,PushSubscription,RepairChainRow,ReviewRetryState,RevisionLineage,Routine,SteerNote,SubscriptionChatProviderId,TaskFamily,TournamentTerms } from "../store.js";
+import type { ChatConfig,ChatProviderId,ChatSnapshot,ChatTurn,CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateSession,MateTurn,PlanRevisionKind,PlanRevisionStatus,PublicationGrant,PushSubscription,RepairChainRow,ReviewRetryState,RevisionLineage,SteerNote,SubscriptionChatProviderId,TaskFamily } from "../store.js";
 import {
 MATE_ASK_OTHER,
 type Artifact,
@@ -158,7 +153,6 @@ type MateAsk,
 type Publication,
 type ResultScreenshots,
 type Run,
-type SessionTurn,
 type Store,
 type Task,
 type TaskState,
@@ -365,16 +359,6 @@ export type ServeOptions = {
    * this device. "vscode" is the only value; the scheme is never data.
    */
   editorLinks?: "vscode";
-  /**
-   * The attended-mint capability (Phase 2E): present only on a co-located
-   * `up` console, which alone can hold a session. `headOf` reads the
-   * repository's CURRENT head — the exact commit the signed terms pin.
-   */
-  attended?: {
-    runner: string;
-    headOf: (repo: string) => Promise<string | null>;
-    coordinator?: import("../held.js").HeldSessionCoordinator;
-  };
   /** Injected by tests: the onboarding ceremony's gh-facing halves — the
    * ceremony's gating, nonce, and enrollment logic is what the HTTP tests
    * prove; gh itself is proved by onboard.test.ts. */
@@ -1094,7 +1078,6 @@ export function approvalSheetHtml(input: {
   revisionSourceHref: string;
   /** A machine-drafted repair: the build it repairs. */
   repairChain: RepairChainRow | null;
-  raceTerms: TournamentTerms | null;
   route: RouteView | null | undefined;
   coordinator: { label: string; filedAgo: string | null } | null;
   deliverable: "branch" | "report";
@@ -1107,7 +1090,7 @@ export function approvalSheetHtml(input: {
    * refused (with why), whether it opens on arrival, and the plan's steps editor. */
   edit: { action: string; draft: URLSearchParams | null; problem: string | null; open: boolean; stepsHref: string | null } | null;
 }): string {
-  const { scope, route, raceTerms } = input;
+  const { scope, route } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
   // shows the goal and one sentence says what the repair fixes. The whole
   // signed goal stays in Details.
@@ -1139,11 +1122,9 @@ export function approvalSheetHtml(input: {
   const legOf = (phase: Phase) => legs.find(one => one.phase === phase);
   const who: string[] = [];
   const builder = legOf("build");
-  if (raceTerms === null) {
-    if (builder !== undefined) who.push(`Builder ${agentNameWords(builder.provider, builder.model)}`);
-    else if (route?.legacy != null) who.push(`Builder ${agentNameWords(route.legacy.provider, route.legacy.model)}`);
-    else if (scope.profile != null) who.push(`Builder ${agentNameWords(scope.profile.provider, scope.profile.model)}`);
-  }
+  if (builder !== undefined) who.push(`Builder ${agentNameWords(builder.provider, builder.model)}`);
+  else if (route?.legacy != null) who.push(`Builder ${agentNameWords(route.legacy.provider, route.legacy.model)}`);
+  else if (scope.profile != null) who.push(`Builder ${agentNameWords(scope.profile.provider, scope.profile.model)}`);
   const planner = legOf("plan");
   // A small change makes no plan: no planner is named (a person's chosen planner still is).
   const sized = route?.projection?.size ?? null;
@@ -1154,25 +1135,17 @@ export function approvalSheetHtml(input: {
   const allowing: string[] = [];
   const allowed = permissionPlainWords(scope.profile);
   if (allowed !== null) allowing.push(allowed);
-  if (raceTerms === null) allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
+  allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
   if (earlier !== null) allowing.push(earlier);
   const yoursToCheck = scope.acceptance.filter(one => one.evidence.includes("manual-review")).map(one => one.statement.trim().replace(/[.\s]+$/, ""));
   const consent =
     (allowing.length === 0 ? "" : `<p class="approval-allowing" data-approval-allowing>You’re allowing: ${allowing.map(escape).join(" · ")}</p>`) +
     (yoursToCheck.length === 0 ? "" : `<p class="approval-you-check" data-approval-you-check>You’ll check: ${yoursToCheck.map(escape).join("; ")}</p>`);
-  const race = raceTerms === null
-    ? ""
-    : `<p class="approval-race">${raceTerms.n} agents build this separately: ${raceTerms.agents.map(one => escape(agentNameWords(one.provider, one.model))).join(" and ")}. ` +
-      (raceTerms.kind === "comparison"
-        ? "No dollar cap; you compare the results and pick one.</p>"
-        : `Each may spend ${money(raceTerms.perAgentBudgetMicrousd)} plus a ${money(raceTerms.overrunReserveMicrousd)} reserve, ${money(raceTerms.totalBudgetMicrousd)} in all; you compare the results and pick one.</p>`);
   const after = input.deliverable === "report"
     ? "An agent investigates without changing the repository. You'll hear when its report is ready."
-    : raceTerms !== null
-      ? "Each agent starts in its own branch. You'll hear when the results are ready to compare."
-      : "An agent starts in its own branch. You'll hear when it's ready to review.";
-  const submit = raceTerms === null ? "Approve & start" : raceTerms.kind === "comparison" ? "Approve comparison" : "Approve tournament";
+    : "An agent starts in its own branch. You'll hear when it's ready to review.";
+  const submit = "Approve & start";
 
   // Everything else the digest binds, one tap away.
   const detail = (title: string, body: string, attrs = ""): string => body === "" ? "" : `<section class="approval-detail"${attrs}><h3>${title}</h3>${body}</section>`;
@@ -1195,7 +1168,7 @@ export function approvalSheetHtml(input: {
     : projection === null
       ? route.legacy === null ? "" : `<p>${escape(agentsSummaryWords(route))}</p>`
       : `<p>${escape(projection.summary)}</p>` +
-        `<p class="meta">${escape(agentsRiskWords(projection))}. Uses ${escape(projection.postureWords)}.</p>` +
+        `<p class="meta">Uses ${escape(projection.postureWords)}.</p>` +
         (projection.demands.length === 0 ? "" : `<ul class="meta">${projection.demands.map(one => `<li>${escape(one)}</li>`).join("")}</ul>`) +
         `<dl class="approval-roles">${projection.legs.map(leg =>
           `<div><dt>${escape(ROLE_NOUN[leg.phase])}</dt><dd><span class="mono">${escape(leg.provider)} · ${escape(leg.model)}</span> <span class="meta">${escape(chosenWords(leg))}</span>` +
@@ -1285,7 +1258,6 @@ export function approvalSheetHtml(input: {
     row("Done when", doneWhen) +
     `</dl>` +
     approvalAmendmentHtml(contract) +
-    race +
     // The size, said once and plainly beside who builds: "Small change: fast model, no plan".
     (projection === null ? "" : sizeLineHtml(projection)) +
     (who.length === 0 ? "" : `<p class="approval-who">${who.map(escape).join(" · ")}</p>`) +
@@ -1409,7 +1381,7 @@ export function consentClosedHtml(taskId: string, door: ConsentDoor & { open: fa
   return `<div class="card approve-form consent-closed" id="approve"><p><strong>This task is waiting on you: ${escape(door.title.toLowerCase())}.</strong></p><p class="meta">${escape(door.why)}</p><p class="ceremony-road"><a class="button-link" href="${href}">${act.toLowerCase()}</a></p></div>`;
 }
 
-export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "unresolvedReason" | "digestVersion" | "proposedChainJson">): string {
+export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "unresolvedReason" | "digestVersion">): string {
   if (scope.profileState === "unresolved") {
     return `<p class="meta"><strong>Filed but unapprovable</strong> — ${escape(scope.unresolvedReason ?? "the scope cannot say exactly what would run")}. Restate the scope to fix it.</p>`;
   }
@@ -1432,23 +1404,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
       : profile.provider === "gemini"
         ? `<p class="meta">Runs on <span class="mono">gemini · ${escape(profile.model)}</span> — ${profile.approvalArgv === "yolo" ? "Full access via --approval-mode yolo; every tool auto-approved" : "Auto via --approval-mode auto_edit; edits auto-approved, other tools refused"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}), spend reported in tokens only; repairs on ${escape(repair)}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
         : `<p class="meta">Runs on <span class="mono">${escape(profile.provider)} · ${escape(profile.model)}</span> — ${profile.sandboxMode === "danger-full-access" ? "FULL permissions via --dangerously-bypass-approvals-and-sandbox; nothing asks" : "workspace-write sandbox"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}); repairs on ${escape(repair)}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`;
-  // The fallback chain rides EVERY surface these words sign (F+G review,
-  // finding 2): the digest binds the whole chain, so the password form —
-  // task page and /next alike — states every entry, credential included.
-  const chain = chainFromJson(scope.proposedChainJson ?? null);
-  const chainLine =
-    chain === null || chain.length < 2
-      ? ""
-      : `<p class="meta">If its subscription runs out: ${chain
-          .slice(1)
-          .map(
-            one =>
-              `falls back to <span class="mono">${escape(one.profile.provider)} · ${escape(one.profile.model)}</span> — ${
-                one.authMode === "api-key" ? "your API key; spend moves to that account" : "its subscription login"
-              }`,
-          )
-          .join("; ")}</p>`;
-  return base + chainLine;
+  return base;
 }
 
 /** The Agents view every console surface renders (v47): the SAME
@@ -1466,9 +1422,8 @@ export type RouteView = {
   legacy: { provider: string; model: string; repairModel: string; approved: boolean } | null;
   /** A routed row whose agents cannot be read — fail closed, in words. */
   problem: string | null;
-  riskLevel: RiskLevel;
   overrides: RouteOverride[];
-  /** An approver may edit: a live claim, a tournament, or a viewer session refuses. */
+  /** An approver may edit: a live claim or a viewer session refuses. */
   editable: boolean;
   editableWhy: string | null;
   /** A planner change after a draft landed asks for a real re-plan. */
@@ -1516,18 +1471,17 @@ export function agentsSummaryWords(view: RouteView): string {
   return view.problem ?? "the agents cannot be read";
 }
 
-export function agentsRiskWords(projection: RouteProjection): string {
-  const consequence = projection.risk === "routine" && projection.size?.risky
-    ? riskConsequence("elevated")
-    : riskConsequence(projection.risk);
-  return `${projection.riskTitle}: ${consequence}`;
+/** A risk badge only when there is something to say: a risky change, or an
+ * older route sealed at elevated or high risk. */
+export function riskBadgeHtml(projection: RouteProjection): string {
+  return projection.riskTitle === "Routine" ? "" : `<span class="badge">${escape(sentenceCase(projection.riskTitle))}</span>`;
 }
 
-/** Neutral metadata badges: risk, posture, and standing. */
+/** Neutral metadata badges: risk (when not routine), posture, and standing. */
 export function agentsBadgesHtml(view: RouteView): string {
   const p = view.projection;
   return (
-    `<span class="badge">${escape(sentenceCase(p?.riskTitle ?? riskTitle(view.riskLevel)))}</span>` +
+    (p === null ? "" : riskBadgeHtml(p)) +
     (p === null ? "" : `<span class="badge">${escape(sentenceCase(p.postureWords))}</span>`) +
     `<span class="badge">${escape(sentenceCase(agentsStandingWords(view)))}</span>`
   );
@@ -1582,49 +1536,18 @@ export function agentsCeremonyHtml(view: RouteView | null | undefined): string {
     `<div class="agents-ceremony"><p class="approval-label">agents</p>` +
     sizeLineHtml(view.projection) +
     `<p class="agents-summary">${escape(view.projection.summary)}</p>` +
-    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(view.projection.riskTitle))}</span><span class="badge">${escape(sentenceCase(view.projection.postureWords))}</span></div>` +
-    `<p class="meta agents-risk-line">${escape(agentsRiskWords(view.projection))}.</p>` +
+    `<div class="agents-badges">${riskBadgeHtml(view.projection)}<span class="badge">${escape(sentenceCase(view.projection.postureWords))}</span></div>` +
     agentsWhyHtml(view.projection) +
     `<p class="meta">These exact agents are part of what you approve; changing any of them asks for a fresh approval.</p></div>`
   );
 }
 
-/** A standing order's agents (v48): the four-role route its approval
- * froze (or will freeze), in the same concise block a task's ceremony
- * shows — a firing can never be re-routed by a later configuration
- * change, and the page says so. */
-export function routineAgentsHtml(routine: Routine, approved: boolean, ceremony = false): string {
-  const agents = routineAgentsState(routine);
-  const route: PhaseRoute | null = (approved ? routine.approvedRoute : routine.route) ?? null;
-  if (route === null || agents.state !== "frozen" && agents.state !== "pending") {
-    // The closed door, with its one road: no agents to restate means no
-    // yes to give — the words say which fact closed it and what opens it.
-    const words =
-      agents.state === "unreadable"
-        ? `the agents on file cannot be read back (${agents.problem ?? "corrupt snapshot"}) — refresh the agents from today's configuration, read them, and approve this standing order again; until then nothing fires`
-        : agents.state === "unfrozen"
-          ? "approved before agents were frozen — refresh the agents, read the exact planner, builder, repair, and reviewer it then names, and approve this standing order again; until then nothing fires"
-          : agents.state === "unverified"
-            ? `the frozen agents do not verify (${agents.problem ?? "the approved snapshot is not whole"}) — refresh the agents from today's configuration, read them, and approve this standing order again; until then nothing fires`
-            : `not resolved — ${agents.problem ?? "this standing order does not name an exact agent for every role"}; configure the project's agents, then refresh and approve again`;
-    return `<div class="agents-ceremony agents-closed"><p class="approval-label">agents</p><p class="agents-summary">${escape(words)}</p></div>`;
-  }
-  const projection = projectRoute(route, () => null);
-  return (
-    `<div class="agents-ceremony"><p class="approval-label">agents</p>` +
-    `<p class="agents-summary">${escape(agentsSummary(route))}</p>` +
-    `<div class="agents-badges"><span class="badge">${escape(sentenceCase(projection.riskTitle))}</span><span class="badge">${escape(sentenceCase(postureWords(route)))}</span><span class="badge">${approved ? "frozen by the approval" : "frozen when you approve"}</span></div>` +
-    (ceremony ? agentsWhyHtml(projection) : "") +
-    `<p class="meta">${approved ? "Every firing runs on exactly these agents; a configuration change cannot re-route it." : "Approving freezes exactly these agents for every firing; a configuration change afterwards cannot re-route one."}</p></div>`
-  );
-}
-
 /** The runtime limits the sealed profile binds — permissions, turn and
- * time bounds, repairs, the fallback chain — restated on the ceremony as
+ * time bounds, repairs — restated on the ceremony as
  * a CLOSED disclosure (v48): a term the yes covers, one tap away, never a
  * wall of switches between the reader and the password. An unresolved
  * profile still speaks in the open: that is a refusal, not a detail. */
-export function runtimeDetailsHtml(scope: Pick<Scope, "profile" | "profileState" | "unresolvedReason" | "digestVersion" | "proposedChainJson">): string {
+export function runtimeDetailsHtml(scope: Pick<Scope, "profile" | "profileState" | "unresolvedReason" | "digestVersion">): string {
   if (scope.profileState === "unresolved") return profileWords(scope);
   const words = profileWords(scope);
   if (words === "") return "";
@@ -1650,11 +1573,10 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
               `</li>`,
           )
           .join("")}</ul>`;
-  // The controls (v48): a risk choice that says what each level does, and
+  // The controls (v48): a size choice that says what each size does, and
   // — per role — ONLY the configured, role-valid agents the operator may
   // pick from. Nothing is typed free-hand, no command line is quoted; the
   // reasons above already say why the current agents were chosen.
-  const riskGuide = `<dl class="agents-risk-guide">${RISK_CHOICES.map(one => `<div><dt>${escape(one.title)}</dt><dd>${escape(one.consequence)}</dd></div>`).join("")}</dl>`;
   const roleForms = ROUTE_PHASES.filter(phase => phase !== "review").map(phase => {
     // Selectable choices are the role's own configured agents; a current
     // agent the configuration no longer names is DISPLAY-ONLY — said
@@ -1679,14 +1601,10 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
       ? `<p class="meta">${escape(view.editableWhy ?? "the agents cannot change right now")}</p>`
       : `<details class="agents-change"><summary>Change agents</summary>` +
         `<form method="post" action="${taskHref(taskId)}/route" class="agents-form-risk">${hidden}` +
-        `<label>Risk<select name="risk" aria-label="declared risk">${RISK_LEVELS.map(one => `<option value="${one}"${one === view.riskLevel ? " selected" : ""}>${escape(riskTitle(one))}</option>`).join("")}</select></label>` +
-        `<button type="submit" class="secondary">Set risk</button></form>` +
-        `<form method="post" action="${taskHref(taskId)}/route" class="agents-form-risk">${hidden}` +
         `<label>Size<select name="size" aria-label="task size">${TASK_SIZES.map(one => `<option value="${one}"${one === (p?.size?.size ?? "medium") ? " selected" : ""}>${escape(sizeConsequence(one, false))}</option>`).join("")}</select></label>` +
         // The hidden "no" says the form showed the box: unticked means not risky; a request without either keeps the flag.
         `<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"${p?.size?.risky === true ? " checked" : ""}> Risky</label>` +
         `<button type="submit" class="secondary">Set size</button></form>` +
-        riskGuide +
         `<div class="agents-role-forms">${roleForms.join("")}</div>` +
         `<p class="meta">Only agents you have configured are offered; each choice is recorded as you. ${view.replanOnPlanChange ? "Changing the planner asks for a new plan — the drafted one is not relabeled. " : ""}An approval given under the earlier agents needs renewing.</p>` +
         overrides +
@@ -2465,8 +2383,6 @@ ${THEME_DARK}
   .filters strong { background: var(--muted); color: var(--foreground); }
   @media (hover: hover) and (pointer: fine) { .filters a:hover { color: var(--foreground); } }
 
-  /* A picked tournament result: marked in the built green, not magenta. */
-  .card.picked { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
   .seal {
     display: inline-block; font-family: var(--font-mono); font-size: .75rem;
     background: var(--muted); border: 1px solid var(--border);
@@ -2962,13 +2878,8 @@ ${THEME_DARK}
   .agents-clear button { padding-inline: .8rem; font-size: .72rem; }
   .agents-ceremony { margin: .5rem 0 0; }
   .agents-ceremony .agents-badges { margin-top: .35rem; }
-  .agents-risk-line { margin: .4rem 0 0; }
   .agents-runtime { margin-top: .5rem; }
   .agents-runtime > summary { display: flex; align-items: center; min-height: 2.75rem; padding: .35rem .2rem; cursor: pointer; font-size: .8rem; font-weight: 600; }
-  .agents-risk-guide { display: grid; gap: .3rem; margin: .5rem 0 0; font-size: .76rem; line-height: 1.45; }
-  .agents-risk-guide div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: .5rem; }
-  .agents-risk-guide dt { color: var(--muted-foreground); font: 500 .66rem/1.8 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
-  .agents-risk-guide dd { margin: 0; color: var(--muted-foreground); overflow-wrap: anywhere; }
   .agents-role-forms { display: grid; gap: .45rem; margin-top: .6rem; }
   .agents-role-row { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: .5rem; align-items: center; }
   .agents-role-name { color: var(--muted-foreground); font: 500 .66rem/1.8 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
@@ -2996,7 +2907,7 @@ ${THEME_DARK}
   .approval-sheet { display: grid; gap: 16px; margin: 0; padding: 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
   .approval-sheet.approve-form > :not(input) { margin: 0; }
   .approval-sheet-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; letter-spacing: -.01em; }
-  .approval-revision, .approval-note, .approval-race { max-width: 75ch; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+  .approval-revision, .approval-note { max-width: 75ch; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
   .approval-note { color: var(--muted-foreground); }
   .approval-rows { display: grid; gap: 14px; margin: 0; }
   .approval-row { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 16px; }
@@ -3165,7 +3076,6 @@ ${THEME_DARK}
   }
   details.section[open] > summary::after { transform: rotate(225deg) translateY(-.125rem); }
   @media (hover: hover) and (pointer: fine) { details.section > summary:hover h2 { color: var(--foreground); } }
-  details.more-agents { margin: .75rem 0 0; }
   .task-layout > .task-main { min-width: 0; }
   .task-rail { position: sticky; top: 1rem; }
   .task-rail .card { margin-top: .75rem; }
@@ -4291,7 +4201,7 @@ ${THEME_DARK}
     .task-options-grid .wide, .task-options-grid .permission-field { grid-column: auto; }
     .agents-form { grid-template-columns: 1fr; }
     .agents-roles { grid-template-columns: 1fr; }
-    .agents-risk-guide div, .agents-role-row { grid-template-columns: 1fr; }
+    .agents-role-row { grid-template-columns: 1fr; }
     .approval-card { padding: 1rem; }
     /* The orientation block says the wait on a phone; the kicker would say it twice. */
     .approval-card .approval-kicker { display: none; }
@@ -4538,19 +4448,6 @@ button { min-height: 44px; }
   }
 }
 
-/* The tournament comparison: an at-a-glance table and side-by-side cards. */
-.scroll-x { overflow-x: auto; max-width: 100%; }
-.contest-glance { border-collapse: collapse; font-size: .8125rem; min-width: 34rem; margin: .75rem 0; }
-.contest-glance th, .contest-glance td { text-align: left; padding: .375rem .75rem .375rem 0; vertical-align: top; border-bottom: 1px solid var(--border); }
-.contest-glance th { font-weight: 600; }
-.contest-glance tr:last-child td { border-bottom: none; }
-.contest-compare { display: grid; grid-template-columns: 1fr; gap: .75rem; align-items: start; }
-@media (min-width: 1100px) {
-  .content > main:has(.contest-compare) { max-width: none; }
-  .contest-compare { grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr)); }
-}
-.contest-compare .card { margin: 0; }
-
 /* The per-file comment button: a small real button beside a diff row. */
 button.pick-file { min-height: 1.75rem; padding: 0 .55rem; font-size: .75rem; }
 
@@ -4599,7 +4496,7 @@ export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CS
 /** Everything the sidebar needs to draw itself for one request. */
 export type Chrome = {
   projectScoped?: boolean;
-  active: "code" | "inbox" | "board" | "queue" | "fleet" | "workbench" | "work" | "done" | "activity" | "review" | "system" | "tasks" | "runs" | "caps" | "routines" | "recipes" | "projects" | "flows" | "settings" | "chat" | "people" | "ledger" | "spend" | "mode" | "menu" | "none";
+  active: "code" | "inbox" | "board" | "queue" | "fleet" | "workbench" | "work" | "done" | "activity" | "review" | "system" | "tasks" | "runs" | "caps" | "recipes" | "projects" | "flows" | "settings" | "chat" | "people" | "ledger" | "spend" | "mode" | "menu" | "none";
   project: string | null;
   /** The surface's scope for the scope bar — which rows this screen can
    * show. Derived from the ROUTE, not the session: portfolio and fleet are
@@ -4758,24 +4655,11 @@ export function transcriptScript(path?: string, elementId = "live-transcript"): 
 }
 
 /**
- * The attended chrome layer: the jump palette and elapsed tickers. Pure
+ * The chrome layer: the jump palette and elapsed tickers. Pure
  * navigation — no key ever posts, so the palette cannot approve anything;
  * ceremonies stay POST + password + CSRF, untouched. Reads its index from
  * a non-executable JSON script tag rendered by the same authorized page.
  */
-/** The attended beat (v28): parameterless, cookie + same-origin proven
- * server-side, renewal-only — any console page keeps the signed-in
- * approver's own sessions live; a hidden tab pauses honestly. Cheap
- * no-op when nothing is open. Shipped ALONE on sensitive pages. */
-export function beatScript(enabled = true): string {
-  if (!enabled) return "";
-  return (
-    `(function(){var beat=function(){if(document.hidden)return;` +
-    `fetch("/session/attended-beats",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:""}).catch(function(){});};` +
-    `beat();setInterval(beat,15000);})();`
-  );
-}
-
 /** The rail's presentation-only state is safe beside a password ceremony:
  * it never reads a field or sends a request, and keeps the chat collapsible
  * from its very first screen while the palette and global keys remain absent. */
@@ -4792,9 +4676,8 @@ export function sidebarScript(): string {
   );
 }
 
-export function chromeScript(beats = true): string {
+export function chromeScript(): string {
   return (
-    beatScript(beats) +
     sidebarScript() +
     `(function(){` +
     // The app-icon badge (Phase 2E): the page's server-rendered waiting
@@ -4881,7 +4764,7 @@ export function chromeScript(beats = true): string {
     `if(ev.key==="?"){toggleHelp();ev.preventDefault();return;}` +
     `if(ev.key==="j"||ev.key==="k"){rove(ev.key==="j"?1:-1,ev);return;}` +
     `if(pending==="g"){pending=null;` +
-    `var map={b:"/board",i:"/",w:"/workbench",r:"/routines",d:"/done",q:"/board?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
+    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
     `if(map[ev.key]){go(map[ev.key]);ev.preventDefault();}return;}` +
     `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);}});` +
     `})();`
@@ -4953,7 +4836,6 @@ export const KBD_HELP =
   `<tr><td><kbd>g</kbd> then <kbd>q</kbd></td><td>go to the queue</td></tr>` +
   `<tr><td><kbd>g</kbd> then <kbd>f</kbd></td><td>go to the fleet</td></tr>` +
   `<tr><td><kbd>g</kbd> then <kbd>w</kbd></td><td>go to the workbench</td></tr>` +
-  `<tr><td><kbd>g</kbd> then <kbd>r</kbd></td><td>go to the routines</td></tr>` +
   `<tr><td><kbd>g</kbd> then <kbd>t</kbd></td><td>go to the task list</td></tr>` +
   `<tr><td><kbd>g</kbd> then <kbd>a</kbd></td><td>go to the activity view</td></tr>` +
   `<tr><td><kbd>g</kbd> then <kbd>p</kbd></td><td>go to the projects</td></tr>` +
@@ -5617,8 +5499,6 @@ export function systemPage(chrome: Chrome, data: {
   }[];
   building: { taskId: string; runner: string; claimedAt: string; expiresAt: string; model: string | null }[];
   runners: Runner[];
-  /** v28: open attended sessions per runner. */
-  heldSessions?: Map<string, number>;
   worktrees: WorktreeRow[];
   episode: { id: number; startedAt: string; endedAt: string | null; ticks: number; built: number; broke: number } | null;
   outboxPending: number;
@@ -5633,10 +5513,9 @@ export function systemPage(chrome: Chrome, data: {
       const dot = age < 5 * 60_000 ? "dot-ok" : age < 60 * 60_000 ? "dot-warn" : "dot-off";
       const said = age < 5 * 60_000 ? "alive" : age < 60 * 60_000 ? `quiet ${Math.round(age / 60_000)}m` : "not heard from";
       const busy = data.building.filter(claim => claim.runner === one.name).length;
-      const sessions = data.heldSessions?.get(one.name) ?? 0;
       return (
         `<div class="stat-card"><span class="k"><span class="dot ${dot}"></span>${escape(one.name)}</span>` +
-        `<span class="v">builder \u00b7 ${said} \u00b7 ${busy}/${one.capacity} building${sessions > 0 ? ` \u00b7 ${sessions} attended session${sessions === 1 ? "" : "s"} (uncapped by Toolroll — each is an agent + a supervisor process; OS limits apply)` : ""}</span></div>`
+        `<span class="v">builder \u00b7 ${said} \u00b7 ${busy}/${one.capacity} building</span></div>`
       );
     });
   const worktreeCards = data.worktrees.map(tree => {
@@ -5689,7 +5568,7 @@ export function systemPage(chrome: Chrome, data: {
     `<h2>Agents</h2>` +
     `<p class="meta">Which AI provider runs each phase — changed from the terminal with your credentials (<code>toolroll config</code>), never by a browser click</p>` +
     `<div class="card">${agentLines}` +
-    `<p class="meta">Repair always stays on the provider that built — only its model can differ. A routine pins its agent the moment it fires; nothing after that can re-route it.</p>` +
+    `<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p>` +
     `</div>`;
 
   return screen("system", [
@@ -5727,7 +5606,6 @@ export function systemPage(chrome: Chrome, data: {
 export function boardBody(
   data: {
     cards: BoardCard[];
-    tracks: Track[];
     done: ReturnType<Store["listCompletedWorkScoped"]>;
     saturated: boolean;
     now: Date;
@@ -5791,7 +5669,7 @@ export function boardBody(
 
   // The card's facts: mono key–value pairs under the title (board pass) —
   // task, worker, runtime — the same grammar on every lane, so the eye
-  // learns one card. Chips carry the words (project, routine, reservation).
+  // learns one card. Chips carry the words (project, reservation).
   const facts = (rows: [string, string][]): string =>
     rows.length === 0
       ? ""
@@ -5812,7 +5690,6 @@ export function boardBody(
       ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince)] as [string, string]]),
     ]) +
     chips([
-      card.routineName === null ? "" : `<span class="badge">${escape(card.routineName)}</span>`,
       chip(card.repo).trim(),
     ]) +
     `</a>`;
@@ -5842,7 +5719,6 @@ export function boardBody(
         ? `<span class="badge">${card.assignedRunner === null ? "next up" : `next for ${escape(card.assignedRunner)}`}</span>`
         : "",
       card.assignedRunner === null ? "" : `<span class="badge">Reserved</span>`,
-      card.routineName === null ? "" : `<span class="badge">${escape(card.routineName)}</span>`,
       chip(card.repo).trim(),
     ]) +
     `</a>`;
@@ -5918,16 +5794,6 @@ export function boardBody(
           : `<strong>${escape(projectName(data.project as string))}</strong> \u00b7 <a href="/board?scope=all">all projects</a>`) +
         `</p>`;
 
-  // The tracks: standing orders as rows under the lanes \u2014 the heartbeat
-  // below the one-off pipeline. Only routines with something to say render;
-  // the full list lives at /routines.
-  const tracksSection =
-    data.tracks.length === 0
-      ? ""
-      : `<section class="tracks"><h2><a href="/routines">routines</a></h2>` +
-        `<p class="hint">each dot is one firing, oldest first \u2014 the full list is under routines</p>` +
-        data.tracks.map(track => trackRow(track, data.all)).join("\n") +
-        `</section>`;
 
   const ago = (minutes: number): string =>
     minutes < 60 ? `${minutes}m` : minutes < 48 * 60 ? `${Math.round(minutes / 60)}h` : `${Math.round(minutes / (24 * 60))}d`;
@@ -5956,7 +5822,6 @@ export function boardBody(
     lane("building", "building", "one agent per card, in its own workspace", building),
     `<details class="lane lane-done"${data.done.length === 0 ? "" : " open"}><summary><h2><a href="/done">done recently</a></h2></summary><p class="hint">the most recent \u2014 the full list is under done</p>${doneCards}</details>`,
     `</div>`,
-    tracksSection,
   ].join("\n");
 }
 
@@ -5999,79 +5864,6 @@ export function donePage(
   ].join("\n"), { chrome });
 }
 
-/** One routine's board-facing snapshot — the store's routineTracks row. */
-export type Track = {
-  routine: Routine;
-  fires: ReturnType<Store["routineFires"]>;
-  spend: { costUsd: number; unmeasuredRuns: number; totalRuns: number };
-  blocker: { taskId: string; state: string } | null;
-};
-
-export const routineHref = (id: number): string => `/routines/${id}`;
-
-export function routineStatus(routine: Routine): { text: string; badge: string } {
-  const approved = routine.approvedAt !== null && routine.approvedDigest === routine.digest;
-  if (routine.paused) return { text: "paused", badge: "badge" };
-  if (!approved) {
-    return {
-      text: routine.approvedAt === null ? "awaiting approval" : "edited — approve again",
-      badge: "badge badge-failed",
-    };
-  }
-  // An approval that froze no readable agents is not live (v48): its
-  // firings wait until the agents are refreshed and approved again.
-  const agents = routineAgentsState(routine);
-  if (agents.state !== "frozen") return { text: "agents not frozen — refresh and approve again", badge: "badge badge-failed" };
-  return { text: "live", badge: "badge badge-running" };
-}
-
-/**
- * The run-history strip: the last firings as dots, oldest on the left like
- * a CI history. Fired slots wear their instance's fate; skipped slots are
- * hollow — recorded absence, not silence.
- */
-export function trackStrip(fires: Track["fires"]): string {
-  const dots = [...fires].reverse().map(fire => {
-    const slot = fire.scheduledFor.replace(/^manual:/, "");
-    if (fire.outcome === "skipped") {
-      return `<span class="fire fire-skip" title="${escape(slot)} — skipped: ${escape(fire.reason ?? "")}"></span>`;
-    }
-    const state = fire.instanceState;
-    const kind =
-      state === "done" ? "fire-ok" : state === "failed" || state === "cancelled" ? "fire-bad" : "fire-live";
-    const title = `${slot} — ${fire.instanceTaskId ?? "instance"}${state === null ? "" : ` (${state})`}`;
-    return fire.instanceTaskId === null
-      ? `<span class="fire ${kind}" title="${escape(title)}"></span>`
-      : `<a class="fire ${kind}" href="${taskHref(fire.instanceTaskId)}" title="${escape(title)}"></a>`;
-  });
-  return `<span class="track-strip">${dots.join("")}</span>`;
-}
-
-/** One track row — shared by the board's tracks section and /routines. */
-export function trackRow(track: Track, all: boolean): string {
-  const { routine, fires, spend, blocker } = track;
-  const status = routineStatus(routine);
-  const schedule = parseSchedule(routine.schedule);
-  const latest = fires.find(fire => fire.outcome === "fired");
-  return (
-    `<div class="card track-row">` +
-    `<p><a href="${routineHref(routine.id)}"><strong>${escape(routine.name)}</strong></a> ` +
-    `<span class="${status.badge}">${escape(status.text)}</span>` +
-    `${all ? ` <span class="badge">${escape(projectName(routine.repo))}</span>` : ""}` +
-    `<span class="right meta">${escape(schedule === null ? routine.schedule : describeSchedule(schedule))}</span></p>` +
-    `<p class="meta">${escape(routine.goal.length > 110 ? routine.goal.slice(0, 110) + "…" : routine.goal)}</p>` +
-    `<p>${trackStrip(fires)}` +
-    `<span class="right meta">$${spend.costUsd.toFixed(2)} this week${spend.unmeasuredRuns > 0 ? ` — measured on ${spend.totalRuns - spend.unmeasuredRuns} of ${spend.totalRuns} builds` : ""}${routine.costCeilingUsd === null ? "" : ` of $${routine.costCeilingUsd.toFixed(2)}`}</span></p>` +
-    (blocker !== null
-      ? `<p class="meta">Stopped behind <a href="${taskHref(blocker.taskId)}" class="mono">${escape(blocker.taskId)}</a> (${escape(blocker.state)})</p>`
-      : latest?.instanceTaskId !== undefined && latest.instanceTaskId !== null
-        ? `<p class="meta">Latest: <a href="${taskHref(latest.instanceTaskId)}" class="mono">${escape(latest.instanceTaskId)}</a>${latest.instanceState === null ? "" : ` (${escape(latest.instanceState)})`}</p>`
-        : "") +
-    `</div>`
-  );
-}
-
-
 export function chatMoney(microusd: number | null): string {
   return microusd === null ? "unknown" : `$${(microusd / 1_000_000).toFixed(2)}`;
 }
@@ -6083,10 +5875,11 @@ export type ChatProjectPulse = {
   peek: ProjectPeek | null;
 };
 
-/** The browser's one-click approval binds not only the signed scope but the
- * exact advisory plan revision and any race terms shown beside it. The scope
- * digest remains the durable authority; this composite makes a stale open
- * tab fail when somebody edits the plan before approval. */
+/** A ceremony nonce as stored: the sha256 hex of the value the form carried. */
+export function nonceHashOf(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 /** The approve POST's refusal, in words a person can act on. */
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
@@ -6095,13 +5888,18 @@ export function approveRefusalWords(reason: string): string {
   return `not approved: ${reason}`;
 }
 
-export function approvalFormDigest(scopeDigest: string, raceDigest: string | null, planSha: string | null): string {
-  if (raceDigest === null && planSha === null) return scopeDigest;
+/** The browser's one-click approval binds not only the signed scope but the
+ * exact advisory plan revision shown beside it. The scope digest remains the
+ * durable authority; this composite makes a stale open tab fail when somebody
+ * edits the plan before approval. The empty middle slot keeps the bytes of
+ * forms already open (it once held other terms, always empty here). */
+export function approvalFormDigest(scopeDigest: string, planSha: string | null): string {
+  if (planSha === null) return scopeDigest;
   return createHash("sha256")
     .update("standing-orders/browser-approval/v1\0", "utf8")
     .update(scopeDigest, "utf8")
     .update("\0", "utf8")
-    .update(raceDigest ?? "", "utf8")
+    .update("", "utf8")
     .update("\0", "utf8")
     .update(planSha ?? "", "utf8")
     .digest("hex");
@@ -6149,7 +5947,6 @@ export type TaskChatFocus = {
      * same panel the task page and /next show inside the ceremony. */
     planContract: PlanContractView | null;
     deliverable: "branch" | "report";
-    raceTerms: TournamentTerms | null;
     revision: RevisionView | null;
     coordinator: { label: string; filedAgo: string | null } | null;
     /** The repair chain row when this task is a machine-drafted repair. */
@@ -6327,7 +6124,7 @@ export function resumeCeremonyPage(chrome: Chrome, data: {
     `<div class="card resume-ceremony">`,
     `<p class="row">Lifts this stop’s hold. Other holds stay in place.</p>`,
     `<p class="row">Continues saved work${control.committed ? " and its commit" : ""} under the current approved scope. The next attempt needs fresh evidence; the earlier handoff cannot count as a new result.</p>`,
-    `<p class="row">Resuming grants no new approval or publishing permission. Scope, budget, agents, risk, fallback, verification, and review limits still apply.</p>`,
+    `<p class="row">Resuming grants no new approval or publishing permission. Scope, budget, agents, verification, and review limits still apply.</p>`,
     `<details><summary>Stop record and saved work</summary><p>Run #${control.run} was stopped by <span class="mono">${escape(control.stop.requestedBy)}</span> at ${escape(stopWhen(control.stop.requestedAt))}${control.stop.settledAt === null ? "" : ` and settled ${escape(stopWhen(control.stop.settledAt))} (${escape(control.stop.settlement ?? "?")})`}.</p>${control.worktree === null ? "" : `<p class="mono">${escape(control.worktree)}</p>`}</details>`,
     data.approved ? "" : `<p class="row problem-words"><strong>The scope is not approved as it stands</strong> — resuming lifts the pause, but no worker spends until the scope is approved again</p>`,
     data.gate === null ? "" : `<p class="row"><strong>Before work starts:</strong> ${escape(data.gate.summary)} — ${escape(data.gate.detail)}</p>`,
@@ -6407,12 +6204,11 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): string {
       revision: approval.revision,
       revisionSourceHref: approval.revision === null ? "" : chatResultHref(focus.id, approval.revision.sourceRun),
       repairChain: approval.repairChain,
-      raceTerms: approval.raceTerms,
       route: focus.route,
       coordinator: approval.coordinator,
       deliverable: approval.deliverable,
       // Edit plan opens the task page's sheet with its fields open for editing.
-      editHref: approval.raceTerms !== null ? `${taskHref(focus.id)}#${approval.planDocument === null ? "scope" : "plan-edit"}` : `${taskHref(focus.id)}?edit=plan#plan-editor`,
+      editHref: `${taskHref(focus.id)}?edit=plan#plan-editor`,
       notNowHref: "/chat",
       sticky: false,
       earlier: { active: focus.assignment?.earlierActive ?? 0, running: focus.assignment?.earlierRunning ?? 0 },
@@ -6976,12 +6772,11 @@ export function chatPage(chrome: Chrome, data: {
     const draft = one.draft;
     parts.push(
       `<div class="card">` +
-        `<p><strong>${draft.kind === "task" ? escape(draft.title) : escape(draft.name)}</strong> <span class="badge">Draft ${escape(draft.kind)}</span></p>` +
+        `<p><strong>${escape(draft.title)}</strong> <span class="badge">Draft ${escape(draft.kind)}</span></p>` +
         `<p class="meta">Drafted by the model from fleet context — nothing is filed; drafts do not survive a restart</p>` +
         `<p style="white-space:pre-wrap">${escape(draft.goal)}</p>` +
         (draft.outOfScope === null ? "" : `<p class="meta">Not: ${escape(draft.outOfScope)}</p>`) +
         (draft.touches.length > 0 ? `<p class="meta">Touches: ${escape(draft.touches.join(", "))}</p>` : "") +
-        (draft.kind === "routine" ? `<p class="meta">Schedule: ${escape(draft.schedule)}</p>` : "") +
         `<p class="meta">Repo: <span class="mono">${escape(projectName(one.repoPath))}</span></p>` +
         `<form method="post" action="/chat/file/${escape(one.key)}" class="inline">` +
         `<input type="hidden" name="csrf" value="${escape(data.csrf)}">` +
@@ -7200,11 +6995,10 @@ export function proposalCardParts(view: ProposalCardView, csrf: string, inert: b
       `<p class="meta proposal-disclosure">This guides the next attempt without changing the task’s scope. It does not interrupt work already running.</p>`;
   } else if (view.kind === "agents") {
     // The agents card (v48): exactly what changes, in the same words the
-    // task page uses — the role, the exact agent, what the risk level
-    // does — and the consequence for the standing approval.
+    // task page uses — the role, the exact agent, the size — and the
+    // consequence for the standing approval.
     const taskTitle = text("taskTitle") || task;
     const role = text("role");
-    const risk = text("risk");
     const clear = payload["clear"] === true;
     const agentWords = text("provider") === "" ? "" : `${text("provider")} · ${text("model")}`;
     const size = text("size");
@@ -7213,21 +7007,18 @@ export function proposalCardParts(view: ProposalCardView, csrf: string, inert: b
       ? `Run <a href="${taskHref(task)}">${escape(taskTitle)}</a>'s ${escape(role)} on <span class="mono">${escape(agentWords)}</span>`
       : role !== "" && clear
         ? `Let the recommended ${escape(role)} stand for <a href="${taskHref(task)}">${escape(taskTitle)}</a>`
-        : risk === "" && size !== ""
+        : size !== ""
           ? `Treat <a href="${taskHref(task)}">${escape(taskTitle)}</a> as a ${escape(sizeLine)}`
-          : `Declare <a href="${taskHref(task)}">${escape(taskTitle)}</a> ${escape(riskTitle((isRiskLevel(risk) ? risk : "routine") as RiskLevel).toLowerCase())}`;
-    const riskWords = isRiskLevel(risk) ? `${riskTitle(risk)}: ${riskConsequence(risk)}.` : "";
+          : `Change the agents for <a href="${taskHref(task)}">${escape(taskTitle)}</a>`;
     what =
       `<h3>${heading}</h3>` +
       (text("why") === "" ? "" : `<p class="proposal-summary">${escape(text("why"))}</p>`) +
       facts(
         ["agents now", escape(text("before"))],
-        ["risk", risk === "" ? "" : `<strong>${escape(riskTitle(risk as RiskLevel))}</strong>${role !== "" && isRiskLevel(risk) ? "" : ` — ${escape(riskConsequence(risk as RiskLevel))}`}`],
         ["size", size === "" ? "" : escape(sizeConsequence(size, payload["risky"] === true))],
         ["role", role === "" ? "" : `${escape(role)} → ${clear ? "the recommendation" : `<span class="mono">${escape(agentWords)}</span>`}`],
         ["project", `<span class="mono">${escape(repoId)}</span>`],
       ) +
-      (role !== "" && riskWords !== "" ? `<p class="meta">${escape(riskWords)}</p>` : "") +
       `<p class="meta proposal-disclosure">Recorded under your name when you confirm. ${text("approval") === "approved" ? "The current approval no longer covers the task afterwards — approve it again on the task." : "The next approval seals these agents."}</p>`;
   } else if (view.kind === "scope") {
     what =
@@ -7706,197 +7497,12 @@ export function matePage(chrome: Chrome, data: MateThreadRows & {
   );
 }
 
-export function routinesPage(
-  chrome: Chrome,
-  tracks: Track[],
-  form: {
-    csrf: string;
-    revision: number;
-    problem: string | null;
-    values?: URLSearchParams;
-    prefill?: { name: string; goal: string; not: string; touches: string; schedule: string; acceptance: string } | null;
-  },
-): Screen {
-  const fill = form.values === undefined ? form.prefill ?? null : { name: form.values.get("name") ?? "", goal: form.values.get("goal") ?? "", not: form.values.get("not") ?? "", touches: form.values.get("touches") ?? "", schedule: form.values.get("schedule") ?? "", acceptance: form.values.get("acceptance") ?? "" };
-  const capture =
-    chrome.project === null
-      ? ""
-      : [
-          `<h2>File a standing order</h2>`,
-          form.problem === null ? "" : `<div class="problem">${escape(form.problem)}</div>`,
-          `<form method="post" action="/routines/add" class="card">`,
-          `<input type="hidden" name="csrf" value="${escape(form.csrf)}">`,
-          `<input type="hidden" name="projectRevision" value="${form.revision}">`,
-          fill === null
-            ? `<p class="meta">Start from a template: ${TEMPLATES.filter(one => one.kind === "routine")
-                .map(one => `<a href="/routines?template=${escape(one.name)}">${escape(one.name)}</a>`)
-                .join(" · ")}</p>`
-            : `<p class="meta">${form.values === undefined ? "pre-filled from a template — edit anything" : "Your entries are kept below"}; nothing fires until you approve the standing order</p>`,
-          `<label>Name <span class="meta">(lowercase-with-dashes — it names each instance)</span><input type="text" name="name" placeholder="nightly-deps" maxlength="41" value="${fill === null ? "" : escape(fill.name)}"></label>`,
-          `<label>Goal <span class="meta">(what every firing is allowed to do)</span><textarea name="goal" rows="2">${fill === null ? "" : escape(fill.goal)}</textarea></label>`,
-          `<label>Not this <span class="meta">(optional)</span><input type="text" name="not" value="${fill === null ? "" : escape(fill.not)}"></label>`,
-          `<label>Touches <span class="meta">(paths, comma-separated, optional)</span><input type="text" name="touches" value="${fill === null ? "" : escape(fill.touches)}"></label>`,
-          `<label>Acceptance <span class="meta">(required — one criterion per line: <code>statement | evidence,kinds | how</code>; evidence kinds are check, screenshot, changed-path, manual-review; id is optional and auto-numbered)</span><textarea name="acceptance" rows="3" placeholder="The full test suite passes | check">${fill === null ? "" : escape(fill.acceptance)}</textarea></label>`,
-          scheduleEditorHtml(fill?.schedule ?? null, form.values),
-          `<label>Budget <span class="meta">(dollars per rolling 7 days, optional — needs a provider that reports cost)</span><input type="text" name="ceiling" inputmode="decimal" style="width:8rem" value="${escape(form.values?.get("ceiling") ?? "")}"></label>`,
-          `<button type="submit">File it \u2192 approve the standing order next</button>`,
-          `<p class="meta">Filing is cheap — nothing fires until you approve the template on the next screen, password and all</p>`,
-          `</form>`,
-        ].join("\n");
-  const list =
-    tracks.length === 0
-      ? `<p class="meta">No routines${chrome.project === null ? " — open a project to file one" : " in this project yet — file one below; nothing fires until you approve it"}.</p>`
-      : tracks.map(track => trackRow(track, chrome.project === null)).join("\n");
-  return screen("routines", [
-    `<h1>Routines</h1>`,
-    `<p class="hint">scheduled work — anything needing a person appears in the inbox</p><p><a class="new-task" href="/recipes">Create a workflow from a recipe →</a></p>`,
-    list,
-    capture,
-  ].join("\n"), { chrome, functional: { script: scheduleEditorScript() } });
-}
-
-export function routineScreenPage(chrome: Chrome, data: {
-  routine: Routine;
-  fires: Track["fires"];
-  spend: Track["spend"];
-  blocker: Track["blocker"];
-  csrf: string;
-  nonce: string;
-  problem: string | null;
-  now: Date;
-}): Screen {
-  const { routine, fires } = data;
-  const status = routineStatus(routine);
-  const approved = routine.approvedAt !== null && routine.approvedDigest === routine.digest;
-  const schedule = parseSchedule(routine.schedule);
-  const scheduleSaid = schedule === null ? routine.schedule : describeSchedule(schedule);
-
-  const terms =
-    `<div class="card">` +
-    `<p class="meta">Goal</p><p class="recap" style="margin-top:0">${escape(routine.goal)}</p>` +
-    `<p class="meta">Not this</p><p class="recap" style="margin-top:0">${routine.outOfScope === null ? "<em>no exclusions</em>" : escape(routine.outOfScope)}</p>` +
-    `<p class="meta">Touches · ${routine.touches.length === 0 ? "anything" : routine.touches.map(one => escape(one)).join(", ")}</p>` +
-    (routine.acceptance.length === 0
-      ? ""
-      : `<p class="meta">Acceptance</p><ul class="recap">${routine.acceptance
-          .map(c => `<li><code>${escape(c.id)}</code> ${escape(c.statement)} <span class="meta">[requires: ${c.evidence.map(escape).join(", ")}]</span></li>`)
-          .join("")}</ul>`) +
-    `<p class="meta">Needs · ${routine.requirements.length === 0 ? "nothing beyond the repository" : routine.requirements.map(one => escape(one)).join(", ")}</p>` +
-    routineAgentsHtml(routine, approved) +
-    `<p class="meta">Schedule · ${escape(scheduleSaid)}</p>` +
-    `<p class="meta">Budget · ${routine.costCeilingUsd === null ? "no ceiling" : `$${routine.costCeilingUsd.toFixed(2)} per rolling 7 days`}</p>` +
-    `<p class="meta">One at a time — a firing skips while the previous instance is unfinished</p>` +
-    `</div>`;
-
-  // THE CONSENT DOOR (v48): the password and the approve act exist only
-  // where an exact, readable route can be restated — never over agents
-  // that are unresolved, unreadable, or never frozen. Those states get the
-  // one recovery act instead: refresh the agents, then approve again.
-  const agents = routineAgentsState(routine);
-  // One plain-language act with accessible, neutral controls: the form is
-  // named by its title, the button described by the reason — no password,
-  // no danger verb, nothing to type.
-  const refreshForm =
-    `<form method="post" action="${routineHref(routine.id)}/refresh" class="card approve-form agents-recovery" id="agents-recovery" aria-labelledby="agents-recovery-title">` +
-    `<input type="hidden" name="csrf" value="${escape(data.csrf)}">` +
-    `<p id="agents-recovery-title"><strong>${escape(
-      agents.state === "unfrozen"
-        ? "This standing order was approved before its agents were frozen — nothing fires until you approve it again."
-        : agents.state === "unreadable"
-          ? "The agents on file for this standing order cannot be read — nothing approves or fires until they are refreshed."
-          : agents.state === "unverified"
-            ? "The agents this standing order's approval froze do not verify — nothing fires until they are refreshed and approved again."
-            : "This standing order cannot be approved yet: it does not name an exact agent for every role.",
-    )}</strong></p>` +
-    `<p id="agents-recovery-why" class="recap">${escape(
-      agents.state === "unresolved" && agents.problem !== null
-        ? `${agents.problem}. Configure the project's agents (config set <phase> --provider … --model …), then refresh.`
-        : "Refreshing reads today's configured agents into this order and shows you exactly who would plan, build, repair, and review each firing. Nothing is approved by refreshing — the password step comes after, on this page.",
-    )}</p>` +
-    `<button type="submit" aria-describedby="agents-recovery-why">Refresh agents</button></form>`;
-  const approveForm = approved
-    ? agents.refresh ? refreshForm : ""
-    : !agents.approvable
-      ? refreshForm
-      : [
-        `<form method="post" action="${routineHref(routine.id)}/approve" class="card approve-form">`,
-        `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-        `<input type="hidden" name="nonce" value="${escape(data.nonce)}">`,
-        `<input type="hidden" name="digest" value="${escape(routine.digest)}">`,
-        `<p><strong>Approve this standing order:</strong></p>`,
-        `<p class="recap">Each firing creates a task under exactly the terms above and BUILDS IT WITHOUT ASKING — ${escape(scheduleSaid)}, until you pause it. Questions and failures still reach you like any other work.</p>`,
-        // The agents the yes freezes (v48): the same concise block every
-        // approval shows, before the password.
-        routineAgentsHtml(routine, false, true),
-        `<label>Your password, typed again — a signed-in session alone cannot agree to standing work<input type="password" name="token" autocomplete="current-password"></label>` +
-          `<button type="submit">Approve this routine</button>`,
-        `</form>`,
-      ].join("\n");
-
-  const verb = (name: string, label: string, danger = false): string =>
-    `<form method="post" action="${routineHref(routine.id)}/${name}" class="inline">` +
-    `<input type="hidden" name="csrf" value="${escape(data.csrf)}">` +
-    `<button type="submit"${danger ? ' class="danger"' : ""}>${label}</button></form>`;
-
-  const runNowForm =
-    approved && !routine.paused && agents.state === "frozen"
-      ? `<form method="post" action="${routineHref(routine.id)}/run-now" class="inline">` +
-        `<input type="hidden" name="csrf" value="${escape(data.csrf)}">` +
-        `<input type="password" name="token" autocomplete="current-password" class="inline" placeholder="your password" aria-label="password for run now" style="width:11rem"> ` +
-        `<button type="submit">Run now</button></form>`
-      : "";
-  const acts =
-    `<div class="card">` +
-    (routine.paused ? verb("resume", "resume") : verb("pause", "pause")) +
-    (runNowForm === "" ? "" : " " + runNowForm) +
-    `<p class="meta">${routine.paused ? "resuming fires again at the next due slot" : "pausing stops firing instantly; a running instance finishes"}${runNowForm === "" ? "" : " · run now spawns an extra instance without touching the schedule — spend outside the schedule takes your password again"}</p>` +
-    `</div>`;
-
-  const ledger =
-    fires.length === 0
-      ? `<p class="meta">No firings yet${approved && routine.nextFireAt !== null ? ` — first at ${whenTime(routine.nextFireAt)}` : ""}.</p>`
-      : fires
-          .map(fire => {
-            const said =
-              fire.outcome === "fired"
-                ? fire.instanceTaskId === null
-                  ? "fired"
-                  : `<a href="${taskHref(fire.instanceTaskId)}" class="mono">${escape(fire.instanceTaskId)}</a>${fire.instanceState === null ? "" : ` <span class="badge badge-${escape(fire.instanceState)}">${escape(sentenceCase(fire.instanceState))}</span>`}`
-                : `<span class="meta">skipped — ${escape(fire.reason ?? "")}</span>`;
-            const slot = fire.scheduledFor.replace(/^manual:/, "");
-            return `<p class="row">${said}<span class="right meta mono">${fire.reason === "manual" ? "run now · " : ""}${whenTime(slot)}</span></p>`;
-          })
-          .join("\n");
-
-  return screen(`routine · ${routine.name}`, [
-    `<h1>${escape(routine.name)} <span class="${status.badge}">${escape(status.text)}</span>` +
-      `<span class="meta"> · ${escape(projectName(routine.repo))}</span></h1>`,
-    data.problem === null ? "" : `<div class="problem">${escape(data.problem)}</div>`,
-    `<p>${trackStrip(fires)}<span class="right meta">$${data.spend.costUsd.toFixed(2)} this week${data.spend.unmeasuredRuns > 0 ? ` — measured on ${data.spend.totalRuns - data.spend.unmeasuredRuns} of ${data.spend.totalRuns} builds` : ""}</span></p>`,
-    data.blocker !== null
-      ? `<div class="problem">stopped behind <a href="${taskHref(data.blocker.taskId)}" class="mono">${escape(data.blocker.taskId)}</a> (${escape(data.blocker.state)}) — the track resumes when it finishes or is cancelled</div>`
-      : "",
-    approved && !routine.paused && routine.nextFireAt !== null
-      ? `<p class="meta">Next fire ${whenTime(routine.nextFireAt)}</p>`
-      : "",
-    "<h2>The standing order</h2>",
-    terms,
-    approveForm,
-    "<h2>Acts</h2>",
-    acts,
-    "<h2>Firings</h2>",
-    ledger,
-  ].join("\n"), { chrome });
-}
-
 export function homePage(chrome: Chrome, data: {
   csrf: string;
   taskCount: number;
   repo: string | null;
   building: { taskId: string; runner: string; claimedAt: string; expiresAt: string; model: string | null }[];
   runners: Runner[];
-  /** v28: open attended sessions per runner. */
-  heldSessions?: Map<string, number>;
   worktrees: WorktreeRow[];
   episode: { id: number; startedAt: string; endedAt: string | null; ticks: number; built: number; broke: number } | null;
   summary: ReturnType<typeof tally<Run & { taskId: string }>>;
@@ -7999,10 +7605,9 @@ export function homePage(chrome: Chrome, data: {
       const dot = age < 5 * 60_000 ? "dot-ok" : age < 60 * 60_000 ? "dot-warn" : "dot-off";
       const said = age < 5 * 60_000 ? "alive" : age < 60 * 60_000 ? `quiet ${Math.round(age / 60_000)}m` : "not heard from";
       const busy = data.building.filter(claim => claim.runner === one.name).length;
-      const sessions = data.heldSessions?.get(one.name) ?? 0;
       return (
         `<div class="stat-card"><span class="k"><span class="dot ${dot}"></span>${escape(one.name)}</span>` +
-        `<span class="v">builder \u00b7 ${said} \u00b7 ${busy}/${one.capacity} building${sessions > 0 ? ` \u00b7 ${sessions} attended session${sessions === 1 ? "" : "s"} (uncapped by Toolroll — each is an agent + a supervisor process; OS limits apply)` : ""}</span></div>`
+        `<span class="v">builder \u00b7 ${said} \u00b7 ${busy}/${one.capacity} building</span></div>`
       );
     });
   const worktreeCards = data.worktrees.map(tree => {
@@ -8234,9 +7839,9 @@ export function workPage(
     (data.previous ? `<a class="button-link" href="${escape(href(data.view))}">First page</a>` : '') +
     (data.work.nextCursor === null ? '' : `<a class="button-link" rel="next" href="${escape(href(data.view, data.work.nextCursor))}">Next page</a>`) + `</nav>`;
   const tools = `<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">` +
-    [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ['/routines', 'Routines'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
+    [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
       .map(([path, label]) => `<a href="${path}">${label}</a>`).join('') + `</nav></details>`;
-  const toolLinks = [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ['/routines', 'Routines'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
+  const toolLinks = [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
   const view: BrowserTasksView = {
     kind: 'tasks',
     tabs: WORK_VIEWS.map(one => ({ label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view })),
@@ -8742,273 +8347,6 @@ export function portfolioOverview(data: {
   ].join("\n");
 }
 
-/** Dollars for a screen: micro-USD stated as money, unknowables in words. */
-export function contestDollars(microusd: number): string {
-  return `$${(microusd / 1_000_000).toFixed(2)}`;
-}
-
-export const CONTEST_STATE_WORDS: Record<string, string> = {
-  dispatching: "the agents are being set up",
-  racing: "the agents are working right now",
-  "pick-wait": "every agent has finished — compare the results and pick one",
-  "decision-wait": "an agent asked a question — answer it from the task screen and the tournament continues",
-  picked: "decided — one result was picked",
-  abandoned: "abandoned — nothing was picked; every agent's work is kept",
-  interrupted: "interrupted — the machine running it went away; decide what happens next",
-  exhausted: "finished with nothing to pick — decide what happens next",
-};
-
-/**
- * The comparison screen: every agent's result side by side — outcome, cost,
- * questions, conclusion, and the verified diff — with a pick button only on
- * results the evidence supports. Plain words throughout: tournament,
- * agents, results. The pick itself happens on a separate confirmation
- * screen whose form this page can only reach through a POST.
- */
-export function contestPage(chrome: Chrome, data: {
-  view: { contest: Contest; agents: AgentView[] };
-  taskId: string;
-  taskTitle: string;
-  questions: Map<number, number>;
-  totalMicrousd: number;
-  anyUnknown: boolean;
-  rollups: Map<number, { costMicrousd: number; tokensIn: number; tokensOut: number; measuredRuns: number; totalRuns: number }>;
-  diffs: Map<number, TerminalDiffView | null>;
-  /** Runs whose lease is still the task's current live claim — "still
-   * working" is said only of these; an interrupted agent's unfinished run
-   * reads as stopped (round-4 finding 16). */
-  liveRuns?: ReadonlySet<number>;
-  csrf: string;
-  problem: string | null;
-}): Screen {
-  const { contest, agents } = data.view;
-  const picking = contest.state === "pick-wait";
-  const abandonable = ["pick-wait", "exhausted", "interrupted", "decision-wait"].includes(contest.state);
-
-  // ONE summary per agent (arc 6, finding 7): the at-a-glance table and the
-  // cards below both render from this object, so the two can never tell a
-  // pick two different stories. Every diff state keeps its own words —
-  // verified-zero, changes, missing, and capture problems are not the same
-  // fact and are never collapsed into "no diff".
-  const summarize = (agent: AgentView) => {
-    const { contestant, run } = agent;
-    const outcome =
-      run === null
-        ? "never produced a finished attempt"
-        : run.outcome === "built"
-          ? "finished with changes"
-          : run.outcome === "no-change"
-            ? "concluded no change was needed"
-            : run.outcome === "parked"
-              ? "waiting on an answer"
-              : run.outcome === null
-                ? (data.liveRuns?.has(run.id) === true ? "still working" : "stopped without finishing")
-                : run.outcome === "failed"
-                  ? "failed"
-                  : run.outcome === "refused"
-                    ? "refused — a gate said no"
-                    : "stopped";
-    const minutes =
-      run === null || run.finishedAt === null
-        ? null
-        : Math.max(1, Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 60_000));
-    const diff = data.diffs.get(contestant.id) ?? null;
-    const diffWords =
-      diff === null || diff.stat === null
-        ? "no change summary"
-        : "problem" in diff.stat
-          ? "summary capture failed"
-          : diff.stat.fileCount === 0
-            ? "no changes, verified"
-            : `${diff.stat.fileCount} file(s) · +${diff.stat.additions} −${diff.stat.deletions}`;
-    return {
-      agent,
-      contestant,
-      run,
-      winner: contest.winnerContestant === contestant.id,
-      outcome,
-      minutes,
-      asked: data.questions.get(contestant.id) ?? 0,
-      // Money words are KIND words (slice B, E3): a comparison lane never
-      // had a reservation, so reservation language would lie in both
-      // directions — unmeasured lanes say tokens instead.
-      cost: (() => {
-        if (contest.kind !== "comparison") {
-          return contestant.unknownSpend
-            ? `${contestDollars(contestant.accountedMicrousd)} — the exact figure was unknowable, so the full reservation was charged`
-            : contestDollars(contestant.accountedMicrousd);
-        }
-        // The WHOLE lineage speaks (Codex slice-B finding 6): main attempt,
-        // resumes, and repairs — a newest-run read under-reports every
-        // park cycle.
-        const rollup = data.rollups.get(contestant.id) ?? { costMicrousd: 0, tokensIn: 0, tokensOut: 0, measuredRuns: 0, totalRuns: 0 };
-        return contestant.unknownSpend
-          ? `tokens only${rollup.tokensIn + rollup.tokensOut > 0 ? ` (${(rollup.tokensIn + rollup.tokensOut).toLocaleString()} across ${rollup.totalRuns} run${rollup.totalRuns === 1 ? "" : "s"})` : ""} — this harness reports no dollars`
-          : `${contestDollars(rollup.costMicrousd)} measured${rollup.measuredRuns < rollup.totalRuns ? ` on ${rollup.measuredRuns} of ${rollup.totalRuns} runs` : ""}`;
-      })(),
-      diff,
-      diffWords,
-    };
-  };
-  const summaries = agents.map(summarize);
-
-  // The at-a-glance table: one COLUMN per agent, the same derived facts as
-  // the cards. Wide content scrolls in its own box (the arc-4 rule).
-  const glance =
-    summaries.length < 2
-      ? ""
-      : `<div class="scroll-x"><table class="contest-glance">` +
-        `<tr><td></td>${summaries.map(one => `<th>Agent ${one.contestant.ordinal}<span class="meta"> · ${escape(one.contestant.provider)} · ${escape(one.contestant.model)}</span>${one.winner ? ` <span class="badge badge-done">Picked</span>` : ""}</th>`).join("")}</tr>` +
-        `<tr><td class="meta">outcome</td>${summaries.map(one => `<td>${escape(one.outcome)}</td>`).join("")}</tr>` +
-        `<tr><td class="meta">changed</td>${summaries.map(one => `<td>${escape(one.diffWords)}</td>`).join("")}</tr>` +
-        `<tr><td class="meta">time</td>${summaries.map(one => `<td>${one.minutes === null ? "—" : `${one.minutes} min`}</td>`).join("")}</tr>` +
-        `<tr><td class="meta">questions</td>${summaries.map(one => `<td>${one.asked}</td>`).join("")}</tr>` +
-        `<tr><td class="meta">cost</td>${summaries.map(one => `<td>${escape(one.cost)}</td>`).join("")}</tr>` +
-        `<tr><td></td>${summaries.map(one => `<td>${one.run === null ? "" : `<a href="/r/${one.run.id}">the build</a>`}</td>`).join("")}</tr>` +
-        `</table></div>`;
-
-  const agentCard = (summary: (typeof summaries)[number]): string => {
-    const { contestant, run, winner, outcome, minutes, asked, cost, diff } = summary;
-    const agent = summary.agent;
-    const parts = [
-      `<div class="card${winner ? " picked" : ""}">`,
-      `<p><strong>Agent ${contestant.ordinal}</strong> <span class="meta">${escape(contestant.provider)} · ${escape(contestant.model)}</span>` +
-        `${winner ? ` <span class="badge badge-done">Picked</span>` : ""}</p>`,
-      `<p class="row">${escape(outcome)}` +
-        `${minutes === null ? "" : ` <span class="meta">· ${minutes} min</span>`}` +
-        `${asked > 0 ? ` <span class="meta">· asked ${asked} question${asked > 1 ? "s" : ""}</span>` : ""}` +
-        `${run === null ? "" : ` <span class="meta">· <a href="/r/${run.id}">the build</a></span>`}</p>`,
-      `<p class="row"><strong>Cost</strong> ${escape(cost)}</p>`,
-      run === null || run.handoff === null ? "" : `<p><strong>Its own conclusion</strong></p><p class="recap">${escape(run.handoff)}</p>`,
-      diff === null ? `<p class="meta">No diff was captured</p>` : terminalDiffCard(diff, run === null ? 0 : run.id),
-    ];
-    if (picking) {
-      if (agent.pickable) {
-        parts.push(
-          `<form method="post" action="/contest/${contest.id}/arm" class="inline">`,
-          `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-          `<input type="hidden" name="choice" value="${contestant.id}">`,
-          `<button type="submit">Pick this result…</button>`,
-          `</form>`,
-          `<p class="meta">Picking continues to a confirmation screen — nothing happens yet</p>`,
-        );
-      } else {
-        parts.push(`<p class="meta">Cannot be picked — ${escape(agent.unpickableReason ?? "")}</p>`);
-      }
-    }
-    parts.push(`</div>`);
-    return parts.filter(one => one !== "").join("\n");
-  };
-
-  return screen("tournament", [
-    `<h1>${contestNoun(contest.kind)}</h1>`,
-    `<p class="meta">${agents.length} agents raced on <a href="${taskHref(data.taskId)}">${escape(data.taskTitle)}</a> — ` +
-      `only one result will be kept as the task's outcome; the rest stay archived with their evidence</p>`,
-    data.problem === null ? "" : `<div class="problem">${escape(data.problem)}</div>`,
-    `<p class="row"><strong>${escape((CONTEST_STATE_WORDS[contest.state] ?? "the tournament is in an unexpected state — the records have the detail").replace(/tournament/g, contestNoun(contest.kind)))}</strong></p>`,
-    contest.pickedBy === null ? "" : `<p class="meta">Picked by ${escape(contest.pickedBy)} at ${whenTime(contest.pickedAt ?? "")}</p>`,
-    contest.kind === "comparison"
-      ? `<p class="row"><strong>Spend</strong> ${escape(contestDollars(data.totalMicrousd))} measured on the lanes that report dollars` +
-        `${data.anyUnknown ? ` <span class="meta">— the rest report tokens only</span>` : ""}</p>`
-      : `<p class="row"><strong>Charged so far</strong> ${escape(contestDollars(data.totalMicrousd))}` +
-        `${data.anyUnknown ? ` <span class="meta">— includes at least one agent charged its full reservation because the exact figure was unknowable</span>` : ""}</p>`,
-    glance,
-    `<div class="contest-compare">${summaries.map(agentCard).join("\n")}</div>`,
-    abandonable
-      ? [
-          `<div class="card">`,
-          `<form method="post" action="/contest/${contest.id}/arm" class="inline">`,
-          `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-          `<input type="hidden" name="act" value="abandon">`,
-          `<button type="submit">Abandon the ${contestNoun(contest.kind)}…</button>`,
-          `</form>`,
-          `<p class="meta">Abandoning picks nothing: the task is marked failed (it can be re-queued), and every agent's branch and evidence is kept</p>`,
-          `</div>`,
-        ].join("\n")
-      : "",
-  ].filter(one => one !== "").join("\n"), { chrome });
-}
-
-/**
- * The confirmation screen a POST minted: it restates, in full, exactly what
- * the password will authorize — the identified result, the money, and the
- * one publication consequence — over a single-use nonce bound to that
- * restatement. If anything shifts underneath before the yes, the pick
- * refuses rather than landing on the moved thing.
- */
-export function contestCeremonyPage(chrome: Chrome, data: {
-  kind: "pick" | "abandon";
-  contestKind: "race" | "comparison";
-  contestId: number;
-  taskId: string;
-  taskTitle: string;
-  agents: number;
-  totalMicrousd: number;
-  anyUnknown: boolean;
-  chosen?: AgentView;
-  publication?: { githubRepo: string; branch: string; draft: boolean } | null;
-  nonceValue: string;
-  csrf: string;
-}): Screen {
-  const back = `<p class="meta"><a href="/contest/${data.contestId}">back — decide nothing</a></p>`;
-  if (data.kind === "abandon") {
-    return screen("tournament", [
-      `<h1>Abandon this ${contestNoun(data.contestKind)}?</h1>`,
-      `<div class="card">`,
-      `<p class="row">${data.agents} agents ${data.contestKind === "comparison" ? "built independently" : "raced"} on <strong>${escape(data.taskTitle)}</strong>. Abandoning picks nothing:</p>`,
-      `<p class="row">— the task is marked <strong>failed</strong> and can be re-queued later</p>`,
-      `<p class="row">— every agent's branch and evidence is kept; nothing is deleted and nothing is published</p>`,
-      data.contestKind === "comparison"
-        ? `<p class="row">— the ${escape(contestDollars(data.totalMicrousd))} measured so far stays on the record</p>`
-        : `<p class="row">— the ${escape(contestDollars(data.totalMicrousd))} already charged stays charged</p>`,
-      `</div>`,
-      `<form method="post" action="/contest/${data.contestId}/abandon" class="card">`,
-      `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-      `<input type="hidden" name="nonce" value="${escape(data.nonceValue)}">`,
-      `<label>Your password, typed again<input type="password" name="token" autocomplete="current-password"></label>`,
-      `<button type="submit" class="danger">Abandon the ${contestNoun(data.contestKind)}</button>`,
-      `</form>`,
-      back,
-    ].join("\n"), { chrome });
-  }
-  const agent = data.chosen;
-  if (agent === undefined || agent.run === null) return screen("tournament", `<p class="meta">Nothing to confirm</p>`, { chrome });
-  const run = agent.run;
-  return screen("tournament", [
-    `<h1>Pick agent ${agent.contestant.ordinal}'s result?</h1>`,
-    `<div class="card">`,
-    `<p class="row"><strong>Agent ${agent.contestant.ordinal}</strong> — ${escape(agent.contestant.provider)} · ${escape(agent.contestant.model)}</p>`,
-    `<p class="row">its result becomes the outcome of <strong>${escape(data.taskTitle)}</strong> — the task is marked done, keyed to <a href="/r/${run.id}">this build</a></p>`,
-    run.outcome === "no-change"
-      ? `<p class="row">the result is a verified <strong>no change</strong> — the agent concluded nothing needed doing, and its checkout still matches the starting point</p>`
-      : `<p class="row">the changes live on branch <span class="mono">${escape(run.branch ?? "?")}</span>` +
-        `${run.headRevision === null ? "" : `, ending at <span class="mono">${escape(run.headRevision.slice(0, 12))}</span>`}</p>`,
-    agent.diff === null
-      ? ""
-      : `<p class="row">the diff being picked: <span class="mono">${escape(agent.diff.sha256.slice(0, 12))}</span> · ${agent.diff.bytesStored} bytes, verified</p>`,
-    data.publication === null || data.publication === undefined
-      ? `<p class="row"><strong>Nothing is published</strong> — the branch stays local to this machine</p>`
-      : `<p class="row"><strong>A ${data.publication.draft ? "draft " : ""}pull request will be opened</strong> on ` +
-        `<span class="mono">${escape(data.publication.githubRepo)}</span> from <span class="mono">${escape(data.publication.branch)}</span></p>`,
-    data.contestKind === "comparison"
-      ? `<p class="row">this agent's spend: ${agent.contestant.unknownSpend ? "unmeasured — its harness reports tokens, not dollars" : `${escape(contestDollars(agent.contestant.measuredMicrousd))} measured`}` +
-        `; the comparison measured ${escape(contestDollars(data.totalMicrousd))} across the lanes that report dollars</p>`
-      : `<p class="row">this agent was charged ${escape(contestDollars(agent.contestant.accountedMicrousd))}` +
-        `${agent.contestant.unknownSpend ? " (its full reservation — the exact figure was unknowable)" : ""}` +
-        `; the tournament charged ${escape(contestDollars(data.totalMicrousd))} in total</p>`,
-    `<p class="row">the other ${data.agents - 1} agent${data.agents - 1 === 1 ? "'s result is" : "s' results are"} not used — their branches and evidence are kept for reference</p>`,
-    `</div>`,
-    `<form method="post" action="/contest/${data.contestId}/pick" class="card approve-form">`,
-    `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-    `<input type="hidden" name="nonce" value="${escape(data.nonceValue)}">`,
-    `<input type="hidden" name="choice" value="${agent.contestant.id}">`,
-    `<label>Your password, typed again<input type="password" name="token" autocomplete="current-password"></label>`,
-    `<div class="sticky-actions"><button type="submit">Yes — pick this result</button></div>`,
-    `</form>`,
-    back,
-  ].filter(one => one !== "").join("\n"), { chrome });
-}
-
 export type OnboardCardState =
   | { enabled: false; why: string }
   | { enabled: true; roots: readonly string[]; record: [string, { nameWithOwner: string; rootIndex: number; target: string; diskUsageKib: number | null; large: boolean; mintedAt: number }] | null };
@@ -9492,7 +8830,7 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
  * The workspace shell (package 1): three primary rows (chat, work,
  * projects) above two accordion groups. Work tools is where work is
  * arranged, planned, and scheduled — the board, its order view, the
- * flat task list, recipes, routines, the portfolio, and the action
+ * flat task list, recipes, the portfolio, and the action
  * ledger. Settings is who and what the fleet runs on — fleet,
  * requirements, people, operating mode, system — plus the agent-defaults
  * page where the console offers it. Both draw from the same two lists on
@@ -9507,7 +8845,6 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
-    { key: "routines", href: "/routines", label: "Routines", hint: "scheduled tracks and their firings" },
     { key: "workbench", href: "/workbench", label: "Portfolio", hint: "every project and live build in one place" },
     { key: "ledger", href: "/ledger", label: "Action ledger", hint: "who acted, what happened, and the result" },
     { key: "spend", href: "/spend", label: "Spend", hint: "what agent work cost, and monthly budgets" },
@@ -9526,7 +8863,7 @@ export function settingsRows(scoped = false, offersSettings = false): NavRow[] {
   return scoped ? rows.filter(row => row.key === "people" || row.key === "settings") : rows;
 }
 /** Which accordion group opens by default for a given active page. */
-export const TOOL_KEYS = new Set<Chrome["active"]>(["code", "inbox", "board", "queue", "tasks", "workbench", "recipes", "routines", "ledger", "spend"]);
+export const TOOL_KEYS = new Set<Chrome["active"]>(["code", "inbox", "board", "queue", "tasks", "workbench", "recipes", "ledger", "spend"]);
 export const SETTINGS_KEYS = new Set<Chrome["active"]>(["settings", "fleet", "caps", "people", "mode", "system"]);
 
 /** The builds screen's views (reduction pass §1): done, the review queue,
@@ -10052,15 +9389,15 @@ export function revisionLineageWords(lineage: RevisionLineage): string[] {
   } else if (lineage.terms !== null) {
     const terms = lineage.terms;
     words.push(
-      `inherited terms, as they stand now: ${riskTitle(terms.riskLevel)} · ${qualityModeTitle(terms.qualityMode)} quality · ` +
+      `inherited terms, as they stand now: ${qualityModeTitle(terms.qualityMode)} quality · ` +
         `${terms.permissionMode === "bypassPermissions" ? "full access" : "auto permissions"} · ` +
         `${terms.budgetMicrousd === null ? "no attempt cap" : `$${(terms.budgetMicrousd / 1_000_000).toFixed(2)} attempt cap`} · ` +
         `${terms.exclusions ? "its exclusions" : "no exclusions"} · ${terms.touches === 0 ? "any path" : `${terms.touches} path limit${terms.touches === 1 ? "" : "s"}`} · ` +
         `${terms.criteria} criteri${terms.criteria === 1 ? "on" : "a"}${terms.routeOverrides === 0 ? "" : ` · ${terms.routeOverrides} agent override${terms.routeOverrides === 1 ? "" : "s"}`}`,
     );
   }
-  words.push("re-resolved for this approval: the agents route and the fallback chain — a yes on the source never covers them");
-  words.push("never inherited: the source's approval, attended sessions, publication and merge grants");
+  words.push("re-resolved for this approval: the agents route — a yes on the source never covers it");
+  words.push("never inherited: the source's approval, publication and merge grants");
   if (lineage.repair !== null) {
     const repair = lineage.repair;
     words.push(
@@ -10133,7 +9470,6 @@ export function taskBodyParts(data: {
   /** Coordinator provenance when an agent filed this; null otherwise. */
   coordinator?: { label: string; filedAgo: string | null } | null;
   holds: Hold[];
-  contest?: { id: number; state: string; agents: number; kind: "race" | "comparison" } | null;
   claimed: boolean;
   /** What this task waits for — blockers outside this console's ceiling
    * are named but carry no state and no link. */
@@ -10156,11 +9492,9 @@ export function taskBodyParts(data: {
   /** The tracker item this task stands for, when it is external work. */
   mirror?: ExternalMirror | null;
   scope: Scope | null;
-  /** Filed race terms (v14) — the approval restates them; one yes covers both. */
-  raceTerms?: TournamentTerms | null;
   /** What the approval nonce/digest bind: scope digest, or the joint fingerprint. */
   approvalDigest?: string | null;
-  spendDefaults?: { buildPerRunMicrousd: number | null; racePerAgentMicrousd: number | null; raceTotalMicrousd: number | null; raceAgents: number | null } | null;
+  spendDefaults?: { buildPerRunMicrousd: number | null } | null;
   /** Installation starting value for a task that has no profile yet. */
   permissionDefault?: UnattendedPermissionMode;
   /** Durable choice for this task, when one was explicitly made. */
@@ -10235,14 +9569,6 @@ export function taskBodyParts(data: {
   editPlan?: boolean;
   cancelDraft?: string;
   problem: string | null;
-  /** The attended road (Phase 2E): mint offer, or the open authorization. */
-  attended?: {
-    canMint: boolean;
-    /** The mint picker (P1/C7): claude models to choose from, and the
-     * permission posture default (escalated when the active mode says so). */
-    mint?: { models: string[]; pinnedModel: string; posture: "auto" | "acceptEdits" | "bypassPermissions"; quick: boolean };
-    open: { id: string; state: string; expiresAt: string; turnsUsed: number; cap: number; spentMicrousd: number; budgetMicrousd: number; running: boolean } | null;
-  } | null;
   now: Date;
 }): { html: string; view: BrowserTaskView } {
   const { task, scope } = data;
@@ -10547,20 +9873,6 @@ export function taskBodyParts(data: {
     return box("problem", "Dispatch unknown", "Refresh this task before relying on its scheduler state.", "unknown");
   })();
 
-  const contest = data.contest ?? null;
-  const contestCard =
-    contest === null
-      ? ""
-      : [
-          `<div class="card">`,
-          `<p><strong>${contestNoun(contest.kind)}</strong> <span class="meta">${contest.agents} agents on this task</span></p>`,
-          `<p class="row">${escape((CONTEST_STATE_WORDS[contest.state] ?? "the tournament is in an unexpected state — the records have the detail").replace(/tournament/g, contestNoun(contest.kind)))}</p>`,
-          `<p class="row"><a href="/contest/${contest.id}">${
-            contest.state === "pick-wait" ? "compare the results and pick one" : `see the ${contestNoun(contest.kind)}`
-          }</a></p>`,
-          `</div>`,
-        ].join("\n");
-
   // Operator steering (arc 1): notes for the agent, each wearing exactly
   // where it stands — waiting, attached, proven delivered, or superseded.
   const steering = data.steering ?? [];
@@ -10582,7 +9894,7 @@ export function taskBodyParts(data: {
     )
     .join("\n");
   const steerForm =
-    data.csrf === "" || task.state === "done" || task.state === "cancelled" || (data.contest ?? null) !== null
+    data.csrf === "" || task.state === "done" || task.state === "cancelled"
       ? ""
       : `<form method="post" action="${taskHref(task.id)}/steer" class="row">` +
         `<input type="hidden" name="csrf" value="${escape(data.csrf)}">` +
@@ -10619,22 +9931,6 @@ export function taskBodyParts(data: {
           scope.outOfScope === null ? "" : `<p><strong>Not this</strong></p><p class="recap">${escape(scope.outOfScope)}</p>`,
           scope.touches.length === 0 ? "" : `<p class="scope-paths"><strong>Touches</strong> ${scope.touches.map(one => escape(one)).join(", ")}</p>`,
           `<p><strong>Quality</strong> ${escape(qualityModeTitle(scope.qualityMode ?? "default"))}</p>`,
-          // The fallback chain, on the card the yes reads (Layer F): the
-          // digest binds the WHOLE chain, so every entry — credential
-          // included — is said before anyone signs.
-          (() => {
-            const chain = chainFromJson(scope.proposedChainJson ?? null);
-            if (chain === null || chain.length < 2) return "";
-            return `<p><strong>If its subscription runs out</strong></p><p class="recap">${chain
-              .slice(1)
-              .map(
-                one =>
-                  `falls back to ${escape(one.profile.provider)} (${escape(one.profile.model)}) — ${
-                    one.authMode === "api-key" ? "your API key; spend moves to that account" : "its subscription login"
-                  }`,
-              )
-              .join("; ")}</p>`;
-          })(),
           acceptanceCeremonyHtml(scope.acceptance),
           approval.approved
             ? `<p class="meta scope-seal">Approved by ${escape(approval.by)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
@@ -10783,7 +10079,6 @@ export function taskBodyParts(data: {
           revision: data.revision == null || "problem" in data.revision ? null : data.revision,
           revisionSourceHref: data.revision == null || "problem" in data.revision ? "" : `/r/${data.revision.sourceRun}`,
           repairChain: data.repairChain ?? null,
-          raceTerms: data.raceTerms ?? null,
           route: data.route,
           coordinator: data.coordinator ?? null,
           deliverable: data.deliverable ?? "branch",
@@ -10791,57 +10086,10 @@ export function taskBodyParts(data: {
           notNowHref: "/work",
           sticky: data.dispatch?.action === "approve-scope",
           earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 },
-          // A tournament's terms live in the full scope editor; every other plan edits in place.
-          edit: data.csrf === "" || (data.raceTerms ?? null) !== null ? null
+          edit: data.csrf === "" ? null
             : { action: `${taskHref(task.id)}/scope`, draft: inlineScopeDraft ? data.scopeDraft ?? null : null, problem: inlineScopeDraft ? data.problem : null,
               open: data.editPlan === true, stepsHref: data.planSha != null && data.planDocument !== null ? "#plan-edit" : null },
         });
-
-  // The attended road (Phase 2E): beside the approval, never replacing it.
-  // The mint button leads to the CONFIRM screen where every term renders
-  // and the password signs; an open authorization shows its state, its
-  // revoke, and — through the page script — the liveness beat that IS
-  // "while you watch".
-  const attended = data.attended ?? null;
-  const attendedCard =
-    attended === null
-      ? ""
-      : attended.open !== null
-        ? [
-            `<div class="card" data-attended="${escape(attended.open.id)}">`,
-            `<p><strong>Attended session</strong> <span class="meta">${escape(attended.open.state)}</span></p>`,
-            `<p class="meta">${attended.open.running ? "the agent is running — your open console keeps it live" : "waiting to dispatch to this machine"} · ${attended.open.turnsUsed}/${attended.open.cap} messages · $${(attended.open.spentMicrousd / 1_000_000).toFixed(2)} of $${(attended.open.budgetMicrousd / 1_000_000).toFixed(2)} · everything ends by ${whenTime(attended.open.expiresAt)}</p>`,
-            `<p class="meta">This page being open keeps it alive — close it and the session winds down within a minute</p>`,
-            `<form method="post" action="${taskHref(task.id)}/attend-revoke" class="inline">`,
-            `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-            `<button type="submit">Revoke — stop the session</button>`,
-            `</form>`,
-            `</div>`,
-          ].join("\n")
-        : attended.canMint
-          ? [
-              `<form method="post" action="${taskHref(task.id)}/attend-preview" class="card">`,
-              `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
-              `<p><strong>Or run it once while you watch</strong></p>`,
-              `<p class="meta">No approval filed: one attempt, on this machine, only while this page is open. You will read every term before ${attended.mint?.quick === true ? "you confirm it" : "your password signs it"}.</p>`,
-              attended.mint === undefined || attended.mint.models.length <= 1
-                ? ""
-                : `<label>Model <span class="meta">(watched sessions run claude only)</span><select name="model">` +
-                  attended.mint.models
-                    .map(model => `<option value="${escape(model)}"${model === attended.mint?.pinnedModel ? " selected" : ""}>${escape(model)}</option>`)
-                    .join("") +
-                  `</select></label>`,
-              attended.mint === undefined
-                ? ""
-                : `<label>Permissions<select name="posture">` +
-                  `<option value="auto"${attended.mint.posture === "auto" ? " selected" : ""}>safe unattended — routine project commands and edits proceed</option>` +
-                  `<option value="acceptEdits"${attended.mint.posture === "acceptEdits" ? " selected" : ""}>legacy acceptEdits — commands that ask are denied unattended</option>` +
-                  `<option value="bypassPermissions"${attended.mint.posture === "bypassPermissions" ? " selected" : ""}>full permissions — nothing asks</option>` +
-                  `</select></label>`,
-              `<button type="submit">Read the terms</button>`,
-              `</form>`,
-            ].join("\n")
-          : "";
 
   const scopeForm = [
     `<details${scope === null || scopeDraft !== undefined ? " open" : ""}><summary>${scope === null ? "Write the scope" : "Edit the scope"}${
@@ -10890,54 +10138,6 @@ export function taskBodyParts(data: {
       return `<fieldset class="permission-field"><legend>Quality</legend>` +
         qualityModeChoices("quality-mode", selected) +
         `<p class="meta permission-note">This choice is signed into the scope. Inspect the saved work and actual check results when it is ready. Publication and deployment need their own authorization.</p></fieldset>`;
-    })(),
-    (() => {
-      // The tournament controls (operator request): how many agents compete,
-      // on which model, under which dollars. "One agent" is the ordinary
-      // path; anything more files race terms beside the scope, and the ONE
-      // approval above restates and covers both.
-      const defaults = data.spendDefaults ?? null;
-      const terms = data.raceTerms ?? null;
-      const selectedCount = scopeDraft === undefined ? terms !== null ? terms.n : defaults?.raceAgents ?? 0 : Number(scopeDraft.get("race-count") ?? "0");
-      const selectedModel = scopeDraft?.get("race-model") ?? terms?.agents[0]?.model ?? "claude-sonnet-5";
-      const perPrefill =
-        terms !== null
-          ? (terms.perAgentBudgetMicrousd / 1_000_000).toFixed(2)
-          : defaults?.racePerAgentMicrousd != null
-            ? (defaults.racePerAgentMicrousd / 1_000_000).toFixed(2)
-            : "";
-      const totalPrefill =
-        terms !== null
-          ? (terms.totalBudgetMicrousd / 1_000_000).toFixed(2)
-          : defaults?.raceTotalMicrousd != null
-            ? (defaults.raceTotalMicrousd / 1_000_000).toFixed(2)
-            : "";
-      return [
-        `<details class="more-agents"${selectedCount > 0 ? " open" : ""}><summary>More than one agent (optional)</summary>`,
-        `<label>How many agents compete <span class="meta">(a tournament builds the task independently N times — you compare and pick one)</span>` +
-          `<select name="race-count">` +
-          `<option value=""${selectedCount === 0 ? " selected" : ""}>one agent — no tournament</option>` +
-          [2, 3, 4].map(count => `<option value="${count}"${selectedCount === count ? " selected" : ""}>${count} agents</option>`).join("") +
-          `</select></label>`,
-        `<label>Competing model <select name="race-model">` +
-          PRICED_BUILD_MODELS.map(model => `<option value="${escape(model)}"${model === selectedModel ? " selected" : ""}>${escape(model)}</option>`).join("") +
-          `</select></label>`,
-        `<label>Each competing agent may spend ($)<input type="number" name="race-per-usd" step="0.01" min="0.01" value="${escape(scopeDraft?.get("race-per-usd") ?? perPrefill)}"></label>`,
-        `<label>The whole tournament may spend ($)<input type="number" name="race-total-usd" step="0.01" min="0.01" value="${escape(scopeDraft?.get("race-total-usd") ?? totalPrefill)}"></label>`,
-        // The comparison lanes (Phase 3 slice B): 2-4 rows, any registered
-        // provider, exact model required — no dollar fields exist. Blank
-        // rows are unused; filling any row files a comparison INSTEAD of a
-        // tournament, and mixing the two refuses in words.
-        `<p class="meta" style="margin-top:.75rem">or compare different agents side by side — no dollar caps; each agent's clock is its bound, and spend lands measured only where the harness reports dollars:</p>`,
-        ...[1, 2, 3, 4].map(lane =>
-          `<div class="row"><label>Agent ${lane} <select name="compare-provider-${lane}">` +
-            `<option value="">—</option>` +
-            PROVIDER_IDS.map(provider => `<option value="${escape(provider)}"${scopeDraft?.get(`compare-provider-${lane}`) === provider ? " selected" : ""}>${escape(provider)}</option>`).join("") +
-            `</select></label>` +
-            `<label>Its exact model<input type="text" name="compare-model-${lane}" value="${escape(scopeDraft?.get(`compare-model-${lane}`) ?? "")}" placeholder="e.g. gemini-2.5-pro"></label></div>`,
-        ),
-        `</details>`,
-      ].join("\n");
     })(),
     `<button type="submit">Save scope</button>`,
     `</form></details>`,
@@ -11404,7 +10604,6 @@ export function taskBodyParts(data: {
     // (slice 1c) rides beside the main column on wide screens and above it
     // on narrow ones.
     `<div class="task-layout"><div class="task-main">`,
-    contestCard,
     attemptPanel,
     data.coordinatorProposals == null || data.coordinatorProposals.rows.length === 0
       ? ""
@@ -11442,7 +10641,7 @@ export function taskBodyParts(data: {
       "scope",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      ["<h2>Scope</h2>", scopeCard, data.repo !== null && data.scope !== null ? `<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.csrf, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), attendedCard, scopeForm].join("\n"),
+      ["<h2>Scope</h2>", scopeCard, data.repo !== null && data.scope !== null ? `<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.csrf, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm].join("\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
     ),
     dependencyChoiceNeeded ? "" : section("waits for", waitsForCard, (data.waitsFor ?? []).length > 0, (data.waitsFor ?? []).length),
@@ -11655,7 +10854,7 @@ export function taskBodyParts(data: {
       { key: "history", html: data.history ?? "" }, { key: "control", html: stop === null ? controlHtml : taskControlDetailsHtml(data.control!, task.id, data.csrf, "task", false, true) }, { key: "problem", html: problemHtml },
       { key: "pull-request", html: pullRequestCard },
       { key: "needs-scope", html: needsScopeCard },
-      { key: "mirror", html: mirrorCard }, { key: "contest", html: contestCard }, { key: "attempt", html: attemptPanel },
+      { key: "mirror", html: mirrorCard }, { key: "attempt", html: attemptPanel },
     ].filter(one => one.html !== ""),
     // Open questions are answered in the thread.
     questions: "",
@@ -11692,11 +10891,7 @@ export function taskBody(data: Parameters<typeof taskBodyParts>[0]): string {
 }
 
 export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): Screen {
-  // The beat moved to the chrome layer (v28): every console page keeps the
-  // approver's sessions live; this page no longer carries its own.
-  //
-  // The sensitive-page composition guard (slice 1c): a live attended
-  // attempt can coexist with an unapproved scope, so this page may carry a
+  // The sensitive-page composition guard (slice 1c): this page may carry a
   // password ceremony. sendScreen() would keep a functional script on such
   // a page — so the decision is made HERE, from the rendered body itself:
   // when the body (or the chrome's list pane) shows a password input, the
@@ -11932,7 +11127,7 @@ export type CompletedWorkRow = ReturnType<Store["listCompletedWorkScoped"]>[numb
 export type RankedReviewRow = CompletedWorkRow & { ciFailing: boolean; priority: ReviewPriority; assignment?: AssignmentSnapshot | null };
 
 /** What the cockpit shows of one selected result — a projection of the
- * scope, plan, run, artifact, verdict, contest, and publication records,
+ * scope, plan, run, artifact, verdict, and publication records,
  * each read through the verifier the run page already uses. */
 export type ReviewCockpitView = {
   taskId: string;
@@ -11952,7 +11147,6 @@ export type ReviewCockpitView = {
     approvedBy: string | null;
   } | null;
   plan: { revision: number; sha256: string; approach: string | null } | null;
-  contest: { id: number; state: string; kind: "race" | "comparison"; agents: number } | null;
   /** null = the task is done with no finished build attempt on record. */
   run: {
     id: number;
@@ -12266,7 +11460,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     taskHref: taskHref(view.taskId), chatHref: taskChatHref(view.taskId),
     status: { label: status.label, tone: status.tone, token: status.token },
     problem: view.detail === null ? view.historyProblem : null,
-    next: reviewNextActionOf(view, csrf), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null, contest: "",
+    next: reviewNextActionOf(view, csrf), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
     acts: { primary: null, secondary: null, line: null }, runChecks: null, mismatch: null,
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
@@ -12312,8 +11506,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     headStatus: false,
     action: false,
   });
-  const contest = view.contest === null ? "" : `<p class="row"><a href="/contest/${view.contest.id}">${view.contest.state === "pick-wait" ? `compare the ${contestNoun(view.contest.kind)} and pick →` : `the ${contestNoun(view.contest.kind)} (${escape(view.contest.state)}) →`}</a></p>`;
-  parts.push(`<div id="verification" data-cockpit-section="result">` + panel.html + contest + `</div>`);
+  parts.push(`<div id="verification" data-cockpit-section="result">` + panel.html + `</div>`);
 
   const blocked = cantAcceptYetOf(proof?.verdict ?? null, proof?.reasons ?? [], accepted);
   const youCheck = panel.panel.youCheck;
@@ -12410,7 +11603,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   return {
     html: `<section class="cockpit-detail">${parts.join("\n")}</section>`,
     selected: {
-      ...selected, complete: failure === null ? complete : null, decision: failure === null ? decision : null, contest, acts, actFacts, runChecks, mismatch, failure,
+      ...selected, complete: failure === null ? complete : null, decision: failure === null ? decision : null, acts, actFacts, runChecks, mismatch, failure,
       // A failed build reads Failed, whatever its task has done since; its outcome is what went wrong.
       // Run checks is the decision's own act on this page; a status row never sends the person to Chat for it.
       panel: (() => {
@@ -12501,9 +11694,6 @@ export function reviewNextActionOf(view: ReviewCockpitView, csrf: string): { kin
   const card = (kind: string, title: string, detailWords: string, control: string) => ({ kind, title, detail: detailWords, control });
   if (run === null || detail === null) {
     return card("inspect-task", "No build to review", "This task was marked complete without a build record.", `<a class="button-link" href="${taskHref(view.taskId)}">Open the task</a>`);
-  }
-  if (view.contest !== null && view.contest.state === "pick-wait") {
-    return card("compare-contest", `Compare the ${contestNoun(view.contest.kind)}`, `${view.contest.agents} agents finished — compare their results side by side and pick one.`, `<a class="button-link" href="/contest/${view.contest.id}">Compare results</a>`);
   }
   if (detail.ciFailing && csrf !== "") {
     return card("draft-repair", "CI is failing on its pull request", "Toolroll confirmed the failure. Draft one repair task, then approve it before it runs.", `<form method="post" action="/r/${run.id}/draft-repair"><input type="hidden" name="csrf" value="${escape(csrf)}"><button type="submit">Draft a repair task</button></form>`);
@@ -14104,8 +13294,6 @@ export function runPage(
   editor: { worktree: string } | null = null,
   editorToggle: { on: boolean } | null = null,
   noted = false,
-  heldTurns: { turns: SessionTurn[]; open: boolean; state: string; cap: number } | null = null,
-  continueOffer: { taskId: string } | null = null,
   structuredHandoff: StructuredHandoffView | null = null,
   proofBundle: ProofBundleView | null = null,
   route: RouteStamp | null = null,
@@ -14115,47 +13303,6 @@ export function runPage(
   sourceDigest: string | null = null,
 ): Screen {
   const rows = runFactsRows(run, taskId, running, route);
-  // The conversation (Phase 2E, v2 S1g): every stdin injection as the
-  // ledger records it — author named for operator turns, machine turns
-  // say so — and the TURN BOX while the session is held. An unconfirmed
-  // turn says honestly that the agent may or may not have seen it.
-  const turnWords = (turn: SessionTurn): string =>
-    turn.state === "settled"
-      ? ""
-      : turn.state === "uncertain"
-        ? " · unconfirmed — the agent may or may not have seen this; its cost is counted at worst case"
-        : turn.state === "cancelled"
-          ? " · never reached the agent"
-          : " · the agent is working on this";
-  const conversation =
-    heldTurns === null
-      ? ""
-      : `<h2>Conversation</h2>` +
-        (heldTurns.turns.length === 0
-          ? `<p class="meta">Nothing said yet</p>`
-          : heldTurns.turns
-              .map(
-                turn =>
-                  `<p class="row"><span class="meta">${
-                    turn.sourceKind === "operator"
-                      ? escape(turn.author ?? "operator")
-                      : turn.sourceKind === "brief"
-                        ? "the brief"
-                        : turn.sourceKind === "answer"
-                          ? "your answer"
-                          : "repair (machine)"
-                  } · ${whenTime(turn.recordedAt)}${turnWords(turn)}</span> ${escape(oneLineOf(turn.text, 240))}</p>`,
-              )
-              .join("\n")) +
-        (heldTurns.open && csrf !== ""
-          ? `<form method="post" action="/r/${run.id}/turn" class="row">` +
-            `<input type="hidden" name="csrf" value="${escape(csrf)}">` +
-            `<input type="text" name="text" maxlength="500" placeholder="say something to the agent — it reads this as its next instruction, inside the approved scope" aria-label="turn" style="width:100%;max-width:34rem">` +
-            `<button type="submit">Send</button></form>` +
-            `<p class="meta">${escape(heldTurns.state)} · ${heldTurns.turns.length}/${heldTurns.cap} messages · a waiting question must be answered before free-form messages</p>`
-          : heldTurns.open
-            ? ""
-            : `<p class="meta">The session has ended — the record above is complete</p>`);
   // The live peek region (A2): the poller fills it only on a serve that
   // asserted its runner. Without the assertion the section still appears
   // for a running build and says honestly why it is empty \u2014 a page that
@@ -14296,21 +13443,6 @@ export function runPage(
         `<button type="submit">Add note</button></form>`;
   const notesCard = noteRows === "" && noteForm === "" ? "" : `<h2>Operator notes</h2>${noteRows}${noteForm}`;
 
-  // Continuation (Phase 2E, A4): a finished attempt offers a watched
-  // follow-up — the text you type here enters the SIGNED terms on the
-  // confirm screen; nothing runs until your password agrees to exactly it.
-  const continueCard =
-    continueOffer === null || csrf === ""
-      ? ""
-      : `<details class="result-request-open continue-watch"><summary>Continue while you watch</summary>` +
-        `<form method="post" action="${taskHref(continueOffer.taskId)}/attend-preview" class="card">` +
-        `<input type="hidden" name="csrf" value="${escape(csrf)}">` +
-        `<input type="hidden" name="parent" value="${run.id}">` +
-        `<p class="meta">Picks up from where this attempt stopped.</p>` +
-        `<label>What next<textarea name="followup" rows="2" maxlength="2000" placeholder="What should the agent do next, within the same scope…"></textarea></label>` +
-        `<button type="submit">Review the terms</button>` +
-        `</form></details>`;
-
   // Outcome first (UI polish 2026-09-13): a finished build leads with its
   // result, proof, and diff; the machine facts fold under "Build details".
   // A live build keeps the facts open — they are what a watcher polls.
@@ -14339,7 +13471,6 @@ export function runPage(
   return screen(`build #${run.id}`, [
     `<h1>Build #${run.id} <span class="meta"><a href="${taskHref(taskId)}">${escape(taskId)}</a></span></h1>`,
     running ? facts : "",
-    conversation,
     transcript,
     peek,
     ...(resultPanel === null
@@ -14350,7 +13481,6 @@ export function runPage(
           reviewCard,
         ]
       : [resultPanel, editorToggleForm]),
-    continueCard,
     running ? "" : facts,
     evidence,
     notesCard,
@@ -14996,7 +14126,6 @@ export function nextPage(chrome: Chrome, data: {
   planDocument: string | null;
   planContract?: PlanContractView | null;
   approvalDigest: string | null;
-  raceTerms: TournamentTerms | null;
   /** v34: said inside the ceremony when the yes buys a report, not a branch. */
   deliverable?: "branch" | "report";
   /** v48: the agents the yes freezes — the one block every ceremony shows. */
@@ -15059,9 +14188,6 @@ export function nextPage(chrome: Chrome, data: {
       `<p class="meta">Not this</p><p class="recap" style="margin-top:0">${scope?.outOfScope == null ? "<em>no exclusions</em>" : escape(scope.outOfScope)}</p>` +
       `<p class="meta">Touches · ${scope === null || scope.touches.length === 0 ? "anything" : scope.touches.map(one => escape(one)).join(", ")}</p>` +
       (scope === null ? "" : acceptanceCeremonyHtml(scope.acceptance)) +
-      (data.raceTerms === null
-        ? ""
-        : `<p><strong>${data.raceTerms.kind === "comparison" ? "comparison" : "tournament"}</strong></p><p class="meta">${data.raceTerms.n} agents build independently: ${data.raceTerms.agents.map(one => `${escape(one.provider)} · ${escape(one.model)}`).join(" vs ")}.</p>`) +
       // The AGENTS the yes freezes (v48): the same concise block the task
       // page and chat sign under, before the password — runtime limits one
       // tap away, never in the way.
@@ -15185,16 +14311,6 @@ export async function form(request: IncomingMessage, cap = BODY_CAP): Promise<UR
     chunks.push(chunk as Buffer);
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-}
-
-/** Attended liveness in words for the task card — reads the durable clock. */
-export function attendedWatchWords(lastBeatAt: string | null, now: Date, absoluteExpiry: string): string {
-  const state = attendedLivenessState(
-    lastBeatAt === null ? null : Date.parse(lastBeatAt),
-    now.getTime(),
-    Date.parse(absoluteExpiry),
-  );
-  return state === "live" ? "watching" : state === "grace" ? "watching (a beat behind)" : state === "expired" ? "expired" : "not watching — reopen this page to resume";
 }
 
 /** One display line, bounded — turn text is data, never layout. */

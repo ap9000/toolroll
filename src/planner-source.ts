@@ -201,7 +201,8 @@ export function plannerContractOf(store: Store, taskId: string): { ok: true; con
         agentPin: { provider: ref.agentProvider, model: ref.agentModel },
         planPin: { provider: ref.planProvider, model: ref.planModel },
         deliverable: ref.deliverable,
-        riskLevel: ref.riskLevel ?? null,
+        // The declared risk level was removed in v115; the field stays in the recorded shape.
+        riskLevel: null,
         qualityMode: ref.qualityMode ?? null,
         permissionMode: ref.permissionMode ?? null,
       },

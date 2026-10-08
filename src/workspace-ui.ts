@@ -658,7 +658,7 @@ export function compareWorkRows(a: { rank: number; updatedAt: string }, b: { ran
  * lives under. */
 export type PrimaryDestination = "chat" | "work" | "projects" | "flows" | "settings" | null;
 
-const WORK_KEYS = new Set(["inbox", "board", "queue", "work", "done", "activity", "review", "tasks", "runs", "workbench", "routines", "recipes", "ledger"]);
+const WORK_KEYS = new Set(["inbox", "board", "queue", "work", "done", "activity", "review", "tasks", "runs", "workbench", "recipes", "ledger"]);
 const SETTINGS_KEYS = new Set(["fleet", "caps", "people", "mode", "system", "settings"]);
 
 export function primaryDestinationOf(active: string): PrimaryDestination {

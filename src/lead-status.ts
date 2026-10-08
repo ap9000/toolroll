@@ -152,11 +152,11 @@ export function taskWaitSnapshot(store: Store, taskId: string, now: Date, watche
 
   const hold = store.handle.prepare(`SELECT owner_kind FROM hold INDEXED BY hold_by_task
     WHERE task_ref = ? AND (until IS NULL OR until > ?)
-    ORDER BY CASE owner_kind WHEN 'decision' THEN 0 WHEN 'incident' THEN 1 WHEN 'operator' THEN 2 WHEN 'revision' THEN 3 WHEN 'stop' THEN 4 WHEN 'contest' THEN 5 ELSE 6 END, id LIMIT 1`)
+    ORDER BY CASE owner_kind WHEN 'decision' THEN 0 WHEN 'incident' THEN 1 WHEN 'operator' THEN 2 WHEN 'revision' THEN 3 WHEN 'stop' THEN 4 ELSE 5 END, id LIMIT 1`)
     .get(taskRef, now.toISOString());
   const holdKind = hold === undefined ? null : String(hold["owner_kind"]);
   if (holdKind !== null && holdKind !== "backoff") {
-    const next = holdKind === "operator" ? "Remove hold" : holdKind === "revision" ? "Review plan" : holdKind === "stop" ? "Resume or close attempt" : holdKind === "contest" ? "Choose a result" : "Review task";
+    const next = holdKind === "operator" ? "Remove hold" : holdKind === "revision" ? "Review plan" : holdKind === "stop" ? "Resume or close attempt" : "Review task";
     return answer("Needs a person", next, true, 1, "needs-person");
   }
   // An admitted attempt is already the work being watched. Its immutable
@@ -190,7 +190,6 @@ function queueReason(row: Record<string, unknown>): string {
   if (hold === "operator") return "on hold";
   if (hold === "revision") return "needs plan review";
   if (hold === "stop") return "stopped";
-  if (hold === "contest") return "needs a result choice";
   if (hold === "backoff") return "retrying later";
   if (row["plan"] === "drafted" && Number(row["approved"]) !== 1) return "needs plan review";
   if (Number(row["strikes"] ?? 0) >= 3) return "stalled after failures";

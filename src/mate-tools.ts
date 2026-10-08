@@ -47,7 +47,7 @@ import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
-import { agentsSummary, chosenWords, PHASES, postureWords, RISK_CHOICES, riskConsequence, riskTitle, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
+import { agentsSummary, chosenWords, PHASES, postureWords, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
 import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
@@ -398,8 +398,8 @@ const ROLE_WORD: Record<Phase, string> = { plan: "planner", build: "builder", re
 const ROLE_OF_WORD: Record<string, Phase> = { planner: "plan", plan: "plan", builder: "build", build: "build", repair: "repair", reviewer: "review", review: "review" };
 
 /**
- * THE AGENTS A TASK RUNS UNDER, as chat reads them (v48): the declared
- * risk and what it means, the same one-line summary the task page and CLI
+ * THE AGENTS A TASK RUNS UNDER, as chat reads them (v48): the task's size,
+ * the same one-line summary the task page and CLI
  * print, each role's exact agent with its reasons, the standing of those
  * agents (approved / awaiting approval / recommended), and — for a
  * proposal — only the configured, role-valid choices an operator could
@@ -411,14 +411,11 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
   if (ref === null) return null;
   const routed = routeOfTask(store, taskId, ref, now);
   const scope = store.getScope(taskId);
-  const risk = ref.riskLevel ?? scope?.riskLevel ?? "routine";
-  const editable = !store.hasLiveClaim(ref.id, now) && store.activeTournamentTerms(ref.id) === null;
-  const editableWhy = store.hasLiveClaim(ref.id, now) ? "this task is running — its agents cannot change under a live claim" : store.activeTournamentTerms(ref.id) !== null ? "tournament terms decide the agents while the contest is open" : null;
+  const editable = !store.hasLiveClaim(ref.id, now);
+  const editableWhy = store.hasLiveClaim(ref.id, now) ? "this task is running — its agents cannot change under a live claim" : null;
   const base = {
     task: taskId,
-    risk: { level: risk, title: riskTitle(risk), consequence: riskConsequence(risk) },
     size: ref.sizing == null ? null : { size: ref.sizing.size, risky: ref.sizing.risky, reason: ref.sizing.reason, source: sizeSourceWords(ref.sizing.source) },
-    riskChoices: RISK_CHOICES.map(one => ({ risk: one.risk, title: one.title, consequence: one.consequence })),
     editable,
     editableWhy,
     approval: scope === null ? "none" : scopeStandingOf(store, taskId),
@@ -1369,7 +1366,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_agents: {
-    description: "Read current roles, risk, approval, configured alternatives and the organisation policy (allowed providers, models, tools, permission ceiling; changed only on Settings → Policy) before propose_agents.",
+    description: "Read current roles, size, approval, configured alternatives and the organisation policy (allowed providers, models, tools, permission ceiling; changed only on Settings → Policy) before propose_agents.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       if (taskId === null) return { ok: false, message: "task is an id, 1-64 characters" };
@@ -1499,7 +1496,6 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (typeof args["note"] === "string" && args["note"].length > LIMITS.note) return { ok: false, message: `guidance is ${args["note"].length} characters; the limit is ${LIMITS.note}. Shorten it and propose again.` };
       if (!honest(args["note"], LIMITS.note)) return { ok: false, message: `guidance is plain text up to ${LIMITS.note} characters` };
       if (task.state === "done" || task.state === "cancelled") return { ok: false, message: "that task is finished, so guidance has no next attempt to reach" };
-      if (ctx.store.openContestFor(ref.id) !== null) return { ok: false, message: "agents are racing on that task — wait until the comparison finishes" };
       const id = ctx.draft("steer", { task: taskId, taskTitle: task.title, repoId: ref.repoId, note: args["note"] });
       if (id === null) return tooMany();
       return { ok: true, body: { proposal: id, kind: "steer", task: taskId, awaiting: "the operator's confirmation" } };
@@ -1578,13 +1574,12 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_agents: {
-    description: "Read get_agents. Change risk, size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
+    description: "Read get_agents. Change size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       const ref = taskId === null ? null : admittedRef(ctx, taskId);
       const task = taskId === null ? null : ctx.store.getTask(taskId);
       if (taskId === null || ref === null || task === null) return notFound();
-      const risk = args["risk"];
       const roleWord = args["role"];
       const phase = roleWord === undefined ? null : typeof roleWord === "string" ? ROLE_OF_WORD[roleWord] ?? null : null;
       if (roleWord !== undefined && (phase === null || phase === "review")) return { ok: false, message: "role is planner, builder, or repair" };
@@ -1594,12 +1589,11 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const risky = args["risky"];
       const sized = ctx.store.refForId(ref.id)?.sizing ?? null;
       const sizeChange = size === undefined && risky === undefined ? null : { size: (size as TaskSize | undefined) ?? sized?.size ?? "medium", risky: (risky as boolean | undefined) ?? sized?.risky ?? false };
-      if (risk === undefined && phase === null && sizeChange === null) return { ok: false, message: "say what changes: a risk, a size, or a role with an agent (or clear: true)" };
+      if (phase === null && sizeChange === null) return { ok: false, message: "say what changes: a size, or a role with an agent (or clear: true)" };
       if (phase !== null && !clear && (agent === null || typeof agent !== "object")) return { ok: false, message: "a role change names an agent from get_agents, or clear: true" };
       if (phase === null && (clear || agent !== undefined)) return { ok: false, message: "an agent or clear needs the role it applies to" };
       if (args["why"] !== undefined && !honest(args["why"], 400)) return { ok: false, message: "why is plain text ≤400" };
       if (ctx.store.hasLiveClaim(ref.id, ctx.now)) return { ok: false, message: "a worker is building that task right now — its agents cannot change under it" };
-      if (ctx.store.activeTournamentTerms(ref.id) !== null) return { ok: false, message: "tournament terms decide this task's agents while the contest is open" };
       const view = agentsOver(ctx.store, taskId, ctx.now);
       if (view === null) return notFound();
       const scope = ctx.store.getScope(taskId);
@@ -1619,17 +1613,15 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         }
         chosen = { provider: match.provider, model: match.model };
         const currentLeg = (view["agents"] as { role: string; provider: string; model: string }[]).find(one => one.role === ROLE_WORD[phase]);
-        if (currentLeg !== undefined && sameSpec(currentLeg, chosen) && risk === undefined) return { ok: false, message: `${specWords(chosen)} already runs the ${ROLE_WORD[phase]} role` };
+        if (currentLeg !== undefined && sameSpec(currentLeg, chosen)) return { ok: false, message: `${specWords(chosen)} already runs the ${ROLE_WORD[phase]} role` };
       }
       if (phase !== null && clear && !(current?.routeOverrides ?? []).some(one => one.phase === phase)) {
         return { ok: false, message: `nobody chose a ${ROLE_WORD[phase]} for this task by hand — there is nothing to clear` };
       }
-      if (risk !== undefined && phase === null && risk === (view["risk"] as { level: string }).level) return { ok: false, message: `this task is already declared ${riskTitle(risk).toLowerCase()}` };
       const id = ctx.draft("agents", {
         task: taskId,
         taskTitle: task.title,
         repoId: ref.repoId,
-        ...(risk === undefined ? {} : { risk, riskConsequence: riskConsequence(risk) }),
         ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
         ...(phase === null ? {} : { phase, role: ROLE_WORD[phase] }),
         ...(chosen === null ? {} : { provider: chosen.provider, model: chosen.model }),
@@ -1646,7 +1638,6 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           proposal: id,
           kind: "agents",
           task: taskId,
-          ...(risk === undefined ? {} : { risk }),
           ...(sizeChange === null ? {} : { size: sizeChange.size, risky: sizeChange.risky }),
           ...(phase === null ? {} : { role: ROLE_WORD[phase], ...(chosen === null ? { clear: true } : { agent: chosen }) }),
           awaiting: view["approval"] === "approved" ? "the operator's confirmation — the current approval will then need renewing" : "the operator's confirmation",

@@ -10,7 +10,7 @@ const { rows } = scopeFixtures();
 const verdict = (read: { ok: true } | { ok: false; issues: readonly { line: string }[] }): SampleVerdict => (read.ok ? { ok: true } : { ok: false, lines: read.issues.map(one => one.line) });
 const routeRead = (input: unknown): SampleVerdict => verdict(readSealedRoute(input));
 
-const savedRoutes = [...rows.task_scope, ...rows.routine].flatMap(row =>
+const savedRoutes = rows.task_scope.flatMap(row =>
   ["proposed_route_json", "approved_route_json", "route_json"].flatMap(column =>
     typeof row[column] === "string" ? [{ name: `${String(row["task_id"] ?? row["id"])} ${column}`, json: String(row[column]) }] : [],
   ),

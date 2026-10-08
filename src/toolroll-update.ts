@@ -205,7 +205,7 @@ export function runningWorkWords(db: DatabaseSync): string | null {
   const runs = db.prepare("SELECT tr.external_id id, COALESCE(t.title, tr.external_id) title FROM run r JOIN task_ref tr ON tr.id = r.task_ref LEFT JOIN task t ON t.id = tr.external_id WHERE r.outcome IS NULL ORDER BY r.id LIMIT 3").all()
     .map(row => `${String(row["id"])} (${String(row["title"]).slice(0, 60)})`);
   const more = Number(active["runs"] ?? 0) - runs.length;
-  const other = Object.entries(active).filter(([key, n]) => key !== "runs" && n > 0).map(([key, n]) => `${n} ${key === "claims" ? "claimed task" : key === "conversations" ? "chat request" : key === "sessions" ? "held session" : key === "stopping" ? "run still stopping" : key === "codingDeliveries" ? "unconfirmed coding message" : "coding session"}${n === 1 ? "" : "s"}`);
+  const other = Object.entries(active).filter(([key, n]) => key !== "runs" && n > 0).map(([key, n]) => `${n} ${key === "claims" ? "claimed task" : key === "conversations" ? "chat request" : key === "stopping" ? "run still stopping" : key === "codingDeliveries" ? "unconfirmed coding message" : "coding session"}${n === 1 ? "" : "s"}`);
   const parts = [...(runs.length ? [`running ${runs.join(", ")}${more > 0 ? ` and ${more} more` : ""}`] : []), ...other];
   return parts.join("; ");
 }
@@ -335,18 +335,33 @@ export function durableRename(temp: string, target: string): void {
  * only when every saved value is null, or, with `carried`, when the receiving table gained exactly one receipt under
  * that destination per row holding a value, and as many non-null values per column as the dropped columns held.
  * `receives`: the only rows the table may gain are those receipts. `compacted`: rows may go only into summary rows,
- * whose `sum` grows by exactly as many. */
+ * whose `sum` grows by exactly as many. `retired`: a removed feature's table, which may go whole. `fromRoutines`: rows
+ * kept as they were, and the only rows the table may gain are one per saved routine, moved into a scheduled flow (its
+ * flow, or its schedule trigger naming that routine) — on only when the routine was approved and running. */
 const LEGACY_DESTINATION = "legacy:single-destination";
-const HISTORY_RULES: Record<string, { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string } }> = {
+type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string };
+  retired?: true; fromRoutines?: "flow" | "trigger" };
+const HISTORY_RULES: Record<string, HistoryRule> = {
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
   // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
   run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
   // v114: single-destination delivery columns may be dropped only once their values are legacy receipts.
   notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"], carried: { into: "notification_delivery", destination: LEGACY_DESTINATION } },
   notification_delivery: { receives: LEGACY_DESTINATION },
+  // v115: contests, held sessions, fallback chains and routines are removed; their tables go whole.
+  tournament_terms: { retired: true }, contest: { retired: true }, contestant: { retired: true },
+  routine: { retired: true }, routine_fire: { retired: true },
+  attended_authorization: { retired: true }, session_turn: { retired: true }, held_session: { retired: true },
+  fallback_config: { retired: true }, fallback_cycle: { retired: true }, fallback_transition: { retired: true },
+  // v115: each routine becomes one scheduled flow and its schedule trigger.
+  flow: { fromRoutines: "flow" }, flow_trigger: { fromRoutines: "trigger" },
 };
+/** The tables a migration may remove whole (v115's removed features). */
+export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));
+/** A saved routine, as its move into a scheduled flow must account for it. */
+type RoutineDigest = { id: number; repo: string; name: string; live: boolean };
 export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number>; carry?: number;
-  received?: { count: number; nonNull: Record<string, number> } };
+  received?: { count: number; nonNull: Record<string, number> }; routines?: RoutineDigest[] };
 const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
 const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
 /** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
@@ -381,10 +396,43 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
         t.carry = Number(db.prepare("SELECT count(*) AS n FROM " + quote(name) + " WHERE " + droppable.map(column => quote(column) + " IS NOT NULL").join(" OR ")).get()!["n"]);
       }
       if (rule?.receives) t.received = receipts(db, name, rule.receives, columns.filter(column => column !== "notification" && column !== "destination"));
-      if (rule?.appendOnly) t.hash = rowsHash(db, name, columns, t.last).hash;
+      if (rule?.appendOnly || rule?.fromRoutines) t.hash = rowsHash(db, name, columns, t.last).hash;
       if (rule?.compacted) t.summed = summed(db, rule.compacted);
+      if (rule?.fromRoutines) t.routines = savedRoutines(db);
       return t;
     });
+}
+/** Each saved routine (none when the table is gone or was never made), and whether it was approved and running. */
+function savedRoutines(db: DatabaseSync): RoutineDigest[] {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='routine'").get()) return [];
+  const columns = new Set(tableColumns(db, "routine"));
+  const live = ["approved_at", "approved_digest", "digest", "paused", "approved_profile_json", "approved_route_json"].every(c => columns.has(c))
+    ? "(approved_at IS NOT NULL AND approved_digest = digest AND approved_profile_json IS NOT NULL AND approved_route_json IS NOT NULL AND paused = 0)" : "0";
+  return db.prepare("SELECT id, repo, name, " + live + " AS live FROM routine ORDER BY id").all()
+    .map(r => ({ id: Number(r["id"]), repo: String(r["repo"]), name: String(r["name"]), live: Number(r["live"]) === 1 }));
+}
+/** Whether a table's rows past its saved last rowid are exactly the flows (or schedule triggers) its saved routines became. */
+function movedRoutines(db: DatabaseSync, t: TableDigest, before: TableDigest[]): boolean {
+  const routines = t.routines ?? [];
+  if (HISTORY_RULES[t.name]!.fromRoutines === "flow") {
+    const added = db.prepare("SELECT repo, name, state FROM flow WHERE rowid > ? ORDER BY rowid").all(t.last);
+    const key = (repo: unknown, name: unknown) => JSON.stringify([String(repo), String(name)]);
+    return added.length === routines.length && added.every(r => r["state"] === "active")
+      && JSON.stringify(added.map(r => key(r["repo"], r["name"])).sort()) === JSON.stringify(routines.map(r => key(r.repo, r.name)).sort());
+  }
+  // A trigger names its routine in its order, and belongs to a flow the move added for that same routine.
+  const flows = before.find(one => one.name === "flow");
+  if (flows === undefined) return false;
+  const added = db.prepare(`SELECT t.kind, t.state, json_extract(t.config_json, '$.order.routine') AS routine, f.id AS flow, f.repo, f.name FROM flow_trigger t
+    LEFT JOIN flow f ON f.id = t.flow AND f.rowid > ? WHERE t.rowid > ? ORDER BY t.rowid`).all(flows.last, t.last);
+  const byId = new Map(routines.map(r => [r.id, r]));
+  const seen = new Set<number>();
+  return added.length === routines.length && added.every(r => {
+    const routine = byId.get(Number(r["routine"]));
+    if (r["kind"] !== "schedule" || routine === undefined || seen.has(routine.id) || r["flow"] === null) return false;
+    seen.add(routine.id);
+    return r["repo"] === routine.repo && r["name"] === routine.name && (r["state"] === "paused" || (r["state"] === "active" && routine.live));
+  });
 }
 /** The tables whose saved history the migration changed beyond what HISTORY_RULES declares. */
 export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[] {
@@ -408,11 +456,12 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
     return got !== undefined && want !== undefined && got.count === want.count && Object.entries(want.nonNull).every(([c, n]) => got.nonNull[c] === n) && t.carry === want.count;
   };
   return before.filter(t => {
-    if (!tables.has(t.name)) return true;
+    if (!tables.has(t.name)) return HISTORY_RULES[t.name]?.retired !== true;
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
     if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
+    if (rule?.fromRoutines) { const kept = rowsHash(db, t.name, columns, t.last); return kept.count !== t.count || kept.hash !== t.hash || !movedRoutines(db, t, before); }
     if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }
     const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(t.name)).get()!, count = Number(r["n"]), last = Number(r["last"]);
     if (rule?.compacted) return count > t.count || last > t.last || t.count - count !== summed(db, rule.compacted) - (t.summed ?? 0);

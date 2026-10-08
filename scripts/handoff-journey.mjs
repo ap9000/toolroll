@@ -89,9 +89,9 @@ for(const provider of providers) {
     store=openStore(db);server=createDecisionServer({store,evidenceRoot:join(dir,'evidence'),repo});await new Promise(r=>server.listen(0,'127.0.0.1',r));base='http://127.0.0.1:'+server.address().port;
     const login=await fetch(base+'/login',{method:'POST',redirect:'manual',body:new URLSearchParams({name:'journey',token:password})});assert.equal(login.status,303);cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
     await cli('file intentionally short title',['task','add','Ship catalog','--id','catalog','--repo',repo]);
-    await cli('file detailed high-risk intent',['task','scope','catalog','--goal',fixture.goal,'--not',fixture.exclusions,'--touches',fixture.touches.join(','),'--acceptance',acceptanceToLines(fixture.acceptance).join(';'),'--risk','high']);
+    await cli('file detailed intent',['task','scope','catalog','--goal',fixture.goal,'--not',fixture.exclusions,'--touches',fixture.touches.join(','),'--acceptance',acceptanceToLines(fixture.acceptance).join(';')]);
     await form('/t/catalog','/t/catalog/scope',{'quality-mode':'strict'});
-    const filed=await show('catalog','filed');assert.equal(filed.scope.qualityMode,'strict');assert.equal(filed.scope.riskLevel,'high');
+    const filed=await show('catalog','filed');assert.equal(filed.scope.qualityMode,'strict');
     if(prepareOnly) record.prepared=true;
     else {
     await cli('request planning',['task','plan','catalog',...auth]);
@@ -108,7 +108,7 @@ for(const provider of providers) {
     const location=await form('/r/'+build.id,'/r/'+build.id+'/revise');
     assert(location?.startsWith('/t/'));const child=decodeURIComponent(location.split('/t/')[1].split(/[?#]/)[0]);record.revisionTask=child;
     const revision=await show(child,'revision-filed');
-    for(const key of ['outOfScope','touches','acceptance','qualityMode','riskLevel','budgetMicrousd'])assert.deepEqual(revision.scope[key],filed.scope[key],'Revision dropped '+key);
+    for(const key of ['outOfScope','touches','acceptance','qualityMode','budgetMicrousd'])assert.deepEqual(revision.scope[key],filed.scope[key],'Revision dropped '+key);
     assert.equal(revision.scope.approvedAt,null,'Child inherited approval');
     await cli('approve exact revision',['task','approve',child,'--yes','--digest',revision.scope.digest,...auth]);
     console.log(provider+': building scoped revision and checking inherited code');await tick('scoped revision build');

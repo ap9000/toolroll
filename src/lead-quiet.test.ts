@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
-import { acquire, completeFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { eveningDigestText, quietCardView } from "./chat-quiet.js";
 import { chatControlHref } from "./chat-controls.js";
@@ -86,7 +86,7 @@ describe("pings follow responsibility", () => {
     if (!took.ok) throw new Error(`claim refused: ${took.reason}`);
     const run = store.startRun({ taskRef, leaseId: lease, runner: RUNNER, branch: "so/t", worktree: "/pool/t", ...legacy, now });
     store.finishRun(run, { outcome: "built", committed: true, now });
-    expect(completeFenced(store, lease, "done", now).ok).toBe(true);
+    expect(finalize(store, lease, { kind: "complete", state: "done", now: now }).ok).toBe(true);
     return run;
   };
 

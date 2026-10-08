@@ -11,18 +11,17 @@ the ledger has every finding): the M1–M4 loop as designed; typed
 decisions answered from terminal, console, or Telegram; publication
 grants (push + PR under exact approved terms; merge stays human);
 capability probes and worktree setup commands; the fleet console (board,
-workbench, inbox, triage, activity, review queue); tournaments (2–4
-agents race under native dollar caps, verified-evidence pick ceremony);
+workbench, inbox, triage, activity, review queue);
 the live worktree peek (a native no-execution reader — names and counts,
 never contents); dependency chains and queue ordering (`task
 block/unblock/next`); per-worker queue columns with drag reservation
 enforced in the claim primitive; and external dispatch (GitHub issues
 mirrored as ordinary local tasks under an explicit dispatch grant —
 titles validated, bodies never imported, closure latched with
-completion-time disowning, done never regressed); the attended core
-(governed live sessions, crash custody, continuation); the attested
-runtime (four providers, tier-2 by versioned conformance); and labeled
-cross-runtime comparisons. Schema v27.
+completion-time disowning, done never regressed); the attested
+runtime (four providers, tier-2 by versioned conformance). Schema v27.
+(Tournaments and labeled comparisons, and the attended core of watched
+live sessions, once listed here, were removed in schema v115.)
 
 v0.4 makes the work graph a pluggable backend chosen during onboarding, and adds the supervision rule that makes overnight runs affordable.
 
@@ -311,11 +310,10 @@ retroactively.
 revisions, CI repair drafts, and criterion repair drafts all file through
 one boundary that proves the source task, run, scope digest, and brief
 custody inside its transaction, then carries the source's goal, exclusions,
-touches, exact rubric, declared risk, quality, posture, budget ceiling,
-route overrides, and pins verbatim — the installation's defaults of the day
-never downgrade or widen them. The route, profile, and fallback chain are
-re-resolved for a fresh approval; the approval stamp, attended
-authorizations, publication and merge grants, and the plan never inherit. A
+touches, exact rubric, quality, posture, budget ceiling, route overrides,
+and pins verbatim — the installation's defaults of the day never downgrade
+or widen them. The route and profile are re-resolved for a fresh approval; the approval stamp, publication and
+merge grants, and the plan never inherit. A
 detour through an annotation or CI revision keeps the repair chain's root
 and remaining automatic bound. The full field-by-field policy is
 [docs/REVISION_TERMS.md](REVISION_TERMS.md).
@@ -408,7 +406,7 @@ process with the machinery that supervises it:
 
 | Principal | Credential | May |
 |---|---|---|
-| **operator** | password (scrypt, typed again per act) | approve scopes and routines, steer, pick tournament winners, grant/revoke authority, answer decisions, enroll devices, clone repositories |
+| **operator** | password (scrypt, typed again per act) | approve scopes, steer, grant/revoke authority, answer decisions, enroll devices, clone repositories |
 | **coordinator** | minted token (operator ceremony), hashed, shown once; immutable cid; repo allowlist bound at the mint | rate-limited proposal filing through the canonical door — filings are quarantined until a password ceremony seals their scope; reads inside the allowlist. Nothing else is expressible. |
 | **runner** | minted token, hashed, shown once | claim, heartbeat, release, tick; every beat re-authenticated |
 | **attempt** | none — it is the supervised process | submit its prescribed outputs (handoff, park decision) through the builder's own protocol files; nothing else |
@@ -438,71 +436,23 @@ restated. Approvals from before v24 are grandfathered: their signed
 bytes untouched, their effective profile pinned at migration and
 labeled.
 
-**Attended liveness (defined once, consumed by attended features).** A
-browser proves presence only by renewing a heartbeat (15s beat; live ≤
-20s; one missed beat forgiven ≤ 45s; lapsed after; a future timestamp is
-lapsed — strict means strict). Renewal can extend nothing past an
-absolute expiry and can never mint or broaden authority. Session cookies
-(12h idle / 7d absolute) are a different thing and are untouched.
-
-**The positioning turn, stated.** Toolroll remains
-unattended-first. Attended features are admitted only where they reuse
-the authority primitives above — never as a second product. The
+**The positioning turn, stated.** Toolroll is unattended-first. The
 maintenance budget is explicit: exactly ONE tier-2 provider adapter is
 funded; adding another requires retiring the first or a new reviewed
 strategy decision.
 
-## 9c. The attended core (Parity II Phase 2)
+## 9c. Watched sessions (removed in v115)
 
-An attended session is ONE watched attempt under a signed authorization
-(ruling 12): the mint form renders every term — scope, pinned claude
-profile, repository at the exact head, named runner, the budget as a
-STOP THRESHOLD (the agent halts when its cumulative total crosses it;
-the final step may overrun a little — the CLI's own semantics, proven
-by probe), a per-session message cap, a per-turn wall clock whose
-expiry is SESSION-FATAL (the protocol has no turn abort), and an
-absolute expiry — and one password signs their composite digest.
-"While you watch" is literal: the console page beats a durable clock
-every 15 seconds while visible; lapse winds the session down. Expiry
-never converts attended work into unattended work.
-
-The held session is a durable state machine, not a promise chain: the
-HeldSessionCoordinator owns run, lease, and worktree after the builder
-hands over at its spawn point, so the watch loop keeps dispatching
-(held claims are excluded from the capacity count). Every stdin
-injection — brief, decision answer, operator turn, machine repair — is
-a ledger row recorded BEFORE writing, accepted only at ITS init (or
-proven by ITS result), and settled at the MARGINAL delta of the
-provider's cumulative totals; an unconfirmed turn is terminal
-'uncertain', charged at its reservation, never reinjected (ruling 15).
-A mid-session park records the decision — causally linked to the turn
-that produced it — and the session stays held; the answer, from any
-surface, injects exactly once through a delivery-CAS, and run_decision
-attaches only at proven acceptance. Malformed parks repair IN the same
-session, bounded, correlated to the producing turn.
-
-Custody survives crashes by parenthood, not guesswork: a supervisor
-process spawns the agent into its own group and holds the handle (a
-PID pinned by an unreaped child cannot be recycled), relays bytes,
-fences autonomously when its pipe breaks, and answers a
-cookie-authenticated kill socket only after the group is PROVEN gone.
-The orphan predicate is lease-based — a live peer's sessions are
-untouchable — the fence seizes custody transactionally BEFORE any
-kill, an unreachable supervisor pages rather than guess-kills, and
-generic recovery excludes open custody rows entirely.
-
-**Parallel sessions (v28).** Any number of attended sessions hold
-concurrently on one runner — parallelism is many tasks, each under its
-own signed envelope; every per-task and per-run singular (one open
-authorization per task, one attempt, one custody row per run, the whole
-exactly-once ledger) is untouched. Liveness moved from the page to the
-console: a parameterless, same-origin-proven beat on every chrome page
-renews EVERY open authorization the signed-in approver minted on this
-runner — a knowing reversal of the per-page binding, because one
-foregrounded tab per session cannot scale and attention was always a
-renewal-of-use; the signed envelope (dollars, messages, clocks, expiry)
-is what bounds an unwatched moment. Sessions are unbounded by default;
-`--max-held-sessions` caps them in words when an operator asks.
+Schema v25–v114 carried an "attended core": one watched attempt held open
+under a signed authorization, with a mid-session conversation, crash
+custody by a supervisor process, and continuations. It was never used and
+was removed in schema v115. Opening an older database ends any attempt a
+held session still owned as an ordinary interrupted attempt (outcome
+`failed`, reason `interrupted`), hands its claim back, and queues its task
+again; the authorization, turn and custody tables are dropped, while the
+`run.attended_authorization`, `decision.session_turn` and
+`decision.delivered_turn` columns and the `interrupted` and `held` words in
+old rows stay readable as history.
 
 ## 9d. Attested runtimes (Parity II Phase 3)
 
@@ -540,8 +490,8 @@ echo proven equal), its native resume-by-UUID in the same working directory,
 and its per-invocation usage scope each trace to a test. A resumed correction
 uses that proven session; minting a new identity and resuming are mutually
 exclusive. Unproven fields stay null and fail closed.
-Money honesty is unchanged: gemini reports tokens, never dollars — it is
-tournament-ineligible in its own words, and every spend rollup states
+Money honesty is unchanged: gemini reports tokens, never dollars, and
+every spend rollup states
 measured coverage ("$X measured across N of M runs") instead of summing
 a lie.
 
@@ -558,23 +508,6 @@ hooks run inside every invocation on a machine that has them, project
 settings and GEMINI.md ride along, and an API key in env is visible to
 the shells the agent runs — cached login or ADC is the recommended
 unattended auth road.
-
-**Labeled comparisons (slice B).** Cross-runtime side-by-side is a
-COMPARISON, not a tournament: the same contest machinery — one filing
-ceremony, one joint approval digest, one admission transaction, the
-ready barrier, the pick password — discriminated by a single `kind`. A
-comparison carries NO dollar terms anywhere: each lane's sealed profile
-clock is its bound, unmeasured lanes are pre-latched as a fact at
-admission, and every money surface says "measured on N of M lanes"
-instead of summing a lie. The discipline gate keeps the two ceremonies
-honest in both directions: a comparison must include at least one lane
-no native dollar cap can bound (else the refusal points at the
-tournament road — "race them instead"), and tournaments keep their
-money contract untouched. Attested lanes ride the same rails as
-ordinary work: the tick's pre-claim skip walks every lane, and the
-gateway proves the version before each spawn — a comparison whose
-gemini drifted out of range skips whole, in words, because running a
-subset is a different comparison than the one that was signed.
 
 ## 10. Milestones
 

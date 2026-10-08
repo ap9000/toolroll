@@ -173,7 +173,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const scope = store.getScope(id)!;
     const approved = approve(store, id, "alex", now, scope.digest, token);
     if (!approved.ok) throw new Error(`approval refused: ${approved.reason}`);
-    const route = store.routeAuthorityFor(ref, "builder", null);
+    const route = store.routeAuthorityFor(ref, "builder");
     if (!route?.ok) throw new Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: `l-${id}`, runner: "builder-1", branch: `so/${id}`, worktree: `/pool/${id}`, route: route.stamp, now });
     store.stampRun(run, { scopeDigest: scope.digest });
@@ -1210,7 +1210,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
     test("answers: a reversible option answers on the first confirm; an irreversible one arms a yes/cancel pair, and cancel restores the card", async () => {
       const ref = task("q");
-      const route = store.routeAuthorityFor(ref, "builder", null);
+      const route = store.routeAuthorityFor(ref, "builder");
       const run = store.startRun({ taskRef: ref, leaseId: "l-q", runner: "r", branch: "b", worktree: "/w", ...(route?.ok ? { route: route.stamp } : { route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" as const } }), now });
       const options = [{ id: "open", label: "Fail open", consequence: "Requests pass while the check is down", reversible: true }, { id: "closed", label: "Fail closed", consequence: "Requests are refused; a rollback restores them", reversible: false }];
       const first = store.saveDecision({ run, urgency: "blocking", recap: "The check can fail", question: "Fail open or closed?", options, recommendation: "closed" }, now);
@@ -1253,7 +1253,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const scope = store.getScope("done-1")!;
       const approved = approve(store, "done-1", "alex", now, scope.digest, token);
       if (!approved.ok) throw new Error(`approval refused: ${approved.reason}`);
-      const route = store.routeAuthorityFor(ref, "builder", null);
+      const route = store.routeAuthorityFor(ref, "builder");
       if (!route?.ok) throw new Error("route");
       const run = store.startRun({ taskRef: ref, leaseId: "l-done-1", runner: "builder-1", branch: "so/done-1", worktree: "/pool/done-1", route: route.stamp, now });
       store.stampRun(run, { scopeDigest: scope.digest, baseRevision: "b".repeat(40) });
@@ -1329,7 +1329,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       register(store, { name: "worker", host: "test", capacity: 1, repos: [repo], now, newToken: () => "worker-token" });
       const claim = acquire(store, ref, "worker", { token: "worker-token", now });
       if (!claim.ok) throw new Error(claim.reason);
-      const route = store.routeAuthorityFor(ref, "builder", null);
+      const route = store.routeAuthorityFor(ref, "builder");
       if (!route?.ok) throw new Error("route");
       const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: "worker", branch: "b", worktree: "/pool/t", route: route.stamp, now });
       const stop = card("task_action", { task: "t", taskTitle: "work t", operation: "stop", run, stamp: stamp("t") });

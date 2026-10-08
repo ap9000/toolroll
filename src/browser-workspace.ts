@@ -343,7 +343,6 @@ export type BrowserResultView = {
     intent: { approval: string; approvedAt: string | null; html: string } | null;
     noRun: string | null;
     panel: BrowserResultPanel | null;
-    contest: string;
     notes: { author: string; at: string; note: string }[];
   } | null;
 };
@@ -431,6 +430,8 @@ export type BrowserFlowTrigger = {
   checkable: boolean;
   /** A button shared as a public form (its link works). */
   shared: boolean;
+  /** A schedule's standing order (v115): the terms each run files, in words — shown on demand. */
+  order?: string[];
 };
 
 /** A flow's canvas: zones, cards, and what this person may change. */

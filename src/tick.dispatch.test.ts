@@ -18,8 +18,6 @@ import { join } from "node:path";
 import { runOperate, EXIT } from "./operate.js";
 import { run as exec } from "./exec.js";
 import { openStore } from "./store.js";
-import { HeldSessionCoordinator } from "./held.js";
-import { canonicalProfileJson, profileDigestOf, type ExecutionProfile } from "./scope.js";
 import type { Runner } from "./builder.js";
 import { AUTH_TRIAL_MS, authPauseOf, pauseForAuth } from "./provider-auth.js";
 import { workIndexPage } from "./work-index.js";
@@ -168,7 +166,7 @@ describe("tick, against real git", () => {
       await queueApproved("t-gem-skip", approverToken);
 
       // A pass whose only event is the skip reports "waiting on a person" —
-      // the existing nothing-dispatched exit, exactly like attended-only.
+      // the existing nothing-dispatched exit.
       expect(await tick(runnerToken)).toBe(EXIT.refused);
       expect(payload().dispatched[0]).toMatchObject({ id: "t-gem-skip", outcome: "skipped", reason: "provider-unattested" });
 
@@ -245,135 +243,6 @@ describe("tick, against real git", () => {
     expect(payload().task.state).toBe("queued");
   });
 
-  /** A finished parent on a real branch with an open, watched continuation
-   * authorization whose terms sign `head` (none when empty) — the shape the
-   * continuation pass dispatches. */
-  const seedContinuation = async (seeded: ReturnType<typeof openStore>, taskId: string, head: string): Promise<{ ref: number; parent: number }> => {
-    const profile: ExecutionProfile = { provider: "claude", model: "sonnet", permissionArgv: "auto", maxTurns: 40, repairMaxTurns: 4, timeoutSeconds: 1800, repairTimeoutSeconds: 300, repairModel: "inherit" };
-    await git(["branch", `standing-orders/${taskId}`]);
-    await run(["task", "add", "finished work", "--id", taskId, "--repo", repo]);
-    const ref = seeded.refFor("built-in", taskId);
-    seeded.raw().prepare("UPDATE task SET state = 'done' WHERE id = ?").run(taskId);
-    seeded
-      .raw()
-      .prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at, released_at) VALUES (?, ?, 1, 'builder-1', ?, ?, ?, ?)")
-      .run(`lease-${taskId}`, ref.id, T0.toISOString(), new Date(T0.getTime() + 60_000).toISOString(), T0.toISOString(), new Date(T0.getTime() + 50_000).toISOString());
-    const parent = seeded.startRun({
-      taskRef: ref.id, leaseId: `lease-${taskId}`, runner: "builder-1", branch: `standing-orders/${taskId}`, worktree: join(pool, taskId), now: T0,
-      route: { routeDigest: "legacy", phase: "build", provider: "claude", model: "sonnet", chosen: "legacy" },
-    });
-    seeded.recordOutcomeFacts(parent, { headRevision: "e".repeat(40) });
-    seeded.finishRun(parent, { outcome: "built", committed: true, now: new Date(T0.getTime() + 40_000) });
-    const minted = seeded.mintAttendedAuthorization({
-      id: `auth-${taskId}`,
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "builder-1",
-      runnerGeneration: 1,
-      compositeDigest: "c".repeat(32),
-      termsJson: JSON.stringify({ attentionMode: "console-visible", scopeDigest: "", profileDigest: profileDigestOf(profile), profileJson: canonicalProfileJson(profile), repo, ...(head === "" ? {} : { head }) }),
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      parentRun: parent,
-      followup: "now add the tests",
-      absoluteExpiry: new Date(T0.getTime() + 3_600_000).toISOString(),
-      now: new Date(T0.getTime() + 41_000),
-    });
-    expect(minted.ok).toBe(true);
-    seeded.beatAuthorization(`auth-${taskId}`, T0);
-    return { ref: ref.id, parent };
-  };
-
-  /** No agent may run: the stub throws if anything spawns. */
-  const neverSpawns: Runner = async () => {
-    throw new Error("nothing spawns under a stale continuation head");
-  };
-
-  /** The custody a refused continuation leaves behind: no new run, the
-   * parent exactly as it ended, no live claim, no leased worktree. */
-  const continuationCustodyReleased = (proved: ReturnType<typeof openStore>, taskId: string, ref: number, parent: number): void => {
-    expect(proved.runsFor(ref).map(one => one.id)).toEqual([parent]);
-    expect(proved.currentLiveLease(ref, T0)).toBeNull();
-    expect(proved.raw().prepare("SELECT COUNT(*) AS n FROM worktree WHERE released_at IS NULL AND task_ref = ?").get(ref)).toEqual({ n: 0 });
-    expect(proved.getRun(parent)).toMatchObject({ outcome: "built" });
-    expect(proved.getTask(taskId)?.state).toBe("done");
-  };
-
-  test("the continuation road proves the SIGNED HEAD before admitAttended (final admission closure): a moved or unreadable head opens no run, spends no attempt, invokes no provider, releases custody, and records one terminal refusal", async () => {
-    const { runnerToken } = await credentials();
-    // Two finished parents on real branches, each with a continuation
-    // authorization: one signed a head the branch never had, the other
-    // signs no readable head at all.
-    const seeded = openStore(db);
-    const parents: Record<string, { ref: number; parent: number }> = {
-      "t-moved": await seedContinuation(seeded, "t-moved", "f".repeat(40)),
-      "t-headless": await seedContinuation(seeded, "t-headless", ""),
-    };
-    seeded.close();
-    lines = [];
-    const code = await runOperate("tick", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool, "--json"], line => lines.push(line), {
-      databaseFile: db,
-      now: T0,
-      agentRunner: neverSpawns,
-      heldCoordinator: new HeldSessionCoordinator(),
-    });
-    expect(code).toBe(EXIT.refused);
-    // ONE terminal refusal each, in words that name the head.
-    expect(payload().dispatched).toEqual([
-      expect.objectContaining({ id: "t-moved", outcome: "skipped", reason: "stale-authorization", detail: expect.stringContaining("the head moved since the continuation authorization auth-t-moved was signed (ffffffffffff →") }),
-      expect.objectContaining({ id: "t-headless", outcome: "skipped", reason: "stale-authorization", detail: expect.stringContaining("the continuation authorization auth-t-headless signs no readable head") }),
-    ]);
-    for (const one of payload().dispatched as { detail: string }[]) expect(one.detail).toContain("no run opened, no attempt spent");
-    const proved = openStore(db);
-    for (const [taskId, { ref, parent }] of Object.entries(parents)) {
-      // The attempt unspent and unbound, the authorization closed typed —
-      // and custody released.
-      expect(proved.readAuthorization(`auth-${taskId}`)).toMatchObject({ attemptRun: null, consumedAt: null, endReason: "refused:stale-authorization" });
-      expect(proved.readAuthorization(`auth-${taskId}`)?.closedAt).not.toBeNull();
-      continuationCustodyReleased(proved, taskId, ref, parent);
-    }
-    expect(proved.raw().prepare("SELECT COUNT(*) AS n FROM run_route").get()).toEqual({ n: 2 });
-    expect(agentRan).toEqual([]);
-    proved.close();
-  });
-
-  test("a continuation whose leased worktree HEAD cannot be READ is not a moved head: custody is released, the failure recorded, and the authorization stays open for the next tick", async () => {
-    const { runnerToken } = await credentials();
-    const seeded = openStore(db);
-    const { ref, parent } = await seedContinuation(seeded, "t-blind", "e".repeat(40));
-    seeded.close();
-    // Real git everywhere except the one read the road makes in the
-    // leased worktree.
-    const blindGit: Parameters<typeof runOperate>[3]["gitRunner"] = async (file, args, options) => {
-      if (args[0] === "rev-parse" && args[1] === "HEAD" && (options?.cwd ?? "").startsWith(pool)) {
-        return { ...OK, code: 128, stdout: "", stderr: "fatal: not a git repository" };
-      }
-      return exec(file, [...args], options);
-    };
-    lines = [];
-    const code = await runOperate("tick", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool, "--json"], line => lines.push(line), {
-      databaseFile: db,
-      now: T0,
-      agentRunner: neverSpawns,
-      gitRunner: blindGit,
-      heldCoordinator: new HeldSessionCoordinator(),
-    });
-    // An environment failure, not a refusal: the tick reports it broke.
-    expect(code).toBe(EXIT.failed);
-    expect(payload()).toMatchObject({ reason: "build-failed" });
-    expect(payload().dispatched).toEqual([
-      expect.objectContaining({ id: "t-blind", outcome: "failed", reason: "head-unreadable", detail: expect.stringContaining("HEAD could not be read (fatal: not a git repository) — the continuation authorization auth-t-blind stays open; no run opened, no attempt spent") }),
-    ]);
-    const proved = openStore(db);
-    // Nothing terminal was said: the authorization is still open and
-    // unspent; custody is released; no provider ran.
-    expect(proved.readAuthorization("auth-t-blind")).toMatchObject({ attemptRun: null, consumedAt: null, closedAt: null, endReason: null });
-    expect(proved.openContinuationAuthorizations("builder-1").map(one => one.id)).toEqual(["auth-t-blind"]);
-    continuationCustodyReleased(proved, "t-blind", ref, parent);
-    expect(agentRan).toEqual([]);
-    proved.close();
-  });
-
   test("a reserved task is built only by its worker; the shared queue waits behind a private column", async () => {
     const { runnerToken, approverToken } = await credentials();
     const otherToken = registerRunner(db, "builder-2", repo);
@@ -392,58 +261,6 @@ describe("tick, against real git", () => {
     const mine = await tick(runnerToken, ["--max", "2"]);
     expect(mine).toBe(EXIT.ok);
     expect(payload().dispatched.map((one: { id: string }) => one.id)).toEqual(["t-private"]);
-  });
-
-  test("the attended road proves the SIGNED HEAD before admission (final authority closure): a head that moved opens no run, spends no attempt, leaves no claim or worktree, and closes the authorization in the refusal's words", async () => {
-    const { runnerToken } = await credentials();
-    await run(["task", "add", "the work", "--id", "t-att", "--repo", repo]);
-    const profile: ExecutionProfile = { provider: "claude", model: "sonnet", permissionArgv: "auto", maxTurns: 40, repairMaxTurns: 4, timeoutSeconds: 1800, repairTimeoutSeconds: 300, repairModel: "inherit" };
-    const seeded = openStore(db);
-    const ref = seeded.refFor("built-in", "t-att");
-    // The authorization signed a head the repository never had.
-    const minted = seeded.mintAttendedAuthorization({
-      id: "auth-stale",
-      taskRef: ref.id,
-      approver: "alex",
-      runner: "builder-1",
-      runnerGeneration: 1,
-      compositeDigest: "a".repeat(32),
-      termsJson: JSON.stringify({ attentionMode: "console-visible", scopeDigest: "", profileDigest: profileDigestOf(profile), profileJson: canonicalProfileJson(profile), repo, head: "f".repeat(40) }),
-      maxSessionTurns: 4,
-      budgetMicrousd: 500_000,
-      absoluteExpiry: new Date(T0.getTime() + 3_600_000).toISOString(),
-      now: T0,
-    });
-    expect(minted.ok).toBe(true);
-    seeded.beatAuthorization("auth-stale", T0);
-    seeded.close();
-    // No agent may run: the stub throws if anything spawns.
-    const neverSpawns: Runner = async () => {
-      throw new Error("nothing spawns under a stale head");
-    };
-    lines = [];
-    const code = await runOperate("tick", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool, "--json"], line => lines.push(line), {
-      databaseFile: db,
-      now: T0,
-      agentRunner: neverSpawns,
-      heldCoordinator: new HeldSessionCoordinator(),
-    });
-    expect(code).toBe(EXIT.refused);
-    expect(payload().dispatched).toEqual([
-      expect.objectContaining({ id: "t-att", outcome: "skipped", reason: "stale-authorization", detail: expect.stringContaining("the head moved since the attended authorization auth-stale was signed (ffffffffffff →") }),
-    ]);
-    expect(String(payload().dispatched[0]?.detail)).toContain("no run opened, no attempt spent");
-    const proved = openStore(db);
-    // No run, no route, no attempt spent — and the authorization is closed
-    // typed, so the operator sees why and may authorize again.
-    expect(proved.runsFor(ref.id)).toHaveLength(0);
-    expect(proved.raw().prepare("SELECT COUNT(*) AS n FROM run_route").get()).toEqual({ n: 0 });
-    expect(proved.readAuthorization("auth-stale")).toMatchObject({ attemptRun: null, consumedAt: null, endReason: "refused:stale-authorization" });
-    expect(proved.readAuthorization("auth-stale")?.closedAt).not.toBeNull();
-    expect(proved.currentLiveLease(ref.id, T0)).toBeNull();
-    expect(proved.raw().prepare("SELECT COUNT(*) AS n FROM worktree WHERE released_at IS NULL AND task_ref = ?").get(ref.id)).toEqual({ n: 0 });
-    expect(proved.getTask("t-att")?.state).toBe("queued");
-    proved.close();
   });
 
   test("one task goes queued → branch → commit, unattended", async () => {
@@ -862,31 +679,6 @@ describe("tick, against real git", () => {
       // Waiting for a worker to draft its plan: Queued, and the sentence says what for.
       expect(items.find(one => one.activeTaskId === "t-plan")?.status).toMatchObject({ label: "Queued", detail: "A connected worker can draft the plan." });
     } finally { resumed.close(); }
-  });
-
-  test("an attended continuation on a paused provider waits with its authorization open instead of failing", async () => {
-    const { runnerToken } = await credentials();
-    const seeded = openStore(db);
-    let parents: { ref: number; parent: number };
-    try {
-      const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
-      parents = await seedContinuation(seeded, "t-waits", head);
-      pauseForAuth(seeded, { provider: "claude", authMode: "subscription", runId: parents.parent, taskRef: parents.ref, now: T0 });
-    } finally { seeded.close(); }
-    lines = [];
-    await runOperate("tick", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool, "--json"], line => lines.push(line), {
-      databaseFile: db, now: T0, agentRunner: neverSpawns, heldCoordinator: new HeldSessionCoordinator(),
-    });
-    expect(payload().dispatched).toEqual([
-      expect.objectContaining({ id: "t-waits", outcome: "skipped", reason: "signed-out", detail: expect.stringContaining("Claude needs you to sign in again") }),
-    ]);
-    const proved = openStore(db);
-    try {
-      // Nothing opened, nothing spent, nothing closed: it starts once the sign-in works.
-      expect(proved.readAuthorization("auth-t-waits")).toMatchObject({ attemptRun: null, consumedAt: null, closedAt: null, endReason: null });
-      continuationCustodyReleased(proved, "t-waits", parents.ref, parents.parent);
-    } finally { proved.close(); }
-    expect(agentRan).toEqual([]);
   });
 
   test("three straight failures stall the task with an incident, not a fourth attempt", async () => {

@@ -9,7 +9,6 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
@@ -17,8 +16,8 @@ import { createDecisionServer } from "./serve.js";
 import { decideFlowCard } from "./flow-engine.js";
 import { TEAMMATE_TEMPLATES } from "./teammates.js";
 import { isProtectedWork, touchesProtected } from "./approval-policy.js";
-import { fileRoutineProposal } from "./proposal.js";
-import { approveRoutine } from "./routine.js";
+import { createScheduledFlow } from "./flow-schedule.js";
+import { runScheduleNow, setFlowTriggerOn } from "./flow-triggers.js";
 import { createHash } from "node:crypto";
 import { writeEvidenceFile } from "./evidence.js";
 import { changedFilesOf, familyChangedFiles } from "./result-completion.js";
@@ -142,7 +141,7 @@ test("protected work needs two people to approve the same scope; a changed scope
   expect((await approveAs("alex", alex, unsaid)).status).toBe(200);
 });
 
-test("on a protected project no mode, AI teammate or watched run stands in for two people", async () => {
+test("on a protected project no mode or AI teammate stands in for two people", async () => {
   store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", new Date());
   const alex = await signIn("alex");
   const id = await fileAsAlex(alex, "Rotate the keys", ["src/keys.ts"]);
@@ -151,9 +150,6 @@ test("on a protected project no mode, AI teammate or watched run stands in for t
   expect(store.sealScopeApproval(id, "alex", now, {}, { kind: "mode", modeDigest: "any" })).toBe(false);
   expect(store.sealScopeApproval(id, "alex", now)).toBe(false);
   expect(store.approvalGate(id, "Maya (AI)", "ai")).toEqual({ verdict: "refuse", reason: "person-required" });
-  const ref = store.lookupRef(id)!;
-  expect(store.mintAttendedAuthorization({ id: randomUUID(), taskRef: ref.id, approver: "alex", runner: "r1", runnerGeneration: 1, compositeDigest: "d", termsJson: "{}",
-    maxSessionTurns: 1, budgetMicrousd: 1, absoluteExpiry: new Date(now.getTime() + 60_000).toISOString(), now })).toEqual({ ok: false, reason: "approval-rules" });
   // A flow's decision zone staffed by a teammate: the person decides instead.
   const stage = (sid: string, kind: string, rest: Record<string, unknown> = {}) => ({ id: sid, title: sid, kind, zone: {}, next: null, onFail: null, ...rest });
   const flow = store.createFlow({ repo: REPO, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
@@ -217,25 +213,24 @@ test("whoever wrote the scope counts as a requester, and a revision's root filer
   expect((await approveAs("sam", sam, made.id)).status).toBe(403);
 });
 
-test("a standing order's maker can't approve it, and its firings are filed as theirs", () => {
+test("a scheduled flow's tasks are filed as its maker's, so the maker can't approve them", () => {
   store.setApprovalRules(REPO, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", new Date());
-  const made = fileRoutineProposal(store, { name: "nightly-deps", repo: REPO, goal: "refresh the lockfile", outOfScope: null, touches: [], createdBy: "alex",
-    acceptance: [{ id: "c1", statement: "The lockfile is refreshed.", evidence: ["check"] }], requirements: [], schedule: "daily:03:30", costCeilingUsd: null, filedVia: "console" }, new Date());
-  if (!made.ok) throw new Error(JSON.stringify(made));
-  expect(store.getRoutine(made.id)?.createdBy).toBe("alex");
-  expect(approveRoutine(store, made.id, "alex", new Date(), made.digest, passwords["alex"]!)).toEqual({ ok: false, reason: "requester" });
-  expect(approveRoutine(store, made.id, "sam", new Date(), made.digest, passwords["sam"]!)).toMatchObject({ ok: true });
+  const made = createScheduledFlow(store, { repo: REPO, name: "Nightly deps", stem: "nightly-deps", schedule: "daily:03:30", by: "alex",
+    terms: { goal: "refresh the lockfile", outOfScope: null, touches: [], requirements: [], acceptance: [{ id: "c1", statement: "The lockfile is refreshed.", how: null, evidence: ["check"] }], budgetPerRunMicrousd: null, costCeilingUsd: null } }, new Date());
+  if (!made.ok) throw new Error(made.message);
+  setFlowTriggerOn(store, store.getFlowTrigger(made.trigger)!, true, new Date());
+  expect(runScheduleNow(store, store.getFlowTrigger(made.trigger)!, "alex", new Date())).toMatchObject({ ok: true });
+  const task = store.listTasks().find(one => one.id.startsWith("nightly-deps-"))!;
+  expect(store.getScope(task.id)?.approvedAt ?? null).toBeNull();
+  expect([...store.requestersOf(task.id)]).toEqual(["alex"]);
 });
 
-test("votes count only while their people can still approve; a watched run is never the second yes; the diff decides completion", async () => {
+test("votes count only while their people can still approve; the diff decides completion", async () => {
   store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", new Date());
   const alex = await signIn("alex"), sam = await signIn("sam");
   const id = await fileAsAlex(alex, "Rotate the keys", ["src/keys.ts"]);
   expect((await approveAs("sam", sam, id)).text).toContain("(1 of 2)");
   const now = new Date();
-  const mint = () => store.mintAttendedAuthorization({ id: randomUUID(), taskRef: store.lookupRef(id)!.id, approver: "alex", runner: "r1", runnerGeneration: 1, compositeDigest: "d",
-    termsJson: "{}", maxSessionTurns: 1, budgetMicrousd: 1, absoluteExpiry: new Date(now.getTime() + 60_000).toISOString(), now });
-  expect(mint()).toEqual({ ok: false, reason: "approval-rules" });
   // sam moves off the project: their vote no longer counts, so alex's is the first.
   expect(store.setAccountProjects("sam", ["/elsewhere"], "alex", now)).toEqual({ ok: true });
   expect((await approveAs("alex", alex, id)).text).toContain("(1 of 2)");

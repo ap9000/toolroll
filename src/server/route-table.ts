@@ -27,7 +27,6 @@ export type ProjectResolver =
   | "run" // the run behind /r/:id
   | "decision" // the run behind /d/:id
   | "incident" // the run behind /i/:id
-  | "routine" // the routine behind /routines/:id
   | "flow" // the flow behind /flows/:id
   | "proposal" // the saved chat proposal's project
   | "conversation" // the shared conversation's projects
@@ -188,7 +187,6 @@ get("tasks", "runs", "/runs", { limited: "collection" });
 get("pages", "menu", "/menu", { limited: "collection", ...free });
 get("tasks", "run.page", `^\\/r\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1" });
 get("tasks", "run.evidence", `^\\/r\\/${ID}\\/evidence\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1/evidence/2" });
-get("tasks", "contest.page", `^\\/contest\\/${ID}$`, { ...free, sample: "/contest/1" });
 get("pages", "caps", "/caps");
 get("flows", "flows.new", "/flows/new", { limited: "resource", ...free });
 get("flows", "flows.gallery", "^\\/flows\\/new\\/[a-z-]{1,40}$", { limited: "resource", ...free, sample: "/flows/new/triage" });
@@ -206,13 +204,14 @@ get("flows", "recipes", "/recipes", { limited: "collection", ...free });
 for (const one of ["run", "start", "new", "edit", "from-task", "preview", "export"]) get("flows", `recipes.${one}`, `/recipes/${one}`, { limited: "collection" });
 // Any other recipe screen answers the recipe area's own refusal.
 get("flows", "recipes.other", "^\\/recipes\\/.*$", { sample: "/recipes/unknown" });
+// v115: routines became scheduled flows; old links to them land on the flows page.
 get("tasks", "routines", "/routines", { limited: "collection" });
 get("chat", "chat.stream", "/chat/stream", free);
 get("chat", "chat.mate-status", "/chat/mate/status", free);
 get("chat", "chat.demo-live", "/chat/demo/live", free);
 get("chat", "chat.page", "/chat", { project: "conversation", limited: "conversation", ...free });
 get("chat", "chat.ack", `^\\/chat\\/ack\\/${ID}$`, { sample: "/chat/ack/1" });
-get("tasks", "routine.page", `^\\/routines\\/${ID}$`, { project: "routine", limited: "resource", sample: "/routines/1" });
+get("tasks", "routine.page", `^\\/routines\\/${ID}$`, { limited: "resource", sample: "/routines/1" });
 get("settings", "control", "/control");
 get("settings", "control.connection", "/control/connection");
 get("chat", "chat.action", `^\\/chat\\/action\\/${ID}$`, { project: "proposal", limited: "proposal", ...free, sample: "/chat/action/1" });
@@ -234,8 +233,6 @@ get("chat", "chat.task-status", "/chat/task-status", free);
 get("tasks", "decision.evidence", `^\\/d\\/${ID}\\/evidence\\/${ID}$`, { project: "decision", limited: "resource", ...free, sample: "/d/1/evidence/2" });
 
 // ---- console actions -------------------------------------------------------------------------------------------
-// The attended beat guards itself (cookie, form type, Sec-Fetch-Site) before the shared mutation guard.
-post("tasks", "session.attended-beats", "/session/attended-beats", { callers: ["cookie"], scopeRefusal: "your login can watch, not keep sessions alive", callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "watching is a browser session's act" } });
 // The scripted demo: the handler answers a non-browser caller "no page here".
 post("chat", "chat.demo", "^\\/chat\\/demo\\/(ask|[0-9]{1,9}\\/(approve|change|revise|complete))$", { sample: "/chat/demo/ask" });
 post("settings", "provider.resume", "^\\/providers\\/[a-z]+\\/resume$", { sample: "/providers/codex/resume" });
@@ -308,12 +305,6 @@ post("people", "people.revoke", "/people/revoke", { scope: "step-up" });
 post("pages", "fleet.retire", "/fleet/runner/retire", { scope: "step-up" });
 // Answering a parked decision needs act access and irreversible-choice confirmation, not password step-up.
 post("tasks", "decision.answer", `^\\/d\\/${ID}\\/answer$`, { project: "decision", limited: "resource", scope: "act", sample: "/d/1/answer" });
-post("tasks", "contest.act.arm", `^\\/contest\\/${ID}\\/arm$`, { sample: "/contest/1/arm" });
-post("tasks", "contest.act.pick", `^\\/contest\\/${ID}\\/pick$`, { scope: "step-up", sample: "/contest/1/pick" });
-post("tasks", "contest.act.abandon", `^\\/contest\\/${ID}\\/abandon$`, { scope: "step-up", sample: "/contest/1/abandon" });
-post("tasks", "task.attend.attend-preview", `^\\/t\\/${TASK}\\/attend-preview$`, { callers: ["cookie"], project: "task", sample: "/t/one/attend-preview" });
-post("tasks", "task.attend.attend", `^\\/t\\/${TASK}\\/attend$`, { scope: "step-up", project: "task", sample: "/t/one/attend" });
-post("tasks", "task.attend.attend-revoke", `^\\/t\\/${TASK}\\/attend-revoke$`, { callers: ["cookie"], project: "task", sample: "/t/one/attend-revoke" });
 post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", limited: "resource", sample: "/t/one/hold" });
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });
@@ -353,15 +344,8 @@ post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up",
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
-post("tasks", "routines.add", "/routines/add", { project: "form", limited: "collection" });
-post("tasks", "routine.act.approve", `^\\/routines\\/${ID}\\/approve$`, { scope: "step-up", project: "routine", limited: "resource", sample: "/routines/1/approve" });
-post("tasks", "routine.act.refresh", `^\\/routines\\/${ID}\\/refresh$`, { project: "routine", limited: "resource", sample: "/routines/1/refresh" });
-post("tasks", "routine.act.pause", `^\\/routines\\/${ID}\\/pause$`, { project: "routine", limited: "resource", sample: "/routines/1/pause" });
-post("tasks", "routine.act.resume", `^\\/routines\\/${ID}\\/resume$`, { project: "routine", limited: "resource", sample: "/routines/1/resume" });
-post("tasks", "routine.act.run-now", `^\\/routines\\/${ID}\\/run-now$`, { scope: "step-up", project: "routine", limited: "resource", sample: "/routines/1/run-now" });
 post("tasks", "run.act", `^\\/r\\/${ID}\\/(note|comment|revise|draft-repair|checks|add-tests)$`, { project: "run", limited: "resource", sample: "/r/1/note" });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });
-post("tasks", "run.turn", `^\\/r\\/${ID}\\/turn$`, { project: "run", sample: "/r/1/turn" });
 post("tasks", "incident.resolve", `^\\/i\\/${ID}\\/resolve$`, { project: "incident", sample: "/i/1/resolve" });
 
 /** The sole route table, in match order. */

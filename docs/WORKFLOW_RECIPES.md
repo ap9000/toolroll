@@ -47,8 +47,9 @@ the existing approval policy. Teammates answer the same recipe in their own
 sessions, with their own current project permissions.
 
 For repeating recipes, the chosen answers stay fixed for every scheduled
-firing. **Use recipe** creates another schedule; manage or pause an existing
-one from **Routines**. **Edit a copy** changes a new recipe, leaving previous
+firing. **Use recipe** creates another scheduled flow; pause or resume an
+existing one from its flow (**Resume** on the canvas, or
+`toolroll flows trigger pause|resume`). **Edit a copy** changes a new recipe, leaving previous
 copies and work intact.
 
 ## Your first workflow
@@ -60,18 +61,21 @@ copies and work intact.
    Keep the supplied success checks or specify your own evidence. Code workflows
    can plan first; repeating work reuses a previously approved scope.
 3. Choose **Run once** or a daily, weekly, or interval schedule. Repeating work
-   supports an optional rolling seven-day dollar cap and runs one instance at
-   a time. Exact cost-reporting capability is checked at routine approval.
+   becomes a scheduled flow: a Build task step and a schedule whose standing
+   order carries the task's terms. It supports an optional rolling seven-day
+   dollar cap and runs one at a time, skipping while the last task is
+   unfinished. The schedule starts paused; nothing repeats until you turn it
+   on.
 4. **Preview workflow** shows the steps, scope, proof, schedule, and current
    project/agent/worker setup. Previewing starts no agents.
 5. Create the task or scheduled workflow. A matching signed policy can approve
    a one-time task filed by its signed-in signer. Otherwise approve the scope
-   on the task page. A new repeating workflow always needs its own routine
-   approval, including the exact agents. Existing publication authority still
-   applies separately.
+   on the task page. Each task a schedule files waits for approval under the
+   project's approval rules, like any other proposal. Existing publication
+   authority still applies separately.
 
 Work can be created while a worker is offline; the preview explains that it
-will wait. The created task/routine page remains the place to inspect evidence,
+will wait. The created task or flow page remains the place to inspect evidence,
 handle decisions, stop/resume work, or pause a schedule. The recipe library
 links the twelve most recent workflows to those same durable records.
 
@@ -101,7 +105,7 @@ you explicitly put in goals, checks, and exclusions is included in the export.
 
 Previews are stored on the server for 30 minutes and bound to the actor,
 canonical project, and a digest of the exact definition. Editing makes a fresh
-preview. Creating work atomically records the task/routine, optional existing
+preview. Creating work atomically records the task or scheduled flow, optional existing
 policy approval, launch receipt, and action-ledger event. Retrying the **same
 preview** after a double click, lost response, or controller restart returns
 the same work. Deliberately making a new preview can create another workflow.

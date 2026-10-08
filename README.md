@@ -163,7 +163,10 @@ failed when a result is marked complete.
 - **Triggers start cards on their own.** A button with a few questions, a
   schedule, GitHub (new issues, a label being added, new pull requests,
   failed checks), Linear (a team, a state, a label), or another flow's cards
-  reaching a zone. GitHub is checked through your `gh` login and Linear
+  reaching a zone. A schedule can carry a standing order — the exact task to
+  file each time, with its own per-run budget and a rolling 7-day cost
+  ceiling — and runs one at a time, skipping while the last task is
+  unfinished. GitHub is checked through your `gh` login and Linear
   with an API key kept on this computer; neither spends model tokens. Each
   issue or run makes at most one card; text from outside the repository's
   team is left out unless you say anyone. With a public address, GitHub,
@@ -361,7 +364,7 @@ for people splitting those parts across machines.
    mandatory review step. Older results retain their own links.
 
 Specialized views remain in **Tools** and **Settings**: the activity ledger, the review cockpit,
-routines (tasks that file themselves on a schedule), the fleet,
+the fleet,
 people (invite a second approver), the operating mode (a signed, expiring
 envelope that pre-approves your own filings), and **chat** — the mate, one
 conversation across every project, which only ever proposes.
@@ -597,16 +600,17 @@ deployment require their own authority and checks.
 
 Which agent plans, builds, and repairs a task is decided once, from
 signed facts, and written down with its reasons. The route reads the task's
-declared **risk** (routine, elevated, high), its quality mode, what the
+**size** (small, medium, large, risky or not), its quality mode, what the
 acceptance rubric demands (screenshots, manual review), how far a live
-operating mode may carry the result unattended, and the agents you configured for each phase. Strength is never
+operating mode may carry the result unattended, each provider's plan room, and
+the agents you configured for each phase. Strength is never
 inferred from a model's name: the ordinary phase row is the routine tier, and
 `config set <phase> --tier strong --provider <p> --model <m>` names the agent
-high-risk, strict, screenshot-proof, and automerge routes reach for. With no
+large or risky, strict, screenshot-proof, and automerge routes reach for. With no
 strong row, a demanding task keeps the default and says so.
 
 ```
-toolroll task scope <id> --goal … --acceptance … --risk high
+toolroll task route <id> --size large --as you --token <t>
 toolroll task route <id>                     # every leg, its reason, its readiness
 toolroll task route <id> --phase build --provider codex --model gpt-5-codex --as you --token <t>
 toolroll task route <id> --clear-phase build --as you --token <t>
@@ -625,8 +629,8 @@ an exact model too, and a plan override becomes the planner pin.
 Every override is recorded under the approver's name, in one transaction that
 checks the scope you were reading is still the one on file (`--digest`, or the
 form's own field). Approval seals the route — routine-shaped routes included —
-together with any configured fallback chain, exactly as it seals the execution
-profile; a later risk change or override re-files the scope and the old
+exactly as it seals the execution profile; a later size change or override
+re-files the scope and the old
 approval reads stale, while a global configuration change can never rewrite a
 sealed route. A row filed before routing existed is recognised by a durable
 marker and stays governed by its sealed profile; a routed row whose route data
@@ -636,44 +640,35 @@ readiness without spending — at startup and with `providers --report`, never
 on a timer — and the task page, the chat, and `task show` say **ready**,
 **unavailable** (with the runner's own words), or **unknown** beside the
 agents, outside what the approval signs; an unavailable provider halts before
-any claim and is never substituted, except that an unavailable primary under
-an approved fallback chain moves to the exact approved next entry (and only
-under a live mode that allows paid fallback). Fallback admission re-check readiness and the exact leg inside their transactions.
-Every run is stamped with its route and the actual provider and model at
+any claim and is never substituted. When a provider's plan runs out mid-build,
+the attempt fails with its reason like any other failure and the task waits
+for a retry or for you; nothing switches to another agent or account on its
+own. Every run is stamped with its route and the actual provider and model at
 admission — set once; a run that would spend as anything else refuses.
 
 Admission proves that stamp before any run row exists: its shape (a known
 phase, provenance word, and provider; a digest; an exact, argv-safe model id),
 its phase against the run's role, its provider and model against what the run
 would spend as, and its provenance against the authority the task actually
-holds — the sealed route's digest and that phase's exact leg, the one approved
-fallback-chain entry the run is bound to for a `fallback` run (two entries
-that share a provider and model but differ in auth mode or repair model are
-different authorities, and an ambiguous pair proves nothing), or a proven
+holds — the sealed route's digest and that phase's exact leg, or a proven
 pre-routing row for `legacy`, whose stamp must name the very sealed profile
 (and, for a build or repair, its exact pair) — the bare word `legacy` belongs
 only to a task with no scope. A task filed under routing never opens an
 unstamped run, and the store dictates nothing: every planner, builder, scout,
-reviewer, repair turn, and fallback **presents** the exact authority it holds
+reviewer, and repair turn **presents** the exact authority it holds
 (`routeAuthorityFor` puts it in the caller's hands, in words), and a missing,
 forged, stale, or inexact stamp opens no row — the refusal names what would
-have had to be presented. Chain custody is proved and written in the same
-insert: base custody opens the task's fallback cycle with the row, a
-parked-resume takes the parked tail's custody through the proven transfer,
-a repair turn inherits exactly its same-task parent's binding, and a fallback
-entry is admitted only when everything it is told — the task, the live cycle,
-the approved chain, the index, the entry digest, provider, model, auth mode,
-repair model, and `fallback` provenance — re-proves against durable state; a
-binding that cannot be proved rolls the insert back, and a mismatch creates no
-run and consumes no edge. A reviewer after a fallback spawns under the review
-leg and takes no custody. A run admitted under a route the scope has since
-re-sealed away refuses to spend. Malformed authority — corrupt route, profile,
-chain, or fallback JSON, a model id that is not one, a turn bound or clock
-that is not a positive whole number, a run row whose chain index or auth mode
-does not read — fails closed in words and never shrinks: a fallback row that
-cannot be read files the scope unresolved rather than sealing a single profile
-nobody configured, and an unreadable binding is no binding, never the base
-entry or the subscription credential.
+have had to be presented. A repair turn mends exactly its same-task parent
+under the claim that holds the task now. A run admitted under a route the scope
+has since re-sealed away refuses to spend. Malformed authority — corrupt route
+or profile JSON, a model id that is not one, a turn bound or clock that is not
+a positive whole number — fails closed in words and never shrinks.
+
+Fallback chains and the declared risk level were removed (schema v115). An
+unfinished task that was filed or approved with fallback agents asks again
+after the update — its scope says so, and saving it once chooses its
+agents; finished tasks and routes sealed at elevated or high risk keep their
+exact bytes and still verify.
 
 Codex resumes carry their sandbox as a configuration override (`-c
 sandbox_mode=…`): `codex exec resume` has no `--sandbox` flag, so a structured
@@ -683,49 +678,37 @@ the planning attempt with its typed reason — the recorded session is not
 resumed twice — and the next attempt, after the planning backoff, is a fresh
 planner root in a fresh session.
 
-A **routine** freezes its agents too. Filing a standing order resolves its
-four-role route from the configuration of that moment and binds it into the
-digest you sign; approval seals the snapshot, and every firing re-hashes that
-snapshot against the approval, holds the build and repair legs to the sealed
-profile's exact provider and model, copies it onto the instance verbatim, and
-rolls the whole firing back unless the instance seals under it — a later
-`config set` cannot re-route a firing. One integrity projection answers
-every question about a standing order's agents — what the page says, whether
-a password may be minted, whether a yes may land, whether a firing may proceed
-— read before any write: an approval is *live* only when its frozen snapshot
-reads back, hashes with the stored terms to the digest the approver signed,
-states no leg problem, and agrees with the sealed profile's build and repair
-pairs. A routine approved before agents were frozen (an upgrade from before
-v48), one whose snapshot cannot be read, or one whose snapshot no longer
-verifies fires nothing and pages once; its page and `routine show` say so and
-offer the one road: `toolroll routine refresh <name>` (or the page's
-**Refresh agents** button) re-resolves the agents from today's configuration,
-withdraws an approval that is not live even when the working agents are
-unchanged, and approves nothing — you read the exact agents it now names and
-approve it again with your password, and only that yes fires the new
-snapshot. An authentic v47 database, or one whose v47→v48 upgrade was
-interrupted, upgrades without re-running older data passes, changing ids,
-backfilling a route, or approving anything.
+A **scheduled flow** with a standing order files an ordinary task each time
+it fires: the order's terms (goal, exclusions, touches, requirements, success
+checks, per-run budget) are copied into the task's scope unchanged, and the
+task waits for approval under the project's approval rules like any other
+proposal. A standing order moved over from an old routine keeps that routine's
+approval and its frozen agents while they still verify: each firing re-hashes
+the frozen snapshot against the approval, holds the build and repair legs to
+the sealed profile's exact provider and model, and rolls the whole firing back
+unless the task seals under it — a later `config set` cannot re-route it. Once
+that approval no longer verifies, each firing says why and waits for approval
+as an ordinary proposal. `toolroll flows show` prints a standing order's
+terms; `toolroll flows trigger pause|resume` (or **Resume** on the flow canvas)
+stops and starts its schedule.
 
 Every approval surface — the task page, the focused chat, and `/next` — shows
-the same concise line of exact agents above the password, with the declared
-risk explained in plain words and the runtime limits one tap away; changing
+the same concise line of exact agents above the password, with why stronger
+agents run explained in plain words and the runtime limits one tap away; changing
 any agent invalidates the approval every surface signed under. Where no yes
-could bind — an unreadable route, a route that cannot run, a standing order
-without frozen agents, or a pre-routing row whose old approval no longer
-stands — those surfaces mint no nonce and show no password or approve button,
-only the reason and the act that opens it (re-file the scope, change the
-agents, refresh the routine) — the inbox row reads *needs attention* rather
-than *review & approve*, and the routine's recovery is one labelled, described
-button with nothing to type; an old approval already on a pre-routing row is
-grandfathered, but no new yes lands on it. In the demo sandbox, Chat is a
+could bind — an unreadable route, a route that cannot run, or a pre-routing
+row whose old approval no longer stands — those surfaces mint no nonce and
+show no password or approve button, only the reason and the act that opens it
+(re-file the scope or change the agents) — the inbox row reads *needs
+attention* rather than *review & approve*; an old approval already on a
+pre-routing row is grandfathered, but no new yes lands on it. In the demo sandbox, Chat is a
 scripted lead that never calls a model; real chat evidence is a subscription-backed plane. The task page's controls offer,
 per role, only the agents you configured *for that role* (gemini never
 reviews; repairs stay on the build provider), a current agent the
 configuration no longer names is shown for what runs today and never offered
-again, and each risk level says what it does — truthfully under strict
-quality and screenshot proof too. Chat reads the same route (`get_agents`)
-and proposes one confirmation-gated change (`propose_agents`) — a risk, one
+again, and each size says what it does — truthfully under strict quality and
+screenshot proof too. Chat reads the same route (`get_agents`)
+and proposes one confirmation-gated change (`propose_agents`) — a size, one
 role switched to a listed agent, or a hand-picked role cleared — which lands,
 when you confirm the card, through the same authenticated route edit the page
 uses; the chosen agent is re-proved against the role's configured choices
@@ -947,9 +930,6 @@ Everything below ships in 0.4.0:
   dependencies (cycles refused), "starts after" on the filing form,
   `task next` moves work to the front of its own queue. Scheduling,
   never authority: approvals are untouched by any of it.
-- **Tournaments** — race 2–4 agents on one task under native dollar
-  caps, compare their verified diffs side by side, and pick one through
-  a password ceremony; the losers' branches and evidence are kept.
 - **The live peek** — a running build's page shows what is changing in
   its checkout right now (names and counts, never contents), through a
   native reader that executes nothing — no git command ever runs
@@ -967,8 +947,7 @@ Everything below ships in 0.4.0:
   into one new approval-bound task.
 - **Operating modes** — a per-repository, password-signed, expiring
   envelope that pre-authorizes the SIGNER'S OWN future acts: your
-  filings approve themselves the moment you file them, watched sessions
-  start without retyping your password, merges fire themselves when CI
+  filings approve themselves the moment you file them, merges fire themselves when CI
   is seen green on the exact authorized commit (only through a merge
   grant, never around one), and daily run/dollar rails bound the spend.
   Every term renders in words at the signing ceremony — including the
@@ -981,7 +960,7 @@ Everything below ships in 0.4.0:
   re-verified against its recorded hash, comments are proven
   patch-local, and they land beside your own for YOU to prune and seal
   into a revision task. A revision keeps the source's contract — its
-  goal, exclusions, touches, exact rubric, declared risk, quality,
+  goal, exclusions, touches, exact rubric, quality,
   permission posture, and budget ceiling — however the installation's
   defaults have changed since, re-resolves its agents for a fresh
   approval, and inherits no approval, session, publication, or merge
@@ -1004,10 +983,6 @@ Everything below ships in 0.4.0:
   doing what, and remove access with one ceremony that actually severs:
   sessions, invites, and every mode they signed end together, while
   history stays attributed forever.
-- **Watched sessions, plural** — run several attended sessions per
-  worker under one signed ceiling, each with its own model and
-  permission posture chosen at mint, the whole execution profile under
-  the signature.
 - **Scout tasks** — `task add … --report` (or the "scout" checkbox, or
   the mate's `propose_task` with `report: true`) files a task whose
   deliverable is a report, never a branch: once its scope is approved,

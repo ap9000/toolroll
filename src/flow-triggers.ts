@@ -4,7 +4,7 @@ import { adapterPolicy } from "./server/route-policy.js";
  * them by hand.
  *
  * - button   — a named button with questions; pressing it makes a card from the answers.
- * - schedule — a card on a schedule (the routines' schedule rules: every N minutes, daily, weekly);
+ * - schedule — a card on a schedule (every N minutes, daily, weekdays, weekly), or a standing order's task;
  *              v90: or a project script run on the schedule, each item it prints a card.
  * - github   — new issues (optionally with a label), new pull requests, or failed checks on a branch.
  * - linear   — Linear issues in a team, moving into a state, and/or with a label.
@@ -38,7 +38,7 @@ import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
-import { describeSchedule, firstFireAt, nextFireAt, parseSchedule, WEEKDAYS } from "./routine.js";
+import { describeSchedule, fileStandingOrder, firstFireAt, nextFireAt, parseSchedule, StandingOrderRefused, WEEKDAYS, type StandingOrder } from "./flow-schedule.js";
 import { takeReply } from "./flow-replies.js";
 import { mailboxAccess, mailCursorOf, mailCursorText, readThroughImap, type MailReader } from "./mailbox.js";
 import type { CodeResult } from "./flow-code.js";
@@ -92,7 +92,7 @@ export function readTriggerSettings(raw: unknown): ContractResult<TriggerInput> 
   return read;
 }
 
-/** A schedule said in words ("every 2 hours", "daily 09:00 Europe/London", "monday 09:00") or in the routines' own form. */
+/** A schedule said in words ("every 2 hours", "daily 09:00 Europe/London", "monday 09:00") or in its stored form ("daily:09:00"). */
 export function scheduleFromWords(text: string): string | null {
   const raw = text.trim().replace(/\s+/g, " ");
   if (parseSchedule(raw) !== null) return raw;
@@ -214,7 +214,7 @@ export function validateTriggerConfig(raw: unknown, context: { store: Store; flo
   }
 }
 
-/** The computer's time zone, as the routines name one. */
+/** The computer's time zone, as a schedule names one. */
 function localTimeZone(): string {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
 }
@@ -241,6 +241,8 @@ export function describeTrigger(config: TriggerConfig, store: Store): string {
     case "schedule": {
       const schedule = parseSchedule(config.schedule);
       const when = schedule === null ? config.schedule : describeSchedule(schedule);
+      // Its limits and terms are said once, in "What each run files" (describeStandingOrder).
+      if (config.order !== undefined) return `${when.charAt(0).toUpperCase()}${when.slice(1)}: files the task “${config.title}”`;
       return config.script !== undefined ? `${when.charAt(0).toUpperCase()}${when.slice(1)}: runs the ${config.script} script, and each item it prints becomes a card` : `${when.charAt(0).toUpperCase()}${when.slice(1)}: “${config.title}”`;
     }
     case "github":
@@ -270,7 +272,7 @@ export function triggerHeadline(config: TriggerConfig, store: Store): { name: st
     case "schedule": {
       const schedule = parseSchedule(config.schedule);
       const when = schedule === null ? config.schedule : schedule.kind === "every" ? describeSchedule(schedule) : `${schedule.kind === "daily" ? "daily" : schedule.kind === "weekdays" ? "weekdays" : `${WEEKDAYS[schedule.day]}s`} at ${schedule.hhmm}`;
-      return { name: `${when.charAt(0).toUpperCase()}${when.slice(1)}`, detail: config.script !== undefined ? `Runs ${config.script}` : `“${config.title}”` };
+      return { name: `${when.charAt(0).toUpperCase()}${when.slice(1)}`, detail: config.script !== undefined ? `Runs ${config.script}` : config.order !== undefined ? `Files “${config.title}”` : `“${config.title}”` };
     }
     case "github": return { name: config.watch === "checks" ? `Failed checks on ${config.branch}` : config.watch === "pulls" ? `New pull requests${config.label === null ? "" : ` labeled ${config.label}`}` : config.label === null ? "New issues" : `Issues labeled ${config.label}`, detail: `GitHub · ${config.repo}` };
     case "linear": return { name: `Linear${config.team === null ? "" : ` ${config.team}`}${config.state === null ? "" : ` → ${config.state}`}`, detail: config.label === null ? "Linear issues" : `Labeled ${config.label}` };
@@ -405,6 +407,16 @@ export function renewFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   return { ok: true, id: trigger.id, said: "New address made; the old one no longer works. Copy it now; it isn't shown again.", reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } };
 }
 
+/**
+ * Pause a trigger, or turn it on again. A schedule that never had a time (a routine moved to a flow while it waited
+ * for approval, v115) starts counting from now, as a new schedule does; one that was due while it was off fires once.
+ */
+export function setFlowTriggerOn(store: Store, trigger: FlowTriggerRow, on: boolean, now: Date): void {
+  const config = on && trigger.nextAt === null ? triggerConfigOf(trigger) : null;
+  const schedule = config !== null && (config.kind === "schedule" || config.kind === "plane-review") ? parseSchedule(config.schedule) : null;
+  store.updateFlowTrigger(trigger.id, { state: on ? "active" : "paused", ...(schedule === null ? {} : { nextAt: firstFireAt(schedule, now) }) }, now);
+}
+
 export function removeFlowTrigger(store: Store, trigger: FlowTriggerRow, now: Date, dir: string | null): void {
   store.updateFlowTrigger(trigger.id, { state: "removed", hookHash: null }, now);
   if (dir !== null) dropHookSecret(dir, trigger.id);
@@ -457,6 +469,40 @@ function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, 
     store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now);
     return { made: "added" as const, note: null, card };
   });
+}
+
+/**
+ * v115: a schedule with a standing order (what a routine was) files its task and the card that follows it, together or
+ * not at all; a slot it skips says why on the trigger. The card starts in the schedule's build step, which follows the
+ * task it was filed with.
+ */
+function fileOrderCard(store: Store, trigger: FlowTriggerRow, config: Extract<TriggerConfig, { kind: "schedule" }>, order: StandingOrder, item: Incoming, slot: string, now: Date): { made: Made; note: string | null; card: number | null } {
+  const flow = store.getFlow(trigger.flow);
+  const definition = flow === null ? null : flowDefinitionOf(flow);
+  if (flow === null || definition === null || flow.state !== "active") return { made: "skipped", note: "the flow isn't active", card: null };
+  const zone = startZone(config, definition);
+  if (definition.stages.find(one => one.id === zone)?.kind !== "task") return { made: "skipped", note: "Skipped: the schedule's first step isn't a build step.", card: null };
+  if (store.flowTriggerSaw(trigger.id, item.key)) return { made: "seen", note: null, card: null };
+  const text = flowCardText(item.title, item.description);
+  if ("problem" in text) return { made: "skipped", note: `Skipped: ${text.problem}`, card: null };
+  try {
+    return store.transact(() => {
+      if (store.flowTriggerSaw(trigger.id, item.key)) return { made: "seen" as const, note: null, card: null };
+      const fired = fileStandingOrder(store, { flowId: flow.id, repo: flow.repo, trigger: trigger.id, schedule: config.schedule, order, title: text.title, slot }, now);
+      if (fired.made === "skipped") {
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, fired.note, now);
+        return { made: "skipped" as const, note: fired.note, card: null };
+      }
+      const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: zone, by: "Schedule", source: item.source }, now);
+      store.updateFlowCard(card, { task: fired.taskId, primaryTask: fired.taskId, waiting: "Filed as a task" }, now);
+      // The firing keeps its task: one-at-a-time and the weekly limit count it however the card moves later.
+      store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, fired.taskId);
+      return { made: "added" as const, note: fired.note ?? (fired.approved ? `Filed ${fired.taskId}, approved.` : `Filed ${fired.taskId}; it waits for approval.`), card };
+    });
+  } catch (error) {
+    if (!(error instanceof StandingOrderRefused)) throw error;
+    return { made: "skipped", note: `Skipped: ${error.message}. Nothing was filed.`, card: null };
+  }
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -544,10 +590,11 @@ function fireSchedule(store: Store, trigger: FlowTriggerRow, config: Extract<Tri
   const slot = trigger.nextAt;
   const next = nextFireAt(schedule, slot, now);
   // One card at a time: while the last one still waits where it started, the slot is skipped, not piled up.
-  const last = store.lastFlowTriggerCard(trigger.id);
+  const last = config.order === undefined ? store.lastFlowTriggerCard(trigger.id) : null;
   const card = last === null ? null : store.getFlowCard(last);
   const flow = store.getFlow(trigger.flow);
   const definition = flow === null ? null : flowDefinitionOf(flow);
+  // A standing order says itself when it waits (its last task unfinished); other schedules wait on their last card.
   if (card !== null && definition !== null && card.state === "active" && card.stage === startZone(config, definition) && card.entry === 1) {
     store.recordFlowTriggerEvent(trigger.id, `slot:${slot}`, null, "the last one hadn't been picked up", now);
     store.updateFlowTrigger(trigger.id, { nextAt: next, lastAt: now.toISOString(), lastOutcome: "Skipped: the last card hasn't been picked up yet." }, now);
@@ -556,8 +603,9 @@ function fireSchedule(store: Store, trigger: FlowTriggerRow, config: Extract<Tri
   const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: schedule.kind === "every" ? "UTC" : schedule.timezone ?? "UTC" }).format(new Date(slot));
   const fill = (text: string) => text.replace(/\{\{\s*date\s*\}\}/g, day);
   const title = /\{\{\s*date\s*\}\}/.test(config.title) ? fill(config.title) : `${config.title} — ${day}`;
-  const made = makeCard(store, trigger, config, { key: `slot:${slot}`, title, description: config.description === null ? null : fill(config.description), source: { kind: "schedule", label: "Schedule", url: null } }, "Schedule", now);
-  store.updateFlowTrigger(trigger.id, { nextAt: next, lastAt: now.toISOString(), lastOutcome: made.made === "added" ? "Added a card." : made.note ?? "Nothing new." }, now);
+  const item: Incoming = { key: `slot:${slot}`, title, description: config.description === null ? null : fill(config.description), source: { kind: "schedule", label: "Schedule", url: null } };
+  const made = config.order === undefined ? makeCard(store, trigger, config, item, "Schedule", now) : fileOrderCard(store, trigger, config, config.order, item, slot, now);
+  store.updateFlowTrigger(trigger.id, { nextAt: next, lastAt: now.toISOString(), lastOutcome: made.made === "added" ? made.note ?? "Added a card." : made.note ?? "Nothing new." }, now);
   return made.made === "added" ? 1 : 0;
 }
 
@@ -637,9 +685,10 @@ export function runScheduleNow(store: Store, trigger: FlowTriggerRow, actor: str
   const config = triggerConfigOf(trigger);
   if (config?.kind !== "schedule" || config.script !== undefined) return { ok: false, said: "Only a schedule without a script runs this way." };
   if (trigger.state !== "active") return { ok: false, said: "It's paused." };
-  const made = makeCard(store, trigger, config, { key: `now:${now.toISOString()}`, title: config.title.replace(/\{\{\s*date\s*\}\}/g, "today"), description: config.description, source: { kind: "schedule", label: `Run now by ${actor}`, url: null } }, "Schedule", now);
+  const item: Incoming = { key: `now:${now.toISOString()}`, title: config.title.replace(/\{\{\s*date\s*\}\}/g, "today"), description: config.description, source: { kind: "schedule", label: `Run now by ${actor}`, url: null } };
+  const made = config.order === undefined ? makeCard(store, trigger, config, item, "Schedule", now) : fileOrderCard(store, trigger, config, config.order, item, now.toISOString(), now);
   if (made.made !== "added" || made.card === null) return { ok: false, said: made.note ?? "Nothing was added." };
-  store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: "Added a card (run now)." }, now);
+  store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: `${made.note ?? "Added a card."} (run now)` }, now);
   return { ok: true, card: made.card };
 }
 

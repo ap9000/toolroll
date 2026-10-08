@@ -21,9 +21,8 @@
  */
 
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
-import { contestantProfileOf, type Store, type TaskRef } from "./store.js";
-import { CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, chainFromJson, canonicalChainJson, type ChainEntry, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
-import { SUBSCRIPTION_CAPABLE } from "./keys.js";
+import type { Store, TaskRef } from "./store.js";
+import { CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
 import { exactModelId, legOf, PHASES, recommendRoute, routeFromJson, routeProblems, sameSpec, type CandidateTier, type ExactSpec, type PhaseRoute, type RouteCandidate, type RouteCandidates, type RouteEvidenceKind } from "./phase-routing.js";
 import type { AcceptanceCriterion } from "./scope.js";
 
@@ -217,70 +216,6 @@ export function resolveScopeProfile(
   return { ok: true, profile, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
-export type ChainResolution =
-  | { ok: true; chain: ChainEntry[]; kind: "profile" | "chain" }
-  | { ok: false; reason: "base-unresolved" | "bad-fallback" | "duplicate"; problem: string };
-
-/**
- * Resolve the full EXECUTION CHAIN a scope files under (v30): the base
- * (entry 0) is the ordinary single-profile resolution wearing the base
- * provider's auth mode; the fallbacks are the scope's configured entries,
- * each resolved to a WHOLE ExecutionProfile (repair per entry). With no
- * fallbacks configured, the result is `kind: "profile"` — a single-profile
- * approval, byte-identical to today (NOT an explicit chain). With
- * fallbacks, it is `kind: "chain"` and the approval binds the whole thing.
- * The base auth mode is passed in (the caller reads it from the managed
- * key store) so resolution stays pure and testable.
- */
-export function resolveScopeChain(
-  store: Store,
-  repo: string | null,
-  ref: Pick<TaskRef, "agentProvider" | "agentModel"> | undefined,
-  flags: PhaseFlags & { repairModel?: string | undefined; permissionMode?: UnattendedPermissionMode | undefined },
-  baseAuthMode: "subscription" | "api-key",
-): ChainResolution {
-  const base = resolveScopeProfile(store, repo, ref, flags);
-  if (!base.ok) return { ok: false, reason: "base-unresolved", problem: base.problem };
-  const unreadable = repo === null ? null : store.fallbackConfigProblem(repo);
-  if (unreadable !== null) return { ok: false, reason: "bad-fallback", problem: unreadable };
-  const fallbacks = repo === null ? [] : store.fallbackConfig(repo);
-  if (fallbacks.length === 0) {
-    // No fallbacks: a legacy single-profile approval, unchanged.
-    return { ok: true, chain: [{ profile: base.profile, authMode: baseAuthMode }], kind: "profile" };
-  }
-  const entries: ChainEntry[] = [{ profile: base.profile, authMode: baseAuthMode }];
-  for (const one of fallbacks) {
-    if (!isProviderId(one.provider) || one.model === undefined || one.model === "") {
-      return { ok: false, reason: "bad-fallback", problem: `a fallback entry names an unknown provider or empty model (${one.provider}:${one.model})` };
-    }
-    if (one.authMode !== "subscription" && one.authMode !== "api-key") {
-      return { ok: false, reason: "bad-fallback", problem: `a fallback entry has an unknown auth mode` };
-    }
-    // An entry can only pin an auth mode its provider can actually take:
-    // "subscription" on a provider with no login (openrouter) would seal an
-    // entry that can never authenticate (E3d, gateway pin).
-    if (one.authMode === "subscription" && !SUBSCRIPTION_CAPABLE[one.provider]) {
-      return { ok: false, reason: "bad-fallback", problem: `${one.provider} has no subscription login — this entry must use an API key` };
-    }
-    // The model rides provider argv (F+G review, finding 1): the SAME
-    // argv-safety validation every other sealed model passes — never a
-    // leading dash, control bytes, or whitespace into a harness's argv.
-    const argvSafe = validateSpec({ provider: one.provider, model: one.model });
-    if (!argvSafe.ok) {
-      return { ok: false, reason: "bad-fallback", problem: argvSafe.problem };
-    }
-    entries.push({ profile: contestantProfileOf(one.provider, one.model, one.repairModel ?? "inherit", flags.permissionMode ?? store.permissionDefault().mode), authMode: one.authMode });
-  }
-  // Re-prove the whole chain through the strict rehydrator: it rejects
-  // exact-duplicate entries and any malformed shape, so what the approval
-  // seals is exactly what dispatch will re-derive.
-  const proven = chainFromJson(canonicalChainJson(entries));
-  if (proven === null) {
-    return { ok: false, reason: "duplicate", problem: "the fallback chain has a duplicate entry (same profile and auth mode) or is malformed" };
-  }
-  return { ok: true, chain: proven, kind: "chain" };
-}
-
 // ---- route candidates (v47, phase routing) --------------------------------
 
 /**
@@ -361,7 +296,7 @@ export function resolveRouteCandidates(store: Store, repo: string | null, pins: 
     const routine = resolvePhaseAgent(store, phase, repo, {});
     if (!routine.ok) return { ok: false, problem: routine.problem };
     if (routine.spec.model === null || routine.spec.model === "") {
-      // A PINNED exact pair (a routine firing's approved profile, a plan
+      // A PINNED exact pair (an approved standing order's frozen profile, a plan
       // request's pin) is the phase's agent whatever the configuration
       // says — it stands in as the candidate when nothing exact is
       // configured, so a firing never depends on today's config.
@@ -499,7 +434,6 @@ export function routeOfTask(store: Store, taskId: string, ref: TaskRef | null, n
   const candidates = resolveRouteCandidates(store, repo, { plan: planPin.pin, build: buildPin.pin });
   if (!candidates.ok) return { kind: "unreadable", problem: candidates.problem };
   const route = recommendRoute({
-    risk: ref?.riskLevel ?? "routine",
     qualityMode: ref?.qualityMode ?? store.qualityDefault().mode,
     evidence: [],
     publication: store.publicationAuthorityOf(repo, now),
@@ -512,27 +446,25 @@ export function routeOfTask(store: Store, taskId: string, ref: TaskRef | null, n
   return { kind: "route", route, source: "live" };
 }
 
-// ---- routine authority (v48) ---------------------------------------------
+// ---- exact agent authority (v48) -----------------------------------------
 
 /**
- * THE ROUTINE'S FROZEN AUTHORITY, resolved once at filing: the four-role
- * route a routine's firings will run under, and the execution profile that
- * restates its build and repair legs exactly. Routine tasks declare routine
- * risk; the rubric's evidence needs, the installation's quality default,
- * and the repository's publication authority are the other signed inputs.
- * A configuration that cannot make an exact, runnable route answers with
- * the words — the routine files unresolved and cannot be approved until
- * it is filed again under a configuration that can.
+ * THE EXACT AUTHORITY a project's configuration names today: the four-role
+ * route work would run under, and the execution profile that restates its
+ * build and repair legs exactly. The rubric's evidence needs, the
+ * installation's quality default, and the repository's publication
+ * authority are the other inputs. A configuration that cannot make an
+ * exact, runnable route answers with the words (the recipes preview shows
+ * them before any work is created).
  */
-export type RoutineAuthority =
+export type AgentAuthority =
   | { ok: true; route: PhaseRoute; profile: ExecutionProfile }
   | { ok: false; problem: string };
 
-export function resolveRoutineAuthority(store: Store, repo: string, acceptance: readonly AcceptanceCriterion[], now: Date): RoutineAuthority {
+export function resolveAgentAuthority(store: Store, repo: string, acceptance: readonly AcceptanceCriterion[], now: Date): AgentAuthority {
   const candidates = resolveRouteCandidates(store, repo);
   if (!candidates.ok) return { ok: false, problem: candidates.problem };
   const route = recommendRoute({
-    risk: "routine",
     qualityMode: store.qualityDefault().mode,
     evidence: [...new Set(acceptance.flatMap(one => one.evidence))] as RouteEvidenceKind[],
     publication: store.publicationAuthorityOf(repo, now),

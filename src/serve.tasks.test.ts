@@ -1,6 +1,6 @@
 /**
  * The console server: task pages — the portfolio, queue, task detail,
- * live peek, tournament comparison and phase route.
+ * live peek and phase route.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
@@ -13,7 +13,6 @@ import { openStore, type Store } from "./store.js";
 import { acquire, release } from "./claim.js";
 import { register, hashToken } from "./runner.js";
 import { addApprover, approvalOf, approve, propose } from "./scope.js";
-import { planTournament, admitContest, finalizeContestant } from "./contest.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
@@ -23,241 +22,6 @@ import { Window } from "happy-dom";
 import { presented, T0, stylesOf, renderedHtmlOf, workspaceOf } from "../test/serve-kit.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { createDemoSandbox } from "./demo.js";
-
-describe("stage 5 — the tournament comparison screen and the pick ceremony, over real HTTP", () => {
-  let store: Store;
-  let server: Server;
-  let base: string;
-  let evidenceRoot: string;
-  let approverToken: string;
-  let contestId: number;
-  let winnerId: number;
-  let taskRef: number;
-
-  const url = (path: string) => `${base}${path}`;
-
-  const login = async (): Promise<string> => {
-    const response = await fetch(url("/login"), {
-      method: "POST",
-      body: new URLSearchParams({ name: "alex", token: approverToken }),
-      redirect: "manual",
-    });
-    expect(response.status).toBe(303);
-    return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
-  };
-
-  beforeEach(async () => {
-    store = openStore(":memory:");
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
-    evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-contest-ev-"));
-    const added = addApprover(store, "alex", T0);
-    if (!added.ok) throw new Error("bootstrap failed");
-    approverToken = added.token;
-
-    // A two-agent tournament, raced to pick-wait: one committed winner with
-    // verified evidence, one that finished without committing.
-    store.createTask({ id: "race-w", title: "raced on the web" }, T0);
-    taskRef = store.refFor("built-in", "race-w", "ours").id;
-    const planned = planTournament({
-      agents: [{ provider: "claude", model: "claude-sonnet-5" }, { provider: "claude", model: "claude-haiku-4-5" }],
-      perAgentBudgetUsd: 5,
-      totalBudgetUsd: 20,
-    });
-    if (!planned.ok) throw new Error(planned.reason);
-    const termsId = store.fileTournamentTerms(
-      {
-        taskRef,
-        raceDigest: planned.plan.raceDigest,
-        agents: planned.plan.agents,
-        perAgentBudgetMicrousd: planned.plan.perAgentBudgetMicrousd,
-        overrunReserveMicrousd: planned.plan.overrunReserveMicrousd,
-        totalBudgetMicrousd: planned.plan.totalBudgetMicrousd,
-        priceVersion: planned.plan.priceVersion,
-        publicationPolicy: "none",
-      },
-      T0,
-    );
-    store.approveTournamentTerms(termsId, "alex", planned.plan.raceDigest, T0);
-    // The runner gate (MCP spec v6): registered, repo-bound, token-proved.
-    store.placeTask(taskRef, "/repo/main");
-    register(store, { name: "night-shift-1", host: "here", capacity: 8, repos: ["/repo/main"], now: T0, newToken: () => "tok-night-shift-1" });
-    const taken = acquire(store, taskRef, "night-shift-1", { token: "tok-night-shift-1", now: T0, ttlMs: 3_600_000 });
-    if (!taken.ok) throw new Error("claim");
-    const admitted = admitContest(
-      store,
-      {
-        taskId: "race-w", taskRef, runner: "night-shift-1", leaseId: taken.claim.leaseId,
-        incarnation: null, scopeDigest: "scope-d", scopeApproved: true, capacity: 8, quotaBlocked: () => null,
-      } as never,
-      T0,
-    );
-    if (!admitted.ok) throw new Error(admitted.reason);
-    contestId = admitted.contestId;
-    store.stampContestDispatch(contestId, "base-sha-000", null);
-    const contest = store.getContest(contestId);
-    if (contest === null) throw new Error("contest");
-    for (const agent of store.contestants(contestId)) store.casContestantState(agent.id, ["pending"], "ready", agent.generation);
-    store.casContestState(contestId, ["dispatching"], "racing", contest.generation);
-    for (const agent of store.contestants(contestId)) store.casContestantState(agent.id, ["ready"], "building", agent.generation);
-
-    const [first, second] = store.contestants(contestId);
-    if (first === undefined || second === undefined) throw new Error("agents");
-    winnerId = first.id;
-    const conclude = (agent: typeof first, committed: boolean, head: string, slot: number | null) => {
-      const lane = store.admitContestLane({
-        taskRef, leaseId: taken.claim.leaseId, runner: "night-shift-1", incarnation: null,
-        branch: agent.branch, worktree: `/pool/${agent.id}`, contestant: agent.id, route: store.laneAuthorityFor(agent.id)!, now: T0,
-      });
-      if (!lane.ok) throw new Error(lane.problem);
-      const runId = lane.runId;
-      storeEvidence(store, evidenceRoot, runId, "terminal-diff", "terminal-diff.patch",
-        Buffer.from("diff --git a/x b/x\n+raced\n", "utf8"), "git diff (exit 0)", T0, { captureStatus: "ok" });
-      storeEvidence(store, evidenceRoot, runId, "diff-stat", "terminal-diff-stat.json",
-        Buffer.from(JSON.stringify({ base: "base-sha-000", head, fileCount: 1, additions: 1, deletions: 0, binaryCount: 0, filesTruncated: false, files: [{ path: "x", additions: 1, deletions: 0 }] }), "utf8"),
-        "git diff --numstat (exit 0)", T0, { captureStatus: "ok" });
-      store.recordOutcomeFacts(runId, { headRevision: head, handoff: "swapped the guard" });
-      store.finishRun(runId, { outcome: "built", committed, now: T0 });
-      finalizeContestant(store, { contestId, contestantId: agent.id, runId, outcome: "built", measuredMicrousd: 500_000, slotId: slot } as never, T0);
-      return runId;
-    };
-    conclude(first, true, "head-aaa", admitted.slotIds[0] ?? null);
-    conclude(second, false, "head-bbb", admitted.slotIds[1] ?? null);
-    if (store.getContest(contestId)?.state !== "pick-wait") throw new Error("not pick-wait");
-
-    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date() });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (typeof address !== "object" || address === null) throw new Error("no address");
-    base = `http://127.0.0.1:${address.port}`;
-  });
-
-  afterEach(async () => {
-    await new Promise<void>(resolve => server.close(() => resolve()));
-    store.close();
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  });
-
-  test("the review cockpit offers the comparison road for a task whose result run raced (Priority 5)", async () => {
-    store.setTaskState("race-w", "done", T0);
-    const cookie = await login();
-    const cockpit = await (await fetch(url("/review?result=race-w"), { headers: { cookie } })).text();
-    expect(cockpit).toContain('data-review-task="race-w"');
-    // The tournament waits for a pick: that is the one primary act, and it
-    // goes to the existing comparison screen — the cockpit picks nothing.
-    expect(cockpit).toContain('data-next-action="compare-contest"');
-    expect(cockpit).toContain(`<a class="button-link" href="/contest/${contestId}">Compare results</a>`);
-    expect(cockpit).toContain(`<a href="/contest/${contestId}">compare the tournament and pick →</a>`);
-    expect(cockpit).not.toContain("Pick this result");
-    expect(cockpit).not.toContain('name="nonce"');
-  });
-
-  test("the whole ceremony: compare → arm (POST mints) → password → picked; a GET never mints and a replay refuses", async () => {
-    const cookie = await login();
-
-    // The comparison screen: plain words, both agents, the refusal named.
-    const compare = await (await fetch(url(`/contest/${contestId}`), { headers: { cookie } })).text();
-    expect(compare).toContain("tournament");
-    expect(compare).toContain("Agent 1");
-    expect(compare).toContain("Agent 2");
-    expect(compare).toContain("Cannot be picked — finished without committing");
-    expect(compare).toContain("Pick this result");
-    // The GET minted nothing: no nonce field anywhere on it.
-    expect(compare).not.toContain('name="nonce"');
-
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(compare)?.[1];
-    if (csrf === undefined) throw new Error("no csrf on the page");
-
-    // Arm: the POST mints the nonce and answers with the confirmation form.
-    const armed = await fetch(url(`/contest/${contestId}/arm`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, choice: String(winnerId) }),
-    });
-    expect(armed.status).toBe(200);
-    const ceremony = await armed.text();
-    expect(ceremony).toContain("Pick agent 1");
-    expect(ceremony).toContain("$0.50"); // the money, restated in dollars
-    expect(ceremony).toContain("Nothing is published"); // no grant on this repo
-    const nonce = /name="nonce" value="([A-Za-z0-9_-]+)"/.exec(ceremony)?.[1];
-    if (nonce === undefined) throw new Error("no nonce in the ceremony form");
-
-    // A wrong password decides nothing.
-    const wrong = await fetch(url(`/contest/${contestId}/pick`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, choice: String(winnerId), nonce, token: "not-the-password" }),
-    });
-    expect(wrong.status).toBe(403);
-    expect(store.getContest(contestId)?.state).toBe("pick-wait");
-
-    // The real yes.
-    const picked = await fetch(url(`/contest/${contestId}/pick`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, choice: String(winnerId), nonce, token: approverToken }),
-      redirect: "manual",
-    });
-    expect(picked.status).toBe(303);
-    expect(store.getContest(contestId)?.state).toBe("picked");
-    expect(store.getContest(contestId)?.winnerContestant).toBe(winnerId);
-    expect(store.getTask("race-w")?.state).toBe("done");
-    expect(store.activeHolds(taskRef, T0)).toHaveLength(0);
-
-    // Replay of the same ceremony refuses — the nonce died with the pick.
-    const replay = await fetch(url(`/contest/${contestId}/pick`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, choice: String(winnerId), nonce, token: approverToken }),
-    });
-    expect(replay.status).toBe(409);
-
-    // The screen now states the decision.
-    const after = await (await fetch(url(`/contest/${contestId}`), { headers: { cookie } })).text();
-    expect(after).toContain("Picked by alex");
-    expect(after).not.toContain("Pick this result");
-  });
-
-  test("the comparison reads at a glance (arc 6): one table column per agent, cards side by side, same facts", async () => {
-    const cookie = await login();
-    const html = await (await fetch(url(`/contest/${contestId}`), { headers: { cookie } })).text();
-    expect(html).toContain('class="contest-glance"');
-    expect(html).toContain('class="contest-compare"');
-    // the table and the cards derive from ONE summary — the same diff words
-    expect(html).toContain("1 file(s) · +1 −0");
-    expect((html.match(/Agent [0-9]/g) ?? []).length).toBeGreaterThanOrEqual(2);
-    // ceremonies untouched: the arm form still points at the same act
-    expect(html).toContain(`/contest/${contestId}/arm`);
-  });
-
-  test("abandon: armed by POST, confirmed by password — the task fails requeueably and everything is kept", async () => {
-    const cookie = await login();
-    const compare = await (await fetch(url(`/contest/${contestId}`), { headers: { cookie } })).text();
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(compare)?.[1];
-    if (csrf === undefined) throw new Error("no csrf");
-    const armed = await fetch(url(`/contest/${contestId}/arm`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, act: "abandon" }),
-    });
-    const ceremony = await armed.text();
-    expect(ceremony).toContain("Abandon this tournament?");
-    expect(ceremony).toContain("marked <strong>failed</strong>");
-    const nonce = /name="nonce" value="([A-Za-z0-9_-]+)"/.exec(ceremony)?.[1];
-    if (nonce === undefined) throw new Error("no nonce");
-    const gone = await fetch(url(`/contest/${contestId}/abandon`), {
-      method: "POST",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, nonce, token: approverToken }),
-      redirect: "manual",
-    });
-    expect(gone.status).toBe(303);
-    expect(store.getContest(contestId)?.state).toBe("abandoned");
-    expect(store.getTask("race-w")?.state).toBe("failed");
-    expect(store.runsFor(taskRef).length).toBe(2); // nothing deleted
-  });
-});
 
 describe("A2 — the live peek over real HTTP: guards, fence, and the names-only fragment", () => {
   let store: Store;
@@ -2112,11 +1876,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     store.createTask({ id: "payouts", title: "Harden payouts" }, T0);
     const ref = store.refFor("built-in", "payouts").id;
     store.placeTask(ref, "/repo/main");
+    // A large change: planning and building reach for the strongest configured agents.
+    store.writeSizing(ref, { size: "large", risky: false, source: "person", reason: "set by alex" });
     propose(store, {
       taskId: "payouts",
       goal: "Harden the payouts flow",
       acceptance: [{ id: "pay", statement: "Payouts never double-send", how: null, evidence: ["check", "screenshot"] }],
-      riskLevel: "high",
       now: T0,
     });
     server = createDecisionServer({ store, evidenceRoot, clock: () => new Date(T0.getTime() + 60_000), repo: "/repo/main" });
@@ -2139,7 +1904,8 @@ describe("the phase route on the console (v47): one projection on the task page,
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
     expect(card).toContain("<h3>Agents</h3>");
-    expect(card).toContain('<span class="badge">High risk</span>');
+    // No risk badge on an ordinary route: nothing to say.
+    expect(card).not.toContain('<span class="badge">Routine</span>');
     expect(card).toContain('<span class="badge">Stronger configured agents</span>');
     expect(card).toContain('<span class="badge">Awaiting approval</span>');
     expect(card).toContain('<p class="agents-summary">claude · sonnet plans; claude · opus builds and repairs</p>');
@@ -2147,14 +1913,15 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(card).toContain('<details class="agents-why"><summary>Why these agents</summary>');
     expect(card).toContain('<details class="agents-change"><summary>Change agents</summary>');
     expect(card).not.toContain("<details open");
-    expect(card).toContain("risk is high — every role uses the strongest configured agent");
+    expect(card).toContain("a large change — planning and building use the strongest configured agent");
     expect(card).toContain("acceptance requires screenshots");
     expect(card).toContain("<dt>Builder</dt><dd><span class=\"mono\">claude · opus</span> <span class=\"badge\">Recommended · strong</span>");
     // Availability is volatile metadata beside the agents.
     expect(card).not.toContain('<li class="agents-availability-unavailable"><span class="mono">codex</span>');
     expect(card).toContain('<span class="mono">claude</span> not yet checked');
     expect(card).not.toContain("Paused: a provider these agents need is reported unavailable.");
-    expect(card).toContain('name="risk"');
+    expect(card).not.toContain('name="risk"');
+    expect(card).toContain('name="size"');
     expect(card).toContain('name="phase"');
     // Valid forms: each form is its own element, never nested, and every
     // control is at least 44px tall.
@@ -2172,8 +1939,9 @@ describe("the phase route on the console (v47): one projection on the task page,
     const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"><summary>Plan details</summary>'));
     expect(details).toContain("<h3>Why these agents</h3><p>claude · sonnet plans; claude · opus builds and repairs</p>");
     expect(details).toContain("These exact agents are part of what you approve");
-    // Plain-English risk consequence, and the runtime mechanics folded away.
-    expect(details).toContain("High risk: every active role — planner, builder, and repair — uses the strongest agent you have configured.");
+    // Why stronger agents run, in plain words, and the runtime mechanics folded away.
+    expect(details).toContain("a large change — planning and building use the strongest configured agent");
+    expect(details).not.toContain("High risk");
     expect(details).toContain("<h3>Runtime limits</h3>");
     expect(ceremony).not.toContain("--dangerously");
     // No duplicate provider · model chip beside the agents summary.
@@ -2230,12 +1998,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(card).toContain("pinned to claude · sonnet by the plan request — nothing overrides a pin");
     expect(card).toContain("Planner → <span class=\"mono\">claude · sonnet</span>");
     expect(card).toContain('name="clear-phase" value="plan"');
-    // The risk moves too, through the same door, with the current digest.
-    const risk = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: after.digest, risk: "elevated" });
-    expect(risk.status).toBe(303);
-    expect(store.getScope("payouts")!.riskLevel).toBe("elevated");
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("Elevated risk");
-    // Clearing the override restores the recommendation — at elevated risk, the strong planner.
+    // The size moves too, through the same door, with the current digest.
+    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: after.digest, size: "medium", risky: "yes" });
+    expect(sized.status).toBe(303);
+    expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: true });
+    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<span class="badge">Risky</span>');
+    // Clearing the override restores the recommendation — for a risky change, the strong planner.
     const cleared = await post(cookie, "/t/payouts/route", { csrf, sawDigest: store.getScope("payouts")!.digest, "clear-phase": "plan" });
     expect(cleared.status).toBe(303);
     expect(store.refFor("built-in", "payouts").routeOverrides).toEqual([]);
@@ -2248,9 +2016,9 @@ describe("the phase route on the console (v47): one projection on the task page,
     const card = agentsCardOf(html);
     expect(card).toContain("claude · opus");
     expect(card).not.toContain('name="phase"');
-    const refused = await post(viewer, "/t/payouts/route", { csrf: csrfOf(html), risk: "routine" });
+    const refused = await post(viewer, "/t/payouts/route", { csrf: csrfOf(html), size: "small" });
     expect(refused.status).toBe(403);
-    expect(store.getScope("payouts")!.riskLevel).toBe("high");
+    expect(store.refFor("built-in", "payouts").sizing?.size).toBe("large");
     // Under a live claim the approver's edit is refused too.
     const cookie = await loginAs("alex", approverToken);
     const scope = store.getScope("payouts")!;
@@ -2260,7 +2028,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(taken.ok).toBe(true);
     const running = await page(cookie, "/t/payouts");
     expect(agentsCardOf(running)).toContain("this task is running — its agents cannot change under a live claim");
-    const blocked = await post(cookie, "/t/payouts/route", { csrf: csrfOf(running), risk: "routine" });
+    const blocked = await post(cookie, "/t/payouts/route", { csrf: csrfOf(running), size: "small" });
     expect(blocked.status).toBe(409);
     expect(approvalOf(store.getScope("payouts")!).approved).toBe(true);
   });
@@ -2271,7 +2039,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const chat = await page(cookie, "/chat?task=payouts");
     const aside = /<div class="task-chat-agents-aside">(.*?)<p class="meta"><a href="\/t\/payouts#agents">Change agents on the task/s.exec(chat)?.[1] ?? "";
     expect(aside).toContain('<p class="agents-summary">claude · sonnet plans; claude · opus builds and repairs</p>');
-    expect(aside).toContain('<span class="badge">High risk</span>');
+    expect(aside).not.toContain("High risk");
     expect(aside).toContain('<span class="badge">Awaiting approval</span>');
     expect(aside).toContain('<details class="agents-why"><summary>Why these agents</summary>');
     expect(aside).toContain('<span class="mono">claude</span> not yet checked');
@@ -2291,22 +2059,21 @@ describe("the phase route on the console (v47): one projection on the task page,
     // the Review plan disclosure over the exact terms.
     const approvalCard = /<section class="card chat-action-card chat-plan" id="task-chat-action"[^>]*>(.*?)<\/form><\/section>/s.exec(chat)?.[0] ?? "";
     expect(approvalCard).toContain('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
-    expect(approvalCard).toContain("High risk: every active role");
+    expect(approvalCard).toContain("a large change — planning and building use the strongest configured agent");
     expect(approvalCard).toContain("<h3>Why these agents</h3>");
     expect(approvalCard).not.toContain("codex · gpt-5-codex");
     expect(approvalCard).not.toContain("not yet checked");
   });
 
-  test("simple-controls: the change controls offer only configured, role-valid agents from a select, explain every risk choice, and quote no command line; an unconfigured pair is refused", async () => {
+  test("simple-controls: the change controls offer only configured, role-valid agents from a select, a size choice in plain words, and quote no command line; an unconfigured pair is refused", async () => {
     const cookie = await loginAs("alex", approverToken);
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
     const change = /<details class="agents-change">(.*?)<\/details>/s.exec(card)?.[1] ?? "";
-    // Every risk level explained in plain words, beside the control.
-    expect(change).toContain('<dl class="agents-risk-guide">');
-    expect(change).toContain("<dt>Routine</dt><dd>every role uses the everyday configured agent unless the work itself asks for more");
-    expect(change).toContain("<dt>Elevated risk</dt><dd>planning and building use the strongest agent you have configured");
-    expect(change).toContain("<dt>High risk</dt><dd>every active role — planner, builder, and repair — uses the strongest agent you have configured");
+    // Each size says what it does; there is no risk level to declare.
+    expect(change).toContain('<option value="large" selected>Large change: strongest agents plan and build</option>');
+    expect(change).not.toContain('name="risk"');
+    expect(change).not.toContain("agents-risk-guide");
     // One form per role, a select of exact configured pairs, no free text.
     expect(change).not.toContain('name="model"');
     expect(change).not.toContain('name="provider"');
@@ -2352,10 +2119,8 @@ describe("the phase route on the console (v47): one projection on the task page,
     const html = await page(cookie, "/t/payouts");
     expect(agentsCardOf(html)).toContain('<option value="small">Small change: fast model, no plan</option>');
     expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "tiny" })).status).toBe(400);
-    // At this task's high risk a small change still plans; at routine risk it makes no plan.
-    expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" })).status).toBe(303);
-    expect(store.refFor("built-in", "payouts")).toMatchObject({ riskLevel: "high", plan: "requested" });
-    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small", risk: "routine" });
+    // A small change makes no plan.
+    const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" });
     expect(sized.status).toBe(303);
     expect(store.refFor("built-in", "payouts").sizing).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
     expect(store.refFor("built-in", "payouts").plan).toBeNull();
@@ -2389,7 +2154,7 @@ describe("the phase route on the console (v47): one projection on the task page,
   test("consent: the task page, the focused chat, and the next-up triage all restate the same concise exact agents before the password, with runtime limits closed away", async () => {
     const cookie = await loginAs("alex", approverToken);
     const summary = "claude · sonnet plans; claude · opus builds and repairs";
-    const risk = "High risk: every active role — planner, builder, and repair — uses the strongest agent you have configured.";
+    const why = "a large change — planning and building use the strongest configured agent";
     const ceremonyOf = (html: string, action: string): string => new RegExp(`<form method="post" action="${action}"(.*?)<\\/form>`, "s").exec(html)?.[1] ?? "";
     // The task page and chat share the approval sheet: who builds in one
     // line before the password, the exact route and limits in Details.
@@ -2401,7 +2166,7 @@ describe("the phase route on the console (v47): one projection on the task page,
       expect(passwordAt).toBeGreaterThan(whoAt);
       expect(detailsAt).toBeGreaterThan(passwordAt);
       expect(ceremony.slice(detailsAt)).toContain(`<h3>Why these agents</h3><p>${summary}</p>`);
-      expect(ceremony.slice(detailsAt)).toContain(risk);
+      expect(ceremony.slice(detailsAt)).toContain(why);
       expect(ceremony.slice(detailsAt)).toContain("<h3>Runtime limits</h3>");
       expect(ceremony).not.toContain("<details open");
       expect(ceremony).not.toContain("not yet checked");
@@ -2413,7 +2178,7 @@ describe("the phase route on the console (v47): one projection on the task page,
       expect(agentsAt).toBeGreaterThan(-1);
       expect(passwordAt).toBeGreaterThan(agentsAt);
       expect(ceremony).toContain(`<p class="agents-summary">${summary}</p>`);
-      expect(ceremony).toContain(risk);
+      expect(ceremony).toContain("Large change: strongest agents plan and build");
       expect(ceremony).toContain('<details class="agents-runtime"><summary>Runtime limits</summary>');
       expect(ceremony).not.toContain("<details open");
       expect(ceremony).not.toContain("not yet checked");
@@ -2442,17 +2207,16 @@ describe("the phase route on the console (v47): one projection on the task page,
     const html = await page(cookie, "/t/payouts");
     expect((await post(cookie, "/t/payouts/route", {
       csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest,
-      risk: "routine", size: "medium", risky: "yes",
+      size: "medium", risky: "yes",
     })).status).toBe(303);
     store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
     const task = await page(cookie, "/t/payouts");
     expect(agentsCardOf(task)).toContain('<span class="badge">Risky</span>');
     expect(agentsCardOf(task)).not.toContain('<span class="badge">Routine</span>');
-    const risk = "Risky: planning and building use the strongest agent you have configured.";
     for (const path of ["/t/payouts", "/chat?task=payouts", "/next"]) {
       const shown = await page(cookie, path);
       const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(shown)?.[1] ?? "";
-      expect(ceremony, path).toContain(risk);
+      expect(ceremony, path).toMatch(/a risky change — planning and building use the strongest configured agent|Risky change: strongest agents plan and build/);
       expect(ceremony, path).not.toContain("Routine:");
     }
     const scope = store.getScope("payouts")!;
@@ -2515,7 +2279,7 @@ describe("/peek: every live agent in the console (peek)", () => {
     register(store, { name: "night-shift-1", host: "host", capacity: 2, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-peek" });
     const taken = acquire(store, ref, "night-shift-1", { token: "tok-peek", now: new Date(), ttlMs: 60 * 60_000 });
     if (!taken.ok) throw new Error("claim failed");
-    const run = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "night-shift-1", role: "builder", provider: "codex", branch: "standing-orders/t-peek", worktree: "/pool/t-peek", now: new Date(), ...presented(store, ref, "builder", null, { provider: "codex", model: null }) });
+    const run = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "night-shift-1", role: "builder", provider: "codex", branch: "standing-orders/t-peek", worktree: "/pool/t-peek", now: new Date(), ...presented(store, ref, "builder", { provider: "codex", model: null }) });
     store.setRunPhase(run, "agent-running");
     const log = openLiveLog(evidenceRoot, run);
     log?.observe({ type: "item.completed", item: { type: "agent_message", text: "Reading the retry loop now." } });

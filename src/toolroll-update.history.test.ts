@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { changedHistory, historySnapshot } from "./toolroll-update.js";
+import { changedHistory, historySnapshot, RETIRED_TABLES } from "./toolroll-update.js";
+import { V115_DROPPED_TABLES } from "./store.js";
 
 /** A small saved database: the ledger tables, an ordinary table, a WITHOUT ROWID one and the v113 shapes v114 changes. */
 function saved(): DatabaseSync {
@@ -118,4 +119,57 @@ test("v114's populated delivery columns may go only when legacy receipts carry e
   // Receipts under any other destination, or legacy ones with no drop, are not a transfer.
   expect(transfer(carried().replace("'legacy:single-destination'", "'slack:abc'") + DROP)).toEqual(["notification", "notification_delivery"]);
   expect(transfer(carried())).toEqual(["notification_delivery"]);
+});
+
+/** The v114 shapes v115 removes or fills: two routines (one approved and running, one never approved), the other
+ * removed features' tables, and one flow with a trigger a person made. */
+function routined(): DatabaseSync {
+  const db = saved();
+  db.exec(`CREATE TABLE routine(id INTEGER PRIMARY KEY, name TEXT, repo TEXT, digest TEXT, approved_at TEXT, approved_digest TEXT, approved_profile_json TEXT, approved_route_json TEXT, paused INTEGER);
+    CREATE TABLE routine_fire(id INTEGER PRIMARY KEY, routine_id INTEGER REFERENCES routine(id), outcome TEXT);
+    CREATE TABLE flow(id INTEGER PRIMARY KEY, repo TEXT, name TEXT, state TEXT);
+    CREATE TABLE flow_trigger(id INTEGER PRIMARY KEY, flow INTEGER REFERENCES flow(id), kind TEXT, config_json TEXT, state TEXT);
+    INSERT INTO routine VALUES(1,'nightly','/w/site','d1','a','d1','{}','{}',0),(2,'audit','/w/site','d2',NULL,NULL,NULL,NULL,0);
+    INSERT INTO routine_fire VALUES(1,1,'fired');
+    INSERT INTO flow VALUES(1,'/w/site','Triage','active');
+    INSERT INTO flow_trigger VALUES(1,1,'button','{}','active');`);
+  for (const table of RETIRED_TABLES.filter(one => !one.startsWith("routine"))) db.exec(`CREATE TABLE ${table}(id INTEGER PRIMARY KEY, note TEXT); INSERT INTO ${table}(note) VALUES('history')`);
+  return db;
+}
+const RETIRE = [...RETIRED_TABLES].reverse().map(table => `DROP TABLE ${table};`).join("");
+const flowOf = (id: number, name: string) => `INSERT INTO flow VALUES(${id},'/w/site','${name}','active');`;
+const triggerOf = (id: number, flow: number, routine: number, state = "paused") =>
+  `INSERT INTO flow_trigger VALUES(${id},${flow},'schedule','{"kind":"schedule","order":{"routine":${routine}}}','${state}');`;
+const MOVED = flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 2, 1, "active") + triggerOf(3, 3, 2);
+const moves = (edit: string) => { const db = routined(); try { const before = historySnapshot(db); db.exec(edit); return changedHistory(db, before); } finally { db.close(); } };
+
+test("v115 retires exactly the removed features' tables and adds only the flows and triggers its routines became", () => {
+  expect([...RETIRED_TABLES].sort()).toEqual([...V115_DROPPED_TABLES].sort());
+  expect(moves(MOVED + RETIRE)).toEqual([]);
+  // An undeclared table dropped beside them, or the ledger changed, is still refused.
+  expect(moves(MOVED + RETIRE + "DROP TABLE task;")).toEqual(["task"]);
+  expect(moves(MOVED + RETIRE + "UPDATE action_ledger SET action='rewritten' WHERE seq=1;")).toEqual(["action_ledger"]);
+  // The routines dropped with no flows, or with one missing: the move didn't account for them.
+  expect(moves(RETIRE)).toEqual(["flow", "flow_trigger"]);
+  expect(moves(flowOf(2, "nightly") + triggerOf(2, 2, 1, "active") + RETIRE)).toEqual(["flow", "flow_trigger"]);
+  // A surplus flow or trigger, or one a routine never named.
+  expect(moves(MOVED + flowOf(4, "extra") + RETIRE)).toEqual(["flow"]);
+  expect(moves(MOVED + triggerOf(4, 2, 1) + RETIRE)).toEqual(["flow_trigger"]);
+  expect(moves(flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 2, 1, "active") + triggerOf(3, 3, 9) + RETIRE)).toEqual(["flow_trigger"]);
+  // A trigger hung on a flow the move didn't add, or on the other routine's flow.
+  expect(moves(flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 1, 1, "active") + triggerOf(3, 3, 2) + RETIRE)).toEqual(["flow_trigger"]);
+  expect(moves(flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 3, 1, "active") + triggerOf(3, 2, 2) + RETIRE)).toEqual(["flow_trigger"]);
+  // The never-approved routine arrives paused; turned on, it is refused.
+  expect(moves(flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 2, 1, "active") + triggerOf(3, 3, 2, "active") + RETIRE)).toEqual(["flow_trigger"]);
+  // Rows a person already had stay as they were.
+  expect(moves(MOVED + RETIRE + "UPDATE flow SET name='Renamed' WHERE id=1;")).toEqual(["flow"]);
+  expect(moves(MOVED + RETIRE + "UPDATE flow_trigger SET state='paused' WHERE id=1;")).toEqual(["flow_trigger"]);
+  // With no routines saved, a flow or trigger appearing is not a move.
+  const db = saved();
+  try {
+    db.exec("CREATE TABLE flow(id INTEGER PRIMARY KEY, repo TEXT, name TEXT, state TEXT); CREATE TABLE flow_trigger(id INTEGER PRIMARY KEY, flow INTEGER, kind TEXT, config_json TEXT, state TEXT);");
+    const before = historySnapshot(db);
+    db.exec(flowOf(1, "nightly") + triggerOf(1, 1, 1));
+    expect(changedHistory(db, before)).toEqual(["flow", "flow_trigger"]);
+  } finally { db.close(); }
 });
