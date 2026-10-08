@@ -180,6 +180,7 @@ describe("the CLI's --json bytes", () => {
       await operate(["runner", "list", "--json"]);
       await operate(["routine", "list", "--json"]);
       await operate(["outbox", "list", "--json"]);
+      await operate(["outbox", "deliver", "--cmd", "true", "--json"]);
       await operate(["incident", "list", "--json"]);
       await operate(["audit", "--json"]);
       await operate(["audit", "--since", "0d", "--json"]);

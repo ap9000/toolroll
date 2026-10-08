@@ -91,8 +91,9 @@ test("the upgrade runs once: settled witnesses become one summary, notification 
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   // The settled run: one summary, no raw rows. Its exits stay proven, so nothing waits on a person.
   expect(db.prepare("SELECT COUNT(*) AS n FROM run_process WHERE run = ?").get(settled)?.["n"]).toBe(0);
+  const settledGroups = 25; // a count of groups, not a process ID
   expect(db.prepare("SELECT witnesses, process_groups, first_observed_at, last_observed_at, last_exited_at FROM run_process_summary WHERE run = ?").get(settled))
-    .toEqual({ witnesses: 50, process_groups: 25, first_observed_at: at(0), last_observed_at: at(4900), last_exited_at: at(4950) });
+    .toEqual({ witnesses: 50, process_groups: settledGroups, first_observed_at: at(0), last_observed_at: at(4900), last_exited_at: at(4950) });
   expect(store.stopQuiescenceFact(settled)).toBeNull();
   expect(store.processesSummarized(settled)).toBe(true);
   // Unsettled custody keeps every row: the finished run with an unproven exit, and the open run.
