@@ -3,6 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runGroups } from "../scripts/e2e-parallel.mjs";
 import { catalogueProblems, GiveUp, groupAlive, processesIn, REAL_MODEL, SCRIPTED, selectJourneys, spawnOwned, stopGroups, until, waitFor } from "../scripts/e2e-kit.mjs";
 import { countingProvider, readJournal, scriptedProvider, turnsOf } from "../scripts/fixtures/scripted-provider.mjs";
 import { parseDecision, parseHandoff } from "./decision.js";
@@ -28,10 +29,11 @@ describe("a real-turn wait that runs out", () => {
   });
 
   test("ends at once, naming the wait, when what it waits for can no longer happen", async () => {
-    const at = Date.now();
-    await expect(until("the planner's updated plan", async () => { throw new GiveUp("planning is held for a person (plan-attempts-exhausted)"); }, { timeoutMs: 60_000, everyMs: 100 }))
+    let asked = 0;
+    await expect(until("the planner's updated plan", async () => { asked++; throw new GiveUp("planning is held for a person (plan-attempts-exhausted)"); }, { timeoutMs: 60_000, everyMs: 100 }))
       .rejects.toThrow("Gave up waiting for the planner's updated plan: planning is held for a person (plan-attempts-exhausted)");
-    expect(Date.now() - at).toBeLessThan(5_000);
+    // Asked once and never again: it did not wait out the poll or the timeout.
+    expect(asked).toBe(1);
   });
 });
 
@@ -52,10 +54,8 @@ if (args.includes("--groups")) { console.log(JSON.stringify(Object.keys(GROUPS).
 const group = option("--group"), out = option("--output"), only = option("--only") === null ? null : new RegExp(option("--only"), "i");
 const dir = process.env.STAND_IN_DIR, mark = name => join(dir, name.replace(/\W+/g, "-"));
 mkdirSync(out, { recursive: true });
-// What a browser leaves in the temp folder (a profile), and how long the group holds its slot.
-const start = Date.now();
+// What a browser leaves in the temp folder (a profile).
 writeFileSync(join(process.env.TMPDIR, "playwright_chromiumdev_profile-stand-in"), "x");
-await new Promise(done => setTimeout(done, Number(process.env.STAND_IN_HOLD_MS ?? 0)));
 if (group === "gamma" && !existsSync(mark("gamma-crashed"))) {
   writeFileSync(mark("gamma-crashed"), "");
   if (process.env.STAND_IN_LEAVES === "1") {
@@ -82,30 +82,106 @@ for (const [name, needs] of [...GROUPS[group], ["No browser errors on any page",
   results.push({ name, needs, state: ok ? "passed" : "failed", ...(ok ? {} : { error: "Timed out after 1 s waiting for the card" }) });
   console.log((ok ? "PASS  " : "FAIL  ") + name);
 }
-appendFileSync(join(dir, "runs.jsonl"), JSON.stringify({ group, out, ran: results.filter(one => one.state !== "not selected").map(one => one.name), tmp: process.env.TMPDIR, start, end: Date.now(), journeys: option("--journeys"), ...(leftover === null ? {} : { leftoverAlive }) }) + "\n");
+appendFileSync(join(dir, "runs.jsonl"), JSON.stringify({ group, out, ran: results.filter(one => one.state !== "not selected").map(one => one.name), tmp: process.env.TMPDIR, journeys: option("--journeys"), ...(leftover === null ? {} : { leftoverAlive }) }) + "\n");
 const kept = results.filter(one => one.state !== "not selected");
 writeFileSync(join(out, "report.json"), JSON.stringify({ results: kept, modelCalls: { turns: 2, scripted: 2, real: 0, unscripted: 0 } }));
 writeFileSync(join(out, "report.md"), "# " + group + "\n" + kept.map(one => "- " + one.state + " " + one.name).join("\n") + "\n");
 process.exitCode = kept.some(one => one.state === "failed") ? 1 : 0;
 `;
 
+describe("e2e-parallel.mjs's runGroups", () => {
+  /** Runs that end when the test says: each start recorded in order, the most running at once, and each run's `first`. */
+  const harness = () => {
+    const started: string[] = [], firsts = new Map<string, unknown>(), ends = new Map<string, PromiseWithResolvers<{ code: number }>>();
+    let running = 0, most = 0;
+    const run = (group: string, folder: string, first: unknown) => {
+      started.push(folder); firsts.set(folder, first);
+      most = Math.max(most, ++running);
+      const end = Promise.withResolvers<{ code: number }>();
+      ends.set(folder, end);
+      return end.promise.finally(() => { running--; });
+    };
+    return { started, firsts, run, most: () => most, end: (folder: string, code = 0) => ends.get(folder)!.resolve({ code }), fail: (folder: string) => ends.get(folder)!.reject(new Error(`${folder} crashed`)) };
+  };
+  /** Until every promise step queued so far has run: the limiter waits on nothing else. */
+  const settle = () => new Promise(done => setImmediate(done));
+
+  test("at most `limit` groups at once, started in order as lanes free up", async () => {
+    const at = harness();
+    const done = runGroups({ groups: ["a", "b", "c", "d", "e"], limit: 2, run: at.run });
+    await settle();
+    expect(at.started).toEqual(["a", "b"]);
+    at.end("b"); await settle();
+    expect(at.started).toEqual(["a", "b", "c"]);
+    at.end("a"); await settle();
+    expect(at.started).toEqual(["a", "b", "c", "d"]);
+    at.end("c"); at.end("d"); await settle();
+    at.end("e");
+    expect((await done).map(each => each.one.folder)).toEqual(["a", "b", "c", "d", "e"]);
+    expect(at.most()).toBe(2);
+  });
+
+  test("a failed group runs again as <group>-retry when its first run ends, taking a lane in turn, handed the first result", async () => {
+    const at = harness();
+    const done = runGroups({ groups: ["a", "b", "c"], limit: 2, run: at.run });
+    await settle();
+    at.end("a", 1); await settle();
+    // c asked for a lane first.
+    expect(at.started).toEqual(["a", "b", "c"]);
+    at.end("b"); await settle();
+    expect(at.started).toEqual(["a", "b", "c", "a-retry"]);
+    expect(at.firsts.get("a-retry")).toMatchObject({ group: "a", folder: "a", code: 1 });
+    at.end("c"); at.end("a-retry");
+    const runs = await done;
+    expect(runs.map(each => [each.one.code, each.again?.folder ?? null])).toEqual([[1, "a-retry"], [0, null], [0, null]]);
+    expect(at.most()).toBe(2);
+
+    const once = harness();
+    const noRetry = runGroups({ groups: ["a"], limit: 1, run: once.run, retry: false });
+    await settle();
+    once.end("a", 1);
+    expect((await noRetry)[0]!.again).toBeNull();
+    expect(once.started).toEqual(["a"]);
+  });
+
+  test("each run's time, from its own start to its end, on the clock given", async () => {
+    const at = harness();
+    let clock = 0;
+    const done = runGroups({ groups: ["a", "b"], limit: 1, run: at.run, now: () => clock });
+    await settle();
+    clock = 90_000; at.end("a", 1); await settle();
+    clock = 120_000; at.end("b"); await settle();
+    clock = 126_000; at.end("a-retry");
+    const [a, b] = await done;
+    expect([a!.one.ms, a!.one.minutes, b!.one.ms, b!.one.minutes, a!.again!.ms, a!.again!.minutes]).toEqual([90_000, 1.5, 30_000, 0.5, 6_000, 0.1]);
+  });
+
+  test("a run that throws still frees its lane", async () => {
+    const at = harness();
+    const done = runGroups({ groups: ["a", "b"], limit: 1, run: at.run });
+    const failed = expect(done).rejects.toThrow("a crashed");
+    await settle();
+    at.fail("a"); await settle();
+    expect(at.started).toEqual(["a", "b"]);
+    at.end("b");
+    await failed;
+  });
+});
+
 describe("e2e-parallel.mjs", () => {
   let dir: string | null = null;
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
 
-  type Run = { group: string; out: string; ran: string[]; tmp: string; start: number; end: number; journeys?: string | null; leftoverAlive?: boolean };
-  const GB = 1024 ** 3;
-  /** The stand-in and the machine's readings it runs on (TOOLROLL_CHECK_MACHINE): an idle machine unless a test says. */
-  const prepare = (machine: object = { platform: "linux", pressure: null, available: 32 * GB, swapUsed: 0, swapTotal: 8 * GB, providers: 0 }, app = false) => {
+  type Run = { group: string; out: string; ran: string[]; tmp: string; journeys?: string | null; leftoverAlive?: boolean };
+  const prepare = () => {
     dir = mkdtempSync(join(tmpdir(), "so-e2e-parallel-"));
-    const script = join(dir, app ? "app-e2e.mjs" : "stand-in-e2e.mjs");
+    const script = join(dir, "stand-in-e2e.mjs");
     writeFileSync(script, STAND_IN);
-    writeFileSync(join(dir, "machine.json"), JSON.stringify(machine));
-    return { script, env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_MACHINE: join(dir, "machine.json"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "", TOOLROLL_E2E_LANES: "" } };
+    return { script, env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } };
   };
   const runsIn = (at: string) => !existsSync(join(at, "runs.jsonl")) ? [] : readFileSync(join(at, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Run);
-  const runParallel = (env: Record<string, string> = {}, extra: string[] = [], machine?: object, app = false) => {
-    const { script, env: base } = prepare(machine, app);
+  const runParallel = (env: Record<string, string> = {}, extra: string[] = []) => {
+    const { script, env: base } = prepare();
     let stdout: string, code = 0;
     try {
       stdout = execFileSync(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir!, "out"), ...extra], { encoding: "utf8", env: { ...base, ...env } });
@@ -115,33 +191,6 @@ describe("e2e-parallel.mjs", () => {
     }
     return { stdout, code, runs: runsIn(dir!) };
   };
-  /** Whether any two runs were going at the same time. */
-  const overlapped = (runs: Run[]) => { const spans = [...runs].sort((a, b) => a.start - b.start); return spans.some((one, at) => at > 0 && one.start < spans[at - 1]!.end); };
-
-  test.each([{ pressure: 1, lanes: 3 }, { pressure: 2, lanes: 1 }, { pressure: null, lanes: 1 }])("app runner chooses $lanes lanes at pressure $pressure and saves wall time and memory", ({ pressure, lanes }) => {
-    const { code, stdout, runs } = runParallel({}, ["--journeys", "scripted"], { platform: "darwin", pressure, available: 32 * GB, total: 64 * GB, swapTotal: 100, swapUsed: 99, providers: 40 }, true);
-    expect(code).toBe(0);
-    expect(stdout).toContain(`app: ${lanes} lane${lanes === 1 ? "" : "s"}: ${pressure === 1 ? "memory normal" : pressure === 2 ? "memory pressure warn" : "couldn't read memory"}`);
-    const metrics = JSON.parse(readFileSync(join(dir!, "out", "lanes.json"), "utf8"));
-    expect(metrics).toMatchObject({ lanes, admission: { most: lanes, providers: 0 } });
-    expect(metrics.wallMs).toBeGreaterThan(0);
-    expect(metrics.memory).toHaveProperty("peakCheck");
-    expect(metrics.groups.every((one: { ms: number; peakBytes: number | null }) => one.ms > 0 && (one.peakBytes === null || one.peakBytes > 0))).toBe(true);
-    if (lanes === 1) expect(overlapped(runs)).toBe(false);
-    expect(new Set(runs.map(one => one.tmp)).size).toBe(runs.length);
-    for (const one of runs) expect(existsSync(one.tmp)).toBe(false);
-  });
-
-  test("app lane override forces one, and malformed overrides fail before running any group", () => {
-    const one = runParallel({ TOOLROLL_E2E_LANES: "1" }, ["--journeys", "scripted"], undefined, true);
-    expect(one.code).toBe(0);
-    expect(overlapped(one.runs)).toBe(false);
-    expect(one.stdout).toContain("TOOLROLL_E2E_LANES=1");
-    rmSync(dir!, { recursive: true, force: true });
-    const bad = runParallel({ TOOLROLL_E2E_LANES: "many" }, [], undefined, true);
-    expect(bad.code).toBe(2);
-    expect(bad.runs).toEqual([]);
-  });
 
   test("retries only a failed journey, with what it needs and what it held up, and names it flaky when it then passes", () => {
     const { stdout, code, runs } = runParallel();
@@ -161,18 +210,13 @@ describe("e2e-parallel.mjs", () => {
     expect(stdout).toContain("- alpha: Flaky one");
     expect(stdout).toContain("- gamma: the whole group");
     // The lines the release check's progress reader matches stay as they were.
+    expect(stdout).toMatch(/^Running 3 groups, at most 3 at once \(the default 4; real turns capped at 4\): alpha, beta, gamma$/m);
     expect(stdout).toMatch(/^✅ alpha\s+[0-9.]+ min$/m);
     expect(stdout).toMatch(/^3 of 3 groups passed \(2 flaky journeys\) in /m);
-  });
-
-  test("groups run at most as many at once as allowed, each in a temp folder of its own that goes when it ends", () => {
-    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "150" }, ["--at-once", "1"]);
-    expect(code).toBe(0);
-    expect(stdout).toMatch(/^Running 3 groups, at most 1 at once \([0-9.]+ GB available, about 400 MB each\): alpha, beta, gamma$/m);
-    const spans = [...runs].sort((a, b) => a.start - b.start);
-    for (let at = 1; at < spans.length; at++) expect(spans[at]!.start).toBeGreaterThanOrEqual(spans[at - 1]!.end);
-    expect(new Set(runs.map(one => one.tmp)).size).toBe(runs.length);
-    for (const one of runs) { expect(one.tmp.startsWith(tmpdir())).toBe(true); expect(existsSync(one.tmp)).toBe(false); }
+    expect(stdout).toMatch(/^provider gate: up to [1-3] real turns? at once, /m);
+    const lanes = JSON.parse(readFileSync(join(dir!, "out", "lanes.json"), "utf8"));
+    expect(lanes).toMatchObject({ lanes: 3, gate: { starts: 5, cap: 4 } });
+    expect(lanes.groups.map((one: { folder: string }) => one.folder).sort()).toEqual(["alpha", "alpha-retry", "beta", "gamma", "gamma-retry"]);
   });
 
   test("a console error from a journey that passed is never retried away: the whole group runs again and fails", () => {
@@ -199,70 +243,15 @@ describe("e2e-parallel.mjs", () => {
     expect(stdout).toMatch(/^2 of 3 groups passed \(1 flaky journey\) in /m);
   });
 
-  test("an idle machine: the groups start together, as before, and nothing waits", () => {
-    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "400", TOOLROLL_CHECK_PROVIDERS: "4" });
-    expect(code).toBe(0);
-    expect(stdout).toMatch(/^Running 3 groups, at most 3 at once \(32\.0 GB available, about 400 MB each\): alpha, beta, gamma$/m);
-    expect(overlapped(runs.filter(one => !one.out.endsWith("-retry")))).toBe(true);
-    expect(stdout).not.toContain("waiting for room");
-    expect(stdout).toMatch(/^admission: ran up to 3 groups at a time: lowest 32\.0 GB free, swap up to 0% used; up to 3 provider turns of ours, 0 other sessions \(cap \d+, from [^)]+\); nothing waited for room$/m);
-  });
-
-  test("low memory and full swap: each group and retry waits for room, one at a time, and a retry after a wait still judges flaky", () => {
-    const { code, stdout, runs } = runParallel({ STAND_IN_HOLD_MS: "100" }, [], { platform: "linux", pressure: null, available: 1.5 * GB, swapUsed: 63 * GB, swapTotal: 64 * GB, providers: 1 });
-    expect(code).toBe(0);
-    // alpha and its retry, beta, and gamma's retry (its first run crashed before it could say).
-    expect(runs).toHaveLength(4);
-    expect(overlapped(runs)).toBe(false);
-    expect(stdout).toMatch(/^waiting for room to start stand-in (alpha|beta|gamma): 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB$/m);
-    expect(stdout).toContain("- alpha: Flaky one");
-    expect(stdout).toMatch(/^3 of 3 groups passed \(2 flaky journeys\) in /m);
-    expect(stdout).toMatch(/^admission: ran up to 1 group at a time: lowest 1\.5 GB free, swap up to 98% used; up to 1 provider turn of ours, 1 other session \(cap \d+, from [^)]+\); [2-4] starts waited [0-9.]+ s in all for room \(longest: stand-in [a-z-]+, 1\.5 GB free, swap 98% used; it needs [0-9.]+ GB\)$/m);
-  });
-
-  test("the provider cap: TOOLROLL_CHECK_PROVIDERS=1 runs one group at a time with memory to spare; a larger cap runs them together", () => {
-    const capped = runParallel({ STAND_IN_HOLD_MS: "150", TOOLROLL_CHECK_PROVIDERS: "1" });
-    expect(capped.code).toBe(0);
-    expect(overlapped(capped.runs)).toBe(false);
-    expect(capped.stdout).toMatch(/^waiting for room to start stand-in [a-z-]+: 1 provider turn of ours and 0 other sessions running, at the cap of 1$/m);
-    expect(capped.stdout).toMatch(/\(cap 1, from TOOLROLL_CHECK_PROVIDERS\)/);
-    rmSync(dir!, { recursive: true, force: true });
-    const roomy = runParallel({ STAND_IN_HOLD_MS: "400", TOOLROLL_CHECK_PROVIDERS: "3" });
-    expect(overlapped(roomy.runs.filter(one => !one.out.endsWith("-retry")))).toBe(true);
-    rmSync(dir!, { recursive: true, force: true });
-    const bad = runParallel({ TOOLROLL_CHECK_PROVIDERS: "many" });
-    expect(bad.code).toBe(2);
-    expect(bad.runs).toEqual([]);
-  });
-
-  test("two runners on one gate (the release check's flows and app) share one provider cap", async () => {
-    const { script, env } = prepare();
-    const gate = join(dir!, "gate");
-    const runner = (out: string) => new Promise<{ code: number | null; stdout: string }>(done => {
-      const child = spawn(process.execPath, [resolve("scripts/e2e-parallel.mjs"), script, "--output", join(dir!, out), "--only", "Beta|Independent|Gamma|No browser"], { env: { ...env, STAND_IN_HOLD_MS: "150", TOOLROLL_CHECK_GATE: gate, TOOLROLL_CHECK_PROVIDERS: "2" } });
-      let stdout = "";
-      child.stdout.on("data", chunk => { stdout += chunk; });
-      child.on("close", code => done({ code, stdout }));
-    });
-    const [flows, app] = await Promise.all([runner("flows"), runner("app")]);
-    const runs = runsIn(dir!).sort((a, b) => a.start - b.start);
-    // At no moment more than 2 groups between the two runners.
-    for (const one of runs) expect(runs.filter(other => other.start <= one.start && other.end > one.start).length).toBeLessThanOrEqual(2);
-    expect(runs.length).toBeGreaterThanOrEqual(6);
-    expect(`${flows.stdout}${app.stdout}`).toMatch(/at the cap of 2$/m);
-    // Each runner reports its own starts; the gate's leases are all let go.
-    expect(flows.stdout).toMatch(/^admission: ran up to [12] groups? at a time: /m);
-    expect(readdirSync(join(gate, "leases"))).toEqual([]);
-    expect([flows.code, app.code]).toEqual([0, 0]);
-  });
-
   test("--journeys runs only the groups with journeys of that kind (a group's own scripted ones), and --run-groups only those named; the model calls are totalled", () => {
-    const scripted = runParallel({ STAND_IN_KINDS: "1" }, ["--journeys", "scripted"]);
+    // A scripted run takes no provider turn: it never opens the gate, so even a bad cap doesn't stop it.
+    const scripted = runParallel({ STAND_IN_KINDS: "1", TOOLROLL_CHECK_PROVIDERS: "many" }, ["--journeys", "scripted", "--at-once", "1"]);
     expect(scripted.code).toBe(0);
     expect(new Set(scripted.runs.map(one => one.group))).toEqual(new Set(["alpha", "gamma"]));
     expect(scripted.runs.every(one => one.journeys === "scripted")).toBe(true);
-    expect(scripted.stdout).toMatch(/^Running 2 groups, .*: alpha, gamma$/m);
+    expect(scripted.stdout).toMatch(/^Running 2 groups, at most 1 at once \(--at-once 1\): alpha, gamma$/m);
     expect(scripted.stdout).toMatch(/^Model calls: \d+ scripted, 0 real turns$/m);
+    expect(scripted.stdout).not.toContain("provider gate:");
     rmSync(dir!, { recursive: true, force: true });
     const real = runParallel({ STAND_IN_KINDS: "1" }, ["--journeys", "real", "--run-groups", "beta,gamma"]);
     expect(real.runs.map(one => one.group)).toEqual(["beta"]);
@@ -271,15 +260,21 @@ describe("e2e-parallel.mjs", () => {
     expect(none.code).toBe(0);
     expect(none.runs).toEqual([]);
     expect(none.stdout).toContain("No real journeys to run in gamma.");
+    rmSync(dir!, { recursive: true, force: true });
+    const bad = runParallel({ STAND_IN_KINDS: "1", TOOLROLL_CHECK_PROVIDERS: "many" }, ["--journeys", "real"]);
+    expect(bad.code).toBe(2);
+    expect(bad.runs).toEqual([]);
   });
 
-  test("a run killed outright leaves no process behind: its listed process groups stop before the retry", () => {
+  test("a run killed outright leaves no process behind: its listed process groups stop before the retry, and every temp folder goes", () => {
     const { code, stdout, runs } = runParallel({ STAND_IN_LEAVES: "1" });
     expect(stdout).toContain("[gamma");
     expect(stdout).toMatch(/stopped 1 process group it left running/);
     const retried = runs.filter(one => one.group === "gamma");
     expect(retried).toHaveLength(1);
     expect(retried[0]!.leftoverAlive).toBe(false);
+    expect(new Set(runs.map(one => one.tmp)).size).toBe(runs.length);
+    for (const one of runs) { expect(one.tmp.startsWith(tmpdir())).toBe(true); expect(existsSync(one.tmp)).toBe(false); }
     expect(code).toBe(0);
   });
 });

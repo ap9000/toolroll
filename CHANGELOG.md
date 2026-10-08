@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.52 — 2026-10-07
+
+- **Smaller database.** Process logs are compacted after each run, so the
+  database file shrinks (one install went from about 116 MB to 26 MB), and
+  backups shrink with it. The action ledger is checkpointed automatically.
+- **Lighter under the hood.** Update checks read history with bounded memory,
+  and live views update without database triggers.
+- **Honest release check.** It runs every unit test on 8 workers, and its
+  tests check behaviour at runtime instead of reading source text.
+- **Webhook alerts keep working.** Legacy Slack and Discord webhooks still
+  send this release, with a notice pointing to Chat settings.
+
 ## 0.9.51 — 2026-10-07
 
 - **No lockout by username.** Wrong passwords slow the source that sent them,

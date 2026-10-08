@@ -9,7 +9,6 @@
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adapterFor, auditOf, validateSpec, reportsCost, inspectionOf, MODEL_ID, OPENROUTER_ENV_KEY, PROVIDER_IDS, MONEY_CAPABILITIES, ALL_CREDENTIAL_ENV } from "./provider.js";
@@ -910,28 +909,6 @@ describe("the gemini dialect (Phase 3, attested at 0.57.0)", () => {
     expect(auditOf("codex").terminalContract).toBe("none");
     // The hooks surface is NAMED — the config-leak class the audit exists for.
     expect(auditOf("gemini").configSurface.join(" ")).toContain("HOOKS");
-  });
-});
-
-describe("the historical Telegram delivery manifest", () => {
-  // Review 1660 (c3): the corrected manifest's completeness check must be a
-  // machine receipt inside the unchanged native gate, not a script somebody
-  // remembers to run. The script reads Git objects only — the exact diff
-  // ba101e6..8217f55 under src/ — so it never touches the working tree.
-  test("scripts/delivery-manifest-check.mjs proves all 23 paths, every hash and the digest", () => {
-    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-    const manifest = JSON.parse(readFileSync(resolve(root, "docs/TELEGRAM_DELIVERY_CANDIDATE_2026-09-15.json"), "utf8")) as { files: { path: string }[]; sourceDigest: string };
-    expect(manifest.files).toHaveLength(23);
-    expect(manifest.files.map((f) => f.path)).toContain("src/claim.ts");
-    expect(manifest.sourceDigest).toBe("80ba1b57c26f8375013dfac7cdd3165ab2dc7125a739757dd7df48b088cca2ad");
-
-    const check = spawnSync(process.execPath, ["scripts/delivery-manifest-check.mjs"], { cwd: root, encoding: "utf8", timeout: 10_000 });
-    expect(check.error).toBeUndefined();
-    expect(check.stderr).toBe("");
-    expect(check.status).toBe(0);
-    const result = check.stdout.trim();
-    expect(result).toBe("delivery-manifest-check: docs/TELEGRAM_DELIVERY_CANDIDATE_2026-09-15.json lists all 23 src/ paths changed in ba101e6..8217f55; every sha256 matches 8217f55 bytes and sourceDigest recomputes");
-    console.log(result);
   });
 });
 

@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, expect, test } from 'vitest';
-import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore, type Store } from './store.js';
 import { TeamLeads } from './team-leads.js';
 import { addApprover } from './scope.js';
-import { prepareWorkspaceRevision, WorkspaceValidatorCache, type WorkspaceRevision } from './workspace-revision.js';
+import { prepareWorkspaceRevision, statementEffect, WorkspaceValidatorCache, type WorkspaceRevision } from './workspace-revision.js';
 
 const NOW = new Date('2026-09-21T12:00:00.000Z');
 const at = (ms: number): string => new Date(NOW.getTime() + ms).toISOString();
@@ -42,30 +41,69 @@ test('conditional response metadata retains 256 keys and evicts in insertion ord
   expect(cache.get('256')).toBe(validators[0]);
 });
 
-test('source writes, external writers and deletes invalidate; no-op updates and rolled-back writes do not', () => {
+test('source writes, another process\'s writes and deletes invalidate once per commit; rolled-back writes do not', () => {
   const initial = revision.current(); task();
   expect(revision.current()).not.toBe(initial);
   const written = revision.current();
-  const writer = new DatabaseSync(file);
+  // Another Toolroll process: its own wrapped connection. Its commit reaches this one through data_version.
+  const other = openStore(file);
   try {
-    writer.exec("UPDATE task SET title=title"); expect(revision.current()).toBe(written);
-    writer.exec("BEGIN; UPDATE task SET title='Rolled back'; ROLLBACK;"); expect(revision.current()).toBe(written);
-    writer.exec("UPDATE task SET title='Changed by another writer'"); expect(revision.current()).not.toBe(written);
+    expect(() => other.transact(() => { other.raw().exec("UPDATE task SET title='Rolled back'"); throw new Error('no'); })).toThrow('no');
+    other.raw().exec("BEGIN; UPDATE task SET title='Also rolled back'; ROLLBACK;");
+    expect(revision.current()).toBe(written);
+    other.raw().exec("UPDATE task SET title='Changed by another writer'"); expect(revision.current()).toBe(`v1:${Number(written.slice(3)) + 1}`);
     const changed = revision.current();
-    writer.exec("DELETE FROM task WHERE id='task'"); expect(revision.current()).not.toBe(changed);
-  } finally { writer.close(); }
+    other.transact(() => { other.raw().exec("UPDATE task SET title='One'"); other.raw().exec("UPDATE task SET title='Two'"); });
+    expect(revision.current()).toBe(`v1:${Number(changed.slice(3)) + 1}`);
+    const twice = revision.current();
+    other.raw().exec("DELETE FROM task WHERE id='task'"); expect(revision.current()).not.toBe(twice);
+    // A write that changes no row moves nothing.
+    const after = revision.current();
+    other.raw().exec("UPDATE task SET title='Nobody' WHERE id='absent'"); expect(revision.current()).toBe(after);
+  } finally { other.close(); }
 });
 
-test('revision and triggers survive closing every process and preparation is idempotent', () => {
+test('a savepoint rolled back to takes its writes with it; the outer commit moves the revision once', () => {
+  const ref = task(); const before = revision.current();
+  store.transact(() => {
+    expect(() => store.savepoint(() => { store.raw().exec("UPDATE task SET title='Undone'"); throw new Error('undo'); })).toThrow('undo');
+    store.raw().prepare('SELECT 1').get();
+  });
+  expect(revision.current()).toBe(before);
+  store.transact(() => store.savepoint(() => store.raw().prepare('UPDATE task_ref SET repo = ? WHERE id = ?').run('/repo', ref)));
+  expect(revision.current()).toBe(`v1:${Number(before.slice(3)) + 1}`);
+  // A savepoint outside any transaction commits when it is released.
+  const inside = revision.current();
+  store.savepoint(() => store.raw().exec("UPDATE task SET title='Released'"));
+  expect(revision.current()).toBe(`v1:${Number(inside.slice(3)) + 1}`);
+});
+
+test('the revision survives closing every process; preparing installs no trigger', () => {
   task(); const before = revision.current();
-  const count = () => Number(store.raw().prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='trigger' AND name LIKE 'workspace_revision_%'").get()!['n']);
-  const triggers = count();
-  expect(prepareWorkspaceRevision(store).current()).toBe(before); expect(count()).toBe(triggers);
+  const triggers = () => Number(store.raw().prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='trigger' AND name LIKE 'workspace_revision_%'").get()!['n']);
+  expect(triggers()).toBe(0);
+  expect(prepareWorkspaceRevision(store).current()).toBe(before);
   store.close();
-  const writer = new DatabaseSync(file);
-  writer.exec("UPDATE task SET title='Changed while browser was stopped'"); writer.close();
+  const writer = openStore(file);
+  writer.raw().exec("UPDATE task SET title='Changed while browser was stopped'"); writer.close();
   store = openStore(file); revision = prepareWorkspaceRevision(store);
-  expect(revision.current()).not.toBe(before); expect(count()).toBe(triggers);
+  expect(revision.current()).not.toBe(before); expect(triggers()).toBe(0);
+});
+
+test('the statement reader names quiet columns, omitted tables and transaction boundaries', () => {
+  expect(statementEffect('UPDATE runner SET heartbeat_at = ? WHERE name = ?')).toEqual({ kind: 'write', table: 'runner', quiet: true });
+  expect(statementEffect('UPDATE claim SET heartbeat_at = ?, expires_at = ?\n WHERE lease_id = ?')).toEqual({ kind: 'write', table: 'claim', quiet: true });
+  expect(statementEffect('UPDATE runner SET capacity = 2, heartbeat_at = ?')).toEqual({ kind: 'write', table: 'runner', quiet: false });
+  expect(statementEffect('UPDATE "watch_episode" SET ticks = ticks + 1')).toEqual({ kind: 'write', table: 'watch_episode', quiet: true });
+  expect(statementEffect('INSERT INTO provider_readiness (runner) VALUES (?) ON CONFLICT DO UPDATE SET observed_at = 1')).toMatchObject({ quiet: false });
+  expect(statementEffect('-- note\nINSERT OR IGNORE INTO service_cursor(key) VALUES (?)')).toEqual({ kind: 'none' });
+  expect(statementEffect('DELETE FROM main.task WHERE id = ?')).toEqual({ kind: 'write', table: 'task', quiet: false });
+  expect(statementEffect('WITH x AS (SELECT 1) UPDATE task SET title = ?')).toEqual({ kind: 'write', table: 'task', quiet: false });
+  expect(statementEffect('CREATE TEMP TRIGGER t AFTER UPDATE ON main.task BEGIN SELECT 1; END')).toEqual({ kind: 'none' });
+  expect(statementEffect('SELECT * FROM task')).toEqual({ kind: 'none' });
+  expect(statementEffect('BEGIN IMMEDIATE')).toEqual({ kind: 'begin' });
+  expect(statementEffect('ROLLBACK TO sp_1')).toEqual({ kind: 'rollback-to', name: 'sp_1' });
+  expect(statementEffect('RELEASE sp_1')).toEqual({ kind: 'release', name: 'sp_1' });
 });
 
 test('cursor, wake and ordinary heartbeats stay quiet; real runner changes and revival invalidate', () => {

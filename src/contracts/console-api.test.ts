@@ -1,14 +1,15 @@
 /**
  * Item 13: the console's form bodies and JSON API. Every form contract survives the JSON Schema round trip, reads
  * every body exactly as `URLSearchParams` did (first value, every value in order, presence, unknown and computed
- * names), and is the one serve.ts reads its route through; the three `?format=json` responses are checked as sent,
- * with their bytes unchanged.
+ * names), and names declared rows of the route table; every console POST row refuses a forged form before it changes
+ * anything; the three `?format=json` responses are checked as sent, with their bytes unchanged.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { Server } from "node:http";
 import { assertContract, roundTripLoss } from "./contract-test.js";
 import { parseContract } from "./contract.js";
@@ -16,6 +17,7 @@ import { BODILESS_POSTS, CONSOLE_FORMS, CONSOLE_RESPONSES, checkResponse, formFi
 import { openStore, type Store } from "../store.js";
 import { addApprover } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
+import { matchRoute, ROUTES } from "../server/route-table.js";
 import { flowFromSteps } from "../flows.js";
 import { packDigest, type EvidencePack } from "../evidence-pack.js";
 
@@ -88,36 +90,31 @@ describe("console form contracts", () => {
 });
 
 describe("the inventory", () => {
-  // Source-input adaptation for the domain move; the contract and HTTP assertions stay unchanged.
-  const sources = ["../serve.ts", "../server/tasks.ts", "../server/flows.ts", "../server/chat.ts", "../server/settings.ts", "../server/people-tokens.ts", "../server/pages.ts", "../server/remote.ts", "../server/guards.ts"]
-    .map(path => readFileSync(new URL(path, import.meta.url), "utf8"));
-  const source = sources.join("\n");
-  const handlePost = sources.flatMap(source => ["  async function handlePost(", "  async function post("].flatMap(header => {
-    const start = source.indexOf(header);
-    return start < 0 ? [] : [source.slice(start, source.indexOf("\n  }\n", start))];
-  })).join("\n");
   const routes = [...Object.values(CONSOLE_FORMS).map(one => one.route), ...BODILESS_POSTS];
+  const posts = ROUTES.filter(row => row.method === "POST");
+  /** Each address a contract names: `a, b` lists and a trailing `x|y` or `<x|y>` choice. */
+  const addresses = (route: string): string[] => route.replace(/^POST /, "").split(", ").flatMap(one => {
+    const choice = /^(.*\/)<?([a-z-]+(?:\|[a-z-]+)+)>?$/.exec(one);
+    return choice === null ? [one] : choice[2]!.split("|").map(last => choice[1] + last);
+  });
+  const named = routes.filter(route => !route.startsWith("POST (")).flatMap(addresses);
+  const example: Record<string, string> = { task: "one", id: "1", run: "1", card: "2", trigger: "2", session: "a".repeat(32), provider: "codex", kit: "support", template: "triage", invite: "abcdefghijklmnop" };
+  const any = (address: string) => new RegExp(`^${address.replace(/<[^>]+>/g, "[^/]+")}$`);
 
-  test("every form contract is the one serve.ts reads its route through", () => {
-    const wired = new Set([...source.matchAll(/CONSOLE_FORMS\.(\w+)/g), ...source.matchAll(/FormFieldOf<"(\w+)">/g)].map(match => match[1]));
-    expect(names.filter(name => !wired.has(name))).toEqual([]);
+  test("every contract names declared POST rows, once", () => {
     expect(new Set(routes).size).toBe(routes.length);
+    // An address declares itself with example ids, or (a generic `<act>`) through a row's sample of the same shape.
+    const declared = (address: string) => matchRoute("POST", address.replace(/<([a-z]+)>/g, (whole, name: string) => example[name] ?? whole)) !== null
+      || posts.some(row => any(address).test(row.sample));
+    const undeclared = named.filter(address => !declared(address));
+    expect(undeclared).toEqual([]);
   });
 
-  test("every exact POST path the console answers is named by a contract", () => {
-    const paths = new Set([...handlePost.matchAll(/url\.pathname === ["'`](\/[^"'`$]+)["'`]/g)].map(match => match[1]!));
-    for (const family of handlePost.matchAll(/\[((?:"[^"]+",?\s*)+)\]\.(?:some|includes)\(/g)) {
-      for (const one of family[1]!.matchAll(/"([^"]+)"/g)) if (one[1]!.startsWith("/")) paths.add(one[1]!);
-    }
-    for (const pre of ["/signup", "/login", "/logout"]) paths.add(pre);
-    const named = (path: string) => routes.some(route => route.replace(/^POST /, "").split(", ").includes(path));
-    expect([...paths].filter(path => !named(path))).toEqual([]);
-  });
-
-  test("handlePost reads nothing but typed views", () => {
-    expect(handlePost).toContain("posted: URLSearchParams");
-    expect(handlePost).not.toMatch(/\bbody: URLSearchParams\b/);
-    expect(handlePost).not.toMatch(/\bposted\.(?:get|getAll|has)\(/);
+  test("every POST row a browser form reaches is named by a contract", () => {
+    const patterns = named.map(any);
+    // The edge's own protocols (MCP, CLI, sessions, team, OAuth, hooks) are not console forms.
+    const forms = posts.filter(row => row.stage === "console" || row.domain === "people");
+    expect(forms.filter(row => !patterns.some(pattern => pattern.test(row.sample))).map(row => row.id)).toEqual([]);
   });
 });
 
@@ -185,6 +182,38 @@ describe("over HTTP", () => {
     const missing = await post(cookie, "/settings/appearance", new URLSearchParams([["theme", "dark"]]));
     expect(missing.status).toBe(403);
     expect(disagreements()).toEqual([]);
+  });
+
+  test("every console POST row refuses a missing, duplicated or stale CSRF field before it changes anything", async () => {
+    const cookie = await signIn();
+    const csrf = csrfOf(await (await get(cookie, "/tasks")).text());
+    // The action ledger records each refused request by design (moving the workspace revision cursor); the request budget counts it.
+    const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+      .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
+    const snapshot = () => Object.fromEntries(tables.map(table => {
+      const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1");
+      return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
+    }));
+    const before = snapshot();
+    // A row with its own protocol (its own caller refusal) proves itself without the shared form guard: only the
+    // attended beat, which checks cookie, approver and Sec-Fetch-Site instead, and still changes nothing here.
+    const posts = ROUTES.filter(row => row.stage === "console" && row.method === "POST");
+    const guarded = posts.filter(row => row.callerRefusal === undefined);
+    expect(posts.filter(row => !guarded.includes(row)).map(row => row.id)).toEqual(["session.attended-beats"]);
+    const beat = await post(cookie, "/session/attended-beats", new URLSearchParams([["csrf", "0".repeat(64)]]));
+    expect([beat.status, await beat.text()]).toEqual([403, expect.stringContaining("the beat only answers this console")]);
+    const fields = { token: password, password, name: "alex", repo: REPO, confirm: "yes" };
+    for (const row of guarded) {
+      const missing = await post(cookie, row.sample, new URLSearchParams(fields));
+      const twice = await post(cookie, row.sample, new URLSearchParams([["csrf", csrf], ["csrf", csrf], ...Object.entries(fields)]));
+      const stale = await post(cookie, row.sample, new URLSearchParams([["csrf", "0".repeat(64)], ...Object.entries(fields)]));
+      expect([row.id, missing.status, await missing.text(), twice.status, await twice.text(), stale.status, await stale.text()]).toEqual([row.id,
+        403, expect.stringContaining("stale form"), 400, expect.stringContaining("duplicated csrf field"), 403, expect.stringContaining("stale form")]);
+      expect(snapshot(), row.id).toEqual(before);
+    }
+    // The snapshot sees a write: the same form with its token is accepted and saved.
+    expect((await post(cookie, "/onboarding/phone/dismiss", new URLSearchParams({ csrf }))).status).toBe(303);
+    expect(snapshot()).not.toEqual(before);
   });
 
   test("a form with unknown fields, blanks and repeats reads its first value, as before", async () => {

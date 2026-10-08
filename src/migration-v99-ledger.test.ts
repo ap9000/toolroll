@@ -32,8 +32,8 @@ test.each([98, -98])("v%s: every ledger row and id carries over, work still reco
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(113);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(113);
+  expect(SCHEMA_VERSION).toBe(114);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(114);
   // Every row, with its id, as it was; the new detail is empty.
   expect(store.actionLedger({ repos: null, limit: 101 })).toEqual(before.map(one => ({ ...one, detail: null })));
   // Work still records itself (the triggers are back), and the ledger stays append-only.

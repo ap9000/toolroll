@@ -15,11 +15,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         node: ["22", "24"]
     steps:
-      # src/provider.test.ts runs scripts/delivery-manifest-check.mjs, which
-      # reads the historical commits ba101e6..8217f55 from Git; the default
-      # depth-1 checkout has neither object, so this job needs full history.
       - uses: actions/checkout@v5
         with:
+          # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:

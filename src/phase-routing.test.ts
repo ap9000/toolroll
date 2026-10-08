@@ -269,6 +269,7 @@ describe("the store", () => {
       raw.exec(`CREATE TABLE phase_tier_config (scope TEXT NOT NULL, phase TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')), tier TEXT NOT NULL CHECK (tier IN ('strong')),
         provider TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')), model TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (scope, phase, tier))`);
       raw.prepare("INSERT INTO phase_tier_config VALUES ('installation', 'build', 'strong', 'claude', 'opus', ?, 'alex')").run(T0.toISOString());
+      raw.exec("UPDATE schema_version SET version = 113"); // an older build's file reads older (v114)
       raw.close();
       const store = openStore(file);
       try {

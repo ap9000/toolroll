@@ -11,7 +11,7 @@ import { childDatabaseEnv } from "./child-database.js";
 import { evidenceRoot } from "./evidence.js";
 import { keysDir } from "./keys.js";
 import { loadBotToken } from "./telegram.js";
-import { loadWebhookTargets } from "./webhooks.js";
+import { loadWebhookTargets, loadConsoleUrl } from "./webhooks.js";
 import { oneClickServices } from "./mcp-connect.js";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, headWithin, isOwnBranch, taskBranch, taskBranches } from "./names.js";
 import { configPath } from "./repos.js";
@@ -89,14 +89,17 @@ describe("TOOLROLL_* variables", () => {
     expect(childDatabaseEnv("/isolated.db")).toEqual({ TOOLROLL_DB: "/isolated.db", STANDING_ORDERS_DB: "/isolated.db" });
   });
 
-  test("the Telegram token, webhooks and the test connector", () => {
+  test("the Telegram token, the console URL and the test connector", () => {
     const token = (n: number) => `${n}:${"a".repeat(35)}`;
     expect(loadBotToken({ TOOLROLL_TELEGRAM_TOKEN: token(1), STANDING_ORDERS_TELEGRAM_TOKEN: token(2) }, "/nowhere")?.botId).toBe("1");
     expect(loadBotToken({ STANDING_ORDERS_TELEGRAM_TOKEN: token(2) }, "/nowhere")?.botId).toBe("2");
 
     const dir = home();
-    expect(loadWebhookTargets({ TOOLROLL_SLACK_WEBHOOK: "https://hooks.slack.com/services/NEW", STANDING_ORDERS_SLACK_WEBHOOK: "https://hooks.slack.com/services/OLD" }, dir).find(one => one.kind === "slack")?.url).toBe("https://hooks.slack.com/services/NEW");
-    expect(loadWebhookTargets({ STANDING_ORDERS_SLACK_WEBHOOK: "https://hooks.slack.com/services/OLD" }, dir).find(one => one.kind === "slack")?.url).toBe("https://hooks.slack.com/services/OLD");
+    expect(loadConsoleUrl({ TOOLROLL_CONSOLE_URL: "https://new.example", STANDING_ORDERS_CONSOLE_URL: "https://old.example" }, dir)).toBe("https://new.example");
+    expect(loadConsoleUrl({ STANDING_ORDERS_CONSOLE_URL: "https://old.example" }, dir)).toBe("https://old.example");
+
+    expect(loadWebhookTargets({ TOOLROLL_SLACK_WEBHOOK: "https://new.example/slack", STANDING_ORDERS_SLACK_WEBHOOK: "https://old.example/slack" }, dir)).toEqual([{ kind: "slack", url: "https://new.example/slack" }]);
+    expect(loadWebhookTargets({ STANDING_ORDERS_DISCORD_WEBHOOK: "https://old.example/discord" }, dir)).toEqual([{ kind: "discord", url: "https://old.example/discord" }]);
 
     const stripe = (env: Record<string, string>) => oneClickServices(env).find(one => one.id === "stripe")?.url;
     expect(stripe({ TOOLROLL_TEST_CONNECT: "stripe|Stripe|http://127.0.0.1:1/mcp", STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|http://127.0.0.1:2/mcp" })).toBe("http://127.0.0.1:1/mcp");

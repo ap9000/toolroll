@@ -131,7 +131,9 @@ function failureWords(error: unknown, folder: string): string {
   return message(error);
 }
 
-export type BackupOutcome = { ok: true; id: number; file: string; bytes: number; removed: number } | { ok: false; id: number; error: string };
+/** The checkpoint made before a backup: the head it records, a broken chain's first break (none recorded), or null (nothing new since the last). */
+export type BackupCheckpoint = { through: number; hash: string } | { problem: string } | null;
+export type BackupOutcome = { ok: true; id: number; file: string; bytes: number; removed: number; checkpoint: BackupCheckpoint } | { ok: false; id: number; error: string };
 
 /** Back the database up now, keep the newest N, and record how it went. */
 export async function backupNow(store: Store, databaseFile: string, trigger: "scheduled" | "manual", clock: () => Date = () => new Date()): Promise<BackupOutcome> {
@@ -144,6 +146,10 @@ export async function backupNow(store: Store, databaseFile: string, trigger: "sc
     const stamp = `${databaseTag(databaseFile)}-${stampOf(clock())}`;
     let name = `standing-orders-${stamp}.db`;
     for (let n = 2; existsSync(join(folder, name)); n++) name = `standing-orders-${stamp}-${n}.db`;
+    // The whole chain walked and its head checkpointed first, so the copy carries the checkpoint. A broken chain gets
+    // none (the walk raises the console's chain alarm, as any whole walk does); the backup goes ahead either way.
+    let checkpoint: BackupCheckpoint;
+    try { checkpoint = store.ledgerCheckpoint("system", clock(), {}); } catch (error) { checkpoint = { problem: message(error) }; }
     partial = join(folder, `.${name}.${randomBytes(4).toString("hex")}.partial`);
     const made = await onlineCopy(databaseFile, partial);
     const file = join(folder, name);
@@ -151,7 +157,7 @@ export async function backupNow(store: Store, databaseFile: string, trigger: "sc
     partial = null;
     const removed = pruneBackups(folder, settings.keep, backupOwner(store, databaseFile));
     store.finishBackupRun(id, { ok: true, file, bytes: made.bytes, schemaVersion: made.schemaVersion, removed }, clock());
-    return { ok: true, id, file, bytes: made.bytes, removed };
+    return { ok: true, id, file, bytes: made.bytes, removed, checkpoint };
   } catch (error) {
     if (partial !== null) rmSync(partial, { force: true });
     const words = failureWords(error, folder);

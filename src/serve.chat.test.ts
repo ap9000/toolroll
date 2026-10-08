@@ -6,6 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
+import { saveSlackCredentials } from "./slack-api.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -2441,7 +2442,7 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
       expect(nav).toContain('provider-status--ok"><i aria-hidden="true"></i>Gets alerts');
 
       // Two services and no choice: neither claims the alerts.
-      writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/T000/B000/XXXX\n", { mode: 0o600 });
+      saveSlackCredentials(dir, { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace", appToken: "xapp-fixture", botToken: "xoxb-fixture" });
       ({ chat } = await overview());
       expect(chat).toMatchObject({ Telegram: "Connected", Slack: "Connected" });
 

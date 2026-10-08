@@ -1,57 +1,67 @@
 /**
- * The route table against the behaviour it replaced. The legacy rules below are a frozen, test-only copy of the
- * hand-kept allowlists serve.ts used before the table (the limited account's read/write sets and resource
- * patterns, the viewer's POST set and the selected-project exceptions). They are deliberately written the old way,
- * independent of the table, so the comparison cannot pass by restating the same object.
+ * The route table's own rules: well formed, each row wins its sample, and every policy class keeps its invariant.
+ * What the server does with each row is checked over HTTP (route-policy-http, handler-registry, console-api and
+ * serve.bearer-scope tests), generated from the same table.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { assertRouteTable, declaredForAnotherMethod, matchRoute, ROUTES, routePolicySnapshot, type LimitedAccess, type RouteDeclaration } from "./route-table.js";
-
-// ---- the frozen legacy rules (serve.ts at 6f7cfcb) --------------------------------------------------------------
-const legacyTask = (path: string, suffix: string): boolean => {
-  const match = new RegExp(`^/t/([^/]+)${suffix === "" ? "$" : suffix}`).exec(path);
-  if (match === null) return false;
-  try { decodeURIComponent(match[1] as string); return true; } catch { return false; }
-};
-/** What projectRequestAllowed decided for a limited account, before any per-request lookup. */
-function legacyLimited(method: string, path: string): LimitedAccess {
-  if (path === "/chat" && method === "GET") return "conversation";
-  if ((method === "GET" && path === "/settings/telegram") || (method === "POST" && ["/settings/telegram/pair", "/settings/telegram/unpair", "/settings/telegram/retry"].includes(path))) return "self";
-  if (method === "POST" && ["/settings/chat-approval/confirm", "/settings/chat-approval/save", "/settings/chat-approval/off"].includes(path)) return "self";
-  if (path === "/code" || path.startsWith("/code/")) return "self";
-  if ((method === "GET" && /^\/chat\/action\/[0-9]{1,15}$/.test(path)) || (method === "POST" && /^\/chat\/proposal\/[0-9]{1,15}\/(confirm|dismiss)$/.test(path))) return "proposal";
-  const read = new Set(["/settings/flows", "/settings/skills", "/settings/knowledge", "/settings", "/settings/learning", "/recipes", "/recipes/run", "/recipes/start", "/recipes/new", "/recipes/edit", "/recipes/from-task", "/recipes/preview", "/recipes/export", "/", "/inbox", "/work", "/projects", "/people", "/ledger", "/ledger/export", "/next", "/board", "/tasks", "/tasks/new", "/runs", "/review", "/done", "/routines", "/menu"]);
-  const write = new Set(["/settings/flows/on", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings/learning/change", "/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/projects/select", "/tasks/add", "/routines/add"]);
-  const task = legacyTask(path, method === "GET" ? "(/evidence|/live)?$" : "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|next|reopen|steer|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
-  const resource = method === "GET"
-    ? /^\/(?:r|d)\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) || /^\/routines\/[0-9]{1,15}$/.test(path) || path === "/flows" || /^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path)
-    : /^\/d\/[0-9]{1,15}\/answer$/.test(path) || /^\/routines\/[0-9]{1,15}\/(approve|refresh|pause|resume|run-now)$/.test(path) || path === "/flows/new" || /^\/flows\/new\/[a-z-]{1,40}$/.test(path) || path === "/flows/import" || /^\/flows\/[0-9]{1,15}\/(save|cards|archive|scripts)$/.test(path) || /^\/flows\/[0-9]{1,15}\/cards\/[0-9]{1,15}\/(move|decide|cancel|comment|assign|watch)$/.test(path) || /^\/flows\/[0-9]{1,15}\/triggers(\/[0-9]{1,15}\/(pause|resume|remove|check|press|renew|secret|share|unshare))?$/.test(path) || /^\/r\/[0-9]{1,15}\/(note|comment|revise|draft-repair|checks|add-tests)$/.test(path);
-  if (!(method === "GET" ? read : write).has(path) && !task && !resource) return "deny";
-  const unscoped = ["/settings/skills", "/settings/skills/import", "/settings/skills/change", "/settings/skills/revise", "/settings/knowledge", "/settings/knowledge/change", "/settings/knowledge/refresh", "/settings", "/settings/learning", "/settings/learning/change", "/projects", "/people", "/ledger", "/ledger/export", "/projects/select"].includes(path);
-  if (task || resource) return "resource";
-  return unscoped ? "unscoped" : "collection";
-}
-/** handleGet's opener redirect exceptions, without its two query-dependent ones. */
-const legacyNeedsProject = (path: string): boolean =>
-  path !== "/" && path !== "/inbox" && path !== "/work" && path !== "/menu" && path !== "/recipes" &&
-  path !== "/flows" && path !== "/flows/import" && !/^\/flows\/[0-9]{1,15}(\/insights|\/export|\/live|\/runs\/[0-9]{1,15}\/[0-9]{1,15})?$/.test(path) &&
-  path !== "/flows/new" && !/^\/flows\/new\/[a-z-]{1,40}$/.test(path) && !path.startsWith("/teammates") &&
-  path !== "/tasks/new" && path !== "/tasks/add" && !/^\/t\/[^/]+(\/evidence|\/live)?$/.test(path) &&
-  !/^\/r\/[0-9]{1,15}(?:\/evidence\/[0-9]{1,15})?$/.test(path) && !path.startsWith("/d/") && !path.startsWith("/contest/") &&
-  path !== "/projects" && path !== "/projects/browse" && path !== "/projects/github" && path !== "/workbench" && path !== "/fleet" &&
-  path !== "/chat" && path !== "/chat/mate/status" && path !== "/chat/task-status" && path !== "/chat/stream" &&
-  path !== "/lead/status" && path !== "/onboarding/phone/dismiss" && !path.startsWith("/chat/demo/") && !/^\/chat\/action\/[0-9]{1,15}$/.test(path) &&
-  !path.startsWith("/settings") && path !== "/logout" && path !== "/people" && path !== "/ledger" && path !== "/ledger/export" && path !== "/metrics" && path !== "/health" && path !== "/spend" && path !== "/spend/budget" &&
-  // /code answered before the opener check.
-  path !== "/code" && !path.startsWith("/code/");
-const legacyViewer = (path: string): boolean => new Set(["/projects/select", "/session/editor-links"]).has(path);
+import { assertRouteTable, declaredForAnotherMethod, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
+const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
+const ids = (routes: readonly RouteDeclaration[]): string[] => routes.map(route => route.id);
 const methodOf = (route: RouteDeclaration): string => route.method === "POST" ? "POST" : "GET";
 
+// Hand-kept access decisions, independent of ROUTES. Equality catches additions and policy changes as well as removals;
+// a deny row must not disappear from the HTTP refusal matrix by silently becoming unscoped/collection/resource.
+const LIMITED_ACCESS = {
+  'code.page': 'self', 'projects.page': 'unscoped',
+  'home': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
+  'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
+  'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection',
+  'task.live': 'resource', 'task.page': 'resource', 'task.evidence': 'resource',
+  'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',
+  'run.page': 'resource', 'run.evidence': 'resource',
+  'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
+  'flow.read': 'resource', 'flow.export': 'resource', 'flow.live': 'resource', 'flow.page': 'resource',
+  'recipes': 'collection', 'recipes.run': 'collection', 'recipes.start': 'collection',
+  'recipes.new': 'collection', 'recipes.edit': 'collection', 'recipes.from-task': 'collection',
+  'recipes.preview': 'collection', 'recipes.export': 'collection', 'routines': 'collection',
+  'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
+  'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
+  'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
+  'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act': 'self',
+  'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
+  'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
+  'flow.act': 'resource', 'flow.triggers': 'resource', 'flow.card': 'resource',
+  'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
+  'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
+  'flow.trigger.secret': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
+  'settings.flows-on': 'collection', 'settings.knowledge-refresh': 'unscoped',
+  'settings.knowledge-change': 'unscoped', 'settings.learning-change': 'unscoped',
+  'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
+  'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
+  'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
+  'projects.select': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
+  'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
+  'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
+  'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',
+  'task.act.reopen': 'resource', 'task.act.steer': 'resource', 'task.act.accept-proof': 'resource',
+  'task.act.accept-revision': 'resource', 'task.act.reject-revision': 'resource', 'task.act.route': 'resource',
+  'task.act.retry-review': 'resource', 'task.act.complete': 'resource', 'task.act.merge': 'resource',
+  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource',
+  'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal': 'proposal',
+  'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
+  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'routines.add': 'collection',
+  'routine.act.approve': 'resource', 'routine.act.refresh': 'resource', 'routine.act.pause': 'resource',
+  'routine.act.resume': 'resource', 'routine.act.run-now': 'resource', 'run.act': 'resource',
+} satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
+
 describe("the route table", () => {
+  test('project-limited access matches the independent per-route decisions exactly', () => {
+    expect(Object.fromEntries(ROUTES.filter(row => row.limited !== 'deny').map(row => [row.id, row.limited])))
+      .toEqual(LIMITED_ACCESS);
+  });
+
   test("is well formed: unique ids and rows, each row wins its own sample", () => {
     expect(() => assertRouteTable()).not.toThrow();
     expect(() => assertRouteTable([...ROUTES, { ...ROUTES[0]!, id: "copy" }])).toThrow(/duplicate route/);
@@ -66,16 +76,40 @@ describe("the route table", () => {
     for (const route of ROUTES) expect(matchRoute(methodOf(route), route.sample, route.stage)?.id, route.sample).toBe(route.id);
   });
 
-  test("a project-limited account's access matches the legacy allowlists, route by route", () => {
-    const differences = consoleRoutes
-      .map(route => ({ id: route.id, sample: route.sample, table: route.limited, legacy: legacyLimited(methodOf(route), route.sample) }))
-      .filter(one => one.table !== one.legacy);
-    expect(differences).toEqual([]);
-  });
-
-  test("the selected-project exceptions and the viewer POST set match the legacy lists", () => {
-    for (const route of consoleRoutes.filter(one => one.method === "GET")) expect(route.needsProject, route.sample).toBe(legacyNeedsProject(route.sample));
-    for (const route of consoleRoutes.filter(one => one.method === "POST")) expect(route.viewer, route.sample).toBe(legacyViewer(route.sample));
+  test("every policy class keeps its invariant", () => {
+    // Password step-up is a browser's POST, never a token's.
+    for (const route of ROUTES.filter(one => one.scope === "step-up")) expect([route.method, route.callers], route.id).toEqual(["POST", ["cookie"]]);
+    // The console admits cookies and bearers only, after Host validation and its own sign-in; reads need read, actions act or step-up.
+    for (const route of consoleRoutes) {
+      expect({ proof: route.proof, host: route.host }, route.id).toEqual({ proof: "console", host: "after" });
+      expect(route.callers.every(caller => caller === "cookie" || caller === "bearer"), route.id).toBe(true);
+      expect(route.scope, route.id).toEqual(route.method === "POST" ? expect.stringMatching(/^(act|step-up)$/) : "read");
+    }
+    // Only health and the signed hooks answer before Host validation.
+    expect(ids(ROUTES.filter(one => one.host === "before"))).toEqual(["edge.healthz", ...ids(edgeRoutes.filter(one => one.sample.startsWith("/hooks/")))]);
+    for (const route of ROUTES.filter(one => one.host === "before" && one.id !== "edge.healthz")) expect(route.proof, route.id).toBe("adapter");
+    // An edge row either is public (anonymous, needs nothing, names no project) or keeps its protocol's own proof.
+    for (const route of edgeRoutes.filter(one => one.proof === "public")) {
+      expect({ scope: route.scope, project: route.project }, route.id).toEqual({ scope: "none", project: "none" });
+      expect(route.callers.every(caller => caller === "anonymous" || caller === "cookie"), route.id).toBe(true);
+    }
+    for (const route of edgeRoutes.filter(one => one.callers.some(caller => !["anonymous", "cookie"].includes(caller)) || one.scope !== "none")) expect(route.proof, route.id).toBe("adapter");
+    // A verified external sender is the row's only caller and proves itself in its adapter.
+    for (const route of ROUTES.filter(one => one.callers.includes("service"))) expect({ callers: route.callers, proof: route.proof, scope: route.scope }, route.id).toEqual({ callers: ["service"], proof: "adapter", scope: "none" });
+    // Project-limited access, the opener redirect and the viewer exception are console facts; the viewer may only POST.
+    for (const route of ROUTES.filter(one => one.limited !== "deny")) expect(route.stage, route.id).toBe("console");
+    for (const route of ROUTES.filter(one => one.needsProject)) expect([route.stage, route.method], route.id).toEqual(["console", "GET"]);
+    for (const route of ROUTES.filter(one => one.viewer)) expect([route.method, route.callers.includes("cookie")], route.id).toEqual(["POST", true]);
+    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["projects.select", "session.editor-links"]);
+    // Each limited kind names how its object is found.
+    for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
+    expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));
+    expect(ids(ROUTES.filter(one => one.limited === "conversation"))).toEqual(["chat.page"]);
+    for (const route of ROUTES.filter(one => ["task", "run", "decision", "routine", "flow"].includes(one.project))) expect(["resource", "deny"], route.id).toContain(route.limited);
+    // Every project resolver but the adapter's is a console fact.
+    for (const route of edgeRoutes) expect(["none", "flow", "adapter"], route.id).toContain(route.project);
+    // Own refusal wording belongs to cookie-only console rows.
+    for (const route of ROUTES.filter(one => one.scopeRefusal !== undefined || one.callerRefusal !== undefined)) expect([route.stage, route.callers], route.id).toEqual(["console", ["cookie"]]);
   });
 
   test("/flows/:id/live is a browser-only read resolved through its flow's project", () => {
@@ -94,30 +128,5 @@ describe("the route table", () => {
     expect(matchRoute("GET", "/tasks/add", "console")).toBeNull();
     expect(matchRoute("DELETE", "/board", "console")).toBeNull();
     expect(matchRoute("HEAD", "/board", "console")).toBeNull();
-  });
-
-  test("every literal address the console's routers compare against is declared", () => {
-    const sources = ["tasks", "flows", "chat", "settings", "people-tokens", "pages"].map(name => readFileSync(join(import.meta.dirname, `${name}.ts`), "utf8"));
-    let source = "";
-    const body = (header: string): string => {
-      const start = source.indexOf(header);
-      const end = source.indexOf("\n  }\n", start);
-      expect(start).toBeGreaterThan(0);
-      return source.slice(start, end);
-    };
-    const literals = (text: string): string[] => [...new Set([...text.matchAll(/url\.pathname\s*===\s*["'`](\/[^"'`$]*)["'`]/g)].map(match => match[1]!))];
-    const reads: string[] = [], writes: string[] = [];
-    for (source of sources) {
-      reads.push(...literals(body("  async function get(")));
-      writes.push(...literals(body("  async function post(")));
-    }
-    expect(reads.length).toBeGreaterThan(60);
-    expect(writes.length).toBeGreaterThan(80);
-    expect(reads.filter(path => matchRoute("GET", path, "console") === null)).toEqual([]);
-    expect(writes.filter(path => matchRoute("POST", path, "console") === null)).toEqual([]);
-  });
-
-  test("the effective policy of every route is frozen", () => {
-    expect(routePolicySnapshot()).toMatchSnapshot();
   });
 });

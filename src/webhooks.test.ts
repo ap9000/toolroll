@@ -1,96 +1,14 @@
 /**
- * UI-only chat mirrors: pages become messages with console links; acting
- * stays in the console. One-way by design — nothing here reads a chat.
+ * Messaging settings: which connected service receives alerts, and the
+ * console URL chat links open.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type Store } from "./store.js";
-import { saveWebhook, saveConsoleUrl, loadWebhookTargets, loadConsoleUrl, linkFor, webhookPass, effectivePrimary, savePrimary, clearWebhook, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
-
-const T0 = new Date("2026-08-13T22:00:00.000Z");
-
-describe("the mirrors", () => {
-  let dir: string;
-  let store: Store;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "standing-orders-webhooks-"));
-    store = openStore(":memory:");
-  });
-  afterEach(() => {
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("URLs are credentials: shape-checked, 0600 on disk, env wins", () => {
-    expect(saveWebhook(dir, "slack", "https://evil.example/x")).toMatchObject({ ok: false });
-    expect(saveWebhook(dir, "slack", "https://hooks.slack.com/services/T0/B0/xyz")).toMatchObject({ ok: true });
-    expect(statSync(join(dir, "slack-webhook")).mode & 0o777).toBe(0o600);
-    expect(saveWebhook(dir, "discord", "https://discord.com/api/webhooks/1/abc")).toMatchObject({ ok: true });
-
-    const targets = loadWebhookTargets({}, dir);
-    expect(targets.map(one => one.kind).sort()).toEqual(["discord", "slack"]);
-    const overridden = loadWebhookTargets({ STANDING_ORDERS_SLACK_WEBHOOK: "https://hooks.slack.com/services/ENV" }, dir);
-    expect(overridden.find(one => one.kind === "slack")?.url).toContain("ENV");
-
-    expect(saveConsoleUrl(dir, "http://server.tailae758.ts.net:4180/")).toMatchObject({ ok: true });
-    expect(loadConsoleUrl({}, dir)).toBe("http://server.tailae758.ts.net:4180");
-  });
-
-  test("links land where acting lives: decisions on their screen, everything else on /next", () => {
-    const base = "http://host:4180";
-    const decision = { dedupeKey: "decision:42", kind: "decision", subject: "s", body: "b" };
-    const gap = { dedupeKey: "gap:/repo:env:KEY", kind: "gap", subject: "s", body: "b" };
-    expect(linkFor(base, decision as never)).toBe("http://host:4180/d/42");
-    expect(linkFor(base, gap as never)).toBe("http://host:4180/next");
-    expect(linkFor(null, decision as never)).toBeNull();
-  });
-
-  test("a pass claims, posts to every mirror, finalizes once — and never leaks the URL on failure", async () => {
-    store.enqueueNotification({ dedupeKey: "decision:7", kind: "decision", subject: "t-1 parked a decision", body: "Q: open or closed?" }, T0);
-    store.enqueueNotification({ dedupeKey: "gap:x", kind: "gap", subject: "env:KEY blocks work", body: "supply it" }, T0);
-
-    const posts: { url: string; body: string }[] = [];
-    const fetcher = (async (url: unknown, init?: { body?: unknown }) => {
-      posts.push({ url: String(url), body: String(init?.body ?? "") });
-      return { ok: true, status: 200 } as Response;
-    }) as typeof fetch;
-
-    const report = await webhookPass(store, {
-      targets: [
-        { kind: "slack", url: "https://hooks.slack.com/services/T/B/x" },
-        { kind: "discord", url: "https://discord.com/api/webhooks/1/y" },
-      ],
-      consoleUrl: "http://host:4180",
-      clock: () => T0,
-      fetcher,
-    });
-    expect(report.sent).toBe(2);
-    // Two notifications × two mirrors; slack wears mrkdwn links, discord content.
-    expect(posts).toHaveLength(4);
-    expect(posts.some(one => one.body.includes("<http://host:4180/d/7|open in Toolroll>"))).toBe(true);
-    expect(posts.some(one => one.body.includes('"content"'))).toBe(true);
-    // Delivered rows do not re-send on the next pass.
-    const again = await webhookPass(store, {
-      targets: [{ kind: "slack", url: "https://hooks.slack.com/services/T/B/x" }],
-      consoleUrl: null, clock: () => new Date(T0.getTime() + 120_000), fetcher,
-    });
-    expect(again.sent).toBe(0);
-
-    // Failure reports the platform and status — never the URL.
-    store.enqueueNotification({ dedupeKey: "decision:8", kind: "decision", subject: "s", body: "b" }, T0);
-    const failing = (async () => ({ ok: false, status: 403 }) as unknown as Response) as typeof fetch;
-    const failed = await webhookPass(store, {
-      targets: [{ kind: "slack", url: "https://hooks.slack.com/services/SECRET" }],
-      consoleUrl: null, clock: () => new Date(T0.getTime() + 240_000), fetcher: failing,
-    });
-    expect(failed.problems.join(" ")).toContain("slack answered 403");
-    expect(failed.problems.join(" ")).not.toContain("SECRET");
-  });
-});
+import { loadWebhookTargets, activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, saveConsoleUrl, loadConsoleUrl, effectivePrimary, savePrimary, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
+import { saveSlackCredentials, slackCredentialFile } from "./slack-api.js";
 
 describe("the primary — one service pages, chosen or sensibly implied", () => {
   let dir: string;
@@ -106,9 +24,9 @@ describe("the primary — one service pages, chosen or sensibly implied", () => 
     // Telegram alone: it pages, no ambiguity.
     expect(effectivePrimary({}, dir, true)).toMatchObject({ channel: "telegram", implicit: false });
 
-    // Telegram + slack, nothing chosen: telegram pages BY DEFAULT and the
+    // Telegram + Slack, nothing chosen: telegram pages BY DEFAULT and the
     // status is flagged implicit — the "pick one" moment.
-    saveWebhook(dir, "slack", "https://hooks.slack.com/services/T/B/x");
+    saveSlackCredentials(dir, { team: "T0", app: "A0", bot: "B0", installation: "I0", workspace: "w", appToken: "xapp-fixture", botToken: "xoxb-fixture" });
     expect(effectivePrimary({}, dir, true)).toMatchObject({ channel: "telegram", implicit: true });
 
     // The choice sticks.
@@ -117,8 +35,18 @@ describe("the primary — one service pages, chosen or sensibly implied", () => 
 
     // A primary pointing at a service that is no longer configured falls
     // through instead of silencing every page.
-    clearWebhook(dir, "slack");
+    rmSync(slackCredentialFile(dir));
     expect(effectivePrimary({}, dir, true)).toMatchObject({ channel: "telegram" });
+  });
+
+  test("legacy notification-only settings remain selectable for this release", () => {
+    writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/T/B/x\n", { mode: 0o600 });
+    expect(effectivePrimary({ TOOLROLL_DISCORD_WEBHOOK: "https://discord.com/api/webhooks/1/y" }, dir, false)).toEqual({ channel: "slack", implicit: true, configured: ["slack", "discord"], legacyWarning: LEGACY_WEBHOOK_WARNING });
+  });
+
+  test("the console URL saves normalized", () => {
+    expect(saveConsoleUrl(dir, "http://server.tailae758.ts.net:4180/")).toMatchObject({ ok: true });
+    expect(loadConsoleUrl({}, dir)).toBe("http://server.tailae758.ts.net:4180");
   });
 });
 
@@ -184,4 +112,41 @@ describe("the phone origin: the same console-url setting, held to an https origi
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+
+test("legacy discovery, destination receipts, retry and adapter suppression", async () => {
+  const { openStore } = await import("./store.js");
+  const dir = mkdtempSync(join(tmpdir(), "standing-orders-legacy-webhooks-")), store = openStore(":memory:");
+  const now = new Date("2026-10-08T00:00:00Z");
+  try {
+    writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/file-secret");
+    writeFileSync(join(dir, "discord-webhook"), "https://discord.com/api/webhooks/file-secret");
+    const env = { TOOLROLL_SLACK_WEBHOOK: "https://hooks.slack.com/services/env-secret" };
+    const targets = loadWebhookTargets(env, dir);
+    expect(targets.map(t => t.url)).toEqual([env.TOOLROLL_SLACK_WEBHOOK, "https://discord.com/api/webhooks/file-secret"]);
+    expect(activeWebhookTargets(env, dir, "telegram")).toEqual([]);
+    expect(activeWebhookTargets(env, dir, "slack")).toEqual([targets[0]]);
+    saveSlackCredentials(dir, { team: "T0", app: "A0", bot: "B0", installation: "I0", workspace: "w", appToken: "xapp-fixture", botToken: "xoxb-fixture" });
+    expect(activeWebhookTargets(env, dir, "slack")).toEqual([]);
+    store.enqueueNotification({ source: { installation: true }, dedupeKey: "legacy", kind: "test", subject: "Plan ready", body: "Review the saved plan." }, now);
+    store.enqueueNotification({ source: { installation: true }, dedupeKey: "resolved", kind: "test", subject: "Resolved", body: "Done" }, now);
+    const [first, resolved] = store.listNotifications().map(row => row.id);
+    store.resolveEpisode("resolved", now);
+    let failed = true;
+    const requests: string[] = [];
+    const fetcher = (async (url: string | URL | Request) => { requests.push(String(url)); if (String(url).includes("discord") && failed) throw Error(String(url)); return new Response("ok"); }) as typeof fetch;
+    const pass = () => webhookPass(store, { targets, consoleUrl: null, fetcher, clock: () => now });
+    expect(await pass()).toEqual({ sent: 1, problems: [`notification ${first}: discord delivery failed`] });
+    failed = false;
+    expect(await pass()).toEqual({ sent: 1, problems: [] });
+    expect(await pass()).toEqual({ sent: 0, problems: [] });
+    expect(requests).toHaveLength(3);
+    const rows = store.handle.prepare("SELECT notification, destination, attempts, delivered_at, last_error FROM notification_delivery ORDER BY destination").all();
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row["notification"] === first && row["notification"] !== resolved && row["delivered_at"] !== null)).toBe(true);
+    expect(rows.map(row => row["attempts"])).toEqual([2, 1]);
+    expect(JSON.stringify(rows)).not.toContain("secret");
+    expect(store.handle.prepare("SELECT name FROM pragma_table_info('notification') WHERE name = 'delivered_at'").all()).toEqual([]);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

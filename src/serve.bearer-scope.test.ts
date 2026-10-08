@@ -5,7 +5,7 @@
  * plain HTTP from outside this computer and the tailnet.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -13,8 +13,10 @@ import { request as httpRequest, type Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { routineDigestOf } from "./routine.js";
 import { resolveRoutineAuthority } from "./agentconfig.js";
+import * as approvers from "./scope.js";
 import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
+import { ROUTES } from "./server/route-table.js";
 import { mintApiToken } from "./api-tokens.js";
 import { contractRow } from "./remote-command.js";
 import { ENVELOPE_VERSION } from "./envelope.js";
@@ -22,6 +24,12 @@ import { MODERN } from "./mcp-core.js";
 import { setLimitOverride, SOURCE_BUDGET_DEFAULTS } from "./request-budget.js";
 import type { RunOperateAs } from "./cli-http.js";
 import type { TeamResponse } from "./team-contract.js";
+
+// Record the function imported by the server before its modules load, and preserve real password verification.
+vi.mock('./scope.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./scope.js')>();
+  return { ...actual, authenticateApprover: vi.fn(actual.authenticateApprover) };
+});
 
 let dir: string, A: string, B: string, store: Store, server: Server, base: string, password: string, now: number;
 let ran: { argv: string[]; scope: string; projects: string[] | null }[];
@@ -267,54 +275,10 @@ describe("bearer step-up and in-flight revocation", () => {
   const formPost = (bearer: string, path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", redirect: "manual",
     headers: { authorization: `Bearer ${bearer}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields) });
 
-  // One row per direct password-check site; shared routes add variants below. The structural test keeps this exhaustive.
-  const ceremonies: [string, string, Record<string, string>?][] = [
-    ["routineMutation", "/routines/1/run-now"],
-    ["code", "/code/start"], ["code", `/code/${"a".repeat(32)}/answer`, { decision: "accept" }],
-    ["flows", "/flows/1/triggers/1/secret"], ["flows", "/flows/1/linear-key"],
-    ["spendBudget", "/spend/budget"], ["projectDelete", "/settings/project/delete", { step: "delete" }],
-    ["policy", "/settings/policy"], ["approval", "/settings/approval"], ["requestLimits", "/settings/request-limits"],
-    ["sessions", "/settings/sessions", { action: "create-token", days: "30" }], ["signIn", "/settings/sign-in"],
-    ["updates", "/settings/updates"], ["retention", "/settings/retention"], ["storage", "/settings/storage"],
-    ["pullRequests", "/settings/pull-requests"], ["checks", "/settings/checks"], ["backups", "/settings/backups"],
-    ["data", "/settings/data"], ["monitoring", "/settings/monitoring"], ["toolsConnect", "/settings/tools/connect"],
-    ["toolsChange", "/settings/tools/change", { action: "add-custom" }], ["projectSetup", "/control/instructions-approve"],
-    ["slack", "/settings/slack/connect"], ["teams", "/settings/teams/connect"], ["discord", "/settings/discord/connect"],
-    ["runnerRegister", "/fleet/runner/register"], ["mode", "/mode/sign"], ["peopleProjects", "/people/projects"],
-    ["peopleInvite", "/people/invite"], ["peopleInviteRevoke", "/people/invite-revoke"], ["peopleRevoke", "/people/revoke"],
-    ["runnerRetire", "/fleet/runner/retire"], ["contest", "/contest/1/pick"], ["confirmStopped", "/t/guarded/confirm-stopped"],
-    ["onboard", "/projects/onboard-confirm"], ["pushSubscribe", "/push/subscribe"], ["chatConfig", "/chat/config"],
-    ["chat", "/chat"], ["chatFile", `/chat/file/${"a".repeat(32)}`], ["chatAck", "/chat/ack/1"],
-    ["attendMutation", "/t/guarded/attend"], ["taskReopen", "/t/guarded/reopen"],
-    ["taskRevision", "/t/guarded/accept-revision"], ["taskResume", "/t/guarded/resume"],
-  ];
-  const variants: [string, string, Record<string, string>?][] = [
-    ["project setup", "/control/setup-approve"], ["task approval", "/t/guarded/approve"], ["routine approval", "/routines/1/approve"], ["contest abandon", "/contest/1/abandon"],
-    ["storage clean", "/settings/storage/clean"], ["storage discard", "/settings/storage/discard"],
-    ["mode confirm", "/mode/confirm"], ["chat approval confirm", "/settings/chat-approval/confirm"], ["chat approval save", "/settings/chat-approval/save"],
-  ];
+  /** Every password step-up (console and the OAuth consent) and every other browser-only action, from the route table. */
+  const browserOnly = ROUTES.filter(row => row.scope === "step-up" || (row.stage === "console" && row.method === "POST" && row.callers.length === 1 && row.callers[0] === "cookie"));
 
-  test("every direct approver password call uses the browser-aware helper and has a bearer refusal case", () => {
-    // Decision 16: preserve the same password-site inventory across the handler move.
-    const source = ["./serve.ts", "./server/tasks.ts", "./server/flows.ts", "./server/chat.ts", "./server/settings.ts", "./server/people-tokens.ts", "./server/remote.ts", "./server/pages.ts", "./server/guards.ts"]
-      .map(path => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
-    expect(source.match(/checkApproverPassword\(/g)).toHaveLength(1);
-    expect(source).not.toContain("cookieOnlyCeremony");
-    expect(source).not.toMatch(/authenticateApprover\(store/);
-    expect(source).toMatch(/if \(who.via !== "cookie"\) return \{ ok: false, reason: "not-an-approver" \};\s+return checkApproverPassword/);
-    const sites: string[] = [];
-    let fn = "", form = "";
-    for (const line of source.split("\n")) {
-      const declaration = /^  (?:async )?function (\w+)\(/.exec(line);
-      if (declaration) { fn = declaration[1]!; form = ""; }
-      if (line.includes("readForm(")) form = /CONSOLE_FORMS\.(\w+)/.exec(line)?.[1] ?? form;
-      if (/authenticateApprover\(who,/.test(line)) sites.push(form || fn);
-    }
-    expect(sites.sort()).toEqual(ceremonies.map(([site]) => site).sort());
-    expect(sites).toHaveLength(45);
-  });
-
-  test.each(["password", "api", "oauth"])("%s bearer gets 403 at every password step-up without changing protected state", async kind => {
+  test.each(["password", "api", "oauth"])("%s bearer gets 403 at every password step-up and browser-only action without changing protected state", async kind => {
     const scope = task();
     const terms = { repo: A, goal: "Guard routine approval", outOfScope: null, touches: [], acceptance: [], requirements: [], schedule: "every:60", singleFlight: true, costCeilingUsd: null };
     const authority = resolveRoutineAuthority(store, A, [], new Date());
@@ -332,12 +296,30 @@ describe("bearer step-up and in-flight revocation", () => {
       });
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
+    expect(browserOnly).toHaveLength(68);
+    const checked = vi.mocked(approvers.authenticateApprover);
+    checked.mockClear();
+    // Prove this recorder sees an actual browser password ceremony before asserting silence for bearer requests.
+    const login = await fetch(`${base}/login`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ name: 'alex', token: password }) });
+    expect(login.status).toBe(303);
+    const cookie = login.headers.getSetCookie().map(one => one.split(';')[0]!).find(one => one.startsWith('standing-orders_session='))!;
+    const page = await fetch(`${base}/tasks`, { headers: { cookie } });
+    expect(page.status).toBe(200);
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await page.text())![1]!;
+    const control = await fetch(`${base}/people/invite`, { method: 'POST', redirect: 'manual', headers: { cookie, origin: base },
+      body: new URLSearchParams({ csrf, token: 'incorrect-control-password', role: 'approver', access: 'all' }) });
+    expect(control.status).toBe(403);
+    await control.arrayBuffer();
+    expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alex', 'incorrect-control-password', undefined);
+    checked.mockClear();
     const before = snapshot();
-    for (const [site, path, fields] of [...ceremonies, ...variants]) {
-      const response = await formPost(bearer, path, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A, ...fields });
-      expect([site, path, response.status]).toEqual([site, path, 403]);
-      expect(snapshot()).toEqual(before);
+    for (const row of browserOnly) {
+      const response = await formPost(bearer, row.sample, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A });
+      expect([row.id, row.sample, response.status]).toEqual([row.id, row.sample, 403]);
+      await response.arrayBuffer();
+      expect(snapshot(), row.id).toEqual(before);
     }
+    expect(checked).not.toHaveBeenCalled();
   });
 
   test.each(["console", "team"].flatMap(route => ["revoked", "read", "projects", "generation", "expired"].map(change => [route, change])))("%s refuses a token changed to %s during body delivery", async (route, change) => {

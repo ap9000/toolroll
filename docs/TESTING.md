@@ -63,39 +63,31 @@ real-model journeys `claude` signed in, and an OpenRouter key in Settings → AI
 providers for Jev. A real run spends a few Claude turns and a few real builds
 (about 45 minutes for both); a scripted one spends none.
 
-The release gate (`scripts/release-check.mjs`) runs what the change can
-break, every chosen group at once: the scripted journeys when a page changed
-(just the groups that own the page when that is clear — the flow pages, the
-teammate and kit pages, first run, one journey script — and every scripted
-group otherwise), and the real-model journeys only when model-facing code
-changed (the lead, chat, mate tools, the planner, the builder, teammates, the
-provider adapters) or `--real` is given. Its plan line names the groups and
-why. It starts typecheck, build and the unit tests together (the tests' setup
-waits for that build); the journeys start once the build is done. Its summary
-ends with the model calls, how long each part took and the peak memory. The
-nightly real-model journeys flow (`scripts/flows/real-model-journeys.mjs`,
-see the flows guide) runs every journey of both scripts with real models, so
-every journey still meets the real models somewhere.
+The release gate (`scripts/release-check.mjs`) runs the full unit suite,
+every scripted browser journey and the upgrade path for changes beyond docs,
+evidence, design notes or a version-only bump. Unit tests are never selected
+by changed files. Typecheck, build and units start together; unit setup waits
+for the build, and browser journeys and the upgrade path start after it passes.
+Browser journeys also stay held if typecheck has already failed.
 
-Every part and group, a retry too, starts only when the machine has room
-(`scripts/check-memory.mjs`): enough memory available beyond a reserve (a
-larger one at macOS warn pressure, or once Linux swap is 90% used; at macOS
-critical pressure it waits), and a slot under one cap on real Claude and Codex
-turns shared by every suite, counting the sessions already running. A busy
-machine makes the check slower, not wrong; an idle one starts everything as
-before. The cap defaults to 4 (fewer on a small machine);
-`TOOLROLL_CHECK_PROVIDERS=<n>` sets it. macOS keeps swap allocated long after
-pressure passes, so swap is only reported there. The summary says what
-admission did, above the peak-memory line:
+Browser concurrency is fixed at two flow lanes and four app lanes per runner.
+Unit workers default to `min(8, max(2, cores - 1))`, using Node's available
+parallelism; `VITEST_MAX_WORKERS` overrides that default. There is no memory
+admission gate or memory-based lane sizing.
 
-```
-admission: ran up to 4 at a time: lowest 3.1 GB free, swap up to 97% used; up to 3 provider turns of ours, 1 other session (cap 4, default maximum 4); 2 starts waited 1.5 min in all for room
-```
+Real-model journeys run when model-facing code changes (the lead, chat,
+planner, builder or provider adapters), with `--real`, or for a full check.
+`--full` (or `TOOLROLL_FULL_CHECK=1`) runs every unit test and every scripted
+and real-model journey. The plan names what runs and why; the summary reports
+results, model calls and time for each part. The nightly real-model journeys
+flow (`scripts/flows/real-model-journeys.mjs`) runs both scripts with real models.
 
-`scripts/e2e-parallel.mjs` run alone does the same for its own groups.
-`TOOLROLL_CHECK_MACHINE=<file.json>` (`{ "platform", "available", "swapUsed",
-"swapTotal", "pressure", "providers" }`, memory in bytes, pressure 1, 2 or 4)
-replaces the machine's readings, to rehearse a busy machine.
+Only real provider turns use `scripts/provider-gate.mjs`. The runners share
+a cap of four Claude/Codex turns, including other sessions on this computer;
+`TOOLROLL_CHECK_PROVIDERS=<n>` overrides it. Other sessions always leave room
+for one check turn. Scripted journeys use no provider slots. The summary
+reports provider concurrency and waits. Standalone `scripts/e2e-parallel.mjs`
+uses the same fixed lane defaults and provider gate for real-model journeys.
 
 ## Unit tests (`npm test`)
 

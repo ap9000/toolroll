@@ -1,6 +1,6 @@
 {
   "name": "toolroll",
-  "version": "0.9.51",
+  "version": "0.9.52",
   "description": "A control plane for unattended coding agents — queue tasks, walk away, come back to pull requests. Agents build in leased worktrees, never touch your default branch, and interrupt you only for decisions that need a human.",
   "directories": {
     "doc": "docs"
@@ -70,8 +70,6 @@
     "@types/react-dom": "19.3.0",
     "esbuild": "0.28.2",
     "happy-dom": "20.14.5",
-    "paper": "0.12.18",
-    "simple-icons": "16.34.0",
     "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "7.0.2",

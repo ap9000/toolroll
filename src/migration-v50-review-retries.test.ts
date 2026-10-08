@@ -145,6 +145,9 @@ function windBackToPreOrigin(file: string): void {
   raw.exec("CREATE UNIQUE INDEX one_open_review_request ON review_request (run) WHERE consumed_at IS NULL");
   raw.exec("CREATE UNIQUE INDEX one_root_review_per_request ON review_request (reviewer_run) WHERE reviewer_run IS NOT NULL");
   raw.exec("COMMIT");
+  // Build 1513 stamped this shape current; since v114 a current stamp names one exact shape, so the file reads as the
+  // version before this build's and takes the upgrade road.
+  raw.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION - 1);
   raw.close();
 }
 
@@ -356,7 +359,7 @@ describe("schema v50: bounded review retries upgrade a v49 database without rewr
       expect(rows(file, "SELECT COUNT(*) AS n FROM pragma_table_info('review_request') WHERE name = 'origin'")).toEqual([{ n: 0 }]);
       expect(strip(rows(file, "SELECT * FROM review_request ORDER BY id"), "reviewer_run")).toEqual(strip(before, "reviewer_run"));
       expect(rows(file, "SELECT id, consumed_at, consumed_reason FROM review_request ORDER BY id")).toEqual(before.map(row => ({ id: row["id"], consumed_at: row["consumed_at"], consumed_reason: row["consumed_reason"] })));
-      expect(rows(file, "SELECT version FROM schema_version")).toEqual([{ version: shape === "v49" ? -49 : SCHEMA_VERSION }]);
+      expect(rows(file, "SELECT version FROM schema_version")).toEqual([{ version: shape === "v49" ? -49 : -(SCHEMA_VERSION - 1) }]);
 
       // The next open runs the WHOLE pass: the replayed automatic retry is
       // spent before any admission could see it, the first ask keeps its
@@ -407,7 +410,7 @@ describe("schema v50: bounded review retries upgrade a v49 database without rewr
         return {
           prepare: sql => real!.prepare(sql) as never,
           exec: sql => {
-            if (opening && /^BEGIN IMMEDIATE$/.test(sql.trim())) {
+            if (opening && waited === 0 && /^BEGIN IMMEDIATE$/.test(sql.trim())) {
               waited += 1;
               columnAtWait = Number((real!.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('review_request') WHERE name = 'origin'").get() as { n: number }).n) === 1;
               const first = openStore(path);
@@ -422,13 +425,14 @@ describe("schema v50: bounded review retries upgrade a v49 database without rewr
           close: () => real!.close(),
         } as Database;
       };
-      const second = openStore(file, { connect: waiting });
+      // The waiting opener stamped its epoch first; the first migrator resumed that epoch and finished it, so the
+      // waiting one refuses at its bookkeeping rather than run a second pass over the queued ask.
+      expect(() => openStore(file, { connect: waiting })).toThrow(new RegExp(`epoch sentinel -${SCHEMA_VERSION - 1} moved under this migration`));
       opening = false;
-      // Exactly one write transaction in the open — the origin pass — and
-      // the column was still absent when it queued for the lock.
       expect(waited).toBe(1);
       expect(columnAtWait).toBe(false);
       expect(queued).not.toBeNull();
+      const second = openStore(file);
       // The first migrator's pass spent the replayed row; the second
       // opener left the operator's fresh retry exactly as queued.
       const origins = new Map(rows(file, "SELECT id, origin, consumed_reason FROM review_request ORDER BY id").map(row => [Number(row["id"]), row]));
@@ -493,7 +497,7 @@ describe("schema 62 compatibility without manual refresh", () => {
     const root = mkdtempSync(join(tmpdir(), "refresh-migration-")), file = join(root, "test.db");
     try {
       let store = openStore(file); seed(store, join(root, "evidence"));
-      expect(SCHEMA_VERSION).toBe(113);
+      expect(SCHEMA_VERSION).toBe(114);
       expect(store.raw().prepare("PRAGMA table_info(run)").all().some(row => row["name"] === "review_refresh")).toBe(false);
       expect(store.raw().prepare("PRAGMA table_info(review_request)").all().some(row => row["name"] === "refresh_json")).toBe(false);
       // The retired schema-62 draft (a refresh request ledger, a second

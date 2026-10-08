@@ -1,3 +1,4 @@
+import { reclaimDatabase } from "./database-reclaim.js";
 /**
  * Retention (v105): how long Toolroll keeps run evidence and logs,
  * finished checkouts' records, chat messages and notifications. Until an
@@ -60,7 +61,7 @@ export const RETENTION_KINDS: readonly { kind: RetentionKind; label: string; det
   { kind: "evidence", label: "Run evidence and logs", detail: "Diffs, check logs, screenshots and reports saved for each run" },
   { kind: "checkouts", label: "Finished checkout records", detail: "Records of build checkouts that were let go and are no longer on disk" },
   { kind: "chat", label: "Chat messages", detail: "Messages in lead and team chats" },
-  { kind: "notifications", label: "Notifications", detail: "Delivered or dismissed notifications" },
+  { kind: "notifications", label: "Notifications", detail: "Resolved notifications" },
 ];
 
 /** The periods the page offers for each kind; the command line takes any number of days from 1 to 3650. */
@@ -193,12 +194,11 @@ export function retentionPlan(store: Store, evidenceRoot: string, now: Date, per
   }
 
   if (periods.notifications !== null) {
-    const rows = db.prepare(`SELECT n.id AS id, length(n.subject) + length(n.body) + COALESCE(length(n.receipt), 0) + COALESCE(length(n.last_error), 0) + 64 AS bytes FROM notification n
-      WHERE n.created_at < ? AND (n.resolved_at IS NOT NULL OR n.delivered_at IS NOT NULL)
-        AND NOT (n.claim_owner IS NOT NULL AND n.claim_expires_at > ?)
+    const rows = db.prepare(`SELECT n.id AS id, length(n.subject) + length(n.body) + 64 AS bytes FROM notification n
+      WHERE n.created_at < ? AND n.resolved_at IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM notification_delivery d WHERE d.notification = n.id AND d.claim_owner IS NOT NULL AND d.claim_expires_at > ?)
         AND NOT (n.resolved_at IS NULL AND n.task_ref IS NOT NULL AND NOT EXISTS (SELECT 1 FROM task_ref r WHERE r.id = n.task_ref AND ${finishedTask("r")}))
-      ORDER BY n.id LIMIT ?`).all(cutoff(now, periods.notifications), now.toISOString(), now.toISOString(), SWEEP_BATCH + 1);
+      ORDER BY n.id LIMIT ?`).all(cutoff(now, periods.notifications), now.toISOString(), SWEEP_BATCH + 1);
     more.notifications = rows.length > SWEEP_BATCH;
     items.notifications = rows.slice(0, SWEEP_BATCH).map(row => ({ id: Number(row["id"]), bytes: Number(row["bytes"]) }));
   }
@@ -286,6 +286,7 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
   const counts = plan.counts.map(one => ({ ...one, count: done[one.kind].count, bytes: done[one.kind].bytes }));
   const freed = counts.reduce((sum, one) => sum + one.bytes, 0);
   const ledgerId = store.recordAction({ at: now.toISOString(), actor, repo: null, taskId: null, runId: null, action: "retention sweep", outcome: freed > 0 || counts.some(one => one.count > 0) ? "removed" : "nothing due", source: "policy", detail: sweepWords(counts, freed) });
+  reclaimDatabase(store.handle, "retention");
   return { at: now.toISOString(), counts, freed, ledgerId };
 }
 

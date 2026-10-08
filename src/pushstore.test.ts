@@ -1,3 +1,4 @@
+import { claimNotifications, finalizeNotification } from "./notification-delivery.js";
 /**
  * The push ledgers (arc 3, v23): enrollment with a transactional
  * high-water mark, pair seeding that never backfills, claim/fence/settle
@@ -87,7 +88,7 @@ describe("enrollment", () => {
 });
 
 describe("the pair machine", () => {
-  test("Telegram success leaves push and shell/webhook claims and receipts independent in both directions", async () => {
+  test("legacy and Telegram success leave push claims and receipts independent", async () => {
     enroll();
     const code = mintPairingCode();
     store.createTelegramPairing({ codeHash: hashPairingCode(code), approver: "alex", by: "alex", ttlMs: PAIRING_TTL_MS }, T0);
@@ -95,19 +96,14 @@ describe("the pair machine", () => {
     store.enqueueNotification({ source: { installation: true }, dedupeKey: "independent", kind: "attention", subject: "Attention", body: "Check settings", pushClass: "attention" }, T0);
     store.seedPushPairs(T0);
     const [push] = store.claimPushPairs("push", 60_000, 1, T0);
-    const [shell] = store.claimDeliveries("shell", 60_000, T0);
+    const [legacy] = claimNotifications(store, "webhook:slack:fixture", "legacy", T0);
+    expect(finalizeNotification(store, legacy!, "legacy", { ok: true, receipt: "slack" }, T0)).toBe(true);
+
     const transport = async (method: string) => ({ ok: true, result: method === "sendMessage" ? { message_id: 7 } : [] });
     expect(await bridgePass(store, { botId: "bot", transport, clock: () => T0 })).toMatchObject({ ok: true, report: { sent: 1 } });
-    expect(store.listNotifications("all")[0]?.deliveredAt).toBeNull();
     expect(store.pushSendFence(push!.id, "push", push!.claimGeneration)).not.toBeNull();
     expect(store.settlePushPair(push!.id, "push", push!.claimGeneration, { kind: "accepted" }, T0)).toBe(true);
-    expect(store.finalizeDelivery(shell!.id, "shell", { ok: true, receipt: "webhook" }, T0)).toBe(true);
     expect(store.telegramDeliveries(store.liveTelegramBinding("bot")!)[0]?.receipt).toBe("telegram:bot:chat:7");
-    store.enqueueNotification({ source: { installation: true }, dedupeKey: "shell-first", kind: "test", subject: "test", body: "test" }, T0);
-    const [next] = store.claimDeliveries("shell", 60_000, T0);
-    expect(store.finalizeDelivery(next!.id, "shell", { ok: true, receipt: "shell-first" }, T0)).toBe(true);
-    expect(await bridgePass(store, { botId: "bot", transport, clock: () => T0 })).toMatchObject({ ok: true, report: { sent: 1 } });
-    expect(store.listNotifications("all")[1]?.receipt).toBe("shell-first");
   });
 
   const pairUp = () => {

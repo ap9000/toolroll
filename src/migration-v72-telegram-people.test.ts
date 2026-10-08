@@ -40,7 +40,7 @@ describe("v72 one Telegram binding per person", () => {
     expect(old.prepare("SELECT name FROM sqlite_master WHERE name = 'telegram_team_chat'").get()).toBeUndefined();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(113);
+    expect(SCHEMA_VERSION).toBe(114);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const indexes = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'telegram_binding'").all().map(row => String(row["name"]));
     expect(indexes).toContain("telegram_binding_live_user");

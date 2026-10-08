@@ -1,39 +1,30 @@
+import { randomUUID } from "node:crypto";
+import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
+import type { Notification, Store } from "./store.js";
 import {loadDiscordCredentials} from "./discord-api.js";
 import { loadTeamsCredentials } from "./teams-api.js";
 import { loadSlackCredentials } from "./slack-api.js";
 /**
- * Legacy notification-only webhooks. Interactive Slack and Discord adapters
- * have their own paired identities and reuse the shared action engine.
- * A configured interactive adapter suppresses its legacy webhook delivery.
- *
- * The webhook URL is a CREDENTIAL (anyone holding it can post to the
- * channel): it lives in a 0600 file beside the database or in the
- * environment, is never a database column, and never appears in logs or
- * errors — the same rules as the bot token, for the same reasons.
+ * Messaging settings beside the database: which connected chat service
+ * receives alerts (the primary), and the console URL that links in chats
+ * and phone pushes open. The chat services themselves — Telegram and the
+ * interactive Slack, Discord and Teams adapters — keep their own
+ * credentials; this file only reads whether they are configured.
  */
 
-import { readFileSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Notification, Store } from "./store.js";
 import { envValue } from "./names.js";
 
-export const SLACK_ENV = "TOOLROLL_SLACK_WEBHOOK";
-export const DISCORD_ENV = "TOOLROLL_DISCORD_WEBHOOK";
+export type WebhookKind = "slack" | "discord";
+export type WebhookTarget = { kind: WebhookKind; url: string };
+const FILE_OF = { slack: "slack-webhook", discord: "discord-webhook" };
+const POST_TIMEOUT_MS = 10_000;
+export const LEGACY_WEBHOOK_WARNING = "Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.";
+
 export const CONSOLE_URL_ENV = "TOOLROLL_CONSOLE_URL";
 export const PRIMARY_ENV = "TOOLROLL_MESSAGING_PRIMARY";
 
-export type WebhookKind = "slack" | "discord";
-
-export type WebhookTarget = { kind: WebhookKind; url: string };
-
-/** How long one delivery claim protects a row from a second sender. */
-const DELIVERY_CLAIM_MS = 60_000;
-const POST_TIMEOUT_MS = 10_000;
-
-const FILE_OF: Record<WebhookKind, string> = {
-  slack: "slack-webhook",
-  discord: "discord-webhook",
-};
 const CONSOLE_FILE = "console-url";
 const PRIMARY_FILE = "messaging-primary";
 
@@ -42,30 +33,6 @@ export const MESSAGING_CHANNELS: readonly MessagingChannel[] = ["telegram", "sla
 
 export function isMessagingChannel(value: string): value is MessagingChannel {
   return (MESSAGING_CHANNELS as readonly string[]).includes(value);
-}
-
-/** The shapes each platform hands out; anything else is probably a paste error. */
-const URL_SHAPE: Record<WebhookKind, RegExp> = {
-  slack: /^https:\/\/hooks\.slack\.com\/\S+$/,
-  discord: /^https:\/\/(canary\.|ptb\.)?discord\.com\/api\/webhooks\/\S+$/,
-};
-
-export function saveWebhook(dir: string, kind: WebhookKind, url: string): { ok: true } | { ok: false; message: string } {
-  if (!URL_SHAPE[kind].test(url.trim())) {
-    return { ok: false, message: `that does not look like a ${kind} webhook URL — paste it exactly as the platform issued it` };
-  }
-  const file = join(dir, FILE_OF[kind]);
-  writeFileSync(file, `${url.trim()}\n`, { mode: 0o600 });
-  chmodSync(file, 0o600);
-  return { ok: true };
-}
-
-export function clearWebhook(dir: string, kind: WebhookKind): void {
-  try {
-    rmSync(join(dir, FILE_OF[kind]));
-  } catch {
-    // Already absent is cleared.
-  }
 }
 
 export function saveConsoleUrl(dir: string, url: string): { ok: true } | { ok: false; message: string } {
@@ -127,29 +94,30 @@ export function loadPrimary(env: Record<string, string | undefined>, dir: string
  * merely fell out of what happens to be configured. Explicit choice wins
  * WHEN its channel is actually configured (a primary pointing at nothing
  * falls through rather than silencing every page); otherwise Telegram if
- * present (it can hold buttons), else the mirrors. `implicit` is the flag
+ * present (it can hold buttons), else the first other connected service. `implicit` is the flag
  * every status surface uses to say "you have several — pick one".
  */
 export function effectivePrimary(
   env: Record<string, string | undefined>,
   dir: string,
   telegramConfigured: boolean,
-): { channel: MessagingChannel | null; implicit: boolean; configured: MessagingChannel[] } {
+): { channel: MessagingChannel | null; implicit: boolean; configured: MessagingChannel[]; legacyWarning?: string } {
   const targets = loadWebhookTargets(env, dir);
+  const warning = targets.length ? { legacyWarning: LEGACY_WEBHOOK_WARNING } : {};
   const configured: MessagingChannel[] = [
     ...(telegramConfigured ? (["telegram"] as const) : []),
     ...(loadSlackCredentials(dir) !== null ? (["slack"] as const) : []),
     ...(loadDiscordCredentials(dir) !== null ? (["discord"] as const) : []),
     ...(loadTeamsCredentials(dir) !== null ? (["teams"] as const) : []),
-    ...targets.map(one => one.kind).filter(kind => (kind !== "slack" || loadSlackCredentials(dir) === null) && (kind !== "discord" || loadDiscordCredentials(dir) === null)),
+    ...targets.map(one => one.kind).filter(kind => kind === "slack" ? loadSlackCredentials(dir) === null : loadDiscordCredentials(dir) === null),
   ];
   const chosen = loadPrimary(env, dir);
   if (chosen !== null && configured.includes(chosen)) {
-    return { channel: chosen, implicit: false, configured };
+    return { channel: chosen, implicit: false, configured, ...warning };
   }
-  if (telegramConfigured) return { channel: "telegram", implicit: configured.length > 1, configured };
+  if (telegramConfigured) return { channel: "telegram", implicit: configured.length > 1, configured, ...warning };
   const fallback = configured[0] ?? null;
-  return { channel: fallback, implicit: configured.length > 1, configured };
+  return { channel: fallback, implicit: configured.length > 1, configured, ...warning };
 }
 
 export function loadConsoleUrl(env: Record<string, string | undefined>, dir: string): string | null {
@@ -182,9 +150,9 @@ function isLoopbackHost(hostname: string): boolean {
 
 /**
  * The origin a phone link may open, or null. The SAME console-url setting
- * the mirrors use — read again on every call, never cached, so a changed or
+ * chat links use — read again on every call, never cached, so a changed or
  * removed setting stops the next link — held to a stricter shape than a
- * mirror link: exactly an https origin (no credentials, path, query,
+ * desktop link: exactly an https origin (no credentials, path, query,
  * fragment), not loopback, and, when the console this process co-hosts
  * states its own `--public-url`, exactly that origin. A model, a Host
  * header or a proposal field never supplies it, and nothing here probes
@@ -235,7 +203,6 @@ export async function postWebhook(
   link: string | null,
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const lines = [notification.subject, "", notification.body];
   const body =
     target.kind === "slack"
       ? {
@@ -252,7 +219,6 @@ export async function postWebhook(
             ...(link === null ? [] : [link]),
           ].join("\n").slice(0, 1900),
         };
-  void lines;
   try {
     const response = await fetcher(target.url, {
       method: "POST",
@@ -265,56 +231,33 @@ export async function postWebhook(
       return { ok: false, error: `${target.kind} answered ${response.status}` };
     }
     return { ok: true };
-  } catch (error) {
-    const said = error instanceof Error ? error.name : "failed";
-    return { ok: false, error: `${target.kind} delivery ${said}` };
+  } catch {
+    return { ok: false, error: `${target.kind} delivery failed` };
   }
 }
 
 export type WebhookReport = { sent: number; problems: string[] };
 
-/**
- * Deliver every pending notification to every configured mirror, through
- * the SAME claim/finalize discipline as every other deliverer — so a
- * webhook pass and a Telegram bridge can never both own one row. This
- * pass runs when Telegram is NOT configured; with a paired Telegram chat,
- * Telegram remains the delivery channel (it can carry buttons) and these
- * mirrors stay silent rather than double-paging every phone.
- */
-export async function webhookPass(
-  store: Store,
-  options: {
-    targets: WebhookTarget[];
-    consoleUrl: string | null;
-    owner?: string;
-    clock?: () => Date;
-    fetcher?: typeof fetch;
-  },
-): Promise<WebhookReport> {
-  const clock = options.clock ?? (() => new Date());
-  const owner = options.owner ?? `webhooks-${Math.floor(clock().getTime() / 1000)}`;
-  const report: WebhookReport = { sent: 0, problems: [] };
-  if (options.targets.length === 0) return report;
+/** Only the chosen service sends; an interactive adapter suppresses its old mirror. */
+export function activeWebhookTargets(env: Record<string, string | undefined>, dir: string, channel: MessagingChannel | null): WebhookTarget[] {
+  return loadWebhookTargets(env, dir).filter(one => one.kind === channel && (one.kind === "slack" ? loadSlackCredentials(dir) === null : loadDiscordCredentials(dir) === null));
+}
 
-  const claimed = store.claimDeliveries(owner, DELIVERY_CLAIM_MS, clock());
-  for (const row of claimed) {
-    // The lead's own work posts to no channel; the console keeps it.
-    if (store.leadQuiet(row)) {
-      store.finalizeDelivery(row.id, owner, { ok: true, receipt: "skipped:quiet" }, clock());
-      continue;
+/** Each destination owns its claim and receipt; a successful one never hides another's retry. */
+export async function webhookPass(store: Store, options: { targets: WebhookTarget[]; consoleUrl: string | null; owner?: string; clock?: () => Date; fetcher?: typeof fetch }): Promise<WebhookReport> {
+  const clock = options.clock ?? (() => new Date()), owner = options.owner ?? `webhooks-${randomUUID()}`;
+  const report: WebhookReport = { sent: 0, problems: [] };
+  for (const target of options.targets) {
+    const destination = notificationDestination(`webhook:${target.kind}`, target.url);
+    for (const row of claimNotifications(store, destination, owner, clock())) {
+      if (!notificationClaimHeld(store, row, owner, clock())) { report.problems.push(`notification ${row.id}: claim expired or notification resolved`); continue; }
+      const outcome = store.leadQuiet(row) ? { ok: true as const, receipt: "skipped:quiet" }
+        : await postWebhook(target, row, linkFor(options.consoleUrl, row), options.fetcher);
+      const finalized = finalizeNotification(store, row, owner, outcome.ok ? { ok: true, receipt: "receipt" in outcome ? outcome.receipt : target.kind } : outcome, clock());
+      if (outcome.ok && finalized && !("receipt" in outcome)) report.sent++;
+      if (outcome.ok && !finalized) report.problems.push(`notification ${row.id}: delivery receipt claim expired`);
+      if (!outcome.ok) report.problems.push(`notification ${row.id}: ${outcome.error}`);
     }
-    const link = linkFor(options.consoleUrl, row);
-    const outcomes = await Promise.all(
-      options.targets.map(target => postWebhook(target, row, link, options.fetcher ?? fetch)),
-    );
-    const failed = outcomes.filter(one => !one.ok);
-    const outcome =
-      failed.length === 0
-        ? { ok: true as const, receipt: options.targets.map(one => one.kind).join("+") }
-        : { ok: false as const, error: failed.map(one => (one.ok ? "" : one.error)).join("; ") };
-    const finalized = store.finalizeDelivery(row.id, owner, outcome, clock());
-    if (outcome.ok && finalized) report.sent++;
-    if (!outcome.ok) report.problems.push(`notification ${row.id}: ${outcome.error}`);
   }
   return report;
 }

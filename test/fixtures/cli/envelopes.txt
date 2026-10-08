@@ -5703,14 +5703,6 @@ $ contract --commands --json → 0
       "remote": "step-up"
     },
     {
-      "invocation": "webhook test",
-      "synopsis": "send a test message",
-      "audience": "operator",
-      "agentMayInvoke": false,
-      "mutation": "unkeyed",
-      "remote": "yes"
-    },
-    {
       "invocation": "bridge",
       "synopsis": "the Telegram bridge (pairing, tokens, the follower)",
       "audience": "operator",
@@ -6603,11 +6595,6 @@ $ outbox list --json → 0
       "subject": "New task: Tidy the README",
       "body": "Filed and waiting in the queue.",
       "createdAt": "2026-08-13T22:00:00.000Z",
-      "attempts": 0,
-      "lastAttemptAt": null,
-      "lastError": null,
-      "deliveredAt": null,
-      "receipt": null,
       "resolvedAt": null,
       "pushClass": null,
       "link": "/chat?task=t-readme"
@@ -6625,11 +6612,6 @@ $ outbox list --json → 0
       "subject": "New task: Fix the login form",
       "body": "Filed and waiting in the queue.",
       "createdAt": "2026-08-13T22:00:00.000Z",
-      "attempts": 0,
-      "lastAttemptAt": null,
-      "lastError": null,
-      "deliveredAt": null,
-      "receipt": null,
       "resolvedAt": null,
       "pushClass": null,
       "link": "/chat?task=t-login"
@@ -6647,16 +6629,20 @@ $ outbox list --json → 0
       "subject": "Paused",
       "body": "The next attempt waits until the hold is released. An attempt already running is not stopped by this.",
       "createdAt": "2026-08-13T22:00:00.000Z",
-      "attempts": 0,
-      "lastAttemptAt": null,
-      "lastError": null,
-      "deliveredAt": null,
-      "receipt": null,
       "resolvedAt": null,
       "pushClass": null,
       "link": "/t/t-login"
     }
   ]
+}
+
+$ outbox deliver --cmd true --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "outbox deliver",
+  "delivered": 3,
+  "failed": 0
 }
 
 $ incident list --json → 0

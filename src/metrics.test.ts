@@ -66,13 +66,24 @@ test('the existing exporter includes real Store transaction and standalone write
   } finally { store.close(); }
 });
 
-test('an idle event loop reads near zero once the sampling interval is subtracted', async () => {
-  const telemetry = new ServerTelemetry();
-  telemetry.start();
-  try {
-    await new Promise(resolve => setTimeout(resolve, 600));
-    const loop = telemetry.snapshot().eventLoop;
-    expect(loop.count).toBeGreaterThan(0);
-    expect(loop.p50Ms!).toBeLessThan(15); // an unsubtracted 20 ms interval would still fail; shared CI runners jitter a few ms
-  } finally { telemetry.stop(); }
+test('event-loop samples have the 20 ms sampling interval subtracted, so an idle loop reads zero', () => {
+  // A stand-in for the native delay monitor: raw samples in milliseconds, read back as nanosecond percentiles.
+  let raw = [20, 20, 21, 30], resets = 0;
+  const monitor = {
+    get count() { return raw.length; },
+    percentile: (p: number) => raw[Math.max(0, Math.ceil(p / 100 * raw.length) - 1)]! * 1e6,
+    reset: () => { raw = []; resets++; },
+  };
+  const telemetry = new ServerTelemetry(() => 0);
+  Object.assign(telemetry, { monitor });
+  telemetry.sampleEventLoop();
+  expect(resets).toBe(1);
+  expect(telemetry.eventLoop.recent()).toEqual({ count: 4, p50Ms: 0.1, p99Ms: 10, maxMs: 10, totalMs: 11 });
+  telemetry.sampleEventLoop(); // nothing new since the reset adds nothing
+  expect(telemetry.eventLoop.total.count).toBe(4);
+
+  const idle = new ServerTelemetry(() => 0);
+  raw = [20, 20, 20];
+  Object.assign(idle, { monitor });
+  expect(idle.snapshot().eventLoop).toEqual({ count: 3, p50Ms: 0, p99Ms: 0, maxMs: 0, totalMs: 0 });
 });

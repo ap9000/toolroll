@@ -1,6 +1,8 @@
+import { reclaimDatabase } from "./database-reclaim.js";
 import { chatSchema, chatTables } from "./contracts/chat-tables.js";
 import { ServerTelemetry } from "./server-telemetry.js";
 import { instrumentDatabase, measureWriteWait } from "./sqlite-telemetry.js";
+import { trackWorkspaceWrites } from "./workspace-revision.js";
 import type { DecisionOption } from "./contracts/decision.js";
 import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn, type SavedToolAction, type SavedToolRule } from "./contracts/store-json.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
@@ -656,7 +658,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v111 keeps an API token's project limit and its rotation: the token that replaced it, and when the old one stops.
 // v112 keeps request budgets for API tokens: owner overrides (request_budget_limit) and saved usage (request_budget_usage).
 // v113 keeps MCP sign-ins (OAuth): registered clients, one-time codes, and each grant's binding to its API token.
-export const SCHEMA_VERSION = 113;
+// v114 names one exact shape, migrated once: a settled run keeps one process summary instead of its exited witnesses,
+// notification's single-destination delivery columns move into legacy receipts, and the workspace revision triggers are gone
+// (the write wrapper bumps the revision). Every later DDL change bumps the version.
+export const SCHEMA_VERSION = 114;
 
 /**
  * The migrations `toolroll update` may carry a database through in place: each
@@ -671,8 +676,13 @@ export const SCHEMA_VERSION = 113;
  * api_token columns (project limit, rotation); existing tokens read as before.
  * v112 only adds the two request-budget tables.
  * v113 adds MCP sign-in tables and API-token purpose metadata.
+ * v114 is the one declared exception to "only adds", and the rehearsal checks
+ * it as such: a settled run's exited process witnesses become one summary row
+ * (rows removed equal the witnesses summarized), and notification drops its
+ * delivery columns only after every value moves into one legacy receipt per row
+ * (rows and ids carried whole; legacy receipts added equal the rows carried).
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113, 114]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -1594,19 +1604,15 @@ export type Notification = {
   subject: string;
   body: string;
   createdAt: string;
-  attempts: number;
-  lastAttemptAt: string | null;
-  lastError: string | null;
-  deliveredAt: string | null;
-  receipt: string | null;
   /** The closed push attention class, or null = this fact never pushes. */
   pushClass: "decision" | "pick" | "merge" | "attention" | "progress" | null;
   /** The machine-minted console path a push may deep-link — never free text. */
   link: string | null;
   /**
    * When the fact stopped wanting a person — a decision answered, an incident
-   * resolved. Distinct from delivery, and it never deletes the row: receipts
-   * are the audit trail of what was actually sent.
+   * resolved. Distinct from delivery, and it never deletes the row: the
+   * per-destination receipts (notification_delivery) are the audit trail of
+   * what was actually sent.
    */
   resolvedAt: string | null;
   scope: "unknown" | "installation" | "project" | "task";
@@ -1614,6 +1620,15 @@ export type Notification = {
   taskRef: number | null;
   taskId: string | null;
   run: number | null;
+};
+
+/** One notification's delivery state at one destination (notification_delivery). */
+export type NotificationReceipt = Notification & {
+  attempts: number;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  deliveredAt: string | null;
+  receipt: string | null;
 };
 
 export type TelegramDelivery = Notification & { destination: string; claimGeneration: number };
@@ -3654,26 +3669,7 @@ CREATE TABLE IF NOT EXISTS incident (
 -- lives only in a process's memory dies with the process, at exactly the
 -- moment it was most worth sending. dedupe_key is an episode identity: a
 -- gap nags once per occurrence, not once per cron firing and not forever.
-CREATE TABLE IF NOT EXISTS notification (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  dedupe_key      TEXT NOT NULL UNIQUE,
-  kind            TEXT NOT NULL,
-  subject         TEXT NOT NULL,
-  body            TEXT NOT NULL,
-  created_at      TEXT NOT NULL,
-  attempts        INTEGER NOT NULL DEFAULT 0,
-  last_attempt_at TEXT,
-  last_error      TEXT,
-  delivered_at    TEXT,
-  -- What the delivery command said on success — the closest thing to a
-  -- provider receipt a shell command can hand back.
-  receipt         TEXT,
-  -- The push surface (arc 3, v23): a CLOSED attention class and a
-  -- machine-minted console link, stamped by producers at enqueue.
-  -- Unstamped kinds never reach a phone; subject/body never do either.
-  push_class      TEXT CHECK (push_class IN ('decision','pick','merge','attention')),
-  link            TEXT
-);
+${NOTIFICATION_DDL("notification")};
 
 -- Away mode (v34, mate arc §10): the Telegram bridge's digest cadence.
 -- One row. every_ms NULL = off (every fact pages as it lands); set, the
@@ -4037,8 +4033,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS telegram_team_chat_live
 CREATE UNIQUE INDEX IF NOT EXISTS telegram_team_chat_group
   ON telegram_team_chat (conversation) WHERE revoked_at IS NULL AND kind = 'group';
 
--- v61: destination receipts around the existing outbox, independent of its
--- legacy shell/webhook receipt and of push_delivery. No second scheduler.
+-- v61: destination receipts around the existing outbox, independent of
+-- push_delivery: where each notification went, per destination (v114
+-- removed the old single-destination receipt). No second scheduler.
 CREATE TABLE IF NOT EXISTS notification_delivery (
   notification INTEGER NOT NULL REFERENCES notification(id) ON DELETE RESTRICT,
   destination TEXT NOT NULL,
@@ -5109,6 +5106,19 @@ CREATE TABLE IF NOT EXISTS run_process (
   container_identity TEXT
 );
 CREATE INDEX IF NOT EXISTS run_process_by_run ON run_process(run, exited_at);
+-- v114: a settled run (finished, every witness exited) keeps this one row
+-- instead of its exited witnesses. Its presence is the proof the run's
+-- processes were witnessed and all exited, so a run with neither witnesses
+-- nor a summary still reads as "exit unproven".
+CREATE TABLE IF NOT EXISTS run_process_summary (
+  run               INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  witnesses         INTEGER NOT NULL CHECK (witnesses > 0),
+  process_groups    INTEGER NOT NULL,
+  first_observed_at TEXT NOT NULL,
+  last_observed_at  TEXT NOT NULL,
+  last_exited_at    TEXT NOT NULL,
+  settled_at        TEXT NOT NULL
+);
 
 CREATE INDEX IF NOT EXISTS task_by_state ON task (state);
 CREATE INDEX IF NOT EXISTS edge_by_blocker ON task_edge (blocker);
@@ -5406,6 +5416,12 @@ function initializeStore(db: Database, file: string): Store {
   if (preflight !== null && Math.abs(preflight) >= 68) {
     for (const table of chatTables("discord")) if (!tableExists(db, table)) throw new Error(`${file}: Discord history is missing; refusing to recreate receipts`);
   }
+  // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
+  // runs. Everything below runs once, for a fresh file or on the way up from an older version.
+  if (preflight === SCHEMA_VERSION) {
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+    return new Store(db);
+  }
   if (preflight !== null && preflight > 0 && preflight < SCHEMA_VERSION) {
     const stamped = db.prepare("UPDATE schema_version SET version = ? WHERE version = ?").run(-preflight, preflight);
     if (Number(stamped.changes) !== 1) {
@@ -5616,6 +5632,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_blocked_revision_per_task
   ON plan_revision (task_ref) WHERE status = 'blocked';
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_run ON run_checkpoint (run, id);
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, id);`);
+  if (preflight !== null) {
+    migrateToV114(db);
+    // Keep the epoch until reclamation succeeds, including a retry after compaction already committed.
+    reclaimDatabase(db, "migration");
+  }
 
   // THE BOOKKEEPING WRITE, checked (raw authority repair): migrate() has
   // already done the work by the time this runs; the row is bookkeeping
@@ -5838,10 +5859,6 @@ function migrate(db: Database, origin: number | null): void {
   addColumn(db, "task_ref", "repo", "TEXT");
   addColumn(db, "claim", "released_by", "TEXT");
   addColumn(db, "notification", "resolved_at", "TEXT");
-  // Delivery claiming: two deliverers (the bridge, `outbox deliver`) must
-  // not both send one row. A claim is a short lease on the act of sending.
-  addColumn(db, "notification", "claim_owner", "TEXT");
-  addColumn(db, "notification", "claim_expires_at", "TEXT");
   addColumn(db, "approver", "generation", "INTEGER NOT NULL DEFAULT 1");
   // v77: a lead thread belongs to the lead conversation, a project or a task.
   addColumn(db, "mate_thread", "scope_kind", "TEXT NOT NULL DEFAULT 'lead' CHECK (scope_kind IN ('lead','project','task'))");
@@ -6971,6 +6988,88 @@ function reviewRequestOriginOf(row: Record<string, unknown>): ReviewRequestOrigi
  * cannot prove, and the upgrade refuses in words rather than binding a
  * retry allowance to it.
  */
+/**
+ * v114, once, on the way up (the sentinel is already stamped): the workspace
+ * revision triggers go (the write wrapper bumps the revision now), notification
+ * is rebuilt without its delivery columns once their values are legacy receipts, and every settled
+ * run's exited witnesses become its process summary. Each step is idempotent,
+ * so a resumed upgrade finishes it.
+ */
+function migrateToV114(db: Database): void {
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'workspace_revision_v1_%'").all()) {
+    db.exec(`DROP TRIGGER IF EXISTS "${String(row["name"])}"`);
+  }
+  const columns = db.prepare("PRAGMA table_info(notification)").all().map(row => String(row["name"]));
+  if (columns.some(column => (NOTIFICATION_DROPPED as readonly string[]).includes(column))) {
+    // Recognized by its columns, not its DDL text: older files reached this shape by different addColumn orders.
+    const known = new Set<string>([...NOTIFICATION_COLUMNS, ...NOTIFICATION_DROPPED]);
+    const unknown = columns.filter(column => !known.has(column));
+    if (unknown.length > 0 || NOTIFICATION_COLUMNS.some(column => !columns.includes(column))) {
+      throw new Error(`the notification table's columns are not a shape this migration knows${unknown.length > 0 ? ` (${unknown.join(", ")})` : ""} — refusing to rebuild it`);
+    }
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        // The AUTOINCREMENT bookkeeping comes back as it was (rebuildExact's rule): the counter, never the surviving
+        // max id, in the original row order, and no row the predecessor never wrote.
+        const sequence = db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY rowid").all() as { name: string; seq: number | bigint }[];
+        carryLegacyDelivery(db, columns);
+        db.exec(NOTIFICATION_DDL("notification_next"));
+        const names = NOTIFICATION_COLUMNS.join(", ");
+        db.exec(`INSERT INTO notification_next (${names}) SELECT ${names} FROM notification ORDER BY id`);
+        db.exec("DROP TABLE notification");
+        db.exec("ALTER TABLE notification_next RENAME TO notification");
+        db.exec("DELETE FROM sqlite_sequence");
+        const restore = db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)");
+        for (const row of sequence) restore.run(row.name, typeof row.seq === "bigint" ? row.seq : BigInt(row.seq));
+        if (db.prepare("PRAGMA foreign_key_check").all().length > 0) throw new Error("foreign keys did not survive the notification rebuild");
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+  if (db.prepare("SELECT 1 FROM run_process WHERE exited_at IS NOT NULL LIMIT 1").get() === undefined) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    compactSettledRunProcesses(db, new Date());
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Settled custody, compacted (v114): a finished run whose every process
+ * witness has exited keeps one run_process_summary row instead of them. A run
+ * with any open witness keeps every row, so no custody fence ever reads less
+ * than it did. Idempotent; the caller owns the transaction. Returns the
+ * witnesses removed.
+ */
+function compactSettledRunProcesses(db: Database, now: Date, only: number | null = null): number {
+  const runs = db.prepare(`SELECT p.run FROM run_process p JOIN run r ON r.id = p.run
+    WHERE r.outcome IS NOT NULL AND r.finished_at IS NOT NULL AND (? IS NULL OR p.run = ?)
+    GROUP BY p.run HAVING COUNT(*) = COUNT(p.exited_at)`).all(only, only).map(row => Number(row["run"]));
+  if (runs.length === 0) return 0;
+  const summarize = db.prepare(`INSERT INTO run_process_summary (run, witnesses, process_groups, first_observed_at, last_observed_at, last_exited_at, settled_at)
+    SELECT run, COUNT(*), SUM(process_group), MIN(observed_at), MAX(observed_at), MAX(exited_at), ? FROM run_process WHERE run = ? GROUP BY run
+    ON CONFLICT (run) DO UPDATE SET witnesses = witnesses + excluded.witnesses, process_groups = process_groups + excluded.process_groups,
+      first_observed_at = MIN(first_observed_at, excluded.first_observed_at), last_observed_at = MAX(last_observed_at, excluded.last_observed_at),
+      last_exited_at = MAX(last_exited_at, excluded.last_exited_at), settled_at = excluded.settled_at`);
+  const remove = db.prepare("DELETE FROM run_process WHERE run = ? AND exited_at IS NOT NULL");
+  let removed = 0;
+  for (const run of runs) {
+    summarize.run(now.toISOString(), run);
+    removed += Number(remove.run(run).changes);
+  }
+  return removed;
+}
+
 function migrateToV50(db: Database): void {
   if (!tableExists(db, "run") || !tableExists(db, "review_request")) return;
   db.exec("BEGIN IMMEDIATE");
@@ -7075,6 +7174,61 @@ function V51_ARTIFACT_DDL(name: string): string {
 /** v38: incident.kind additionally admits 'malformed-proof'. */
 function V38_INCIDENT_DDL(name: string): string {
   return V34_INCIDENT_DDL(name).replace("'plan-attempts-exhausted','malformed-report'", "'plan-attempts-exhausted','malformed-report','malformed-proof'");
+}
+
+/** The durable outbox (§6). A notification is a fact that something wants a
+ * person, recorded next to the record that made it true. dedupe_key is an
+ * episode identity: a gap nags once per occurrence. Where it went is
+ * notification_delivery's, per destination (v114 moved the old
+ * single-destination attempt, receipt and claim columns into legacy receipts). */
+function NOTIFICATION_DDL(name: string): string {
+  return `CREATE TABLE IF NOT EXISTS ${name} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedupe_key       TEXT NOT NULL UNIQUE,
+  kind             TEXT NOT NULL,
+  subject          TEXT NOT NULL,
+  body             TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  -- The push surface (arc 3, v23): a CLOSED attention class and a
+  -- machine-minted console link, stamped by producers at enqueue.
+  push_class       TEXT CHECK (push_class IN ('decision','pick','merge','attention')),
+  link             TEXT,
+  resolved_at      TEXT,
+  provenance_scope TEXT NOT NULL DEFAULT 'unknown' CHECK (provenance_scope IN ('unknown','installation','project','task')),
+  project          TEXT,
+  task_ref         INTEGER REFERENCES task_ref(id),
+  task_id          TEXT,
+  source_run       INTEGER REFERENCES run(id),
+  recipient        TEXT
+)`;
+}
+const NOTIFICATION_COLUMNS = ["id", "dedupe_key", "kind", "subject", "body", "created_at", "push_class", "link", "resolved_at",
+  "provenance_scope", "project", "task_ref", "task_id", "source_run", "recipient"] as const;
+/** What v114 drops from notification: the removed single-destination delivery's columns. Their values move first. */
+const NOTIFICATION_DROPPED = ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"] as const;
+/** The receipt v114 keeps a notification's old single-destination delivery under. No sender claims it: every real
+ * destination is a kind and a 64-character hash, or a Telegram binding. */
+export const LEGACY_NOTIFICATION_DESTINATION = "legacy:single-destination";
+
+/**
+ * v114, inside the notification rebuild's transaction: every row with any saved delivery value (attempts is never
+ * null, so every row the old schema wrote) gets one legacy receipt holding exactly those values, then the copy is
+ * proved field for field. A reserved receipt that differs, or one with nothing to carry, refuses the upgrade.
+ */
+function carryLegacyDelivery(db: Database, columns: readonly string[]): void {
+  const present = NOTIFICATION_DROPPED.filter(column => columns.includes(column));
+  if (present.length === 0) return;
+  const value = (column: string) => present.includes(column as never) ? `n.${column}` : column === "attempts" ? "0" : "NULL";
+  const populated = present.map(column => `n.${column} IS NOT NULL`).join(" OR ");
+  db.prepare(`INSERT OR IGNORE INTO notification_delivery (notification, destination, ${NOTIFICATION_DROPPED.join(", ")})
+    SELECT n.id, ?, ${NOTIFICATION_DROPPED.map(value).join(", ")} FROM notification n WHERE ${populated} ORDER BY n.id`).run(LEGACY_NOTIFICATION_DESTINATION);
+  const expected = Number(db.prepare(`SELECT COUNT(*) AS n FROM notification n WHERE ${populated}`).get()?.["n"]);
+  const matched = Number(db.prepare(`SELECT COUNT(*) AS n FROM notification n JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
+    WHERE (${populated}) AND ${NOTIFICATION_DROPPED.map(column => `d.${column} IS ${value(column)}`).join(" AND ")}`).get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]);
+  const reserved = Number(db.prepare("SELECT COUNT(*) AS n FROM notification_delivery WHERE destination = ?").get(LEGACY_NOTIFICATION_DESTINATION)?.["n"]);
+  if (matched !== expected || reserved !== expected) {
+    throw new Error(`notification delivery history did not copy whole (${matched} of ${expected} rows match, ${reserved} legacy receipts) — refusing to drop its columns`);
+  }
 }
 
 /**
@@ -8985,7 +9139,8 @@ export class Store {
   private readonly db: Database;
   constructor(db: Database) {
     this.telemetry = new ServerTelemetry();
-    this.db = instrumentDatabase(db, this.telemetry);
+    // Outside in: telemetry, then the workspace revision (one bump per committed meaningful write), then SQLite.
+    this.db = instrumentDatabase(trackWorkspaceWrites(db), this.telemetry);
   }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
@@ -11581,10 +11736,24 @@ export class Store {
   }
 
   /** A checkpoint of the chain as it stands: its head, recorded here and handed back to be copied off the machine.
-   * Never over a chain that doesn't verify: that would vouch for what broke it. */
-  ledgerCheckpoint(by: string, now: Date): { through: number; hash: string } | { problem: string } | null {
+   * Never over a chain that doesn't verify: that would vouch for what broke it. `automatic` (before a backup, after
+   * a monitoring delivery): at the verified head, or at `head` (one that was sent) once the walk reached it, only past
+   * the newest checkpoint (null otherwise), and with no ledger entry of its own, so a checkpoint never makes new
+   * activity for the next backup or delivery to checkpoint again. */
+  ledgerCheckpoint(by: string, now: Date, automatic?: { head?: { through: number; hash: string } }): { through: number; hash: string } | { problem: string } | null {
     const report = this.ledgerChain({ full: true });
     if (!report.ok) return { problem: report.problem?.what ?? "the chain doesn't verify" };
+    if (automatic !== undefined) {
+      const head = automatic.head ?? (report.through === null ? null : { through: report.through, hash: report.head });
+      if (head === null || report.through === null || head.through > report.through) return null;
+      return this.transact(() => {
+        if (this.db.prepare("SELECT hash FROM ledger_seal WHERE id = ?").get(head.through)?.["hash"] !== head.hash) return { problem: `entry #${head.through} isn't sealed as ${head.hash.slice(0, 12)}` };
+        const newest = this.db.prepare(`SELECT MAX(through) AS through FROM ledger_checkpoint WHERE typeof(through) = 'integer' AND through ${IN_RANGE}`).get()?.["through"];
+        if (newest != null && Number(newest) >= head.through) return null;
+        this.db.prepare("INSERT INTO ledger_checkpoint (through, hash, at, by) VALUES (?, ?, ?, ?)").run(head.through, head.hash, now.toISOString(), by);
+        return head;
+      });
+    }
     return this.transact(() => {
       sealLedger(this.db);
       const last = this.db.prepare(`SELECT id, hash FROM ledger_seal WHERE id ${IN_RANGE} ORDER BY id DESC LIMIT 1`).get();
@@ -16774,6 +16943,10 @@ export class Store {
   recordProviderReadiness(runner: string, observations: readonly Omit<ReadinessObservation, "runner" | "observedAt">[], now: Date): void {
     this.transact(() => {
       for (const one of observations) {
+        // The same observation again only renews its time: a quiet write that moves no workspace revision.
+        const renewed = this.db.prepare("UPDATE provider_readiness SET observed_at = ? WHERE runner = ? AND provider = ? AND state = ? AND reason = ? AND probe IS ?")
+          .run(now.toISOString(), runner, one.provider, one.state, one.reason, one.probe);
+        if (Number(renewed.changes) > 0) continue;
         this.db
           .prepare(
             `INSERT INTO provider_readiness (runner, provider, state, reason, probe, observed_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -18908,36 +19081,14 @@ export class Store {
   }
 
   listNotifications(only: "pending" | "all" = "pending"): Notification[] {
-    // Resolved-but-undelivered is not pending: a decision answered before the
-    // outbox ran is a fact that stopped wanting a person, and paging someone
-    // about it anyway would teach them to ignore the pager.
-    const where = only === "pending" ? "WHERE delivered_at IS NULL AND resolved_at IS NULL" : "";
+    // Pending means unresolved: a decision answered is a fact that stopped
+    // wanting a person. Delivery state lives per destination
+    // (notification_delivery), not on the fact.
+    const where = only === "pending" ? "WHERE resolved_at IS NULL" : "";
     return this.db
       .prepare(`SELECT * FROM notification ${where} ORDER BY id`)
       .all()
       .map(readNotification);
-  }
-
-  recordDelivery(
-    id: number,
-    outcome: { ok: true; receipt: string | null } | { ok: false; error: string },
-    now: Date,
-  ): void {
-    if (outcome.ok) {
-      this.db
-        .prepare(
-          `UPDATE notification SET delivered_at = ?, receipt = ?, attempts = attempts + 1, last_attempt_at = ?, last_error = NULL
-            WHERE id = ?`,
-        )
-        .run(now.toISOString(), outcome.receipt, now.toISOString(), id);
-      return;
-    }
-    this.db
-      .prepare(
-        `UPDATE notification SET attempts = attempts + 1, last_attempt_at = ?, last_error = ?
-          WHERE id = ?`,
-      )
-      .run(now.toISOString(), outcome.error, id);
   }
 
   /**
@@ -18946,9 +19097,13 @@ export class Store {
    * forever would be a gap the operator hears about exactly once per lifetime.
    */
   clearGapEpisode(repo: string, kind: string, name: string): void {
-    this.db
-      .prepare("DELETE FROM notification WHERE dedupe_key = ?")
-      .run(`gap:${repo}:${kind}:${name}`);
+    const key = `gap:${repo}:${kind}:${name}`;
+    this.transact(() => {
+      // Its v114 legacy receipt goes with it, as the old columns went with the row.
+      this.db.prepare("DELETE FROM notification_delivery WHERE destination = ? AND notification IN (SELECT id FROM notification WHERE dedupe_key = ?)")
+        .run(LEGACY_NOTIFICATION_DESTINATION, key);
+      this.db.prepare("DELETE FROM notification WHERE dedupe_key = ?").run(key);
+    });
   }
 
   /**
@@ -26218,7 +26373,7 @@ export class Store {
     return this.transact(() => {
       if (this.stopQuiescenceProblem(runId) !== null) return false;
       const recordExit = this.db.prepare("UPDATE run_process SET exited_at = ? WHERE run = ? AND exited_at IS NULL");
-      for (const owned of this.ownedRunsOf(runId)) recordExit.run(now.toISOString(), owned);
+      for (const owned of this.ownedRunsOf(runId)) { recordExit.run(now.toISOString(), owned); compactSettledRunProcesses(this.db, now, owned); }
       const { changes } = this.db
         .prepare("UPDATE run_stop SET settled_at = ?, settlement = ? WHERE run = ? AND settled_at IS NULL")
         .run(now.toISOString(), settlement, runId);
@@ -26252,7 +26407,7 @@ export class Store {
       if (held !== null && held.endedAt === null) return fact(id, "alive", `run #${id}'s held supervisor has not finished shutdown`);
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
       let incompleteSpawn = false;
-      if (run.providerStartedAt !== null && witnesses.length === 0) {
+      if (run.providerStartedAt !== null && witnesses.length === 0 && !this.processesSummarized(id)) {
         return fact(id, "unprovable", `run #${id} may have spawned before its process witness was recorded; exit is unproven`);
       }
       for (const witness of witnesses) {
@@ -26359,14 +26514,29 @@ export class Store {
     for (let after = 0; ;) {
       const runs = page.all(hostname(), after, batch).map(row => Number(row["run"]));
       for (const run of runs) recorded += this.recordRunProcessExits(run, now);
-      if (runs.length < batch) return recorded;
+      if (runs.length < batch) break;
       after = runs[runs.length - 1]!;
     }
+    // A run whose witnesses all exited before it finished settles here, on the same pass.
+    this.compactRunProcesses(now);
+    return recorded;
   }
 
   finishUnspawnedProcess(witness: number, now: Date): void {
     this.db.prepare("UPDATE run_process SET exited_at = ? WHERE id = ? AND pid IS NULL AND ((containment IS NULL AND container IS NULL) OR container_empty_at IS NOT NULL)")
       .run(now.toISOString(), witness);
+  }
+
+  /** Settled custody, compacted (v114; compactSettledRunProcesses): a finished run whose witnesses all exited keeps
+   * one summary row. A settled stop, an approver's settlement and a recovery compact their run at once; the worker's
+   * reconcile pass (recordFinishedRunExits) compacts every other settled run, including one that settled at run end. */
+  compactRunProcesses(now: Date, only?: number): number {
+    return this.transact(() => compactSettledRunProcesses(this.db, now, only ?? null));
+  }
+
+  /** Whether a run's witnesses were compacted into its summary: they existed, and all exited. */
+  processesSummarized(runId: number): boolean {
+    return this.db.prepare("SELECT 1 AS hit FROM run_process_summary WHERE run = ?").get(runId) !== undefined;
   }
 
   /** The reconcile road for a pid-less witness a crash or a thrown spawn
@@ -26471,7 +26641,7 @@ export class Store {
       }
       // A run that may have spawned before any witness was written has none
       // to settle: the approver's word is recorded as one ended witness.
-      if (rows.length === 0 && run.providerStartedAt !== null) {
+      if (rows.length === 0 && run.providerStartedAt !== null && !this.processesSummarized(args.runId)) {
         const id = Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at) VALUES (?,?,0,?,?,?)")
           .run(args.runId, hostname(), now.toISOString(), currentBootId(), now.toISOString()).lastInsertRowid);
         this.recordAction({ at: now.toISOString(), actor: args.by, repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
@@ -26487,6 +26657,7 @@ export class Store {
       for (const id of ids) this.db.prepare("UPDATE run_process SET exited_at = ? WHERE id = ? AND run = ? AND exited_at IS NULL").run(now.toISOString(), id, args.runId);
       this.recordAction({ at: now.toISOString(), actor: args.by, repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
         action: "process witness settled by approver", outcome: `witness ${ids.join(", ")}`, source: "request", detail: args.why });
+      compactSettledRunProcesses(this.db, now, args.runId);
       this.settleQuiescentStops(now);
       return { ok: true as const, witnesses: ids, repeated: false };
     });
@@ -26523,7 +26694,8 @@ export class Store {
    * must independently prove gone; this never grants authority to signal. */
   runCustodyProvenGone(runId: number): boolean {
     const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ?").all(runId);
-    return rows.length > 0 && rows.every(row => {
+    // A summarized run's witnesses all exited, each on recorded proof.
+    return (rows.length > 0 || this.processesSummarized(runId)) && rows.every(row => {
       if (String(row["host"]) !== hostname()) return false;
       if (provenDeadByBootChange({ host: String(row["host"]), bootId: row["boot_id"] == null ? null : String(row["boot_id"]) })) return true;
       if (row["containment"] == null || row["container"] == null) return false;
@@ -27373,76 +27545,11 @@ export class Store {
     });
   }
 
-  /** Read receipts without changing the meaning of shell/webhook history. */
-  telegramDeliveries(binding: TelegramBinding): Notification[] {
+  /** The notifications this pairing holds, each with its delivery state there. */
+  telegramDeliveries(binding: TelegramBinding): NotificationReceipt[] {
     return this.db.prepare(`SELECT n.*, d.attempts, d.last_attempt_at, d.last_error, d.delivered_at, d.receipt
       FROM notification n JOIN notification_delivery d ON d.notification = n.id WHERE d.destination = ? ORDER BY n.id`)
-      .all(this.telegramDestination(binding)).map(readNotification);
-  }
-
-  /**
-   * Claim pending notifications for one deliverer. Two deliverers — the
-   * bridge and `outbox deliver` — select-then-send-then-record, and without
-   * a claim both can send the same row in the gap. The claim is a short
-   * lease on the act of sending; a deliverer that dies mid-send leaves rows
-   * that unclaim themselves by expiry.
-   */
-  claimDeliveries(owner: string, ttlMs: number, now: Date, only: "all" | "urgent" = "all"): Notification[] {
-    return this.transact(() => {
-      const stamp = now.toISOString();
-      // `urgent` (v34, digests): only what must page NOW — a decision, or
-      // an attention-class fact. Routine rows stay unclaimed and pending
-      // until a pass asks for `all`; nothing about them is written here.
-      const rows = this.db
-        .prepare(
-          `SELECT id FROM notification
-            WHERE delivered_at IS NULL AND resolved_at IS NULL AND recipient IS NULL
-              AND (claim_owner IS NULL OR claim_expires_at <= ?)
-              AND (? = 'all' OR dedupe_key LIKE 'decision:%' OR COALESCE(push_class, '') = 'attention')
-            ORDER BY id`,
-        )
-        .all(stamp, only)
-        .map(row => Number(row["id"]));
-      const expires = new Date(now.getTime() + ttlMs).toISOString();
-      for (const id of rows) {
-        this.db
-          .prepare("UPDATE notification SET claim_owner = ?, claim_expires_at = ? WHERE id = ?")
-          .run(owner, expires, id);
-      }
-      return rows
-        .map(id => this.db.prepare("SELECT * FROM notification WHERE id = ?").get(id))
-        .filter((row): row is Record<string, unknown> => row !== undefined)
-        .map(readNotification);
-    });
-  }
-
-  /** Finalize only what this owner still holds. A lapsed claim writes nothing. */
-  finalizeDelivery(
-    id: number,
-    owner: string,
-    outcome: { ok: true; receipt: string | null } | { ok: false; error: string },
-    now: Date,
-  ): boolean {
-    const stamp = now.toISOString();
-    if (outcome.ok) {
-      const { changes } = this.db
-        .prepare(
-          `UPDATE notification SET delivered_at = ?, receipt = ?, attempts = attempts + 1,
-                                   last_attempt_at = ?, last_error = NULL,
-                                   claim_owner = NULL, claim_expires_at = NULL
-            WHERE id = ? AND claim_owner = ? AND delivered_at IS NULL`,
-        )
-        .run(stamp, outcome.receipt, stamp, id, owner);
-      return Number(changes) > 0;
-    }
-    const { changes } = this.db
-      .prepare(
-        `UPDATE notification SET attempts = attempts + 1, last_attempt_at = ?, last_error = ?,
-                                 claim_owner = NULL, claim_expires_at = NULL
-          WHERE id = ? AND claim_owner = ?`,
-      )
-      .run(stamp, outcome.error, id, owner);
-    return Number(changes) > 0;
+      .all(this.telegramDestination(binding)).map(readNotificationReceipt);
   }
 
   // ---- the Telegram digest (v34, away mode) --------------------------------
@@ -27826,21 +27933,6 @@ export class Store {
     this.db.prepare("UPDATE telegram_digest SET last_sent_at = ? WHERE id = 1").run(now.toISOString());
   }
 
-  /** Every batched row finalized delivered AND the anchor moved, in ONE
-   * transaction (v4 review, finding 5): a digest is either recorded whole
-   * or not at all. Rows whose claim lapsed meanwhile are reported, not
-   * silently skipped. */
-  finalizeDigest(ids: readonly number[], owner: string, receipt: string | null, now: Date): { finalized: number; lapsed: number } {
-    return this.transact(() => {
-      let finalized = 0;
-      for (const id of ids) {
-        if (this.finalizeDelivery(id, owner, { ok: true, receipt }, now)) finalized++;
-      }
-      this.markTelegramDigestSent(now);
-      return { finalized, lapsed: ids.length - finalized };
-    });
-  }
-
   /** Routine rows waiting for the next digest: pending, and not urgent.
    * A row the live pairing delivered, or skipped as pre-pairing history,
    * is settled and not waiting. */
@@ -27875,9 +27967,8 @@ export class Store {
    */
   pendingForAttention(): Notification[] {
     const holds = Object.values(TELEGRAM_HOLD_REASONS);
-    // A successful shell/webhook receipt does not settle a different
-    // destination's failure. Select that union before applying the global
-    // pending filter, and exclude resolved facts from both arms.
+    // Select the troubled union before applying the global pending filter,
+    // and exclude resolved facts from both arms.
     return this.db
       .prepare(
         `WITH troubled AS (
@@ -27891,7 +27982,7 @@ export class Store {
          )
          SELECT n.* FROM notification n
           WHERE n.resolved_at IS NULL
-            AND ((n.delivered_at IS NULL AND n.recipient IS NULL AND substr(n.dedupe_key, 1, ${LIFECYCLE_KEY_PREFIX.length}) <> '${LIFECYCLE_KEY_PREFIX}')
+            AND ((n.recipient IS NULL AND substr(n.dedupe_key, 1, ${LIFECYCLE_KEY_PREFIX.length}) <> '${LIFECYCLE_KEY_PREFIX}')
               OR n.id IN (SELECT id FROM troubled))
           ORDER BY n.id`,
       )
@@ -28460,11 +28551,6 @@ function readNotification(row: Record<string, unknown>): Notification {
     subject: String(row["subject"]),
     body: String(row["body"]),
     createdAt: String(row["created_at"]),
-    attempts: Number(row["attempts"]),
-    lastAttemptAt: row["last_attempt_at"] === null ? null : String(row["last_attempt_at"]),
-    lastError: row["last_error"] === null ? null : String(row["last_error"]),
-    deliveredAt: row["delivered_at"] === null ? null : String(row["delivered_at"]),
-    receipt: row["receipt"] === null ? null : String(row["receipt"]),
     resolvedAt:
       row["resolved_at"] === null || row["resolved_at"] === undefined
         ? null
@@ -28476,6 +28562,17 @@ function readNotification(row: Record<string, unknown>): Notification {
         ? null
         : (String(row["push_class"]) as Notification["pushClass"]),
     link: row["link"] === null || row["link"] === undefined ? null : String(row["link"]),
+  };
+}
+
+function readNotificationReceipt(row: Record<string, unknown>): NotificationReceipt {
+  return {
+    ...readNotification(row),
+    attempts: Number(row["attempts"]),
+    lastAttemptAt: row["last_attempt_at"] == null ? null : String(row["last_attempt_at"]),
+    lastError: row["last_error"] == null ? null : String(row["last_error"]),
+    deliveredAt: row["delivered_at"] == null ? null : String(row["delivered_at"]),
+    receipt: row["receipt"] == null ? null : String(row["receipt"]),
   };
 }
 
