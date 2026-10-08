@@ -218,3 +218,90 @@ describe("HTTP password admission", () => {
     expect((await signIn("alex", password)).status).toBe(429);
   });
 });
+
+test("real and fabricated names keep identical HTTP and KDF histories after a 10,001-name flood", async () => {
+  const now = Date.parse("2026-10-07T12:00:00Z");
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  const dir = mkdtempSync(join(tmpdir(), "so-signin-flood-")), store = openStore(join(dir, "orders.db"));
+  // Deterministic guard-private HMAC key; leave token and session randomness alone.
+  store.saveApprover("alex", hashPassword("chosen-password"), new Date(now));
+  const entropy = vi.spyOn(await import("node:crypto"), "randomBytes").mockReturnValueOnce(Buffer.alloc(32, 7));
+  const guard = passwordGuardOf(store);
+  entropy.mockRestore();
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/main", configDir: dir, clock: () => new Date(now) });
+  try {
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address !== "object") throw Error("listen");
+    const base = `http://127.0.0.1:${address.port}`;
+    // Seed equivalent histories without thousands of password derivations. Each target has five failures at S
+    // and five more across fresh /64s, producing the same source lock and 32-minute shared slowdown.
+    for (const name of ["alex", "fabricated"]) {
+      for (const from of [0, 0, 0, 0, 0, 1, 2, 3, 4, 5]) guard.failed(name, now, source(from), name === "alex");
+    }
+    vi.mocked(scryptSync).mockClear();
+    for (let i = 0; i < 10_001; i++) guard.failed(`junk-${i}`, now, source(i + 100), false);
+    expect(scryptSync).not.toHaveBeenCalled();
+    expect(guard.size).toBe(10_000);
+
+    const histories: { status: number; body: string; kdfs: number; retryAfter: string | null }[][] = [];
+    for (const name of ["alex", "fabricated"]) {
+      const history: (typeof histories)[number] = [];
+      for (const from of [0, 20_000, 20_001, 20_002, 20_003]) {
+        vi.mocked(scryptSync).mockClear();
+        const response = await fetch(`${base}/login`, {
+          method: "POST", redirect: "manual", body: new URLSearchParams({ name, token: "wrong" }),
+          headers: { "x-forwarded-for": source(from).slice(4), "x-forwarded-proto": "https" },
+        });
+        history.push({ status: response.status, body: await response.text(), kdfs: vi.mocked(scryptSync).mock.calls.length, retryAfter: response.headers.get("retry-after") });
+      }
+      histories.push(history);
+    }
+    expect(histories[0]).toEqual(histories[1]);
+    expect(histories[0]!.map(({ status, kdfs }) => [status, kdfs])).toEqual([
+      [429, 0], ...Array(ACCOUNT_PASSWORD_TRIES).fill([403, 1]), [429, 0],
+    ]);
+    expect(histories[0]![0]!.retryAfter).toBe("1920");
+    expect(histories[0]!.at(-1)!.retryAfter).toBe("60");
+  } finally {
+    vi.restoreAllMocks();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saturated guard budgets survive successes and freed exact slots, then expire by time", async () => {
+  const entropy = vi.spyOn(await import("node:crypto"), "randomBytes").mockReturnValueOnce(Buffer.alloc(32, 7));
+  const guard = new PasswordGuard();
+  entropy.mockRestore();
+  for (let i = 0; i < 10_000; i++) guard.failed(`fill-${i}`, 0, source(i), false);
+  expect(guard.size).toBe(10_000);
+  for (const [name, exists] of [["overflow-real", true], ["overflow-fabricated", false]] as const) {
+    for (let i = 0; i < 5; i++) guard.failed(name, 1, source(20_000), exists);
+    for (let i = 0; i < ACCOUNT_PASSWORD_TRIES; i++) expect(guard.preflight(name, 2, source(20_001 + i))).toBe(0);
+    expect(guard.preflight(name, 2, source(20_010))).toBe(ACCOUNT_PASSWORD_WINDOW_MS);
+    expect(guard.preflight(name, 2, source(20_010), true)).toBe(0);
+    // A verified sign-in cannot clear a shared overflow bucket and erase another name's budget.
+    guard.succeeded(name, source(20_010));
+    expect(guard.preflight(name, 2, source(20_010))).toBe(ACCOUNT_PASSWORD_WINDOW_MS);
+  }
+  guard.succeeded("fill-0", source(0));
+  expect(guard.size).toBe(9_999);
+  for (const name of ["overflow-real", "overflow-fabricated"]) {
+    // Reusing the freed slot would silently discard this name's admission history.
+    expect(guard.preflight(name, 2, source(20_010))).toBe(ACCOUNT_PASSWORD_WINDOW_MS);
+    guard.failed(name, 3, source(20_020), name === "overflow-real");
+    expect(guard.preflight(name, 3, source(20_010))).toBe(ACCOUNT_PASSWORD_WINDOW_MS - 1);
+    expect(guard.preflight(name, 3, source(20_000), true)).toBeGreaterThan(0);
+  }
+  const day = DEFAULT_GUARD_POLICY.maxLockMs;
+  for (const name of ["overflow-real", "overflow-fabricated"]) guard.failed(name, day - 1, source(20_000), name === "overflow-real");
+  for (const name of ["overflow-real", "overflow-fabricated"]) expect(guard.preflight(name, day, source(20_000))).toBeGreaterThan(0);
+  // All original exact entries expired, while both recent overflow records still enforce their slowdown.
+  expect(guard.size).toBe(0);
+  for (const name of ["overflow-real", "overflow-fabricated"]) expect(guard.preflight(name, 2 * day - 1, source(20_000))).toBe(0);
+  guard.failed("after-expiry", 2 * day - 1, source(0), false);
+  expect(guard.size).toBe(1);
+});

@@ -1,12 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHmac, randomBytes } from "node:crypto";
 import { sourceKey } from "./source-key.js";
 
 /**
  * Five failures lock a source/account pair, with exponential backoff. Across sources, failures slow an account and
  * admit only a few unproven checks per minute before password derivation. A validated same-account browser session
  * bypasses that shared admission budget, never a source's own lock. Fabricated names follow the same admission path.
- * Source records expire by time and have a capacity bound; fabricated entries are evicted first. Real account
- * slowdowns are separate, bounded by the database's accounts, so source/name churn cannot reset their budgets.
+ * Source and name records expire by time. Both use bounded, non-evicting keyed storage, regardless of whether the
+ * account exists. Saturation shares overflow buckets without displacing or changing individually tracked state.
  */
 export type GuardPolicy = { failuresBeforeLock: number; firstLockMs: number; maxLockMs: number; firstSlowMs: number };
 export const DEFAULT_GUARD_POLICY: GuardPolicy = { failuresBeforeLock: 5, firstLockMs: 15 * 60_000, maxLockMs: 24 * 60 * 60_000, firstSlowMs: 60_000 };
@@ -29,17 +30,66 @@ export const currentPasswordSource = (): string => passwordSource.getStore() ?? 
 export const provenPasswordAccount = new AsyncLocalStorage<{ name: string; generation: number } | null>();
 
 type Tries = { failures: number; lockedUntil: number; locks: number; lastAt: number };
-type Slowdown = { failures: number; until: number; lastAt: number; admissions: number[] };
+type Slowdown = { failures: number; until: number; lastAt: number; admissions: number[]; observedAccount: boolean };
+
+/**
+ * Keep the first TRACKED live keys exactly; further keys share TRACKED overflow buckets. Hashes use the guard's
+ * private secret, so callers cannot choose collisions. Neither tier evicts live state. Overflow never mutates the
+ * exact tier, and cannot move into a freed exact slot until all overflow state expires: moving would reset budgets.
+ * A success may clear its exact record, but never a shared bucket (which could also hold another name's failures).
+ */
+class KeyedGuardState<T extends { lastAt: number }> {
+  private readonly entries = new Map<string, T>();
+  private readonly overflow = new Map<number, T>();
+  constructor(private readonly secret: Buffer, private readonly domain: string) {}
+
+  private hash(key: string): string { return createHmac("sha256", this.secret).update(this.domain).update("\0").update(key).digest("hex"); }
+  private bucket(hash: string): number { return parseInt(hash.slice(0, 8), 16) % TRACKED; }
+
+  get(key: string): T | undefined {
+    const hash = this.hash(key);
+    return this.entries.get(hash) ?? this.overflow.get(this.bucket(hash));
+  }
+
+  retain(key: string, create: () => T): T {
+    const hash = this.hash(key), kept = this.entries.get(hash);
+    if (kept !== undefined) return kept;
+    if (this.overflow.size === 0 && this.entries.size < TRACKED) {
+      const entry = create();
+      this.entries.set(hash, entry);
+      return entry;
+    }
+    const bucket = this.bucket(hash), shared = this.overflow.get(bucket);
+    if (shared !== undefined) return shared;
+    const entry = create();
+    this.overflow.set(bucket, entry);
+    return entry;
+  }
+
+  clear(key: string): void { this.entries.delete(this.hash(key)); }
+
+  prune(now: number, lifetime: number): number {
+    let next = Infinity;
+    const pruneEntries = <Key>(entries: Map<Key, T>) => {
+      for (const [key, entry] of entries) {
+        const expires = entry.lastAt + lifetime;
+        if (expires <= now) entries.delete(key);
+        else next = Math.min(next, expires);
+      }
+    };
+    pruneEntries(this.entries);
+    pruneEntries(this.overflow);
+    return next;
+  }
+
+  /** Individual source/name records; shared overflow storage has its own fixed TRACKED-bucket bound. */
+  get size(): number { return this.entries.size; }
+}
 
 export class PasswordGuard {
-  /** Per source and account that exists. */
-  private readonly accounts = new Map<string, Tries>();
-  /** Per source and name that doesn't: let go first. */
-  private readonly guesses = new Map<string, Tries>();
-  /** Per account that exists, across sources. */
-  private readonly slowdowns = new Map<string, Slowdown>();
-  /** Disposable look-alike state: cannot evict a real account's shared budget. */
-  private readonly guessedSlowdowns = new Map<string, Slowdown>();
+  private readonly secret = randomBytes(32);
+  private readonly sources = new KeyedGuardState<Tries>(this.secret, "source/name");
+  private readonly slowdowns = new KeyedGuardState<Slowdown>(this.secret, "name");
   private nextPruneAt = Infinity;
   /** Told once per lock: the account (as typed), and for how long. */
   onLock: ((account: string, lockMs: number) => void) | null = null;
@@ -54,32 +104,26 @@ export class PasswordGuard {
   /** Prune by the supplied time, even below capacity; retain a lock's escalation history for a day. */
   private prune(now: number): void {
     if (now < this.nextPruneAt) return;
-    this.nextPruneAt = Infinity;
-    for (const entries of [this.accounts, this.guesses, this.slowdowns, this.guessedSlowdowns]) {
-      for (const [key, entry] of entries) {
-        const expires = entry.lastAt + this.policy.maxLockMs;
-        if (expires <= now) entries.delete(key);
-        else this.nextPruneAt = Math.min(this.nextPruneAt, expires);
-      }
-    }
+    this.nextPruneAt = Math.min(this.sources.prune(now, this.policy.maxLockMs), this.slowdowns.prune(now, this.policy.maxLockMs));
   }
 
   /** Source-local snapshot for existing callers. Authentication must use preflight to spend the shared budget. */
   lockedFor(account: string, now: number, source: string = currentPasswordSource()): number {
     this.prune(now);
     const pair = PasswordGuard.pair(account, source);
-    const tries = this.accounts.get(pair) ?? this.guesses.get(pair);
+    const tries = this.sources.get(pair);
     if (tries === undefined) return 0;
     const slowdown = this.slowdowns.get(PasswordGuard.key(account));
-    return Math.max(0, tries.lockedUntil - now, slowdown === undefined ? 0 : slowdown.until - now);
+    // Legacy observation only: account existence never affects authentication or state retention.
+    return Math.max(0, tries.lockedUntil - now, slowdown?.observedAccount === true ? slowdown.until - now : 0);
   }
 
   /** Reserve one password check, or return its wait. No password derivation may precede this call. */
   preflight(account: string, now: number, source: string = currentPasswordSource(), proven = false): number {
     this.prune(now);
-    const tries = this.accounts.get(PasswordGuard.pair(account, source)) ?? this.guesses.get(PasswordGuard.pair(account, source));
+    const tries = this.sources.get(PasswordGuard.pair(account, source));
     const key = PasswordGuard.key(account);
-    const slowdown = this.slowdowns.get(key) ?? this.guessedSlowdowns.get(key);
+    const slowdown = this.slowdowns.get(key);
     const sourceWait = Math.max(0, (tries?.lockedUntil ?? 0) - now,
       tries === undefined ? 0 : (slowdown?.until ?? 0) - now);
     if (sourceWait > 0) return sourceWait;
@@ -96,9 +140,7 @@ export class PasswordGuard {
   failed(account: string, now: number, source: string = currentPasswordSource(), exists = false): void {
     this.prune(now);
     const pair = PasswordGuard.pair(account, source);
-    const tries = this.accounts.get(pair) ?? this.guesses.get(pair) ?? { failures: 0, lockedUntil: 0, locks: 0, lastAt: now };
-    this.accounts.delete(pair);
-    this.guesses.delete(pair);
+    const tries = this.sources.retain(pair, () => ({ failures: 0, lockedUntil: 0, locks: 0, lastAt: now }));
     tries.failures += 1;
     tries.lastAt = now;
     this.nextPruneAt = Math.min(this.nextPruneAt, now + this.policy.maxLockMs);
@@ -109,36 +151,24 @@ export class PasswordGuard {
       tries.failures = 0;
       this.onLock?.(account.trim().slice(0, 64), lockMs);
     }
-    (exists ? this.accounts : this.guesses).set(pair, tries);
-    // Bounded: made-up names go first, then the oldest tracked.
-    while (this.accounts.size + this.guesses.size > TRACKED) {
-      const from = this.guesses.size > 0 ? this.guesses : this.accounts;
-      from.delete(from.keys().next().value!);
-    }
     const key = PasswordGuard.key(account);
-    const slowdowns = exists ? this.slowdowns : this.guessedSlowdowns;
-    const kept = slowdowns.get(key);
-    const slowdown = kept === undefined || now - kept.lastAt > this.policy.maxLockMs ? { failures: 0, until: 0, lastAt: now, admissions: [] } : kept;
-    slowdowns.delete(key);
+    const slowdown = this.slowdowns.retain(key, () => ({ failures: 0, until: 0, lastAt: now, admissions: [], observedAccount: false }));
+    slowdown.observedAccount = exists;
     slowdown.failures += 1;
     slowdown.lastAt = now;
     const over = slowdown.failures - this.policy.failuresBeforeLock;
     if (over >= 0) slowdown.until = now + Math.min(this.policy.maxLockMs, this.policy.firstSlowMs * 2 ** Math.min(over, 32));
-    slowdowns.set(key, slowdown);
-    while (this.guessedSlowdowns.size > TRACKED) this.guessedSlowdowns.delete(this.guessedSlowdowns.keys().next().value!);
   }
 
-  /** The right password: this source's count clears, and so does the account's slowdown. */
+  /** The right password clears individually tracked state; shared overflow buckets must expire by time. */
   succeeded(account: string, source: string = currentPasswordSource()): void {
     const pair = PasswordGuard.pair(account, source);
-    this.accounts.delete(pair);
-    this.guesses.delete(pair);
-    this.slowdowns.delete(PasswordGuard.key(account));
-    this.guessedSlowdowns.delete(PasswordGuard.key(account));
+    this.sources.clear(pair);
+    this.slowdowns.clear(PasswordGuard.key(account));
   }
 
-  /** How many source-and-name entries are tracked now (never more than the bound). */
-  get size(): number { return this.accounts.size + this.guesses.size; }
+  /** Individually tracked source-and-name entries (at most TRACKED), excluding fixed shared overflow buckets. */
+  get size(): number { return this.sources.size; }
 }
 
 const guards = new WeakMap<object, PasswordGuard>();
