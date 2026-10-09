@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { addApprover, propose, approve } from "./scope.js";
 import { register } from "./runner.js";
 import { createDecisionServer } from "./serve.js";
@@ -509,31 +509,6 @@ describe("managed project skills", () => {
       false,
     );
     expect(() => conversationSkills(store, repo, "unknown")).toThrow(/access/);
-  });
-  test("v64 migration preserves existing rows and refuses missing v65 history", () => {
-    add();
-    for (const table of [
-      "skill_test",
-      "skill_snapshot",
-      "project_skill_change",
-      "skill_owner",
-      "skill_package",
-    ])
-      store.handle.exec(`DROP TABLE ${table}`);
-    store.handle.exec("DROP TABLE service_cursor; UPDATE schema_version SET version=64");
-    store.close();
-    store = openStore(db);
-    expect(view().library).toEqual([]);
-    expect(store.accountOf("alex")).not.toBeNull();
-    expect(
-      store.handle.prepare("SELECT version FROM schema_version").get()?.[
-        "version"
-      ],
-    ).toBe(SCHEMA_VERSION);
-    store.handle.exec("DROP TABLE skill_snapshot");
-    store.close();
-    expect(() => openStore(db)).toThrow(/skills are missing/);
-    store = openStore(":memory:");
   });
   test("HTTP protects writes, retains a failed draft, and imports before enabling", async () => {
     const server = createDecisionServer({

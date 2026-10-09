@@ -11,8 +11,8 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   CGROUP2_PRELUDE,
   CONTAINMENT_ENV,
@@ -34,7 +34,8 @@ import {
 } from "./containment.js";
 import { CONTAINMENT_REFUSED_CODE, run, runClaudeStreamJsonl, runGeminiStreamJsonl, runStreamJsonl } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
-import { openStore } from "./store.js";
+import { openStore, type Store } from "./store.js";
+import { register } from "./runner.js";
 
 const posix = process.platform !== "win32";
 
@@ -412,5 +413,29 @@ describe("the shared transports under a required policy", () => {
     overrideContainerFactoryForTests(() => { throw new Error("mkdir EACCES"); });
     const failed = createContainer(effectiveContainment("required", available), "run:1");
     expect("refused" in failed && failed.refused).toContain("could not be established for this spawn");
+  });
+});
+
+describe("the container custody on a process witness", () => {
+  const REPO = resolve("/repo");
+  const T0 = new Date("2026-09-12T08:00:00.000Z");
+  let store: Store | null = null;
+  afterEach(() => { store?.close(); store = null; });
+
+  test("the container custody writes are fenced: one object per witness, empty only after it was named", () => {
+    store = openStore(":memory:");
+    register(store, { name: "r", host: hostname(), capacity: 1, repos: [REPO], now: T0, newToken: () => "tok" });
+    store.createTask({ id: "t", title: "t" }, T0);
+    const ref = store.refFor("built-in", "t").id;
+    store.placeTask(ref, REPO);
+    const run = store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", branch: "b", worktree: "/w", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" } });
+    const witness = store.reserveRunProcess(run, T0, true);
+    store.markRunContainerEmpty(witness, T0);
+    expect(store.raw().prepare("SELECT container_empty_at FROM run_process WHERE id = ?").get(witness)?.["container_empty_at"]).toBeNull();
+    store.recordRunContainer(witness, "cgroup2", "/sys/fs/cgroup/own/so-x");
+    expect(() => store!.recordRunContainer(witness, "cgroup2", "/sys/fs/cgroup/own/so-y")).toThrow(/container custody changed/);
+    store.markRunContainerEmpty(witness, T0);
+    expect(store.raw().prepare("SELECT containment, container, container_empty_at FROM run_process WHERE id = ?").get(witness)).toEqual({ containment: "cgroup2", container: "/sys/fs/cgroup/own/so-x", container_empty_at: T0.toISOString() });
+    expect(store.latestRunProcessWitness(run)).toBe(witness);
   });
 });

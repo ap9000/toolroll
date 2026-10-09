@@ -8,7 +8,7 @@
  *   - every scripted browser journey (scripts/flows-e2e.mjs and app-e2e.mjs, the model scripted by
  *     scripts/fixtures/scripted-provider.mjs), each script's groups through scripts/e2e-parallel.mjs: flows 2 at once,
  *     app 4 at once
- *   - the upgrade path (scripts/upgrade-path.mjs): each of the last 3 published releases, with a realistic database,
+ *   - the upgrade path (scripts/upgrade-path.mjs): every published release from 0.5.0 on, with a realistic database,
  *     moves to this candidate through the deploy's facts check, `toolroll update` and `npm i -g` with no manual step
  *     (needs the npm registry; each release is installed once and cached)
  *   - the real-model journeys only when model-facing code changed (the lead, chat, mate tools, the planner, the
@@ -138,7 +138,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // No main to compare with, or nothing differs from it (a release of main itself): check everything.
   const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
   const upgrade = plan.checks && existsSync(join("scripts", "upgrade-path.mjs"));
-  console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from the last 3 releases and 0.9.11" : ""}.`);
+  console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from every release since 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
 
   // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * The upgrade path, a release-check step. For each of the last three published
- * releases: install it from npm into a temporary home, give it a realistic
- * database made by that release's own code (completed tasks, a finished run
- * that left a process record with no pid, and a completed release candidate),
- * then move it to this candidate three ways:
+ * The upgrade path, a release-check step. For every published release from
+ * 0.5.0 on (the first npm release: schema v107, the baseline and the oldest
+ * schema this build upgrades): install it from npm into a temporary home, give
+ * it a realistic database made by that release's own code (completed tasks, a
+ * finished run that left a process record with no pid, and a completed release
+ * candidate), then move it to this candidate three ways:
  *
  *   - the deploy's facts check: the candidate's assignment code over the
  *     installed release's store and database, before any migration, exactly
@@ -19,8 +20,11 @@
  * A release with a coding workspace first opens its own coding catalog in a
  * process that is then killed, as launchd kills a service that outlasts its
  * exit window: the candidate's deploy check must release that stale owner
- * record before `toolroll update` (deploys over 0.9.11, Oct 2). 0.9.11 stays
- * on the path whatever the newest three are.
+ * record before `toolroll update` (deploys over 0.9.11, Oct 2).
+ *
+ * The release whose schema is the baseline (0.5.0) also proves the baseline
+ * itself: a new database it makes has exactly the shape the candidate's
+ * BASELINE_SCHEMA creates.
  *
  * Each must succeed with no manual step. Afterwards every completed task is
  * still complete with the same digest, every table a fresh candidate database
@@ -61,8 +65,8 @@ const load = (dist, name) => import(pathToFileURL(join(dist, name)).href);
 const UPDATE_LIMIT_MS = 6 * 60_000;
 const NOW = () => new Date();
 
-/** The newest `count` published versions, oldest first. */
-export function lastPublished(versions, count = 3) {
+/** The newest `count` published versions (every one by default), oldest first; a prerelease is not one. */
+export function lastPublished(versions, count = Infinity) {
   const release = versions.filter(v => /^\d+\.\d+\.\d+$/.test(v));
   const key = v => v.split(".").map(Number);
   release.sort((a, b) => { const [x, y] = [key(a), key(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; });
@@ -80,12 +84,12 @@ export function atLeast(version, from) {
 /** The texts the candidate writes for the rollback leg: as long as its limits allow. */
 export const LONG_TEXT = Object.freeze({ goal: 8_000, note: 4_000, instructions: 8_000 });
 
-/** Releases always on the path. 0.9.11's service could be killed before it released the coding workspace (Oct 2). */
-export const PINNED_RELEASES = Object.freeze(["0.9.11"]);
+/** The first npm release: schema v107, the baseline. Nothing older was ever published, and this build refuses it. */
+export const FIRST_RELEASE = "0.5.0";
 
-/** The newest `count` published versions and every pinned one, oldest first. */
-export function upgradeVersions(published, count = 3) {
-  return lastPublished([...new Set([...lastPublished(published, count), ...PINNED_RELEASES])], Infinity);
+/** Every published release from the first on, oldest first. */
+export function upgradeVersions(published) {
+  return lastPublished(published).filter(version => atLeast(version, FIRST_RELEASE));
 }
 
 /** Tables a fresh database has that `actual` lacks. */
@@ -208,6 +212,21 @@ async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, 
     });
     return { ok: true, completion: result.completion.digest };
   } finally { db.close(); }
+}
+
+/** A new database the release makes, and the schema it speaks. */
+async function fresh({ dist, file }) {
+  const { openStore, SCHEMA_VERSION } = await load(dist, "store.js");
+  openStore(file).close();
+  return { version: SCHEMA_VERSION };
+}
+
+/** Whether a database has exactly the shape the candidate's baseline (schema v107) creates. */
+async function baseline({ candidateDist, file }) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { BASELINE_SCHEMA_VERSION, BASELINE_SHAPE_SHA256, schemaShape } = await load(candidateDist, "store-baseline.js");
+  const db = new DatabaseSync(file, { readOnly: true });
+  try { return { version: BASELINE_SCHEMA_VERSION, matches: schemaShape(db) === BASELINE_SHAPE_SHA256 }; } finally { db.close(); }
 }
 
 /** Record an update to the candidate as `toolroll update` would, with the packed candidate staged as its runtime. */
@@ -440,6 +459,14 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   const step = (name, fn) => { const at = Date.now(); try { const value = fn(); steps.push(`${name} (${Math.round((Date.now() - at) / 1000)} s)`); return value; } catch (error) { throw Object.assign(error, { step: name }); } };
   step("npm i -g", () => installPublished(version, prefix, env));
   const installed = realpathSync(join(prefix, "lib", "node_modules", "toolroll", "dist"));
+  // The release that speaks the baseline's schema makes exactly the database the candidate's baseline creates.
+  step("baseline shape", () => {
+    const file = join(home, "fresh.db");
+    const made = child("fresh", { dist: installed, file }, env, `${version}'s new database`);
+    const shape = child("baseline", { candidateDist, file }, env, "comparing it with the candidate's baseline");
+    if (made.version === shape.version && !shape.matches) throw Error(`a new ${version} database (schema v${made.version}) is not the shape the candidate's v${shape.version} baseline creates`);
+    for (const one of [file, `${file}-wal`, `${file}-shm`]) rmSync(one, { force: true });
+  });
   const seeded = step("database", () => child("seed", { dist: installed, stateDir, repo: join(home, "projects", "shop") }, env, `${version}'s database`));
   if (existsSync(join(installed, "coding-workspace.js"))) {
     const at = Date.now();
@@ -553,7 +580,7 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SELF) {
-  const modes = { seed, facts, stage, inspect, hold, release, longText, rollback, schemas, rolledBack };
+  const modes = { seed, fresh, baseline, facts, stage, inspect, hold, release, longText, rollback, schemas, rolledBack };
   const mode = Object.keys(modes).find(name => args[0] === `--${name}`);
   if (mode) {
     modes[mode](JSON.parse(args[1])).then(value => { process.stdout.write(`\n${JSON.stringify(value)}\n`); }, error => { process.stderr.write(`${error?.stack ?? error}\n`); process.exitCode = 1; });

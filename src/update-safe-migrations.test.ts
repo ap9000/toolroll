@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V115_DROPPED_TABLES, type Database } from "./store.js";
-import { LEDGER_SCHEMA, LEDGER_V54_COLUMNS, LEDGER_V99_TABLE, installLedgerTriggers } from "./action-ledger.js";
+import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_V99_TABLE, installLedgerTriggers } from "./action-ledger.js";
 import { verifiedDatabaseBackup } from "./desktop-update.js";
 import { changedHistory, historySnapshot } from "./toolroll-update.js";
+import { baselineFile } from "../test/baseline.js";
 
 const GATE = "00000000-0000-4000-8000-000000000110";
 /** The 0.9.52 release: schema v114, the last with contests, held sessions, fallback chains and routines. */
@@ -23,15 +24,16 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v110 to v116 are update-safe, nothing before them is", () => {
+  test("every schema version is classed: v108 to v116 are update-safe, from the v107 baseline up", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
+    // v108 (sign-in pauses) and v109 (the pause a task waits on) each only add a table or a column.
     // v113 (MCP sign-in) only adds its four oauth_ tables plus the purpose column; v111 and v112 are the sibling token and limit migrations.
     // v114 is update-safe under the rehearsal's declared conservation rules (process summaries, notification's unused columns).
     // v115 is update-safe only under its named rules: the removed features' tables retire whole and each routine becomes one flow and trigger.
     // v116 moves every old chat table's rows into the shared chat tables, and the rehearsal checks each moved count (HISTORY_RULES' moved tables).
     expect(SCHEMA_VERSION).toBe(116);
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111, 112, 113, 114, 115, 116]);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -41,8 +43,10 @@ describe("update-safe migrations", () => {
     expect(updateSafeSchema(109)).toBe(true);
     expect(updateSafeSchema(110)).toBe(true);
     expect(updateSafeSchema(111)).toBe(true);
-    // v109 itself was never classed update-safe: a v108 database needs the separate procedure.
-    expect(updateSafeSchema(108)).toBe(false);
+    expect(updateSafeSchema(108)).toBe(true);
+    expect(updateSafeSchema(107)).toBe(true);
+    // Below the v107 baseline nothing is carried: update through 0.9.x first.
+    expect(updateSafeSchema(106)).toBe(false);
     expect(updateSafeSchema(47)).toBe(false);
     // A fresh file, a mid-flight marker, nonsense, and a newer build's schema are never carried forward.
     for (const version of [null, -109, -110, -112, 0, SCHEMA_VERSION + 1, 1.5]) expect(updateSafeSchema(version)).toBe(false);
@@ -62,7 +66,7 @@ describe("update-safe migrations", () => {
     // The v109 shape: the v99 ledger table, its triggers back in place.
     const db = new DatabaseSync(file);
     for (const trigger of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%action_ledger%'").all()) db.exec(`DROP TRIGGER "${String(trigger["name"])}"`);
-    const columns = [...LEDGER_V54_COLUMNS, "detail"].join(",");
+    const columns = LEDGER_COLUMNS.join(",");
     db.exec(LEDGER_V99_TABLE("action_ledger_old"));
     db.exec(`INSERT INTO action_ledger_old (${columns}) SELECT ${columns} FROM action_ledger; DROP TABLE action_ledger; ALTER TABLE action_ledger_old RENAME TO action_ledger`);
     db.exec(LEDGER_SCHEMA);
@@ -89,11 +93,29 @@ describe("update-safe migrations", () => {
     const after = new DatabaseSync(backup, { readOnly: true });
     try { expect(changedHistory(after, before)).toEqual([]); } finally { after.close(); }
 
-    // A database two migrations behind, through one never classed safe, is still refused.
+    // A database older than the v107 baseline is refused, in words that say what to do.
     const older = new DatabaseSync(file);
-    older.prepare("UPDATE schema_version SET version = 108").run();
+    older.prepare("UPDATE schema_version SET version = 106").run();
     older.close();
-    await expect(verifiedDatabaseBackup(file, join(dir, "older.backup.db"), GATE, undefined, undefined, updateSafeSchema)).rejects.toThrow(/separate verified migration procedure/);
+    await expect(verifiedDatabaseBackup(file, join(dir, "older.backup.db"), GATE, undefined, undefined, updateSafeSchema)).rejects.toThrow(/older than v107: update through 0\.9\.x first/);
+  });
+
+  test("a v107 database (0.5.0's baseline) is backed up for toolroll update, and its rehearsal keeps every saved row", async () => {
+    dir = mkdtempSync(join(tmpdir(), "so-update-safe-"));
+    const file = baselineFile(join(dir, "state.db"));
+    const backup = join(dir, "orders.backup.db");
+    expect(await verifiedDatabaseBackup(file, backup, GATE, undefined, undefined, updateSafeSchema)).toMatch(/^[a-f0-9]{64}$/);
+    const copy = new DatabaseSync(backup);
+    expect(readSchemaVersion(copy as unknown as Database)).toEqual({ ok: true, version: 107 });
+    const before = historySnapshot(copy);
+    copy.close();
+    openStore(backup).close();
+    const after = new DatabaseSync(backup, { readOnly: true });
+    try {
+      expect(readSchemaVersion(after as unknown as Database)).toEqual({ ok: true, version: SCHEMA_VERSION });
+      expect(changedHistory(after, before)).toEqual([]);
+      expect(after.prepare("PRAGMA integrity_check").get()?.["integrity_check"]).toBe("ok");
+    } finally { after.close(); }
   });
 
   test("a v114 database made by 0.9.52 itself is carried to v115 by toolroll update: routines become paused or running scheduled flows, the removed tables retire, and every other row and the ledger chain stay", async () => {

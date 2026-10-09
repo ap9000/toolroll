@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, openStoreNoMigrate, SCHEMA_VERSION } from "./store.js";
+import { openStore } from "./store.js";
 
 describe("restart-safe service progress", () => {
   let dir: string;
@@ -10,17 +10,10 @@ describe("restart-safe service progress", () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "so-service-cursor-")); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  test("an authentic v69 database gains empty progress without changing existing work", () => {
+  test("progress starts empty, survives a reopen, and rolls back with its transaction", () => {
     const file = join(dir, "orders.db");
     let store = openStore(file);
-    store.createTask({ id: "existing", title: "Preserve current work" }, now);
-    store.raw().exec("DROP TABLE service_cursor; UPDATE schema_version SET version = 69");
-    store.close();
-    expect(openStoreNoMigrate(file)).toMatchObject({ ok: false, reason: "version" });
-    store = openStore(file);
-    expect(store.getTask("existing")?.title).toBe("Preserve current work");
     expect(store.serviceCursor("review-retry-scan")).toBe(0);
-    expect(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     store.setServiceCursor("review-retry-scan", 50, now);
     expect(() => store.transact(() => { store.setServiceCursor("review-retry-scan", 100, now); throw new Error("rollback"); })).toThrow("rollback");
     store.close();

@@ -1560,51 +1560,6 @@ describe("the reviewer role in the store", () => {
     expect(store.getRun(strictRun)?.qualityMode).toBe("strict");
   });
 
-  test("the pre-typed upgrade fails closed: open requests from before basis existed are spent as legacy-untyped", () => {
-    // Simulate the bc8b3bd shape exactly: the table without its typed
-    // authority columns, holding one open mode-queued request in the old
-    // display-string format and one already-spent row.
-    const file = join(evidenceRoot, "legacy.db");
-    {
-      const old = openStore(file);
-      const t = old.refFor("built-in", "t-1");
-      void t; // the store exists; we only need the file's schema
-      old.close();
-    }
-    {
-      const legacy = openStore(file);
-      legacy.createTask({ id: "t-legacy", title: "old work" }, T0);
-      const ref = legacy.refFor("built-in", "t-legacy").id;
-      legacy.placeTask(ref, REPO);
-      const run = legacy.startRun({ taskRef: ref, leaseId: "l-old", runner: "b-1", branch: "b", worktree: "/w", now: T0, ...presented(legacy, ref, "builder") });
-      legacy.finishRun(run, { outcome: "built", committed: true, now: T0 });
-      legacy.raw().prepare("INSERT INTO review_request (run, requested_by, requested_at) VALUES (?, 'mode:deadbeef', ?)").run(run, T0.toISOString());
-      legacy.raw().prepare("INSERT INTO review_request (run, requested_by, requested_at, consumed_at, consumed_reason) VALUES (?, 'alex', ?, ?, 'reviewed')").run(run, T0.toISOString(), T0.toISOString());
-      legacy.raw().exec("ALTER TABLE review_request DROP COLUMN mode_digest");
-      legacy.raw().exec("ALTER TABLE review_request DROP COLUMN basis");
-      legacy.raw().exec("UPDATE schema_version SET version = 113"); // an older build's file reads older (v114)
-      legacy.close();
-    }
-    const upgraded = openStore(file);
-    // The open pre-typed request was spent, not granted human authority.
-    expect(upgraded.openReviewRequests()).toHaveLength(0);
-    const rows = upgraded
-      .raw()
-      .prepare("SELECT requested_by, basis, consumed_reason FROM review_request ORDER BY id")
-      .all() as Record<string, unknown>[];
-    expect(rows[0]).toMatchObject({ requested_by: "mode:deadbeef", basis: "human", consumed_reason: "legacy-untyped" });
-    // Already-spent history keeps its own words.
-    expect(rows[1]).toMatchObject({ consumed_reason: "reviewed" });
-    // A reopen does not re-sweep: fresh typed requests survive restarts.
-    const run2 = upgraded.startRun({ taskRef: upgraded.refFor("built-in", "t-legacy").id, leaseId: "l-new", runner: "b-1", branch: "b2", worktree: "/w2", now: T0, ...presented(upgraded, upgraded.refFor("built-in", "t-legacy").id, "builder") });
-    storeEvidence(upgraded, evidenceRoot, run2, "terminal-diff", "terminal-diff.patch", Buffer.from(PATCH, "utf8"), "git diff (exit 0)", T0, { captureStatus: "ok" });
-    upgraded.finishRun(run2, { outcome: "built", committed: true, now: T0 });
-    expect(upgraded.requestReview(run2, "alex", T0).ok).toBe(true);
-    upgraded.close();
-    const reopened = openStore(file);
-    expect(reopened.openReviewRequests()).toHaveLength(1);
-    reopened.close();
-  });
 
   test("workspace consumers see a reviewer run's missing worktree as null, never \"null\"", () => {
     const reviewer = store.startRun({ taskRef, leaseId: "review:1", runner: "builder-1", role: "reviewer", parentRun: builtRun, now: T0, ...presented(store, taskRef, "reviewer"), ...askReview(builtRun) });

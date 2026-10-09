@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { partTempRoot, planFor, versionOnly } from "../scripts/release-check.mjs";
-import { atLeast, completionProblems, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
+import { atLeast, completionProblems, FIRST_RELEASE, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
 import { gateWords, openGate, providerCap } from "../scripts/provider-gate.mjs";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -188,18 +188,22 @@ describe("the upgrade path step", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  test("the last 3 published releases, oldest first; a prerelease is not one", () => {
-    expect(lastPublished(["0.9.10", "0.9.4", "0.9.9-beta.1", "0.9.8", "0.10.0", "0.9.9"])).toEqual(["0.9.9", "0.9.10", "0.10.0"]);
+  test("published releases, oldest first; a prerelease is not one", () => {
+    expect(lastPublished(["0.9.10", "0.9.4", "0.9.9-beta.1", "0.9.8", "0.10.0", "0.9.9"], 3)).toEqual(["0.9.9", "0.9.10", "0.10.0"]);
+    expect(lastPublished(["0.9.10", "0.9.4", "0.9.9-beta.1"])).toEqual(["0.9.4", "0.9.10"]);
   });
 
-  test("0.9.11 stays on the upgrade path beside the newest three: its service could die holding the coding workspace", () => {
-    expect(upgradeVersions(["0.9.8", "0.9.9", "0.9.10", "0.9.11"])).toEqual(["0.9.9", "0.9.10", "0.9.11"]);
-    expect(upgradeVersions(["0.9.10", "0.9.11", "0.9.12", "0.9.13", "0.10.0"])).toEqual(["0.9.11", "0.9.12", "0.9.13", "0.10.0"]);
+  test("every published release from 0.5.0 (the v107 baseline) is on the upgrade path, 0.9.11 among them", () => {
+    expect(FIRST_RELEASE).toBe("0.5.0");
+    expect(upgradeVersions(["0.4.2", "0.9.11", "0.5.0", "0.6.0-rc.1", "0.6.0", "0.9.10", "0.10.0"])).toEqual(["0.5.0", "0.6.0", "0.9.10", "0.9.11", "0.10.0"]);
     // The step that frees what a killed 0.9.11 left behind runs before `toolroll update`.
     const path = readFileSync("scripts/upgrade-path.mjs", "utf8");
     const onePath = path.slice(path.indexOf("async function onePath("));
     expect(onePath.indexOf("killedCodingOwner(")).toBeGreaterThan(-1);
     expect(onePath.indexOf("killedCodingOwner(")).toBeLessThan(onePath.indexOf('step("toolroll update"'));
+    // The baseline release proves the baseline: its new database is the candidate's v107 shape.
+    expect(onePath.indexOf('step("baseline shape"')).toBeGreaterThan(-1);
+    expect(onePath.indexOf('step("baseline shape"')).toBeLessThan(onePath.indexOf('step("database"'));
   });
 
   test("the rollback leg: from 0.9.23 on, the release reads back the candidate's long text (same schema), then toolroll update --rollback restores it", () => {

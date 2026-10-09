@@ -13,16 +13,7 @@ export type LedgerEntry = {
   detail: string | null;
 };
 
-/** The table as v54 made it: the one earlier shape the v99 rebuild accepts. */
-export const LEDGER_V54_TABLE = (name: string) => `CREATE TABLE ${name} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  at TEXT NOT NULL, actor TEXT NOT NULL, repo TEXT,
-  task_id TEXT, run_id INTEGER,
-  action TEXT NOT NULL, outcome TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('work','request','access'))
-)`;
-export const LEDGER_V54_COLUMNS = ["id", "at", "actor", "repo", "task_id", "run_id", "action", "outcome", "source"] as const;
-/** The table as v99 made it: the v110 rebuild accepts this shape and v54's. */
+/** The table as v99 made it (v107 has it): the one earlier shape the v110 rebuild accepts. */
 export const LEDGER_V99_TABLE = (name: string) => `CREATE TABLE ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, actor TEXT NOT NULL, repo TEXT,
@@ -31,6 +22,7 @@ export const LEDGER_V99_TABLE = (name: string) => `CREATE TABLE ${name} (
   source TEXT NOT NULL CHECK (source IN ('work','request','access','sign-in','policy')),
   detail TEXT
 )`;
+export const LEDGER_COLUMNS = ["id", "at", "actor", "repo", "task_id", "run_id", "action", "outcome", "source", "detail"] as const;
 export const LEDGER_TABLE = (name: string) => `CREATE TABLE ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, actor TEXT NOT NULL, repo TEXT,
