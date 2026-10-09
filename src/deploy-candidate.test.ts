@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../scripts/deploy-candidate.mjs";
+import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
+import { completionBlockersOf } from "./task-status.js";
 
 const HEAD = "a".repeat(40);
 const COMMAND = "npm run verify";
@@ -33,6 +35,11 @@ const regate: Run = { id: 2, taskRef: 7, role: "builder", outcome: "no-change", 
 const passing = { run: 2, head: HEAD, scopeDigest: DIGEST, result: { ran: true, exitCode: 0 }, command: { command: COMMAND } };
 
 describe("deploymentCandidate", () => {
+  test("a passing gate cannot cover an invalid screenshot on a row whose check reference is missing", () => {
+    const blockers = completionBlockersOf({ report: false, checks: { status: "passed", exitCode: 0, level: "full" }, checkRequired: true,
+      matrix: [mixedCheckScreenshot({ path: "", ok: false, problem: "wrong file kind" })], verdict: "short", accepted: false, high: 0 });
+    expect(() => fixture([built, regate], { 2: passing }, { blockers })(2)).toThrow("isn't ready to deploy");
+  });
   test("a regate of the last built commit deploys on its own passing receipt", () => {
     const result = fixture([built, regate], { 2: passing })(2);
     expect(result).toMatchObject({ taskId: "t1", scopeDigest: DIGEST, gateDigest: "gate-2", worktree: "/w2" });

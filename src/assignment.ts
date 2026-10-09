@@ -16,7 +16,7 @@ import { noteAssignmentStatus } from "./assignment-status.js";
 import { historicalAssessmentReason } from "./assignment-presentation.js";
 import { manualReviewOnly, shownVerdictOf, type ProofVerdict } from "./proof.js";
 import { ACCEPT_NEEDS_REASON, cantAcceptYetOf } from "./result-acts.js";
-import { runCheckLevel, type CheckLevel } from "./check-levels.js";
+import { requiredCheckCommandFor, runCheckLevel, type CheckLevel } from "./check-levels.js";
 import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
@@ -396,7 +396,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
 function readinessOf(store: Store, receipt: AssignmentReceipt, repo: string | null, review: BuildReviewView | null): NonNullable<AssignmentSnapshot["readiness"]> {
   const report = receipt.completionKind === "research-report";
   const high = review === null || review.sentBackAs !== null || review.state !== "reviewed" ? 0 : review.high.length;
-  const checkRequired = repo !== null && olderStoreSafe(() => store.liveVerifyCommand(repo), null) !== null;
+  const checkRequired = olderStoreSafe(() => requiredCheckCommandFor(store, repo, receipt.taskId, receipt.checks.level), null) !== null;
   const matrix = receipt.proof?.matrix ?? [];
   const backing = checkBackingOf(receipt.checks);
   const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && receipt.checks.status === "failed", highFindings: high,

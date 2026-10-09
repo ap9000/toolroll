@@ -19,7 +19,7 @@ import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { assignmentTaskStatusOf } from "./assignment-presentation.js";
 import { taskStatusOf, completionBlockersOf, requirementWordOf, HEADLINES, HEADLINE_TONE } from "./task-status.js";
 import { releaseCoverageOf } from "./release-coverage.js";
-import { workIndexPage } from "./work-index.js";
+import { workIndexPage, workIndexTask } from "./work-index.js";
 import { verifyApproverByPassword } from "./principal.js";
 import { completeAndOpenPullRequest, mergePullRequest, pullRequestViewOf, savePublishing } from "./pull-request-flow.js";
 import { runOperate, EXIT } from "./operate.js";
@@ -28,10 +28,11 @@ import { MATE_TOOLS } from "./mate-tools.js";
 import { confirmMateProposal } from "./mate-doors.js";
 import {
   checkCommandFor, checkLevelFromWords, effectiveCheckLevel, projectCheckLevel, quickVerifyKey, recordRunCheckLevel, setProjectCheckLevel,
-  setTaskCheckLevel, suggestQuickCommand, taskCheckLevel, type CheckLevel,
+  setTaskCheckLevel, suggestQuickCommand, taskCheckLevel, requiredCheckCommandFor, type CheckLevel,
 } from "./check-levels.js";
 import { followUpChecksOf, fullCheckGate, requestFollowUpChecks, runFollowUpCheck, withFollowUps } from "./result-follow-ups.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
+import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -178,6 +179,10 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
     expect(checkCommandFor(store, REPO, "full")).toMatchObject({ level: "full", command: { command: "test -f app.txt" } });
     expect(checkCommandFor(store, REPO, "off")).toEqual({ level: "off", command: null });
     expect(checkCommandFor(store, join(dir, "fresh-project"), "quick")).toEqual({ level: "full", command: null });
+    expect(requiredCheckCommandFor(store, REPO, "quick-pass", "quick")?.command).toBe("test -f package.json");
+    expect(requiredCheckCommandFor(store, REPO, "full-pass", "full")?.command).toBe("test -f app.txt");
+    expect(requiredCheckCommandFor(store, REPO, "checks-off", "off")).toBeNull();
+    expect(requiredCheckCommandFor(store, REPO, "checks-off", null)).toBeNull();
     expect(suggestQuickCommand(REPO)).toBe("npm run typecheck && npx vitest related --run $(git diff --name-only HEAD~1)");
   });
 
@@ -527,6 +532,75 @@ describe("checks Off are checked at release", () => {
     // A pending review is never verified.
     store.handle.prepare("UPDATE build_review SET state = 'pending', findings_json = NULL WHERE run = ?").run(runs["refuse-high"]!);
     expect(read("refuse-high").readiness?.verdict).toBe("short");
+  });
+
+  test("an invalid screenshot plus a missing check cannot be completed after a passing check", async () => {
+    const run = built("mixed-invalid-shot", "Keep checkout readable", ago(8), "full");
+    const row = mixedCheckScreenshot({ path: "", ok: false, problem: "not a PNG or JPEG" });
+    store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+    store.saveProofVerdict(run, "short", row.detail, ago(8), [row], "short");
+    const lines: string[] = [];
+    expect(await runOperate("task", ["complete", "mixed-invalid-shot", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain("requirement");
+    expect(read("mixed-invalid-shot").readiness?.blockers).toMatchObject([{ key: "criteria" }]);
+  });
+
+  test("Quick-only projects still require the Quick check when its log is missing", async () => {
+    const run = built("quick-only-missing", "Check checkout totals", ago(7), "quick");
+    const heldRepo = `${REPO}-full-command-held`;
+    store.handle.prepare("UPDATE verify_command SET repo = ? WHERE repo = ?").run(heldRepo, REPO);
+    try {
+      store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(run);
+      store.handle.prepare("DELETE FROM run_check WHERE run = ?").run(run);
+      // No verdict can stand in for the required machine check.
+      store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+      expect(read("quick-only-missing").readiness?.blockers).toMatchObject([{ key: "check-missing" }]);
+      const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 100, root }).items.find(one => one.activeTaskId === "quick-only-missing")!;
+      expect(listed.status.label).toBe("Needs you");
+      const lines: string[] = [];
+      expect(await runOperate("task", ["complete", "quick-only-missing", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+      expect(lines.join("\n")).toContain("Run checks on it");
+    } finally {
+      store.handle.prepare("UPDATE verify_command SET repo = ? WHERE repo = ?").run(REPO, heldRepo);
+    }
+  });
+
+  test("CLI show preserves recorded Failed, Complete and manual-review asks when evidence files disappear", async () => {
+    for (const [id, level, exit, expected] of [["lost-failed", "full", 1, "Failed"], ["lost-complete", "full", 0, "Complete"], ["lost-manual", "full", 0, "Needs you"]] as const) {
+      const run = built(id, "Confirm checkout stays readable on a phone", ago(6), level, exit);
+      if (id === "lost-complete") {
+        const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+        if (!who.ok) throw Error("approver");
+        expect(checkAssignmentAsOperator(store, id, read(id).receipt!.digest, who.who, NOW, root)).toMatchObject({ ok: true });
+      }
+      if (id === "lost-manual") {
+        store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+        store.saveProofVerdict(run, "short", ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'], ago(6),
+          [{ id: "c1", statement: "Confirm checkout stays readable on a phone", requiredEvidence: ["manual-review"], state: "manual-review", detail: [], answered: [], review: null }], "short");
+      }
+      for (const artifact of store.artifactsFor(run)) rmSync(join(root, artifact.key), { force: true });
+      const lines: string[] = [];
+      expect(await runOperate("task", ["show", id, "--json"], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.ok);
+      const shown = JSON.parse(lines.join("\n"));
+      const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 100, root }).items.find(one => one.activeTaskId === id)!;
+      expect(shown.status).toEqual({ headline: expected, sentence: listed.status.detail });
+      expect(shown.assignment.result.checks.status).toBe("unavailable");
+      expect(shown.work.status.label).toBe(expected);
+      if (id === "lost-manual") expect(shown.status.sentence).toContain("Check this requirement yourself");
+      const completion: string[] = [];
+      expect(await runOperate("task", ["complete", id, "--as", "sam", "--token", password], line => completion.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+      expect(completion.join("\n")).toContain("Run checks on it");
+    }
+  });
+
+  test("exact saved-status lookup is independent of the page limit and retains project admission", () => {
+    const access = { principal: "operator" as const, repos: [REPO] };
+    const all = workIndexPage(store, NOW, access, { limit: 100, root }).items;
+    const last = all.at(-1)!;
+    expect(all.length).toBeGreaterThan(1);
+    expect(workIndexTask(store, last.activeTaskId, NOW, access, root)).toEqual(last);
+    expect(workIndexTask(store, last.activeTaskId, NOW, { ...access, repos: [] }, root)).toBeNull();
+    expect(workIndexTask(store, "unknown-task", NOW, access, root)).toBeNull();
   });
 
   test("the completion guard is one pure rule", () => {

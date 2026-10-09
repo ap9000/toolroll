@@ -398,15 +398,26 @@ export function assignmentStageOf(assignment: Pick<AssignmentSnapshot, "state" |
 }
 
 type RequirementRow = { id?: string; statement?: string; state: string; requiredEvidence?: readonly string[]; answered?: readonly { kind: string }[];
-  assessment?: { evidenceState?: string } | undefined; review?: unknown };
+  detail?: readonly string[]; assessment?: { evidenceState?: string; detail?: readonly string[] } | undefined; review?: unknown };
 /** Evidence that passed and only awaits the retired assessment step is met. */
 const requirementMet = (row: RequirementRow): boolean => row.state === "pass" || (row.assessment?.evidenceState === "pass" && (row.review ?? null) === null);
 /** A requirement whose only gap is the project check: every other kind it needs was shown, none is a person's check. */
 const onlyCheckMissing = (row: RequirementRow): boolean => {
   const needs = row.requiredEvidence ?? [];
   const answered = new Set((row.answered ?? []).map(one => one.kind));
-  return row.state !== "failed" && needs.includes("check") && !needs.includes("manual-review") &&
-    needs.every(kind => kind === "check" || answered.has(kind));
+  if (row.state !== "missing" || row.review != null || row.assessment?.evidenceState === "failed" ||
+    !needs.includes("check") || needs.includes("manual-review") || !needs.every(kind => kind === "check" || answered.has(kind))) return false;
+  // `answered` contains claims, not validated evidence. In legacy matrices a missing
+  // check takes precedence over an invalid screenshot/changed path in `state`.
+  // Only the stored validator's check-only gaps establish that every other
+  // reference resolved. Direct assessment keeps these outcomes in its own detail.
+  const detail = row.assessment?.detail ?? row.detail ?? [];
+  const checkGaps = new Set([
+    `criterion "${row.id}" requires check evidence, which the proof does not reference`,
+    `criterion "${row.id}" is waiting for the final check`,
+    `criterion "${row.id}" needs a passing approved project check`,
+  ]);
+  return (needs.every(kind => kind === "check") || detail.length > 0) && detail.every(one => checkGaps.has(one));
 };
 /** A required screenshot nobody captured. */
 const screenshotMissing = (row: RequirementRow): boolean =>

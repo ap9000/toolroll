@@ -16,7 +16,7 @@ import { checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replaced
 import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
 import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
-import { isCheckLevel } from './check-levels.js';
+import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
@@ -398,6 +398,16 @@ function readCursor(value: string | null | undefined, scope: string): Cursor | n
  * Project counters share the page's admitted project/state filter.
  * Cursors bind the admitted scope, project and view, never broaden access. */
 export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions = {}): WorkIndexPage {
+  return readWorkIndexPage(store, now, access, options);
+}
+
+/** An exact family lookup through the list's saved-fact projection. It remains
+ * permission-bound and bypasses pagination, never action-time verification. */
+export function workIndexTask(store: Store, taskId: string, now: Date, access: WorkSummaryAccess, root?: string): WorkIndexItem | null {
+  return readWorkIndexPage(store, now, access, { limit: 1, ...(root === undefined ? {} : { root }) }, taskId).items[0] ?? null;
+}
+
+function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, taskId: string | null = null): WorkIndexPage {
   const projection = registerValidators(store);
   const custody = custodyReadings(store);
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
@@ -405,7 +415,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ${filter} AND ($cursorRoot=0 OR
+    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
   ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
@@ -431,7 +441,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
-    .all({ ...parameters(now, access, options, custody), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -508,7 +518,7 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
   const proof = store.proofVerdictFor(run), accepted = store.proofAcceptance(run) !== null;
   const review = buildReviewOf(store, run);
   const high = review === null || review.sentBackAs !== null || review.state !== 'reviewed' ? 0 : review.high.length;
-  const checkRequired = repo !== null && store.liveVerifyCommand(repo) !== null;
+  const checkRequired = requiredCheckCommandFor(store, repo, String(row['id']), checks?.level) !== null;
   const backing = checkBackingOf(checks);
   const requirements = requirementsOf(proof?.matrix, backing);
   const verdict = shownVerdictOf(proof?.verdict ?? null, { checkFailed: !report && checks?.status === 'failed', highFindings: high, reviewPending: review?.state === 'pending',

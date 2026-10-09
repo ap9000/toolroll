@@ -7,6 +7,29 @@ import {
   type ChecksFact, type PullRequestFact, type TaskStage, type TaskStatusFacts,
 } from "./task-status.js";
 import type { AssignmentSnapshot } from "./assignment.js";
+import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
+import { requirementWordOf, completionBlockersOf } from "./task-status.js";
+
+describe("release coverage requires validated non-check evidence", () => {
+  test.each([null, { path: "", ok: false, problem: "missing file" }, { path: "", ok: true, bytes: 40, dims: { width: 1, height: 1 } }])("invalid screenshot stays unresolved: %j", shot => {
+    const row = mixedCheckScreenshot(shot);
+    expect(row.state).toBe("missing");
+    for (const release of ["pending", "covered"] as const) {
+      expect(requirementWordOf(row, null, release)).toBe("Not shown yet");
+    }
+    expect(completionBlockersOf({ report: false, checks: { status: "passed", exitCode: 0, level: "full" }, checkRequired: true,
+      matrix: [row], verdict: "short", accepted: false, high: 0 })).toMatchObject([{ key: "criteria" }]);
+  });
+
+  test("valid screenshot waits only for checks, including stored direct-assessment outcomes", () => {
+    const row = mixedCheckScreenshot({ path: "", ok: true, bytes: 5000, dims: { width: 390, height: 844 } });
+    expect(requirementWordOf(row, null, "pending")).toBe("Checked at release");
+    expect(requirementWordOf(row, null, "covered")).toBe("Met");
+    expect(requirementWordOf({ ...row, assessment: { evidenceState: "missing", detail: row.detail } }, null, "covered")).toBe("Met");
+    expect(requirementWordOf({ ...row, assessment: { evidenceState: "failed", detail: ["Screenshot could not be verified"] } }, null, "covered")).toBe("Not shown yet");
+    expect(requirementWordOf({ ...row, answered: [{ kind: "changed-path", ref: "evidence/checkout.png" }] }, null, "covered")).toBe("Not shown yet");
+  });
+});
 
 const HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const passed: ChecksFact = { status: "passed", exitCode: 0, head: HEAD };

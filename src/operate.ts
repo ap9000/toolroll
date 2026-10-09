@@ -275,8 +275,7 @@ import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFr
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
 import { worktreeAdoptionNotice } from "./worktree-notices.js";
-import { workIndexPage, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
-import { assignmentTaskStatusOf } from "./assignment-presentation.js";
+import { workIndexPage, workIndexTask, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
 import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
@@ -9997,11 +9996,14 @@ function showTask(positional: readonly string[], context: Context): number {
   });
   const work = taskWorkSummaryOf(store, id, now, access);
   const current = assignmentOf(store, id, now, access, context.evidenceRoot);
-  // The one shared status (task-status.ts): the words the console list, task page and result page show.
-  const shared = current === null ? null : assignmentTaskStatusOf(current, work === null ? {} : { workStatus: work.status });
+  // Read the same saved facts and statusOf path as task list. File health remains
+  // in the assignment diagnostics and action-time guards; it cannot rewrite history.
+  const listed = workIndexTask(store, id, now, access, context.evidenceRoot);
+  const shared = listed === null ? null : { headline: listed.status.label, sentence: listed.status.detail };
+  const primaryAction = listed === null ? work?.primaryAction ?? null : listed.primaryAction;
   const detail = {
     task,
-    work,
+    work: work === null || listed === null ? work : { ...work, status: { ...work.status, label: listed.status.label, detail: listed.status.detail, tone: listed.status.tone }, primaryAction },
     status: shared === null ? null : { headline: shared.headline, sentence: shared.sentence },
     assignment: assignmentBrief(current),
     ref: ref.id,
@@ -10045,7 +10047,7 @@ function showTask(positional: readonly string[], context: Context): number {
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : ` — ${shared.sentence}`}`,
-      ...(detail.work.primaryAction === null ? [] : [`  next: ${detail.work.primaryAction.label}${detail.work.primaryAction.target.decisionId === null ? "" : ` — decision #${detail.work.primaryAction.target.decisionId}`}`]),
+      ...(primaryAction === null ? [] : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
     ]),
     // The closed machine-authored verdict (Priority 2), computed once at
     // completion — never re-derived here. Same words `verdictWords`
