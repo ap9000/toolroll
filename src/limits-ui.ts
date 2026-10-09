@@ -7,6 +7,7 @@
 import type { BrowserLimitTile, BrowserLimits } from "./browser-workspace.js";
 import { windowLabel } from "./provider-limits.js";
 import { usd, type BudgetState } from "./spend.js";
+import { html, type Html } from "./html.js";
 
 const PROVIDER_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
 /** Plan names worth showing; anything else (an internal billing name) is left off. */
@@ -63,16 +64,14 @@ export function limitsView(
   return tiles.length === 0 ? null : { tiles };
 }
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-
 /** The same tiles for the page without scripts. */
-export function limitsHtml(limits: BrowserLimits | null): string {
-  if (limits === null) return "";
-  return `<section class="limits" aria-label="Limits"><ul>${limits.tiles.map(tile => {
-    const body = `<p class="limit-name"><strong>${e(tile.name)}</strong> ${e(tile.window)}</p><p class="limit-value"><strong>${e(tile.value)}</strong> ${e(tile.unit)}</p>` +
-      `<span class="limit-bar" aria-hidden="true"><span style="width:${Math.min(100, Math.max(0, tile.percent))}%"></span></span><p class="limit-detail">${e(tile.detail)}</p>`;
-    return `<li class="limit limit-${tile.tone}" data-limit="${e(tile.key)}"${tile.title === null ? "" : ` title="${e(tile.title)}"`}>${tile.href === null ? body : `<a href="${e(tile.href)}">${body}</a>`}</li>`;
-  }).join("")}</ul></section>`;
+export function limitsHtml(limits: BrowserLimits | null): Html {
+  if (limits === null) return html``;
+  return html`<section class="limits" aria-label="Limits"><ul>${limits.tiles.map(tile => {
+    const body = html`<p class="limit-name"><strong>${tile.name}</strong> ${tile.window}</p><p class="limit-value"><strong>${tile.value}</strong> ${tile.unit}</p>\
+<span class="limit-bar" aria-hidden="true"><span style="width:${Math.min(100, Math.max(0, tile.percent))}%"></span></span><p class="limit-detail">${tile.detail}</p>`;
+    return html`<li class="limit limit-${tile.tone}" data-limit="${tile.key}"${tile.title === null ? "" : html` title="${tile.title}"`}>${tile.href === null ? body : html`<a href="${tile.href}">${body}</a>`}</li>`;
+  })}</ul></section>`;
 }
 
 export const LIMITS_CSS = `.limits ul{list-style:none;margin:0 0 16px;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:8px}` +

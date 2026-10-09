@@ -1248,7 +1248,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(store.consumeInviteAndCreateAccount({ tokenValue: minted.token, name: "member", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
     const member = await login("member", memberPassword);
     const abort = new AbortController();
-    const live = await fetch(url(`/flows/${own}/live`), { headers: { cookie: member }, redirect: "manual", signal: abort.signal });
+    const live = await fetch(url(`/live?room=${encodeURIComponent(`flow:${own}`)}`), { headers: { cookie: member }, redirect: "manual", signal: abort.signal });
     expect(live.status).toBe(200);
     expect(live.headers.get("content-type")).toBe("text/event-stream");
     const reader = live.body!.getReader();
@@ -1259,16 +1259,16 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       text += new TextDecoder().decode(chunk.value);
     }
     expect(text).toContain("event: change");
-    expect(text).toContain('event: here\ndata: {"people":[]}');
+    expect(text).toContain(`event: here\ndata: {"room":"flow:${own}","people":[]}`);
     abort.abort();
     await reader.cancel().catch(() => undefined);
-    const foreign = await fetch(url(`/flows/${other}/live`), { headers: { cookie: member }, redirect: "manual" });
+    const foreign = await fetch(url(`/live?room=${encodeURIComponent(`flow:${other}`)}`), { headers: { cookie: member }, redirect: "manual" });
     expect(foreign.status).toBe(404);
     expect(foreign.headers.get("content-type")).not.toBe("text/event-stream");
     await foreign.text();
     // With All projects open, the stream names its own flow's project too: no project chooser redirect.
     const everything = new AbortController();
-    const operator = await fetch(url(`/flows/${other}/live`), { headers: { cookie: await login() }, redirect: "manual", signal: everything.signal });
+    const operator = await fetch(url(`/live?room=${encodeURIComponent(`flow:${other}`)}`), { headers: { cookie: await login() }, redirect: "manual", signal: everything.signal });
     expect(operator.status).toBe(200);
     expect(operator.headers.get("content-type")).toBe("text/event-stream");
     everything.abort();

@@ -31,10 +31,10 @@ test('per-stream queue distribution keeps no stream ID and cleans up on finish a
   const telemetry = new ServerTelemetry(() => 0);
   const slow = Object.assign(new EventEmitter(), { writableLength: 8192, writableEnded: false, destroyed: false }) as unknown as ServerResponse;
   const quick = Object.assign(new EventEmitter(), { writableLength: 0, writableEnded: false, destroyed: false }) as unknown as ServerResponse;
-  telemetry.openStream(slow, 'team-stream'); telemetry.openStream(quick, 'team-stream');
+  telemetry.openStream(slow, 'live'); telemetry.openStream(quick, 'live');
   expect(telemetry.snapshot().streams).toEqual({ open: 2, queuedBytes: 8192, maxQueuedBytes: 8192 });
-  expect(performanceMetrics(telemetry)).toContain('toolroll_sse_queue_bytes_bucket{route="team-stream",le="0"} 1');
-  expect(performanceMetrics(telemetry)).toContain('toolroll_sse_queue_bytes_bucket{route="team-stream",le="16384"} 2');
+  expect(performanceMetrics(telemetry)).toContain('toolroll_sse_queue_bytes_bucket{route="live",le="0"} 1');
+  expect(performanceMetrics(telemetry)).toContain('toolroll_sse_queue_bytes_bucket{route="live",le="16384"} 2');
   slow.emit('close'); slow.emit('finish'); quick.emit('finish');
   expect(telemetry.snapshot().streams.open).toBe(0);
 });
@@ -62,7 +62,7 @@ test('the existing exporter includes real Store transaction and standalone write
     expect(store.telemetry.writeStatement.total.count).toBeGreaterThan(0);
     const exported = prometheusMetrics(store, new Date());
     expect(exported).toContain('toolroll_sqlite_write_wait_seconds_count');
-    expect(exported).toContain('toolroll_sse_connections{route="team-stream"} 0');
+    expect(exported).toContain('toolroll_sse_connections{route="live"} 0');
   } finally { store.close(); }
 });
 

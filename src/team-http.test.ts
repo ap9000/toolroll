@@ -119,16 +119,10 @@ describe('shared team transport', () => {
     const response = await fetch(url + '/api/team', { method: 'POST', headers, body: JSON.stringify({ operation: 'send', args: { conversationId: 'room', requestId: 'one', text: 'Hello' } }) });
     expect(response.status).toBe(502); expect((await response.json()).code).toBe('delivery-unconfirmed'); expect(execute).toHaveBeenCalledTimes(1);
   });
-  test('idle streams send no repeated messages and revalidate revoked access', async () => {
-    let allowed = true; let cursor = 1;
-    const { url, execute } = await fixture({ revalidate: () => allowed, cursor: () => cursor });
+  test('conversation updates are not answered here: a page follows GET /live?room=team instead', async () => {
+    const { url, execute } = await fixture({});
     const response = await fetch(url + '/api/team/events?conversation=room', { headers });
-    const reader = response.body!.getReader(), decode = new TextDecoder();
-    expect(decode.decode((await reader.read()).value)).toContain('id: 1');
-    cursor = 2;
-    expect(decode.decode((await reader.read()).value)).toContain('id: 2');
-    allowed = false;
-    expect(decode.decode((await reader.read()).value)).toContain('event: revoked');
-    expect((await reader.read()).done).toBe(true); expect(execute).toHaveBeenCalledTimes(1);
+    expect(response.headers.get('content-type') ?? '').not.toContain('text/event-stream');
+    expect(execute).not.toHaveBeenCalled();
   });
 });

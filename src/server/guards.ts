@@ -21,7 +21,10 @@ type Run,
 type Store
 } from "../store.js";
 import type { RouteDeclaration } from './route-table.js';
-import { matchTaskPath,PersistentSessions,refuse,requestContext,SESSION_ABSOLUTE_MS,SESSION_COOKIE,SESSION_IDLE_MS,type Session,type Who } from "./shared.js";
+import { requestContext } from "./request-context.js";
+import { refuse } from "./chrome.js";
+import { matchTaskPath } from "./http.js";
+import { PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_COOKIE,SESSION_IDLE_MS,type Session,type Who } from "./session.js";
 /** Shared browser, credential and project guards. Runtime access is lazy to preserve server initialization order. */
 export interface GuardsRuntime {
   store: Store;
@@ -195,7 +198,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const path = url.pathname;
     const project = resolveRouteProject(source, url, who, request, body);
     if (restricted() && body !== null) {
-      const repos = body.getAll("repo");
+      const repos = readForm(body, CONSOLE_FORMS.projectCeiling).getAll("repo");
       if (repos.length > 1 || repos.some(repo => repo.trim() !== "" && !visible(repo.trim()))) {
         refuse(response, who, 403, "That project is outside your access.", "/projects"); return false;
       }

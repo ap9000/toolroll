@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.55 — 2026-10-09
+
+- **One door per route.** Every page's access comes from one table with one
+  handler each; pages escape automatically and forms carry CSRF protection.
+- **One live stream.** It re-checks your session and project access before
+  every update.
+- **One-command release.** `toolroll release <branch>` runs a whole release
+  after your scope approval and never merges on pending or failed CI.
+
 ## 0.9.54 — 2026-10-09
 
 - **One chat core.** Telegram, Slack, Discord and Teams now share one chat

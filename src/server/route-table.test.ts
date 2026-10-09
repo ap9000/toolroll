@@ -18,21 +18,24 @@ const LIMITED_ACCESS = {
   'home': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection',
-  'task.live': 'resource', 'task.page': 'resource', 'task.evidence': 'resource',
+  'task.page': 'resource', 'task.evidence': 'resource',
   'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',
   'run.page': 'resource', 'run.evidence': 'resource',
   'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
-  'flow.read': 'resource', 'flow.export': 'resource', 'flow.live': 'resource', 'flow.page': 'resource',
+  'flow.insights': 'resource', 'flow.scripts': 'resource', 'flow.export': 'resource', 'flow.page': 'resource',
   'recipes': 'collection', 'recipes.run': 'collection', 'recipes.start': 'collection',
   'recipes.new': 'collection', 'recipes.edit': 'collection', 'recipes.from-task': 'collection',
   'recipes.preview': 'collection', 'recipes.export': 'collection', 'routines': 'collection',
   'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
   'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
-  'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act': 'self',
+  'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
+  'code.other': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
+  'code.session': 'self', 'code.ship': 'self', 'code.ship-send': 'self', 'code.start': 'self', 'code.state': 'self', 'code.stop-send': 'self',
   'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
-  'flow.act': 'resource', 'flow.triggers': 'resource', 'flow.card': 'resource',
+  'flow.archive': 'resource', 'flow.cards': 'resource', 'flow.run': 'resource', 'flow.save': 'resource', 'flow.triggers': 'resource', 'flow.card.assign': 'resource', 'flow.card.cancel': 'resource', 'flow.card.comment': 'resource',
+  'flow.card.decide': 'resource', 'flow.card.move': 'resource', 'flow.card.watch': 'resource',
   'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
   'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
   'flow.trigger.secret': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
@@ -49,9 +52,10 @@ const LIMITED_ACCESS = {
   'task.act.accept-revision': 'resource', 'task.act.reject-revision': 'resource', 'task.act.route': 'resource',
   'task.act.retry-review': 'resource', 'task.act.complete': 'resource', 'task.act.merge': 'resource',
   'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource',
-  'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal': 'proposal',
+  'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal.confirm': 'proposal', 'chat.proposal.dismiss': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
-  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act': 'resource',
+  'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act.add-tests': 'resource', 'run.act.checks': 'resource', 'run.act.comment': 'resource',
+  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.revise': 'resource',
 } satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
 
 describe("the route table", () => {
@@ -110,14 +114,16 @@ describe("the route table", () => {
     for (const route of ROUTES.filter(one => one.scopeRefusal !== undefined || one.callerRefusal !== undefined)) expect([route.stage, route.callers], route.id).toEqual(["console", ["cookie"]]);
   });
 
-  test("/flows/:id/live is a browser-only read resolved through its flow's project", () => {
-    const live = matchRoute("GET", "/flows/7/live", "console");
-    expect(live).toMatchObject({ id: "flow.live", callers: ["cookie"], scope: "read", project: "flow", limited: "resource", needsProject: false });
-    expect(matchRoute("POST", "/flows/7/live", "console")).toBeNull();
+  test("one live stream: GET /live, readable by a browser or a token, each room proving its own access", () => {
+    const live = matchRoute("GET", "/live", "edge");
+    expect(live).toMatchObject({ id: "live", callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter", needsProject: false });
+    for (const old of ["/t/one/live", "/flows/7/live", "/chat/stream"]) expect(matchRoute("GET", old, "console"), old).toBeNull();
+    expect(matchRoute("GET", "/api/team/events")).toBeNull();
+    expect(matchRoute("POST", "/live", "console")).toBeNull();
   });
 
   test("undeclared paths and wrong methods match nothing", () => {
-    for (const path of ["/nope", "/settings/nope", "/t", "/t/a/b/c", "/r/x", "/flows/0/live", "/flows/1/live/x", "/chat/action/x", "/admin", "/.env", "/login/../board"]) {
+    for (const path of ["/nope", "/settings/nope", "/t", "/t/a/b/c", "/r/x", "/flows/0/export", "/flows/1/export/x", "/chat/action/x", "/admin", "/.env", "/login/../board"]) {
       expect(matchRoute("GET", path, "console"), path).toBeNull();
       expect(matchRoute("POST", path, "console"), path).toBeNull();
     }

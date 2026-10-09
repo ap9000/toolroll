@@ -168,10 +168,6 @@ export class WorkspaceAuthError extends Error {}
 export type WorkspaceRead = { kind: "changed"; workspace: BrowserWorkspace; etag: string | null }
   | { kind: "unchanged"; etag: string };
 
-export function workspacePollDelay(previous: number, unchanged: boolean, busy: boolean): number {
-  return unchanged && !busy ? Math.min(30_000, previous * 2) : 5_000;
-}
-
 export async function readWorkspace(workspace: BrowserWorkspace, request: string | null, fetcher: typeof fetch = fetch,
   options: { etag?: string | null; force?: boolean } = {}): Promise<WorkspaceRead> {
   const url = new URL(localUrl(workspace.refreshUrl), window.location.origin);

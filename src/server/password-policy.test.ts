@@ -1,17 +1,18 @@
 import { expect, test } from 'vitest';
 import { matchRoute, ROUTES } from './route-table.js';
 
-// Independent of both ROUTES and the password list: eight browser-only actions do not ask for a password.
+// Independent of both ROUTES and the password list: browser-only actions without passwords remain distinct from step-up ceremonies.
 const COOKIE_ONLY_POSTS = [
-  'edge.oauth-consent', 'code.act', 'flow.instance-act', 'flow.trigger.secret',
+  'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
+  'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret',
   'spend.budget', 'settings.project-delete', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',
   'settings.storage-send', 'settings.storage-clean-send', 'settings.storage-discard-send',
   'settings.pull-requests-send', 'settings.checks-send', 'settings.backups-send', 'settings.data-send',
   'settings.monitoring-send', 'settings.tools-connect-send', 'settings.tools-change-send',
-  'control.setup-approve', 'control.instructions-approve', 'settings.slack-send', 'settings.teams-send',
-  'settings.discord-send', 'settings.telegram-retry', 'settings.chat-approval-confirm',
+  'control.setup-approve', 'control.instructions-approve', 'settings.slack-alerts', 'settings.slack-connect', 'settings.slack-disconnect', 'settings.slack-pair', 'settings.slack-unpair', 'settings.teams-alerts', 'settings.teams-connect', 'settings.teams-disconnect', 'settings.teams-pair', 'settings.teams-unpair',
+  'settings.discord-alerts', 'settings.discord-connect', 'settings.discord-disconnect', 'settings.discord-pair', 'settings.discord-unpair', 'settings.telegram-retry', 'settings.chat-approval-confirm',
   'settings.chat-approval-save', 'settings.chat-approval-off', 'settings.telegram-pair', 'settings.telegram-unpair',
   'fleet.register', 'mode.confirm', 'mode.sign', 'people.projects', 'people.invite', 'people.invite-revoke',
   'people.revoke', 'fleet.retire',

@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { Window } from "happy-dom";
 import { deadlineWords, localizeTimes, shortAge, shortWhen, whenHtml, whenUtc } from "./when-html.js";
 import { ledgerBody } from "./ledger-view.js";
+import { html, htmlString } from "./html.js";
 
 describe("times on a phone", () => {
   const now = new Date("2026-09-30T17:10:00Z");
@@ -16,10 +17,10 @@ describe("times on a phone", () => {
   });
 
   test("the desk keeps the full stamp, and so does the title", () => {
-    const html = whenUtc("2026-09-30T16:39:12.000Z", now);
-    expect(html).toBe('<time data-when datetime="2026-09-30T16:39:12.000Z" title="2026-09-30 16:39 UTC"><span class="so-when-full">2026-09-30 16:39 UTC</span><span class="so-when-short">16:39</span></time>');
-    expect(whenHtml(null, "never", now)).toBe("");
-    expect(whenHtml("2026-09-30T16:39:00Z", '<b>"', now)).toContain('title="&lt;b&gt;&quot;"');
+    const stamp = htmlString(whenUtc("2026-09-30T16:39:12.000Z", now));
+    expect(stamp).toBe('<time data-when datetime="2026-09-30T16:39:12.000Z" title="2026-09-30 16:39 UTC"><span class="so-when-full">2026-09-30 16:39 UTC</span><span class="so-when-short">16:39</span></time>');
+    expect(htmlString(whenHtml(null, "never", now))).toBe("");
+    expect(htmlString(whenHtml("2026-09-30T16:39:00Z", '<b>"', now))).toContain('title="&lt;b&gt;&quot;"');
   });
 });
 
@@ -52,7 +53,7 @@ describe("the one formatter in the viewer's zone", () => {
     try {
       const ledger = ledgerBody([{ id: 7, at: "2026-10-01T21:16:42.123Z", actor: "sam", repo: null, taskId: null, runId: null, action: "Approved", outcome: "ok", source: "work", detail: null }], [], new URLSearchParams());
       window.document.body.innerHTML =
-        `<div data-workspace-native>${whenUtc("2026-10-01T21:16:00.000Z", now)}${ledger}</div>` +
+        htmlString(html`<div data-workspace-native>${whenUtc("2026-10-01T21:16:00.000Z", now)}${ledger}</div>`) +
         // The home lead's age and a thread time, as React writes them.
         `<p id="lead"><time datetime="2026-10-02T18:57:00.000Z">3 min ago</time></p><p id="thread"><time datetime="2026-10-02T16:39:00.000Z" title="2026-10-02 09:39">09:39</time></p>` +
         `<p id="chat"><time datetime="2026-10-02T18:57:00.000Z">3m ago</time></p>`;

@@ -44,7 +44,13 @@ import {
 type ReviewFacts
 } from "../workspace-ui.js";
 import { WorktreePool } from "../worktree.js";
-import { PersistentSessions,taskBody,type ChatEnablement,type Chrome,type LiveTurn,type PlanContractView,type PlanRevisionLedgerView,type ProjectPeek,type ReplacedThread,type ResultDetail,type RevisionDocView,type RevisionView,type RouteView,type Screen,type ServeOptions,type Session,type SsoIntent,type TaskChatFocus,type Who } from "./shared.js";
+import { type Chrome,type Screen } from "./chrome.js";
+import { type ServeOptions } from "./http.js";
+import { type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./render-chat.js";
+import { type ProjectPeek } from "./render-pages.js";
+import { type ResultDetail } from "./render-results.js";
+import { taskBody,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
+import { PersistentSessions,type Session,type SsoIntent,type Who } from "./session.js";
 
 export interface ServerRuntime {
   codingActorAllowed: (actor: { name: string; generation: number; }) => boolean;
@@ -52,7 +58,7 @@ export interface ServerRuntime {
   codingProjectAllowed: (repo: string) => boolean;
   store: Store;
   sendScreen: (response: ServerResponse, status: number, s: Screen) => void;
-  chromeFor: (project: string | null, active: Chrome["active"], listPane?: string, scope?: Chrome["scope"]) => Chrome;
+  chromeFor: (project: string | null, active: Chrome["active"], listPane?: import("../html.js").Html, scope?: Chrome["scope"]) => Chrome;
   visible: (repo: string | null) => boolean;
   managedRepos: () => string[];
   codingProblem: string | undefined;
@@ -95,7 +101,8 @@ export interface ServerRuntime {
   matePrincipal: (who: Who & { via: "cookie"; }) => VerifiedApprover | null;
   chatScopeOf: (focusTask: TaskChatFocus | null, chatProject: string | null) => MateThreadScope;
   liveTurns: Map<number, LiveTurn>;
-  chatStreams: Set<ServerResponse<IncomingMessage>>;
+  /** A lead reply started on a thread: pages with that conversation open follow it (server/live.ts). */
+  liveTurnStarted: (thread: number) => void;
   mateConversationRows: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject?: string | null) => { messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: MateTurn | null; recent: MateTurn[]; ask: MateAsk | null; asks: Map<number, MateAsk>; previous: ReplacedThread | null; };
   demoLeadHere: () => DemoLead | null;
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
@@ -164,15 +171,15 @@ export interface ServerRuntime {
   catalogCache: { at: number; models: import("../converse.js").CatalogModel[]; } | null;
   CHAT_CANDIDATE_TTL_MS: number;
   CHAT_CANDIDATES_PER_APPROVER: 9;
-  peekSay: (message: string, final?: boolean) => string;
-  peekCache: Map<string, { fragment: string; at: number; }>;
+  peekSay: (message: string, final?: boolean) => import("../html.js").Html;
+  peekCache: Map<string, { fragment: import("../html.js").Html; bytes: number; at: number; }>;
   PEEK_CACHE_TTL_MS: 10000;
   peekCacheBytes: number;
-  peekInFlight: Map<string, Promise<string>>;
+  peekInFlight: Map<string, Promise<import("../html.js").Html>>;
   PEEK_GLOBAL_INFLIGHT: 4;
   peekBySession: Map<string, number>;
   PEEK_SESSION_INFLIGHT: 2;
-  peekName: (path: string) => string;
+  peekName: (path: string) => import("../html.js").Html;
   PEEK_FRAGMENT_BYTES: number;
   peekEvict: () => void;
   allowedHost: (host: string | undefined) => boolean;

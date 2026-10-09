@@ -534,7 +534,7 @@ External trackers — build what a tracker nominates, under local approvals
 
   toolroll claim <id> --runner <name> [--ttl <seconds>]
   toolroll heartbeat <lease>         still working; extends the lease
-  toolroll release <lease>           done with it; fenced if superseded
+  toolroll worker release <lease>    done with it; fenced if superseded
   toolroll reap                      release every lease that ran out
 
   toolroll tick --runner <name> --token <t> --repo <path>
@@ -1395,8 +1395,9 @@ async function dispatch(
       return claimCommand(positional, flags, context);
     case "heartbeat":
       return leaseCommand("heartbeat", positional, flags, context);
-    case "release":
-      return leaseCommand("release", positional, flags, context);
+    case "worker":
+      if (positional[0] === "release") return leaseCommand("release", positional.slice(1), flags, context);
+      return fail(context.write, context.json, "worker", "usage", "`toolroll worker release <lease>` returns a lease.", EXIT.usage);
     case "reap":
       return reapCommand(context);
     case "runner":
@@ -1795,11 +1796,13 @@ function leaseCommand(
   context: Context,
 ): number {
   const { store, write, json, now } = context;
+  // `release` answers as the worker verb it now is (the bare `toolroll release <lease>` form is deprecated).
+  const name = command === "release" ? "worker release" : command;
   const lease = positional[0];
-  if (lease === undefined) return fail(write, json, command, "usage", `which lease? \`toolroll ${command} <lease>\``, EXIT.usage);
+  if (lease === undefined) return fail(write, json, name, "usage", `which lease? \`toolroll ${name} <lease>\``, EXIT.usage);
 
   const ttl = readTtl(flags);
-  if (ttl === null) return fail(write, json, command, "usage", "--ttl takes whole seconds", EXIT.usage);
+  if (ttl === null) return fail(write, json, name, "usage", "--ttl takes whole seconds", EXIT.usage);
 
   const result =
     command === "heartbeat" ? heartbeat(store, lease, now, ttl) : release(store, lease, now);
@@ -1809,7 +1812,7 @@ function leaseCommand(
       result.reason === "fenced"
         ? "superseded — another runner holds this task now; stop rather than retry"
         : "no such lease";
-    return fail(write, json, command, result.reason, message, EXIT.refused);
+    return fail(write, json, name, result.reason, message, EXIT.refused);
   }
 
   if (command === "release") {
@@ -1819,7 +1822,7 @@ function leaseCommand(
     if (task !== null && task.state === "running") store.setTaskState(task.id, "queued", now);
   }
 
-  return succeed(write, json, command, { lease: result.claim }, () => [
+  return succeed(write, json, name, { lease: result.claim }, () => [
     command === "heartbeat"
       ? `Still yours until ${result.claim.expiresAt}.`
       : `Released ${result.claim.leaseId}.`,

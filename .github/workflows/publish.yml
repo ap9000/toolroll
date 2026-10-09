@@ -5,8 +5,10 @@
 # provenance. Set up once with:
 #   npm trust github toolroll --repo ap9000/toolroll --file publish.yml
 #
-# To release: bump package.json and CHANGELOG.md on main (through the release
-# check), then push the matching tag, e.g. `git tag v0.6.0 && git push origin v0.6.0`.
+# To release: `toolroll release <branch>` (src/release.ts). It pushes the
+# matching tag on the squash-merged commit once main's tree equals the gated
+# tree. Both macOS legs must pass before publishing; the coordinator waits
+# for all three check names before Homebrew.
 name: Publish
 
 on:
@@ -22,7 +24,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  macos:
+    name: node ${{ matrix.node }} · macos-latest
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      # src/provider.test.ts reads historical commits (see ci.yml).
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+        env:
+          CI: "true"
+
   publish:
+    needs: macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

@@ -12,6 +12,7 @@
  * - Runs of blank lines collapse to one.
  * Code (inline or fenced) is left exactly as written.
  */
+import { html, joinHtml, type Html } from "./html.js";
 
 export type ReplyChannel = "console" | "terminal" | "telegram" | "slack" | "discord" | "teams";
 export type ShapeOptions = {
@@ -282,8 +283,6 @@ export function replyPieces(shaped: string): ReplyPiece[] {
   return pieces;
 }
 
-const html = (value: string): string =>
-  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 const slack = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 /** Discord's presentation syntax, escaped; mentions are broken so nothing pings. */
 export const discordPlain = (text: string): string =>
@@ -291,12 +290,12 @@ export const discordPlain = (text: string): string =>
 const teams = (value: string): string => value.replace(/([\\`*_\[\]<>#])/g, "\\$1");
 
 /** One line of a shaped reply as console HTML (the console lays out paragraphs and lists itself). */
-export function replyHtmlInline(shapedLine: string): string {
-  return replyPieces(shapedLine).map(piece =>
-    piece.kind === "text" ? html(piece.text)
-      : piece.kind === "bold" ? `<strong>${html(piece.text)}</strong>`
-        : piece.kind === "code" ? `<code>${html(piece.text)}</code>`
-          : `<a href="${html(piece.url)}" rel="noopener noreferrer" target="_blank">${html(piece.label)}</a>`).join("");
+export function replyHtmlInline(shapedLine: string): Html {
+  return joinHtml(replyPieces(shapedLine).map(piece =>
+    piece.kind === "text" ? piece.text
+      : piece.kind === "bold" ? html`<strong>${piece.text}</strong>`
+        : piece.kind === "code" ? html`<code>${piece.text}</code>`
+          : html`<a href="${piece.url}" rel="noopener noreferrer" target="_blank">${piece.label}</a>`));
 }
 
 /** A shaped reply in a channel's own text format (Telegram's formatting rides entities: see `telegramReply`). */

@@ -2,6 +2,7 @@
  * what needs attention on the first line, where it lives and when it was
  * last opened on the second, Open on the right. Opening stays the server's
  * POST (the session's project changes there), so every road is a form. */
+import { PostForm } from "../ui/index.js";
 import { BookOpen, FolderOpen, GitBranch, GitPullRequest, ListChecks, Plus } from "lucide-react";
 import { threadWhen } from "./task-view.js";
 import type { ReactNode } from "react";
@@ -10,12 +11,11 @@ import { GuardedHtml } from "../guarded-html.js";
 import { Badge, Button, badgeVariants, cn } from "../components/ui/index.js";
 
 function OpenForm({ csrf, path, destination, children, className }: { csrf: string; path: string; destination: string; children: ReactNode; className?: string }) {
-  return <form method="post" action="/projects/open" className={cn("inline-flex", className)}>
-    <input type="hidden" name="csrf" value={csrf} />
+  return <PostForm action="/projects/open" className={cn("inline-flex", className)}>
     <input type="hidden" name="path" value={path} />
     <input type="hidden" name="return" value={destination} />
     {children}
-  </form>;
+  </PostForm>;
 }
 
 /** In words people use: today, yesterday, or the date, by the one formatter in the viewer's zone. */

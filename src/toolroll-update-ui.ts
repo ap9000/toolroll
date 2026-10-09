@@ -4,10 +4,10 @@
  * and a one-time "What's new" card afterwards. The work itself is the
  * `toolroll update` command (toolroll-update.ts), started as its own job.
  */
+import { html, postForm, replaceMarkup, type Html } from "./html.js";
 import type { InstallMethod } from "./install-method.js";
 import { STEP_WORDS, UPDATE_STEPS, runtimeUpdateTerminal, type RuntimeUpdateJournal, type UpdateStep } from "./toolroll-update.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const clock = (iso: string) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
 export const UPDATES_CSS = `.updates{max-width:640px;min-width:0;overflow-wrap:anywhere}.updates .card{margin:0 0 16px}.updates h2{margin:0;font-size:1.0625rem}.updates .card>p{margin:4px 0 0}` +
@@ -39,66 +39,60 @@ export type UpdatesView = {
 };
 
 /** The steps, each done, current, failed or waiting. Also the live region's fragment. */
-export function updateStepsHtml(j: RuntimeUpdateJournal, running: boolean): string {
+export function updateStepsHtml(j: RuntimeUpdateJournal, running: boolean): Html {
   const finished = runtimeUpdateTerminal(j.phase);
   const failed = ["restored", "refused", "needs-attention", "rolling-back"].includes(j.phase);
   const last = UPDATE_STEPS.indexOf([...j.steps].reverse().find(s => (UPDATE_STEPS as readonly string[]).includes(s.phase))?.phase as UpdateStep);
   const items = UPDATE_STEPS.map((step: UpdateStep, i) => {
     const state = j.phase === "complete" || i < last ? "done" : i > last ? "waiting" : failed ? "failed" : finished ? "waiting" : "now";
     // Only where it adds something: which work it waits for, or what went wrong.
-    const detail = state === "now" && step === "draining" && j.waiting ? `<span class="step-detail">${e(j.waiting.on)}.${j.waiting.action ? ` If nothing of it is running, run <code>${e(j.waiting.action)}</code>.` : ""}</span>`
-      : (state === "now" && step === "draining") || (state === "failed" && j.phase === "rolling-back") ? `<span class="step-detail">${e(j.detail)}</span>` : "";
-    return `<li data-step="${step}" data-state="${state}">${e(STEP_WORDS[step])}${detail}</li>`;
-  }).join("");
-  const title = j.phase === "scheduled" ? `Update to ${e(j.to.version)} scheduled for ${e(clock(j.at ?? j.startedAt))}`
-    : j.phase === "rolling-back" ? `Restoring ${e(j.from.version)}`
-    : j.kind === "rollback" ? `Rolling back to ${e(j.to.version)}` : `Updating to ${e(j.to.version)}`;
-  const stalled = !running && !finished ? `<p class="update-problem" role="alert">The updater stopped. Run <code>toolroll update --resume</code> to continue it.</p>` : "";
-  return `<div id="update-live" data-phase="${e(j.phase)}" data-done="${finished ? 1 : 0}"><h2>${title}</h2>` +
-    (j.phase === "scheduled" ? `<p class="meta">Running work finishes first. You can close this page.</p>` : `<ol class="update-steps" aria-label="Update steps">${items}</ol>`) + stalled + `</div>`;
+    const detail = state === "now" && step === "draining" && j.waiting ? html`<span class="step-detail">${j.waiting.on}.${j.waiting.action ? html` If nothing of it is running, run <code>${j.waiting.action}</code>.` : ""}</span>`
+      : (state === "now" && step === "draining") || (state === "failed" && j.phase === "rolling-back") ? html`<span class="step-detail">${j.detail}</span>` : "";
+    return html`<li data-step="${step}" data-state="${state}">${STEP_WORDS[step]}${detail}</li>`;
+  });
+  const title = j.phase === "scheduled" ? `Update to ${j.to.version} scheduled for ${clock(j.at ?? j.startedAt)}`
+    : j.phase === "rolling-back" ? `Restoring ${j.from.version}`
+    : j.kind === "rollback" ? `Rolling back to ${j.to.version}` : `Updating to ${j.to.version}`;
+  const stalled = !running && !finished ? html`<p class="update-problem" role="alert">The updater stopped. Run <code>toolroll update --resume</code> to continue it.</p>` : "";
+  return html`<div id="update-live" data-phase="${j.phase}" data-done="${finished ? 1 : 0}"><h2>${title}</h2>${
+    j.phase === "scheduled" ? html`<p class="meta">Running work finishes first. You can close this page.</p>` : html`<ol class="update-steps" aria-label="Update steps">${items}</ol>`}${stalled}</div>`;
 }
 
-function outcomeHtml(j: RuntimeUpdateJournal): string {
-  if (j.phase === "complete") return j.kind === "rollback" ? `<div class="card" data-update-outcome="rolled-back"><h2>Back on ${e(j.to.version)}</h2><p class="meta">${e(j.detail)}</p></div>` : "";
-  if (j.phase === "cancelled") return `<div class="card" data-update-outcome="cancelled"><h2>Update cancelled</h2><p class="meta">Nothing changed.</p></div>`;
+function outcomeHtml(j: RuntimeUpdateJournal): Html | "" {
+  if (j.phase === "complete") return j.kind === "rollback" ? html`<div class="card" data-update-outcome="rolled-back"><h2>Back on ${j.to.version}</h2><p class="meta">${j.detail}</p></div>` : "";
+  if (j.phase === "cancelled") return html`<div class="card" data-update-outcome="cancelled"><h2>Update cancelled</h2><p class="meta">Nothing changed.</p></div>`;
   // Stopped on a finished run it can't show has ended: what is in the way and the one command, nothing more.
-  if (j.phase === "refused" && j.waiting) return `<div class="card" data-update-outcome="stopped"><h2>Update to ${e(j.to.version)} stopped: run #${e(j.waiting.run)} is in the way</h2>` +
-    `<p>${e(j.waiting.on)}. New work resumed.</p>` + (j.waiting.action ? `<p class="meta">If nothing of it is running, run <code>${e(j.waiting.action)}</code>, then update again.</p>` : `<p class="meta">Update again once it has stopped.</p>`) + `</div>`;
-  const title = j.phase === "refused" ? `Didn't update to ${e(j.to.version)}` : j.phase === "restored" ? `Update to ${e(j.to.version)} didn't finish` : "The update needs attention";
-  return `<div class="card" data-update-outcome="${e(j.phase)}"><h2>${title}</h2><p class="${j.phase === "needs-attention" ? "update-problem" : ""}" role="alert">${e(j.detail)}</p>` +
-    `<details><summary>Steps</summary>${updateStepsHtml(j, false).replace(/<h2>.*?<\/h2>/, "")}</details></div>`;
+  if (j.phase === "refused" && j.waiting) return html`<div class="card" data-update-outcome="stopped"><h2>Update to ${j.to.version} stopped: run #${j.waiting.run} is in the way</h2><p>${j.waiting.on}. New work resumed.</p>${
+    j.waiting.action ? html`<p class="meta">If nothing of it is running, run <code>${j.waiting.action}</code>, then update again.</p>` : html`<p class="meta">Update again once it has stopped.</p>`}</div>`;
+  const title = j.phase === "refused" ? html`Didn't update to ${j.to.version}` : j.phase === "restored" ? html`Update to ${j.to.version} didn't finish` : "The update needs attention";
+  return html`<div class="card" data-update-outcome="${j.phase}"><h2>${title}</h2><p class="${j.phase === "needs-attention" ? "update-problem" : ""}" role="alert">${j.detail}</p><details><summary>Steps</summary>${replaceMarkup(updateStepsHtml(j, false), /<h2>.*?<\/h2>/, () => html``)}</details></div>`;
 }
 
-export function updatesHtml(view: UpdatesView, notice: { said?: string | null; problem?: string | null }): string {
-  const note = notice.problem ? `<p class="update-problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+export function updatesHtml(view: UpdatesView, notice: { said?: string | null; problem?: string | null }): Html {
+  const note = notice.problem ? html`<p class="update-problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const j = view.journal;
   const active = j !== null && !runtimeUpdateTerminal(j.phase);
-  const csrf = `<input type="hidden" name="csrf" value="${e(view.csrf)}">`;
-  const whatsNew = view.whatsNew === null ? "" : `<div class="card whats-new" data-whats-new="${e(view.whatsNew.version)}"><h2>What’s new in ${e(view.whatsNew.version)}</h2>` +
-    (view.whatsNew.notes.length > 0 ? `<ul>${view.whatsNew.notes.map(line => `<li>${e(line)}</li>`).join("")}</ul>` : "") +
-    `<p class="meta"><a href="https://github.com/ap9000/toolroll/releases/tag/v${e(view.whatsNew.version)}" rel="noreferrer">Full release notes</a></p>` +
-    `<form method="post" action="/settings/updates/seen">${csrf}<button type="submit">Got it</button></form></div>`;
+  const whatsNew = view.whatsNew === null ? "" : html`<div class="card whats-new" data-whats-new="${view.whatsNew.version}"><h2>What’s new in ${view.whatsNew.version}</h2>${
+    view.whatsNew.notes.length > 0 ? html`<ul>${view.whatsNew.notes.map(line => html`<li>${line}</li>`)}</ul>` : ""}<p class="meta"><a href="https://github.com/ap9000/toolroll/releases/tag/v${view.whatsNew.version}" rel="noreferrer">Full release notes</a></p>${
+    postForm("/settings/updates/seen", html`<button type="submit">Got it</button>`)}</div>`;
   if (active) {
-    const cancel = ["scheduled", "draining"].includes(j.phase) ? `<form method="post" action="/settings/updates/cancel" class="update-actions">${csrf}<button type="submit">Cancel update</button></form>` : "";
-    return `<section class="updates">${note}<div class="card" id="update-region">${updateStepsHtml(j, view.running)}${cancel}</div><p class="meta stamp" id="update-region-stamp"></p></section>`;
+    const cancel = ["scheduled", "draining"].includes(j.phase) ? postForm("/settings/updates/cancel", html`<button type="submit">Cancel update</button>`, { attrs: { class: "update-actions" } }) : "";
+    return html`<section class="updates">${note}<div class="card" id="update-region">${updateStepsHtml(j, view.running)}${cancel}</div><p class="meta stamp" id="update-region-stamp"></p></section>`;
   }
   const latest = "version" in view.latest ? view.latest.version : null;
   const newer = latest !== null && newerThan(latest, view.current);
-  const state = view.method.kind === "npx" ? `<h2>Toolroll ${e(view.current)}</h2><p class="meta">npx runs the latest release each time, so this is current.</p>`
-    : view.method.kind === "source" ? `<h2>Toolroll ${e(view.current)}</h2><p class="meta">This runs from a source checkout. Update it with git.</p>`
-    : newer && view.method.kind === "desktop" ? `<h2>Toolroll ${e(latest)} is available</h2><p class="meta">You have ${e(view.current)}. Update it from the Toolroll app.</p>`
-    : newer ? `<h2>Toolroll ${e(latest)} is available</h2><p class="meta">You have ${e(view.current)}. Running work finishes first, and your current version is kept so you can go back.</p>`
-    : "off" in view.latest ? `<h2>Toolroll ${e(view.current)}</h2><p class="meta">Update checks are off.</p><form method="get" action="/settings/updates" class="update-actions"><input type="hidden" name="check" value="now"><button type="submit">Check now</button></form>`
-    : latest === null ? `<h2>Toolroll ${e(view.current)}</h2><p class="meta">Couldn’t check for a newer release: ${e("problem" in view.latest ? view.latest.problem : "")}</p>`
-    : `<h2>Toolroll ${e(view.current)} is up to date</h2>`;
+  const state = view.method.kind === "npx" ? html`<h2>Toolroll ${view.current}</h2><p class="meta">npx runs the latest release each time, so this is current.</p>`
+    : view.method.kind === "source" ? html`<h2>Toolroll ${view.current}</h2><p class="meta">This runs from a source checkout. Update it with git.</p>`
+    : newer && view.method.kind === "desktop" ? html`<h2>Toolroll ${latest} is available</h2><p class="meta">You have ${view.current}. Update it from the Toolroll app.</p>`
+    : newer ? html`<h2>Toolroll ${latest} is available</h2><p class="meta">You have ${view.current}. Running work finishes first, and your current version is kept so you can go back.</p>`
+    : "off" in view.latest ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Update checks are off.</p><form method="get" action="/settings/updates" class="update-actions"><input type="hidden" name="check" value="now"><button type="submit">Check now</button></form>`
+    : latest === null ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Couldn’t check for a newer release: ${"problem" in view.latest ? view.latest.problem : ""}</p>`
+    : html`<h2>Toolroll ${view.current} is up to date</h2>`;
   const form = newer && !["npx", "source", "desktop"].includes(view.method.kind)
-    ? `<form method="post" action="/settings/updates">${csrf}<input type="hidden" name="version" value="${e(latest)}">` +
-      `<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>` +
-      `<div class="update-actions"><button type="submit" name="when" value="now" class="primary">Update now</button>` +
-      `<button type="submit" name="when" value="when-idle">When idle</button><button type="submit" name="when" value="tonight">Tonight (03:00)</button></div></form>`
+    ? postForm("/settings/updates", html`<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><div class="update-actions"><button type="submit" name="when" value="now" class="primary">Update now</button><button type="submit" name="when" value="when-idle">When idle</button><button type="submit" name="when" value="tonight">Tonight (03:00)</button></div>`, { hidden: { version: latest } })
     : "";
-  const rollback = view.rollbackTo !== null ? `<p class="meta">To go back to ${e(view.rollbackTo)}: <code>toolroll update --rollback</code></p>` : "";
-  return `<section class="updates">${note}${whatsNew}${j ? outcomeHtml(j) : ""}<div class="card" data-update-state="${newer ? "available" : "current"}">${state}${form}${rollback}</div></section>`;
+  const rollback = view.rollbackTo !== null ? html`<p class="meta">To go back to ${view.rollbackTo}: <code>toolroll update --rollback</code></p>` : "";
+  return html`<section class="updates">${note}${whatsNew}${j ? outcomeHtml(j) : ""}<div class="card" data-update-state="${newer ? "available" : "current"}">${state}${form}${rollback}</div></section>`;
 }
 
 export function newerThan(a: string, b: string): boolean {

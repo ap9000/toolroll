@@ -1,32 +1,30 @@
+import { html, type Html } from './html.js';
 import type { ChatSnapshot } from './store.js';
-
-const escape = (value: string): string => value.replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]!));
 
 /** Presentation only. These are recorded completions, not a claim that
  * work happened since the user last visited, or that every result passed. */
-export function completedWorkHtml(snapshot: ChatSnapshot, projectLabels: readonly string[], assignments?: Readonly<Record<string, { state: string }>>): string {
+export function completedWorkHtml(snapshot: ChatSnapshot, projectLabels: readonly string[], assignments?: Readonly<Record<string, { state: string }>>): Html {
   const completed = snapshot.tasks.filter(task => assignments === undefined ? task.state === 'done'
     && task.proofVerdict !== 'short' && task.proofVerdict !== 'refuted'
     && !task.historyProblem && !task.otherActive?.length
     && task.dispatch?.condition !== 'waiting' : assignments[task.id]?.state === 'complete').slice(0, 3);
-  if (!completed.length) return '';
-  return `<section class="chat-completed" aria-label="Completed work"><h3>Completed work</h3>` + completed.map(task => {
-    return `<a class="chat-overview-item" href="/t/${encodeURIComponent(task.rootId ?? task.id)}"><span class="chat-overview-copy"><strong>${escape(task.title)}</strong><span>${escape(projectLabels[task.repoIndex] ?? `Project ${task.repoIndex + 1}`)}</span></span><span class="chat-completed-action">Open task <span aria-hidden="true">→</span></span></a>`;
-  }).join('') + '</section>';
+  if (!completed.length) return html``;
+  return html`<section class="chat-completed" aria-label="Completed work"><h3>Completed work</h3>${completed.map(task => {
+    return html`<a class="chat-overview-item" href="/t/${encodeURIComponent(task.rootId ?? task.id)}"><span class="chat-overview-copy"><strong>${task.title}</strong><span>${projectLabels[task.repoIndex] ?? `Project ${task.repoIndex + 1}`}</span></span><span class="chat-completed-action">Open task <span aria-hidden="true">→</span></span></a>`;
+  })}</section>`;
 }
 
 /** Keep activity truthful: the turn's recorded step count is not a
  * percentage or an invented tool phase. Billing detail stays available. */
-export function chatWorkingHtml(input: { details: string; stopForm?: string; keyed?: boolean }): string {
-  return `<div class="chat-thinking chat-activity-row" id="latest" role="status"${input.keyed ? ' data-key="pending"' : ''}>` +
-    `<span class="activity-dot" aria-hidden="true"></span><details><summary>Working<span class="activity-ellipsis" aria-hidden="true">…</span></summary><p class="meta">${escape(input.details)}</p></details>` +
-    (input.stopForm ?? '') + '</div>';
+export function chatWorkingHtml(input: { details: string; stopForm?: Html; keyed?: boolean }): Html {
+  const activity = html`<span class="activity-dot" aria-hidden="true"></span><details><summary>Working<span class="activity-ellipsis" aria-hidden="true">…</span></summary><p class="meta">${input.details}</p></details>`;
+  return html`<div class="chat-thinking chat-activity-row" id="latest" role="status"${input.keyed ? html` data-key="pending"` : ''}>${activity}${input.stopForm}</div>`;
 }
 
 /** Recorded activity is inspectable, not a row of performance badges. */
-export function chatActivityDetailsHtml(activity: string | null): string {
-  if (!activity) return '';
-  return `<details class="chat-activity-details"><summary>Activity</summary><div class="chat-activity" aria-label="work performed">${activity.split(' · ').map(one => `<span>${escape(one)}</span>`).join('')}</div></details>`;
+export function chatActivityDetailsHtml(activity: string | null): Html {
+  if (!activity) return html``;
+  return html`<details class="chat-activity-details"><summary>Activity</summary><div class="chat-activity" aria-label="work performed">${activity.split(' · ').map(one => html`<span>${one}</span>`)}</div></details>`;
 }
 
 // Local primitives adapted from the researched interaction patterns. No

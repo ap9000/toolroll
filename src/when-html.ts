@@ -5,7 +5,7 @@
  * formatter in the viewer's own zone, as the React views do. The CSS that picks one lives in the shared page
  * stylesheet (`.so-when-*` in serve.ts).
  */
-const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+import { html, type Html } from "./html.js";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY_MS = 86_400_000;
 
@@ -106,19 +106,18 @@ export function exactWhen(iso: string, zone = "UTC"): string {
 }
 
 /** The `<time>` for an exact stamp: its seconds in UTC words on the server, the viewer's zone in a browser. */
-export function exactWhenHtml(iso: string): string {
-  return `<time data-when="exact" datetime="${escape(iso)}" title="${escape(iso)}">${escape(exactWhen(iso))}</time>`;
+export function exactWhenHtml(iso: string): Html {
+  return html`<time data-when="exact" datetime="${iso}" title="${iso}">${exactWhen(iso)}</time>`;
 }
 
 /** The `<time>` for a stamp: `full` is the words a desk shows ("2026-09-30 16:39 UTC"). Empty for no stamp. */
-export function whenHtml(iso: string | null, full: string, now: Date = new Date()): string {
-  if (iso === null || iso === "") return "";
-  const words = escape(full);
-  return `<time data-when datetime="${escape(iso)}" title="${words}"><span class="so-when-full">${words}</span><span class="so-when-short">${escape(shortWhen(iso, now))}</span></time>`;
+export function whenHtml(iso: string | null, full: string, now: Date = new Date()): Html {
+  if (iso === null || iso === "") return html``;
+  return html`<time data-when datetime="${iso}" title="${full}"><span class="so-when-full">${full}</span><span class="so-when-short">${shortWhen(iso, now)}</span></time>`;
 }
 
 /** "2026-09-30 16:39 UTC" — the desk's words for a stamp. */
 export const utcMinute = (iso: string) => `${iso.slice(0, 16).replace("T", " ")} UTC`;
 
 /** Both the desk and phone forms of a UTC stamp. */
-export const whenUtc = (iso: string | null, now: Date = new Date()) => iso === null || iso === "" ? "" : whenHtml(iso, utcMinute(iso), now);
+export const whenUtc = (iso: string | null, now: Date = new Date()): Html => iso === null || iso === "" ? html`` : whenHtml(iso, utcMinute(iso), now);

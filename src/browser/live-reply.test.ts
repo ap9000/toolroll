@@ -7,9 +7,10 @@ import { LiveReplyBubble, useLiveReply } from "./live-reply.js";
 
 class Events extends EventTarget {
   static latest: Events;
-  onerror: (() => void) | null = null;
-  close = vi.fn();
-  constructor(_url: string) { super(); Events.latest = this; }
+  static CLOSED = 2;
+  readyState = 1;
+  close = vi.fn(() => { this.readyState = 2; });
+  constructor(readonly url: string) { super(); Events.latest = this; }
 }
 const chat = { sessionId: 1, taskId: null, project: null } as BrowserConversation;
 const done = vi.fn();
@@ -27,7 +28,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.unstubAllGlobals(); });
 const emit = async (steps: unknown[], ended = false) => act(async () => {
-  Events.latest.dispatchEvent(new MessageEvent("turn", { data: JSON.stringify({ steps, done: ended, ok: ended }) }));
+  Events.latest.dispatchEvent(new MessageEvent("turn", { data: JSON.stringify({ room: "chat", steps, done: ended, ok: ended }) }));
 });
 const step = (calls: unknown[], text = "") => ({ tools: calls.map(() => "Reading the flows"), toolCalls: calls, text });
 const call = (id: string, state: string, reason?: string) => ({ id, label: "Reading the flows", state, ...(reason === undefined ? {} : { reason }) });
@@ -53,7 +54,9 @@ test("a failed call keeps its reason when a same-label retry succeeds and the tu
   expect(document.querySelector("script")).toBeNull();
   expect(document.querySelector(".so-working, .so-live-caret")).toBeNull();
   expect(done).toHaveBeenCalledOnce();
-  expect(Events.latest.close).toHaveBeenCalled();
+  // The page's stream stays open for its other rooms (and the conversation's next reply).
+  expect(Events.latest.url).toBe("/live?room=chat");
+  expect(Events.latest.close).not.toHaveBeenCalled();
 });
 
 test("old snapshots and invalid outcomes never imply success from text, position or turn success", async () => {
@@ -70,7 +73,7 @@ test.each(["ended", "disconnected"])("an unresolved call becomes unknown when th
   const steps = [step([call("pending", "running"), call("done", "succeeded")])];
   await emit(steps);
   if (how === "ended") await emit(steps, true);
-  else await act(async () => Events.latest.onerror?.());
+  else await act(async () => { Events.latest.readyState = Events.CLOSED; Events.latest.dispatchEvent(new Event("error")); });
   expect(rows().map(row => row.dataset.state)).toEqual(["unknown", "succeeded"]);
   expect(document.querySelector(".so-working")).toBeNull();
 });

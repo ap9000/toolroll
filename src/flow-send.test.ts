@@ -5,6 +5,8 @@
  * Scripted Telegram transport and a real store; no live account. Slack, Discord and Teams rendering is tested in
  * their own files.
  */
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -324,7 +326,8 @@ describe("c3: another project, and Send me the result", () => {
     const steps = [{ id: "build", title: "Build the docs", kind: "task" as const, repo: BETA }];
     const definition = flowFromSteps(steps, null);
     expect(definition.stages[0]).toMatchObject({ kind: "task", repo: BETA });
-    expect(flowTerms(definition, null)[0]).toContain("Builds in another project: /projects/beta");
+    expect(flowTerms(definition, null)[0]).toContain("Builds in project: beta");
+    expect(flowTerms(definition, null).join("\n")).not.toContain(BETA);
     expect(crossProjectProblem(store, definition, { repo: ALPHA, owner: "sam" })).toBe("Zone Build the docs: sam, who owns this flow, can't file work in that project.");
     expect(crossProjectProblem(store, definition, { repo: ALPHA, owner: "alex" })).toBeNull();
 
@@ -396,12 +399,12 @@ describe("c3: another project, and Send me the result", () => {
       expect(asked.definition.stages.filter(one => one.kind === "send"), template.id).toHaveLength(1);
       expect(asked.answers, template.id).not.toHaveProperty(SEND_RESULT.key);
       expect(asked.does, template.id).not.toContain(SEND_RESULT.does);
-      expect(galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }), template.id).not.toContain("data-send-result");
+      expect(htmlString(withFormToken("x", () => galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }))), template.id).not.toContain("data-send-result");
     }
     for (const template of [...GALLERY, BLANK].filter(one => !already.includes(one.id))) {
       const drawn = galleryDiagram(template);
       expect(sendsAlready(template), template.id).toBe(false);
-      expect(galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }), template.id).toContain("data-send-result");
+      expect(htmlString(withFormToken("x", () => galleryUseHtml({ template, projects: [], repo: ALPHA, answers: {}, name: template.name, preview: null, problem: null, csrf: "x", diagram: null }))), template.id).toContain("data-send-result");
       const sending: FlowDefinition = validateFlowDefinition(withSendResult(drawn));
       // Exactly one is gained.
       expect(sending.stages.filter(one => one.kind === "send"), template.id).toHaveLength(1);

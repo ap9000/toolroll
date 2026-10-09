@@ -14,6 +14,8 @@ import { reproveRemote, remoteAllows } from "./operate-remote.js";
 import { runTokensCommand, type TokensCliContext } from "./tokens-cli.js";
 import { TOKEN_NOTICE_KIND, tokenNoticePass } from "./token-notices.js";
 import { credentialsHtml } from "./credentials-ui.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 
 const NOW = new Date("2026-10-06T12:00:00.000Z");
 const DAY = 86_400_000;
@@ -234,12 +236,12 @@ describe("toolroll tokens", () => {
     expect(tokenNoticePass(store, clock).sent).toEqual([{ token: replacement, days: 1 }]);
     expect(tokenNoticePass(store, clock).sent).toEqual([]);
     // The card says it once, beside its projects, and never shows a secret.
-    const html = credentialsHtml({ who: "alex", everyone: false, canSeeEveryone: false, sessions: [], tokens: store.apiTokens("alex"), now: clock.getTime() }, "csrf", {});
+    const html = htmlString(withFormToken("csrf", () => credentialsHtml({ who: "alex", everyone: false, canSeeEveryone: false, sessions: [], tokens: store.apiTokens("alex"), now: clock.getTime() }, {})));
     expect(html).toContain("Expires within a day");
     expect(html.match(/Expires within a day/g)).toHaveLength(1);
     expect(html).toContain("All projects");
     expect(html).not.toMatch(/so_[a-f0-9]{12}_/);
-    const soon = credentialsHtml({ who: "alex", everyone: false, canSeeEveryone: false, sessions: [], tokens: store.apiTokens("alex"), now: expires - 5 * DAY }, "csrf", {});
+    const soon = htmlString(withFormToken("csrf", () => credentialsHtml({ who: "alex", everyone: false, canSeeEveryone: false, sessions: [], tokens: store.apiTokens("alex"), now: expires - 5 * DAY }, {})));
     expect(soon).toContain("Expires in 5 days");
   });
 

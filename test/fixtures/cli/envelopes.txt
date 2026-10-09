@@ -445,6 +445,71 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "release",
+      "synopsis": "release Toolroll itself from a branch: gate the exact commit, wait for the owner's approval, check, complete, deploy, merge, tag, publish, Homebrew; rerun to resume",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "branch",
+          "required": true,
+          "meaning": "the pushed branch with an open pull request"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the gate checkout the release check runs in (default: this checkout)"
+        },
+        {
+          "name": "new",
+          "takesValue": false,
+          "meaning": "release a new commit on the branch, setting the earlier unfinished release aside"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "<step>=<minutes>: one waiting step's time limit"
+        },
+        {
+          "name": "tap",
+          "takesValue": true,
+          "meaning": "the Homebrew tap, owner/name"
+        },
+        {
+          "name": "release-gate",
+          "takesValue": true,
+          "meaning": "<id>: show why an update pause left before a deployment's swap is safe to lift"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "with --release-gate: lift that one pause once it is proved"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "ambiguous",
+        "drift",
+        "timeout",
+        "check-failed",
+        "ci-failed",
+        "tree-mismatch",
+        "conflict",
+        "mixed-runtime",
+        "gate-held",
+        "after-swap"
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "demo",
       "synopsis": "a seeded throwaway sandbox",
       "audience": "operator",
@@ -4663,7 +4728,7 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
-      "invocation": "release",
+      "invocation": "worker release",
       "synopsis": "done with it; fenced if superseded",
       "audience": "agent",
       "agentMayInvoke": true,

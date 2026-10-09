@@ -15,7 +15,10 @@
  *   an invalidation, never content. The page reads itself again under its
  *   own checks, so redaction stays the page's.
  * - The safety net. Every room also checks itself about every 30 s, so a
- *   missed signal heals, and sends a keep-alive between.
+ *   missed signal heals; the page's connection sends a keep-alive between,
+ *   each after every room proves its viewer again.
+ * - One connection per page. A page opens one stream (GET /live) and joins
+ *   every room it shows; each event names its room.
  * - Back-pressure. Each page's stream is bounded: a page that falls behind
  *   gets one `reload` and ends so its EventSource can reconnect.
  *
@@ -157,64 +160,129 @@ export class LiveStream {
   }
 }
 
-export type LiveViewer = { name: string; response: ServerResponse; valid: () => boolean };
+/**
+ * One page's live connection: its bounded stream, one keep-alive, and every
+ * room it joined. Each event names its room, so one EventSource serves the
+ * whole page. It ends when the page goes, when it falls behind (one
+ * `reload`), or when its last room lets it go. A keep-alive is a delivery
+ * too: every room proves its viewer again first, so a page whose session
+ * lapsed with nothing written hears its rooms go, never another frame.
+ */
+export class LiveConnection {
+  readonly stream: LiveStream;
+  private readonly leaves = new Set<() => void>();
+  private readonly proofs = new Set<() => void>();
+  private readonly timer: NodeJS.Timeout;
+  private closed = false;
+  constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number } = {}) {
+    this.stream = new LiveStream(response, options.limitBytes, () => this.close());
+    this.timer = setInterval(() => this.keepAlive(), options.keepAliveMs ?? KEEP_ALIVE_MS);
+    this.timer.unref();
+    response.once("close", () => this.close());
+  }
+  private keepAlive(): void {
+    for (const prove of [...this.proofs]) { if (!this.open) return; prove(); }
+    if (this.open) this.stream.keepAlive();
+  }
+  /** Run before each keep-alive: a room proves its viewer again (and leaves if it no longer passes). Returns the undo. */
+  onKeepAlive(prove: () => void): () => void { this.proofs.add(prove); return () => { this.proofs.delete(prove); }; }
+  get open(): boolean { return !this.closed && this.stream.open; }
+  /** An event for one room: its data says which. */
+  send(room: string, event: string, data: Record<string, unknown> = {}): void { this.stream.send(event, { room, ...data }); }
+  /** Run when the connection ends; returns the undo for a room that leaves first. */
+  onClose(leave: () => void): () => void { this.leaves.add(leave); return () => { this.leaves.delete(leave); }; }
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.timer);
+    for (const leave of [...this.leaves]) leave();
+    this.leaves.clear();
+    this.proofs.clear();
+    if (!this.response.writableEnded) this.response.end();
+  }
+  /** Rooms joined and not yet left. */
+  get rooms(): number { return this.leaves.size; }
+}
+
+/** One page in one room: who, the room's name as the page asked for it, the page's connection, and its re-proof. */
+export type LiveViewer = { name: string; room: string; connection: LiveConnection; valid: () => boolean };
 
 export type LiveRooms<K, V extends LiveViewer> = {
-  /** Keep this page's stream on the room until it closes; the first events say where it stands and who's here. */
+  /** Keep this page on the room until it leaves; the first events say where the room stands (and who's here). */
   join: (key: K, viewer: V) => void;
-  /** Every stream, ended (the server is closing). */
+  /** Every page leaves (the server is closing). */
   close: () => void;
   size: () => number;
 };
 
-export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; keepAliveMs?: number; limitBytes?: number };
+/** `minIntervalMs`: a busy room says `change` at most this often — the first at once, the latest after. */
+export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number };
 
 const PRESENCE_SETTLE_MS = 150;
 
-type Room<V> = { viewers: Map<V, LiveStream>; last: string | null; timer: NodeJS.Timeout; ticks: number; settling: NodeJS.Timeout | null; retry: NodeJS.Timeout | null };
+type Room<V> = { viewers: Map<V, () => void>; last: string | null; timer: NodeJS.Timeout; settling: NodeJS.Timeout | null; retry: NodeJS.Timeout | null;
+  saidAt: number; holding: NodeJS.Timeout | null; revision: string | null };
 
-/** Rooms of open pages that hear the bus. `presence` says who else is here, as each page should see it. */
+/**
+ * Rooms of open pages that hear the bus. `presence` says who else is here, as
+ * each page should see it (null: the room has no presence). A viewer that no
+ * longer passes its re-proof hears `gone` and leaves; a room whose subject is
+ * gone (fingerprint null) sends everyone `gone`. A connection with no rooms
+ * left ends.
+ */
 export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) => string | null,
-  presence: (viewers: readonly V[], me: string) => unknown, options: LiveRoomOptions = {}): LiveRooms<K, V> {
+  presence: ((viewers: readonly V[], me: string) => unknown) | null, options: LiveRoomOptions = {}): LiveRooms<K, V> {
   const bus = options.bus ?? null;
-  const keepAliveMs = options.keepAliveMs ?? KEEP_ALIVE_MS;
-  const checkEvery = Math.max(1, Math.round((options.safetyNetMs ?? SAFETY_NET_MS) / keepAliveMs));
+  const safetyNetMs = options.safetyNetMs ?? SAFETY_NET_MS;
+  const minIntervalMs = options.minIntervalMs ?? 0;
   const rooms = new Map<K, Room<V>>();
   let unsubscribe: (() => void) | null = null;
 
-  const here = (room: Room<V>, viewer: V): unknown => presence([...room.viewers.keys()], viewer.name);
-  const announce = (room: Room<V>): void => {
+  const announce = (key: K, room: Room<V>): void => {
+    if (presence === null || rooms.get(key) !== room) return;
     // A page that moves from one card to the next leaves and joins at once: say it once, after it settles.
     if (room.settling !== null) clearTimeout(room.settling);
     room.settling = setTimeout(() => {
       room.settling = null;
-      for (const [viewer, stream] of room.viewers) stream.send("here", { people: here(room, viewer) });
+      for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) });
     }, PRESENCE_SETTLE_MS);
     room.settling.unref();
   };
   const leave = (key: K, viewer: V): void => {
     const room = rooms.get(key);
-    if (room === undefined || !room.viewers.delete(viewer)) return;
-    if (!viewer.response.writableEnded) viewer.response.end();
-    if (room.viewers.size > 0) { announce(room); return; }
+    const forget = room?.viewers.get(viewer);
+    if (room === undefined || forget === undefined) return;
+    room.viewers.delete(viewer);
+    forget();
+    // The page's last room: its connection has nothing left to say.
+    if (viewer.connection.rooms === 0) viewer.connection.close();
+    if (room.viewers.size > 0) { announce(key, room); return; }
     clearInterval(room.timer);
     if (room.settling !== null) clearTimeout(room.settling);
     if (room.retry !== null) clearTimeout(room.retry);
+    if (room.holding !== null) clearTimeout(room.holding);
     rooms.delete(key);
     if (rooms.size === 0 && unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
   };
-  const drop = (key: K, viewer: V): void => {
-    rooms.get(key)?.viewers.get(viewer)?.send("gone", {});
-    leave(key, viewer);
+  /** The final delivery boundary, including queued frames and sends that may overflow. */
+  const deliver = (key: K, room: Room<V>, viewer: V, event?: "change" | "here" | "gone", data: Record<string, unknown> = {}): boolean => {
+    if (rooms.get(key) !== room || !room.viewers.has(viewer)) return false;
+    if (!viewer.connection.open) { leave(key, viewer); return false; }
+    let valid = false;
+    try { valid = viewer.valid(); } catch { /* A failed proof releases only this room. */ }
+    if (!valid || event === "gone") {
+      // A failed proof may send only the generic departure, never the pending room data.
+      try { viewer.connection.send(viewer.room, "gone"); }
+      finally { leave(key, viewer); }
+      return false;
+    }
+    if (event !== undefined) viewer.connection.send(viewer.room, event, data);
+    return viewer.connection.open && room.viewers.has(viewer);
   };
   /** Recheck who may still see the room, then whether what it shows moved. */
   const refresh = (key: K, room: Room<V>, revision: string | null): void => {
     // A signed-out or narrowed account stops hearing about it, at the first write after.
-    for (const viewer of [...room.viewers.keys()]) {
-      let ok = false;
-      try { ok = viewer.valid(); } catch { ok = false; }
-      if (!ok) drop(key, viewer);
-    }
+    for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer);
     if (rooms.get(key) !== room) return;
     let now: string | null;
     try { now = fingerprint(key); } catch {
@@ -222,19 +290,18 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       if (room.retry === null) { room.retry = setTimeout(() => { room.retry = null; if (rooms.get(key) === room) refresh(key, room, revision); }, 1_000); room.retry.unref(); }
       return;
     }
-    if (now === null) { for (const viewer of [...room.viewers.keys()]) drop(key, viewer); return; }
+    if (now === null) { for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "gone"); return; }
     if (now === room.last) return;
     room.last = now;
-    for (const stream of room.viewers.values()) stream.send("change", { at: now, revision: revision ?? bus?.revision() ?? null });
+    room.revision = revision ?? bus?.revision() ?? null;
+    if (room.holding !== null) return;
+    const wait = room.saidAt + minIntervalMs - Date.now();
+    if (wait > 0) { room.holding = setTimeout(() => { room.holding = null; if (rooms.get(key) === room) say(key, room); }, wait); room.holding.unref(); return; }
+    say(key, room);
   };
-  const tick = (key: K, room: Room<V>): void => {
-    room.ticks += 1;
-    if (room.ticks % checkEvery === 0) {
-      const before = room.last;
-      refresh(key, room, null);
-      if (rooms.get(key) === room && room.last !== before) return;
-    }
-    for (const stream of room.viewers.values()) stream.keepAlive();
+  const say = (key: K, room: Room<V>): void => {
+    room.saidAt = Date.now();
+    for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "change", { at: room.last, revision: room.revision });
   };
   const heard = (change: LiveChange): void => {
     for (const [key, room] of [...rooms]) refresh(key, room, change.revision);
@@ -246,21 +313,18 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       if (room === undefined) {
         let last: string | null = null;
         try { last = fingerprint(key); } catch { /* the next signal or the safety net reads it */ }
-        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => tick(key, created), keepAliveMs), ticks: 0, settling: null, retry: null };
+        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null };
         created.timer.unref();
         room = created;
         rooms.set(key, room);
         if (bus !== null && unsubscribe === null) unsubscribe = bus.subscribe(heard);
       }
-      // Remove an overflowed page immediately, even while its final bytes
-      // wait for the client. Peers must not keep seeing stale presence.
-      const stream = new LiveStream(viewer.response, options.limitBytes, () => leave(key, viewer));
-      room.viewers.set(viewer, stream);
-      viewer.response.once("close", () => leave(key, viewer));
-      stream.send("change", { at: room.last, revision: bus?.revision() ?? null });
-      if (!stream.open) return;
-      stream.send("here", { people: here(room, viewer) });
-      if (stream.open) announce(room);
+      const joined = room;
+      const forget = viewer.connection.onClose(() => leave(key, viewer));
+      const unprove = viewer.connection.onKeepAlive(() => { deliver(key, joined, viewer); });
+      room.viewers.set(viewer, () => { forget(); unprove(); });
+      if (!deliver(key, room, viewer, "change", { at: room.last, revision: bus?.revision() ?? null }) || presence === null) return;
+      if (deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) })) announce(key, room);
     },
     close() {
       for (const [key, room] of [...rooms]) for (const viewer of [...room.viewers.keys()]) leave(key, viewer);

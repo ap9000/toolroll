@@ -109,6 +109,45 @@ describe("the lead builds and runs a flow", () => {
   };
   const confirm = (id: number) => confirmMateProposal(store, who, id, now, { via: "telegram", evidenceRoot: root });
 
+  test("a build step naming the flow's own project can be confirmed inline", () => {
+    const created = proposalOf(lead("propose_flow", { operation: "create", repo: "r1", name: "Bug fixes", steps: [
+      { id: "build", title: "Build the fix", kind: "task", repo: "r1", next: "tests" },
+      { id: "tests", title: "Run tests", kind: "check", script: "tests" },
+    ] }));
+    const drafted = sharedActionPayload(store.getMateProposal(created)!.payload)!;
+    expect(drafted.title).toBe("Create the Bug fixes flow in shop");
+    expect(drafted.terms.join("\n")).toContain("Builds in project: shop");
+    expect(drafted.terms.join("\n")).not.toContain(repo);
+    expect(drafted.terms.join("\n")).not.toMatch(/[\\/]/);
+    expect(sharedActionNeedsReview(drafted)).toBe(false);
+    expect(confirm(created)).toMatchObject({ ok: true });
+    const flow = store.listFlows([repo])[0]!;
+    expect(flowDefinitionOf(flow)!.stages[0]!.repo).toBe(repo);
+
+    const edited = proposalOf(lead("propose_flow", { operation: "edit", flow: flow.id, steps: [
+      { id: "build", title: "Build the fix", kind: "task", repo: "r1", planning: "required", next: "tests" },
+      { id: "tests", title: "Run tests", kind: "check", script: "tests" },
+    ] }));
+    const changed = sharedActionPayload(store.getMateProposal(edited)!.payload)!;
+    expect(changed.terms.join("\n")).toContain("Builds in project: shop");
+    expect(changed.terms.join("\n")).not.toContain(repo);
+    expect(changed.terms.join("\n")).not.toMatch(/[\\/]/);
+    expect(sharedActionNeedsReview(changed)).toBe(false);
+    expect(confirm(edited)).toMatchObject({ ok: true });
+  });
+
+  test("a flow term containing an actual filesystem path still needs secure review", () => {
+    const instructions = "Read /Users/operator/Documents/checklist.md before building the fix.";
+    const created = proposalOf(lead("propose_flow", { operation: "create", repo: "r1", name: "Bug fixes", steps: [
+      { id: "build", title: "Build the fix", kind: "task", repo: "r1", instructions },
+    ] }));
+    const drafted = sharedActionPayload(store.getMateProposal(created)!.payload)!;
+    expect(drafted.terms.join("\n")).toContain(instructions);
+    expect(sharedActionNeedsReview(drafted)).toBe(true);
+    expect(confirm(created)).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(store.listFlows([repo])).toEqual([]);
+  });
+
   test("create from plain steps, add a card, move it, approve it — each a card the operator confirms — and a stale card is refused", () => {
     // With no flows yet, the lead still learns that scripts are the project's and can be saved now.
     expect(lead("get_flows", {})).toMatchObject({ ok: true, body: { flows: [], templates: FLOW_TEMPLATES.map(one => ({ template: one.id })), scripts: [{ project: "r1", scripts: [] }], rule: expect.stringContaining("even before any flow exists") } });

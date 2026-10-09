@@ -3,7 +3,7 @@ import type { ServerResponse } from "node:http";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
-import { createLiveBus, followWorkspace } from "./live-bus.js";
+import { createLiveBus, followWorkspace, LiveConnection } from "./live-bus.js";
 import { prepareWorkspaceRevision } from "./workspace-revision.js";
 import { openStore, type Store } from "./store.js";
 
@@ -205,13 +205,13 @@ test("a write reaches the open stream at once as one opaque change; nothing writ
   const write = vi.fn();
   const response = Object.assign(new EventEmitter(), { write, end: vi.fn(), writableEnded: false, destroyed: false, writableLength: 0 });
   try {
-    rooms.join(fixture.flow, { name: "alex", card: null, editing: false, response: response as unknown as ServerResponse, valid: () => true });
+    rooms.join(fixture.flow, { name: "alex", card: null, editing: false, room: "", connection: new LiveConnection(response as unknown as ServerResponse), valid: () => true });
     write.mockClear();
     fixture.checkpoint(["blocked"], "private diagnostic");
     vi.advanceTimersByTime(1);
     const changes = write.mock.calls.map(call => String(call[0])).filter(line => line.startsWith("event: change"));
     expect(changes).toHaveLength(1);
-    expect(changes[0]).toMatch(/^event: change\ndata: \{"at":"[a-f0-9]{16}","revision":"v1:\d+"\}\n\n$/);
+    expect(changes[0]).toMatch(/^event: change\ndata: \{"room":"","at":"[a-f0-9]{16}","revision":"v1:\d+"\}\n\n$/);
     expect(changes[0]).not.toContain("private diagnostic");
     vi.advanceTimersByTime(10_000);
     expect(write.mock.calls.filter(call => String(call[0]).startsWith("event: change"))).toHaveLength(1);

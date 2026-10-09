@@ -1,0 +1,35 @@
+name: macOS
+
+# The nightly macOS full suite. Release tags run the same matrix in
+# publish.yml, where both legs must pass before npm publication. Pull
+# requests run Ubuntu plus containment (ci.yml).
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} · macos-latest
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      # src/provider.test.ts reads historical commits from Git, so this job
+      # needs full history (see ci.yml).
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+        env:
+          CI: "true"

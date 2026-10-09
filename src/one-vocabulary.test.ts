@@ -21,6 +21,7 @@ import { askChipOf, ASK_LABEL, resultHoldUpSentence } from "./needs-you.js";
 import { fullWhen, localizeTimes, shortWhen } from "./when-html.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
 import { MISMATCH_HEADLINE } from "./workspace-ui.js";
+import { htmlString } from "./html.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MismatchHeadline } from "./browser/views/result-view.js";
@@ -279,7 +280,7 @@ describe("plain, consistent words (c3)", () => {
     const view = (await tasksView()).view as TasksView;
     expect(view.rows.find(row => row.id === "search-typo-tolerance")!.action!.label).toBe("Open result");
     const status = taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: "a".repeat(40) }, why: ["Check output kept"] });
-    expect(statusWhyHtml(status)).toContain("<summary>More</summary>");
+    expect(htmlString(statusWhyHtml(status))).toContain("<summary>More</summary>");
   });
 
   test("badges, labels, buttons and fold names are sentence case", async () => {

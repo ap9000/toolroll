@@ -1,7 +1,7 @@
 /**
  * Sign-in hardening over HTTP: a source that guessed wrong is locked while the owner signs in from elsewhere, rotating
  * sources holds back every source that failed, every per-source cap counts a native IPv6 caller by its /64 (sign-in,
- * join, MCP sign-in), and a password bearer on a long /api/team/events stream proves its password again on a bounded
+ * join, MCP sign-in), and a password bearer on a long live team stream (GET /live?room=team) proves its password again on a bounded
  * interval while a credential-generation bump still ends it at once.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -104,10 +104,10 @@ test("MCP sign-in's registration and pending-consent caps count per /64", async 
   expect((await start("2001:db8:b:2::1")).status).toBe(200);
 });
 
-/** A password-bearer team stream from this computer, read as text until some event shows up or it ends. */
+/** A password-bearer's live team room from this computer, read as text until some event shows up or it ends. */
 async function teamStream() {
   const controller = new AbortController();
-  const response = await fetch(`${base}/api/team/events`, { headers: { authorization: `Bearer alex:${password}` }, signal: controller.signal });
+  const response = await fetch(`${base}/live?room=team`, { headers: { authorization: `Bearer alex:${password}` }, signal: controller.signal });
   expect(response.status).toBe(200);
   const reader = response.body!.getReader(), decode = new TextDecoder();
   let seen = "";
@@ -132,18 +132,19 @@ test("a password bearer on a long team stream proves its password again once the
   const generation = store.accountOf("alex")!.generation;
   store.handle.prepare("UPDATE approver SET credential_hash = ? WHERE name = ?").run(hashPassword("a-different-password"), "alex");
   expect(store.accountOf("alex")!.generation).toBe(generation);
-  // Once the interval passes the next tick checks the password again, and the stream ends revoked.
+  // Once the interval passes, the next signal (any write) checks the password again, and the room ends.
   now = new Date(now.getTime() + TEAM_PASSWORD_REVERIFY_MS + 1);
-  const after = await stream.until("event: revoked");
-  expect(after.seen).toContain("event: revoked");
+  store.createTask({ id: "after-the-interval", title: "a write" }, now);
+  const after = await stream.until("event: gone");
+  expect(after.seen).toContain("event: gone");
   expect(await stream.ended()).toBe(true);
 });
 
 test("a credential-generation bump still ends a password bearer's stream at once, inside the interval", async () => {
   const stream = await teamStream();
   expect((await stream.until("event: change")).ended).toBe(false);
-  // No time passes: the password proof still stands, and the generation check alone ends the stream on the next tick.
+  // No time passes: the password proof still stands, and the generation check alone ends the room at the write's signal.
   store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = ?").run("alex");
-  expect((await stream.until("event: revoked")).seen).toContain("event: revoked");
+  expect((await stream.until("event: gone")).seen).toContain("event: gone");
   expect(await stream.ended()).toBe(true);
 });

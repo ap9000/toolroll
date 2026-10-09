@@ -60,7 +60,7 @@ async function stage(options, name, abort) {
     if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)) throw Error('Scratch server did not bind loopback.');
     await Promise.all(tokens.map(async token => {
       const controller = new AbortController(); streams.push(controller);
-      const response = await fetch(`${url}/api/team/events?conversation=${encodeURIComponent(ready.conversation)}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.any([abort, controller.signal, AbortSignal.timeout((options.seconds + 60) * 1000)]) });
+      const response = await fetch(`${url}/live?room=${encodeURIComponent(`team?conversation=${ready.conversation}`)}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.any([abort, controller.signal, AbortSignal.timeout((options.seconds + 60) * 1000)]) });
       if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('text/event-stream')) throw Error(`Live view failed (${response.status}).`);
       const reader = response.body.getReader();
       const drain = (async () => { try { while (!(await reader.read()).done) {} } catch { /* own shutdown */ } finally { reader.releaseLock(); } })();

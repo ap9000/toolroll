@@ -4,6 +4,8 @@
  * without anyone running a command; the unit tests keep it off unless a test turns it on.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,7 +159,7 @@ const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date
 const part = (kind: SweepPart["kind"], count: number, more: Partial<SweepPart> = {}): SweepPart => ({ kind, count, bytes: 0, failed: 0, items: [], ...more });
 
 test("Settings → Storage says when the last sweep ran and what it did, in one line; its paths sit behind Details", () => {
-  const view = (last: Parameters<typeof storageHtml>[0]["sweep"]) => storageHtml({ plan: plan(), csrf: "c".repeat(64), ...(last === undefined ? {} : { sweep: last }) }, {});
+  const view = (last: Parameters<typeof storageHtml>[0]["sweep"]) => htmlString(withFormToken("c".repeat(64), () => storageHtml({ plan: plan(), csrf: "c".repeat(64), ...(last === undefined ? {} : { sweep: last }) }, {})));
   expect(view({ last: null, off: false })).toContain("Toolroll sweeps leftovers once a day. It hasn't run yet.");
   expect(view({ last: null, off: true })).toContain("Automatic sweep is off.");
   const at = "2026-10-04T03:12:00.000Z";

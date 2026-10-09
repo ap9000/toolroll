@@ -7,6 +7,7 @@
  * sits one tap away in the header. Tab contents, the diff and the feedback
  * form stay the server's own HTML; the page script binds to the same data
  * attributes and ids it always has. */
+import { PostForm } from "../ui/index.js";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { useState, type MouseEvent, type ReactNode } from "react";
 import type { BrowserCheckItem, BrowserResultPanel, BrowserResultView } from "../../browser-workspace.js";
@@ -253,9 +254,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
         const form = complete ?? accept;
         if (form === null) return null;
         // An acceptance that takes a reason: its field sits directly above the act, under its own words.
-        return <form key={kind} method="post" action={form.action} className={cn(reason === null ? "flex flex-wrap items-center gap-2 phone:w-full" : "flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none")}
-          {...(reason === null ? {} : { "data-accept-with-reason": "" })}>
-          <input type="hidden" name="csrf" value={csrf} />
+        return <PostForm key={kind} action={form.action} className={cn(reason === null ? "flex flex-wrap items-center gap-2 phone:w-full" : "flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none")} {...(reason === null ? {} : { "data-accept-with-reason": "" })}>
           <input type="hidden" name="run" value={String(form.run)} />
           {complete !== null ? <>
             <input type="hidden" name="receipt" value={complete.receipt} />
@@ -266,20 +265,19 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
             <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder={reason} className="h-11 w-full" />
           </>}
           <Button type="submit" variant={variant} className={wide} {...mark} data-accept-result><Check className="phone:hidden" />{decision.label}</Button>
-        </form>;
+        </PostForm>;
       }
       case "accept-anyway": {
         // A failed task's result: accepted only on purpose, so the reason field is required and sits right above it.
         const anyway = selected.failure?.acceptAnyway ?? null;
         if (anyway == null) return null;
-        return <form key={kind} method="post" action={anyway.action} className="flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none" data-accept-with-reason data-accept-anyway>
-          <input type="hidden" name="csrf" value={csrf} />
+        return <PostForm key={kind} action={anyway.action} className="flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none" data-accept-with-reason data-accept-anyway>
           <input type="hidden" name="run" value={String(anyway.run)} />
           <input type="hidden" name="return" value={anyway.returnTo} />
           <label htmlFor="accept-reason" className="text-[13px] font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
           <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder="Why is this safe to accept?" className="h-11 w-full" />
           <Button type="submit" variant="outline" className={wide} {...mark} data-accept-result><Check className="phone:hidden" />Accept anyway</Button>
-        </form>;
+        </PostForm>;
       }
       case "next-check":
         return firstUnanswered === null ? null
@@ -288,12 +286,11 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
         return <Button key={kind} type="button" variant={variant} disabled aria-disabled="true" className={wide} {...mark}>Checks running</Button>;
       case "run-checks":
         if (selected.runChecks === null) return null;
-        return <form key={kind} method="post" action={selected.runChecks.action} className="phone:w-full">
-          <input type="hidden" name="csrf" value={csrf} />
+        return <PostForm key={kind} action={selected.runChecks.action} className="phone:w-full">
           <input type="hidden" name="level" value={selected.runChecks.level} />
           <input type="hidden" name="return" value={selected.runChecks.returnTo} />
           <Button type="submit" variant={variant} className={wide} {...mark}>Run checks</Button>
-        </form>;
+        </PostForm>;
       case "request-changes":
         return <Button key={kind} asChild variant={variant} className={wide}><a href="#request-changes" {...mark}>Request changes</a></Button>;
       case "rebuild":

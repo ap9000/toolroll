@@ -17,6 +17,7 @@ import { callPersonTool } from "./mcp-person.js";
 import { auditOutcome, OWNER_READER, readDetail, remoteAudit, sinceOf, type AuditFilters } from "./remote-audit.js";
 import { auditLine } from "./audit-cli.js";
 import { personAuditHtml } from "./people-audit-ui.js";
+import { htmlString } from "./html.js";
 import { createDecisionServer } from "./serve.js";
 
 const NOW = new Date("2026-10-06T12:00:00.000Z");
@@ -267,9 +268,9 @@ describe("People → a person", () => {
       { id: "bbbbbbbbbbbb", account: "sam", name: "ci", access: "read" as const, createdAt: NOW.toISOString(), createdBy: "sam", expiresAt: "2026-10-01T00:00:00.000Z", lastUsedAt: null, revokedAt: null, revokedBy: null },
       { id: "cccccccccccc", account: "sam", name: "old", access: "read" as const, createdAt: NOW.toISOString(), createdBy: "sam", expiresAt: "2027-01-01T00:00:00.000Z", lastUsedAt: null, revokedAt: NOW.toISOString(), revokedBy: "alex" },
     ];
-    const html = personAuditHtml({ name: "sam", tokens, token: null, nextCursor: "41", now: NOW, actions: [
+    const html = htmlString(personAuditHtml({ name: "sam", tokens, token: null, nextCursor: "41", now: NOW, actions: [
       { id: 42, at: NOW.toISOString(), person: "sam", token: "<b>laptop</b>", source: "mcp", kind: "tool", name: "task_show", command: "task show", tool: "task_show", repo: "/srv/a-very-long-project-name", taskId: "t-1", outcome: "refused", reason: "not-found" },
-    ] });
+    ] }));
     expect(html).toContain("<h1>sam</h1>");
     expect(html).toContain(`<a href="/people?person=sam&amp;token-name=%3Cb%3Elaptop%3C%2Fb%3E">&lt;b&gt;laptop&lt;/b&gt;</a>`);
     expect(html).toContain("Active · Can act · last used 2026-10-06 11:58 UTC");
@@ -279,7 +280,7 @@ describe("People → a person", () => {
     expect(html).toContain("2026-10-06 12:00 UTC · &lt;b&gt;laptop&lt;/b&gt; · Agent (MCP) · a-very-long-project-name · not-found");
     expect(html).toContain(`<a href="/people?person=sam&amp;before=41">Older actions</a>`);
     expect(html).not.toContain("<b>");
-    const empty = personAuditHtml({ name: "vic", tokens: [], token: "ci", nextCursor: null, now: NOW, actions: [] });
+    const empty = htmlString(personAuditHtml({ name: "vic", tokens: [], token: "ci", nextCursor: null, now: NOW, actions: [] }));
     expect(empty).toContain("No API tokens.");
     expect(empty).toContain("No remote actions with this token.");
     expect(empty).toContain(`<p class="meta">With ci</p><p><a href="/people?person=vic">All tokens</a></p>`);

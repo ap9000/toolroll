@@ -21,6 +21,9 @@ export function buildIsStale(root: string): boolean {
     const output = join(root, "dist", name.replace(/\.ts$/, ".js"));
     return !existsSync(output) || statSync(join(root, "src", name)).mtimeMs > statSync(output).mtimeMs;
   })) return true;
+  // The console's stylesheet ships beside the server module that reads it.
+  const sheet = join(root, "dist", "server", "console.css");
+  if (!existsSync(sheet) || statSync(join(root, "src", "server", "console.css")).mtimeMs > statSync(sheet).mtimeMs) return true;
 
   const browserOutputs = ["workspace.js", "workspace.css", "THIRD_PARTY_NOTICES.txt"].map(name => join(root, "dist", "browser", name));
   if (browserOutputs.some(output => !existsSync(output))) return true;

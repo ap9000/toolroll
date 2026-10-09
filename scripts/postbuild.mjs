@@ -22,6 +22,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // The Windows Job Object helper is PowerShell — tsc ignores it, and
 // containment.ts resolves it as a sibling, so dist needs its own copy.
 await copyFile(resolve(root, "src", "job-object-helper.ps1"), resolve(root, "dist", "job-object-helper.ps1"));
+// The console's stylesheet is a plain .css file the server module reads as a sibling.
+await copyFile(resolve(root, "src", "server", "console.css"), resolve(root, "dist", "server", "console.css"));
 
 if (process.platform !== "win32") {
   for (const name of ["bin.js", "cli.js"]) {

@@ -1,5 +1,6 @@
 /** Live discovery for the UI. Prices are USD, separate from rounded budget pins. */
 import { createHash } from "node:crypto";
+import { html, type Html } from "./html.js";
 import { readCappedBody } from "./converse.js";
 import { validModelId } from "./provider.js";
 
@@ -82,7 +83,6 @@ export function openRouterModelsCache(fetcher: typeof fetch = fetch) {
   };
 }
 
-const escape = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 export function modelDollars(amount: number | null): string {
   if (amount === null) return "Not reported";
   if (amount === 0) return "$0";
@@ -96,17 +96,13 @@ function details(model: OpenRouterModel): string {
     (model.conditionalPricing ? "Rates change with context length or other conditions. " : "") +
     (model.extraCharges ? "Additional usage charges may apply. " : "") + "Actual charges depend on routing and usage.";
 }
-export function openRouterPicker(catalog: OpenRouterModels, selected: string | null, refreshUrl: string): string {
+export function openRouterPicker(catalog: OpenRouterModels, selected: string | null, refreshUrl: string): Html {
   const rows = catalog.ok ? catalog.models : [];
   const current = rows.find(row => row.id === selected);
-  const manual = selected && !current ? `<option selected value="${escape(selected)}" data-detail="This saved model is not in the loaded catalog. Availability and pricing are unverified.">${escape(selected)} · Saved choice</option>` : "";
-  return `<div data-openrouter-picker><p class="meta">${catalog.ok
-    ? `${rows.length} text models · ${catalog.source === "account" ? "Filtered for your OpenRouter account" : "Public catalog · Connect a key to check your account"} · Updated ${escape(catalog.checkedAt.slice(11, 16))} UTC`
-    : escape(catalog.problem)} <a href="${escape(refreshUrl)}">Refresh models</a></p>` +
-    `<label data-model-search hidden>Search models<input type="search" placeholder="Search by name or provider" autocomplete="off"></label>` +
-    `<label>Model<select name="model" aria-describedby="openrouter-price"><option value="__custom__"${selected === null ? " selected" : ""}>Choose a model</option>${manual}${rows.map(row => `<option value="${escape(row.id)}" data-detail="${escape(details(row))}"${row.id === selected ? " selected" : ""}>${escape(row.name)} · ${modelDollars(row.input)} in / ${modelDollars(row.output)} out per 1M</option>`).join("")}</select></label>` +
-    `<p id="openrouter-price" class="meta" aria-live="polite">${current ? escape(details(current)) : selected ? "This saved model is not in the loaded catalog. Availability and pricing are unverified." : "Choose a model to see its token prices and context size."}</p>` +
-    `<p data-model-count class="meta" aria-live="polite"></p><p class="meta"><a href="https://openrouter.ai/models" target="_blank" rel="noreferrer">Compare models on OpenRouter ↗</a> · Prices in USD; catalog browsing uses no model tokens.</p></div>`;
+  const manual = selected && !current ? html`<option selected value="${selected}" data-detail="This saved model is not in the loaded catalog. Availability and pricing are unverified.">${selected} · Saved choice</option>` : "";
+  return html`<div data-openrouter-picker><p class="meta">${catalog.ok
+    ? `${rows.length} text models · ${catalog.source === "account" ? "Filtered for your OpenRouter account" : "Public catalog · Connect a key to check your account"} · Updated ${catalog.checkedAt.slice(11, 16)} UTC`
+    : catalog.problem} <a href="${refreshUrl}">Refresh models</a></p><label data-model-search hidden>Search models<input type="search" placeholder="Search by name or provider" autocomplete="off"></label><label>Model<select name="model" aria-describedby="openrouter-price"><option value="__custom__"${selected === null ? html` selected` : ""}>Choose a model</option>${manual}${rows.map(row => html`<option value="${row.id}" data-detail="${details(row)}"${row.id === selected ? html` selected` : ""}>${row.name} · ${modelDollars(row.input)} in / ${modelDollars(row.output)} out per 1M</option>`)}</select></label><p id="openrouter-price" class="meta" aria-live="polite">${current ? details(current) : selected ? "This saved model is not in the loaded catalog. Availability and pricing are unverified." : "Choose a model to see its token prices and context size."}</p><p data-model-count class="meta" aria-live="polite"></p><p class="meta"><a href="https://openrouter.ai/models" target="_blank" rel="noreferrer">Compare models on OpenRouter ↗</a> · Prices in USD; catalog browsing uses no model tokens.</p></div>`;
 }
 
 /** Only filters already-rendered options; credentials never enter this script. */

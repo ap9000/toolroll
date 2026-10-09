@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import type { BrowserFirstRun, BrowserPhoneCard } from "../browser-workspace.js";
 import type { JourneyStep } from "../first-run.js";
-import { Button } from "./ui/index.js";
+import { Button, PostForm } from "./ui/index.js";
 
 function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -105,11 +105,11 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
             : <><p className="so-first-run-choice-hint">Start Toolroll with this, then on your phone open <code>{phone.tailnet.address}</code> and sign in:</p><Command command={phone.tailnet.restart} /></>}
       </div>
     </div>
-    {dismissable && <form method="post" action={phone.dismissHref} onSubmit={event => {
+    {dismissable && <PostForm action={phone.dismissHref} onSubmit={event => {
       event.preventDefault();
       setHidden(true);
       void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
-    }}><input type="hidden" name="csrf" value={csrf} /><Button variant="ghost" size="sm" type="submit">Not now</Button></form>}
+    }}><Button variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
   </section>;
 }
 

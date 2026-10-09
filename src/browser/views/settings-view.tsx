@@ -1,6 +1,7 @@
 /** Settings, rebuilt with shadcn/ui. Every control posts to the same server
  * route as before (CSRF included); choices save the moment they change and
  * the server's confirmation arrives as a toast. */
+import { PostForm } from "../ui/index.js";
 import { Activity, Bot, BookOpen, ChevronRight, Clock, Cpu, Database, Download, FileCheck, Folder, HardDrive, KeyRound, LineChart, Lock, Monitor, Moon, Plug, RefreshCw, ShieldCheck, Sparkles, Sun, Workflow, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -23,14 +24,13 @@ const TILE_ICONS: Record<string, ReactNode> = {
 
 const slug = (words: string) => words.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
-function Csrf({ csrf }: { csrf: string }) { return <input type="hidden" name="csrf" value={csrf} />; }
 
 /** A form that submits itself when one of its choices changes. */
 function AutoForm({ action, csrf, children, className }: { action: string; csrf: string; children: (submit: () => void) => ReactNode; className?: string }) {
   const form = useRef<HTMLFormElement>(null);
   // Radix writes the hidden value on the next tick; submit after it lands.
   const submit = () => setTimeout(() => form.current?.requestSubmit(), 0);
-  return <form ref={form} method="post" action={action} className={className}><Csrf csrf={csrf} />{children(submit)}</form>;
+  return <PostForm ref={form} action={action} className={className}>{children(submit)}</PostForm>;
 }
 
 function Section({ title, description, children, id }: { title: string; description?: string; children: ReactNode; id?: string }) {
@@ -46,14 +46,13 @@ function StatusDot({ tone }: { tone: "ok" | "warn" | "off" | "neutral" }) {
 
 function Themes({ view, csrf }: { view: BrowserSettingsView; csrf: string }) {
   const options = [["system", "Match device", <Monitor key="m" />], ["light", "Light", <Sun key="s" />], ["dark", "Dark", <Moon key="d" />]] as const;
-  return <form method="post" action="/settings/appearance" className="flex flex-wrap items-center gap-3">
-    <Csrf csrf={csrf} />
+  return <PostForm action="/settings/appearance" className="flex flex-wrap items-center gap-3">
     <div role="group" aria-label="Theme" className="inline-flex rounded-lg bg-muted p-0.5">
       {options.map(([value, label, icon]) => <button key={value} type="submit" name="theme" value={value} aria-pressed={view.theme === value}
         className={cn("inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground phone:h-11 [&_svg]:size-3.5", view.theme === value && "bg-card text-foreground shadow-[var(--so-pill-shadow)]")}>{icon}{label}</button>)}
     </div>
     <span className="text-[13px] text-muted-foreground">Saved in this browser.</span>
-  </form>;
+  </PostForm>;
 }
 
 type Hsv = { h: number; s: number; v: number };
@@ -186,18 +185,16 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
       </div>
       <CollapsibleContent>
         {google !== null
-          ? <form method="post" action="/settings/google/disconnect" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-google-connected>
-              <Csrf csrf={csrf} />
+          ? <PostForm action="/settings/google/disconnect" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-google-connected>
               <p className="text-[13px]">Signed in with Google as <strong>{google}</strong>. Mail is sent and read through it.</p>
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="submit" variant="outline" formAction="/settings/email-test">Send a test email</Button>
                 <Button type="submit" variant="outline" formAction="/settings/email-read-test">Check the inbox</Button>
                 <Button type="submit" variant="ghost">Disconnect Google</Button>
               </div>
-            </form>
+            </PostForm>
           : <>
-            <form method="post" action="/settings/email" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-email-settings>
-              <Csrf csrf={csrf} />
+            <PostForm action="/settings/email" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-email-settings>
               <p className="text-[13px] text-muted-foreground">For Gmail: smtp.gmail.com, port 587, your address, and an app password. To read mail too, add imap.gmail.com.</p>
               <div className="grid gap-3 desk:grid-cols-[1fr_7rem]">
                 <div className="grid gap-2"><Label htmlFor="email-host">Mail server</Label><Input id="email-host" name="host" defaultValue={email.host} placeholder="smtp.gmail.com" required /></div>
@@ -216,11 +213,10 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
                 {email.set && <Button type="submit" variant="outline" formAction="/settings/email-test" formNoValidate>Send a test email</Button>}
                 {email.set && email.imapHost !== "" && <Button type="submit" variant="outline" formAction="/settings/email-read-test" formNoValidate>Check the inbox</Button>}
               </div>
-            </form>
+            </PostForm>
             <details className="mt-3 rounded-lg border px-4 py-3" open={email.google.clientId !== "" && !email.set} data-google-setup>
               <summary className="cursor-pointer text-[13px] font-semibold phone:-my-3 phone:min-h-11 phone:py-3 phone:leading-5">Or sign in with a Google account</summary>
-              <form method="post" action="/settings/google" className="mt-3 grid gap-3">
-                <Csrf csrf={csrf} />
+              <PostForm action="/settings/google" className="mt-3 grid gap-3">
                 <ol className="list-decimal space-y-1 pl-5 text-[13px] text-muted-foreground">
                   <li>In Google Cloud Console, make an OAuth client of type <em>Web application</em>, and set the consent screen to <em>In production</em> (while it's in Testing, Google ends the connection after 7 days).</li>
                   {email.google.redirect === null
@@ -231,7 +227,7 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
                 <div className="grid gap-2"><Label htmlFor="google-id">Client ID</Label><Input id="google-id" name="clientId" defaultValue={email.google.clientId} placeholder="….apps.googleusercontent.com" required /></div>
                 <div className="grid gap-2"><Label htmlFor="google-secret">Client secret</Label><Input id="google-secret" name="clientSecret" type="password" autoComplete="off" placeholder={email.google.clientId !== "" ? "Leave empty to keep the saved one" : ""} /></div>
                 <Button type="submit" className="justify-self-start" disabled={email.google.redirect === null}>Connect Google</Button>
-              </form>
+              </PostForm>
             </details>
           </>}
       </CollapsibleContent>
@@ -250,8 +246,8 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
             <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="ml-auto group">Manage<ChevronRight className="transition-transform group-data-[state=open]:rotate-90" /></Button></CollapsibleTrigger>
           </div>
           <CollapsibleContent>
-            <form method="post" action="/settings/provider-key" className="mt-3 grid gap-3 rounded-lg bg-muted p-4">
-              <Csrf csrf={csrf} /><input type="hidden" name="provider" value={one.provider} />
+            <PostForm action="/settings/provider-key" className="mt-3 grid gap-3 rounded-lg bg-muted p-4">
+              <input type="hidden" name="provider" value={one.provider} />
               {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <a className="underline underline-offset-4" href={one.connection.checkHref}>Check again</a></p>}
               <p className="text-[13px] text-muted-foreground">{one.usage} · <code className="font-mono text-xs">{one.envName}</code></p>
               {one.subscriptionCapable && <div className="grid gap-2"><Label htmlFor={`${one.provider}-auth`}>Sign-in</Label>
@@ -267,7 +263,7 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
                   <CollapsibleContent className="mt-2 grid gap-2"><p className="text-[13px] text-muted-foreground">Runs that use this API key stop until you add one again.</p>
                     <Button type="submit" variant="destructive" size="sm" formAction="/settings/provider-key-clear">Remove key</Button></CollapsibleContent></Collapsible>}
               </div>
-            </form>
+            </PostForm>
           </CollapsibleContent>
         </Collapsible>
       </li>)}
@@ -410,15 +406,15 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
       <div className="grid gap-3">
         <div className="grid gap-1"><span className="font-semibold">This device</span>
           <span className="text-[13px] text-muted-foreground">{view.push.available ? "A notification when something needs you. On iPhone, add this app to your Home Screen first." : "Alerts need a secure (https) address for this app."}</span></div>
-        {view.push.available && <form method="post" action="/push/subscribe" id="push-form" className="flex flex-wrap items-end gap-3">
-          <Csrf csrf={csrf} /><input type="hidden" name="endpoint" value="" /><input type="hidden" name="p256dh" value="" /><input type="hidden" name="auth" value="" />
+        {view.push.available && <PostForm action="/push/subscribe" id="push-form" className="flex flex-wrap items-end gap-3">
+          <input type="hidden" name="endpoint" value="" /><input type="hidden" name="p256dh" value="" /><input type="hidden" name="auth" value="" />
           <div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="push-password">Your password</Label><Input id="push-password" type="password" name="token" autoComplete="current-password" /></div>
           <Button type="submit" id="push-enable" variant="outline">Get alerts on this device</Button>
           <p className="w-full text-[13px] text-muted-foreground" id="push-state" aria-live="polite"></p>
-        </form>}
+        </PostForm>}
         {view.push.devices.length > 0 && <ul className="grid gap-2">{view.push.devices.map(one => <li key={one.id} className="flex flex-wrap items-center gap-3 text-sm">
           <span>{one.words}</span>{one.state !== "ok" && <Badge tone={one.state === "failing" ? "warning" : "neutral"}>{one.state}</Badge>}
-          {one.removable && <form method="post" action="/push/remove" className="ml-auto"><Csrf csrf={csrf} /><input type="hidden" name="id" value={one.id} /><Button type="submit" variant="ghost" size="sm">Remove</Button></form>}
+          {one.removable && <PostForm action="/push/remove" className="ml-auto"><input type="hidden" name="id" value={one.id} /><Button type="submit" variant="ghost" size="sm">Remove</Button></PostForm>}
         </li>)}</ul>}
       </div>
     </>}
@@ -446,11 +442,10 @@ function TelegramToken({ view, csrf }: { view: BrowserSettingsView; csrf: string
     <CollapsibleContent className="grid gap-3 border-t border-border px-5 py-4 phone:px-4">
       <p className="text-[13px] text-muted-foreground">Current: {view.telegram.current}</p>
       {view.telegram.delivery != null && <p className="text-[13px] text-muted-foreground" data-telegram-delivery>{view.telegram.delivery}</p>}
-      <form method="post" action="/settings/telegram-token" className="flex flex-wrap items-end gap-3">
-        <Csrf csrf={csrf} />
+      <PostForm action="/settings/telegram-token" className="flex flex-wrap items-end gap-3">
         <div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="telegram-token-field">Token from @BotFather</Label><Input id="telegram-token-field" type="password" name="token" autoComplete="off" /></div>
         <Button type="submit" variant="outline">Save token</Button>
-      </form>
+      </PostForm>
       <p className="text-[13px] text-muted-foreground">Stored privately on this computer. Then pair your phone under <a className="underline underline-offset-4" href="/settings/telegram">Telegram</a>.</p>
     </CollapsibleContent>
   </Collapsible>;

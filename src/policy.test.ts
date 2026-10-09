@@ -6,6 +6,7 @@
  * teammates and flow steps.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { htmlString } from "./html.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -301,7 +302,7 @@ describe("the page and the command line", () => {
       expect((await post([...wanted, ["ceiling", "escalated"], ["password", sam.token]], samCookie)).status).toBe(403);
       expect(store.orgPolicy().ceiling).toBe("standard");
       // Read-only, it says what's in force and who sets it, with no form.
-      const readOnly = policyHtml({ policy: store.orgPolicy(), history: store.policyHistory(), canChange: false, toolNames: [] }, "", {});
+      const readOnly = htmlString(policyHtml({ policy: store.orgPolicy(), history: store.policyHistory(), canChange: false, toolNames: [] }, {}));
       expect(readOnly).toContain("<dt>Ceiling</dt><dd>Standard</dd>");
       expect(readOnly).toContain("An instance operator sets the policy.");
       expect(readOnly).not.toContain("<form");

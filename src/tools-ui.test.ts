@@ -4,7 +4,12 @@
  * Connect with one line of how.
  */
 import { expect, test } from "vitest";
-import { toolsHtml, type ToolsView } from "./tools-ui.js";
+import { toolsHtml as renderTools, type ToolsView } from "./tools-ui.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
+
+// The page as a browser session with this token would get it (its forms carry the token).
+const toolsHtml = (...args: Parameters<typeof renderTools>) => htmlString(withFormToken(args[1], () => renderTools(...args)));
 
 const view = (wanted: string | null): ToolsView => ({
   repo: "/work/shop", project: "shop", kit: null, wanted, tools: [], catalog: [], found: [],

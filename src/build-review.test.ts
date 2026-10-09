@@ -5,6 +5,7 @@
  * every failure reaches the person.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { htmlString } from "./html.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -166,7 +167,7 @@ describe("the review switch (c5)", () => {
   });
 
   test("a person who cannot change it sees the state without a control", () => {
-    const html = checkSettingsHtml({ repo: REPO, name: "review", csrf: "", canChange: false, level: "full", full: null, quick: null, suggestion: null, said: null, problem: null, review: { on: true, source: "hands-off" } });
+    const html = htmlString(checkSettingsHtml({ repo: REPO, name: "review", csrf: "", canChange: false, level: "full", full: null, quick: null, suggestion: null, said: null, problem: null, review: { on: true, source: "hands-off" } }));
     expect(html).toContain("On while hands-off lasts");
     expect(html).not.toContain('name="act" value="review"');
   });

@@ -49,6 +49,7 @@
  */
 import { TEXT_LIMITS } from "./text-limits.js";
 import { createHash } from "node:crypto";
+import { projectName } from "./project.js";
 import { parseContract, readVersioned, type ContractIssue, type ContractResult } from "./contracts/contract.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import {
@@ -818,7 +819,7 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
         : `The agent looks into the card and writes a short report${notes}, plus any note it was sent back with.`);
     }
     if (stage.kind === "task" && stage.planning !== "auto") lines.push(stage.planning === "required" ? "Plans first." : "Builds without a plan.");
-    if (stage.kind === "task" && stage.repo !== undefined) lines.push(`Builds in another project: ${stage.repo}`);
+    if (stage.kind === "task" && stage.repo !== undefined) lines.push(`Builds in project: ${projectName(stage.repo)}`);
     if (stage.kind === "draft") lines.push(`Claude writes: ${plain(stage.instructions ?? "")}`, `Then → ${to(stage.next)}`);
     else if (stage.kind === "request" && stage.request !== undefined) {
       const headers = Object.keys(stage.request.headers);

@@ -2,7 +2,8 @@ import { expect, test, vi } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSharedGuards, type GuardsRuntime } from './guards.js';
 import { matchRoute, type ProjectResolver } from './route-table.js';
-import { requestContext, type Who } from './shared.js';
+import { requestContext } from "./request-context.js";
+import { type Who } from "./session.js";
 import { authenticateApprover as checkPassword } from '../scope.js';
 
 vi.mock('../scope.js', async importOriginal => {
@@ -49,7 +50,7 @@ test('project columns resolve saved resource identities, forms and session conte
     ['none', '/', null], ['session', '/', '/allowed'], ['form', '/tasks/add', '/form'],
     ['form-path', '/projects/select', process.cwd()], ['task', '/t/a%2Fb/evidence', '/task/a/b'], ['run', '/r/7', '/run/107'],
     ['decision', '/d/7', '/run/117'], ['incident', '/i/7', '/run/120'],
-    ['flow', '/flows/7/live', '/flow/7'],
+    ['flow', '/flows/7/export', '/flow/7'],
     ['proposal', '/chat/action/7', '/saved-owner-project'], ['coding', '/code/session', '/saved-owner-project'], ['conversation', '/chat', '/allowed'],
   ];
   for (const [source, path, expected] of cases) expect(guards.resolveRouteProject(source, new URL(path, 'http://local'), who, request, new URLSearchParams({ repo: '/form', path: process.cwd() })), source).toBe(expected);
@@ -63,7 +64,7 @@ test('the shared gate checks the resolved resource against instance and account 
   for (const projects of [null, ['/allowed']]) {
     const { guards, who, request, response } = fixture(projects);
     const check = () => {
-      for (const [method, path] of [['GET', '/t/other'], ['GET', '/r/7'], ['GET', '/d/7'], ['GET', '/flows/7/live'], ['POST', '/tasks/add']]) {
+      for (const [method, path] of [['GET', '/t/other'], ['GET', '/r/7'], ['GET', '/d/7'], ['GET', '/flows/7/export'], ['POST', '/tasks/add']]) {
         const row = matchRoute(method!, path!)!;
         expect(guards.projectRequestAllowed(row, row.project, new URL(path!, 'http://local'), who, request, response, new URLSearchParams({ repo: '/outside' })), row.id).toBe(false);
       }
@@ -120,7 +121,7 @@ test.each([null, ['/allowed']])('stale cookie recovery preserves explicit projec
   requestContext.run({ actor: 'alice', csrf: '', returnTo: '/' }, () => {
     expect(guards.projectOf(who, request)).toBe('/allowed');
     for (const [method, path, body, status] of [
-      ['GET', '/flows/7/live', null, 404],
+      ['GET', '/flows/7/export', null, 404],
       ['POST', '/tasks/add', new URLSearchParams({ repo: outside }), 403],
       ['POST', '/projects/select', new URLSearchParams({ path: process.cwd() }), 403],
     ] as const) {

@@ -4,8 +4,7 @@
  * that's on links to its flow; one that can't run here says why.
  */
 import type { StarterView } from "./flow-starters.js";
-
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+import { html, postForm, type Html } from "./html.js";
 
 export const STARTERS_CSS = `.starters{max-width:760px;min-width:0}.starters h2{margin:24px 0 4px;font-size:.9375rem}` +
   `.starter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;align-items:start;padding:14px 0;border-top:1px solid var(--so-line);min-width:0}` +
@@ -24,24 +23,21 @@ export const STARTERS_CSS = `.starters{max-width:760px;min-width:0}.starters h2{
 export function startersHtml(input: {
   repo: string; projects: readonly { path: string; name: string }[]; starters: readonly StarterView[]; csrf: string; canSwitch: boolean;
   suggested: string | null; said: string | null; problem: string | null;
-}): string {
-  const note = input.problem ? `<p class="problem" role="alert">${e(input.problem)}</p>` : input.said ? `<p role="status">${e(input.said)}</p>` : "";
+}): Html {
+  const note = input.problem ? html`<p class="problem" role="alert">${input.problem}</p>` : input.said ? html`<p role="status">${input.said}</p>` : "";
   const selector = input.projects.length > 1
-    ? `<form class="starters-project" method="get" action="/settings/flows"><label>Project<select name="repo">${input.projects.map(one => `<option value="${e(one.path)}"${one.path === input.repo ? " selected" : ""}>${e(one.name)}</option>`).join("")}</select></label><button>Show</button></form>` : "";
+    ? html`<form class="starters-project" method="get" action="/settings/flows"><label>Project<select name="repo">${input.projects.map(one => html`<option value="${one.path}"${one.path === input.repo && html` selected`}>${one.name}</option>`)}</select></label><button>Show</button></form>` : "";
   // The one asked about ("Do this every time…") comes first, marked.
   const ordered = [...input.starters].sort((a, b) => Number(b.id === input.suggested) - Number(a.id === input.suggested));
   const rows = ordered.map(one => {
-    const action = one.on !== null ? `<p class="starter-action"><a class="button-link starter-open" href="/flows/${one.on.flow}">Open flow</a></p>`
+    const action = one.on !== null ? html`<p class="starter-action"><a class="button-link starter-open" href="/flows/${one.on.flow}">Open flow</a></p>`
       : one.blocked !== null || !input.canSwitch ? ""
-      : `<form method="post" action="/settings/flows/on" class="starter-action"><input type="hidden" name="csrf" value="${e(input.csrf)}"><input type="hidden" name="repo" value="${e(input.repo)}">` +
-        `<input type="hidden" name="starter" value="${e(one.id)}"><button type="submit">Switch on</button></form>`;
-    return `<div class="starter" id="starter-${e(one.id)}" data-starter="${e(one.id)}" data-suggested="${one.id === input.suggested && one.on === null}">` +
-      `<h3>${e(one.name)}${one.on === null ? "" : ` <span class="starter-on"><i aria-hidden="true"></i>On</span>`}</h3>` +
-      `<p>${e(one.summary)}</p>` +
-      // What the yes agrees to, in full, before it; nothing to agree to once it's on or can't be.
-      (one.on === null && one.blocked === null ? `<ul>${one.does.map(line => `<li>${e(line)}</li>`).join("")}</ul><p class="starter-never">${e(one.never)}</p>` : "") +
-      (one.on === null && one.blocked !== null ? `<p class="starter-blocked">${e(one.blocked)}</p>` : "") + action + `</div>`;
-  }).join("");
-  const nobody = !input.canSwitch && input.starters.some(one => one.on === null) ? `<p class="meta">An approver switches these on.</p>` : "";
-  return `<section class="starters">${note}${selector}<h2>Starter flows</h2>${rows}${nobody}<p class="meta"><a href="/flows">All flows</a></p></section>`;
+      : postForm("/settings/flows/on", html`<button type="submit">Switch on</button>`, { attrs: { class: "starter-action" }, hidden: { repo: input.repo, starter: one.id } });
+    // What the yes agrees to, in full, before it; nothing to agree to once it's on or can't be.
+    const agrees = one.on === null && one.blocked === null && html`<ul>${one.does.map(line => html`<li>${line}</li>`)}</ul><p class="starter-never">${one.never}</p>`;
+    const head = html`<h3>${one.name}${one.on === null ? "" : html` <span class="starter-on"><i aria-hidden="true"></i>On</span>`}</h3>`;
+    return html`<div class="starter" id="starter-${one.id}" data-starter="${one.id}" data-suggested="${String(one.id === input.suggested && one.on === null)}">${head}<p>${one.summary}</p>${agrees}${one.on === null && one.blocked !== null && html`<p class="starter-blocked">${one.blocked}</p>`}${action}</div>`;
+  });
+  const nobody = !input.canSwitch && input.starters.some(one => one.on === null) ? html`<p class="meta">An approver switches these on.</p>` : "";
+  return html`<section class="starters">${note}${selector}<h2>Starter flows</h2>${rows}${nobody}<p class="meta"><a href="/flows">All flows</a></p></section>`;
 }

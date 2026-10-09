@@ -28,6 +28,8 @@ import { hashSecret, mintApiToken, type TokenAccess } from "./api-tokens.js";
 import { limitWords, type Admission } from "./request-budget.js";
 import { sourceKey } from "./source-key.js";
 import { PKCE_CHALLENGE, readOAuthRegistration, readOAuthTokenRequest } from "./contracts/mcp-oauth.js";
+import { html, htmlString, joinHtml, postForm, styleElement, type Html } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 
 /** How long each piece lives. A code is spent at once; a grant ends after 30 days and the person consents again. */
 export const OAUTH_TIMES = { requestMs: 10 * 60_000, codeMs: 60_000, accessSeconds: 3600, grantDays: 30 } as const;
@@ -88,7 +90,6 @@ type Waiting = { client: string; redirectUri: string; challenge: string; state: 
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const same = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
-const escape = (text: string) => text.replace(/[&<>"']/g, one => `&#${one.charCodeAt(0)};`);
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
 
 /**
@@ -126,10 +127,10 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
   const oauthError = (response: ServerResponse, status: number, error: string, description: string): void => json(response, status, { error, error_description: description });
 
   /** A page of this sign-in: script-free, never framed, posting only to this console. */
-  const page = (response: ServerResponse, status: number, html: string): void => {
+  const page = (response: ServerResponse, status: number, document: Html): void => {
     response.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-    response.end(html);
+    response.end(htmlString(document));
   };
   /**
    * On to an address by a page that moves on by itself, never a redirect: a redirect answering a form is held to
@@ -139,10 +140,10 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
   const moveOn = (response: ServerResponse, to: string, words: string): void => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" });
-    response.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${escape(to)}"><title>Toolroll</title>${STYLE}<main><p>${escape(words)} <a href="${escape(to)}">Continue</a></p></main></html>`);
+    response.end(htmlString(html`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${to}"><title>Toolroll</title>${STYLE}<main><p>${words} <a href="${to}">Continue</a></p></main></html>`));
   };
   const problemPage = (response: ServerResponse, status: number, title: string, said: string): void =>
-    page(response, status, shell(title, `<h1>${escape(title)}</h1><p>${escape(said)}</p>`));
+    page(response, status, shell(title, html`<h1>${title}</h1><p>${said}</p>`));
 
   /** Back to the client with an answer: the code, or an error, and its state; `iss` names this console (RFC 9207). */
   const backToClient = (response: ServerResponse, origin: string, redirectUri: string, state: string | null, answer: Record<string, string>, words: string): void => {
@@ -254,7 +255,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     return moveOn(response, `/oauth/authorize?request=${id}`, "Opening Toolroll…");
   }
 
-  const consentHtml = (session: OAuthSession, id: string, one: Waiting, problem: string | null, chosen: { access: TokenAccess; projects: string[] } | null): string => {
+  const consentHtml = (session: OAuthSession, id: string, one: Waiting, problem: string | null, chosen: { access: TokenAccess; projects: string[] } | null): Html => {
     const client = store.oauthClient(one.client)!;
     const host = new URL(one.redirectUri).host;
     const projects = options.projectsFor(session.name);
@@ -264,34 +265,34 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     const title = "Connect to Toolroll";
     const projectList = projects.length === 0 ? "" : projects.map(path => {
       const name = path.split("/").filter(part => part !== "").pop() ?? path;
-      return `<label class="pick"><input type="checkbox" name="project" value="${escape(path)}"${checked.has(path) ? " checked" : ""}><span><b>${escape(name)}</b><small>${escape(path)}</small></span></label>`;
-    }).join("");
+      return html`<label class="pick"><input type="checkbox" name="project" value="${path}"${checked.has(path) ? " checked" : ""}><span><b>${name}</b><small>${path}</small></span></label>`;
+    });
     const step = session.sso?.fresh === true
-      ? `<p class="meta">Confirmed with ${escape(session.sso.label)}.</p><input type="hidden" name="password" value="">`
-      : `<label class="field">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>${session.sso === null ? "" : `<p class="meta"><a href="/login/sso?reauth=1&amp;return=${escape(encodeURIComponent(`/oauth/authorize?request=${id}`))}">Confirm with ${escape(session.sso.label)}</a> instead.</p>`}`;
-    const body = [
-      `<h1>${escape(title)}</h1>`,
-      `<p class="client"><b>${escape(client.name)}</b> <span class="tag">unverified</span> <span class="meta">returns to ${escape(host)}</span></p>`,
-      problem === null ? "" : `<div class="problem" role="alert">${escape(problem)}</div>`,
+      ? html`<p class="meta">Confirmed with ${session.sso.label}.</p><input type="hidden" name="password" value="">`
+      : html`<label class="field">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>${session.sso === null ? "" : html`<p class="meta"><a href="/login/sso?reauth=1&amp;return=${encodeURIComponent(`/oauth/authorize?request=${id}`)}">Confirm with ${session.sso.label}</a> instead.</p>`}`;
+    // The consent form carries the console session's own CSRF token (checked against session.csrf on the post).
+    const consentForm = (body: Html) => withFormToken(session.csrf, () => postForm("/oauth/authorize", body, { hidden: { request: id } }));
+    const body = joinHtml([
+      html`<h1>${title}</h1>`,
+      html`<p class="client"><b>${client.name}</b> <span class="tag">unverified</span> <span class="meta">returns to ${host}</span></p>`,
+      problem === null ? "" : html`<div class="problem" role="alert">${problem}</div>`,
       projects.length === 0
-        ? `<p>You don't have access to any projects. Ask your Toolroll administrator to add you to one.</p>`
-          + `<form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="${escape(id)}"><input type="hidden" name="csrf" value="${escape(session.csrf)}"><button name="decision" value="deny" class="secondary">Cancel</button></form>`
-        : [
-          `<p>Connects as ${escape(session.name)} in your selected projects. It can't approve work or change people or policy.</p>`,
-          `<form method="post" action="/oauth/authorize">`,
-          `<input type="hidden" name="request" value="${escape(id)}"><input type="hidden" name="csrf" value="${escape(session.csrf)}">`,
-          `<fieldset><legend>Access</legend>`,
-          `<label class="pick"><input type="radio" name="access" value="read"${access === "read" ? " checked" : ""}><span><b>Read</b><small>See tasks, results and status.</small></span></label>`,
-          mayAct ? `<label class="pick"><input type="radio" name="access" value="act"${access === "act" ? " checked" : ""}><span><b>Act</b><small>Also file tasks under your name.</small></span></label>` : "",
-          `</fieldset>`,
-          `<fieldset><legend>Projects</legend>${projectList}</fieldset>`,
-          `<p class="meta">Access lasts up to 30 days. Revoke it anytime in Settings → Sessions &amp; tokens.</p>`,
-          step,
-          `<div class="actions"><button name="decision" value="allow">Allow access</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div>`,
-          `</form>`,
-        ].join(""),
-      `<details><summary>Client details</summary><p class="meta">Client ID <code>${escape(client.id)}</code><br>Returns to <code>${escape(one.redirectUri)}</code><br>Toolroll doesn't know who made this client; its name is what it says about itself.</p></details>`,
-    ].join("");
+        ? html`<p>You don't have access to any projects. Ask your Toolroll administrator to add you to one.</p>${consentForm(html`<button name="decision" value="deny" class="secondary">Cancel</button>`)}`
+        : joinHtml([
+          html`<p>Connects as ${session.name} in your selected projects. It can't approve work or change people or policy.</p>`,
+          consentForm(joinHtml([
+            html`<fieldset><legend>Access</legend>`,
+            html`<label class="pick"><input type="radio" name="access" value="read"${access === "read" ? " checked" : ""}><span><b>Read</b><small>See tasks, results and status.</small></span></label>`,
+            mayAct ? html`<label class="pick"><input type="radio" name="access" value="act"${access === "act" ? " checked" : ""}><span><b>Act</b><small>Also file tasks under your name.</small></span></label>` : "",
+            html`</fieldset>`,
+            html`<fieldset><legend>Projects</legend>${projectList}</fieldset>`,
+            html`<p class="meta">Access lasts up to 30 days. Revoke it anytime in Settings → Sessions &amp; tokens.</p>`,
+            step,
+            html`<div class="actions"><button name="decision" value="allow">Allow access</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div>`,
+          ])),
+        ]),
+      html`<details><summary>Client details</summary><p class="meta">Client ID <code>${client.id}</code><br>Returns to <code>${one.redirectUri}</code><br>Toolroll doesn't know who made this client; its name is what it says about itself.</p></details>`,
+    ]);
     return shell(title, body);
   };
 
@@ -439,8 +440,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
 }
 
 /** The sign-in's pages stand alone: no stylesheet, script or font loads here, so the palette rides inline. */
-const STYLE = [
-  `<style>`,
+const STYLE = styleElement([
   `:root{color-scheme:light dark;--ground:#efefef;--paper:#fff;--ink:#171717;--muted:#666;--line:#e6e6e6;--soft:#f2f2f2;--accent:#171717;--on-accent:#fff;--problem:#b42318}`,
   `@media (prefers-color-scheme:dark){:root{--ground:#0b0b0b;--paper:#161616;--ink:#ededed;--muted:#a1a1a1;--line:#262626;--soft:#1f1f1f;--accent:#ededed;--on-accent:#0b0b0b;--problem:#ff8a80}}`,
   `*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;background:var(--ground);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}`,
@@ -457,8 +457,7 @@ const STYLE = [
   `.problem{border:1px solid var(--problem);color:var(--problem);border-radius:8px;padding:10px 12px;margin-bottom:14px}a{color:inherit;text-underline-offset:3px}`,
   `details{border-top:1px solid var(--line)}summary{cursor:pointer;color:var(--muted);font-size:13px;min-height:44px;padding:12px 0}code{font:12.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;background:var(--soft);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}`,
   `@media (max-width:480px){main{padding:20px}.field input{font-size:16px}.actions button{flex:1 1 auto}}`,
-  `</style>`,
-].join("");
+].join(""));
 
-const shell = (title: string, body: string): string =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escape(title)}</title>${STYLE}</head><body><main>${body}</main></body></html>`;
+const shell = (title: string, body: Html): Html =>
+  html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${title}</title>${STYLE}</head><body><main>${body}</main></body></html>`;
