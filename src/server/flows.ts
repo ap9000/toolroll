@@ -299,7 +299,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const { url, who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.kit);
     const now = clock();
-    const kit = kitOf(pathPart(url, 4));
+    const kit = kitOf(pathPart(url, 2));
     const projects = consoleProjects();
     const repo = body.get("repo") ?? "";
     if (kit === null || !projects.includes(repo) || !store.accountCanAccess(who.name, repo)) return redirect(response, `/kits?problem=${encodeURIComponent("Choose one of your projects.")}`);
