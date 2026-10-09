@@ -286,6 +286,7 @@ describe("the schema-version preflight reads exactly one safe supported integer 
       const real = new sqlite.DatabaseSync(path);
       let moved = false;
       return {
+        enableDefensive: (on: boolean) => (real as unknown as { enableDefensive?: (on: boolean) => void }).enableDefensive?.(on),
         prepare: sql => {
           const statement = real.prepare(sql);
           if (!on.test(sql)) return statement as never;
@@ -320,6 +321,7 @@ describe("the schema-version preflight reads exactly one safe supported integer 
     const clearingRace = (path: string): Database => {
       const real = new sqlite.DatabaseSync(path);
       return {
+        enableDefensive: (on: boolean) => (real as unknown as { enableDefensive?: (on: boolean) => void }).enableDefensive?.(on),
         prepare: sql => {
           const statement = real.prepare(sql);
           if (!/^UPDATE schema_version SET version = \? WHERE version = \?$/.test(sql)) return statement as never;

@@ -120,6 +120,7 @@ test("v114 → v115: contests go, and every task they owned ends ordinary, held 
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec(V114_CONTEST_DDL);
   const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+  (db as unknown as { enableDefensive?: (on: boolean) => void }).enableDefensive?.(false); // Node 24 opens defensive
   db.exec("PRAGMA writable_schema = ON");
   for (const table of ["run", "decision", "execution_slot"]) {
     const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.["sql"]);

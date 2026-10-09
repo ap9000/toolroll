@@ -110,7 +110,7 @@ describe("the non-migrating door", () => {
       migrated = openStore(file, { connect: path => {
         const real = new DatabaseSync(path);
         return {
-          prepare: sql => real.prepare(sql), close: () => real.close(),
+          prepare: sql => real.prepare(sql), close: () => real.close(), enableDefensive: (on: boolean) => real.enableDefensive?.(on),
           exec: sql => {
             const firstDdl = sql.indexOf("CREATE TABLE");
             if (!paused && firstDdl !== -1) {

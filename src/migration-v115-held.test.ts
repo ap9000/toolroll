@@ -116,6 +116,7 @@ test("v114 → v115: held sessions go, and the attempt one still owned ends as a
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec(V114_HELD_DDL);
   const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+  (db as unknown as { enableDefensive?: (on: boolean) => void }).enableDefensive?.(false); // Node 24 opens defensive
   db.exec("PRAGMA writable_schema = ON");
   const reference = (table: string, rewrite: (sql: string) => string) => {
     const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.["sql"]);
