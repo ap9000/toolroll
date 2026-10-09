@@ -1,12 +1,15 @@
 /**
  * Every lead tool and MCP gateway tool contract (docs/plans/zod-revamp.md, item 5), one table: each input schema's
- * JSON Schema survives the round trip, every recorded call is accepted — and read the same by the 0.9.36 hand-written
- * schema. Lead readers also preserve the older handlers' loose calls; malformed calls are refused by path.
+ * JSON Schema survives the round trip and every recorded call is accepted. Historical tools also compare against the
+ * unchanged 0.9.36 schemas, with explicit renames and intended differences. Additions need current call coverage.
+ * Lead readers also preserve the older handlers' loose calls; malformed calls are refused by path.
  * Each output schema gets the same: a well-formed result is accepted and a malformed one refused by path. The registries
  * are checked against what the model and tools/list are shown, so a tool added or dropped can't escape the table.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { mintCoordinator } from "../coordinator.js";
@@ -21,13 +24,38 @@ import { LEAD_TOOL_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutpu
 type Json = Record<string, unknown>;
 type Surface = "lead" | "gateway";
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(`../../test/fixtures/tools/${name}`, import.meta.url), "utf8")) as T;
-const OLD = fixture<{ lead: Record<string, Json | null>; gateway: Record<string, Json>; leadDescriptions: Record<string, string> }>("schemas-0.9.36.json");
+const OLD_BYTES = readFileSync(new URL("../../test/fixtures/tools/schemas-0.9.36.json", import.meta.url));
+const OLD = JSON.parse(OLD_BYTES.toString("utf8")) as { lead: Record<string, Json | null>; gateway: Record<string, Json>; leadDescriptions: Record<string, string> };
 const CALLS = fixture<{ lead: Record<string, Json[]>; gateway: Record<string, Json[]> }>("calls.json");
 const LOOSE = fixture<{ calls: Record<string, Json[]> }>("loose-lead-calls-0.9.36.json").calls;
 const FALLBACK_FIELDS: Record<string, string[]> = { list_tasks: ["limit"], get_task_conversation: ["limit"], get_flow_insights: ["days"], get_person: ["id", "name"] };
 
 const INPUTS: Record<Surface, Record<string, z.ZodType>> = { lead: LEAD_TOOL_INPUTS, gateway: GATEWAY_TOOL_INPUTS };
 const OUTPUTS: Record<Surface, Record<string, z.ZodType>> = { lead: LEAD_TOOL_OUTPUTS, gateway: GATEWAY_TOOL_OUTPUTS };
+
+/** Retire historical names explicitly; never rewrite the baseline to make them current. D5 keeps their behavior. */
+const RENAMED: Record<Surface, Record<string, { from: string; fields: Record<string, string>; why: string }>> = {
+  lead: {
+    get_subagents: { from: "get_teammates", fields: { subagent: "teammate" }, why: "D5: teammates are the lead's named subagents" },
+    propose_subagent: { from: "propose_teammate", fields: { subagent: "teammate" }, why: "D5: retain each subagent's personality, rules and operations" },
+  },
+  gateway: {},
+};
+// No historical tools are removed without a replacement today. Future removals must record their decision here.
+const REMOVED: Record<Surface, Record<string, string>> = { lead: {}, gateway: {} };
+const DESCRIPTION_CHANGES: Record<string, string> = {
+  get_flows: "D5: describe delegation through the lead and named subagents",
+  propose_flow: "D5: teammate tools, steps and fields are named subagent",
+  get_person: "D5: the people index calls teammates subagents",
+  get_subagents: "D5: describe the renamed tool and field",
+  propose_subagent: "D5: describe the renamed tool and the new ask operation",
+};
+const historicalName = (surface: Surface, tool: string) => RENAMED[surface][tool]?.from ?? tool;
+const historicalCall = (surface: Surface, tool: string, call: unknown): unknown => {
+  if (!call || typeof call !== "object" || Array.isArray(call)) return call;
+  const fields = RENAMED[surface][tool]?.fields ?? {};
+  return Object.fromEntries(Object.entries(call).map(([key, value]) => [fields[key] ?? key, value]));
+};
 
 /**
  * Calls whose verdict changed on purpose, each with why (the plan's Done entry says so too). Every other recorded and
@@ -41,6 +69,8 @@ const CHANGED: { surface: Surface; tool: string; call: Json; before: boolean; wh
     why: "the handler always read a null note, path and line as left out; the schema now says so" },
   { surface: "lead", tool: "propose_task", call: { repo: "r1", title: "t", goal: "g", acceptance: [{ id: "", statement: "", evidence: ["check"] }] }, before: true,
     why: "the plan's acceptance criterion (an empty id or statement was refused after parsing anyway)" },
+  { surface: "lead", tool: "propose_subagent", call: { operation: "ask", subagent: 2, text: "Draft the reply to Sam about order 1043." }, before: false,
+    why: "D5 adds named delegation; the historical teammate tool did not have ask" },
 ];
 
 const verdict = (schema: z.ZodType, input: unknown): SampleVerdict => {
@@ -112,24 +142,56 @@ function gatewayToolsList(): { name: string; inputSchema: Json }[] {
 }
 
 describe("the lead and gateway tool registries", () => {
+  it("keeps the historical schema fixture byte-for-byte", () => {
+    expect(createHash("sha256").update(OLD_BYTES).digest("hex")).toBe("e6ada37434f4b092beeba403e897b7b3755632ac9bad92edaa0868b6084ce902");
+  });
+
   it("cover every tool the model and tools/list are shown, each with an input and an output schema", () => {
-    expect(NAMES.lead).toHaveLength(52);
     expect(LEAD_TOOL_SCHEMAS.map(one => one.name)).toEqual(NAMES.lead);
     expect(Object.keys(LEAD_TOOL_OUTPUTS)).toEqual(NAMES.lead);
-    expect(NAMES.gateway).toHaveLength(25);
     const listed = gatewayToolsList();
     expect(listed.map(one => one.name)).toEqual(NAMES.gateway);
     expect(Object.keys(GATEWAY_TOOL_OUTPUTS)).toEqual(NAMES.gateway);
-    // The fixtures name exactly the same tools: a tool added without recorded calls fails here.
+    // Current calls cover every current tool, including additions that have no historical schema.
     for (const surface of ["lead", "gateway"] as const) {
       expect(Object.keys(CALLS[surface])).toEqual(NAMES[surface]);
-      expect(Object.keys(OLD[surface])).toEqual(NAMES[surface]);
     }
   });
 
-  it("show the model and coordinators exactly the derived schemas, under unchanged names and descriptions", () => {
+  it("accounts for every historical tool under its original name, an explicit rename or a documented removal", () => {
+    for (const surface of ["lead", "gateway"] as const) {
+      const renamed = Object.entries(RENAMED[surface]);
+      for (const [current, change] of renamed) {
+        expect(OLD[surface], change.why).toHaveProperty(change.from);
+        expect(NAMES[surface], change.why).toContain(current);
+        expect(NAMES[surface], change.why).not.toContain(change.from);
+        expect(REMOVED[surface]).not.toHaveProperty(change.from);
+      }
+      expect(new Set(renamed.map(([, change]) => change.from)).size).toBe(renamed.length);
+      for (const [removed, why] of Object.entries(REMOVED[surface])) {
+        expect(why.trim().length).toBeGreaterThan(0);
+        expect(OLD[surface]).toHaveProperty(removed);
+        expect(NAMES[surface]).not.toContain(removed);
+      }
+      for (const old of Object.keys(OLD[surface])) {
+        if (REMOVED[surface][old]) continue;
+        expect(NAMES[surface], `${surface}: historical ${old}`).toContain(renamed.find(([, change]) => change.from === old)?.[0] ?? old);
+      }
+    }
+  });
+
+  it("shows the derived schemas and preserves historical descriptions except for documented changes", () => {
     for (const tool of LEAD_TOOL_SCHEMAS) expect(tool.inputSchema, tool.name).toEqual(toModelSchema(LEAD_TOOL_INPUTS[tool.name as keyof typeof LEAD_TOOL_INPUTS]));
-    expect(Object.fromEntries(LEAD_TOOL_SCHEMAS.map(one => [one.name, one.description]))).toEqual(OLD.leadDescriptions);
+    for (const tool of LEAD_TOOL_SCHEMAS) {
+      expect(tool.description).toBe(LEAD_TOOLS.find(one => one.name === tool.name)!.description);
+      const old = OLD.leadDescriptions[historicalName("lead", tool.name)];
+      if (old !== undefined && !DESCRIPTION_CHANGES[tool.name]) expect(tool.description, tool.name).toBe(old);
+    }
+    for (const [tool, why] of Object.entries(DESCRIPTION_CHANGES)) {
+      expect(NAMES.lead, why).toContain(tool);
+      expect(OLD.leadDescriptions, why).toHaveProperty(historicalName("lead", tool));
+      expect(LEAD_TOOLS.find(one => one.name === tool)!.description, why).not.toBe(OLD.leadDescriptions[historicalName("lead", tool)]);
+    }
     for (const tool of gatewayToolsList()) expect(tool.inputSchema, tool.name).toEqual(toModelSchema(GATEWAY_TOOL_INPUTS[tool.name as keyof typeof GATEWAY_TOOL_INPUTS]));
   });
 });
@@ -168,16 +230,20 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
       for (const call of LOOSE[tool] ?? []) expect(input.safeParse(call).success).toBe(false);
     }
     // Compare advertised schemas; actual loose-call behavior is covered above and in the handler tests.
-    const before = OLD[surface][tool];
+    const before = OLD[surface][historicalName(surface, tool)];
     if (before === null || before === undefined) return;
     const old = z.fromJSONSchema(before as never) as z.ZodType;
-    for (const call of calls) expect(old.safeParse(call).success, `0.9.36 accepted ${JSON.stringify(call)}`).toBe(true);
+    const oldAccepts = (call: unknown) => old.safeParse(historicalCall(surface, tool, call)).success;
+    for (const call of calls) {
+      const change = CHANGED.find(one => one.surface === surface && one.tool === tool && isDeepStrictEqual(one.call, call));
+      expect(oldAccepts(call), change?.why ?? `0.9.36 accepted ${JSON.stringify(call)}`).toBe(change?.before ?? true);
+    }
     for (const sample of invalid) {
       if (Array.isArray(sample.input)) continue; // the gateway refused a non-object root before any schema; the lead never got one
-      expect(old.safeParse(sample.input).success, `0.9.36 refused ${sample.name}`).toBe(false);
+      expect(oldAccepts(sample.input), `0.9.36 refused ${sample.name}`).toBe(false);
     }
     for (const change of CHANGED.filter(one => one.surface === surface && one.tool === tool)) {
-      expect(old.safeParse(change.call).success, change.why).toBe(change.before);
+      expect(oldAccepts(change.call), change.why).toBe(change.before);
       expect(read(change.call).ok, change.why).toBe(!change.before);
     }
   });
