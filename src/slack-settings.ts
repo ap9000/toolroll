@@ -1,7 +1,7 @@
 import { loadPrimary } from "./webhooks.js";
 import type { Store } from "./store.js";
 import { loadSlackCredentials } from "./slack-api.js";
-import { SlackState } from "./slack-state.js";
+import { ChatState } from "./chat-delivery-state.js";
 const escape = (text: string) =>
   text
     .replaceAll("&", "&amp;")
@@ -17,22 +17,16 @@ export function slackSettingsHtml(
   options: { code?: string; problem?: string; now?: Date; who?: string } = {},
 ): string {
   const credentials = loadSlackCredentials(dir),
-    state = new SlackState(store),
+    state = new ChatState(store, "slack"),
     bindings = credentials ? state.bindings(credentials.installation).filter(one => state.live(one)) : [],
     binding = options.who === undefined ? null : bindings.find(one => one.approver === options.who) ?? null,
     others = bindings.length - (binding === null ? 0 : 1);
-  const runtime = credentials
-    ? state.db
-        .prepare(
-          "SELECT connected,problem,lease_until FROM slack_runtime WHERE installation=?",
-        )
-        .get(credentials.installation)
-    : null;
+  const runtime = credentials ? state.runtime(credentials.installation) : null;
   const now = options.now ?? new Date(),
     live =
       runtime &&
-      typeof runtime.lease_until === "string" &&
-      runtime.lease_until > now.toISOString() &&
+      runtime.leaseUntil !== null &&
+      runtime.leaseUntil > now.toISOString() &&
       runtime.connected;
   const hidden = `<input type="hidden" name="csrf" value="${escape(csrf)}">`;
   const password =
@@ -63,20 +57,7 @@ export function slackSettingsHtml(
         `<label>Pairing message<input type="text" readonly value="pair ${escape(options.code)}" autocomplete="off" style="width:100%;max-width:100%;font-size:14px;min-height:44px"></label>` +
         '<a class="button-link" style="min-height:44px;white-space:nowrap" href="/settings/slack">Check connection</a>';
     } else if (binding && state.live(binding)) {
-      const pending = Number(
-        state.db
-          .prepare(
-            "SELECT count(*) n FROM slack_part p JOIN slack_event e ON e.id=p.event WHERE e.binding=? AND p.state='pending'",
-          )
-          .get(binding.id)?.n ?? 0,
-      );
-      const failed = Number(
-        state.db
-          .prepare(
-            "SELECT count(*) n FROM slack_part p JOIN slack_event e ON e.id=p.event WHERE e.binding=? AND p.state='dropped'",
-          )
-          .get(binding.id)?.n ?? 0,
-      );
+      const { pending, dropped: failed } = state.partCounts(binding.id);
       content +=
         `<p>Your Slack account is paired.${others ? ` ${others} teammate${others === 1 ? " is" : "s are"} paired too.` : ""}${pending ? ` ${pending} replies waiting to send.` : ""}${failed ? ` ${failed} replies could not be delivered. Open the saved chat to recover them.` : ""}</p>` +
         "<p>Try “What needs my attention?” or “Show the evidence for the latest result.”</p>" +

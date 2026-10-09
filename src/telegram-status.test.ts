@@ -251,7 +251,7 @@ describe("read-only phone status", () => {
     expect(sends().slice(-2).every(c => c.params["reply_markup"] === undefined)).toBe(true);
     expect(PHONE_HELP).toContain("nothing changes until you act");
     expect(PHONE_HELP).not.toMatch(/localhost|http/);
-    for (const table of ["run", "claim", "mate_turn", "mate_proposal", "telegram_action", "telegram_proposal_action"]) {
+    for (const table of ["run", "claim", "mate_turn", "mate_proposal", "chat_action"]) {
       expect(store.raw().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!["n"]).toBe(table === "run" ? 1 : 0);
     }
   });
@@ -372,7 +372,7 @@ describe("read-only phone status", () => {
     expect(s.texts()[2]).toBe(PHONE_HELP);
     expect(s.calls.filter(c => c.method === "sendMessage").every(c => c.params["parse_mode"] === undefined && c.params["reply_markup"] === undefined)).toBe(true);
     expect(store.getTask("mobile-nav")).toEqual(before);
-    for (const table of ["run", "claim", "mate_turn", "chat_turn", "mate_proposal", "telegram_action", "publication"]) {
+    for (const table of ["run", "claim", "mate_turn", "chat_turn", "mate_proposal", "chat_action", "publication"]) {
       expect(store.raw().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!["n"]).toBe(0);
     }
   });

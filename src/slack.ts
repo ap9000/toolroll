@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { SocketModeClient, LogLevel } from "@slack/socket-mode";
 import { loadSlackCredentials, slackApi } from "./slack-api.js";
-import { SlackState } from "./slack-state.js";
+import { ChatState } from "./chat-delivery-state.js";
 import {
   receiveSlack,
   processSlackEvent,
@@ -49,7 +49,7 @@ export async function followSlack(
   },
 ): Promise<void> {
   const owner = randomBytes(16).toString("hex"),
-    state = new SlackState(options.store);
+    state = new ChatState(options.store, "slack");
   const pause = async (ms: number) => {
     try {
       await sleep(ms, undefined, { signal: options.signal });
@@ -79,12 +79,7 @@ export async function followSlack(
         state.owns(credentials.installation, owner)
       );
     };
-    const problem = (text: string) =>
-      state.db
-        .prepare(
-          "UPDATE slack_runtime SET problem=? WHERE installation=? AND owner=?",
-        )
-        .run(text, credentials.installation, owner);
+    const problem = (text: string) => state.setProblem(credentials.installation, owner, text);
     // SDK log output can include envelopes/tokens. Only fixed status phrases are saved.
     const client = new ToolrollSlackSocket({
       appToken: credentials.appToken,
@@ -124,11 +119,7 @@ export async function followSlack(
     }, 10_000);
     client.on("connected", () => {
       connected = true;
-      state.db
-        .prepare(
-          "UPDATE slack_runtime SET connected=?,problem=NULL WHERE installation=? AND owner=?",
-        )
-        .run(new Date().toISOString(), credentials.installation, owner);
+      state.setConnected(credentials.installation, owner, new Date());
     });
     client.on("disconnected", () => {
       connected = false;
@@ -178,13 +169,7 @@ export async function followSlack(
     try {
       await client.start();
       while (same()) {
-        const retry = state.db
-          .prepare("SELECT retry_at FROM slack_runtime WHERE installation=?")
-          .get(credentials.installation)?.retry_at;
-        if (
-          !connected ||
-          (typeof retry === "string" && retry > new Date().toISOString())
-        ) {
+        if (!connected || state.retryAt(credentials.installation) > new Date().toISOString()) {
           await pause(1000);
           continue;
         }
@@ -202,11 +187,7 @@ export async function followSlack(
       alive = false;
       options.signal.removeEventListener("abort", stop);
       await client.disconnect().catch(() => {});
-      state.db
-        .prepare(
-          "UPDATE slack_runtime SET owner=NULL,lease_until=NULL,connected=NULL WHERE installation=? AND owner=?",
-        )
-        .run(credentials.installation, owner);
+      state.stop(credentials.installation, owner);
     }
     await pause(5000);
   }

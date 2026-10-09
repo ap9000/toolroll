@@ -22,12 +22,12 @@ export function chatAskText(ask: Pick<MateAsk, "question" | "options">): string 
 /** The live buttons on one part, in the order they were minted: the options, then "Something else". None when the part
  * is not in its owner's own chat with Toolroll (a room), where a tap could not be their message. */
 export function chatAskButtons(state: ChatState, part: number, now: Date): Array<{ token: string; label: string; words: boolean }> {
-  const row = state.prepare("SELECT p.payload,e.channel,b.channel AS own FROM chat_part p JOIN chat_event e ON e.id=p.event JOIN chat_binding b ON b.id=e.binding WHERE p.id=?").get(part);
+  const row = state.prepare("SELECT p.payload,e.channel,b.channel AS own FROM chat_part p JOIN chat_event e ON e.provider=p.provider AND e.id=p.event JOIN chat_binding b ON b.provider=e.provider AND b.id=e.binding WHERE p.provider=:provider AND p.id=?").get(part);
   if (row === undefined) return [];
   const content = partContent(String(row["payload"]));
   if ((content.channel ?? row["channel"]) !== row["own"]) return [];
   const options = content.ask?.options ?? [];
-  return (state.prepare("SELECT token,choice FROM chat_ask_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: number | null }>)
+  return (state.prepare("SELECT token,choice FROM chat_ask_action WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: number | null }>)
     .map(one => {
       const label = one.choice === null ? MATE_ASK_OTHER : options[Number(one.choice)] ?? null;
       return label === null ? null : { token: String(one.token), label: label.slice(0, 75), words: one.choice === null };
@@ -42,21 +42,21 @@ const EDIT_WINDOW_MS = 86_400_000;
 /** Show the question again with what happened, and without its buttons: one edit, under the part's own time. A question
  * too old to edit gets the line once as a new message instead. */
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string, now: Date): void {
-  const row = state.prepare("SELECT payload,created FROM chat_part WHERE id=?").get(part);
+  const row = state.prepare("SELECT payload,created FROM chat_part WHERE provider=:provider AND id=?").get(part);
   if (row === undefined || new Date(String(row["created"])).getTime() + EDIT_WINDOW_MS <= now.getTime()) {
     state.plan(event.id, [{ text: line }], now);
     return;
   }
   const before = partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
   state.finish(event.id);
 }
 
 /** A tapped ask button, inside the action's transaction; false when the token isn't one. */
 export function applyChatAskTap(options: { store: Store; state: ChatState }, event: ChatEvent, binding: ChatBinding, token: string, now: Date): boolean {
   const { store, state } = options;
-  const action = state.prepare("SELECT a.*,p.message,e.binding AS owner,e.channel FROM chat_ask_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE a.token=?").get(token);
+  const action = state.prepare("SELECT a.token,a.part,a.turn,a.choice,a.expires,a.consumed,p.message,e.binding AS owner,e.channel FROM chat_ask_action a JOIN chat_part p ON p.provider=a.provider AND p.id=a.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE a.provider=:provider AND a.token=?").get(token);
   if (action === undefined) return false;
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, their own chat and the exact message the button rode.
@@ -79,7 +79,7 @@ export function applyChatAskTap(options: { store: Store; state: ChatState }, eve
     return true;
   }
   if (found.state !== "open" || expired) {
-    state.prepare("UPDATE chat_ask_action SET consumed=? WHERE part=? AND consumed IS NULL").run(now.toISOString(), part);
+    state.prepare("UPDATE chat_ask_action SET consumed=? WHERE provider=:provider AND part=? AND consumed IS NULL").run(now.toISOString(), part);
     // The question is shown again without its buttons, so a later tap has nothing to press.
     repaint(state, part, event, found.state === "answered" ? "This question was already answered." : "This question expired. If it still matters, send your answer as a message.", now);
     return true;
@@ -91,10 +91,10 @@ export function applyChatAskTap(options: { store: Store; state: ChatState }, eve
   }
   const option = ask.options[Number(action["choice"])];
   if (option === undefined) { say("That option is no longer there."); return true; }
-  state.prepare("UPDATE chat_ask_action SET consumed=? WHERE part=? AND consumed IS NULL").run(now.toISOString(), part);
+  state.prepare("UPDATE chat_ask_action SET consumed=? WHERE provider=:provider AND part=? AND consumed IS NULL").run(now.toISOString(), part);
   // The option is the owner's next message, answered like one they typed.
   state.enqueue({
-    id: chatHash(`${state.channel}:ask:${event.id}`).slice(0, 32), installation: event.installation, binding: binding.id, kind: "message",
+    id: chatHash(`${state.provider}:ask:${event.id}`).slice(0, 32), installation: event.installation, binding: binding.id, kind: "message",
     channel: event.channel, member: event.member, ts: event.ts, thread: event.thread,
     payload: { text: option, originalLength: option.length }, created: now.toISOString(),
   });

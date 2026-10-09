@@ -183,16 +183,11 @@ export function reviewPlane(store: Store, now: Date, canSee: (repo: string | nul
   }
 
   // Chat replies that couldn't be delivered.
-  for (const app of ["slack", "discord", "teams"] as const) {
-    if (!tableExists(store, `${app}_part`)) continue;
-    const name = { slack: "Slack", discord: "Discord", teams: "Teams" }[app];
-    for (const row of store.handle.prepare(`SELECT id, problem, attempts FROM ${app}_part WHERE state = 'dropped' AND created >= ? ORDER BY id`).all(since)) {
-      add(`chat/${app}`, `${name} replies weren't delivered`, ["reply", "replies"], { evidence: `After ${plural(Number(row["attempts"] ?? 0), "try", "tries")}: ${excerpt(str(row["problem"])) || "dropped"}` });
-    }
-  }
-  if (tableExists(store, "telegram_conversation_part")) {
-    for (const row of store.handle.prepare("SELECT last_error, attempts FROM telegram_conversation_part WHERE state = 'dropped' AND created_at >= ?").all(since)) {
-      add("chat/telegram", "Telegram replies weren't delivered", ["reply", "replies"], { evidence: `After ${plural(Number(row["attempts"] ?? 0), "try", "tries")}: ${excerpt(str(row["last_error"])) || "dropped"}` });
+  if (tableExists(store, "chat_part")) {
+    const names: Record<string, string> = { telegram: "Telegram", slack: "Slack", discord: "Discord", teams: "Teams" };
+    for (const row of store.handle.prepare("SELECT provider, problem, attempts FROM chat_part WHERE state = 'dropped' AND created >= ? ORDER BY provider = 'telegram' DESC, provider, id").all(since)) {
+      const app = String(row["provider"]);
+      add(`chat/${app}`, `${names[app] ?? app} replies weren't delivered`, ["reply", "replies"], { evidence: `After ${plural(Number(row["attempts"] ?? 0), "try", "tries")}: ${excerpt(str(row["problem"])) || "dropped"}` });
     }
   }
   if (tableExists(store, "notification_delivery")) {

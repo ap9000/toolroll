@@ -310,13 +310,14 @@ describe("decisions finish in the chat app", () => {
     const lines: string[] = [];
     const code = await runOperate("mode", ["set", "--repo", REPO, "--chat-approve", "--as", "alex", "--token", alexToken], line => lines.push(line), { databaseFile: join(dir, "orders.db") });
     expect(code).toBe(0);
-    // Telegram is the chat app wired today, so the term names it alone.
-    expect(lines.join("\n")).toContain("your paired Telegram chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password");
-    expect(lines.join("\n")).not.toMatch(/Slack|Discord|Teams/);
-    expect(JSON.parse(store.activeMode(REPO, new Date())!.termsJson)).toMatchObject({ chatApprove: true });
+    // A new signature names every chat app it covers, in its words and in its signed terms.
+    expect(lines.join("\n")).toContain("your paired Telegram, Slack, Discord or Teams chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password");
+    expect(JSON.parse(store.activeMode(REPO, new Date())!.termsJson)).toMatchObject({ chatApprove: true, chatApproveChats: ["telegram", "slack", "discord", "teams"] });
     const plain = presetTerms("standard", now.toISOString());
     expect(plain.chatApprove).toBe(false);
-    expect(modeWords(plain).join("\n")).not.toContain("paired Telegram chat");
+    expect(modeWords(plain).join("\n")).not.toContain("paired");
+    // A grant signed before the term named its apps said Telegram, and still says (and means) only that.
+    expect(modeWords({ ...plain, chatApprove: true }).join("\n")).toContain("your paired Telegram chat may approve this repository's plans");
   });
 
   test("c2: under a signed chatApprove term a plan approves in chat with two taps, ledgered via telegram with the binding", async () => {
@@ -376,7 +377,7 @@ describe("decisions finish in the chat app", () => {
   test("c2: outside the mode's terms the plan keeps its link — no term, another signer, over budget, wider access, protected paths", async () => {
     const id = "plan-8";
     planWaiting(id, "Refuse over-limit payouts");
-    const why = () => { const plan = planInChat(store, id, "bob", now); return plan.ok ? "in chat" : plan.why; };
+    const why = () => { const plan = planInChat(store, id, "bob", now, "telegram"); return plan.ok ? "in chat" : plan.why; };
     expect(why()).toBe("Approving from chat isn't turned on for this project.");
     sign("bob", { chatApprove: false });
     expect(why()).toBe("Approving from chat isn't turned on for this project.");
@@ -396,7 +397,7 @@ describe("decisions finish in the chat app", () => {
     if (!planRoute?.ok) throw new Error("plan route fixture");
     const plannerRun = store.startRun({ taskRef: store.refFor("built-in", id).id, leaseId: "l-plan", runner: RUNNER, role: "planner", branch: "so/p", worktree: "/pool/p", route: planRoute.stamp, now });
     store.saveArtifact({ run: plannerRun, kind: "plan", key: `${plannerRun}/plan.json`, bytesOriginal: 2, bytesStored: 2, truncated: false, sha256: "0".repeat(64), capture: "planner" }, now);
-    expect(planInChat(store, id, "bob", now, dir)).toEqual({ ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." });
+    expect(planInChat(store, id, "bob", now, "telegram", dir)).toEqual({ ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." });
     store.setApprovalRules(REPO, { notRequester: false, protectProject: false, protectedPaths: ["src/"] }, "alex", now);
     expect(why()).toBe("This plan touches protected work, so two people approve it in Toolroll.");
 
@@ -415,7 +416,7 @@ describe("decisions finish in the chat app", () => {
     await pass();
     const linked = [...script.inChat(BOB)].reverse().find(call => call.method === "sendMessage" && String(call.params["text"]).includes("Ready to merge"))!;
     expect(script.buttons(linked).map(one => [one.text, one.callback_data === undefined])).toEqual([["Merge", true]]);
-    expect(mergeInChat(store, "merge-9", run, "bob", now)).toEqual({ ok: false, why: "Approving from chat isn't turned on for this project." });
+    expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "Approving from chat isn't turned on for this project." });
 
     sign("bob");
     now = new Date(now.getTime() + 60_000);
@@ -435,7 +436,7 @@ describe("decisions finish in the chat app", () => {
     expect(store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = 'merge from chat'").all()).toEqual([{ outcome: "merged", detail: via }]);
     // A commit pushed after the card: the next card's Yes acts on nothing.
     store.handle.prepare("UPDATE pull_request_follow SET ready_head = ? WHERE publication = ?").run("c".repeat(40), publication);
-    expect(mergeInChat(store, "merge-9", run, "bob", now)).toEqual({ ok: false, why: "This pull request changed since this card was sent." });
+    expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "This pull request changed since this card was sent." });
   });
 
   test("c2: a chat merge GitHub refuses is ledgered as failed, with why, and the card keeps a way to the task", async () => {

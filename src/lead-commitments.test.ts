@@ -16,7 +16,6 @@ import { getCommitment, openCommitments, promiseChannelOf } from "./lead-commitm
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { prepareSharedAction } from "./chat-actions.js";
 import { TELEGRAM_SKIPPED_OTHER_CHAT } from "./store.js";
-import { SlackState, slackHash } from "./slack-state.js";
 import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
 import type { SlackApi } from "./slack-api.js";
 import { ChatState, chatHash } from "./chat-delivery-state.js";
@@ -239,9 +238,9 @@ describe("the lead keeps its promises and remembers corrections", () => {
         if (method === "chat.postMessage" || method === "chat.update") { sent.push(String(args["text"])); return { ts: `1789700000.${String(next++).padStart(6, "0")}` }; }
         return {};
       };
-      const state = new SlackState(store), options: SlackChatOptions = { ...base, identity, api };
+      const state = new ChatState(store, "slack"), options: SlackChatOptions = { ...base, identity, api };
       state.lease(installation, "test", at(32));
-      expect(state.pair(identity, slackHash(state.pairing(installation, "operator", store.accountOf("operator")!.generation, t0)), "UTEST", "DTEST", t0)).not.toBeNull();
+      expect(state.pair(identity, chatHash(state.pairing(installation, "operator", store.accountOf("operator")!.generation, t0)), "UTEST", "DTEST", t0)).not.toBeNull();
       plan = () => planSlackNotifications(options); deliver = () => deliverSlackPart(options);
     } else if (channel === "discord") {
       const identity = { installation, app: "200000000000000001", bot: "100000000000000001", workspace: "Discord" };

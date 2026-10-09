@@ -337,11 +337,49 @@ export function durableRename(temp: string, target: string): void {
  * `receives`: the only rows the table may gain are those receipts. `compacted`: rows may go only into summary rows,
  * whose `sum` grows by exactly as many. `retired`: a removed feature's table, which may go whole. `fromRoutines`: rows
  * kept as they were, and the only rows the table may gain are one per saved routine, moved into a scheduled flow (its
- * flow, or its schedule trigger naming that routine) — on only when the routine was approved and running. */
+ * flow, or its schedule trigger naming that routine) — on only when the routine was approved and running. `moved`:
+ * the table may go only when every row it had (or the ones `rows` counts) arrived in `into`: the rows there that
+ * `where` picks grew by exactly that many. */
 const LEGACY_DESTINATION = "legacy:single-destination";
+type Moved = { into: string; where: string; rows?: string };
 type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string };
-  retired?: true; fromRoutines?: "flow" | "trigger" };
+  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved };
+/** v116: every old per-app chat table into the shared chat tables, keyed by provider (chat-migration.ts). Several old
+ * tables fan into one shared table; each picks out only its own rows there, so every count is checked on its own. */
+const TELEGRAM_MOVES: Record<string, Moved> = {
+  telegram_binding: { into: "chat_binding", where: "1" },
+  telegram_pairing: { into: "chat_pair", where: "1" },
+  telegram_team_chat: { into: "chat_room", where: "1" },
+  // An applied update is a receipt; a pushed one still waiting is queued (one already applied was spent with it).
+  telegram_update: { into: "chat_event", where: "kind = 'update' AND state = 'done'" },
+  telegram_inbox: { into: "chat_event", where: "kind = 'update' AND state = 'queued'", rows: "update_id NOT IN (SELECT update_id FROM telegram_update)" },
+  telegram_conversation: { into: "chat_event", where: "kind = 'message'" },
+  telegram_conversation_part: { into: "chat_part", where: "1" },
+  telegram_proposal_action: { into: "chat_action", where: "proposal IS NOT NULL" },
+  telegram_action: { into: "chat_action", where: "decision IS NOT NULL" },
+  telegram_flow_action: { into: "chat_flow_action", where: "action IN ('approve','edit','send-back')" },
+  telegram_flow_confirm: { into: "chat_flow_action", where: "action IN ('yes','cancel')" },
+  telegram_flow_choice: { into: "chat_flow_choice", where: "1" },
+  telegram_flow_prompt: { into: "chat_flow_prompt", where: "1" },
+  telegram_question_action: { into: "chat_question_action", where: "1" },
+  telegram_question_prompt: { into: "chat_question_prompt", where: "1" },
+  telegram_decision_message: { into: "chat_message_ref", where: "kind = 'decision'" },
+  telegram_task_message: { into: "chat_message_ref", where: "kind = 'task'" },
+  telegram_outbound_message: { into: "chat_message_ref", where: "kind = 'notification'" },
+  telegram_note_draft: { into: "chat_note_draft", where: "1" },
+  // A bot's lease and its rate-limit wait share its one runtime row.
+  bridge_lease: { into: "chat_runtime", where: "lease_until IS NOT NULL" },
+  telegram_retry: { into: "chat_runtime", where: "retry_at IS NOT NULL" },
+  telegram_digest: { into: "chat_digest", where: "1", rows: "id = 1" },
+};
+const APP_TABLES = ["binding", "pair", "event", "part", "action", "progress", "runtime", "room", "meta",
+  "flow_action", "flow_prompt", "flow_choice", "flow_note", "question_action", "question_prompt", "ask_action"];
+export const CHAT_MOVES: Record<string, Moved> = {
+  ...Object.fromEntries(Object.entries(TELEGRAM_MOVES).map(([table, move]) => [table, { ...move, where: `provider = 'telegram' AND (${move.where})` }])),
+  ...Object.fromEntries(["slack", "discord", "teams"].flatMap(app => APP_TABLES.map(suffix => [`${app}_${suffix}`, { into: `chat_${suffix}`, where: `provider = '${app}'` }]))),
+};
 const HISTORY_RULES: Record<string, HistoryRule> = {
+  ...Object.fromEntries(Object.entries(CHAT_MOVES).map(([table, moved]) => [table, { moved }])),
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
   // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
   run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
@@ -361,7 +399,7 @@ export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTO
 /** A saved routine, as its move into a scheduled flow must account for it. */
 type RoutineDigest = { id: number; repo: string; name: string; live: boolean };
 export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number>; carry?: number;
-  received?: { count: number; nonNull: Record<string, number> }; routines?: RoutineDigest[] };
+  received?: { count: number; nonNull: Record<string, number> }; routines?: RoutineDigest[]; moved?: { rows: number; found: number } };
 const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
 const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
 /** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
@@ -378,6 +416,9 @@ function receipts(db: DatabaseSync, name: string, destination: string, columns: 
   const r = db.prepare("SELECT count(*) AS n" + columns.map(column => ",count(" + quote(column) + ") AS " + quote(column)).join("") + " FROM " + quote(name) + " WHERE destination = ?").get(destination)!;
   return { count: Number(r["n"]), nonNull: Object.fromEntries(columns.map(column => [column, Number(r[column])])) };
 }
+/** The rows a moved table's rule picks out in its destination (none while there is no such table). */
+const arrived = (db: DatabaseSync, move: Moved) =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(move.into) ? Number(db.prepare("SELECT count(*) AS n FROM " + quote(move.into) + " WHERE " + move.where).get()!["n"]) : 0;
 const summed = (db: DatabaseSync, into: { into: string; sum: string }) =>
   db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(into.into) ? Number(db.prepare("SELECT coalesce(sum(" + quote(into.sum) + "),0) AS n FROM " + quote(into.into)).get()!["n"]) : 0;
 /** Each saved table's columns, row count and last rowid; the append-only ones hashed (deploy-browser's rehearsal check).
@@ -399,6 +440,8 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
       if (rule?.appendOnly || rule?.fromRoutines) t.hash = rowsHash(db, name, columns, t.last).hash;
       if (rule?.compacted) t.summed = summed(db, rule.compacted);
       if (rule?.fromRoutines) t.routines = savedRoutines(db);
+      if (rule?.moved) t.moved = { found: arrived(db, rule.moved),
+        rows: rule.moved.rows === undefined ? t.count : Number(db.prepare("SELECT count(*) AS n FROM " + quote(name) + " WHERE " + rule.moved.rows).get()!["n"]) };
       return t;
     });
 }
@@ -450,13 +493,18 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
       if (lost.length > 0) owed.set(carried.into, { count: t.carry, nonNull: Object.fromEntries(lost.map(c => [c, t.nonNull![c]!])) });
     }
   }
-  const accounted = (rule: (typeof HISTORY_RULES)[string] | undefined, t: TableDigest) => {
+  const accounted = (rule: HistoryRule | undefined, t: TableDigest) => {
     if (!rule?.carried) return false;
     const got = gained.get(rule.carried.into), want = owed.get(rule.carried.into);
     return got !== undefined && want !== undefined && got.count === want.count && Object.entries(want.nonNull).every(([c, n]) => got.nonNull[c] === n) && t.carry === want.count;
   };
   return before.filter(t => {
-    if (!tables.has(t.name)) return HISTORY_RULES[t.name]?.retired !== true;
+    if (!tables.has(t.name)) {
+      const rule = HISTORY_RULES[t.name];
+      if (rule?.retired === true) return false;
+      const move = rule?.moved;
+      return move === undefined || t.moved === undefined || arrived(db, move) - t.moved.found !== t.moved.rows;
+    }
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
     if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));

@@ -9,8 +9,9 @@
  * their own chat; otherwise, and for a plan that widens permissions, exceeds the limit or touches protected paths, the
  * card keeps its link.
  *
- * Channel-agnostic: Telegram renders these today, and Slack, Discord and Teams reach the same acts through the same
- * tokens (the `channel` column). Every act runs through the door the console uses. */
+ * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
+ * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
+ * console uses. */
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -20,7 +21,7 @@ import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
 import { chatTitle } from "./chat-voice.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
-import { modeTermsFromJson, type ModeTerms } from "./modes.js";
+import { chatApproveChatsOf, chatNames, modeTermsFromJson, type ModeTerms } from "./modes.js";
 import { parseExecutionPlanDocument } from "./plan.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { pullRequestFollowOf } from "./pull-request-flow.js";
@@ -73,10 +74,11 @@ const title = (store: Store, taskId: string): string => phoneText(chatTitle(stor
 
 // ---- the chatApprove term ----------------------------------------------------------
 
-/** What lets this person's chat approve on this repository now: their lasting chat-approval setting (chat-approval.ts),
- * or else a live signed mode carrying the chatApprove term, signed by them. `digest` names that authority for the
+/** What lets this person's chat on `channel` approve on this repository now: their lasting chat-approval setting
+ * (chat-approval.ts), or else a live signed mode carrying the chatApprove term, signed by them, that names this chat
+ * app (a mode signed before the term named its apps covers Telegram alone). `digest` names that authority for the
  * ledger; the yes itself is the person's tap and is sealed as theirs, so it doesn't lapse when the authority does. */
-export function chatApproveMode(store: Store, repo: string | null, approver: string, now: Date):
+export function chatApproveMode(store: Store, repo: string | null, approver: string, now: Date, channel: DecideChannel):
   { ok: true; digest: string; limits: ChatApprovalLimits; source: "setting" | "mode" } | { ok: false; why: string } {
   if (repo === null) return { ok: false, why: "Approving from chat isn't turned on for this project." };
   const setting = effectiveChatApproval(store, repo, approver);
@@ -85,6 +87,8 @@ export function chatApproveMode(store: Store, repo: string | null, approver: str
   const terms: ModeTerms | null = mode === null ? null : modeTermsFromJson(mode.termsJson);
   if (mode === null || terms === null || !terms.chatApprove) return setting;
   if (mode.signedBy !== approver || !store.accountCanAccess(approver, repo)) return { ok: false, why: "Only the person who signed this project's mode can approve from chat." };
+  const chats = chatApproveChatsOf(terms);
+  if (!chats.includes(channel)) return { ok: false, why: `Your mode approves from ${chatNames(chats)} only. Sign it again to approve from ${chatNames([channel])}.` };
   return { ok: true, digest: mode.digest, limits: { fullAccess: terms.permissionDefault === "escalated", capMicrousd: terms.perAttemptBudgetMicrousd }, source: "mode" };
 }
 
@@ -111,14 +115,14 @@ const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 
 /** A plan this person's chat may approve now: the term, the plan's exact bytes, and none of the reasons it must open
  * Toolroll instead. `digest` binds the scope and the plan document the card shows. */
-export function planInChat(store: Store, taskId: string, approver: string, now: Date, root?: string):
+export function planInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel, root?: string):
   { ok: true; modeDigest: string; source: "setting" | "mode"; digest: string; scope: Scope } | { ok: false; why: string } {
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
   if (ref === null || ref.repo === null || scope === null) return { ok: false, why: "This plan isn't available now." };
   if (scope.approvedDigest != null && scope.approvedDigest === scope.digest) return { ok: false, why: "This plan is already approved." };
   if (ref.plan === "requested") return { ok: false, why: "The plan is still being written." };
-  const mode = chatApproveMode(store, ref.repo, approver, now);
+  const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;
   if (store.getTask(taskId)?.state === "cancelled" || store.getTask(taskId)?.state === "done") return { ok: false, why: "This task is already finished." };
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
@@ -150,7 +154,7 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
 }
 
 /** A ready pull request this person's chat may merge now, bound to the exact commit. */
-export function mergeInChat(store: Store, taskId: string, run: number, approver: string, now: Date):
+export function mergeInChat(store: Store, taskId: string, run: number, approver: string, now: Date, channel: DecideChannel):
   { ok: true; modeDigest: string; source: "setting" | "mode"; head: string } | { ok: false; why: string } {
   const ref = store.lookupRef(taskId);
   const publication = store.publicationForRun(run);
@@ -158,7 +162,7 @@ export function mergeInChat(store: Store, taskId: string, run: number, approver:
   if (ref === null || ref.repo === null || publication === null || follow === null || publication.prNumber === null) return { ok: false, why: "This result has no pull request to merge." };
   if (follow.mergeCommit !== null) return { ok: false, why: "This pull request is already merged." };
   if (follow.readyHead !== publication.headSha) return { ok: false, why: "This pull request changed since this card was sent." };
-  const mode = chatApproveMode(store, ref.repo, approver, now);
+  const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;
   return { ok: true, modeDigest: mode.digest, source: mode.source, head: publication.headSha };
 }
@@ -215,7 +219,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
 
 /** The acts a card about this target can take in chat right now, or null when none can (the card keeps its own
  * link). Reads only; nothing is minted. */
-export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, root?: string, channel?: DecideChannel): DecideOffer | null {
+export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): DecideOffer | null {
   const ref = store.lookupRef(target.taskId);
   if (ref === null || ref.repo === null || !who.repos.includes(ref.repo)) return null;
   switch (target.kind) {
@@ -235,13 +239,13 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
       return { text: null, rows: [[{ act: "retry", run: null, digest: stamp }], [{ label: DECIDE_LABELS.look, path: chatControlHref("task", target.taskId) }]] };
     }
     case "plan": {
-      const plan = planInChat(store, target.taskId, who.name, now, root);
+      const plan = planInChat(store, target.taskId, who.name, now, channel, root);
       if (!plan.ok) return null;
       return { text: planCardText(store, target.taskId, plan.scope, root, channel),
         rows: [[{ act: "approve", run: null, digest: plan.digest }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: plan.digest }]] };
     }
     case "merge": {
-      const merge = mergeInChat(store, target.taskId, target.run, who.name, now);
+      const merge = mergeInChat(store, target.taskId, target.run, who.name, now, channel);
       if (!merge.ok) return null;
       return { text: null, rows: [[{ act: "merge", run: target.run, digest: merge.head }], [{ label: DECIDE_LABELS.look, path: chatResultHref(target.taskId, target.run, "changes") }]] };
     }
@@ -370,7 +374,7 @@ function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run">): DecideTarget 
 }
 
 /** Why the card's act no longer applies, or null while it still does — checked at the offer and again at the yes. */
-function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest">, who: VerifiedApprover, now: Date, root?: string): string | null {
+function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest">, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
   switch (row.act) {
     case "accept": case "changes": {
       const fresh = resultFresh(store, row.taskId, row.run ?? 0, who, now, root);
@@ -383,12 +387,12 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
       return retryStamp(store, row.taskId, who) === row.digest ? null : "This task changed since this card was sent.";
     }
     case "approve": case "not-now": {
-      const plan = planInChat(store, row.taskId, who.name, now, root);
+      const plan = planInChat(store, row.taskId, who.name, now, channel, root);
       if (!plan.ok) return plan.why;
       return plan.digest === row.digest ? null : "The plan changed since this card was sent.";
     }
     case "merge": {
-      const merge = mergeInChat(store, row.taskId, row.run ?? 0, who.name, now);
+      const merge = mergeInChat(store, row.taskId, row.run ?? 0, who.name, now, channel);
       if (!merge.ok) return merge.why;
       return merge.head === row.digest ? null : "This pull request changed since this card was sent.";
     }
@@ -473,13 +477,13 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
 
   if (row.phase === "cancel") {
     spend();
-    const offer = decideOffer(store, target, who, now, input.root, seat.channel);
+    const offer = decideOffer(store, target, who, now, seat.channel, input.root);
     if (offer === null) return { ack: "Cancelled.", edit: { text: body, rows: linksFor(target), tokens: [] } };
     const minted = mintDecideButtons(store, seat, target, offer, now, input.message);
     return { ack: "Cancelled.", edit: { text: offer.text ?? body, ...minted } };
   }
 
-  const why = staleWhy(store, row, who, now, input.root);
+  const why = staleWhy(store, row, who, now, seat.channel, input.root);
   if (why !== null) return stale(why);
 
   if (row.phase === "offer") {
@@ -517,7 +521,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       return retried.ok ? done("✓ Queued again. Existing approvals and holds still apply.") : notDone(retried.message);
     }
     case "approve": {
-      const plan = planInChat(store, row.taskId, who.name, now, input.root);
+      const plan = planInChat(store, row.taskId, who.name, now, seat.channel, input.root);
       if (!plan.ok) return notDone(plan.why);
       // The owner's own yes, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the mode or setting ends.
       if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest })) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
@@ -526,7 +530,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       return done("✓ Approved. Work starts when a worker is free.");
     }
     case "merge": {
-      const merge = mergeInChat(store, row.taskId, row.run ?? 0, who.name, now);
+      const merge = mergeInChat(store, row.taskId, row.run ?? 0, who.name, now, seat.channel);
       if (!merge.ok) return notDone(merge.why);
       const via = `via ${seat.channel} · chat binding #${seat.binding} · ${merge.source} ${merge.modeDigest} · ${merge.head.slice(0, 12)}`;
       // The approval is ledgered with the tap, so a bridge that stops before GitHub answers still leaves it on record;
@@ -589,7 +593,7 @@ export function applyDecideFeedback(store: Store, seat: DecideSeat, prompt: Deci
   const name = title(store, prompt.taskId);
   const verified = verifyApproverStanding(store, seat.approver, seat.generation, repos);
   if (!verified.ok) return { said: "That result isn't available here now. Nothing was sent.", link: null };
-  const why = staleWhy(store, { act: "changes", taskId: prompt.taskId, run: prompt.run, digest: prompt.digest }, verified.who, now, root);
+  const why = staleWhy(store, { act: "changes", taskId: prompt.taskId, run: prompt.run, digest: prompt.digest }, verified.who, now, seat.channel, root);
   if (why !== null) return { said: `${why} Your feedback wasn't sent.`, link: { label: "Open task", path: chatControlHref("task", prompt.taskId) } };
   if (root === undefined) return { said: "This chat can't read the saved result, so your feedback wasn't sent. Open it in Toolroll.", link: null };
   const revised = requestResultChanges(store, root, {

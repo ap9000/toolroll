@@ -8,7 +8,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { slackHash, type SlackIdentity } from "./slack-state.js";
+import { chatHash, type ChatIdentity } from "./chat-delivery-state.js";
+
+/** A Slack app installation: the chat identity, with the workspace (team) it belongs to. */
+export type SlackIdentity = ChatIdentity & { team: string };
 
 export type SlackCredentials = SlackIdentity & {
   appToken: string;
@@ -178,7 +181,7 @@ export async function checkSlackCredentials(
     app: String(detail.app_id),
     bot: String(auth.user_id),
     workspace: typeof auth.team === "string" ? auth.team : "Slack",
-    installation: slackHash(`${auth.team_id}:${detail.app_id}:${auth.user_id}`),
+    installation: chatHash(`${auth.team_id}:${detail.app_id}:${auth.user_id}`),
   };
 }
 export function object(value: unknown): Record<string, unknown> {

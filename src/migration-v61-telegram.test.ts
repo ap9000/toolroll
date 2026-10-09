@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { addLegacyChatTables } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 
 const NOW = new Date("2026-09-15T18:00:00Z");
@@ -25,6 +26,7 @@ describe("v61 Telegram delivery foundation", () => {
     store.enqueueNotification({ dedupeKey: "legacy-sent", kind: "merge", subject: "b", body: "sent" }, NOW);
     store.close(); store = undefined;
     const old = new DatabaseSync(file);
+    addLegacyChatTables(old);
     for (const table of [...laterTables, ...tables]) old.exec(`DROP TABLE ${table}`);
     for (const column of columns) old.exec(`ALTER TABLE notification DROP COLUMN ${column}`);
     old.exec("DROP TABLE service_cursor");
@@ -32,21 +34,25 @@ describe("v61 Telegram delivery foundation", () => {
     const before = old.prepare("SELECT * FROM notification ORDER BY id").all();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(115);
+    expect(SCHEMA_VERSION).toBe(116);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const after = store.handle.prepare("SELECT * FROM notification ORDER BY id").all();
     expect(after.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !columns.includes(key))))).toEqual(before);
     expect(store.listNotifications("all").map(row => row.scope)).toEqual(["unknown", "unknown"]);
-    for (const table of tables) expect(store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+    // The receipts, sent messages and retry waits moved to the shared chat tables (v116): still none.
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification_delivery").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_message_ref").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_runtime").get()?.["n"]).toBe(0);
+    for (const table of tables.slice(1)) expect(store.handle.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table)).toBeUndefined();
     store.close(); store = openStore(file);
     expect(store.handle.prepare("SELECT * FROM notification ORDER BY id").all()).toEqual(after);
   });
 
-  test("a current database missing delivery history fails closed instead of recreating it", () => {
+  test("a v113 database missing delivery history fails closed instead of recreating it", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v61-missing-"));
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
-    const db = new DatabaseSync(file); db.exec("DROP TABLE telegram_outbound_message"); db.close();
+    const db = new DatabaseSync(file); addLegacyChatTables(db); db.exec("DROP TABLE telegram_outbound_message; UPDATE schema_version SET version = 113"); db.close();
     expect(() => openStore(file)).toThrow("Telegram delivery history is missing");
   });
 });

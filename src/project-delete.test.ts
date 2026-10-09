@@ -101,6 +101,21 @@ function mentions(where: string): string[] {
 }
 const count = (sql: string, ...params: unknown[]) => Number(store.handle.prepare(sql).get(...params)!["n"]);
 
+/** A paired Telegram chat's messages, each about one task, each with its reply planned. Returns their event ids. */
+function telegramTalk(about: Array<[string, number]>): string[] {
+  const alex = addApprover(store, "alex", NOW);
+  if (!alex.ok) throw new Error("approver fixture");
+  store.createTelegramPairing({ codeHash: "c".repeat(64), approver: "alex", by: "alex", ttlMs: 60_000 }, NOW);
+  const paired = store.consumeTelegramPairing({ codeHash: "c".repeat(64), botId: "777", chatId: "42", userId: "42", updateId: 1 }, NOW);
+  if (!paired.ok) throw new Error("pairing fixture");
+  return about.map(([taskId, update]) => {
+    store.enqueueTelegramConversation({ binding: paired.binding, updateId: update, messageId: String(update), replyTo: null, request: `r-${update}`, text: `How is ${taskId}?`, context: null, taskId, sourceRun: null }, NOW);
+    const claimed = store.claimTelegramConversation("777", "owner", 60_000, NOW)!;
+    expect(store.planTelegramConversationParts(claimed.id, "owner", { session: 1, turn: 1 }, [{ kind: "reply", text: "Going well." }], NOW)).toBe(true);
+    return `m${update}`;
+  });
+}
+
 test("deleting a project removes what Toolroll holds for it and keeps everything else", async () => {
   const shop = populate(repo);
   const other = populate(OTHER);
@@ -113,8 +128,15 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   store.handle.prepare("UPDATE task_ref SET revision_brief_artifact = ? WHERE id = ?").run(shared, other.second.ref);
   expect(mentions(repo).length).toBeGreaterThan(5);
 
+  // A paired Telegram chat asked about each project's task; each message has its reply planned (event ids are text, 'm…').
+  const talk = telegramTalk([[shop.first.id, 501], [other.first.id, 502]]);
+  expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
+
   const done = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool });
   expect(done).toMatchObject({ ok: true, removed: { tasks: 1, versions: 1, runs: 2, branches: 2, chats: 2, teammates: 1 }, left: [] });
+  // The shop's message and its reply went with it; the other project's stayed.
+  expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
+  expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);
 
   // Nothing names the project any more; its tasks, runs, chats, cards, teammate and evidence are gone.
   expect(mentions(repo)).toEqual([]);

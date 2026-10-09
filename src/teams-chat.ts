@@ -153,13 +153,11 @@ export function teamsMessages(text: string, markdown: boolean, last: (text: stri
 export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boolean> {
   const shared = teamsDelivery(options), state = shared.state, { store, identity } = options, now = options.clock?.() ?? new Date();
   if (!options.current() || !state.owns(identity.installation, options.owner, now)) return false;
-  const row = state.prepare(
-    "SELECT p.* FROM chat_part p JOIN chat_event e ON e.id=p.event WHERE e.installation=? AND p.state='pending' AND (e.kind!='notice' OR ?=1) AND (p.next_at IS NULL OR p.next_at<=?) ORDER BY p.created,p.id LIMIT 1",
-  ).get(identity.installation, options.canNotify?.() === false ? 0 : 1, now.toISOString()) as ChatPart | undefined;
+  const row = state.nextPart(identity.installation, options.canNotify?.() !== false, now, "created");
   if (!row) return false;
   const event = state.event(row.event)!, binding = event.binding === null ? null : state.bindingById(event.binding);
   if (!binding || new Date(row.created).getTime() + 86_400_000 < now.getTime()) {
-    state.prepare("UPDATE chat_part SET state='dropped',problem='Delivery expired or access changed; open the saved chat' WHERE id=?").run(row.id);
+    state.dropPart(row.id, "Delivery expired or access changed; open the saved chat");
     return true;
   }
   try {
@@ -173,7 +171,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     if (content.task && !repos.includes(store.lookupRef(content.task)?.repo ?? "")) throw new TeamsError("Connected projects changed");
     let text = content.text, actions: Record<string, unknown>[] = [];
     if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
-      state.prepare("UPDATE chat_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      state.dropPart(row.id, "Removed by retention");
       return true;
     }
     if (content.image) {
@@ -188,7 +186,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
         const preview = proposalPreview(store, proposal, repos, "teams");
         text = content.phase === "armed" ? armedCardText(proposal, preview.text) : preview.text.replace("\n\nConfirm or Dismiss below. Nothing changes until you confirm.", "");
         if (preview.buttons && preview.text.length <= PLATFORM_LIMITS.teams) {
-          actions = state.prepare("SELECT token,phase FROM chat_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(row.id, now.toISOString())
+          actions = state.partTokens(row.id, now)
             .map(action => ({ type: "Action.Submit", title: action.phase === "yes" ? armedYesLabel(proposal) : action.phase === "cancel" ? "Cancel" : action.phase === "dismiss" ? "Dismiss" : "Confirm", data: { so: String(action.token) } }));
           if (!actions.length) text = "This confirmation expired. Ask for a fresh proposal.";
         } else {
@@ -203,7 +201,11 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       const asked = content.question ? chatQuestionButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token } })) : [];
       // The lead's question to its owner: its options, then "Something else".
       const owner = content.ask ? chatAskButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token } })) : [];
-      actions = [...flow, ...asked, ...owner, ...openUrlAction(options.origin(), content.link), ...(content.also ?? []).flatMap(one => openUrlAction(options.origin(), one))];
+      // A result's, plan's, failure's or pull request's own buttons (chat-decide.ts): its acts, then its links.
+      const decided = (content.decide?.rows.flat() ?? []).flatMap((one, index) => "token" in one
+        ? [{ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token }, ...(index === 0 ? { style: "positive" } : {}) }]
+        : openUrlAction(options.origin(), one.link));
+      actions = [...flow, ...asked, ...owner, ...decided, ...openUrlAction(options.origin(), content.link), ...(content.also ?? []).flatMap(one => openUrlAction(options.origin(), one))];
     }
     const target = content.edit ?? row.message;
     // The lead's own reply goes out in Teams' Markdown (bold anchors, labelled links); everything else stays plain.
@@ -215,16 +217,15 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     for (const more of bodies.slice(1)) answer = await options.api("POST", serviceUrl, activities, more);
     const messageId = target ?? (typeof answer.id === "string" ? answer.id : null);
     if (messageId === null) throw new TeamsError("Teams did not confirm the message", 15_000, true);
-    state.prepare("UPDATE chat_part SET state='sent',message=?,attempts=attempts+1,next_at=NULL,problem=NULL WHERE id=?").run(messageId, row.id);
+    state.partSent(row.id, messageId, now);
     return true;
   } catch (error) {
     if (error instanceof ChatDeliveryError && error.permanent) {
-      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      state.dropPart(row.id, error.message);
       return true;
     }
     const problem = error instanceof TeamsError ? error : new TeamsError("Teams delivery failed", 15_000, true);
-    state.prepare("UPDATE chat_part SET attempts=attempts+1,uncertain=?,next_at=?,problem=?,state=CASE WHEN attempts>=20 THEN 'dropped' ELSE state END WHERE id=?")
-      .run(problem.uncertain ? 1 : 0, new Date(now.getTime() + problem.retryMs).toISOString(), problem.message, row.id);
+    state.partFailed(row.id, { problem: problem.message, until: new Date(now.getTime() + problem.retryMs).toISOString(), uncertain: problem.uncertain }, 20);
     return true;
   }
 }

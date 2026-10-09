@@ -193,7 +193,7 @@ export function applyFlowTap(store: Store, binding: TelegramBinding, action: Tel
     store.retireTelegramFlowVisit(action.card, action.entry, now);
     const mint = (phase: "yes" | "cancel") => {
       const token = randomBytes(16).toString("hex");
-      store.handle.prepare("INSERT INTO telegram_flow_confirm (token, binding, chat_id, message_id, card, entry, phase, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)")
+      store.telegramChat().prepare("INSERT INTO chat_flow_action (provider, token, binding, chat, message, card, entry, action, created, expires) VALUES (:provider,?,?,?,?,?,?,?,?,?)")
         .run(token, binding.id, binding.chatId, message.messageId, action.card, action.entry, phase, now.toISOString(), new Date(now.getTime() + CONFIRM_TTL_MS).toISOString());
       return token;
     };
@@ -216,17 +216,17 @@ export type FlowConfirm = { token: string; binding: number; chatId: string; mess
 /** A Yes or Cancel this module armed, or null when the token isn't one. */
 export function flowConfirmOf(store: Store, token: string): FlowConfirm | null {
   if (!/^[0-9a-f]{32}$/.test(token)) return null;
-  const row = store.handle.prepare("SELECT * FROM telegram_flow_confirm WHERE token = ?").get(token);
+  const row = store.telegramChat().prepare("SELECT * FROM chat_flow_action WHERE provider = :provider AND token = ? AND action IN ('yes','cancel')").get(token);
   if (row === undefined) return null;
-  return { token: String(row["token"]), binding: Number(row["binding"]), chatId: String(row["chat_id"]), messageId: String(row["message_id"]), card: Number(row["card"]), entry: Number(row["entry"]),
-    phase: String(row["phase"]) === "cancel" ? "cancel" : "yes", expiresAt: String(row["expires_at"]), consumedAt: row["consumed_at"] == null ? null : String(row["consumed_at"]) };
+  return { token: String(row["token"]), binding: Number(row["binding"]), chatId: String(row["chat"]), messageId: String(row["message"]), card: Number(row["card"]), entry: Number(row["entry"]),
+    phase: String(row["action"]) === "cancel" ? "cancel" : "yes", expiresAt: String(row["expires"]), consumedAt: row["consumed"] == null ? null : String(row["consumed"]) };
 }
 
 /** The second tap, inside the update's transaction: Yes decides the card through the console's door, once; Cancel puts
  * the card's own buttons back. The caller has proved the binding, chat and message are the ones it was armed on. */
 export function applyFlowConfirm(store: Store, binding: TelegramBinding, confirm: FlowConfirm, message: { text: string }, repos: readonly string[] | null, now: Date): FlowTapEffect[] {
   const body = message.text.replace(FLOW_QUESTION, "");
-  const spend = () => store.handle.prepare("UPDATE telegram_flow_confirm SET consumed_at = ? WHERE card = ? AND entry = ? AND message_id = ? AND consumed_at IS NULL").run(now.toISOString(), confirm.card, confirm.entry, confirm.messageId);
+  const spend = () => store.telegramChat().prepare("UPDATE chat_flow_action SET consumed = ? WHERE provider = :provider AND action IN ('yes','cancel') AND card = ? AND entry = ? AND message = ? AND consumed IS NULL").run(now.toISOString(), confirm.card, confirm.entry, confirm.messageId);
   if (confirm.consumedAt !== null || confirm.expiresAt <= now.toISOString()) {
     spend();
     const now_ = flowWhereNow(store, confirm.card, repos);

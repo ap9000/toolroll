@@ -15,9 +15,9 @@ export function teamsSettingsHtml(store: Store, dir: string, csrf: string, optio
   const bindings = credentials ? state.bindings(credentials.installation).filter(one => state.live(one)) : [];
   const binding = options.who === undefined ? null : bindings.find(one => one.approver === options.who) ?? null;
   const others = bindings.length - (binding === null ? 0 : 1);
-  const runtime = credentials ? state.db.prepare("SELECT connected,problem,lease_until FROM teams_runtime WHERE installation=?").get(credentials.installation) : null;
+  const runtime = credentials ? state.runtime(credentials.installation) : null;
   const now = options.now ?? new Date();
-  const live = runtime && typeof runtime.lease_until === "string" && runtime.lease_until > now.toISOString() && runtime.connected;
+  const live = runtime && runtime.leaseUntil !== null && runtime.leaseUntil > now.toISOString() && runtime.connected;
   const hidden = `<input type="hidden" name="csrf" value="${escape(csrf)}">`;
   const password = '<label>Your Toolroll password<input style="min-height:44px" type="password" name="password" autocomplete="current-password" required></label>';
   const post = (action: string, content: string) => `<form method="post" action="/settings/teams/${action}" class="card">${hidden}${content}</form>`;

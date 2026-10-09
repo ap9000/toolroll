@@ -37,6 +37,13 @@ Each can be connected under Settings and used to talk to the lead and
 confirm its cards. Only one app sends alerts: the one you choose as primary
 (Settings → Notifications).
 
+Pairing and approvals work as on Telegram. Each person pairs their own
+chat with a code from Settings. A ready result, a failed task, a plan or
+a pull request comes with its own buttons (**Accept and finish**,
+**Retry**, **Approve & start**, **Merge**), and each asks once more before
+it acts. A mode signed before Slack, Discord and Teams could approve covers
+Telegram only; sign the mode again to approve plans and merges from them.
+
 A flow decision arrives there with the draft and **Approve**, **Edit** and
 **Send back**, as on Telegram. Edit and Send back ask for your next message
 in that chat: it becomes the new draft (which comes back to approve) or the
