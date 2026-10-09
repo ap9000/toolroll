@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -72,6 +72,55 @@ describe("the release adapters", () => {
     expect(await releaseAdapters({ checkout: "/rv", run }).toolroll.fileGate({ taskId: "release-1", title: "Release 1", checkout: "/rv", candidate: SHA, goal: "Verify", acceptance: "passes|check" })).toEqual({ scopeDigest: "d1" });
     expect(calls[0]).toEqual(["task", "add", "Release 1", "--id", "release-1", "--repo", "/rv", "--checks", "full", "--json"]);
     expect(calls[1]).toContain(SHA);
+  });
+
+  test("an unfinished run without a live claim keeps release busy and names its task", async () => {
+    const database = join(root(), "orders.db"), store = openStore(database), db = store.handle;
+    const run: Exec = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ ok: true, running: { count: 0, tasks: [] } }) });
+    const adapter = releaseAdapters({ checkout: "/rv", database, run }).toolroll;
+    try {
+      db.exec("INSERT INTO task_ref(id,backend,external_id) VALUES(1,'built-in','unclaimed-build')");
+      db.exec("INSERT INTO run(task_ref,lease_id,runner,branch,worktree,started_at) VALUES(1,'lost-lease','fixture','feature','/w','2026-10-09T00:00:00Z')");
+      expect(db.prepare("SELECT count(*) n FROM claim WHERE released_at IS NULL").get()?.["n"]).toBe(0);
+      expect(await adapter.busy()).toEqual({ running: 1, tasks: ["unclaimed-build"] });
+      // Observing the unfinished run does not recover or otherwise change it.
+      expect(db.prepare("SELECT outcome FROM run").get()?.["outcome"]).toBeNull();
+      db.exec("UPDATE run SET outcome='built', finished_at='2026-10-09T01:00:00Z'");
+      expect(await adapter.busy()).toEqual({ running: 0, tasks: [] });
+    } finally { store.close(); }
+  });
+
+  test("unreleased claims and unsettled stops keep release busy after the run finishes", async () => {
+    const database = join(root(), "orders.db"), store = openStore(database), db = store.handle;
+    const adapter = releaseAdapters({ checkout: "/rv", database }).toolroll;
+    try {
+      db.exec("INSERT INTO task_ref(id,backend,external_id) VALUES(1,'built-in','claimed-task'),(2,'built-in','stopping-task')");
+      db.exec("INSERT INTO claim(task_ref,lease_id,lease_generation,runner,acquired_at,expires_at,heartbeat_at) VALUES(1,'lease',1,'fixture','2000-01-01','2000-01-02','2000-01-01')");
+      db.exec("INSERT INTO run(id,task_ref,lease_id,runner,branch,worktree,started_at,outcome,finished_at) VALUES(1,2,'other-lease','fixture','feature','/w','2000-01-01','built','2000-01-02')");
+      db.exec("INSERT INTO run_stop(run,task_ref,requested_by,requested_via,requested_at) VALUES(1,2,'alex','cli','2000-01-02')");
+      expect(await adapter.busy()).toEqual({ running: 2, tasks: ["claimed-task", "stopping-task"] });
+      db.exec("UPDATE claim SET released_at='2000-01-03'");
+      expect(await adapter.busy()).toEqual({ running: 1, tasks: ["stopping-task"] });
+      db.exec("UPDATE run_stop SET settled_at='2000-01-03', settlement='finished'");
+      expect(await adapter.busy()).toEqual({ running: 0, tasks: [] });
+    } finally { store.close(); }
+  });
+
+  test("active conversations keep release busy even without task work", async () => {
+    const database = join(root(), "orders.db"), store = openStore(database), db = store.handle;
+    const adapter = releaseAdapters({ checkout: "/rv", database }).toolroll;
+    try {
+      db.exec("INSERT INTO chat_turn(approver,credential_key,provider,model,state,created_at,reserved_microusd) VALUES('alex','fixture','codex-subscription','fixture','queued','2000-01-01',0)");
+      expect(await adapter.busy()).toEqual({ running: 1, tasks: [] });
+      db.exec("UPDATE chat_turn SET state='answered'");
+      expect(await adapter.busy()).toEqual({ running: 0, tasks: [] });
+    } finally { store.close(); }
+  });
+
+  test("a missing database cannot be mistaken for idle or created by the quiet check", async () => {
+    const database = join(root(), "missing.db");
+    await expect(releaseAdapters({ checkout: "/rv", database }).toolroll.busy()).rejects.toThrow();
+    expect(existsSync(database)).toBe(false);
   });
 
   test("bump only the formula's url and sha256", () => {

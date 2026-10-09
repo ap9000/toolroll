@@ -304,6 +304,14 @@ describe("toolroll release", () => {
   });
 
   describe("pull-request checks", () => {
+    const repeat = "Windows Job Object containment · c2 × 20";
+    const blocked = [
+      { status: "queued", conclusion: null, reason: "timeout" },
+      { status: "in_progress", conclusion: null, reason: "timeout" },
+      ...["failure", "cancelled", "skipped", "timed_out", "neutral", "action_required", "stale", null]
+        .map(conclusion => ({ status: "completed", conclusion, reason: "ci-failed" })),
+    ];
+
     test("every required check passed on the gated commit, its newest attempt counting", () => {
       expect(checksVerdict(passing(REQUIRED_PR_CHECKS), REQUIRED_PR_CHECKS)).toEqual({ state: "passed" });
       const rerun = [{ name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }, ...passing(REQUIRED_PR_CHECKS)];
@@ -326,6 +334,45 @@ describe("toolroll release", () => {
       failed.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
       expect(await runRelease(options(stateDir()), failed.adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed", message: expect.stringContaining("Nothing was merged") });
       expect(failed.s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
+    });
+
+    test("the newest attempt counts for extra checks too, while every required name must still be present", () => {
+      expect(REQUIRED_PR_CHECKS).not.toContain(repeat);
+      const failure = { name: repeat, status: "completed", conclusion: "failure" };
+      const success = passing([repeat]);
+      expect(checksVerdict([...passing(REQUIRED_PR_CHECKS), failure, ...success], REQUIRED_PR_CHECKS)).toEqual({ state: "passed" });
+      expect(checksVerdict([...passing(REQUIRED_PR_CHECKS), ...success, failure], REQUIRED_PR_CHECKS))
+        .toEqual({ state: "failed", failed: [`${repeat} (failure)`] });
+      expect(checksVerdict([...passing(REQUIRED_PR_CHECKS.slice(1)), ...success], REQUIRED_PR_CHECKS))
+        .toEqual({ state: "pending", waiting: [`${REQUIRED_PR_CHECKS[0]} (not started)`] });
+    });
+
+    test.each(blocked)("an extra Windows repeat check blocks CI at $status/$conclusion and resumes after success", async ({ status, conclusion, reason }) => {
+      const dir = stateDir();
+      const { s, adapters } = world();
+      s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS), { name: repeat, status, conclusion }]);
+      const result = await runRelease(options(dir, { limits: { ci: 1 } }), adapters);
+      expect(result).toMatchObject({ ok: false, step: "ci", reason });
+      expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
+      if (reason === "ci-failed") expect(result).toMatchObject({ message: expect.stringContaining(repeat) });
+      s.checks.get(SHA)!.push(...passing([repeat]));
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+      for (const mutation of MUTATIONS) expect(s.calls.filter(one => one === mutation), mutation).toHaveLength(1);
+    });
+
+    test.each(blocked)("re-fetches all checks before merge and blocks an extra check now at $status/$conclusion", async ({ status, conclusion }) => {
+      const { s, adapters } = world();
+      const checks = adapters.github.checks;
+      let reads = 0;
+      adapters.github.checks = async (repo, sha) => {
+        if (sha !== SHA) return checks(repo, sha);
+        reads += 1;
+        return [...passing(REQUIRED_PR_CHECKS), ...(reads === 1 ? passing([repeat]) : [{ name: repeat, status, conclusion }])];
+      };
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "ci-failed" });
+      expect(reads).toBe(2);
+      expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
+      expect(s.pr.state).toBe("open");
     });
   });
 

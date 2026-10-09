@@ -13,7 +13,8 @@
  * final JSON names; an interrupted one is recovered from its saved stage (--phase recover) before anything else. link
  * points both CLI names at that runtime's bin.js, putting them back if either doesn't answer, and goes on only when
  * the console, worker and both names run the gated commit. ci waits for every
- * required pull-request check on that same commit to pass: pending, missing, skipped or failed never merges. merge
+ * reported pull-request check on that same commit to pass, with every required check present: pending, missing,
+ * skipped or failed never merges. merge
  * squash-merges with the head pinned to the gated commit, tree proves main's new commit has exactly the gated tree,
  * and only then tag pushes the version tag, whose macOS matrix must pass before npm publication (publish.yml). publish
  * waits for npm, the GitHub release and the macOS checks; homebrew updates the tap's formula and merges it.
@@ -221,12 +222,13 @@ export function ownerApproval(gate: GateState, digest: string | null): { ok: tru
   return { ok: true, by: approval.by, at: approval.at };
 }
 
-/** Every required check present on the commit, its newest run completed, and each concluded success. */
+/** Every required check present, and every reported check's newest attempt completed successfully. */
 export function checksVerdict(runs: readonly CheckRun[], required: readonly string[]): { state: "passed" } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [];
-  for (const name of required) {
-    // GitHub lists every attempt; a rerun's newest attempt is the last one it lists for that name.
-    const run = runs.filter(one => one.name === name).at(-1);
+  // The adapter orders attempts oldest first, so the last attempt for each name is authoritative.
+  const latest = new Map(runs.map(run => [run.name, run]));
+  for (const name of new Set([...required, ...latest.keys()])) {
+    const run = latest.get(name);
     if (run === undefined || run.status !== "completed") { waiting.push(run === undefined ? `${name} (not started)` : `${name} (${run.status})`); continue; }
     if (run.conclusion !== "success") failed.push(`${name} (${run.conclusion ?? "no conclusion"})`);
   }

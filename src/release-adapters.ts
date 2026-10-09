@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
+import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import { databasePath, type Database } from "./store.js";
@@ -258,10 +259,19 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return answer["ok"] === true ? { ok: true } : { ok: false, message: refused(answer) };
       },
       async busy() {
-        const answer = await toolroll("status");
-        const running = object(answer["running"]);
-        if (answer["ok"] !== true || typeof running["count"] !== "number") throw new Error(`toolroll status: ${refused(answer)}`);
-        return { running: running["count"], tasks: (Array.isArray(running["tasks"]) ? running["tasks"] : []).map(one => String(object(one)["task"])) };
+        const db = new DatabaseSync(database, { readOnly: true }) as unknown as Database;
+        try {
+          // Match the deploy guard, including unfinished runs whose claim is gone. Keep one read snapshot.
+          db.exec("BEGIN");
+          const work = activeUpdateWork(db);
+          const tasks = db.prepare(`SELECT DISTINCT external_id FROM task_ref WHERE id IN (
+            SELECT task_ref FROM run WHERE outcome IS NULL
+            UNION SELECT task_ref FROM claim WHERE released_at IS NULL
+            UNION SELECT task_ref FROM run_stop WHERE settled_at IS NULL
+          ) ORDER BY external_id`).all().map(row => String(row["external_id"]));
+          db.exec("COMMIT");
+          return { running: Object.values(work).reduce((total, count) => total + count, 0), tasks };
+        } finally { db.close(); }
       },
       async deploy({ run: runId, worktree, stage }) {
         // The candidate's own deployment, from its own checkout: drain, backup, rehearsal, swap, health. Its last JSON
