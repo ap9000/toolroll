@@ -80,7 +80,6 @@ const SHAPED_SAMPLES: Partial<Record<StoreColumn, unknown>> = {
   "mate_ask.options_json": ["Continue", "Stop"],
   "plan_revision.changed_fields": ["goal", "touches"],
   "run_checkpoint.snapshot_json": { revisionHash: "abc", milestones: [{ id: "m1", state: "completed", note: null, extra: 1 }], extra: 1 },
-  "telegram_conversation_part.keyboard_json": [[{ text: "Continue", callback_data: "historical-token", extra: 1 }]],
   "publication_grant.capabilities": ["push-branch", "open-pr"],
   "task_scope.touches": ["src/example.ts"],
   "task_scope.acceptance_json": [{ id: "c1", statement: "Reads saved data", evidence: ["check"] }],

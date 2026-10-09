@@ -26,6 +26,12 @@ const NEEDED_KINDS = new Set([
   "stale-approval", "security-release", "secret-detected",
 ]);
 
+/** What still wants a person who pairs after it landed, in every chat app: an open decision or an unresolved attention
+ * notice. Routine history is never replayed to a chat that just arrived (store.ts WANTED_BEFORE_PAIRING, the same rule). */
+export function wantedBeforePairing(row: Pick<Notification, "dedupeKey" | "pushClass" | "resolvedAt">): boolean {
+  return row.resolvedAt === null && (row.dedupeKey.startsWith("decision:") || row.pushClass === "attention");
+}
+
 export function needsPerson(row: Pick<Notification, "dedupeKey" | "kind" | "pushClass" | "recipient">): boolean {
   if (row.recipient !== null) return true;
   if (/^decision:\d+$/.test(row.dedupeKey)) return true;

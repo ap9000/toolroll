@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { CHAT_BUTTON_TOKEN } from "./chat-content.js";
 import { parseContract, type ContractResult } from "./contract.js";
 
 const user = z.object({ id: z.string() });
@@ -27,7 +28,7 @@ export type DiscordComponentInteraction = z.infer<typeof discordComponentInterac
 
 /** Toolroll's button data: `so_` and a one-time token. */
 export const discordButtonSchema = z.object({
-  custom_id: z.string().regex(/^so_[a-f0-9]{32}$/, { error: "not a Toolroll button" }),
+  custom_id: z.string().regex(new RegExp(`^so_${CHAT_BUTTON_TOKEN.source.slice(1)}`), { error: "not a Toolroll button" }),
 });
 
 export function readDiscordComponentInteraction(body: unknown): ContractResult<DiscordComponentInteraction> {

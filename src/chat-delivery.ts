@@ -38,7 +38,7 @@ import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisi
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
 import { telegramProgressCard } from "./telegram-progress.js";
-import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView } from "./chat-quiet.js";
+import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, wantedBeforePairing } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle } from "./chat-voice.js";
 import { LEAD_SAY_KIND, enqueueLeadLapses, leadSayEarlier, leadSayText, leadSubjectOf } from "./lead-voice.js";
 import { leadChannelOf } from "./lead-context.js";
@@ -50,6 +50,9 @@ import { isShotsKind, resultShotsFor } from "./result-shots.js";
 import { messageTeammate } from "./teammate-desk.js";
 import { CHAT_APP_NAMES } from "./flow-triggers.js";
 import type { SubscriptionMateRunner } from "./subscription-chat.js";
+import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
+  mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
+import { mergePullRequest } from "./pull-request-flow.js";
 export const chatObject = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -73,6 +76,8 @@ export type ChatDeliveryOptions = {
   maxProposal?: number;
   /** The app's warm touches for one owner message (a 👍, typing), where the app and the bot's permissions allow them. */
   warm?: (event: ChatEvent, binding: ChatBinding) => WarmHooks;
+  /** Merges a pull request approved in chat (tests script it); otherwise the project's own merge. */
+  merge?: (input: { runId: number; by: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
 };
 const nowOf = (options: ChatDeliveryOptions) => options.clock?.() ?? new Date();
 const CHAT_PART_SIZE = 2800;
@@ -133,6 +138,79 @@ export async function channelAccess(
   return latest;
 }
 
+// ---- decisions that finish in the chat (chat-decide.ts), the same in every app --------------------------------------
+
+/** Where a paired person taps: their binding, and the chat the card is in. */
+const decideSeat = (state: ChatState, binding: ChatBinding, chat = binding.channel): DecideSeat =>
+  ({ channel: state.provider, binding: binding.id, chat, approver: binding.approver, generation: binding.generation });
+
+/** What a card about one result, plan, failure or pull request may act on in this person's chat now, under their
+ * current ceiling; null keeps its link. Reads only. */
+function decideOfferFor(options: ChatDeliveryOptions, binding: ChatBinding, target: DecideTarget | null | undefined, repos: readonly string[], now: Date): DecideOffer | null {
+  if (target == null) return null;
+  const principal = verifyApproverStanding(options.store, binding.approver, binding.generation, repos);
+  return principal.ok ? decideOffer(options.store, target, principal.who, now, options.state.provider, options.evidenceRoot) : null;
+}
+
+/** A card's buttons as a part carries them. */
+const decideRows = (rows: readonly DecideButton[][]): NonNullable<ChatContent["decide"]>["rows"] =>
+  rows.map(row => row.map(one => "token" in one ? { label: one.label, token: one.token } : { label: one.label, link: one.link }));
+
+/** The offer's buttons, minted now: they ride the part's message once it is sent (ChatState.partSent). */
+function mintDecide(options: ChatDeliveryOptions, binding: ChatBinding, target: DecideTarget, offer: DecideOffer, now: Date): NonNullable<ChatContent["decide"]> {
+  return { rows: decideRows(mintDecideButtons(options.store, decideSeat(options.state, binding), target, offer, now).rows) };
+}
+
+/** A merge approved in chat, waiting on GitHub, and the card that says how it went. */
+type PendingMerge = { merge: ChatMerge; part: number; shown: string; content: ChatContent };
+
+/**
+ * A decide button (chat-decide.ts), inside the tap's transaction: the same door, words and two taps as on Telegram.
+ * The card it rode is repainted in place; Request changes asks for the next message; a merge goes out after.
+ */
+function applyChatDecideTap(options: ChatDeliveryOptions, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): PendingMerge | null {
+  const { store, state } = options;
+  // The card the button rode: this person's part on that message.
+  const row = state.prepare(`SELECT p.id, p.payload FROM chat_part p JOIN chat_event e ON e.provider = p.provider AND e.id = p.event
+    WHERE p.provider = :provider AND e.binding = ? AND p.message = ? ORDER BY p.id DESC LIMIT 1`).get(binding.id, event.ts);
+  const read = row === undefined ? null : readChatPart(String(row["payload"]));
+  const card = read?.ok === true ? read.value : null;
+  const tapped = applyDecideTap(store, decideSeat(state, binding, event.channel), { token, message: event.ts, shown: card?.text ?? "", repos, root: options.evidenceRoot, now });
+  if (tapped === null) {
+    state.plan(event.id, [{ text: "That button doesn't do anything now." }], now);
+    return null;
+  }
+  const replies: ChatContent[] = [];
+  let repainted: ChatContent | null = null;
+  if (tapped.edit !== undefined && row !== undefined && card !== null) {
+    const { decide: _decide, link: _link, also: _also, edit: _edit, ...kept } = card;
+    repainted = { ...kept, text: tapped.edit.text, ...(tapped.edit.rows.length === 0 ? {} : { decide: { rows: decideRows(tapped.edit.rows) } }) };
+    state.repaint(Number(row["id"]), repainted);
+  } else replies.push({ text: tapped.ack });
+  if (tapped.prompt !== undefined) replies.push({ text: tapped.prompt.text, prompt: tapped.prompt.id });
+  state.plan(event.id, replies, now);
+  return tapped.merge === undefined || row === undefined || repainted === null ? null
+    : { merge: tapped.merge, part: Number(row["id"]), shown: tapped.edit?.text ?? card?.text ?? "", content: repainted };
+}
+
+/** GitHub is a network call: after the tap's transaction, then the card says how it went, and the ledger too. */
+async function mergeFromChat(options: ChatDeliveryOptions, pending: PendingMerge): Promise<void> {
+  const { merge } = pending;
+  let merged: { ok: true } | { ok: false; message: string };
+  try {
+    const result = options.merge !== undefined ? await options.merge({ runId: merge.runId, by: merge.by })
+      : await mergePullRequest(options.store, { runId: merge.runId, by: merge.by, clock: () => nowOf(options) });
+    merged = result.ok ? { ok: true } : { ok: false, message: result.message };
+  } catch {
+    merged = { ok: false, message: "GitHub couldn't be reached just now. Try again from the task." };
+  }
+  recordChatMerge(options.store, merge, merged, nowOf(options));
+  const { decide: _decide, ...kept } = pending.content;
+  // A merge that didn't land keeps a way to the task.
+  options.state.repaint(pending.part, { ...kept, text: mergedText(pending.shown, merged),
+    ...(merged.ok ? {} : { decide: { rows: decideRows(linksFor({ kind: "merge", taskId: merge.taskId, run: merge.runId })) } }) });
+}
+
 export async function processChatEvent(
   options: ChatDeliveryOptions,
 ): Promise<boolean> {
@@ -159,14 +237,14 @@ export async function processChatEvent(
         return false;
       const body = readChatPairBody(event.payload);
       const paired = body.ok
-        ? state.pair(identity, body.value.hash, event.member, event.channel, nowOf(options))
+        ? state.pair(identity, body.value.hash, event.member, event.channel, nowOf(options), event.id)
         : null;
       if (!paired) {
         state.finish(event.id, true);
         return true;
       }
       state
-        .prepare("UPDATE chat_event SET binding=? WHERE id=?")
+        .prepare("UPDATE chat_event SET binding=? WHERE provider=:provider AND id=?")
         .run(paired.id, event.id);
       state.plan(
         event.id,
@@ -188,7 +266,8 @@ export async function processChatEvent(
     }
     const repos = await channelAccess(options, binding);
     if (event.kind === "action") {
-      applyChatAction(options, event, binding, repos);
+      const merging = applyChatAction(options, event, binding, repos);
+      if (merging !== null) await mergeFromChat(options, merging);
       return true;
     }
     const body = readChatMessageBody(event.payload);
@@ -208,12 +287,22 @@ export async function processChatEvent(
     // A flow decision asked for this person's next message (Edit, Send back): it is the draft or the note.
     if (answerChatFlowPrompt({ store, state, label: options.label }, event, binding,
       { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}) }, repos, nowOf(options))) return true;
+    // After Request changes asked "What should change?": the person's next message in their own chat is the feedback
+    // (a reply in another message's thread keeps its own meaning).
+    if (event.channel === binding.channel && text.trim() !== "" && phoneCommand(text) === null) {
+      const prompt = openPromptFor(store, { channel: state.provider, binding: binding.id, chat: binding.channel }, nowOf(options));
+      if (prompt !== null && answersPrompt(prompt, event.thread !== "" && event.thread !== event.ts ? event.thread : null)) {
+        const answer = applyDecideFeedback(store, decideSeat(state, binding), prompt, text, repos, options.evidenceRoot, nowOf(options));
+        state.plan(event.id, [{ text: answer.said, ...(answer.link === null ? {} : { link: answer.link }) }], nowOf(options));
+        return true;
+      }
+    }
     // A "Person chooses" notice's thread reply is the note; the first other message after it is asked about (chat-flow.ts).
     if (answerChoiceMessage({ store, state, label: options.label }, event, binding,
       { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}), lead: input.lead === true }, nowOf(options), repos)) return true;
     // A message to a teammate by name (v96), in someone's own chat with Toolroll: a card on its desk.
     if (event.channel === binding.channel) {
-      const handed = messageTeammate(store, { who: binding.approver, repos, via: CHAT_APP_NAMES[state.channel] ?? "Chat" }, text, nowOf(options));
+      const handed = messageTeammate(store, { who: binding.approver, repos, via: CHAT_APP_NAMES[state.provider] ?? "Chat" }, text, nowOf(options));
       if (handed !== null) {
         state.plan(event.id, [{ text: handed.said, ...(handed.link === undefined ? {} : { link: handed.link }) }], nowOf(options));
         return true;
@@ -258,7 +347,7 @@ export async function processChatEvent(
       const replies: ChatContent[] = [];
       const registry = await options.readProjects();
       const consumed = applyRoomInbound({
-        store, channel: state.channel, backend: state.roomBackend(identity.installation, now), chatId: event.channel, isGroup: isRoom,
+        store, channel: state.provider, backend: state.roomBackend(identity.installation, now), chatId: event.channel, isGroup: isRoom,
         sender: { approver: binding.approver, generation: binding.generation, binding: binding.id }, updateKey: event.id, text,
         projects: registry, origin: options.origin(), now, report: { ignored: 0 },
         say: (reply, link) => replies.push({ text: reply, ...(link ? { link } : {}), ...(isRoom ? { channel: event.channel } : {}) }),
@@ -283,7 +372,7 @@ export async function processChatEvent(
       return true;
     }
     const request = chatHash(
-      `${options.state.channel}:${binding.id}:${event.id}`,
+      `${options.state.provider}:${binding.id}:${event.id}`,
     ).slice(0, 32);
     let receipt =
       event.session === null
@@ -340,12 +429,12 @@ export async function processChatEvent(
       }
       state
         .prepare(
-          "UPDATE chat_event SET session=? WHERE id=? AND state='queued'",
+          "UPDATE chat_event SET session=? WHERE provider=:provider AND id=? AND state='queued'",
         )
         .run(resolved.session.id, event.id);
       const contexts = state
         .prepare(
-          "SELECT p.payload FROM chat_part p JOIN chat_event e ON e.id=p.event WHERE e.binding=? AND e.channel=? AND (p.message=? OR e.thread=?) AND p.state='sent' ORDER BY p.id DESC LIMIT 100",
+          "SELECT p.payload FROM chat_part p JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE p.provider=:provider AND e.binding=? AND e.channel=? AND (p.message=? OR e.thread=?) AND p.state='sent' ORDER BY p.id DESC LIMIT 100",
         )
         .all(binding.id, binding.channel, event.thread, event.thread)
         // Context only: a part that can't be read adds none.
@@ -382,7 +471,7 @@ export async function processChatEvent(
       if (context?.task) {
         about = { task: context.task, run: context.run ?? null };
         state
-          .prepare("UPDATE chat_event SET payload=? WHERE id=? AND state='queued'")
+          .prepare("UPDATE chat_event SET payload=? WHERE provider=:provider AND id=? AND state='queued'")
           .run(JSON.stringify({ ...input, about }), event.id);
       }
       // An unknown surface names no channel rather than a guess.
@@ -528,12 +617,12 @@ export async function processChatEvent(
         : new ChatDeliveryError(`${options.label} is waiting to retry`);
     if (problem.permanent) {
       state.plan(event.id, [{ text: problem.message }], nowOf(options));
-      state.prepare("UPDATE chat_event SET next_at=NULL,problem=? WHERE id=?").run(problem.message, event.id);
+      state.prepare("UPDATE chat_event SET next_at=NULL,problem=? WHERE provider=:provider AND id=?").run(problem.message, event.id);
       return true;
     }
     state
       .prepare(
-        "UPDATE chat_runtime SET problem=? WHERE installation=? AND owner=?",
+        "UPDATE chat_runtime SET problem=? WHERE provider=:provider AND installation=? AND owner=?",
       )
       .run(problem.message, identity.installation, options.owner);
     state.defer(
@@ -543,7 +632,7 @@ export async function processChatEvent(
     );
     if (problem.code === "ratelimited")
       state
-        .prepare("UPDATE chat_runtime SET retry_at=? WHERE installation=?")
+        .prepare("UPDATE chat_runtime SET retry_at=? WHERE provider=:provider AND installation=?")
         .run(
           new Date(nowOf(options).getTime() + problem.retryMs).toISOString(),
           identity.installation,
@@ -557,7 +646,7 @@ export async function processChatEvent(
  * or that the channel's flow takes as a card. False: not for an inbox.
  */
 async function channelInboxEvent(options: ChatDeliveryOptions, event: ChatEvent): Promise<boolean> {
-  const { store, identity } = options, state = options.state, app = state.channel;
+  const { store, identity } = options, state = options.state, app = state.provider;
   const binding = event.binding === null ? null : state.bindingById(event.binding);
   if (binding !== null && event.channel === binding.channel) return false;
   const body = readChatMessageBody(event.payload);
@@ -583,7 +672,7 @@ async function channelInboxEvent(options: ChatDeliveryOptions, event: ChatEvent)
   const root = app === "teams" ? /;messageid=([0-9]+)$/.exec(event.channel)?.[1] ?? event.ts : event.thread;
   const taken = takeChannelMessage(store, trigger, { app, conversation: event.channel, ts: event.ts, thread: root, text, who: binding?.approver ?? "someone" }, nowOf(options));
   if (taken.said === null) { state.finish(event.id); return true; }
-  state.prepare("UPDATE chat_event SET binding=? WHERE id=?").run(grant.id, event.id);
+  state.prepare("UPDATE chat_event SET binding=? WHERE provider=:provider AND id=?").run(grant.id, event.id);
   state.plan(event.id, [{ text: taken.said, channel: event.channel, ...(taken.link === undefined ? {} : { link: taken.link }) }], nowOf(options));
   return true;
 }
@@ -594,11 +683,12 @@ export function applyChatAction(
   event: ChatEvent,
   binding: ChatBinding,
   repos: readonly string[],
-): void {
+): PendingMerge | null {
   const state = options.state,
     { store } = options,
     now = nowOf(options),
     signals: Array<() => void> = [];
+  let merging: PendingMerge | null = null;
   store.transact(() => {
     if (
       !state.owns(options.identity.installation, options.owner, now) ||
@@ -616,6 +706,11 @@ export function applyChatAction(
       return;
     }
     const token = body.value.token;
+    // A result's, plan's, failure's or pull request's own button (chat-decide.ts).
+    if (token.startsWith("d:")) {
+      merging = applyChatDecideTap(options, event, binding, token, repos, now);
+      return;
+    }
     // A flow decision's button (v88) is answered by the flow's own door.
     if (applyChatFlowTap({ store, state, label: options.label }, event, binding, token, repos, now)) return;
     // A teammate's question's button (v93) is answered by the question's own door.
@@ -624,7 +719,7 @@ export function applyChatAction(
     if (applyChatAskTap({ store, state }, event, binding, token, now)) return;
     const saved = state
       .prepare(
-        "SELECT a.*,p.message,e.binding,e.channel,e.thread FROM chat_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE token=?",
+        "SELECT a.token,a.part,a.proposal,a.phase,a.expires,a.consumed,p.message,e.binding,e.channel,e.thread FROM chat_action a JOIN chat_part p ON p.provider=a.provider AND p.id=a.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE a.provider=:provider AND a.token=?",
       )
       .get(token);
     // The saved button, read by its schema: one that can't be read is a spent button, never a guess.
@@ -635,7 +730,7 @@ export function applyChatAction(
       action.binding !== binding.id ||
       action.channel !== event.channel ||
       action.message !== event.ts ||
-      (options.state.channel === "slack" && action.thread !== event.thread) ||
+      (options.state.provider === "slack" && action.thread !== event.thread) ||
       action.consumed !== null ||
       action.expires <= now.toISOString();
     if (invalid) {
@@ -666,7 +761,7 @@ export function applyChatAction(
       proposal: proposal.id,
       edit: event.ts,
     };
-    const preview = proposalPreview(store, proposal, repos, options.state.channel);
+    const preview = proposalPreview(store, proposal, repos, options.state.provider);
     const phase = action.phase;
     if (proposal.state !== "pending")
       content = { text: proposalOutcomeText(proposal), edit: event.ts };
@@ -709,7 +804,7 @@ export function applyChatAction(
         proposal.id,
         now,
         {
-          via: options.state.channel,
+          via: options.state.provider,
           evidenceRoot: options.evidenceRoot,
           confirm: phase === "yes",
           deferSignal: (signal) => signals.push(signal),
@@ -731,22 +826,23 @@ export function applyChatAction(
     // Repaint the original persisted card; retain one placement and fresh tokens.
     state
       .prepare(
-        "UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?",
+        "UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?",
       )
       .run(savedChatPart(content), action.part);
     if (!content.proposal)
       state
         .prepare(
-          "UPDATE chat_action SET consumed=? WHERE proposal=? AND consumed IS NULL",
+          "UPDATE chat_action SET consumed=? WHERE provider=:provider AND proposal=? AND consumed IS NULL",
         )
         .run(now.toISOString(), proposal.id);
     else
       state
-        .prepare("UPDATE chat_action SET consumed=? WHERE token=?")
+        .prepare("UPDATE chat_action SET consumed=? WHERE provider=:provider AND token=?")
         .run(now.toISOString(), token);
     state.finish(event.id);
   });
   for (const signal of signals) signal();
+  return merging;
 }
 
 /**
@@ -772,7 +868,7 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
     const row = conversationRow(store, room.conversation);
     if (row === null) continue;
     for (const message of roomMessagesAfter(store, row.thread, room.cursor)) {
-      const text = roomMessageText(message, state.channel, room.chat);
+      const text = roomMessageText(message, state.provider, room.chat);
       let carrier: ChatBinding | null = null;
       if (room.kind === "private") carrier = live.find(one => one.channel === room.chat) ?? null;
       else {
@@ -788,7 +884,7 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
       }
       if (message.role === "assistant" && message.turn !== null)
         for (const proposal of store.listMateProposals(row.thread, ["pending"]).filter(one => one.turn === message.turn)) parts.push({ text: "", proposal: proposal.id, channel: room.chat });
-      const id = chatHash(`${state.channel}:room:${room.id}:${message.id}`);
+      const id = chatHash(`${state.provider}:room:${room.id}:${message.id}`);
       const target = carrier;
       store.transact(() => {
         if (parts.length > 0 && state.enqueue({ id, installation: identity.installation, binding: target.id, kind: "message", channel: room.chat, member: target.member, ts: "", thread: "", payload: {}, created: now.toISOString() }))
@@ -804,50 +900,58 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
 function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notification: Parameters<typeof isTaskFact>[0] & { taskRef: number | null; taskId: string | null; createdAt: string }, now: Date): void {
   const { state, store, identity } = options;
   if (notification.taskRef === null || notification.taskId === null) return;
-  const card = store.chatCardFor(`${state.channel}:${binding.id}`, notification.taskRef, store.getTask(notification.taskId)?.createdAt ?? notification.createdAt, now);
+  const card = store.chatCardFor(`${state.provider}:${binding.id}`, notification.taskRef, store.getTask(notification.taskId)?.createdAt ?? notification.createdAt, now);
   const view = quietCardView(store, card.tasks, now, options.evidenceRoot, binding.approver);
   if (view === null) return;
   const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}) };
   const shown = chatHash(JSON.stringify(content));
   if (card.message !== null) {
     if (card.digest === shown) return;
-    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(card.message));
+    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE provider=:provider AND id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(card.message));
     store.setChatCardMessage(card.id, card.message, shown);
     return;
   }
-  const id = chatHash(`${state.channel}:card:${binding.id}:${card.id}`);
+  const id = chatHash(`${state.provider}:card:${binding.id}:${card.id}`);
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
     ts: "", thread: "", payload: {}, created: now.toISOString() });
   state.plan(id, [content], now);
-  const part = state.prepare("SELECT id FROM chat_part WHERE event=?").get(id);
+  const part = state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=?").get(id);
   if (part !== undefined) store.setChatCardMessage(card.id, String(part.id), shown);
 }
 
 /** Any update for this person joins their open batch (two minutes from its first), and the batch's one message
  * is planned once, then repainted in place as more updates land. `notification`: an update that is not a finished
  * result (null for one that is). False when nothing in the batch reads as a line, so the update goes out on its own. */
-function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRef: number, run: number | null, now: Date, notification: number | null = null): boolean {
+function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRef: number, run: number | null, now: Date, notification: number | null = null, repos: readonly string[] = []): boolean {
   const { state, store, identity } = options;
-  const batch = store.chatBatchFor(`${state.channel}:${binding.id}`, taskRef, run, now, BATCH_MS, notification);
+  const batch = store.chatBatchFor(`${state.provider}:${binding.id}`, taskRef, run, now, BATCH_MS, notification);
   const view = finishedView(store, batch, now, options.evidenceRoot, binding.approver);
   if (view === null) return false;
   // A single update keeps its task and run, so a reply to it names that work.
   const single = batch.items.length === 1 ? batch.items[0]! : null;
   const task = single === null ? null : store.refById(single.taskRef)?.externalId ?? null;
-  const content: ChatContent = { text: view.text, link: view.link, ...(view.also === undefined ? {} : { also: view.also }),
-    ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }) };
-  const shown = chatHash(JSON.stringify(content));
+  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }) };
+  // A message about one result, plan, failure or pull request acts in place (chat-decide.ts), as on Telegram: its
+  // buttons are minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps them.
+  const offer = decideOfferFor(options, binding, view.target, repos, now);
+  const content: ChatContent = offer === null
+    ? { text: view.text, link: view.link, ...(view.also === undefined ? {} : { also: view.also }), ...about }
+    : { text: offer.text ?? view.text, ...about };
+  const shown = chatHash(JSON.stringify(offer === null ? content : [content, offerFingerprint(offer)]));
   if (batch.message !== null) {
-    if (batch.digest === shown) return true;
-    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(batch.message));
+    const placed = state.part(Number(batch.message));
+    const live = offer === null || placed?.state === "pending" || (placed?.message != null && hasLiveDecideTokens(store, state.provider, binding.channel, placed.message, now));
+    if (batch.digest === shown && live) return true;
+    const painted: ChatContent = offer === null ? content : { ...content, decide: mintDecide(options, binding, view.target!, offer, now) };
+    state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE provider=:provider AND id=? AND state!='dropped'").run(savedChatPart(painted), now.toISOString(), Number(batch.message));
     store.setChatBatchMessage(batch.id, batch.message, shown);
     return true;
   }
-  const id = chatHash(`${state.channel}:batch:${binding.id}:${batch.id}`);
+  const id = chatHash(`${state.provider}:batch:${binding.id}:${batch.id}`);
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
     ts: "", thread: "", payload: {}, created: now.toISOString() });
-  state.plan(id, [content], now);
-  const part = state.prepare("SELECT id FROM chat_part WHERE event=?").get(id);
+  state.plan(id, [offer === null ? content : { ...content, decide: mintDecide(options, binding, view.target!, offer, now) }], now);
+  const part = state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=?").get(id);
   if (part !== undefined) store.setChatBatchMessage(batch.id, String(part.id), shown);
   return true;
 }
@@ -867,17 +971,17 @@ function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, not
     if (visit !== null) {
       for (const key of [`flow-send:${visit[1]}:${visit[2]}`, `flow-choose:${visit[1]}:${visit[2]}`]) {
         const notice = store.handle.prepare("SELECT id FROM notification WHERE dedupe_key=?").get(key);
-        const part = notice === undefined ? undefined : state.prepare("SELECT id FROM chat_part WHERE event=? ORDER BY id DESC LIMIT 1").get(chatHash(`${state.channel}:notice:${binding.id}:${Number(notice["id"])}`));
+        const part = notice === undefined ? undefined : state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=? ORDER BY id DESC LIMIT 1").get(chatHash(`${state.provider}:notice:${binding.id}:${Number(notice["id"])}`));
         if (part !== undefined) return Number(part.id);
       }
       return null;
     }
-    const batch = notification.taskRef === null ? null : store.chatBatchMessageFor(`${state.channel}:${binding.id}`, notification.taskRef, notification.run);
+    const batch = notification.taskRef === null ? null : store.chatBatchMessageFor(`${state.provider}:${binding.id}`, notification.taskRef, notification.run);
     if (batch !== null) return Number(batch);
-    const card = state.prepare("SELECT part FROM chat_progress WHERE binding=? AND run=?").get(binding.id, notification.run);
+    const card = state.prepare("SELECT part FROM chat_progress WHERE provider=:provider AND binding=? AND run=?").get(binding.id, notification.run);
     if (card !== undefined) return Number(card.part);
     for (const one of store.handle.prepare("SELECT id FROM notification WHERE source_run=? AND recipient IS NULL AND id<? ORDER BY id DESC").all(notification.run, notification.id)) {
-      const part = state.prepare("SELECT id FROM chat_part WHERE event=? ORDER BY id LIMIT 1").get(chatHash(`${state.channel}:notice:${binding.id}:${Number(one["id"])}`));
+      const part = state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=? ORDER BY id LIMIT 1").get(chatHash(`${state.provider}:notice:${binding.id}:${Number(one["id"])}`));
       if (part !== undefined) return Number(part.id);
     }
     return null;
@@ -885,7 +989,7 @@ function planResultShots(options: ChatDeliveryOptions, binding: ChatBinding, not
   const image = (artifact: number, sha256: string) => ({ taskId: where.task, run: where.run, artifact, sha256 });
   const parts: ChatContent[] = plan.kind === "line" ? [{ text: plan.text, ...where }]
     // Teams has no file upload here: one message that links to the saved result.
-    : state.channel === "teams" ? [{ text: plan.shots.length === 1 ? plan.shots[0]!.caption : `${plan.shots[0]!.caption} · ${plan.shots.length} screenshots`,
+    : state.provider === "teams" ? [{ text: plan.shots.length === 1 ? plan.shots[0]!.caption : `${plan.shots[0]!.caption} · ${plan.shots.length} screenshots`,
       image: image(plan.shots[0]!.artifact, plan.shots[0]!.sha256), shot: { follows: null }, ...where }]
     : plan.shots.map(one => ({ text: one.caption, image: image(one.artifact, one.sha256), shot: { follows }, ...where }));
   state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
@@ -912,24 +1016,43 @@ export async function planChatNotifications(
   enqueueLeadLapses(store, nowOf(options));
   const cursor = Number(
     state
-      .prepare("SELECT notification FROM chat_runtime WHERE installation=?")
+      .prepare("SELECT notification FROM chat_runtime WHERE provider=:provider AND installation=?")
       .get(identity.installation)?.notification ?? 0,
   );
+  // A person who paired after the cursor passed is still owed what wanted them before: once per pairing, their
+  // unresolved attention notices and open decisions from before it, through the same door as every new one.
+  for (const binding of bindings) {
+    const owed = `owed-before-pairing:${binding.id}`;
+    if (state.meta(identity.installation, owed) !== null) continue;
+    for (const notification of store.notificationsWantedBefore(binding.created, cursor)) offerNotice(options, notification, binding, registry);
+    state.setMeta(identity.installation, owed, "offered", nowOf(options));
+  }
   // Every paired person is a destination of their own, under their own ceiling.
   for (const notification of store.notificationsAfter(cursor, 100)) {
-    for (const binding of bindings) {
+    for (const binding of bindings) offerNotice(options, notification, binding, registry);
+    state
+      .prepare("UPDATE chat_runtime SET notification=? WHERE provider=:provider AND installation=?")
+      .run(notification.id, identity.installation);
+  }
+}
+
+/** One notification for one paired person: planned as their parts, or nothing. Never twice: each plan's event id is
+ * the notification's for this binding. */
+function offerNotice(options: ChatDeliveryOptions, notification: Notification, binding: ChatBinding, registry: Awaited<ReturnType<ChatDeliveryOptions["readProjects"]>>): void {
+    const { state, store, identity } = options;
     const repos = channelRepos(store, binding.approver, registry);
     store.transact(() => {
       // One person's notification (v83) goes to that person alone, task or not.
       const personal = notification.recipient !== null;
       if (
-        notification.createdAt >= binding.created &&
+        // From before the pairing, only what still wants a person (the rule every chat app shares, wantedBeforePairing).
+        (notification.createdAt >= binding.created || wantedBeforePairing(notification)) &&
         notification.resolvedAt === null &&
         // A promise the lead made on another chat is reported there (lead-commitments.ts); one its owner asked for on
         // this chat is always said here, however quiet the lead's own work is kept.
-        (promiseChannelOf(notification) ?? state.channel) === state.channel &&
+        (promiseChannelOf(notification) ?? state.provider) === state.provider &&
         // Pings follow responsibility: the lead's work, this person's own act and a muted project stay in the console.
-        (promiseChannelOf(notification) === state.channel || store.pingAllowed(notification, binding.approver)) &&
+        (promiseChannelOf(notification) === state.provider || store.pingAllowed(notification, binding.approver)) &&
         // A flow decision for "anyone who approves" reaches every approver who can see the project.
         // A notification addressed to this person reaches them whatever project
         // their channel follows (a sign-in pause is the installation's, v108).
@@ -939,7 +1062,7 @@ export async function planChatNotifications(
       ) {
         const run = store.telegramProgressRun(notification);
         const id = chatHash(
-            `${options.state.channel}:notice:${binding.id}:${notification.id}`,
+            `${options.state.provider}:notice:${binding.id}:${notification.id}`,
           ),
           now = nowOf(options);
         // Only when I'm needed (the default): the task's one card is edited in place, and a new message
@@ -953,10 +1076,10 @@ export async function planChatNotifications(
           // The lead's words (lead-voice.ts): one message, repainted in place when a later say joins it.
           const content: ChatContent = { text: leadSayText(store, notification, binding.approver),
             ...(notification.link ? { link: { label: "Open", path: notification.link } } : {}) };
-          const earlier = leadSayEarlier(store, notification).map(one => state.prepare("SELECT id FROM chat_part WHERE event=?")
-            .get(chatHash(`${options.state.channel}:notice:${binding.id}:${one}`))).find(one => one !== undefined);
+          const earlier = leadSayEarlier(store, notification).map(one => state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=?")
+            .get(chatHash(`${options.state.provider}:notice:${binding.id}:${one}`))).find(one => one !== undefined);
           if (earlier !== undefined) {
-            state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(earlier.id));
+            state.prepare("UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE provider=:provider AND id=? AND state!='dropped'").run(savedChatPart(content), now.toISOString(), Number(earlier.id));
             return;
           }
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
@@ -970,12 +1093,12 @@ export async function planChatNotifications(
           if (notification.kind === "run-finished" && run) {
             // Finished work goes out only as the batch line; one left out on purpose (a release check, a replaced
             // task, the reader's own completion) stays quiet rather than falling through to another message.
-            planFinished(options, binding, notification.taskRef!, run.id, now);
+            planFinished(options, binding, notification.taskRef!, run.id, now, null, repos);
             return;
           }
           // Every other update for this person within two minutes joins the same one message.
           else if (notification.kind !== "run-finished" && joinsBatch(notification)) {
-            if (planFinished(options, binding, notification.taskRef!, run?.id ?? null, now, notification.id)) return;
+            if (planFinished(options, binding, notification.taskRef!, run?.id ?? null, now, notification.id, repos)) return;
           }
         }
         if (!quiet && run && notification.taskId && notification.project !== null && isTelegramProgressNotification(notification)) {
@@ -997,14 +1120,14 @@ export async function planChatNotifications(
           const digest = chatHash(JSON.stringify(content));
           const prior = state
             .prepare(
-              "SELECT part,digest FROM chat_progress WHERE binding=? AND run=?",
+              "SELECT part,digest FROM chat_progress WHERE provider=:provider AND binding=? AND run=?",
             )
             .get(binding.id, run.id);
           if (prior) {
             if (prior.digest !== digest) {
               state
                 .prepare(
-                  "UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE id=? AND state!='dropped'",
+                  "UPDATE chat_part SET payload=?,state='pending',created=?,next_at=NULL WHERE provider=:provider AND id=? AND state!='dropped'",
                 )
                 .run(
                   JSON.stringify(content),
@@ -1013,7 +1136,7 @@ export async function planChatNotifications(
                 );
               state
                 .prepare(
-                  "UPDATE chat_progress SET digest=? WHERE binding=? AND run=?",
+                  "UPDATE chat_progress SET digest=? WHERE provider=:provider AND binding=? AND run=?",
                 )
                 .run(digest, binding.id, run.id);
             }
@@ -1032,25 +1155,25 @@ export async function planChatNotifications(
             });
             state.plan(id, [content], now);
             const part = state
-              .prepare("SELECT id FROM chat_part WHERE event=?")
+              .prepare("SELECT id FROM chat_part WHERE provider=:provider AND event=?")
               .get(id)!;
             state
-              .prepare("INSERT INTO chat_progress VALUES(?,?,?,?)")
+              .prepare("INSERT INTO chat_progress (provider,binding,run,part,digest) VALUES(:provider,?,?,?,?)")
               .run(binding.id, run.id, Number(part.id), digest);
           }
         } else if (notification.kind === "flow-decision") {
           // The draft as written, and Approve / Edit / Send back on its last part; a card that moved on is not news.
-          const parts = flowDecisionParts(store, notification, state.channel);
+          const parts = flowDecisionParts(store, notification, state.provider);
           if (parts !== null) {
             state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
               ts: "", thread: "", payload: {}, created: now.toISOString() });
             state.plan(id, parts, now);
           }
-        } else if (personal && flowSendParts(store, notification, state.channel) !== null) {
+        } else if (personal && flowSendParts(store, notification, state.provider) !== null) {
           // A flow's "Send to me" (flow-send.ts): what was done, with its links as buttons.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
             ts: "", thread: "", payload: {}, created: now.toISOString() });
-          state.plan(id, flowSendParts(store, notification, state.channel)!, now);
+          state.plan(id, flowSendParts(store, notification, state.provider)!, now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A teammate's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
@@ -1069,18 +1192,25 @@ export async function planChatNotifications(
             payload: {},
             created: now.toISOString(),
           });
+          // A result, plan, failure or ready pull request acts in place (chat-decide.ts); otherwise its one link (a plan's
+          // is Review & start, where the password step lives).
+          const target = decideTargetOf(notification);
+          const offer = decideOfferFor(options, binding, target, repos, now);
+          const fallback = offer === null ? decideFallbackLink(target) : null;
           state.plan(
             id,
             [
               {
                 // Never the task's id or a "— revision" suffix (chat-voice.ts).
-                text: chatText(phoneText(
+                text: offer?.text ?? chatText(phoneText(
                   notification.body === "" ? leadSubjectOf(store, notification, binding.approver) : `${leadSubjectOf(store, notification, binding.approver)}\n\n${notification.body}`,
                   2500,
                 ), notification.taskId === null ? [] : [{ id: notification.taskId, title: chatTitle(store, notification.taskId) }]),
                 ...(notification.taskId ? { task: notification.taskId } : {}),
                 ...(run ? { run: run.id } : {}),
-                ...(notification.link
+                ...(offer !== null ? { decide: mintDecide(options, binding, target!, offer, now) }
+                  : fallback !== null ? { link: fallback }
+                  : notification.link
                   ? { link: { label: notification.kind === "pull-request-ready" ? "Merge" : personal ? "Open" : "Review", path: notification.link } }
                   : {}),
               },
@@ -1090,9 +1220,4 @@ export async function planChatNotifications(
         }
       }
     });
-    }
-    state
-      .prepare("UPDATE chat_runtime SET notification=? WHERE installation=?")
-      .run(notification.id, identity.installation);
-  }
 }

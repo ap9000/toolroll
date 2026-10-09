@@ -32,9 +32,9 @@ describe("Telegram team selection transactions", () => {
   test("switching to a conversation already followed by another group preserves both selections", () => {
     expect(select("-1001", first)).toMatchObject({ ok: true, chat: { binding } });
     expect(select("-1002", second).ok).toBe(true);
-    const before = store.handle.prepare("SELECT * FROM telegram_team_chat ORDER BY id").all();
+    const before = store.handle.prepare("SELECT * FROM chat_room WHERE provider = 'telegram' ORDER BY id").all();
     expect(select("-1001", second)).toEqual({ ok: false, reason: "group-taken" });
-    expect(store.handle.prepare("SELECT * FROM telegram_team_chat ORDER BY id").all()).toEqual(before);
+    expect(store.handle.prepare("SELECT * FROM chat_room WHERE provider = 'telegram' ORDER BY id").all()).toEqual(before);
     expect(store.telegramTeamChat(BOT, "-1001")?.conversation).toBe(first);
     expect(store.telegramTeamChat(BOT, "-1002")?.conversation).toBe(second);
     expect(select("-1001", first)).toMatchObject({ ok: true, chat: { conversation: first, binding } });
@@ -42,11 +42,11 @@ describe("Telegram team selection transactions", () => {
 
   test("an invalid pairing rolls back the switch even if an enclosing transaction catches the failure", () => {
     expect(select("-1001", first).ok).toBe(true);
-    const before = store.handle.prepare("SELECT * FROM telegram_team_chat ORDER BY id").all();
+    const before = store.handle.prepare("SELECT * FROM chat_room WHERE provider = 'telegram' ORDER BY id").all();
     store.transact(() => {
       expect(() => select("-1001", second, binding + 1)).toThrow(/FOREIGN KEY/);
     });
-    expect(store.handle.prepare("SELECT * FROM telegram_team_chat ORDER BY id").all()).toEqual(before);
+    expect(store.handle.prepare("SELECT * FROM chat_room WHERE provider = 'telegram' ORDER BY id").all()).toEqual(before);
     expect(store.telegramTeamChat(BOT, "-1001")).toMatchObject({ conversation: first, binding });
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });

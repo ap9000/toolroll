@@ -1,10 +1,11 @@
 /**
- * What Slack, Discord and Teams keep between steps (chat-delivery-state.ts): one schema for a received event's body
+ * What every chat app keeps between steps (chat-delivery-state.ts, and Telegram's store methods): one schema for a received event's body
  * (`chat_event.payload`, by the event's kind) and one for a planned message part (`chat_part.payload`), the message a
  * button rides and the content a delivery repaints. Both are saved with `version`; a body or part saved before they
  * carried one reads as it did then (its known fields; a reader then passed any others by unread).
  *
- * An event body lives only until the event is handled (then it is `{}`); a part lives as long as its message.
+ * An event body lives only until the event is handled (then it is `{}`; a Telegram message keeps its words as its
+ * record until its chat is unpaired); a part lives as long as its message.
  */
 
 import { z } from "zod";
@@ -12,6 +13,10 @@ import { parseContract, readVersioned, versioned, type ContractResult } from "./
 
 const id = z.int().min(1);
 const link = z.strictObject({ label: z.string(), path: z.string() });
+
+/** A Toolroll button's one-time token, as every chat app carries it: 32 hex, or `d:` and 24 hex for a decide button
+ * (chat-decide.ts: a result's, plan's, failure's or pull request's own buttons). */
+export const CHAT_BUTTON_TOKEN = /^(?:[a-f0-9]{32}|d:[a-f0-9]{24})$/;
 
 /** One planned message part, as delivery reads it. */
 export const chatContentShape = {
@@ -42,6 +47,17 @@ export const chatContentShape = {
   ask: z.strictObject({ turn: id, options: z.array(z.string()) }).optional(),
   /** The lead's own reply, already shaped (reply-shape.ts): the channel renders its bold anchors and labelled links in its own format. */
   voice: z.literal(true).optional(),
+  /** Telegram: the person's message the first reply part answers. */
+  replyTo: z.string().optional(),
+  /** Telegram: the part's buttons exactly as sent, their tokens minted with the part (a resend carries the same ones). */
+  keyboard: z.array(z.array(z.looseObject({ text: z.string(), callback_data: z.string() }))).optional(),
+  /** Telegram: a proposal card, still one after its proposal is gone. */
+  card: z.literal(true).optional(),
+  /** A result's, plan's, failure's or pull request's own buttons (chat-decide.ts), minted with the part: each an act's
+   * one-time token or a link. They ride the message once it is sent. */
+  decide: z.strictObject({ rows: z.array(z.array(z.union([z.strictObject({ label: z.string(), token: z.string().regex(CHAT_BUTTON_TOKEN) }), z.strictObject({ label: z.string(), link })]))) }).optional(),
+  /** The "What should change?" this part asks (chat-decide.ts): a reply to its message is the feedback. */
+  prompt: id.optional(),
 };
 
 export const chatContentSchema = z.strictObject(chatContentShape);
@@ -103,13 +119,17 @@ export const chatMessageBodySchema = versioned(CHAT_EVENT_VERSION, {
   unsupported: z.string().optional(),
   about: z.strictObject({ task: z.string(), run: z.int().nullable() }).optional(),
   lead: z.literal(true).optional(),
+  /** Telegram: the server-authored context its turn carries (the exact task or result a reply bound to). */
+  context: z.string().optional(),
+  /** Telegram: the request identity the lead's engine receipts the turn under. */
+  request: z.string().optional(),
 });
 
 /**
  * A button: the one-time token it carried, or, when the app's callback came from the paired person but its data
  * couldn't be read, the path-named line saying why — answered plainly, and nothing is done.
  */
-export const chatTokenBodySchema = versioned(CHAT_EVENT_VERSION, { token: z.string().regex(/^[a-f0-9]{32}$/, { error: "must be a Toolroll button token" }) });
+export const chatTokenBodySchema = versioned(CHAT_EVENT_VERSION, { token: z.string().regex(CHAT_BUTTON_TOKEN, { error: "must be a Toolroll button token" }) });
 export const chatProblemBodySchema = versioned(CHAT_EVENT_VERSION, { problem: z.string().min(1) });
 export const chatActionBodySchema = z.union([chatTokenBodySchema, chatProblemBodySchema]);
 

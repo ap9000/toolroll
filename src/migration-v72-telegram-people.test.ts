@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { addLegacyChatTables, windChatsBack } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
@@ -30,8 +31,10 @@ describe("v72 one Telegram binding per person", () => {
     if (!alex.ok) throw new Error("alex fixture");
     expect(addApprover(store, "sam", NOW, { name: "alex", token: alex.token }).ok).toBe(true);
     expect(pairAs("alex", "4242")).toMatchObject({ ok: true });
+    const paired = store.liveTelegramBindings(BOT);
     store.close(); store = undefined;
     const old = new DatabaseSync(file);
+    windChatsBack(old);
     old.exec("DROP TABLE telegram_team_chat");
     old.exec("DROP INDEX IF EXISTS telegram_binding_live_user");
     old.exec("CREATE UNIQUE INDEX telegram_binding_live ON telegram_binding (bot_id) WHERE revoked_at IS NULL");
@@ -40,15 +43,17 @@ describe("v72 one Telegram binding per person", () => {
     expect(old.prepare("SELECT name FROM sqlite_master WHERE name = 'telegram_team_chat'").get()).toBeUndefined();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(115);
+    expect(SCHEMA_VERSION).toBe(116);
+    expect(before).toHaveLength(1);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-    const indexes = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'telegram_binding'").all().map(row => String(row["name"]));
-    expect(indexes).toContain("telegram_binding_live_user");
-    expect(indexes).not.toContain("telegram_binding_live");
-    expect(store.handle.prepare("SELECT * FROM telegram_binding ORDER BY id").all()).toEqual(before);
-    expect(store.handle.prepare("SELECT * FROM telegram_team_chat").all()).toEqual([]);
-    expect(store.handle.prepare("PRAGMA table_info(telegram_team_chat)").all()).toContainEqual(expect.objectContaining({ name: "binding", notnull: 1 }));
-    expect(store.handle.prepare("PRAGMA foreign_key_list(telegram_team_chat)").all()).toContainEqual(expect.objectContaining({ table: "telegram_binding", from: "binding", to: "id" }));
+    // The pairing moved into the shared chat tables (v114), whose live rule is one live pairing per (bot, user).
+    const indexes = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'chat_binding'").all().map(row => String(row["name"]));
+    expect(indexes).toContain("chat_binding_live");
+    expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name IN ('telegram_binding', 'telegram_binding_live')").all()).toEqual([]);
+    expect(store.liveTelegramBindings(BOT)).toEqual(paired);
+    expect(store.handle.prepare("SELECT * FROM chat_room WHERE provider = 'telegram'").all()).toEqual([]);
+    expect(store.handle.prepare("PRAGMA table_info(chat_room)").all()).toContainEqual(expect.objectContaining({ name: "binding", notnull: 1 }));
+    expect(store.handle.prepare("PRAGMA foreign_key_list(chat_room)").all()).toContainEqual(expect.objectContaining({ table: "chat_binding", from: "binding", to: "id" }));
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(store.liveTelegramBindings(BOT).map(one => one.approver)).toEqual(["alex"]);
     // The rule the index now enforces: a second person pairs; the same person cannot pair twice.
@@ -62,12 +67,14 @@ describe("v72 one Telegram binding per person", () => {
   test.each([
     ["missing subscriptions", "DROP TABLE telegram_team_chat", "Telegram team chat history is missing"],
     ["missing pairing identity", "ALTER TABLE telegram_team_chat DROP COLUMN binding", "Telegram team chat pairing metadata is missing"],
-  ])("a v72 file with %s refuses before changing it", (_name, damage, problem) => {
+  ])("a v113 file with %s refuses before changing it", (_name, damage, problem) => {
     dir = mkdtempSync(join(tmpdir(), "so-v72-damaged-"));
     const file = join(dir, "orders.db");
     store = openStore(file);
     store.close(); store = undefined;
     const broken = new DatabaseSync(file);
+    addLegacyChatTables(broken);
+    broken.exec("UPDATE schema_version SET version = 113");
     broken.exec(damage);
     broken.close();
     const before = readFileSync(file);

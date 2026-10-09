@@ -65,12 +65,7 @@ export async function followDiscord(
         state.owns(credentials.installation, owner)
       );
     };
-    const problem = (message: string) =>
-      state
-        .prepare(
-          "UPDATE chat_runtime SET problem=? WHERE installation=? AND owner=?",
-        )
-        .run(message, credentials.installation, owner);
+    const problem = (message: string) => state.setProblem(credentials.installation, owner, message);
     const api = discordApi(credentials.botToken);
     const client = new Client({
       // Guild messages and their content are needed for rooms; the Message
@@ -93,11 +88,7 @@ export async function followDiscord(
     const online = () => {
       if (!same() || !validated) return;
       connected = true;
-      state
-        .prepare(
-          "UPDATE chat_runtime SET connected=?,problem=NULL WHERE installation=? AND owner=?",
-        )
-        .run(new Date().toISOString(), credentials.installation, owner);
+      state.setConnected(credentials.installation, owner, new Date());
     };
     client.on("shardReady", online);
     client.on("shardResume", online);
@@ -188,13 +179,7 @@ export async function followDiscord(
     try {
       await client.login(credentials.botToken);
       while (same()) {
-        const retry = state
-          .prepare("SELECT retry_at FROM chat_runtime WHERE installation=?")
-          .get(credentials.installation)?.retry_at;
-        if (
-          !connected ||
-          (typeof retry === "string" && retry > new Date().toISOString())
-        ) {
+        if (!connected || state.retryAt(credentials.installation) > new Date().toISOString()) {
           await pause(1000);
           continue;
         }
@@ -212,11 +197,7 @@ export async function followDiscord(
       alive = false;
       options.signal.removeEventListener("abort", stop);
       await client.destroy().catch(() => {});
-      state
-        .prepare(
-          "UPDATE chat_runtime SET owner=NULL,lease_until=NULL,connected=NULL WHERE installation=? AND owner=?",
-        )
-        .run(credentials.installation, owner);
+      state.stop(credentials.installation, owner);
     }
     await pause(5000);
   }

@@ -213,36 +213,31 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   const notifications = json(ids(db, `SELECT id FROM notification WHERE project = ? OR ${IN("task_ref")} OR ${IN("source_run")}`, repo, T, R));
   const questions = json(ids(db, `SELECT id FROM teammate_question WHERE ${IN("teammate")} OR ${IN("card")}`, M, C));
   const proposals = json(ids(db, `SELECT id FROM mate_proposal WHERE ${IN("thread")}`, H));
-  const conversations = json(ids(db, `SELECT id FROM telegram_conversation WHERE ${IN("task_id")}`, K));
+  // A chat message about one of the project's tasks (its turn named it), with its reply. Event ids are text ('m123'),
+  // and the same id can be another app's: each is kept whole, as provider:id.
+  const conversations = json(list(db, `SELECT provider || ':' || id FROM chat_event WHERE kind = 'message' AND json_extract(payload, '$.about.task') IN (SELECT value FROM json_each(?))`, K));
+  // Every app's planned parts about the project's work: a result screenshot, or a message naming one of its tasks or runs.
+  const parts = `SELECT provider || ':' || id FROM chat_part WHERE provider || ':' || event IN (SELECT value FROM json_each(?))
+    OR json_extract(payload, '$.image.taskId') IN (SELECT value FROM json_each(?)) OR json_extract(payload, '$.image.run') IN (SELECT value FROM json_each(?))`;
+  const doomedParts = `provider || ':' || part IN (${parts})`;
 
-  // Chats about the project's work, on every surface.
-  for (const surface of ["discord", "slack", "teams"]) {
-    del(`${surface}_progress`, IN("run"), R);
-    del(`${surface}_action`, IN("proposal"), proposals);
-    del(`${surface}_flow_action`, IN("card"), C);
-    del(`${surface}_flow_prompt`, IN("card"), C);
-    del(`${surface}_flow_choice`, IN("card"), C);
-    del(`${surface}_flow_note`, IN("card"), C);
-    del(`${surface}_question_action`, IN("question"), questions);
-    del(`${surface}_question_prompt`, IN("question"), questions);
-    del(`${surface}_ask_action`, IN("turn"), U);
-  }
-  del("telegram_action", IN("decision"), decisions);
-  del("telegram_decision_message", IN("decision"), decisions);
-  del("telegram_note_draft", IN("decision"), decisions);
-  del("telegram_proposal_action", IN("proposal"), proposals);
-  del("telegram_flow_action", IN("card"), C);
-  del("telegram_flow_prompt", IN("card"), C);
-  del("telegram_flow_choice", IN("card"), C);
+  // Chats about the project's work, on every app.
+  del("chat_progress", IN("run"), R);
+  del("chat_action", `${IN("proposal")} OR ${IN("decision")} OR ${doomedParts}`, proposals, decisions, conversations, K, R);
+  del("chat_flow_action", `${IN("card")} OR ${doomedParts}`, C, conversations, K, R);
+  del("chat_flow_prompt", IN("card"), C);
+  del("chat_flow_choice", `${IN("card")} OR ${doomedParts}`, C, conversations, K, R);
+  del("chat_flow_note", IN("card"), C);
+  del("chat_question_action", `${IN("question")} OR ${doomedParts}`, questions, conversations, K, R);
+  del("chat_question_prompt", IN("question"), questions);
+  del("chat_ask_action", `${IN("turn")} OR ${doomedParts}`, U, conversations, K, R);
+  del("chat_note_draft", IN("decision"), decisions);
   del("flow_send", IN("card"), C);
-  del("telegram_question_action", IN("question"), questions);
-  del("telegram_question_prompt", IN("question"), questions);
   del("chat_decide_action", IN("task_id"), K);
   del("chat_decide_prompt", IN("task_id"), K);
-  del("telegram_task_message", `${IN("task_id")} OR ${IN("source_run")}`, K, R);
-  del("telegram_conversation_part", `${IN("conversation")} OR ${IN("source_run")} OR ${IN("task_id")}`, conversations, R, K);
-  del("telegram_conversation", IN("id"), conversations);
-  del("telegram_outbound_message", `project = ? OR ${IN("notification")} OR ${IN("task_ref")} OR ${IN("source_run")}`, repo, notifications, T, R);
+  del("chat_message_ref", `${IN("decision")} OR ${IN("task_id")} OR ${IN("run")} OR project = ? OR ${IN("notification")} OR ${IN("task_ref")}`, decisions, K, R, repo, notifications, T);
+  del("chat_part", `provider || ':' || id IN (${parts})`, conversations, K, R);
+  del("chat_event", `provider || ':' || id IN (SELECT value FROM json_each(?))`, conversations);
   del("chat_card_task", IN("task_ref"), T);
   del("chat_batch_item", IN("task_ref"), T);
   del("result_shot_sent", IN("run"), R);

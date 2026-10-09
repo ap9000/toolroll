@@ -74,7 +74,7 @@ export async function followTeams(
       const current = loadTeamsCredentials(options.dir);
       return alive && !options.signal.aborted && current?.installation === credentials.installation && current.secret === credentials.secret && state.owns(credentials.installation, owner);
     };
-    const problem = (message: string) => state.prepare("UPDATE chat_runtime SET problem=? WHERE installation=? AND owner=?").run(message, credentials.installation, owner);
+    const problem = (message: string) => state.setProblem(credentials.installation, owner, message);
     const stop = () => { alive = false; };
     options.signal.addEventListener("abort", stop, { once: true });
     const heartbeat = setInterval(() => { if (!same() || !state.lease(credentials.installation, owner, new Date())) stop(); }, 10_000);
@@ -83,15 +83,14 @@ export async function followTeams(
       // Connected means the app can sign in; inbound reachability is the operator's endpoint to verify.
       try {
         await teamsAccessToken(credentials, options.fetcher);
-        state.prepare("UPDATE chat_runtime SET connected=?,problem=NULL WHERE installation=? AND owner=?").run(new Date().toISOString(), credentials.installation, owner);
+        state.setConnected(credentials.installation, owner, new Date());
       } catch (error) {
         problem(error instanceof TeamsError ? error.message : "Microsoft sign-in failed. Check the Teams app credentials.");
         await pause(30_000);
         continue;
       }
       while (same()) {
-        const retry = state.prepare("SELECT retry_at FROM chat_runtime WHERE installation=?").get(credentials.installation)?.retry_at;
-        if (typeof retry === "string" && retry > new Date().toISOString()) { await pause(1000); continue; }
+        if (state.retryAt(credentials.installation) > new Date().toISOString()) { await pause(1000); continue; }
         await processTeamsEvent(chat);
         if (same()) await planTeamsRooms(chat);
         if (same()) await deliverTeamsPart(chat);
@@ -104,7 +103,7 @@ export async function followTeams(
       clearInterval(heartbeat);
       alive = false;
       options.signal.removeEventListener("abort", stop);
-      state.prepare("UPDATE chat_runtime SET owner=NULL,lease_until=NULL,connected=NULL WHERE installation=? AND owner=?").run(credentials.installation, owner);
+      state.stop(credentials.installation, owner);
     }
     await pause(5000);
   }

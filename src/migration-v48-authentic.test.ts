@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, V115_DROPPED_TABLES, type Database } from "./store.js";
+import { CHAT_MOVES } from "./toolroll-update.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "v47-authentic.sql");
 const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -136,7 +137,15 @@ describe("the authentic v47 database upgrades to v48 and stays put", () => {
       // row v47 wrote — no other table gained or lost a row, no id moved, no
       // digest changed. (The features v115 removed take their own tables
       // with them; the routine moves to a scheduled flow, asserted below.)
+      const db = new sqlite.DatabaseSync(file, { readOnly: true });
       for (const table of authentic.schema.filter(one => one.type === "table" && one.name !== "schema_version" && !V115_DROPPED_TABLES.includes(one.name))) {
+        // The old chat tables' rows moved into the shared chat tables (v116): every one arrived, and the old table is gone.
+        const move = CHAT_MOVES[table.name];
+        if (move !== undefined) {
+          expect(upgraded.rows[table.name], table.name).toBeUndefined();
+          if (move.rows === undefined) expect(Number(db.prepare(`SELECT COUNT(*) AS n FROM ${move.into} WHERE ${move.where}`).get()!["n"]), table.name).toBe(authentic.rows[table.name]!.length);
+          continue;
+        }
         expect(upgraded.rows[table.name], table.name).toBeDefined();
         // v115 settles the one unfinished task filed under a fallback chain (asserted below); every other row is as written.
         // The sequence forgets the removed tables and learns the moved routine's flow and schedule (and, from the
@@ -146,6 +155,7 @@ describe("the authentic v47 database upgrades to v48 and stays put", () => {
           : table.name === "sqlite_sequence" ? rows.filter(row => !settled(row)) : rows;
         expect(kept(upgraded.rows[table.name]!.map(row => withoutNew(table.name, row))), table.name).toEqual(kept(authentic.rows[table.name]!));
       }
+      db.close();
       for (const table of ["approver", "invite"]) for (const row of upgraded.rows[table]!) expect(row["projects_json"]).toBeNull();
       for (const row of upgraded.rows["run"]!) expect(row).toMatchObject({ watch_incarnation: null });
       expect(upgraded.schema.some(one => one.type === "table" && one.name === "routine")).toBe(false);

@@ -128,7 +128,7 @@ describe("destination-bound authorized outbox", () => {
     expect(await pass(script.transport)).toMatchObject({ ok: true, report: { sent: 2 } });
     expect(sends(script).map(call => call.params["text"])).toEqual(["project / a · a-ready\n\na-ready", "other / b · b-ready\n\nb-ready"]);
     expect(receipts().at(-1)).toMatchObject({ scope: "unknown", deliveredAt: null, lastError: "Notification has no trusted project provenance" });
-    expect(store.handle.prepare("SELECT task_ref, task_id, project FROM telegram_outbound_message ORDER BY notification").all()).toEqual([
+    expect(store.handle.prepare("SELECT task_ref, task_id, project FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification' ORDER BY notification").all()).toEqual([
       { task_ref: a, task_id: "a", project: REPO }, { task_ref: b, task_id: "b", project: OTHER },
     ]);
   });
@@ -180,7 +180,7 @@ describe("destination-bound authorized outbox", () => {
     expect(second.indexOf("b-first")).toBeLessThan(second.indexOf("b-second"));
     expect(receipts().map(row => row.deliveredAt !== null)).toEqual([false, true, true, true]);
     expect(store.countRoutinePending()).toBe(1);
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_outbound_message").get()?.["n"]).toBe(3);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification'").get()?.["n"]).toBe(3);
   });
 
   // The root's three isolated digest cases (legacy only, unenrolled only,
@@ -224,7 +224,7 @@ describe("destination-bound authorized outbox", () => {
     expect(sends(script)).toHaveLength(1);
     expect(String(sends(script)[0]!.params["text"]).length).toBeLessThanOrEqual(3900);
     expect(receipts().every(row => row.deliveredAt === null)).toBe(true);
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM telegram_outbound_message").get()?.["n"]).toBeGreaterThan(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification'").get()?.["n"]).toBeGreaterThan(0);
   });
 
   test.each(["unpair", "replace", "revoke", "generation", "viewer", "disable"])("%s while a message is in flight cannot acknowledge or send its next part", async change => {
@@ -246,7 +246,7 @@ describe("destination-bound authorized outbox", () => {
     expect(await pass(transport, { canDeliver: () => enabled })).toMatchObject({ ok: true, report: { sent: 0 } });
     expect(sends(script)).toHaveLength(1);
     expect(store.telegramDeliveries(old)[0]?.deliveredAt).toBeNull();
-    expect(store.handle.prepare("SELECT binding, chat_id FROM telegram_outbound_message").get()).toEqual({ binding: old.id, chat_id: String(CHAT) });
+    expect(store.handle.prepare("SELECT binding, chat FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification'").get()).toEqual({ binding: old.id, chat: String(CHAT) });
     if (change === "replace") {
       expect(store.telegramDeliveries(store.liveTelegramBinding(BOT)!)).toHaveLength(0);
       now = later(2_000);

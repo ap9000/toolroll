@@ -25,6 +25,7 @@
  * made through chooseFlowCard, by that person alone, for exactly that visit,
  * and spend that visit's buttons in every chat app.
  */
+import type { ChatProvider } from "./contracts/chat-tables.js";
 import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
@@ -85,8 +86,8 @@ function sendLinks(paths: { label: string; path: string }[]): Pick<ChatContent, 
 
 /** The most an item list's part carries here, as the app renders it — a Slack section (2,800), Discord's plain message
  * content (2,000), a Teams message as long as Telegram's — less room for the line a tap adds under it. */
-const ITEMS_LIMIT: Record<ChatApp, number> = { slack: PART_CHARS - 300, discord: 2000 - 300, teams: 4096 - 300 };
-type ChatApp = "slack" | "discord" | "teams";
+const ITEMS_LIMIT: Record<ChatApp, number> = { slack: PART_CHARS - 300, discord: 2000 - 300, teams: 4096 - 300, telegram: 4096 - 300 };
+type ChatApp = ChatProvider;
 
 /** After research (flow-items.ts): the message with each item numbered under the summary, its words cleaned as every
  * other flow message's are, in as few parts as the app's limit allows (one, unless head, links and tail alone overflow). */
@@ -137,29 +138,29 @@ export function flowDecisionParts(store: Store, notification: { dedupeKey: strin
 /** The live buttons on one part, in the order they were minted: a decision's, a choice's options in their order, or
  * "Use this as your note?" Yes / No. `key` is unique on the part (Slack names each button by it). */
 export function chatFlowButtons(state: ChatState, part: number, now: Date): Array<{ token: string; action: ChatFlowAction | "choose" | "note"; label: string; key: string }> {
-  const decide = (state.prepare("SELECT token,action FROM chat_flow_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; action: ChatFlowAction }>)
+  const decide = (state.prepare("SELECT token,action FROM chat_flow_action WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; action: ChatFlowAction }>)
     .map(one => ({ token: String(one.token), action: one.action, label: CHAT_FLOW_LABELS[one.action], key: one.action.replace("-", "_") }));
-  const choose = (state.prepare("SELECT token,choice,label FROM chat_flow_choice WHERE part=? AND consumed IS NULL AND expires>? ORDER BY choice").all(part, now.toISOString()) as Array<{ token: string; choice: number; label: string }>)
+  const choose = (state.prepare("SELECT token,choice,label FROM chat_flow_choice WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY choice").all(part, now.toISOString()) as Array<{ token: string; choice: number; label: string }>)
     .map(one => ({ token: String(one.token), action: "choose" as const, label: String(one.label), key: `choose_${Number(one.choice)}` }));
-  const note = (state.prepare("SELECT token,answer FROM chat_flow_note WHERE part=? AND consumed IS NULL AND expires>? ORDER BY answer DESC").all(part, now.toISOString()) as Array<{ token: string; answer: "yes" | "no" }>)
+  const note = (state.prepare("SELECT token,answer FROM chat_flow_note WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY answer DESC").all(part, now.toISOString()) as Array<{ token: string; answer: "yes" | "no" }>)
     .map(one => ({ token: String(one.token), action: "note" as const, label: one.answer === "yes" ? "Yes" : "No", key: `note_${one.answer}` }));
   return [...decide, ...choose, ...note];
 }
 
 const retire = (state: ChatState, card: number, entry: number, now: Date): void => {
-  state.prepare("UPDATE chat_flow_action SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
-  state.prepare("UPDATE chat_flow_choice SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
-  state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
+  state.prepare("UPDATE chat_flow_action SET consumed=? WHERE provider=:provider AND card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
+  state.prepare("UPDATE chat_flow_choice SET consumed=? WHERE provider=:provider AND card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
+  state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE provider=:provider AND card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
 };
 
 /** Show the tapped notice again with what happened, and without its buttons. */
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
-  const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
+  const row = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider AND id=?").get(part);
   const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   // An item list (flow-items.ts) stays whole and keeps its bold titles and labelled links; only plain text is capped.
   const content: ChatContent = { text: before.voice === true ? `${before.text}\n\n${line}` : `${before.text}\n\n${line}`.slice(0, PART_CHARS + 400), edit: event.ts, ...(before.voice === true ? { voice: true as const } : {}),
     ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
 }
 
 /**
@@ -169,7 +170,7 @@ function repaint(state: ChatState, part: number, event: ChatEvent, line: string)
  */
 export function applyChatFlowTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
   const { store, state } = options;
-  const action = state.prepare("SELECT a.*,p.message,e.binding AS owner,e.channel FROM chat_flow_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE a.token=?").get(token);
+  const action = state.prepare("SELECT a.token,a.part,a.card,a.entry,a.action,a.expires,a.consumed,p.message,e.binding AS owner,e.channel FROM chat_flow_action a JOIN chat_part p ON p.provider=a.provider AND p.id=a.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE a.provider=:provider AND a.token=?").get(token);
   if (action === undefined) return applyChatChoiceTap(options, event, binding, token, repos, now) || applyChatNoteTap(options, event, binding, token, repos, now);
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, the chat and the exact message the button rode.
@@ -197,9 +198,9 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
     return true;
   }
   // One open prompt per person: the newest question is the one the next message answers.
-  state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
-  state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
-  state.prepare("INSERT INTO chat_flow_prompt(binding,card,entry,mode,created,expires) VALUES(?,?,?,?,?,?)")
+  state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE provider=:provider AND binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
+  state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE provider=:provider AND binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
+  state.prepare("INSERT INTO chat_flow_prompt(provider,id,binding,card,entry,mode,created,expires) VALUES(:provider,(SELECT COALESCE(MAX(id),0)+1 FROM chat_flow_prompt WHERE provider=:provider),?,?,?,?,?,?)")
     .run(binding.id, card, entry, kind, now.toISOString(), new Date(now.getTime() + PROMPT_MS).toISOString());
   const back = waiting.stage.onFail === null ? "the zone before" : flowDefinitionOf(waiting.flow)?.stages.find(one => one.id === waiting.stage.onFail)?.title ?? waiting.stage.onFail;
   say(kind === "edit"
@@ -211,7 +212,7 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
 /** A tapped option of a "Person chooses" notice; false when the token isn't one. */
 function applyChatChoiceTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
   const { store, state } = options;
-  const tapped = state.prepare("SELECT c.*,p.message,e.binding AS owner,e.channel FROM chat_flow_choice c JOIN chat_part p ON p.id=c.part JOIN chat_event e ON e.id=p.event WHERE c.token=?").get(token);
+  const tapped = state.prepare("SELECT c.token,c.part,c.card,c.entry,c.choice,c.label,c.expires,c.consumed,p.message,e.binding AS owner,e.channel FROM chat_flow_choice c JOIN chat_part p ON p.provider=c.provider AND p.id=c.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE c.provider=:provider AND c.token=?").get(token);
   if (tapped === undefined) return false;
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, the chat and the exact message the button rode.
@@ -249,8 +250,9 @@ function replyAsNote(options: { store: Store; state: ChatState; label: string },
 
 /** The choice a part's message carries, by the message any of its parts was posted as (a long notice is several). */
 function choiceOnMessage(state: ChatState, binding: ChatBinding, channel: string, message: string): { card: number; entry: number; live: boolean } | null {
-  const row = state.prepare(`SELECT c.card,c.entry,MAX(c.consumed IS NULL) AS live FROM chat_part p JOIN chat_event e ON e.id=p.event
-    JOIN chat_part q ON q.event=p.event JOIN chat_flow_choice c ON c.part=q.id WHERE e.binding=? AND e.channel=? AND p.message=? GROUP BY c.card,c.entry ORDER BY MAX(c.rowid) DESC LIMIT 1`)
+  const row = state.prepare(`SELECT c.card,c.entry,MAX(c.consumed IS NULL) AS live FROM chat_part p JOIN chat_event e ON e.provider=p.provider AND e.id=p.event
+    JOIN chat_part q ON q.provider=p.provider AND q.event=p.event JOIN chat_flow_choice c ON c.provider=q.provider AND c.part=q.id
+    WHERE p.provider=:provider AND e.binding=? AND e.channel=? AND p.message=? GROUP BY c.card,c.entry ORDER BY MAX(c.rowid) DESC LIMIT 1`)
     .get(binding.id, channel, message);
   return row === undefined ? null : { card: Number(row["card"]), entry: Number(row["entry"]), live: Number(row["live"]) === 1 };
 }
@@ -281,8 +283,8 @@ export function answerChoiceMessage(options: { store: Store; state: ChatState; l
     }
     if (said === "" || phoneCommand(said) !== null) return false;
     // The newest choice of theirs still open here that takes a reply and hasn't asked yet.
-    const open = state.prepare(`SELECT DISTINCT c.card,c.entry FROM chat_flow_choice c JOIN chat_part p ON p.id=c.part JOIN chat_event e ON e.id=p.event
-      WHERE e.binding=? AND c.consumed IS NULL AND c.expires>? AND NOT EXISTS (SELECT 1 FROM chat_flow_note n WHERE n.card=c.card AND n.entry=c.entry) ORDER BY c.rowid DESC`)
+    const open = state.prepare(`SELECT DISTINCT c.card,c.entry FROM chat_flow_choice c JOIN chat_part p ON p.provider=c.provider AND p.id=c.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event
+      WHERE c.provider=:provider AND e.binding=? AND c.consumed IS NULL AND c.expires>? AND NOT EXISTS (SELECT 1 FROM chat_flow_note n WHERE n.provider=c.provider AND n.card=c.card AND n.entry=c.entry) ORDER BY c.rowid DESC`)
       .all(binding.id, now.toISOString()) as Array<{ card: number; entry: number }>;
     for (const one of open) {
       const visit = flowChoiceAt(store, Number(one.card), Number(one.entry));
@@ -292,7 +294,7 @@ export function answerChoiceMessage(options: { store: Store; state: ChatState; l
       state.plan(event.id, [{ text: `Use this as your note on “${visit.card.title}”?\nYes sends it to ${to}. No passes it to the lead.`,
         note: { card: visit.card.id, entry: visit.card.entry, held: event.id } }], now);
       // What it said is kept beside its question until answered: the event's own copy is cleared once it is handled.
-      state.prepare("UPDATE chat_flow_note SET words=? WHERE held=?").run(JSON.stringify({ text: input.text, ...(input.originalLength === undefined ? {} : { originalLength: input.originalLength }) }), event.id);
+      state.prepare("UPDATE chat_flow_note SET words=? WHERE provider=:provider AND held=?").run(JSON.stringify({ text: input.text, ...(input.originalLength === undefined ? {} : { originalLength: input.originalLength }) }), event.id);
       return true;
     }
     return false;
@@ -302,7 +304,7 @@ export function answerChoiceMessage(options: { store: Store; state: ChatState; l
 /** Yes or No to "Use this as your note?"; false when the token isn't one. */
 function applyChatNoteTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, repos: readonly string[], now: Date): boolean {
   const { store, state } = options;
-  const tapped = state.prepare("SELECT n.*,p.message,e.binding AS owner,e.channel FROM chat_flow_note n JOIN chat_part p ON p.id=n.part JOIN chat_event e ON e.id=p.event WHERE n.token=?").get(token);
+  const tapped = state.prepare("SELECT n.token,n.part,n.card,n.entry,n.held,n.words,n.answer,n.expires,n.consumed,p.message,e.binding AS owner,e.channel FROM chat_flow_note n JOIN chat_part p ON p.provider=n.provider AND p.id=n.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE n.provider=:provider AND n.token=?").get(token);
   if (tapped === undefined) return false;
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   if (Number(tapped["owner"]) !== binding.id || tapped["channel"] !== event.channel || tapped["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
@@ -312,7 +314,7 @@ function applyChatNoteTap(options: { store: Store; state: ChatState; label: stri
     state.finish(event.id);
     return true;
   }
-  state.prepare("UPDATE chat_flow_note SET consumed=?,words=NULL WHERE part=?").run(now.toISOString(), part);
+  state.prepare("UPDATE chat_flow_note SET consumed=?,words=NULL WHERE provider=:provider AND part=?").run(now.toISOString(), part);
   const held = state.event(String(tapped["held"]));
   const kept = typeof tapped["words"] === "string" ? readHeldWords(tapped["words"]) : null;
   const words = kept?.ok === true ? kept.value : null;
@@ -341,11 +343,11 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
   const { store, state } = options;
   if (event.channel !== binding.channel) return false;
   return store.transact(() => {
-    const prompt = state.prepare("SELECT * FROM chat_flow_prompt WHERE binding=? AND consumed IS NULL AND expires>? ORDER BY id DESC LIMIT 1").get(binding.id, now.toISOString());
+    const prompt = state.prepare("SELECT * FROM chat_flow_prompt WHERE provider=:provider AND binding=? AND consumed IS NULL AND expires>? ORDER BY id DESC LIMIT 1").get(binding.id, now.toISOString());
     if (prompt === undefined) return false;
     const id = Number(prompt["id"]), card = Number(prompt["card"]), entry = Number(prompt["entry"]), mode = String(prompt["mode"]);
     const say = (text: string) => state.plan(event.id, [{ text }], now);
-    const close = () => state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE id=?").run(now.toISOString(), id);
+    const close = () => state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE provider=:provider AND id=?").run(now.toISOString(), id);
     const said = input.text.trim();
     if (/^cancel\.?$/i.test(said)) { close(); say(mode === "edit" ? "Left the draft as it is. The buttons on the notice still work." : "Left it where it is. The buttons on the notice still work."); return true; }
     const waiting = flowDecisionAt(store, card, entry);

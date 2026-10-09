@@ -37,8 +37,8 @@ const who = (store: Store, question: TeammateQuestionRow) => { const mate = stor
 /** Everyone else's buttons retire once a question is answered anywhere. */
 function retireEverywhere(store: Store, question: number, now: Date, state?: ChatState): void {
   store.retireTelegramQuestion(question, now);
-  state?.prepare("UPDATE chat_question_action SET consumed=? WHERE question=? AND consumed IS NULL").run(now.toISOString(), question);
-  state?.prepare("UPDATE chat_question_prompt SET consumed=? WHERE question=? AND consumed IS NULL").run(now.toISOString(), question);
+  state?.prepare("UPDATE chat_question_action SET consumed=? WHERE provider=:provider AND question=? AND consumed IS NULL").run(now.toISOString(), question);
+  state?.prepare("UPDATE chat_question_prompt SET consumed=? WHERE provider=:provider AND question=? AND consumed IS NULL").run(now.toISOString(), question);
 }
 
 // ---- Telegram ----------------------------------------------------------------------
@@ -98,25 +98,25 @@ export function questionParts(store: Store, notification: { dedupeKey: string; s
 
 /** The live buttons on one part, in the order they were minted. */
 export function chatQuestionButtons(state: ChatState, part: number, now: Date): Array<{ token: string; label: string; words: boolean }> {
-  const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
+  const row = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider AND id=?").get(part);
   const content = row === undefined ? null : partContent(String(row["payload"]));
   const labels = new Map((content?.question?.choices ?? []).map(one => [one.choice ?? "", one.label]));
-  return (state.prepare("SELECT token,choice FROM chat_question_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: string | null }>)
+  return (state.prepare("SELECT token,choice FROM chat_question_action WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: string | null }>)
     .map(one => ({ token: String(one.token), label: (labels.get(one.choice ?? "") ?? IN_WORDS).slice(0, 75), words: one.choice === null }));
 }
 
 /** Show the tapped notice again with the answer, and without its buttons. */
 function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
-  const row = state.prepare("SELECT payload FROM chat_part WHERE id=?").get(part);
+  const row = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider AND id=?").get(part);
   const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE id=?").run(savedChatPart(content), part);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
 }
 
 /** A tapped question button, inside the action's transaction; false when the token isn't one. */
 export function applyChatQuestionTap(options: { store: Store; state: ChatState; label: string }, event: ChatEvent, binding: ChatBinding, token: string, now: Date): boolean {
   const { store, state } = options;
-  const action = state.prepare("SELECT a.*,p.message,e.binding AS owner,e.channel FROM chat_question_action a JOIN chat_part p ON p.id=a.part JOIN chat_event e ON e.id=p.event WHERE a.token=?").get(token);
+  const action = state.prepare("SELECT a.token,a.part,a.question,a.choice,a.expires,a.consumed,p.message,e.binding AS owner,e.channel FROM chat_question_action a JOIN chat_part p ON p.provider=a.provider AND p.id=a.part JOIN chat_event e ON e.provider=p.provider AND e.id=p.event WHERE a.provider=:provider AND a.token=?").get(token);
   if (action === undefined) return false;
   const say = (text: string) => state.plan(event.id, [{ text }], now);
   // Bound to the person, the chat and the exact message the button rode.
@@ -131,9 +131,9 @@ export function applyChatQuestionTap(options: { store: Store; state: ChatState; 
   }
   if (action["choice"] === null) {
     // One open prompt per person, across flow decisions and questions: the newest is the one the next message answers.
-    state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
-    state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
-    state.prepare("INSERT INTO chat_question_prompt(binding,question,created,expires) VALUES(?,?,?,?)").run(binding.id, questionId, now.toISOString(), new Date(now.getTime() + PROMPT_MS).toISOString());
+    state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE provider=:provider AND binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
+    state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE provider=:provider AND binding=? AND consumed IS NULL").run(now.toISOString(), binding.id);
+    state.prepare("INSERT INTO chat_question_prompt(provider,id,binding,question,created,expires) VALUES(:provider,(SELECT COALESCE(MAX(id),0)+1 FROM chat_question_prompt WHERE provider=:provider),?,?,?,?)").run(binding.id, questionId, now.toISOString(), new Date(now.getTime() + PROMPT_MS).toISOString());
     say(`Your next message here is your answer to ${who(store, question)}: “${question.question}” Send “cancel” to leave it.`);
     return true;
   }
@@ -151,12 +151,12 @@ export function answerChatQuestionPrompt(options: { store: Store; state: ChatSta
   const { store, state } = options;
   if (event.channel !== binding.channel) return false;
   return store.transact(() => {
-    const prompt = state.prepare("SELECT * FROM chat_question_prompt WHERE binding=? AND consumed IS NULL AND expires>? ORDER BY id DESC LIMIT 1").get(binding.id, now.toISOString());
+    const prompt = state.prepare("SELECT * FROM chat_question_prompt WHERE provider=:provider AND binding=? AND consumed IS NULL AND expires>? ORDER BY id DESC LIMIT 1").get(binding.id, now.toISOString());
     if (prompt === undefined) return false;
     const id = Number(prompt["id"]), questionId = Number(prompt["question"]);
     const say = (text: string) => state.plan(event.id, [{ text }], now);
     const said = input.text.trim();
-    if (/^cancel\.?$/i.test(said)) { state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE id=?").run(now.toISOString(), id); say("Left it unanswered. The buttons on the message still work."); return true; }
+    if (/^cancel\.?$/i.test(said)) { state.prepare("UPDATE chat_question_prompt SET consumed=? WHERE provider=:provider AND id=?").run(now.toISOString(), id); say("Left it unanswered. The buttons on the message still work."); return true; }
     if (said === "") { say("Send the answer itself, or “cancel”."); return true; }
     // A message the chat cut short is never taken as part of an answer.
     if ((input.originalLength ?? 0) > input.text.length || said.length > ANSWER_CHARS) { say(`That's too long to take from here. Keep it under ${ANSWER_CHARS.toLocaleString("en-US")} characters, or answer on the card.`); return true; }

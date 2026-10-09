@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
-import { chatTables } from "./chat-delivery-state.js";
-const DISCORD_TABLES = chatTables("discord");
+import { addLegacyChatTables } from "../test/legacy-chat.js";
+import { legacyAppTables } from "./chat-migration.js";
+const DISCORD_TABLES = legacyAppTables("discord");
 describe("v68 Discord audit and durable delivery", () => {
   let dir: string, store: Store | undefined;
   afterEach(() => {
@@ -38,6 +39,7 @@ describe("v68 Discord audit and durable delivery", () => {
     store = undefined;
     const db = new DatabaseSync(file);
     db.exec("PRAGMA foreign_keys=OFF");
+    addLegacyChatTables(db);
     db.exec("DROP TABLE decision; DROP TABLE run_stop;");
     db.exec(
       readFileSync(
@@ -124,19 +126,20 @@ describe("v68 Discord audit and durable delivery", () => {
       inspect.close();
     },
   );
-  test("a missing current Discord receipt table refuses before the epoch changes", () => {
+  test("a v113 file missing a Discord receipt table refuses before the epoch changes", () => {
     const f = fixture();
     store = openStore(f.file);
     store.close();
     store = undefined;
     const db = new DatabaseSync(f.file);
-    db.exec("DROP TABLE discord_part");
+    addLegacyChatTables(db);
+    db.exec("DROP TABLE discord_part; UPDATE schema_version SET version = 113");
     db.close();
     expect(() => openStore(f.file)).toThrow(/Discord history is missing/);
     const inspect = new DatabaseSync(f.file);
     expect(
       inspect.prepare("SELECT version FROM schema_version").get()?.version,
-    ).toBe(SCHEMA_VERSION);
+    ).toBe(113);
     inspect.close();
   });
 });

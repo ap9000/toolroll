@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
-import { SLACK_TABLES } from "./slack-state.js";
+import { addLegacyChatTables } from "../test/legacy-chat.js";
+import { legacyAppTables } from "./chat-migration.js";
+const SLACK_TABLES = legacyAppTables("slack");
 describe("v67 Slack audit and durable delivery", () => {
   let dir: string, store: Store | undefined;
   afterEach(() => {
@@ -37,6 +39,7 @@ describe("v67 Slack audit and durable delivery", () => {
     store = undefined;
     const db = new DatabaseSync(file);
     db.exec("PRAGMA foreign_keys=OFF");
+    addLegacyChatTables(db);
     db.exec("DROP TABLE decision; DROP TABLE run_stop;");
     db.exec(
       readFileSync(
@@ -117,19 +120,20 @@ describe("v67 Slack audit and durable delivery", () => {
       inspect.close();
     },
   );
-  test("a missing current Slack receipt table refuses before the epoch changes", () => {
+  test("a v113 file missing a Slack receipt table refuses before the epoch changes", () => {
     const f = fixture();
     store = openStore(f.file);
     store.close();
     store = undefined;
     const db = new DatabaseSync(f.file);
-    db.exec("DROP TABLE slack_part");
+    addLegacyChatTables(db);
+    db.exec("DROP TABLE slack_part; UPDATE schema_version SET version = 113");
     db.close();
     expect(() => openStore(f.file)).toThrow(/Slack history is missing/);
     const inspect = new DatabaseSync(f.file);
     expect(
       inspect.prepare("SELECT version FROM schema_version").get()?.version,
-    ).toBe(SCHEMA_VERSION);
+    ).toBe(113);
     inspect.close();
   });
 });

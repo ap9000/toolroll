@@ -15,7 +15,7 @@ import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
 import { acquire, finalize } from "./claim.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
-import { SlackState, slackHash } from "./slack-state.js";
+import { ChatState, chatHash } from "./chat-delivery-state.js";
 import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
 import type { SlackApi } from "./slack-api.js";
 import { enqueueEveningDigests, needsPerson } from "./chat-quiet.js";
@@ -234,7 +234,7 @@ describe("quiet chat on Slack (shared by Discord and Teams)", () => {
 
   test("c1: one card edited in place and one ping when the result is Ready", async () => {
     const identity = { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace" };
-    const state = new SlackState(store);
+    const state = new ChatState(store, "slack");
     const calls: { method: string; args: Record<string, unknown> }[] = [];
     let ts = 100;
     const api: SlackApi = vi.fn(async (method, args = {}) => {
@@ -248,7 +248,7 @@ describe("quiet chat on Slack (shared by Discord and Teams)", () => {
     const options: SlackChatOptions = { store, identity, api, owner: "test", readProjects: async () => [REPO], evidenceRoot: join(dir, "evidence"), current: () => true, origin: () => ORIGIN, clock: () => now };
     state.lease(identity.installation, "test", T0);
     const pairing = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, T0);
-    expect(state.pair(identity, slackHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
+    expect(state.pair(identity, chatHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
     const pass = async () => {
       state.lease(identity.installation, "test", now);
       await planSlackNotifications(options);

@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { MATE_ASK_TTL_MS, openStore, type Store } from "./store.js";
 import { applyChatAskTap, chatAskButtons } from "./chat-ask.js";
 import { addApprover, propose, approve } from "./scope.js";
-import { SlackState, slackHash, type SlackContent } from "./slack-state.js";
+import { ChatState, chatHash, type ChatContent } from "./chat-delivery-state.js";
 import {
   SlackError,
   slackApi,
@@ -71,7 +71,7 @@ describe("Slack shared chat", () => {
   let dir: string,
     repo: string,
     store: Store,
-    state: SlackState,
+    state: ChatState,
     now: Date,
     options: SlackChatOptions,
     password: string;
@@ -113,15 +113,15 @@ describe("Slack shared chat", () => {
     const binding = state.binding(ID.installation)!;
     state.enqueue({ id: "bad-part", installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: "", thread: "", payload: {}, created: now.toISOString() });
     state.plan("bad-part", [{ text: "Saved reply" }], now);
-    state.prepare("UPDATE chat_part SET payload=? WHERE event='bad-part'").run(payload);
+    state.prepare("UPDATE chat_part SET payload=? WHERE provider=:provider AND event='bad-part'").run(payload);
     expect(await deliverSlackPart(options)).toBe(true);
-    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get();
+    const row = state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get();
     expect(row).toMatchObject({ payload, state: "dropped", next_at: null, problem: expect.stringContaining(path), attempts: 0, uncertain: 0 });
     expect(sends()).toEqual([]);
     now = new Date(now.getTime() + 60_000);
     state.lease(ID.installation, "test", now);
     expect(await deliverSlackPart(options)).toBe(false);
-    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE event='bad-part'").get()).toEqual(row);
+    expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get()).toEqual(row);
   });
 
   const pair = () => {
@@ -131,20 +131,20 @@ describe("Slack shared chat", () => {
       store.accountOf("alex")!.generation,
       now,
     );
-    return state.pair(ID, slackHash(code), MEMBER, CHANNEL, now)!;
+    return state.pair(ID, chatHash(code), MEMBER, CHANNEL, now)!;
   };
 
   test("a callback for an unreadable saved question replies with the problem without retrying or applying it", async () => {
     const binding = state.binding(ID.installation)!;
     state.enqueue({ id: "bad-question", installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: TS, thread: TS, payload: {}, created: now.toISOString() });
     state.plan("bad-question", [{ text: "Which page first?", ask: { turn: 1, options: ["Login", "Signup"] } }], now);
-    state.prepare("UPDATE chat_part SET payload=?,state='sent',message=? WHERE event='bad-question'").run('{"text":42}', TS);
-    const button = state.prepare("SELECT token FROM chat_ask_action WHERE choice=0").get()!;
+    state.prepare("UPDATE chat_part SET payload=?,state='sent',message=? WHERE provider=:provider AND event='bad-question'").run('{"text":42}', TS);
+    const button = state.prepare("SELECT token FROM chat_ask_action WHERE provider=:provider AND choice=0").get()!;
     expect(receiveSlack(state, ID, "interactive", action(String(button.token)), now)).toBe(true);
     expect(await processSlackEvent(options)).toBe(true);
-    expect(state.prepare("SELECT state,problem,next_at FROM chat_event WHERE kind='action'").get()).toMatchObject({ state: "done", problem: expect.stringContaining("text:"), next_at: null });
-    expect(state.prepare("SELECT consumed FROM chat_ask_action WHERE token=?").get(String(button.token))?.consumed).toBeNull();
-    expect(state.prepare("SELECT COUNT(*) n FROM chat_event WHERE kind='message'").get()?.n).toBe(0);
+    expect(state.prepare("SELECT state,problem,next_at FROM chat_event WHERE provider=:provider AND kind='action'").get()).toMatchObject({ state: "done", problem: expect.stringContaining("text:"), next_at: null });
+    expect(state.prepare("SELECT consumed FROM chat_ask_action WHERE provider=:provider AND token=?").get(String(button.token))?.consumed).toBeNull();
+    expect(state.prepare("SELECT COUNT(*) n FROM chat_event WHERE provider=:provider AND kind='message'").get()?.n).toBe(0);
     await drain();
     expect(sends()).toHaveLength(1);
     expect(sends()[0]?.args.text).toContain("This saved message can't be read: text:");
@@ -182,20 +182,20 @@ describe("Slack shared chat", () => {
     await drain();
   }
   function latestCard() {
-    const row = state.db
+    const row = state
       .prepare(
-        "SELECT * FROM slack_part WHERE json_extract(payload,'$.proposal') IS NOT NULL ORDER BY id DESC LIMIT 1",
+        "SELECT * FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') IS NOT NULL ORDER BY id DESC LIMIT 1",
       )
       .get()!;
-    const token = state.db
+    const token = state
       .prepare(
-        "SELECT token FROM slack_action WHERE part=? AND phase='confirm' AND consumed IS NULL",
+        "SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='confirm' AND consumed IS NULL",
       )
       .get(Number(row.id))!;
     return {
       id: Number(row.id),
       proposal: Number(
-        (JSON.parse(String(row.payload)) as SlackContent).proposal,
+        (JSON.parse(String(row.payload)) as ChatContent).proposal,
       ),
       ts: String(row.message),
       token: String(token.token),
@@ -282,7 +282,7 @@ describe("Slack shared chat", () => {
       { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 },
       now,
     );
-    const event = slackHash(`card${++serial}`);
+    const event = chatHash(`card${++serial}`);
     state.enqueue({
       id: event,
       installation: ID.installation,
@@ -318,7 +318,7 @@ describe("Slack shared chat", () => {
       "seed",
     ]);
     store = openStore(join(dir, "state.db"));
-    state = new SlackState(store);
+    state = new ChatState(store, "slack");
     now = new Date("2026-09-17T20:00:00Z");
     serial = 0;
     calls = [];
@@ -419,7 +419,7 @@ describe("Slack shared chat", () => {
     const payload = message(`pair ${code}`);
     expect(receiveSlack(state, ID, "events_api", payload, now)).toBe(true);
     expect(
-      JSON.stringify(state.db.prepare("SELECT * FROM slack_event").all()),
+      JSON.stringify(state.prepare("SELECT * FROM chat_event WHERE provider=:provider").all()),
     ).not.toContain(code);
     await processSlackEvent(options);
     expect(state.binding(ID.installation)?.member).toBe(MEMBER);
@@ -439,12 +439,12 @@ describe("Slack shared chat", () => {
       receive("public", { channel_type: "channel", channel: "COTHER" }),
     ).toBe(false);
     expect(receive("bot echo", { bot_id: "BBOT" })).toBe(false);
-    expect(state.pair(ID, slackHash(code), "UOTHER", "DOTHER", now)).toBeNull();
+    expect(state.pair(ID, chatHash(code), "UOTHER", "DOTHER", now)).toBeNull();
   });
   test("a reply in a thread about one task stays on it: the /task status and the lead's answer name that task; a new message is for the lead", async () => {
     store.createTask({ id: "login", title: "Fix the login page" }, now);
     store.placeTask(store.refFor("built-in", "login").id, repo);
-    const lastPart = () => JSON.parse(String(state.db.prepare("SELECT payload FROM slack_part ORDER BY id DESC LIMIT 1").get()!.payload)) as SlackContent;
+    const lastPart = () => JSON.parse(String(state.prepare("SELECT payload FROM chat_part WHERE provider=:provider ORDER BY id DESC LIMIT 1").get()!.payload)) as ChatContent;
     const asked = () => {
       const request = (runner as unknown as { mock: { calls: [{ history: { role: string; text?: string }[] }][] } }).mock.calls.at(-1)![0];
       return String(request.history.filter((one) => one.role === "operator").at(-1)?.text);
@@ -516,7 +516,7 @@ describe("Slack shared chat", () => {
     };
     await deliverSlackPart(options);
     expect(
-      state.db.prepare("SELECT uncertain FROM slack_part").get()?.uncertain,
+      state.prepare("SELECT uncertain FROM chat_part WHERE provider=:provider").get()?.uncertain,
     ).toBe(1);
     options.api = base;
     now = new Date(now.getTime() + 6000);
@@ -524,7 +524,7 @@ describe("Slack shared chat", () => {
     await drain();
     expect(runner).toHaveBeenCalledTimes(1);
     expect(sends().at(-1)?.args.thread_ts).toBe(TS);
-    expect(state.db.prepare("SELECT state FROM slack_part").get()?.state).toBe(
+    expect(state.prepare("SELECT state FROM chat_part WHERE provider=:provider").get()?.state).toBe(
       "sent",
     );
   });
@@ -675,7 +675,7 @@ describe("Slack shared chat", () => {
         bytesOriginal: bytes.length,
         bytesStored: bytes.length,
         truncated: false,
-        sha256: slackHash(bytes.toString("binary")),
+        sha256: chatHash(bytes.toString("binary")),
         capture: "Synthetic screenshot",
       },
       now,
@@ -737,20 +737,20 @@ describe("Slack shared chat", () => {
     await planSlackNotifications(options);
     await drain();
     expect(
-      state.db.prepare("SELECT count(*) n FROM slack_progress").get()?.n,
+      state.prepare("SELECT count(*) n FROM chat_progress WHERE provider=:provider").get()?.n,
     ).toBe(1);
     expect(sends().filter((c) => c.method === "chat.postMessage")).toHaveLength(
       1,
     );
     const content = JSON.parse(
       String(
-        state.db
+        state
           .prepare(
-            "SELECT p.payload FROM slack_part p JOIN slack_progress s ON s.part=p.id",
+            "SELECT p.payload FROM chat_part p JOIN chat_progress s ON s.provider=p.provider AND s.part=p.id WHERE p.provider=:provider",
           )
           .get()?.payload,
       ),
-    ) as SlackContent;
+    ) as ChatContent;
     expect(content.text).toBe(
       telegramProgressCard(store, store.getRun(run)!, "sample", repo, now, options.evidenceRoot).text,
     );
@@ -768,7 +768,7 @@ describe("Slack shared chat", () => {
     };
     await deliverSlackPart(options);
     expect(
-      state.db.prepare("SELECT retry_at FROM slack_runtime").get()?.retry_at,
+      state.prepare("SELECT retry_at FROM chat_runtime WHERE provider=:provider").get()?.retry_at,
     ).toBe(new Date(now.getTime() + 120_000).toISOString());
   });
   test("credentials stay in an owner-only file; setup escapes names and never echoes tokens", () => {
@@ -821,7 +821,7 @@ describe("Slack shared chat", () => {
     receive("What needs review?");
     answers.push({ text: "The saved result is ready to inspect." });
     const plan = vi
-      .spyOn(SlackState.prototype, "plan")
+      .spyOn(ChatState.prototype, "plan")
       .mockImplementationOnce(() => {
         throw Error("crash after engine receipt");
       });
@@ -877,9 +877,9 @@ describe("Slack shared chat", () => {
     await tap(first.token, first.ts);
     expect(store.getDecision(decision)?.state).toBe("open");
     const yes = String(
-      state.db
+      state
         .prepare(
-          "SELECT token FROM slack_action WHERE part=? AND phase='yes' AND consumed IS NULL",
+          "SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL",
         )
         .get(first.id)?.token,
     );
@@ -1013,11 +1013,11 @@ describe("Slack shared chat", () => {
       return original(method, args);
     }) };
     const code = state.pairing(ID.installation, "sam", store.accountOf("sam")!.generation, now);
-    expect(state.pair(ID, slackHash(code), "USAM", "DSAM", now)).toMatchObject({ approver: "sam", member: "USAM" });
+    expect(state.pair(ID, chatHash(code), "USAM", "DSAM", now)).toMatchObject({ approver: "sam", member: "USAM" });
     expect(state.bindings(ID.installation).map(one => one.approver)).toEqual(["alex", "sam"]);
     // alex cannot pair a second Slack identity; sam cannot pair alex's member id.
     const again = state.pairing(ID.installation, "alex", store.accountOf("alex")!.generation, now);
-    expect(state.pair(ID, slackHash(again), "UALEX2", "DALEX2", now)).toBeNull();
+    expect(state.pair(ID, chatHash(again), "UALEX2", "DALEX2", now)).toBeNull();
     expect(receive("status")).toBe(true);
     await processSlackEvent(options);
     await drain();
@@ -1048,7 +1048,7 @@ describe("Slack shared chat", () => {
     expect(String(armed.args["text"])).toContain("This records that you handled this exact result. Confirm?");
     expect(JSON.stringify(armed.args["blocks"])).toContain("Yes, accept and finish");
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))?.state).toBe("ready-to-check");
-    const yes = state.db.prepare("SELECT token FROM slack_action WHERE part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
+    const yes = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
     await tap(String(yes.token), c.ts);
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
     expect(store.proofAcceptance(run)).toBeNull();
@@ -1068,7 +1068,7 @@ describe("Slack shared chat", () => {
       return original(method, args);
     }) };
     const samCode = state.pairing(ID.installation, "sam", store.accountOf("sam")!.generation, now);
-    expect(state.pair(ID, slackHash(samCode), "USAM", "DSAM", now)).not.toBeNull();
+    expect(state.pair(ID, chatHash(samCode), "USAM", "DSAM", now)).not.toBeNull();
     const domain = new TeamLeads(store, () => projects);
     const actor = (name: string) => ({ name, generation: store.accountOf(name)!.generation });
     const lead = domain.execute(actor("alex"), { operation: "create-lead", args: { name: "Engineering", instructions: "Keep it simple.", projects } }, now);
@@ -1132,7 +1132,7 @@ describe("Slack shared chat", () => {
     advanceFlows(store, repo, now);
     await planSlackNotifications(options);
     await drain();
-    const flowPart = () => state.db.prepare("SELECT id, message FROM slack_part WHERE json_extract(payload,'$.flow') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
+    const flowPart = () => state.prepare("SELECT id, message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.flow') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
     const buttonsOf = (call: { args: Record<string, unknown> }) =>
       ((call.args.blocks as Array<{ type: string; elements?: Array<{ text: { text: string }; value?: string; action_id: string }> }>).find(block => block.type === "actions")?.elements ?? []);
     const notice = sends().at(-1)!;
@@ -1200,7 +1200,7 @@ describe("Slack shared chat", () => {
     const choice = posted.find(one => JSON.stringify(one.args.blocks).includes("Choose one"))!;
     const buttons = buttonsOf(choice);
     expect(buttons.map(one => [one.text.text, one.action_id])).toEqual([["Ship it", "toolroll_flow_choose_0"], ["Later", "toolroll_flow_choose_1"], ["Ignore", "toolroll_flow_choose_2"], ["Card", "toolroll_link"]]);
-    const ts = String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+    const ts = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
     const press = async (token: string) => {
       receiveSlack(state, ID, "interactive", { ...action(token, ts), message: {}, actions: [{ action_id: "toolroll_flow_choose_1", value: token, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
       await processSlackEvent(options);
@@ -1217,7 +1217,7 @@ describe("Slack shared chat", () => {
     expect(store.flowEvents(card).at(-1)).toMatchObject({ actor: "alex", note: "Chose “Later” in Slack" });
 
     // A reply in the notice's thread is the note.
-    const choiceTs = () => String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+    const choiceTs = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
     const replyInThread = async (text: string, thread: string) => {
       receive(text, { ts: `1789700200.${String(++serial).padStart(6, "0")}`, thread_ts: thread });
       await processSlackEvent(options);
@@ -1239,7 +1239,7 @@ describe("Slack shared chat", () => {
     const thirdTs = choiceTs();
     const thirdButtons = buttonsOf(sends().filter(one => one.method === "chat.postMessage" && JSON.stringify(one.args.blocks).includes("Old banner")).at(-1)!);
     expect(chooseFlowCard(store, { card: third, choice: 0, note: null, actor: "alex", where: "Toolroll", repos: [repo] }, now)).toMatchObject({ ok: true });
-    expect(state.db.prepare("SELECT count(*) AS n FROM slack_flow_choice WHERE card=? AND consumed IS NULL").get(third)!.n).toBe(0);
+    expect(state.prepare("SELECT count(*) AS n FROM chat_flow_choice WHERE provider=:provider AND card=? AND consumed IS NULL").get(third)!.n).toBe(0);
     receiveSlack(state, ID, "interactive", { ...action(thirdButtons[1]!.value!, thirdTs), message: {}, actions: [{ action_id: "toolroll_flow_choose_1", value: thirdButtons[1]!.value!, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
     await processSlackEvent(options);
     await drain();
@@ -1261,7 +1261,7 @@ describe("Slack shared chat", () => {
     };
     const buttonsOf = (call: { args: Record<string, unknown> }) =>
       ((call.args.blocks as Array<{ type: string; elements?: Array<{ text: { text: string }; value?: string; action_id: string }> }>).find(block => block.type === "actions")?.elements ?? []);
-    const partTs = () => String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.question') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+    const partTs = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.question') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
     const press = async (id: string, token: string, ts: string) => {
       receiveSlack(state, ID, "interactive", { ...action(token, ts), message: {}, actions: [{ action_id: id, value: token, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
       await processSlackEvent(options);
@@ -1324,7 +1324,7 @@ describe("Slack shared chat", () => {
     expect(String(question.args.text)).toContain("Which page first?");
     const buttons = buttonsOf(question);
     expect(buttons.map(one => one.text.text)).toEqual(["Login", "Signup", "Something else"]);
-    const askTs = String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
+    const askTs = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
     // Something else asks for words and keeps the buttons.
     await press("toolroll_question_words", buttons[2]!.value!, askTs);
     expect(String(sends().at(-1)!.args.text)).toContain("Type your answer here");
@@ -1353,7 +1353,7 @@ describe("Slack shared chat", () => {
       await processSlackEvent(options);
       await drain();
     };
-    const askPart = () => state.db.prepare("SELECT id,message FROM slack_part WHERE json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
+    const askPart = () => state.prepare("SELECT id,message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
     // Asked in a thread: the buttons are drawn there, and a tap's answer comes back in the same thread.
     answers.push(
       { text: "", calls: [{ id: "q1", name: "ask_owner", args: { question: "Which page first?", options: ["Login", "Signup"] } }] },
@@ -1385,11 +1385,11 @@ describe("Slack shared chat", () => {
     const binding = state.bindingFor(ID.installation, MEMBER)!;
     state.enqueue({ id: "other-approver-tap", installation: ID.installation, binding: binding.id, kind: "action", channel: CHANNEL, member: MEMBER, ts: String(second.message), thread: THREAD, payload: "{}", created: now.toISOString() });
     expect(store.transact(() => applyChatAskTap({ store, state }, state.event("other-approver-tap")!, { ...binding, approver: "sam" }, unit, now))).toBe(true);
-    expect(state.db.prepare("SELECT COUNT(*) AS n FROM slack_part WHERE event='other-approver-tap'").get()!.n).toBe(0);
+    expect(state.prepare("SELECT COUNT(*) AS n FROM chat_part WHERE provider=:provider AND event='other-approver-tap'").get()!.n).toBe(0);
     expect(state.event("other-approver-tap")!.state).toBe("done");
     expect(chatAskButtons(state, Number(second.id), now)).toHaveLength(3);
     // Answered by typing within the day: a tap repaints the question once, without its buttons, under its own time.
-    const created = String(state.db.prepare("SELECT created FROM slack_part WHERE id=?").get(Number(second.id))!.created);
+    const created = String(state.prepare("SELECT created FROM chat_part WHERE provider=:provider AND id=?").get(Number(second.id))!.created);
     answers.push({ text: "Unit first, then." });
     expect(receive("Unit", { ts: "1789700000.000202", thread_ts: THREAD })).toBe(true);
     await processSlackEvent(options);
@@ -1399,7 +1399,7 @@ describe("Slack shared chat", () => {
     await press(unit, String(second.message));
     expect(sends().slice(sent)).toMatchObject([{ method: "chat.update", args: { ts: String(second.message), text: expect.stringContaining("This question was already answered.") } }]);
     expect(buttonsOf(sends().at(-1)!)).toEqual([]);
-    expect(state.db.prepare("SELECT created FROM slack_part WHERE id=?").get(Number(second.id))!.created).toBe(created);
+    expect(state.prepare("SELECT created FROM chat_part WHERE provider=:provider AND id=?").get(Number(second.id))!.created).toBe(created);
     // A later tap (a stale card) edits nothing more and posts nothing.
     sent = sends().length;
     await press(unit, String(second.message));
@@ -1427,20 +1427,20 @@ describe("Slack shared chat", () => {
     await processSlackEvent(options);
     expect((runner as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(before);
     // Deleting a part (and the turn) is never blocked by its buttons.
-    expect(Number(state.db.prepare("SELECT COUNT(*) AS n FROM slack_ask_action WHERE part=?").get(Number(second.id))!.n)).toBe(3);
-    state.db.prepare("DELETE FROM slack_part WHERE id=?").run(Number(second.id));
-    expect(Number(state.db.prepare("SELECT COUNT(*) AS n FROM slack_ask_action WHERE part=?").get(Number(second.id))!.n)).toBe(0);
+    expect(Number(state.prepare("SELECT COUNT(*) AS n FROM chat_ask_action WHERE provider=:provider AND part=?").get(Number(second.id))!.n)).toBe(3);
+    state.prepare("DELETE FROM chat_part WHERE provider=:provider AND id=?").run(Number(second.id));
+    expect(Number(state.prepare("SELECT COUNT(*) AS n FROM chat_ask_action WHERE provider=:provider AND part=?").get(Number(second.id))!.n)).toBe(0);
   });
 
   test("in a room the lead's question has no buttons: a tap there would not be the owner's own message", () => {
     const binding = state.bindingFor(ID.installation, MEMBER)!;
     state.enqueue({ id: "room-event", installation: ID.installation, binding: binding.id, kind: "message", channel: "CROOM", member: MEMBER, ts: TS, thread: TS, payload: JSON.stringify({ text: "hi" }), created: now.toISOString() });
     state.plan("room-event", [{ text: "Which page first?", ask: { turn: 1, options: ["Login", "Signup"] } }], now);
-    const part = Number(state.db.prepare("SELECT id FROM slack_part WHERE event='room-event'").get()!.id);
+    const part = Number(state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event='room-event'").get()!.id);
     expect(chatAskButtons(state, part, now)).toEqual([]);
     state.enqueue({ id: "dm-event", installation: ID.installation, binding: binding.id, kind: "message", channel: CHANNEL, member: MEMBER, ts: TS, thread: TS, payload: JSON.stringify({ text: "hi" }), created: now.toISOString() });
     state.plan("dm-event", [{ text: "Which page first?", ask: { turn: 1, options: ["Login", "Signup"] } }], now);
-    const own = Number(state.db.prepare("SELECT id FROM slack_part WHERE event='dm-event'").get()!.id);
+    const own = Number(state.prepare("SELECT id FROM chat_part WHERE provider=:provider AND event='dm-event'").get()!.id);
     expect(chatAskButtons(state, own, now).map(one => one.label)).toEqual(["Login", "Signup", "Something else"]);
   });
 
@@ -1523,8 +1523,8 @@ describe("Slack shared chat", () => {
     advanceFlows(store, repo, now);
     await planSlackNotifications(options);
     await drain();
-    const ts = String(state.db.prepare("SELECT message FROM slack_part WHERE json_extract(payload,'$.flow') IS NOT NULL").get()!.message);
-    const token = String(state.db.prepare("SELECT token FROM slack_flow_action WHERE action='send-back'").get()!.token);
+    const ts = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.flow') IS NOT NULL").get()!.message);
+    const token = String(state.prepare("SELECT token FROM chat_flow_action WHERE provider=:provider AND action='send-back'").get()!.token);
     const press = async () => {
       receiveSlack(state, ID, "interactive", { ...action(token, ts), message: {}, actions: [{ action_id: "standing_orders_flow_send_back", value: token, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
       await processSlackEvent(options);

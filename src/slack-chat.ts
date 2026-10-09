@@ -22,16 +22,7 @@ import {
 } from "./chat-channel.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { renderReply } from "./reply-shape.js";
-import {
-  SlackState,
-  slackHash,
-  type SlackIdentity,
-  type SlackBinding,
-  type SlackEvent,
-  type SlackPart,
-  type SlackContent,
-} from "./slack-state.js";
-import { ChatDeliveryError, partContent } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
@@ -42,6 +33,7 @@ import {
   SlackError,
   uploadSlackBytes,
   type SlackApi,
+  type SlackIdentity,
 } from "./slack-api.js";
 import {
   resultImageFileName,
@@ -80,7 +72,7 @@ const split = (text: string, size = 2800): string[] => {
 
 /** Synchronous receipt before ACK. Never stores response_url, raw tokens, or a pairing code. */
 export function receiveSlack(
-  state: SlackState,
+  state: ChatState,
   identity: SlackIdentity,
   type: string,
   raw: unknown,
@@ -112,7 +104,7 @@ export function receiveSlack(
     thread: unknown,
     id: string,
     payload: ChatEventBody,
-    kind: SlackEvent["kind"];
+    kind: ChatEvent["kind"];
   if (type === "events_api" && event.type === "message") {
     if (
       event.subtype !== undefined ||
@@ -130,12 +122,12 @@ export function receiveSlack(
     const match = /^pair ([a-f0-9]{32})$/.exec(event.text.trim());
     kind = match ? "pair" : "message";
     payload = match
-      ? { hash: slackHash(match[1]!) }
+      ? { hash: chatHash(match[1]!) }
       : {
           text: event.text.slice(0, MATE_MESSAGE_MAX_CHARS + 1),
           originalLength: event.text.length,
         };
-    id = slackHash(`${identity.installation}:event:${body.event_id}`);
+    id = chatHash(`${identity.installation}:event:${body.event_id}`);
   } else if (type === "interactive" && body.type === "block_actions") {
     const interaction = readSlackBlockActions(body);
     if (!interaction.ok || interaction.value.container.type !== "message") return false;
@@ -151,7 +143,7 @@ export function receiveSlack(
     const button = readSlackButton(interaction.value);
     payload = button.ok ? { token: button.value.value } : { problem: button.issues.map(issue => issue.line).join("; ") };
     const tapped = actions[0];
-    id = slackHash(
+    id = chatHash(
       `${identity.installation}:action:${member}:${ts}:${tapped?.value ?? ""}:${tapped?.action_ts ?? ""}`,
     );
   } else return false;
@@ -197,7 +189,7 @@ export function receiveSlack(
 
 const delivery = (options: SlackChatOptions): ChatDeliveryOptions => ({
   ...options,
-  state: new SlackState(options.store),
+  state: new ChatState(options.store, "slack"),
   label: "Slack",
   member: (member, channel) =>
     slackMember(options.api, options.identity, member, channel),
@@ -210,8 +202,8 @@ export const processSlackEvent = (options: SlackChatOptions) =>
   processChatEvent(delivery(options));
 export const applySlackAction = (
   options: SlackChatOptions,
-  event: SlackEvent,
-  binding: SlackBinding,
+  event: ChatEvent,
+  binding: ChatBinding,
   repos: readonly string[],
 ) => applyChatAction(delivery(options), event, binding, repos);
 export const planSlackNotifications = (options: SlackChatOptions) =>
@@ -220,7 +212,7 @@ export const planSlackRooms = (options: SlackChatOptions) =>
   planRoomMessages(delivery(options));
 const access = (
   options: SlackChatOptions,
-  binding: SlackBinding,
+  binding: ChatBinding,
   ceiling?: string,
 ) => channelAccess(delivery(options), binding, ceiling);
 export function slackBlocks(
@@ -259,7 +251,7 @@ export function slackVoiceBlocks(
 }
 function linkButton(
   origin: string | null,
-  link: SlackContent["link"],
+  link: ChatContent["link"],
 ): Record<string, unknown>[] {
   if (
     !origin ||
@@ -294,7 +286,7 @@ function linkButton(
 export async function deliverSlackPart(
   options: SlackChatOptions,
 ): Promise<boolean> {
-  const state = new SlackState(options.store),
+  const state = new ChatState(options.store, "slack"),
     { store, identity } = options,
     now = nowOf(options);
   if (
@@ -302,32 +294,16 @@ export async function deliverSlackPart(
     !options.current()
   )
     return false;
-  const row = state.db
-    .prepare(
-      "SELECT p.* FROM slack_part p JOIN slack_event e ON e.id=p.event WHERE e.installation=? AND p.state='pending' AND (e.kind!='notice' OR ?=1) AND (p.next_at IS NULL OR p.next_at<=?) ORDER BY p.id LIMIT 1",
-    )
-    .get(
-      identity.installation,
-      options.canNotify?.() === false ? 0 : 1,
-      now.toISOString(),
-    ) as SlackPart | undefined;
+  const row = state.nextPart(identity.installation, options.canNotify?.() !== false, now);
   if (!row) return false;
   const event = state.event(row.event)!,
     binding = event.binding === null ? null : state.bindingById(event.binding);
   if (!binding) {
-    state.db
-      .prepare(
-        "UPDATE slack_part SET state='dropped',problem='Chat access changed' WHERE id=?",
-      )
-      .run(row.id);
+    state.dropPart(row.id, "Chat access changed");
     return true;
   }
   if (new Date(row.created).getTime() + 86_400_000 < now.getTime()) {
-    state.db
-      .prepare(
-        "UPDATE slack_part SET state='dropped',problem='Delivery expired; open the saved chat to recover it' WHERE id=?",
-      )
-      .run(row.id);
+    state.dropPart(row.id, "Delivery expired; open the saved chat to recover it");
     return true;
   }
   try {
@@ -346,15 +322,15 @@ export async function deliverSlackPart(
     )
       throw new SlackError("Connected projects changed");
     // A screenshot sent with a result goes in that result's thread once its message is placed, and waits until then.
-    const result = content.shot?.follows == null ? undefined : state.db.prepare("SELECT message,state,next_at FROM slack_part WHERE id=?").get(content.shot.follows);
-    if (result !== undefined && !slackTs(result["message"]) && result["state"] === "pending") {
-      state.db.prepare("UPDATE slack_part SET next_at=? WHERE id=?").run(shotWaitsUntil(result["next_at"], now), row.id);
+    const result = content.shot?.follows == null ? null : state.part(content.shot.follows);
+    if (result !== null && !slackTs(result.message) && result.state === "pending") {
+      state.holdPart(row.id, shotWaitsUntil(result.next_at, now));
       return true;
     }
-    const follows = result?.["message"];
+    const follows = result?.message;
     const thread = slackTs(follows) ? String(follows) : event.thread;
     if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
-      state.db.prepare("UPDATE slack_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      state.dropPart(row.id, "Removed by retention");
       return true;
     }
     if (content.image) {
@@ -384,9 +360,7 @@ export async function deliverSlackPart(
           )
             throw new SlackError("Slack did not identify the upload");
           file = allocated.file_id;
-          state.db
-            .prepare("UPDATE slack_part SET file=? WHERE id=?")
-            .run(file, row.id);
+          state.setPartFile(row.id, file);
           await access(options, binding, session?.ceilingDigest);
           const fresh = verifyResultImage(
             store,
@@ -400,9 +374,7 @@ export async function deliverSlackPart(
             allocated.upload_url,
             fresh.bytes,
           );
-          state.db
-            .prepare("UPDATE slack_part SET uploaded=1 WHERE id=?")
-            .run(row.id);
+          state.setPartFile(row.id, null, true);
         }
         await access(options, binding, session?.ceilingDigest);
         if (
@@ -426,11 +398,7 @@ export async function deliverSlackPart(
                 (receipt.thread_ts ?? "") === thread && slackTs(receipt.ts),
             );
           if (found) {
-            state.db
-              .prepare(
-                "UPDATE slack_part SET state='sent',message=?,problem=NULL WHERE id=?",
-              )
-              .run(String(found.ts), row.id);
+            state.partSent(row.id, String(found.ts), nowOf(options), false);
             return true;
           }
         }
@@ -462,9 +430,7 @@ export async function deliverSlackPart(
             15_000,
             true,
           );
-        state.db
-          .prepare("UPDATE slack_part SET state='sent',problem=NULL WHERE id=?")
-          .run(row.id);
+        state.partSent(row.id, null, nowOf(options), false);
         return true;
       }
     }
@@ -483,11 +449,7 @@ export async function deliverSlackPart(
                 "",
               );
         if (preview.buttons && preview.text.length <= 10_000) {
-          const tokens = state.db
-            .prepare(
-              "SELECT token,phase FROM slack_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid",
-            )
-            .all(row.id, now.toISOString());
+          const tokens = state.partTokens(row.id, now);
           buttons = tokens.map((action) => ({
             type: "button",
             text: {
@@ -555,6 +517,10 @@ export async function deliverSlackPart(
               value: one.token,
             }))
           : []),
+        // A result's, plan's, failure's or pull request's own buttons (chat-decide.ts): its acts, then its links.
+        ...(content.decide?.rows.flat() ?? []).flatMap((one, index) => "token" in one
+          ? [{ type: "button", text: { type: "plain_text", text: one.label }, action_id: `toolroll_decide_${index}`, value: one.token, ...(index === 0 ? { style: "primary" } : {}) }]
+          : linkButton(options.origin(), one.link).map(button => ({ ...button, action_id: `toolroll_link_${index + 10}` }))),
         ...linkButton(options.origin(), content.link),
         // [Look first] beside [Merge] or [Accept and finish]: each button's own action id.
         ...(content.also ?? []).flatMap((one, index) => linkButton(options.origin(), one).map(button => ({ ...button, action_id: `toolroll_link_${index + 2}` }))),
@@ -589,20 +555,12 @@ export async function deliverSlackPart(
         15_000,
         true,
       );
-    state.db
-      .prepare(
-        "UPDATE slack_part SET state='sent',message=?,attempts=attempts+1,problem=NULL,next_at=NULL WHERE id=?",
-      )
-      .run(answer.ts, row.id);
-    state.db
-      .prepare(
-        "UPDATE slack_runtime SET problem=NULL WHERE installation=? AND owner=?",
-      )
-      .run(identity.installation, options.owner);
+    state.partSent(row.id, String(answer.ts), nowOf(options));
+    state.setProblem(identity.installation, options.owner, null);
     return true;
   } catch (error) {
     if (error instanceof ChatDeliveryError && error.permanent) {
-      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      state.dropPart(row.id, error.message);
       return true;
     }
     // No permission to upload files here: one plain line instead of the result's screenshots.
@@ -615,11 +573,7 @@ export async function deliverSlackPart(
       error instanceof SlackError
         ? error
         : new SlackError("Slack delivery is waiting to retry", 15_000, true);
-    state.db
-      .prepare(
-        "UPDATE slack_runtime SET problem=? WHERE installation=? AND owner=?",
-      )
-      .run(problem.message, identity.installation, options.owner);
+    state.setProblem(identity.installation, options.owner, problem.message);
     const until = new Date(
       nowOf(options).getTime() +
         Math.max(
@@ -627,15 +581,8 @@ export async function deliverSlackPart(
           [5000, 15000, 60000, 300000][Math.min(row.attempts, 3)]!,
         ),
     ).toISOString();
-    state.db
-      .prepare(
-        "UPDATE slack_part SET attempts=attempts+1,uncertain=uncertain+?,next_at=?,problem=? WHERE id=?",
-      )
-      .run(problem.uncertain ? 1 : 0, until, problem.message, row.id);
-    if (problem.code === "ratelimited")
-      state.db
-        .prepare("UPDATE slack_runtime SET retry_at=? WHERE installation=?")
-        .run(until, identity.installation);
+    state.partFailed(row.id, { problem: problem.message, until, uncertain: problem.uncertain });
+    if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
     return true;
   }
 }

@@ -23,7 +23,7 @@ import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { telegramProgressCard } from "./telegram-progress.js";
 import { finishedView, quietCardView } from "./chat-quiet.js";
 import { bridgePass, followBridge, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
-import { SlackState, slackHash } from "./slack-state.js";
+import { ChatState, chatHash } from "./chat-delivery-state.js";
 import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
 import type { SlackApi } from "./slack-api.js";
 import { batchLine, BOT_NAME, chatText, nameTelegramBot, shortTitle } from "./chat-voice.js";
@@ -449,7 +449,9 @@ describe("chat voice on Telegram", () => {
 
   test("c4: pairing names the bot Toolroll; on upgrade a bot still called StandingOrders is renamed once, any other name is kept", async () => {
     const script = scriptedTelegram();
-    // Pairing through the bot: "/pair <code>" in a private chat.
+    // Pairing through the bot: "/pair <code>" in a private chat. One live pairing per person on a bot, as in every
+    // chat app: alex moves to this new chat after unpairing the old one.
+    store.unpairTelegram(BOT, "alex", now);
     const code = mintPairingCode();
     store.createTelegramPairing({ codeHash: hashPairingCode(code), approver: "alex", by: "alex", ttlMs: PAIRING_TTL_MS }, now);
     let queued = true;
@@ -516,7 +518,7 @@ describe("chat voice on Slack (the shared path Discord and Teams use)", () => {
 
   test("c1, c2, c3: six results in two minutes are one post edited in place, own completions say nothing, and no text carries an id", async () => {
     const identity = { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace" };
-    const state = new SlackState(store);
+    const state = new ChatState(store, "slack");
     const calls: { method: string; args: Record<string, unknown> }[] = [];
     let ts = 100;
     const api: SlackApi = vi.fn(async (method, args = {}) => {
@@ -530,7 +532,7 @@ describe("chat voice on Slack (the shared path Discord and Teams use)", () => {
     const options: SlackChatOptions = { store, identity, api, owner: "test", readProjects: async () => [REPO], evidenceRoot: join(dir, "evidence"), current: () => true, origin: () => ORIGIN, clock: () => now };
     state.lease(identity.installation, "test", T0);
     const pairing = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, T0);
-    expect(state.pair(identity, slackHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
+    expect(state.pair(identity, chatHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
     const pass = async () => {
       state.lease(identity.installation, "test", now);
       await planSlackNotifications(options);
@@ -582,7 +584,7 @@ describe("chat voice on Slack (the shared path Discord and Teams use)", () => {
 
   test("c2: a lone failure that no batch line can read still gets its own post", async () => {
     const identity = { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace" };
-    const state = new SlackState(store);
+    const state = new ChatState(store, "slack");
     const calls: { method: string; args: Record<string, unknown> }[] = [];
     let ts = 100;
     const api: SlackApi = vi.fn(async (method, args = {}) => {
@@ -596,7 +598,7 @@ describe("chat voice on Slack (the shared path Discord and Teams use)", () => {
     const options: SlackChatOptions = { store, identity, api, owner: "test", readProjects: async () => [REPO], evidenceRoot: join(dir, "evidence"), current: () => true, origin: () => ORIGIN, clock: () => now };
     state.lease(identity.installation, "test", T0);
     const pairing = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, T0);
-    expect(state.pair(identity, slackHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
+    expect(state.pair(identity, chatHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
     const pass = async () => {
       state.lease(identity.installation, "test", now);
       await planSlackNotifications(options);

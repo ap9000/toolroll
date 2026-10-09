@@ -184,6 +184,6 @@ export function refuseResultShots(state: Pick<ChatState, "prepare">, store: Stor
   const title = chatTitle(store, content.image?.taskId ?? content.task ?? "");
   const line: ChatContent = { text: `Screenshots for ${title} weren't sent: the ${app} app isn't allowed to upload files here.`,
     ...(content.task === undefined ? {} : { task: content.task }), ...(content.run === undefined ? {} : { run: content.run }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL,problem=NULL,file=NULL,uploaded=0,uncertain=0,created=? WHERE id=?").run(savedChatPart(line), now.toISOString(), part.id);
-  state.prepare("UPDATE chat_part SET state='dropped',problem='Uploads are not allowed here' WHERE event=? AND id<>? AND state='pending'").run(part.event, part.id);
+  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL,problem=NULL,file=NULL,uploaded=0,uncertain=0,created=? WHERE provider=:provider AND id=?").run(savedChatPart(line), now.toISOString(), part.id);
+  state.prepare("UPDATE chat_part SET state='dropped',problem='Uploads are not allowed here' WHERE provider=:provider AND event=? AND id<>? AND state='pending'").run(part.event, part.id);
 }

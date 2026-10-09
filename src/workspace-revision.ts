@@ -18,10 +18,12 @@ export const WORKSPACE_REVISION_KEY = 'workspace-content:v1';
 const KEY = WORKSPACE_REVISION_KEY;
 const MAX_AGE_MS = 60_000;
 const OMIT = new Set(['schema_version', 'service_cursor', 'wake', 'notification_delivery', 'sqlite_sequence',
-  'team_read', 'team_request', 'push_delivery', 'telegram_update', 'telegram_outbound_message', 'telegram_retry', 'bridge_lease']);
+  'team_read', 'team_request', 'push_delivery', 'chat_message_ref']);
 const QUIET: Record<string, readonly string[]> = {
   runner: ['heartbeat_at'], claim: ['heartbeat_at', 'expires_at'], watch_lease: ['heartbeat_at', 'expires_at'],
   watch_episode: ['ticks'], provider_readiness: ['observed_at'],
+  // A chat worker's lease, poll cursor and rate-limit wait are its own bookkeeping; its connection and problem are news.
+  chat_runtime: ['owner', 'lease_until', 'generation', 'cursor', 'heartbeat', 'retry_at'],
 };
 /** A quiet beat that revives what a view already rendered as gone: the rows a beat may move, read before and after.
  * A runner beat after its liveness window (or backwards) is a revival; a lease renewed at or past its expiry is one. */

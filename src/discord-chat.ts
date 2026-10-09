@@ -269,15 +269,7 @@ export async function deliverDiscordPart(
     !state.owns(identity.installation, options.owner, now)
   )
     return false;
-  const row = state
-    .prepare(
-      "SELECT p.* FROM chat_part p JOIN chat_event e ON e.id=p.event WHERE e.installation=? AND p.state='pending' AND (e.kind!='notice' OR ?=1) AND (p.next_at IS NULL OR p.next_at<=?) ORDER BY p.id LIMIT 1",
-    )
-    .get(
-      identity.installation,
-      options.canNotify?.() === false ? 0 : 1,
-      now.toISOString(),
-    ) as ChatPart | undefined;
+  const row = state.nextPart(identity.installation, options.canNotify?.() !== false, now);
   if (!row) return false;
   const event = state.event(row.event)!,
     binding = event.binding === null ? null : state.bindingById(event.binding);
@@ -285,11 +277,7 @@ export async function deliverDiscordPart(
     !binding ||
     new Date(row.created).getTime() + 86_400_000 < now.getTime()
   ) {
-    state
-      .prepare(
-        "UPDATE chat_part SET state='dropped',problem='Delivery expired or access changed; open the saved chat' WHERE id=?",
-      )
-      .run(row.id);
+    state.dropPart(row.id, "Delivery expired or access changed; open the saved chat");
     return true;
   }
   try {
@@ -309,16 +297,16 @@ export async function deliverDiscordPart(
       buttons: Record<string, unknown>[] = [],
       file: { bytes: Uint8Array; name: string } | undefined;
     if (content.image && content.shot && resultShotsPruned(options.evidenceRoot, content.image.run)) {
-      state.prepare("UPDATE chat_part SET state='dropped',problem='Removed by retention' WHERE id=?").run(row.id);
+      state.dropPart(row.id, "Removed by retention");
       return true;
     }
     // A screenshot sent with a result replies to that result's message once it is placed, and waits until then.
-    const result = content.shot?.follows == null ? undefined : state.prepare("SELECT message,state,next_at FROM chat_part WHERE id=?").get(content.shot.follows);
-    if (result !== undefined && !discordId(result["message"]) && result["state"] === "pending") {
-      state.prepare("UPDATE chat_part SET next_at=? WHERE id=?").run(shotWaitsUntil(result["next_at"], now), row.id);
+    const result = content.shot?.follows == null ? null : state.part(content.shot.follows);
+    if (result !== null && !discordId(result.message) && result.state === "pending") {
+      state.holdPart(row.id, shotWaitsUntil(result.next_at, now));
       return true;
     }
-    const follows = result?.["message"];
+    const follows = result?.message;
     const thread = discordId(follows) ? String(follows) : event.thread;
     if (content.image) {
       const image = verifyResultImage(
@@ -373,10 +361,7 @@ export async function deliverDiscordPart(
           discordPlain(text).length <= 3900
         ) {
           buttons = state
-            .prepare(
-              "SELECT token,phase FROM chat_action WHERE part=? AND consumed IS NULL AND expires>? ORDER BY rowid",
-            )
-            .all(row.id, now.toISOString())
+            .partTokens(row.id, now)
             .map((action) => ({
               type: 2,
               style:
@@ -435,6 +420,10 @@ export async function deliverDiscordPart(
               custom_id: `so_${one.token}`,
             }))
           : []),
+        // A result's, plan's, failure's or pull request's own buttons (chat-decide.ts): its acts, then its links.
+        ...(content.decide?.rows.flat() ?? []).flatMap((one, index) => "token" in one
+          ? [{ type: 2, style: index === 0 ? 1 : 2, label: one.label.slice(0, 80), custom_id: `so_${one.token}` }]
+          : link(options.origin(), one.link)),
         ...link(options.origin(), content.link),
         ...(content.also ?? []).flatMap(one => link(options.origin(), one)),
       ];
@@ -487,17 +476,7 @@ export async function deliverDiscordPart(
           // Preserve the original remote attachment; never upload it again on an edit.
           file = undefined;
         }
-        state
-          .prepare("UPDATE chat_part SET message=?,uploaded=? WHERE id=?")
-          .run(
-            target,
-            content.image &&
-              Array.isArray(found.attachments) &&
-              found.attachments.length
-              ? 1
-              : 0,
-            row.id,
-          );
+        state.setPartFile(row.id, null, Boolean(content.image && Array.isArray(found.attachments) && found.attachments.length), target);
       }
     }
     await channelAccess(shared, binding, session?.ceilingDigest);
@@ -551,20 +530,12 @@ export async function deliverDiscordPart(
         15_000,
         true,
       );
-    state
-      .prepare(
-        "UPDATE chat_part SET state='sent',message=?,attempts=attempts+1,problem=NULL,next_at=NULL WHERE id=?",
-      )
-      .run(answer.id, row.id);
-    state
-      .prepare(
-        "UPDATE chat_runtime SET problem=NULL WHERE installation=? AND owner=?",
-      )
-      .run(identity.installation, options.owner);
+    state.partSent(row.id, String(answer.id), options.clock?.() ?? new Date());
+    state.setProblem(identity.installation, options.owner, null);
     return true;
   } catch (error) {
     if (error instanceof ChatDeliveryError && error.permanent) {
-      state.prepare("UPDATE chat_part SET state='dropped',next_at=NULL,problem=? WHERE id=?").run(error.message, row.id);
+      state.dropPart(row.id, error.message);
       return true;
     }
     // No permission to attach files here: one plain line instead of the result's screenshots.
@@ -588,26 +559,9 @@ export async function deliverDiscordPart(
           [5000, 15000, 60000, 300000][Math.min(row.attempts, 3)]!,
         ),
     ).toISOString();
-    state
-      .prepare(
-        "UPDATE chat_part SET attempts=attempts+1,uncertain=uncertain+?,next_at=?,problem=? WHERE id=?",
-      )
-      .run(problem.uncertain ? 1 : 0, until, problem.message, row.id);
-    state
-      .prepare(
-        "UPDATE chat_runtime SET problem=? WHERE installation=? AND owner=?",
-      )
-      .run(
-        problem.code === "ratelimited"
-          ? "Discord asked us to wait. Saved replies will retry."
-          : problem.message,
-        identity.installation,
-        options.owner,
-      );
-    if (problem.code === "ratelimited")
-      state
-        .prepare("UPDATE chat_runtime SET retry_at=? WHERE installation=?")
-        .run(until, identity.installation);
+    state.partFailed(row.id, { problem: problem.message, until, uncertain: problem.uncertain });
+    state.setProblem(identity.installation, options.owner, problem.code === "ratelimited" ? "Discord asked us to wait. Saved replies will retry." : problem.message);
+    if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
     return true;
   }
 }
