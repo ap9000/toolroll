@@ -27,6 +27,11 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     assignment.receipt.head === head && assignment.receipt.scopeDigest === scope.digest &&
     assignment.completion?.digest === assignment.receipt.digest,
     'The lead or user has not marked this exact result complete.');
+  // The same readiness guard as task complete, read now: a failed or missing required check, an unresolved
+  // requirement or an unresolved HIGH finding refuses (a requirement a release check covers counts as passed).
+  const blockers = assignment.readiness?.blockers;
+  requireFact(Array.isArray(blockers), 'The result\'s readiness could not be read.');
+  requireFact(blockers.length === 0, `This result isn't ready to deploy: ${blockers.map(one => one.message).join(' ')}`);
   return { taskId: ref.externalId, repo: ref.repo, scopeDigest: scope.digest,
     completion: assignment.completion, gateDigest: evidence.digest,
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,

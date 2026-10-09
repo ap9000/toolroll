@@ -75,7 +75,7 @@ function finished(name: string, file: string, body: string, when: Date, options:
   store.recordOutcomeFacts(run, { headRevision: head, handoff: `${task}.` });
   store.finishRun(run, { outcome: "built", committed: true, now: when });
   store.setTaskState(task, "done", when);
-  store.saveProofVerdict(run, "attested", [], when, [{ id: "c1", statement: task, requiredEvidence: ["check"], state: "manual-review", detail: [], answered: [], review: null }] as never, "attested");
+  store.saveProofVerdict(run, "attested", [], when, [{ id: "c1", statement: task, requiredEvidence: ["check"], state: "missing", detail: [], answered: [], review: null }] as never, "attested");
   store.recordRunCheck(run, { status: "not-run", exitCode: null, suites: [] }, when);
   return { run, head, task };
 }

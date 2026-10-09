@@ -8,7 +8,7 @@ const DIGEST = "scope-digest";
 
 type Run = { id: number; taskRef: number; role: string; outcome: string; headRevision: string; scopeDigest: string; worktree: string };
 
-function fixture(runs: Run[], receipts: Record<number, object | null>) {
+function fixture(runs: Run[], receipts: Record<number, object | null>, readiness: { blockers: { key: string; message: string }[] } | null = { blockers: [] }) {
   const store = {
     getRun: (id: number) => runs.find(one => one.id === id) ?? null,
     runsFor: (taskRef: number) => runs.filter(one => one.taskRef === taskRef).sort((a, b) => b.id - a.id),
@@ -23,7 +23,7 @@ function fixture(runs: Run[], receipts: Record<number, object | null>) {
       const receipt = receipts[runId];
       return receipt ? { ok: true, bytes: JSON.stringify(receipt), digest: `gate-${runId}` } : { ok: false, bytes: null, problem: "no receipt" };
     },
-    assignmentOf: () => ({ state: "complete", receipt: { runId: 2, head: HEAD, scopeDigest: DIGEST, digest: "r" }, completion: { digest: "r" } }),
+    assignmentOf: () => ({ state: "complete", receipt: { runId: 2, head: HEAD, scopeDigest: DIGEST, digest: "r" }, completion: { digest: "r" }, readiness }),
   };
   return (runId: number) => deploymentCandidate(store, { runId, head: HEAD, evidenceRoot: "/evidence", now: new Date() }, deps);
 }
@@ -42,6 +42,17 @@ describe("deploymentCandidate", () => {
     expect(() => fixture([built, regate], {})(2)).toThrow("Native check unavailable: no receipt.");
     const failed = { ...passing, result: { ran: true, exitCode: 1 } };
     expect(() => fixture([built, regate], { 2: failed })(2)).toThrow("did not pass this candidate");
+  });
+
+  test("a completed result with a failed or missing check, an unresolved requirement or a HIGH finding is refused", () => {
+    for (const blocker of [
+      { key: "check-failed", message: "Checks failed (exit 1). Fix them and run checks again, or ask for changes." },
+      { key: "check-missing", message: "No passing project check is recorded for this result. Run checks on it, then mark it complete." },
+      { key: "criteria", message: "This requirement isn't met: Refunds post. Ask for changes, or accept the result with a reason." },
+      { key: "high", message: "The automatic review found a high-severity problem. Ask for changes before marking it complete." },
+    ]) expect(() => fixture([built, regate], { 2: passing }, { blockers: [blocker] })(2)).toThrow(`This result isn't ready to deploy: ${blocker.message}`);
+    // A result whose readiness can't be read is never assumed ready.
+    expect(() => fixture([built, regate], { 2: passing }, null)(2)).toThrow("readiness could not be read");
   });
 
   test("a no-change run that is not a regate of the last built commit is refused", () => {

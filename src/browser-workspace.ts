@@ -571,7 +571,7 @@ export function browserCrewOf(store: Store, now: Date, access: WorkSummaryAccess
   if (project !== null && access.repos !== null && !access.repos.includes(project)) return { crew: [], crewTruncated: false };
   const limit = Number.isFinite(options.limit)
     ? Math.max(1, Math.min(BROWSER_CREW_LIMIT, Math.floor(options.limit!))) : BROWSER_CREW_LIMIT;
-  const page = workIndexPage(store, now, access, { limit, project });
+  const page = workIndexPage(store, now, access, { limit, project, ...(options.evidenceRoot === undefined ? {} : { root: options.evidenceRoot }) });
   return browserCrewFromIndex(page);
 }
 

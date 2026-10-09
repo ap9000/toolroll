@@ -53,7 +53,24 @@ export type ChecksFact = {
   running?: "quick" | "full" | null;
   /** A batch check (batch-checks.ts): waiting for its batch, or how it was checked. */
   batch?: ChecksBatch | null;
+  /** Off: the passing full release check whose commit contains this one (release-coverage.ts), read at read time. */
+  release?: { run: number; head: string } | null;
 };
+/** What checks Off leaves for a release: `pending` until a passing full release check contains the commit, then
+ * `covered`. `running`: a check is waiting for its batch or running on this commit. */
+export type ReleaseState = "pending" | "covered" | "running";
+export const CHECKED_AT_RELEASE = "Checked at release";
+export function releaseStateOf(checks: Pick<ChecksFact, "status" | "level" | "release"> | null | undefined): ReleaseState | undefined {
+  if (checks?.level !== "off" || checks.status === "passed" || checks.status === "failed") return undefined;
+  return checks.release != null ? "covered" : "pending";
+}
+/** How the project check stands for requirements that rest on it, read now: `covered` once a check passed on this
+ * commit (its own, a follow-up, or a release check containing it), `pending` while checks Off wait for a release. */
+export function checkBackingOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch"> | null | undefined): ReleaseState | undefined {
+  return checks?.status === "passed" ? "covered" : checksUnderway(checks) ? "running" : releaseStateOf(checks);
+}
+/** What stands between a finished result and Complete (`completionBlockersOf`): each with the exact next step. */
+export type CompletionBlocker = { key: "check-failed" | "check-missing" | "criteria" | "high"; message: string };
 /** `waiting`: the result waits to be checked with others. Otherwise how its check ran: `together` on the
  * temporary batch commit `tested` with `peers`; `split` (its batch failed), `conflict` or `alone` on its own commit. */
 export type ChecksBatch = { state: "waiting" | "together" | "split" | "conflict" | "alone"; tested: string | null; peers: string[] };
@@ -95,8 +112,13 @@ export type TaskStatusFacts = {
   checks?: ChecksFact | null;
   pullRequest?: PullRequestFact | null;
   /** `unverified`: the report is refuted, so no requirement counts as met however it was marked. `missed`: the ones it
-   * failed or left unanswered. */
-  requirements?: { met: number; total: number; yours: number; missed?: number; unverified?: boolean } | null;
+   * failed or left unanswered. `atRelease`: checks Off, waiting for a release check. `unshown`: a required screenshot
+   * is missing. `ask`: what a person is asked to look at first (a requirement they check, or a missing screenshot). */
+  requirements?: { met: number; total: number; yours: number; missed?: number; unverified?: boolean; atRelease?: number; unshown?: number; ask?: string | null } | null;
+  /** A person accepted this result's proof: their own check and a recorded exception need nothing more. */
+  accepted?: boolean;
+  /** What refuses Complete (`completionBlockersOf`); the first one is the sentence when it holds the result back. */
+  blockers?: readonly CompletionBlocker[];
   evidence?: { shortened: number; missing: number; damaged: number } | null;
   completedBy?: string | null;
   action?: StatusAction | null;
@@ -113,7 +135,21 @@ export type TaskStatusFacts = {
 
 const short = (sha: string | null): string | null => sha !== null && /^[a-f0-9]{7,40}$/.test(sha) ? sha.slice(0, 7) : null;
 
-export function headlineOf(facts: Pick<TaskStatusFacts, "stage" | "checks" | "report">): Headline {
+/** A check waiting for its batch or running on this commit: the result reads Ready meanwhile, not Needs you. */
+const checksUnderway = (checks: Pick<ChecksFact, "running" | "batch"> | null | undefined): boolean => checks?.batch?.state === "waiting" || checks?.running != null;
+/** A finished result a person still has to act on before it can be complete: an unresolved HIGH finding or unmet
+ * requirement, a missing check, or a requirement only they can confirm. Failed checks read Failed instead. */
+function resultAsk(facts: Pick<TaskStatusFacts, "report" | "checks" | "requirements" | "accepted" | "blockers">): string | null {
+  if (facts.report || facts.checks?.status === "failed") return null;
+  const blocker = facts.blockers?.find(one => one.key !== "check-failed" && !(one.key === "check-missing" && checksUnderway(facts.checks)));
+  if (blocker !== undefined) return blocker.message;
+  const req = facts.requirements;
+  if (req == null || facts.accepted === true || req.unverified === true) return null;
+  if ((req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
+  return null;
+}
+
+export function headlineOf(facts: Pick<TaskStatusFacts, "stage" | "checks" | "report" | "requirements" | "accepted" | "blockers">): Headline {
   switch (facts.stage) {
     case "queued": return "Queued";
     case "planning": return "Planning";
@@ -123,7 +159,9 @@ export function headlineOf(facts: Pick<TaskStatusFacts, "stage" | "checks" | "re
     case "finished":
       if (facts.report) return "Ready for review";
       if (facts.checks?.status === "failed") return "Failed";
-      // Off: ready like any build; the sentence and the Checks row say no check ran.
+      // A requirement a person checks, a missing screenshot, an unmet requirement or a HIGH finding: Needs you, with the ask.
+      if (resultAsk(facts) !== null) return "Needs you";
+      // Off: ready like any build; the sentence and the Checks row say it is checked at release.
       return "Ready for review";
     case "complete": return "Complete";
     case "failed": return "Failed";
@@ -138,13 +176,14 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
     case "Queued": return reason ?? "Waiting for a worker.";
     case "Planning": return reason ?? "The lead is writing the plan.";
     // One plain sentence per need (needs-you.ts); a recorded reason only where the need keeps one.
-    case "Needs you": return needSentence(facts.need ?? "other", reason, facts.needContext);
+    case "Needs you": return facts.stage === "finished" ? resultAsk(facts) ?? needSentence("review-result", reason, facts.needContext) : needSentence(facts.need ?? "other", reason, facts.needContext);
     case "Waiting": return waitSentence(facts.wait, reason, facts.needContext);
     case "Building": return facts.stage === "checking" ? "Checks are running on the change."
       : facts.stage === "reviewing" ? "Reviewing the change before it reaches you." : reason ?? "An agent is working on it.";
     case "Ready for review":
       if (facts.report) return "The report is ready to read. Read it, then mark it complete.";
-      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checks are off for this project. Review the change, then mark it complete.";
+      if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then mark it complete.`;
+      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checked at release. Review the change, then mark it complete.";
       if (facts.checks?.status === "passed") {
         // The Checks row names the others and the batch commit; the sentence doesn't repeat them.
         const peers = facts.checks.batch?.state === "together" ? facts.checks.batch.peers.length : 0;
@@ -194,7 +233,8 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
     else if (checks.status === "failed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks failed" : "Failed"}${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}`, problem(headline),
       headline === "Failed" ? { href: checksHref } : { action: { label: "See what failed", href: checksHref } });
     else if (checks.status === "running") row("checks", CHECKS_LABEL, "Running", "running");
-    else if (checks.level === "off") row("checks", CHECKS_LABEL, "Off for this project", "none", runChecks === null ? {} : { action: runChecks });
+    else if (checks.level === "off" && checks.release != null) row("checks", CHECKS_LABEL, `Passed at release on ${short(checks.release.head) ?? `build #${checks.release.run}`}`, "ok", { href: checksHref });
+    else if (checks.level === "off") row("checks", CHECKS_LABEL, CHECKED_AT_RELEASE, "none", runChecks === null ? {} : { action: runChecks });
     else if (checks.status === "not-run") row("checks", CHECKS_LABEL, "Didn't run", "none", runChecks === null ? {} : { action: runChecks });
     // A saved check that can't be read is run again where that is possible.
     else row("checks", CHECKS_LABEL, "Couldn't be read", "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null } });
@@ -219,8 +259,9 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
   if (req != null && req.total > 0 && headline === "Failed" && (req.missed ?? 0) > 0) row("requirements", "Requirements", `${req.missed} missed`, "failed");
   else if (req != null && req.total > 0 && req.unverified === true) row("requirements", "Requirements", "Unverified", "none");
   else if (req != null && req.total > 0) {
-    const unmet = req.total - req.met - req.yours;
-    const text = `${req.met} of ${req.total} met${req.yours > 0 ? ` · You check ${req.yours}` : ""}`;
+    const atRelease = req.atRelease ?? 0;
+    const unmet = req.total - req.met - req.yours - atRelease;
+    const text = `${req.met} of ${req.total} met${atRelease > 0 ? ` · ${atRelease} at release` : ""}${req.yours > 0 ? ` · You check ${req.yours}` : ""}`;
     row("requirements", "Requirements", text, unmet > 0 ? problem(headline) : req.met === req.total ? "ok" : "none",
       unmet > 0 && headline !== "Failed" ? { action: { label: "See which", href: facts.links?.checks ?? facts.links?.result ?? null } } : {});
   }
@@ -248,19 +289,24 @@ function leadSentence(headline: Headline, facts: TaskStatusFacts): string {
   return leadOnIt(facts.leadName);
 }
 
-export function taskStatusOf(facts: TaskStatusFacts): TaskStatus {
+/** The one status every surface shows (console list, task and result pages, CLI, chat, phone, `status`). */
+export function statusOf(facts: TaskStatusFacts): TaskStatus {
   const read = headlineOf(facts);
   const lead = facts.lead != null && LEAD_HEADLINES.has(read) ? facts.lead : null;
   // The lead has it: nothing waits on the person, so a Needs you reads Waiting.
   const headline: Headline = lead === "on-it" && read === "Needs you" ? "Waiting" : read;
-  // Every Needs you carries the one action that resolves it, worded the same everywhere.
-  const need = headline === "Needs you" ? { key: facts.need ?? "other", action: NEEDS[facts.need ?? "other"].action } : null;
+  // Every Needs you carries the one action that resolves it, worded the same everywhere; a finished result's is Open result.
+  const needKey: NeedKey = facts.stage === "finished" ? "review-result" : facts.need ?? "other";
+  const need = headline === "Needs you" ? { key: needKey, action: NEEDS[needKey].action } : null;
   const ownWords = need !== null && (need.key === "other" || need.key === "review-result") && facts.action != null;
   const primaryAction = need === null || ownWords ? facts.action ?? null : { label: need.action.label, href: facts.action?.href ?? null };
   const sentence = lead === "on-it" ? leadSentence(headline, facts) : lead === "lapsed" ? `${leadLapsed(facts.leadName)} ${sentenceOf(headline, facts)}` : sentenceOf(headline, facts);
   return { headline, tone: HEADLINE_TONE[headline], sentence, details: detailsOf(headline, facts),
     primaryAction, why: [...new Set(facts.why ?? [])].filter(one => one.trim() !== ""), need };
 }
+
+/** The name most surfaces already import. */
+export const taskStatusOf = statusOf;
 
 // ---- reading the existing projections ----------------------------------------
 
@@ -351,23 +397,88 @@ export function assignmentStageOf(assignment: Pick<AssignmentSnapshot, "state" |
   }
 }
 
-type RequirementRow = { state: string; assessment?: { evidenceState?: string } | undefined; review?: unknown };
+type RequirementRow = { id?: string; statement?: string; state: string; requiredEvidence?: readonly string[]; answered?: readonly { kind: string }[];
+  assessment?: { evidenceState?: string } | undefined; review?: unknown };
 /** Evidence that passed and only awaits the retired assessment step is met. */
 const requirementMet = (row: RequirementRow): boolean => row.state === "pass" || (row.assessment?.evidenceState === "pass" && (row.review ?? null) === null);
+/** A requirement whose only gap is the project check: every other kind it needs was shown, none is a person's check. */
+const onlyCheckMissing = (row: RequirementRow): boolean => {
+  const needs = row.requiredEvidence ?? [];
+  const answered = new Set((row.answered ?? []).map(one => one.kind));
+  return row.state !== "failed" && needs.includes("check") && !needs.includes("manual-review") &&
+    needs.every(kind => kind === "check" || answered.has(kind));
+};
+/** A required screenshot nobody captured. */
+const screenshotMissing = (row: RequirementRow): boolean =>
+  (row.requiredEvidence ?? []).includes("screenshot") && !(row.answered ?? []).some(one => one.kind === "screenshot");
 /** One requirement's state in words: the card's Requirements row and the Checks tab read this one source, so they
- * can't disagree. A refuted report verifies none of its requirements, so each reads Unverified, as the card does. */
-export type RequirementWord = "Met" | "You check" | "Not shown yet" | "Not met" | "Unverified";
-export function requirementWordOf(row: RequirementRow, verdict?: string | null): RequirementWord {
+ * can't disagree. A refuted report verifies none of its requirements, so each reads Unverified, as the card does.
+ * With checks Off, a requirement that waits only on the check reads Checked at release, then Met once a passing full
+ * release check contains the commit. */
+export type RequirementWord = "Met" | "You check" | "Not shown yet" | "Checked at release" | "Waiting for checks" | "Not met" | "Unverified";
+export function requirementWordOf(row: RequirementRow, verdict?: string | null, release?: ReleaseState): RequirementWord {
   if (verdict === "refuted") return "Unverified";
   if (requirementMet(row)) return "Met";
-  return row.state === "manual-review" ? "You check" : row.state === "missing" ? "Not shown yet" : "Not met";
+  if (release !== undefined && onlyCheckMissing(row)) return release === "covered" ? "Met" : release === "running" ? "Waiting for checks" : CHECKED_AT_RELEASE;
+  if (row.state === "manual-review") return "You check";
+  return row.state === "missing" || screenshotMissing(row) ? "Not shown yet" : "Not met";
 }
 
+const ASK_STATEMENT = 140;
+const quoted = (statement: string | undefined): string => {
+  const one = (statement ?? "").replace(/\s+/g, " ").trim();
+  return one.length > ASK_STATEMENT ? `${one.slice(0, ASK_STATEMENT - 1)}…` : one;
+};
+/** The ask for one unresolved requirement: what is wrong with it, and the two ways on. */
+function unresolvedAsk(row: RequirementRow, word: RequirementWord): string {
+  const what = word === "Not shown yet" && screenshotMissing(row) ? "A screenshot is missing for"
+    : word === "Not shown yet" ? "Nothing shows this requirement is met" : word === "Unverified" ? "This requirement couldn't be verified" : "This requirement isn't met";
+  return `${what}: ${quoted(row.statement) || row.id || "a requirement"}. Ask for changes, or accept the result with a reason.`;
+}
 /** Requirements from the stored matrix: met, the ones only a person confirms, and the total. */
-export function requirementsOf(matrix: readonly RequirementRow[] | null | undefined): NonNullable<TaskStatusFacts["requirements"]> | null {
+export function requirementsOf(matrix: readonly RequirementRow[] | null | undefined, release?: ReleaseState): NonNullable<TaskStatusFacts["requirements"]> | null {
   if (!matrix || matrix.length === 0) return null;
-  return { met: matrix.filter(requirementMet).length, total: matrix.length, yours: matrix.filter(row => requirementWordOf(row) === "You check").length,
-    missed: matrix.filter(row => !requirementMet(row) && (row.state === "failed" || row.state === "missing")).length };
+  const words = matrix.map(row => requirementWordOf(row, null, release));
+  const yours = matrix.find((_, index) => words[index] === "You check");
+  const unshown = matrix.filter((row, index) => words[index] === "Not shown yet" && screenshotMissing(row));
+  const ask = yours !== undefined ? `Check this requirement yourself, then mark it complete: ${quoted(yours.statement)}`
+    : unshown.length > 0 ? unresolvedAsk(unshown[0]!, "Not shown yet") : null;
+  return { met: words.filter(word => word === "Met").length, total: matrix.length, yours: words.filter(word => word === "You check").length,
+    missed: words.filter(word => word === "Not met" || word === "Not shown yet").length,
+    ...(release !== "pending" ? {} : { atRelease: words.filter(word => word === CHECKED_AT_RELEASE).length }),
+    ...(unshown.length === 0 ? {} : { unshown: unshown.length }),
+    ...(ask === null ? {} : { ask }) };
+}
+
+/** What refuses Complete, for `task complete`, the console and chat completion and deploy-candidate alike: a failed
+ * check; a required check that is missing (checks deliberately Off are not missing: they are checked at release);
+ * an unresolved requirement (a person's own check is theirs to give by completing; a recorded acceptance resolves
+ * the rest); an unresolved HIGH review finding. A release check that covers the commit counts as passed. */
+export function completionBlockersOf(f: {
+  report: boolean; checks: Pick<ChecksFact, "status" | "exitCode" | "level" | "release" | "running" | "batch"> | null; checkRequired: boolean;
+  matrix: readonly RequirementRow[] | null | undefined; verdict: string | null | undefined; accepted: boolean; high: number;
+}): CompletionBlocker[] {
+  const blockers: CompletionBlocker[] = [];
+  const release = releaseStateOf(f.checks);
+  const backing = checkBackingOf(f.checks);
+  if (!f.report && f.checks?.status === "failed") {
+    blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or ask for changes.` });
+  } else if (!f.report && f.checkRequired && f.checks?.status !== "passed" && release === undefined) {
+    blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Mark it complete once it passes."
+      : "No passing project check is recorded for this result. Run checks on it, then mark it complete." });
+  }
+  if (!f.accepted && f.checks?.status !== "failed") {
+    const refuted = f.verdict === "refuted";
+    const unresolved = (f.matrix ?? []).map(row => ({ row, word: requirementWordOf(row, refuted ? "refuted" : null, backing) }))
+      .filter(one => one.word === "Not met" || one.word === "Not shown yet" || one.word === "Unverified");
+    if (unresolved.length === 1) blockers.push({ key: "criteria", message: unresolvedAsk(unresolved[0]!.row, unresolved[0]!.word) });
+    else if (unresolved.length > 1) {
+      const ids = unresolved.map(one => one.row.id ?? "?");
+      blockers.push({ key: "criteria", message: `${unresolved.length} requirements ${unresolved.every(one => one.word === "Unverified") ? "couldn't be verified" : "aren't met yet"} (${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ", …" : ""}). Ask for changes, or accept the result with a reason.` });
+    }
+  }
+  if (f.high > 0) blockers.push({ key: "high", message: `The automatic review found ${f.high === 1 ? "a high-severity problem" : `${f.high} high-severity problems`}. Ask for changes before marking it complete.` });
+  return blockers;
 }
 
 /** A refuted report verifies none of its requirements, whatever it marked met (a person's acceptance doesn't change that). */
@@ -400,7 +511,7 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
   const checks: ChecksFact | null = receipt === null || !withResult ? null
     : { status: receipt.checks.status, exitCode: receipt.checks.exitCode, head: receipt.head,
       ...(receipt.checks.level == null ? {} : { level: receipt.checks.level }), ...(receipt.checks.running == null ? {} : { running: receipt.checks.running }),
-      ...(receipt.checks.batch == null ? {} : { batch: receipt.checks.batch }) };
+      ...(receipt.checks.batch == null ? {} : { batch: receipt.checks.batch }), ...(receipt.checks.release == null ? {} : { release: receipt.checks.release }) };
   const publication = assignment.publication;
   const pullRequest = options.pullRequest !== undefined ? options.pullRequest
     : publication === null ? (withResult && !report ? { state: "none" as const, number: null, url: null, ci: null, error: null } : null)
@@ -413,7 +524,9 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
     stage, ...(need === undefined ? {} : { need }), ...(wait === undefined ? {} : { wait }), ...(build === null ? {} : { needContext: { build } }), reason, report,
     checks,
     pullRequest: withResult ? pullRequest : null,
-    requirements: withResult ? unverifiedWhenRefuted(requirementsOf(receipt?.proof?.matrix), receipt?.proof?.verdict) : null,
+    requirements: withResult ? unverifiedWhenRefuted(requirementsOf(receipt?.proof?.matrix, checkBackingOf(checks)), assignment.readiness?.verdict ?? receipt?.proof?.verdict) : null,
+    ...(withResult && receipt?.proofAcceptance != null ? { accepted: true } : {}),
+    ...(withResult && (assignment.readiness?.blockers.length ?? 0) > 0 ? { blockers: assignment.readiness!.blockers } : {}),
     evidence: withResult ? options.evidence ?? evidenceOf(receipt, [...(receipt?.caveats ?? []), ...assignment.attention]) : null,
     completedBy: assignment.completion === null ? null : assignment.completion.lead === true ? "the lead" : assignment.completion.actor.replace(/^(?:operator|coordinator|lead):/, ""),
     action: options.action ?? null,

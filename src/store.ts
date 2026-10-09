@@ -13119,7 +13119,7 @@ export class Store {
    * transaction can never commit half a seal). A brief FILE whose seal
    * failed is an orphan on disk, not authority — no artifact row points at
    * it. Two concurrent seals race on the comment consumption count, the
-   * deterministic child id, or the repair chain's `source_run UNIQUE`, and
+   * family's next version id, or the repair chain's `source_run UNIQUE`, and
    * exactly one wins; the loser refuses in words with zero rows.
    *
    * The child is filed UNAPPROVED, always: this method never stamps an
@@ -13136,9 +13136,9 @@ export class Store {
       /** The brief the caller wrote to disk BEFORE this transaction — re-read
        * and re-hashed here, never trusted from the caller's numbers. */
       brief: { evidenceRoot: string; key: string; sha256: string; bytes: number; capture: string };
-      /** The child's own words: an optional deterministic id, its title,
-       * and the explicitly described repair appended to the SOURCE goal. */
-      child: { id?: string; title: string; repair: string };
+      /** The child's own words: its title and the explicitly described repair
+       * appended to the SOURCE goal. Its id is the family's next version. */
+      child: { title: string; repair: string };
       /** Comments to consume, or null when the brief has no comment batch (CI / criterion repair). */
       commentIds: readonly number[] | null;
       /** v102: who asked for this revision (a person, an AI teammate's "Name (AI)", or none for machine repairs): its filer. */
@@ -13232,9 +13232,10 @@ export class Store {
           // runtime-private insert cannot be selected by a filing caller.
           const badText = validateTaskText({ title: args.child.title, goal: args.child.repair });
           if (badText !== null) return refuse(badText.reason, badText.message);
+          // Every road names its child the same way: the family root and the next version, `<root>-v2`, `-v3`.
           const made = this.#insertConsoleTask(
             {
-              ...(args.child.id === undefined ? {} : { id: args.child.id }),
+              id: this.#nextRevisionId(ancestry.chain.at(-1) ?? args.source.task),
               title: args.child.title,
               ...(sourceRef.repo === null ? {} : { repo: sourceRef.repo }),
               goal,
@@ -13308,6 +13309,20 @@ export class Store {
       cursor = ref.revisionOf;
     }
     return { chain, problem: null };
+  }
+
+  /** The next free `<root>-vN` id inside the caller's transaction: N counts the family's versions (the root is v1),
+   * skipping any id already taken. The suffix survives truncation to the 64-character id bound. */
+  #nextRevisionId(root: string): string {
+    const family = this.db.prepare(`WITH RECURSIVE fam(id, depth) AS (
+        SELECT external_id, 0 FROM task_ref WHERE backend = ? AND external_id = ?
+        UNION SELECT r.external_id, fam.depth + 1 FROM task_ref r JOIN fam ON r.revision_of = fam.id WHERE r.backend = ? AND fam.depth < 64)
+      SELECT COUNT(DISTINCT id) AS n FROM fam`).get(BUILT_IN, root, BUILT_IN);
+    const taken = (id: string) => this.db.prepare("SELECT 1 AS hit FROM task WHERE id = ? UNION ALL SELECT 1 FROM task_ref WHERE backend = ? AND external_id = ?").get(id, BUILT_IN, id) !== undefined;
+    const named = (n: number) => `${root.slice(0, 64 - `-v${n}`.length)}-v${n}`;
+    let n = Math.max(2, Number(family?.["n"] ?? 1) + 1);
+    while (taken(named(n))) n++;
+    return named(n);
   }
 
   revisionAncestryOf(taskId: string): string[] {
@@ -13584,7 +13599,7 @@ export class Store {
     args: {
       source: { task: string; run: number; scopeDigest: string | null };
       brief: { evidenceRoot: string; key: string; sha256: string; bytes: number; capture: string };
-      child: { id: string; title: string; repair: string };
+      child: { title: string; repair: string };
       rootTask: string;
       attempt: number;
       basis: "human" | "mode";

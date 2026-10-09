@@ -134,7 +134,8 @@ describe("one state per task, the same words on every surface (c1)", () => {
     const rows = (workspace.view as TasksView).rows;
     const expected: Record<string, string> = {
       "search-typo-tolerance": "Ready for review", "gift-card-hold": "Needs you", "coupon-plan-changed": "Needs you",
-      "order-export-refuted": "Ready for review", "agent-gave-up": "Failed",
+      // A refuted report verifies none of its requirements: Complete is refused until they are resolved, so it needs you.
+      "order-export-refuted": "Needs you", "agent-gave-up": "Failed",
     };
     for (const [id, words] of Object.entries(expected)) {
       const row = rows.find(one => one.id === id)!;
@@ -154,7 +155,7 @@ describe("one state per task, the same words on every surface (c1)", () => {
     const workspace = await tasksView();
     const rows = (workspace.view as TasksView).rows;
     const crew = Object.fromEntries(workspace.crew.map(one => [one.id, one.label]));
-    expect(crew).toEqual({ "search-typo-tolerance": "Ready for review", "gift-card-hold": "Needs you", "coupon-plan-changed": "Needs you", "order-export-refuted": "Ready for review", "agent-gave-up": "Failed" });
+    expect(crew).toEqual({ "search-typo-tolerance": "Ready for review", "gift-card-hold": "Needs you", "coupon-plan-changed": "Needs you", "order-export-refuted": "Needs you", "agent-gave-up": "Failed" });
     for (const row of rows) expect(crew[row.id], row.id).toBe(row.status.label);
     const groupWords = new Set<string>(Object.values(ASK_LABEL));
     for (const item of workspace.crew) expect(groupWords.has(item.label), item.id).toBe(false);
@@ -162,7 +163,7 @@ describe("one state per task, the same words on every surface (c1)", () => {
 
   test("Crew reasons preserve the server's existing status detail", async () => {
     const workspace = await tasksView();
-    const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] });
+    const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { root });
     for (const item of workspace.crew) {
       if (['Needs you', 'Failed', 'Waiting'].includes(item.label)) {
         expect(item.detail, item.id).toBe(index.items.find(row => row.rootId === item.id)!.status.detail);
@@ -261,6 +262,7 @@ describe("plain, consistent words (c3)", () => {
     expect(Object.fromEntries(review.map(row => [row.id, row.detail]))).toEqual({
       "gift-card-hold": "On hold: Waiting on legal sign-off. Release the hold to accept it.",
       "coupon-plan-changed": "The plan changed after this was built. Build it again to the current plan.",
+      "order-export-refuted": "2 requirements couldn't be verified (c1, c2). Ask for changes, or accept the result with a reason.",
     });
     const html = await page("/work");
     expect(html).not.toContain(BOILERPLATE);

@@ -1225,6 +1225,16 @@ export function coverageStateWords(coverage: CriterionCoverage): string {
   }
 }
 
+/** The verdict a result shows today, read from the stored one and the facts recorded since, never written back: a
+ * failed check or an unresolved HIGH review finding refutes; a pending review, or any acceptance criterion that has
+ * not passed, keeps it short. It only ever lowers the stored verdict. */
+export function shownVerdictOf(stored: ProofVerdict | null, facts: { checkFailed: boolean; highFindings: number; reviewPending: boolean; criteriaPassed: boolean }): ProofVerdict | null {
+  if (facts.checkFailed || facts.highFindings > 0 || stored === "refuted") return "refuted";
+  if (stored === null) return null;
+  if (facts.reviewPending || !facts.criteriaPassed) return "short";
+  return stored;
+}
+
 /** Plain words for a verdict, shared by every surface (the `summary.ts`
  * pattern) so the task page, run page, board, CLI, and chat cannot say
  * three different things about the same run. */

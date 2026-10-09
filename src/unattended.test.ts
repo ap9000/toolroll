@@ -541,7 +541,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
       expect(final.runsFor(ref.id)).toEqual(runs);
       expect(final.proofVerdictFor(result.id)).toEqual(proof);
       expect(final.repairChainForRoot("t-check")).toHaveLength(0);
-      expect(final.lookupRef("t-check-fix-1")).toBeNull();
+      expect(final.lookupRef("t-check-v2")).toBeNull();
       expect(final.openReviewRequests()).toHaveLength(0);
       expect(final.proofAcceptance(result.id)).toBeNull();
       final.close();

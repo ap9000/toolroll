@@ -37,7 +37,7 @@ Crew is not exempt: it reads the Tasks list's own words for each task, the headl
 
 **2. Details as a quiet list underneath**, one row each, neutral text with a small icon. Colour only on the icon, and only when it matters:
 
-- Project checks: passed / failed / running / couldn't run. A quick check says so ("Quick checks passed on a1b2c3d"); Off reads "Off" with **Run checks**; a follow-up check reads "Full checks running"
+- Project checks: passed / failed / running / couldn't run. A quick check says so ("Quick checks passed on a1b2c3d"); Off reads "Checked at release" with **Run checks**, then "Passed at release on <commit>" once a passing full release check's commit contains it (read from the existing receipts and Git ancestry, never stored); a follow-up check reads "Full checks running"
 - Pull request: none · opening · #12 open · PR CI running · #12 merged · couldn't open
 - Requirements: "3 of 3 met" · "You check 1" (not "Not assessed")
 - Saved evidence: complete · some output shortened
@@ -46,6 +46,8 @@ Crew is not exempt: it reads the Tasks list's own words for each task, the headl
 - Red only when the headline is Failed.
 - A detail problem that doesn't undo the outcome (pull request couldn't open, output shortened) is an amber note *on that row*, with one action ("Open the pull request", "Retry", "Open it on GitHub"). It never turns the headline, the card border or the whole card red.
 - A detail problem that blocks the next step makes the headline "Needs you", with that problem as the sentence.
+
+**Ready, or Needs you with the ask.** A finished result reads Ready for review unless a person must act first: a requirement only they can check, a missing screenshot, an unmet requirement, a missing required check or an unresolved HIGH review finding reads Needs you, and the sentence is that ask. A failed check reads Failed. The same rule (`completionBlockersOf`) refuses `task complete`, the console and chat completion and `scripts/deploy-candidate.mjs`: a failed or missing required check, an unresolved requirement or an unresolved HIGH finding. Checks deliberately Off are not missing; a requirement a release check covers counts as met. The shown verdict is derived the same way and never rewrites the stored one.
 
 **4. One primary action**, chosen from the headline and details (Approve, Review, Mark complete, Merge, Retry the pull request…). Secondary actions stay quiet.
 

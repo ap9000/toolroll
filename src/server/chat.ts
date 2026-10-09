@@ -57,7 +57,7 @@ import { loadBotToken,redactToken } from "../telegram.js";
 import { WORK_INDEX_MAX_LIMIT,workIndexPage,type WorkIndexItem } from "../work-index.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { chatAckPage,chatPage,chatResultHref,chatReturnWithLatest,chatReturnWithSaid,completionForm,coordinatorProposalsSection,decisionsFor,escape,homePhaseWords,mateAfterComposerHtml,mateChatVersion,mateMintCard,matePage,mateThreadHtml,oneLineUa,owedAcceptanceOf,PHONE_CARD_FACT,projectChatHref,redirect,refuse,requestContext,respond,resultPanelHtml,safeChatReturn,safeReturn,screen,TASK_COMPOSER_MODES,taskChatHref,taskChatLiveRegion,taskHref,teamProposalCardParts,type AssignmentChatSnapshot,type ChatCandidate,type ChatEnablement,type LiveTurn,type ProjectPeek,type Screen,type Session,type TaskComposerMode,type Who } from "./shared.js";
+import { chatAckPage,chatPage,hardBlockerOf,chatResultHref,chatReturnWithLatest,chatReturnWithSaid,completionForm,coordinatorProposalsSection,decisionsFor,escape,homePhaseWords,mateAfterComposerHtml,mateChatVersion,mateMintCard,matePage,mateThreadHtml,oneLineUa,owedAcceptanceOf,PHONE_CARD_FACT,projectChatHref,redirect,refuse,requestContext,respond,resultPanelHtml,safeChatReturn,safeReturn,screen,TASK_COMPOSER_MODES,taskChatHref,taskChatLiveRegion,taskHref,teamProposalCardParts,type AssignmentChatSnapshot,type ChatCandidate,type ChatEnablement,type LiveTurn,type ProjectPeek,type Screen,type Session,type TaskComposerMode,type Who } from "./shared.js";
 export function createChatHandlers(runtime: ServerRuntime) {
   const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, mateSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, matePrincipal, taskChatFocus, chatScopeOf, chatStreams, mateConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startMateConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
 
@@ -242,7 +242,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
       const roomId = url.searchParams.get('conversation');
       const resultLink = (href: string) => roomId ? href + '&conversation=' + encodeURIComponent(roomId) : href;
       // Accept and finish is here: the one act that accepts the person's own checks and finishes the task.
-      const finishes = resultRun !== null && who.role === 'approver' && focusTask?.assignment?.state === 'ready-to-check' && focusTask.assignment.receipt?.runId === resultRun.id;
+      // Never offered where Complete is refused whatever is accepted (a failed check, a HIGH finding).
+      const finishes = resultRun !== null && who.role === 'approver' && focusTask?.assignment?.state === 'ready-to-check' && focusTask.assignment.receipt?.runId === resultRun.id &&
+        hardBlockerOf(focusTask.assignment) === null;
       const resultPanel =
         resultRun === null
           ? null
@@ -322,7 +324,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       if (repos.length > 0) {
         try {
           fleetSnapshot = store.chatSnapshot(repos, now);
-          const summaries = workIndexPage(store, now, { principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100 }).items;
+          const summaries = workIndexPage(store, now, { principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100, root: evidenceRoot }).items;
           fleetSnapshot.assignmentStates = Object.fromEntries(summaries.flatMap(value =>
             [value.rootId, value.activeTaskId].map(id => [id, { state: value.assignmentState, label: value.status.label, detail: value.status.detail }])));
           fleetSnapshot.attentionCount = needsYouBadge(null);
@@ -1286,9 +1288,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
         agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt,
         activity: runActivityOf(store, run, now) };
     });
-    const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT });
-    const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT });
-    const done = workIndexPage(store, now, access, { view: "completed", limit: WORK_INDEX_MAX_LIMIT });
+    const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
+    const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
+    const done = workIndexPage(store, now, access, { view: "completed", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
     const counts: BrowserHomeCount[] = [
       { key: "working", label: "Working now", value: agents.length, href: "/work?view=running" },

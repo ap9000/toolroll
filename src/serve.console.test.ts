@@ -341,8 +341,8 @@ describe("the operations console", () => {
       redirect: "manual",
     });
     expect(drafted.status).toBe(303);
-    expect(store.getScope("t-strict-ci-103")).toMatchObject({ qualityMode: "strict", budgetMicrousd: 2_000_000, approvedAt: null });
-    const ciPage = await (await fetch(url("/t/t-strict-ci-103"), { headers: { cookie } })).text();
+    expect(store.getScope("t-strict-v3")).toMatchObject({ qualityMode: "strict", budgetMicrousd: 2_000_000, approvedAt: null });
+    const ciPage = await (await fetch(url("/t/t-strict-v3"), { headers: { cookie } })).text();
     expect(ciPage).toContain("CI repair");
     expect(ciPage).toContain(lineage);
     expect(ciPage).toContain("inherited terms, as they stand now: Strict / release quality · auto permissions · $2.00 attempt cap");
@@ -517,7 +517,7 @@ describe("the operations console", () => {
     expect(store.revisionSourceOf(store.lookupRef(child.taskId)!.id)).toMatchObject({ sourceTask: "t-rev", sourceRun: run });
     const taskView = await (await fetch(url(target), { headers: { cookie } })).text();
     expect(store.getTask(child.taskId)?.title).toBe("Mobile project switcher — revision");
-    expect(child.taskId).toBe(`revise-t-rev-from-${count}-annotation${count === 1 ? "" : "s"}-on-build-${run}`);
+    expect(child.taskId).toBe("t-rev-v2");
     expect(taskView).toContain("Mobile project switcher");
     expect(taskView).toContain(`<a class="item current" href="/t/t-rev"><span class="t">Mobile project switcher</span></a>`);
     expect(taskView).not.toContain('task-eyebrow');
@@ -553,7 +553,7 @@ describe("the operations console", () => {
     expect(second.headers.get("location")).not.toBe(target);
     expect(store.revisionsFromRun(run)).toHaveLength(2);
     const laterId = revisionIdOf(second.headers.get("location"));
-    expect(laterId).toBe(`revise-t-rev-from-1-annotation-on-build-${run}${count === 1 ? "-2" : ""}`);
+    expect(laterId).toBe("t-rev-v3");
     expect(store.getTask(laterId)?.title).toBe("Mobile project switcher — revision");
     expect(store.getTask(child.taskId)?.title).toBe("Mobile project switcher — revision");
     expect(store.revisionSourceOf(store.lookupRef(laterId)!.id)).toMatchObject({ sourceTask: "t-rev", sourceRun: run });
@@ -637,7 +637,7 @@ describe("the operations console", () => {
       redirect: "manual",
     });
     expect(drafted.status).toBe(303);
-    expect(drafted.headers.get("location")).toBe("/t/t-pr2-ci-102");
+    expect(drafted.headers.get("location")).toBe("/t/t-pr2-v2");
 
     // One draft per task/PR, ever: the second click is a 409, not a twin.
     const twin = await fetch(url(`/r/${run2}/draft-repair`), {
@@ -649,7 +649,7 @@ describe("the operations console", () => {
     expect(twin.status).toBe(409);
 
     // The draft is unapproved and says what it is.
-    const draftPage = await (await fetch(url("/t/t-pr2-ci-102"), { headers: { cookie } })).text();
+    const draftPage = await (await fetch(url("/t/t-pr2-v2"), { headers: { cookie } })).text();
     expect(draftPage).toContain("CI failing on PR #102");
     expect(draftPage).toContain("approve");
   });
