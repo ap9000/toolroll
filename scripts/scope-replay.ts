@@ -34,6 +34,5 @@ const report = (table: string, rows: readonly RowReplay[]) => {
 
 console.log(`replaying ${file} (read-only)`);
 report("task_scope", replay.task_scope);
-report("routine", replay.routine);
 console.log(mismatches === 0 ? "every digest and route matches" : `${mismatches} rows do not match`);
 process.exitCode = mismatches === 0 ? 0 : 1;

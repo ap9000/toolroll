@@ -19,7 +19,7 @@ const args = (positionals = '', values = '', references: Record<string, Kind> = 
  * digest. Neither dereferences a conversation, task or proposal. Creation IDs are never looked up. */
 export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ...['status', 'ready', 'grants', 'gaps', 'sync', 'runner list', 'coordinator list', 'incident list',
-    'routine list', 'intake show', 'intake run', 'template list', 'webhook status', 'review show',
+    'intake show', 'intake run', 'template list', 'webhook status', 'review show',
     'chat-approval show', 'chat-approval off'].map(row => [row, args()] as const),
   ['integrations', args('', 'saved')],
   // --person and --token-name are names compared inside the reader's own view; --token stays a refused credential.
@@ -40,7 +40,7 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task next', args('id:task', 'key undo')],
   ['task steer', args('id:task', 'note')],
   ['task assign', args('id:task', 'key runner anyone')],
-  ['task scope', args('id:task', 'key goal not touches budget-usd risk acceptance candidate compare model provider race race-count race-per-usd race-total-usd repair-model')],
+  ['task scope', args('id:task', 'key goal not touches budget-usd risk acceptance candidate model provider repair-model')],
   ['task plan', args('id:task', 'key provider model')],
   ['task hold', args('id:task', 'key reason until')],
   ['task unhold', args('id:task', 'key')],
@@ -56,13 +56,9 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['cap list', args()], ['cap add', args('name', 'kind probe expires')],
   // These objects are installation-scoped at the outer boundary; only an all-project principal reaches them.
   ['incident resolve', args('incident')],
-  ['routine show', args('id')],
-  ['routine add', args('name', 'goal schedule acceptance ceiling budget-usd not touches require')],
-  ...['refresh', 'pause', 'resume', 'run-now'].map(action => [`routine ${action}`, args('name')] as const),
   ['config show', args('phase?')], ['verify show', args()],
   ['intake preview', args()], ['intake pr-comments', args('', 'limit')],
   ['template show', args('name')],
-  ['contest show', args('id')], ['contest exclude', args('contest ordinal')],
   ...['search', 'impact'].map(action => [`knowledge ${action}`, args('query', 'base')] as const),
   ['knowledge refresh', args('', 'base')],
   // Decision reads and supersession are already project-bound in project-memory.ts. Proposal IDs are

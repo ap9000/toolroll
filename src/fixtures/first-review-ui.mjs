@@ -27,7 +27,7 @@ export async function startFirstReviewFixture() {
   const ref = store.refFor('built-in', task).id; store.placeTask(ref, repo);
   const scope = propose(store, { taskId: task, goal: 'Limit retries to three and keep the result readable.', acceptance: rubric, now });
   assert(approve(store, task, name, now, scope.digest, password).ok);
-  const authority = store.routeAuthorityFor(ref, 'builder', null); assert(authority.ok);
+  const authority = store.routeAuthorityFor(ref, 'builder'); assert(authority.ok);
   const run = store.startRun({ taskRef: ref, leaseId: 'fixture-build', runner: 'fixture-worker', branch: 'fixture-candidate', worktree: repo, now, route: authority.stamp, provider: 'claude', model: 'sonnet' });
   store.stampRun(run, { scopeDigest: scope.digest, baseRevision: base }); store.recordOutcomeFacts(run, { headRevision: head, handoff: 'Limited retries to three.' });
   const evidence = (kind, file, bytes, capture) => storeEvidence(store, root, run, kind, file, Buffer.from(bytes), capture, now, { captureStatus: 'ok' });

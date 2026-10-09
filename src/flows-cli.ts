@@ -14,8 +14,9 @@ import { addCardToFlow, advanceFlows, crossProjectProblem, decideFlowCard, flowD
 import { chooseFlowCard } from './flow-send.js';
 import { saveScript } from './flow-scripts.js';
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike } from './flow-share.js';
+import { describeStandingOrder } from './flow-schedule.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
-import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
+import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { verifyApproverByPassword } from './principal.js';
 import { projectName } from './project.js';
@@ -406,7 +407,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     return checked.ok ? ok({ applied: true, triggerId: trigger.id, said: checked.said }, [checked.said]) : fail('check-failed', checked.said);
   }
   if (action === 'trigger remove') removeFlowTrigger(store, trigger, now, context.configDir);
-  else store.updateFlowTrigger(trigger.id, { state: action === 'trigger pause' ? 'paused' : 'active' }, now);
+  else setFlowTriggerOn(store, trigger, action !== 'trigger pause', now);
   record(flow.repo, 'accepted', `flow #${flow.id} trigger #${trigger.id}`);
   settle(flow.repo);
   const said = action === 'trigger remove' ? 'Trigger removed.' : action === 'trigger pause' ? 'Trigger paused.' : 'Trigger on again.';
@@ -455,7 +456,8 @@ function describeFlow(store: Store, flow: FlowRow) {
     triggers: store.flowTriggers(flow.id).map(trigger => {
       const config = triggerConfigOf(trigger);
       return { id: trigger.id, kind: trigger.kind, state: trigger.state, words: config === null ? 'This trigger can\'t be read.' : describeTrigger(config, store),
-        zone: config?.zone ?? definition?.start ?? null, nextAt: trigger.nextAt, lastAt: trigger.lastAt, lastOutcome: trigger.lastOutcome, failing: trigger.failures > 0 };
+        zone: config?.zone ?? definition?.start ?? null, nextAt: trigger.nextAt, lastAt: trigger.lastAt, lastOutcome: trigger.lastOutcome, failing: trigger.failures > 0,
+        ...(config?.kind === 'schedule' && config.order !== undefined ? { order: describeStandingOrder(config.order, flow.repo, config.schedule) } : {}) };
     }),
     cards: store.flowCards(flow.id, true).slice(0, 10).map(card => cardOf(definition, card)),
   };
@@ -475,7 +477,9 @@ function showLines(flow: ReturnType<typeof describeFlow>): string[] {
       ...(zone.ifFails === null ? [] : [`     ${zone.kind === 'approval' ? 'sent back' : zone.kind === 'sort' ? 'not sure' : zone.kind === 'wait' ? 'no reply' : zone.kind === 'choose' ? 'a reply' : 'if it fails'} → ${title(zone.ifFails)}`]),
     ]),
     '', 'Triggers',
-    ...(flow.triggers.length === 0 ? ['  none — add one with toolroll flows trigger add'] : flow.triggers.map(one => `  #${one.id} ${one.state === 'active' ? '' : `(${one.state}) `}${one.words} → ${title(one.zone)}${one.lastOutcome === null ? '' : ` · last: ${one.lastOutcome}`}`)),
+    ...(flow.triggers.length === 0 ? ['  none — add one with toolroll flows trigger add'] : flow.triggers.flatMap(one => [`  #${one.id} ${one.state === 'active' ? '' : `(${one.state}) `}${one.words} → ${title(one.zone)}${one.lastOutcome === null ? '' : ` · last: ${one.lastOutcome}`}`,
+      ...(one.order === undefined ? [] : one.order.map(line => `     ${line}`)),
+      ...(one.order !== undefined && one.state === 'paused' ? [`     Off: toolroll flows trigger resume ${flow.id} ${one.id} turns it on.`] : [])])),
     '', 'Recent cards',
     ...(flow.cards.length === 0 ? ['  none'] : flow.cards.map(one => `  #${one.id} ${one.title} · ${one.state === 'active' ? one.zoneTitle : one.state}${one.waiting === null ? '' : ` · ${one.waiting}`}`)),
   ];

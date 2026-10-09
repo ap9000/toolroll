@@ -112,28 +112,19 @@ describe("the severing revocation (D7)", () => {
     if (!made.ok) throw new Error("seed person");
   };
 
-  test("one transaction ends sessions, invites, authorizations, and every mode they signed", () => {
+  test("one transaction ends sessions, invites, and every mode they signed", () => {
     addPerson("bob", "approver");
-    // Bob signs a mode, mints an invite, and holds an attended session.
+    // Bob signs a mode and mints an invite.
     const terms = presetTerms("standard", later(24).toISOString());
     store.signMode(
       { repo: REPO, name: "standard", termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "bob", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication },
       T0,
     );
     const bobsInvite = store.mintInvite("viewer", "bob", T0);
-    store.createTask({ id: "t-1", title: "the work" }, T0);
-    const ref = store.refFor("built-in", "t-1").id;
-    store
-      .raw()
-      .prepare(
-        `INSERT INTO attended_authorization (id, task_ref, approver, runner, runner_generation, composite_digest, terms_json, max_session_turns, budget_microusd, created_at, absolute_expiry)
-         VALUES ('auth-1', ?, 'bob', 'runner-1', 1, 'digest', '{}', 10, 1000000, ?, ?)`,
-      )
-      .run(ref, T0.toISOString(), later(24).toISOString());
 
     const before = store.accountFacts().find(one => one.name === "bob");
     const severed = store.revokeAccount("bob", "alex", T0);
-    expect(severed).toEqual({ ok: true, modesRevoked: 1, authorizationsClosed: 1, invitesRevoked: 1 });
+    expect(severed).toEqual({ ok: true, modesRevoked: 1, invitesRevoked: 1 });
 
     // The credential is dead and its generation moved (cookies die at
     // their next lookup; bearers die at authenticateAccount).
@@ -148,11 +139,8 @@ describe("the severing revocation (D7)", () => {
     const event = store.raw().prepare("SELECT kind, actor FROM operating_mode_event ORDER BY id DESC LIMIT 1").get();
     expect(event).toMatchObject({ kind: "signer-revoked", actor: "alex" });
 
-    // His invite and his watched session ended with him.
+    // His invite ended with him.
     expect(store.inviteIsLive(bobsInvite.token, T0)).toBe(false);
-    const authorization = store.raw().prepare("SELECT closed_at, end_reason FROM attended_authorization WHERE id = 'auth-1'").get();
-    expect(authorization?.["end_reason"]).toBe("approver-revoked");
-    expect(authorization?.["closed_at"]).not.toBeNull();
 
     // History is untouched: the account row itself remains, attributable.
     expect(store.accountFacts().some(one => one.name === "bob")).toBe(true);

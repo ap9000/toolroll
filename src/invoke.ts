@@ -22,16 +22,16 @@ import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV } fr
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
-import { run as runCommand, runOwnerTag, startClaudeHeldSession } from "./exec.js";
+import { run as runCommand, runOwnerTag } from "./exec.js";
 import { currentContainment } from "./containment.js";
 import type { Store } from "./store.js";
 import type { RunOptions } from "./exec.js";
-import { witnessedRunner, recordProcessObservationFailure, preserveObservedProcesses } from "./process-custody.js";
+import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-tools.js";
 import { realpathSync } from "node:fs";
-import { agentFence, claudeFenceSettings, linuxFenceAvailable, macosFenceAvailable, type FenceMethod } from "./agent-fence.js";
+import { agentFence, linuxFenceAvailable, macosFenceAvailable, type FenceMethod } from "./agent-fence.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 
 export type { ProviderRunner } from "./provider.js";
@@ -114,7 +114,7 @@ export type InvokeResult =
   | { kind: "ran"; outcome: AgentOutcome }
   | {
       kind: "refused";
-      reason: "provider-unattested" | "provider-protocol" | "chain-credential" | "chain-custody" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment";
+      reason: "provider-unattested" | "provider-protocol" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment";
       providerVersion: string | null;
       diagnostic: string | null;
       /** Bounded agent reply when a spawned turn later failed a protocol
@@ -231,11 +231,6 @@ export async function invokeAgent(
   // re-supply survives resolveChildEnv's chat-key strip); in
   // "subscription" mode the key is STRIPPED from the child so the CLI's
   // own login is used — its key is retained, just not handed over.
-  // A CHAIN-BOUND run carries a PINNED mode sealed into its approved entry
-  // (E3d, review finding 5): the pin IS the authority — a per-provider
-  // mode-file flip between admission and spawn must never move the spend
-  // onto a credential the operator didn't approve for this entry. Every
-  // other run reads the operator's live setting, as always.
   const {
     runner,
     clock: _clock,
@@ -252,40 +247,21 @@ export async function invokeAgent(
   // before any stamp or process — never the subscription default a
   // lenient read would coerce it to, which would spend on a credential
   // the seal never proved. The same reader gates filing and the seal.
-  let authMode: "subscription" | "api-key";
-  if (run.chainCycle != null && run.authMode != null) {
-    authMode = run.authMode;
-  } else {
-    const strict = readAuthModeStrict(spec.provider, keyHome);
-    if (!strict.ok) {
-      return {
-        kind: "refused",
-        reason: "auth-mode",
-        providerVersion: attested === null ? null : attested.version,
-        diagnostic: strict.problem,
-      };
-    }
-    authMode = strict.mode;
+  const strict = readAuthModeStrict(spec.provider, keyHome);
+  if (!strict.ok) {
+    return {
+      kind: "refused",
+      reason: "auth-mode",
+      providerVersion: attested === null ? null : attested.version,
+      diagnostic: strict.problem,
+    };
   }
+  const authMode: "subscription" | "api-key" = strict.mode;
   const ownKeyEnv = OWN_KEY_ENV[spec.provider];
   const managedKey =
     authMode === "api-key"
       ? readProviderKey(spec.provider, keyHome) ?? (process.env[PROVIDER_KEY_ENV[spec.provider]] || null)
       : null;
-  // A pinned api-key entry with NO key is REFUSED, not spawned (Codex E3d
-  // review, finding 1): with nothing to inject, the provider CLI would
-  // quietly fall back to its cached subscription login — spend on a
-  // credential the entry never approved. A value-shaped refusal before any
-  // stamp: no process, no spend, no strike.
-  if (run.chainCycle != null && authMode === "api-key" && managedKey === null) {
-    return {
-      kind: "refused",
-      reason: "chain-credential",
-      providerVersion: attested === null ? null : attested.version,
-      diagnostic: `the approved entry is pinned to a ${spec.provider} API key, and no managed or ambient key exists — add one on the keys screen`,
-    };
-  }
-
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
   // geminiArgv silently prefers --resume, so a minted id that rides
@@ -303,11 +279,7 @@ export async function invokeAgent(
   // that claims spend which never happened — the honest direction. A spawn
   // before the stamp would leave spend no record claims, which is the lie
   // the invariant exists to rule out. For attested providers the probed
-  // version rides the SAME durable write (B2). A CHAIN-BOUND run's stamp is
-  // the PRE-SPAWN CUSTODY PROOF (Codex E3d review, finding 3): one
-  // transaction re-derives the approval, cycle, entry, pin, and (past the
-  // base) the live paid-fallback grant, and stamps ONLY if all still stand
-  // — a grant revoked between admission and this instant refuses here.
+  // version rides the SAME durable write (B2).
   // The spawn leg of the runner gate (MCP spec v6, review finding 4):
   // the tuple re-proven against LIVE rows AFTER every awaited step, in
   // the same breath as the stamp — a takeover during the attestation
@@ -315,7 +287,7 @@ export async function invokeAgent(
   // THE PLANNER'S ROUTE, RE-PROVED AT THE SPAWN (final authority closure):
   // the provenance the planner was admitted under is held to the authority
   // its task holds RIGHT NOW — the strict working projection of a filed
-  // scope (exact terms, resolved profile, whole chain, route parity, digest,
+  // scope (exact terms, resolved profile, route parity, digest,
   // live auth mode), or the bare word `legacy` on a task with no scope. A
   // scope rewritten, corrupted, or unresolved between the claim and this
   // instant invokes no provider: a value-shaped refusal, no spend.
@@ -366,20 +338,7 @@ export async function invokeAgent(
     };
   }
 
-  if (run.chainCycle != null) {
-    const custody =
-      attested !== null
-        ? store.proveChainCustodyForSpawn(runId, clock(), attested.version)
-        : store.proveChainCustodyForSpawn(runId, clock());
-    if (!custody) {
-      return {
-        kind: "refused",
-        reason: "chain-custody",
-        providerVersion: attested === null ? null : attested.version,
-        diagnostic: "the run's chain custody lapsed before spawn — the approval, cycle, entry pin, or paid-fallback grant no longer stands",
-      };
-    }
-  } else if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+  if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
   else store.stampProviderStart(runId, clock());
 
   const spawn = witnessedRunner(store, runId, clock, runner ?? adapter.defaultRunner);
@@ -526,18 +485,8 @@ export async function invokeAgent(
     ...(envelope.usageRaw === null ? {} : { usageJson: envelope.usageRaw }),
   });
 
-  // The fallback taxonomy stamp (E2): classify HERE, where the evidence
-  // still exists — the structural terminal off this exact envelope, the
-  // AUTHORITATIVE version the gateway proved at spawn, and the auth mode
-  // that spawned it. `classifyTerminal` is fail-closed: with no
-  // fixture-backed recognizer for this (provider, version) — the state
-  // every build ships in — it can only ever return a non-eligible class,
-  // so this stamp authorizes nothing. It is the honest disposal record the
-  // dispatch's C8 gate later re-checks against `hasRecognizer` before it
-  // reads the class as anything more than history. Tier-1 providers prove
-  // no version here yet (attested === null), so they classify fail-closed
-  // until their exhaustion fixture — and the version proving it needs — is
-  // captured and reviewed.
+  // How the attempt ended, classified HERE where the structural terminal
+  // still exists; a sign-in that no longer works pauses its provider.
   // A run that failed within seconds having produced nothing is read for
   // the sign-in signal too: a CLI that is not logged in often says so on
   // stderr before its structured stream starts.
@@ -546,9 +495,6 @@ export async function invokeAgent(
     Date.now() - spawnedAt <= AUTH_EARLY_EXIT_MS &&
     envelope.promptConsumed !== true && (envelope.tokensOut ?? 0) === 0;
   const terminalClass = classifyTerminal({
-    provider: spec.provider,
-    version: attested === null ? null : attested.version,
-    authMode,
     terminal: envelope.structuralTerminal,
     // stderr and plain stdout only: a JSON event line can carry the agent's
     // own command output (codex aggregated_output), never its sign-in.
@@ -680,208 +626,6 @@ export async function invokeAgent(
         !result.notFound,
     },
   };
-}
-
-/**
- * The HELD invocation gateway (Parity II Phase 2, spec v2 S0b): the only
- * door to the held-session transport, symmetric with invokeAgent — same
- * open-run verification, same provider-match rule (claude only in Phase
- * 2: nothing else can hold), same stamp-before-spawn honesty. It returns
- * the live handle rather than awaiting session end: ownership of the
- * hold belongs to the coordinator, never to a promise chain that would
- * stall the watch.
- */
-/** What a held session may use of the project's tools: a research run, which may only read and isn't told here which
- * actions are read-only, gets none at all; any other run gets them as launched. */
-export function heldReadOnly(store: Store, runId: number): Readonly<Record<string, readonly string[]>> | undefined {
-  return store.getRun(runId)?.role === "scout" ? {} : undefined;
-}
-
-export async function invokeHeldAgent(
-  store: Store,
-  runId: number,
-  spec: AgentSpec,
-  argv: readonly string[],
-  options: import("./exec.js").RunOptions & {
-    socketPath: string;
-    cookie: string;
-    graceMs?: number;
-    events?: import("./exec.js").HeldSessionEvents;
-    readyTimeoutMs?: number;
-    clock?: () => Date;
-    starter?: typeof startClaudeHeldSession;
-    keyHome?: string;
-  },
-): Promise<import("./exec.js").HeldSessionStart> {
-  const clock = options.clock ?? (() => new Date());
-  const run = store.getRun(runId);
-  if (run === null || run.outcome !== null) {
-    throw new Error(
-      `run ${runId} is not an open attempt — nothing spends without a run record that will outlive it`,
-    );
-  }
-  if (spec.provider !== "claude" || run.provider !== "claude") {
-    throw new Error(
-      `run ${runId}: only claude can hold a session in Phase 2 — ${run.provider}/${spec.provider} cannot`,
-    );
-  }
-
-  const adapter = adapterFor("claude");
-  const { clock: _clock, starter, socketPath, cookie, graceMs, events, readyTimeoutMs, keyHome, ...runOptions } = options;
-
-  // The spawn leg of the runner gate (MCP spec v6) — held sessions are a
-  // provider spawn like any other; a lapsed custody throws, because the
-  // held road's contract is exceptions, not refusal values.
-  if (!store.proveRunnerCustodyForSpawn(runId, clock())) {
-    throw new Error(
-      `run ${runId}: runner custody lapsed before the held spawn — the lease, the runner, or its repo binding no longer stands`,
-    );
-  }
-
-  // The held road reads the mode STRICTLY too (atomic authority closure),
-  // before the start stamp: a mode file that says neither word throws in
-  // its words — the held road's contract — and no spend is claimed.
-  const heldStrict = readAuthModeStrict("claude", keyHome);
-  if (!heldStrict.ok) throw new Error(`run ${runId}: ${heldStrict.problem}`);
-  const heldMode = heldStrict.mode;
-
-  // The containment fence, same direction as the one-shot gateway: a
-  // required policy this runner cannot meet throws in its words before
-  // the start stamp, and no supervisor spawns.
-  const heldContainment = currentContainment();
-  if (heldContainment.refusal !== null) throw new Error(`run ${runId}: ${heldContainment.refusal}`);
-
-  // The stamp precedes the spawn — same direction as the one-shot gateway.
-  store.stampProviderStart(runId, clock());
-
-  const heldKey =
-    heldMode === "api-key" ? readProviderKey("claude", keyHome) ?? (process.env[PROVIDER_KEY_ENV.claude] || null) : null;
-  const heldSeen = { keySource: null as string | null, model: null as string | null, planWindows: false, decided: false };
-  // A session given a key bills the key from its first byte.
-  if (heldMode === "api-key") store.fixRunBilling(runId, "api-key", clock());
-  const start = starter ?? startClaudeHeldSession;
-  const isolatedDb = isolatedAgentDatabase(runId);
-  // The project's tools (v80), as for every build: exactly its MCP servers;
-  // and the agent fence around Toolroll's own secrets.
-  const heldTools = runTools(store, runId, spec, keyHome, clock, heldReadOnly(store, runId), undefined);
-  const heldFence = runFence(store, runId, keyHome);
-  argv = [...argv, ...heldTools.argv, ...(heldFence.length > 0 ? ["--settings", claudeFenceSettings(heldFence)] : [])];
-  const heldLaunch = fenceLaunch("claude", heldFence);
-  store.recordRunFence(runId, { method: heldLaunch.method, paths: heldFence.length }, clock());
-  let started: import("./exec.js").HeldSessionStart;
-  let heldWitness: number | undefined;
-  let unknownTree = false;
-  let nativeHeld = false;
-  try {
-    started = await start(adapter.binary, argv, {
-      ...(heldLaunch.wrap.length === 0 ? {} : { fence: heldLaunch.wrap }),
-      ...runOptions,
-      beforeSpawn: () => {
-        if (store.applicableStopFor(runId) !== null) return false;
-        heldWitness = store.reserveRunProcess(runId, clock(), false);
-        return true;
-      },
-      onSpawn: pid => {
-        store.recordRunProcess(runId, pid, clock(), false, heldWitness);
-        runOptions.onSpawn?.(pid);
-      },
-      onSpawnFailed: () => {
-        if (heldWitness !== undefined) store.finishUnspawnedProcess(heldWitness, clock());
-        runOptions.onSpawnFailed?.();
-      },
-      onContainer: info => {
-        nativeHeld = true;
-        if (heldWitness !== undefined) store.recordRunContainer(heldWitness, info.backend, info.id, info.identity);
-        runOptions.onContainer?.(info);
-      },
-      onContainerEmpty: () => {
-        if (heldWitness !== undefined) store.markRunContainerEmpty(heldWitness, clock());
-        runOptions.onContainerEmpty?.();
-      },
-      onDescendant: (pid, group) => {
-        store.recordRunProcess(runId, pid, clock(), group);
-        runOptions.onDescendant?.(pid, group);
-      },
-      onDescendantWriteFailure: rows => runOptions.onDescendant === undefined
-        && preserveObservedProcesses(store, runId, clock(), rows),
-      onDescendantExit: (pid, group) => {
-        store.recordRunProcessExits(runId, clock(), { pid, group });
-        runOptions.onDescendantExit?.(pid, group);
-      },
-      onObservationFailure: failure => {
-        recordProcessObservationFailure(store, runId, clock(), failure);
-        runOptions.onObservationFailure?.(failure);
-      },
-      onUnknown: () => {
-        if (!nativeHeld && !unknownTree) { store.reserveRunProcess(runId, clock()); unknownTree = true; }
-        runOptions.onUnknown?.();
-      },
-      env: {
-        ...(runOptions.env ?? {}),
-        ...heldTools.env,
-        ...(heldKey === null ? {} : { [PROVIDER_KEY_ENV.claude]: heldKey }),
-        ...childDatabaseEnv(isolatedDb.file),
-      },
-      omitEnv: [
-        ...(runOptions.omitEnv ?? []),
-        ...adapter.extraOmitEnv,
-        ...(heldMode === "subscription" ? OWN_KEY_ENV.claude : []),
-      ],
-      socketPath,
-      cookie,
-      ...(graceMs === undefined ? {} : { graceMs }),
-      ...(readyTimeoutMs === undefined ? {} : { readyTimeoutMs }),
-      events: {
-        ...events,
-        // v105: the session's billing from its own stream. A sign-in can't change inside one process, and Claude reports
-        // its plan's windows on a process's first answer but later only when they move: so the first answer decides, and
-        // after it only a named key source or a cloud model can make the session a key.
-        onStreamEvent: event => {
-          if (event["type"] === "system" && event["subtype"] === "init") {
-            if (typeof event["apiKeySource"] === "string") heldSeen.keySource = event["apiKeySource"].slice(0, 80);
-            if (typeof event["model"] === "string") heldSeen.model = event["model"].slice(0, 200);
-          } else if (event["type"] === "rate_limit_event") {
-            heldSeen.planWindows = true;
-          } else if (event["type"] === "result" && event["is_error"] !== true && event["subtype"] === "success") {
-            // Only an answer decides: a failure before the first answer (a startup or sign-in error) says nothing yet.
-            const billing = heldMode === "api-key" ? "api-key"
-              : !heldSeen.decided ? claudeBillingFrom(heldSeen)
-              : claudeBillingFrom({ ...heldSeen, keySource: heldSeen.keySource === "none" ? null : heldSeen.keySource, planWindows: false }) === "api-key" ? "api-key" : null;
-            if (billing !== null) {
-              store.fixRunBilling(runId, billing, new Date());
-              if (!heldSeen.decided && heldMode === "subscription" && heldKey === null) store.recordProviderBilling("claude", billing, new Date());
-            }
-            heldSeen.decided = true;
-          }
-          events?.onStreamEvent?.(event);
-        },
-        onSessionId: id => {
-          const normalized = transportSessionId(id);
-          if (normalized === null) return;
-          store.stampRun(runId, { sessionId: normalized });
-          try {
-            events?.onSessionId?.(normalized);
-          } catch {
-            // Observational.
-          }
-        },
-      },
-    });
-  } catch (error) {
-    removeAgentDatabase(isolatedDb.dir);
-    heldTools.cleanup();
-    throw error;
-  }
-  if (!started.ok) {
-    removeAgentDatabase(isolatedDb.dir);
-    heldTools.cleanup();
-  } else {
-    void started.handle.exited.then(
-      () => { removeAgentDatabase(isolatedDb.dir); heldTools.cleanup(); },
-      () => { removeAgentDatabase(isolatedDb.dir); heldTools.cleanup(); },
-    );
-  }
-  return started;
 }
 
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree) and ~/.toolroll (or its older name). */

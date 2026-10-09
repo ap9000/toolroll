@@ -79,6 +79,7 @@ describe("the assistant envelope — exactly one shape, atomic proposals", () =>
     expect(parseAssistantEnvelope(JSON.stringify(bidi))).toMatchObject({ ok: true, proposalsDiscarded: true });
     const badRepo = { ...good, proposals: [{ ...good.proposals[0], repoId: "/etc" }] };
     expect(parseAssistantEnvelope(JSON.stringify(badRepo))).toMatchObject({ ok: true, proposalsDiscarded: true });
+    // Routines became scheduled flows (v115): a routine-shaped proposal is no longer a draft.
     const routine = {
       ...good,
       proposals: [
@@ -88,12 +89,7 @@ describe("the assistant envelope — exactly one shape, atomic proposals", () =>
         },
       ],
     };
-    expect(parseAssistantEnvelope(JSON.stringify(routine))).toMatchObject({ ok: true, proposalsDiscarded: false });
-    const badSchedule = {
-      ...good,
-      proposals: [{ ...(routine.proposals[0] as object), schedule: "whenever" }],
-    };
-    expect(parseAssistantEnvelope(JSON.stringify(badSchedule))).toMatchObject({ ok: true, proposalsDiscarded: true });
+    expect(parseAssistantEnvelope(JSON.stringify(routine))).toMatchObject({ ok: true, proposalsDiscarded: true });
     const four = { ...good, proposals: Array.from({ length: 4 }, () => good.proposals[0]) };
     expect(parseAssistantEnvelope(JSON.stringify(four))).toMatchObject({ ok: false, problem: "bad-proposals" });
   });

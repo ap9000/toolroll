@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.53 — 2026-10-08
+
+- **Fewer features to learn.** Contests, held sessions and fallback chains
+  are gone. Routines are now scheduled flows; existing routines migrate,
+  paused, and `toolroll routine` points you to flows.
+- **Schedule limits hold.** Moving a flow card can't reset its spending or
+  single-flight limits.
+
 ## 0.9.52 — 2026-10-07
 
 - **Smaller database.** Process logs are compacted after each run, so the

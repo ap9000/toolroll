@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
-import { acquire, finalizeInterruptedFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -22,7 +22,7 @@ import { createDecisionServer } from "./serve.js";
 const T0 = new Date("2026-09-12T10:00:00.000Z");
 
 const presented = (store: Store, taskRef: number) => {
-  const authority = store.routeAuthorityFor(taskRef, "builder", null) ?? store.routeAuthorityFor(taskRef, "builder", null, { provider: "claude", model: null });
+  const authority = store.routeAuthorityFor(taskRef, "builder") ?? store.routeAuthorityFor(taskRef, "builder", { provider: "claude", model: null });
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -150,7 +150,7 @@ describe("the exact-run control on the console (v52)", () => {
     expect(await early.text()).toContain("still stopping");
 
     // Settlement (the worker's fenced seal): Paused with a Resume form.
-    finalizeInterruptedFenced(store, { leaseId, runId, taskId: "payouts", stopRun: runId, now: new Date() });
+    finalize(store, leaseId, { kind: "interrupted", runId, taskId: "payouts", stopRun: runId, now: new Date() });
     const paused = controlOf(await page(cookie, "/t/payouts"));
     expect(paused).toContain('data-task-control="paused"');
     expect(paused).toContain(`<input type="hidden" name="run" value="${runId}">`);
@@ -196,7 +196,7 @@ describe("the exact-run control on the console (v52)", () => {
     await post(cookie, `/chat/proposal/${staleStop}/confirm`, { csrf });
     expect(store.stopsForTask(ref)).toHaveLength(1);
     expect(store.getMateProposal(staleStop)?.state).toBe("refused");
-    finalizeInterruptedFenced(store, { leaseId, runId, taskId: "payouts", stopRun: runId, now });
+    finalize(store, leaseId, { kind: "interrupted", runId, taskId: "payouts", stopRun: runId, now });
     const resume = make("resume");
     const armed = await post(cookie, `/chat/proposal/${resume}/confirm`, { csrf });
     expect(armed.status).toBe(200);
@@ -262,7 +262,7 @@ describe("the exact-run control on the console (v52)", () => {
     const alex = await loginAs("alex", approverToken);
     const csrf = csrfOf(await page(alex, "/t/payouts"));
     expect((await post(alex, "/t/payouts/stop", { csrf, run: String(runId) })).status).toBe(303);
-    finalizeInterruptedFenced(store, { leaseId, runId, taskId: "payouts", stopRun: runId, now: new Date() });
+    finalize(store, leaseId, { kind: "interrupted", runId, taskId: "payouts", stopRun: runId, now: new Date() });
 
     // Arm: the ceremony page restates the exact run and carries a fresh nonce.
     const armed = await post(alex, "/t/payouts/resume-arm", { csrf, run: String(runId) });

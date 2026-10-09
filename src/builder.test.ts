@@ -58,13 +58,12 @@ const presented = (
   s: Pick<import("./store.js").Store, "routeAuthorityFor">,
   taskRef: number,
   role: "builder" | "repair" | "planner" | "scout" | "reviewer" = "builder",
-  bound: { index: number; entryDigest: string } | null = null,
   spend: { provider: string; model: string | null } = { provider: "claude", model: null },
 ): { route: import("./phase-routing.js").RouteStamp } | Record<string, never> => {
   // A task with no scope presents the bare word `legacy` for the pair it
   // spends as (atomic authority closure): the default claude pair, or the
   // exact pair a fixture names.
-  const authority = s.routeAuthorityFor(taskRef, role, bound) ?? s.routeAuthorityFor(taskRef, role, bound, spend);
+  const authority = s.routeAuthorityFor(taskRef, role) ?? s.routeAuthorityFor(taskRef, role, spend);
   return authority === null || !authority.ok ? {} : { route: authority.stamp };
 };
 
@@ -644,7 +643,8 @@ describe("the builder's gates", () => {
   test("route provenance (v47): the run and its sealed handoff name the route digest and the actual provider and model; a sealed route that disagrees with the sealed profile refuses", async () => {
     store.setPhaseTierConfig("installation", "build", "strong", "claude", "opus", "test", T0);
     claimIt();
-    propose(store, { taskId: "t-1", goal: "add a guard on the payout path", acceptance: [{ id: "c1", statement: "guarded", how: null, evidence: ["check"] }], riskLevel: "high", now: T0 });
+    store.writeSizing(store.refFor("built-in", "t-1").id, { size: "large", risky: false, source: "person", reason: "" });
+    propose(store, { taskId: "t-1", goal: "add a guard on the payout path", acceptance: [{ id: "c1", statement: "guarded", how: null, evidence: ["check"] }], now: T0 });
     approve(store, "t-1", "alex", T0, store.getScope("t-1")!.digest, approverToken);
     const sealedRoute = store.approvedRouteOf("t-1")!;
     expect(sealedRoute.legs.find(one => one.phase === "build")).toMatchObject({ provider: "claude", model: "opus", tier: "strong" });
@@ -667,7 +667,7 @@ describe("the builder's gates", () => {
     expect(payload.route).toEqual({ digest: routeDigestOf(sealedRoute), phase: "build", provider: "claude", model: "opus", chosen: "recommended" });
     // A sealed route that no longer agrees with the sealed profile is a stale seal, never a pass.
     store.raw().prepare("UPDATE task_scope SET approved_route_json = REPLACE(approved_route_json, '\"model\":\"opus\"', '\"model\":\"haiku\"') WHERE task_id = 't-1'").run();
-    expect(proveApprovedProfile(store.getScope("t-1"), null, { provider: "claude", model: "opus", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false });
+    expect(proveApprovedProfile(store.getScope("t-1"), { provider: "claude", model: "opus", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false });
   });
 
   test("a resumed attempt seals the CUMULATIVE terminal diff, pinned to the branch's first builder base (run 1461)", async () => {
@@ -2658,7 +2658,7 @@ describe("bounded repair", () => {
     expect(payloads).toHaveLength(2);
   });
 
-  test("route provenance (v47): the repair carries the sealed repair leg; a fallback parent's repair stays `fallback`; a route that vanishes mid-build refuses the repair in words", async () => {
+  test("route provenance (v47): the repair carries the sealed repair leg; nothing opens as `fallback`; a route that vanishes mid-build refuses the repair in words", async () => {
     // The ordinary road: the build was admitted under the sealed route and
     // its repair names the same route's repair leg.
     const { agent } = staged([invalid, valid]);
@@ -2672,16 +2672,14 @@ describe("bounded repair", () => {
     const repair = store.runsFor(taskRef).find(r => r.role === "repair")!;
     expect(store.runRoute(repair.id)).toMatchObject({ phase: "repair", provider: "claude", model: "sonnet", chosen: "recommended", routeDigest: routeDigestOf(sealed) });
 
-    // A `fallback` stamp never enters the generic admission (v48
-    // integrity): no run row, no repair, nothing spends as a fallback
-    // outside admitFallback. (A real approved fallback and its repair are
-    // proved end to end in fallback-e2e.test.ts.)
+    // A `fallback` stamp (fallback chains were removed in v115) opens no
+    // run row and no repair.
     expect(() =>
       store.startRun({
         taskRef, leaseId: currentClaim(store, taskRef, T0)!.leaseId, runner: "builder-1", branch: "feat/a", worktree, now: T0,
         route: { routeDigest: routeDigestOf(sealed), phase: "build", provider: "claude", model: "sonnet", chosen: "fallback" },
       }),
-    ).toThrow(/admitted only through admitFallback/);
+    ).toThrow(/nothing opens as `fallback`/);
 
     // The route removed from the routed row while the build runs: the
     // repair refuses — no mending under agents nobody can read.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, hashPassword } from "./scope.js";
 import { presetTerms, modeDigestOf, modeTermsJson } from "./modes.js";
-import { approveRoutine, fireRoutine } from "./routine.js";
+import { runScheduleNow, setFlowTriggerOn, triggerConfigOf } from "./flow-triggers.js";
 import { createWorkflowPreview, exportRecipe, findRecipe, importRecipe, launchWorkflow, parseRecipe, recipeScheduleWords, saveWorkflowRecipe, savedRecipes, starterRecipes, workflowPreview, type RecipeDocument } from "./recipes.js";
 
 describe("portable recipe parsing", () => {
@@ -54,7 +54,7 @@ describe("reusable recipes on the existing work engine", () => {
     const p = preview(); document.goal = "An edit after preview must not change the saved copy";
     const saved = saveWorkflowRecipe(store, "owner", repo, p.token, now);
     expect(saved.document.goal).toBe(p.document.goal);
-    expect(store.listTasks()).toHaveLength(0); expect(store.listRoutines(null)).toHaveLength(0);
+    expect(store.listTasks()).toHaveLength(0); expect(store.listFlows([repo])).toHaveLength(0);
     expect(saveWorkflowRecipe(store, "owner", repo, p.token, now)).toEqual(saved);
     expect(savedRecipes(store, "member", repo)).toEqual([saved]);
     expect(findRecipe(store, "owner", other, saved.id)).toBeNull();
@@ -83,7 +83,7 @@ describe("reusable recipes on the existing work engine", () => {
     expect(store.filedViaOf(first.taskId!)).toBe("recipe:lint-sweep");
     store.close(); store = openStore(file);
     expect(launchWorkflow(store, "owner", repo, p.token, new Date(now.getTime() + 3600_000), true)).toEqual(first);
-    expect(store.listTasks()).toHaveLength(1); expect(store.listRoutines(null)).toHaveLength(0);
+    expect(store.listTasks()).toHaveLength(1); expect(store.listFlows([repo])).toHaveLength(0);
     expect(store.getScope(first.taskId!)?.goal).toBe(p.document.goal);
     expect(store.actionLedger({ repos: [repo] }).filter(one => one.action === "workflow created")).toHaveLength(1);
   });
@@ -100,19 +100,26 @@ describe("reusable recipes on the existing work engine", () => {
     expect(store.listTasks()).toHaveLength(1);
   });
 
-  test("repetition uses an unapproved routine, then the existing single-flight scheduler", () => {
+  test("repetition makes a scheduled flow whose schedule starts paused; turned on, it files one task at a time", () => {
     const p = preview("owner", { ...document, schedule: "every:60", costCeilingUsd: null });
     const result = launchWorkflow(store, "owner", repo, p.token, now, true);
-    const routine = store.getRoutine(result.routineId!)!;
-    expect(routine.approvedAt).toBeNull(); expect(routine.singleFlight).toBe(true);
+    expect(result.taskId).toBeNull();
+    const flow = store.getFlow(result.flowId!)!;
+    expect(flow).toMatchObject({ repo, name: document.name });
+    expect(store.handle.prepare("SELECT task_id, routine_id, flow_id FROM workflow_preview WHERE token = ?").get(p.token)).toEqual({ task_id: null, routine_id: null, flow_id: flow.id });
+    const [trigger] = store.flowTriggers(flow.id);
+    expect(trigger).toMatchObject({ state: "paused", nextAt: null });
+    expect(triggerConfigOf(trigger!)).toMatchObject({ schedule: "every:60", order: { approval: null, singleFlight: true, filedBy: "owner" } });
     expect(store.listTasks()).toHaveLength(0);
-    expect(approveRoutine(store, routine.id, "owner", now, routine.digest, token)).toMatchObject({ ok: true });
+    // The receipt returns the same flow, whatever happens to it later.
     expect(launchWorkflow(store, "owner", repo, p.token, now, true)).toEqual(result);
+    setFlowTriggerOn(store, trigger!, true, now);
     const due = new Date(now.getTime() + 3600_000);
-    const fired = fireRoutine(store, routine.id, due);
-    expect(fired).toMatchObject({ ok: true });
+    expect(runScheduleNow(store, store.getFlowTrigger(trigger!.id)!, "owner", due)).toMatchObject({ ok: true });
     expect(store.listTasks()).toHaveLength(1);
-    fireRoutine(store, routine.id, new Date(due.getTime() + 3600_000));
+    expect(store.getScope(store.listTasks()[0]!.id)?.approvedAt ?? null).toBeNull();
+    // One at a time: the next slot waits while that task is unfinished.
+    expect(runScheduleNow(store, store.getFlowTrigger(trigger!.id)!, "owner", new Date(due.getTime() + 3600_000))).toMatchObject({ ok: false });
     expect(store.listTasks()).toHaveLength(1);
   });
 
@@ -126,7 +133,7 @@ describe("reusable recipes on the existing work engine", () => {
     const api = launchWorkflow(store, "owner", repo, preview().token, now, false);
     expect(store.getScope(api.taskId!)?.approvedAt).toBeNull();
     const repeating = launchWorkflow(store, "owner", repo, preview("owner", { ...document, schedule: "every:60" }).token, now, true);
-    expect(store.getRoutine(repeating.routineId!)?.approvedAt).toBeNull();
+    expect(store.flowTriggers(repeating.flowId!)).toMatchObject([{ state: "paused" }]);
   });
 
   test("preview is private to its actor and project; expiry and revoked access refuse", () => {

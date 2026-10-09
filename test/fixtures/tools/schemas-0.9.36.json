@@ -1901,7 +1901,7 @@
   "get_models": "Default agent per role with the exact model each name runs now, installed CLI versions and updates, and models released in the last two weeks. Read-only; changes happen in Settings → Models.",
   "list_tasks": "Newest tasks with state, age (hours) and failed-attempt strikes; one project or all. search finds tasks by the operator's own words for them (title or goal), older ones included, best match first.",
   "get_task": "Read currentExecution, state, dispatch, history, scope, dependencies, holds, queue, attempts and decisions before acting.",
-  "get_agents": "Read current roles, risk, approval, configured alternatives and the organisation policy (allowed providers, models, tools, permission ceiling; changed only on Settings → Policy) before propose_agents.",
+  "get_agents": "Read current roles, size, approval, configured alternatives and the organisation policy (allowed providers, models, tools, permission ceiling; changed only on Settings → Policy) before propose_agents.",
   "list_decisions": "List open decisions; read get_decision for options before proposing.",
   "get_decision": "Read every option/consequence before propose_answer; excludes builder recommendation.",
   "queue": "Queue dispatch order per column: shared, then worker reservations.",
@@ -1913,7 +1913,7 @@
   "propose_steer": "Guide the next attempt within existing scope; never interrupt work.",
   "propose_dependency_repair": "Read get_task. Retry failed dependency, replace with unfinished work, or unlink; confirm graph change.",
   "propose_scope": "Rewrite goal/non-goals/paths; confirmation saves scope, then password approval is separate.",
-  "propose_agents": "Read get_agents. Change risk, size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
+  "propose_agents": "Read get_agents. Change size (small: fast model, no plan; large or risky: strongest agents), configured role model, or clear override; stales approval, refuses running work.",
   "propose_answer": "Read get_decision in an EARLIER step; propose option/rationale. Irreversible choices need explicit confirmation.",
   "propose_cancel": "Propose task cancellation/reason; operator must arm and confirm."
  }

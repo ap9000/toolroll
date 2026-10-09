@@ -1,15 +1,19 @@
 /** Isolated fixtures only: production databases are never opened here. */
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { openStore, readSchemaVersion, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, type Database } from "./store.js";
+import { openStore, readSchemaVersion, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V115_DROPPED_TABLES, type Database } from "./store.js";
 import { LEDGER_SCHEMA, LEDGER_V54_COLUMNS, LEDGER_V99_TABLE, installLedgerTriggers } from "./action-ledger.js";
 import { verifiedDatabaseBackup } from "./desktop-update.js";
 import { changedHistory, historySnapshot } from "./toolroll-update.js";
 
 const GATE = "00000000-0000-4000-8000-000000000110";
+/** The 0.9.52 release: schema v114, the last with contests, held sessions, fallback chains and routines. */
+const V114_RELEASE = "1fba8161a675d974e3de0b842eaf24600f94fc5f";
+const REPO = join(__dirname, "..");
 let dir: string | undefined;
 afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });
 
@@ -19,13 +23,14 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v110 to v114 are update-safe, nothing before them is", () => {
+  test("every schema version is classed: v110 to v115 are update-safe, nothing before them is", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
     // v113 (MCP sign-in) only adds its four oauth_ tables plus the purpose column; v111 and v112 are the sibling token and limit migrations.
     // v114 is update-safe under the rehearsal's declared conservation rules (process summaries, notification's unused columns).
-    expect(SCHEMA_VERSION).toBe(114);
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111, 112, 113, 114]);
+    // v115 is update-safe only under its named rules: the removed features' tables retire whole and each routine becomes one flow and trigger.
+    expect(SCHEMA_VERSION).toBe(115);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([110, 111, 112, 113, 114, 115]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -89,4 +94,69 @@ describe("update-safe migrations", () => {
     older.close();
     await expect(verifiedDatabaseBackup(file, join(dir, "older.backup.db"), GATE, undefined, undefined, updateSafeSchema)).rejects.toThrow(/separate verified migration procedure/);
   });
+
+  test("a v114 database made by 0.9.52 itself is carried to v115 by toolroll update: routines become paused or running scheduled flows, the removed tables retire, and every other row and the ledger chain stay", async () => {
+    dir = mkdtempSync(join(tmpdir(), "so-update-safe-"));
+    const file = join(dir, "state.db");
+    // The older runtime is the released source itself, run through its own migrating open.
+    const older = join(dir, "older");
+    mkdirSync(older);
+    execFileSync("sh", ["-c", `git -C "$1" archive "$2" src | tar -x -C "$3"`, "sh", REPO, V114_RELEASE, older]);
+    symlinkSync(join(REPO, "node_modules"), join(older, "node_modules"));
+    writeFileSync(join(older, "seed.ts"), `import { openStore, SCHEMA_VERSION } from "./src/store.ts";
+const now = new Date("2026-10-07T20:00:00.000Z");
+const store = openStore(process.argv[2]!);
+store.createTask({ id: "t-1", title: "a task" }, now);
+for (let n = 0; n < 40; n++) store.recordAction({ at: now.toISOString(), actor: "alex", repo: "/w/site", taskId: "t-1", runId: null, action: "note " + n, outcome: "noted", source: "policy", detail: null });
+store.sealLedger();
+const routine = store.handle.prepare(\`INSERT INTO routine (name, repo, goal, touches, requirements, schedule, single_flight, cost_ceiling_usd, paused, digest, approved_at, approved_by,
+  approved_digest, approved_profile_json, approved_route_json, next_fire_at, created_at, updated_at, acceptance_json, created_by) VALUES (?, '/w/site', ?, '[]', '[]', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 'alex')\`);
+// The owner's routine: approved, then paused. And one approved and running.
+routine.run("weekly-review", "Review the week's merged work", "weekly:1:09:00", 10, 1, "d1", now.toISOString(), "alex", "d1", "{}", "{}", "2026-10-12T09:00:00.000Z", now.toISOString(), now.toISOString());
+routine.run("nightly-deps", "Refresh the lockfile", "every:60", null, 0, "d2", now.toISOString(), "alex", "d2", "{}", "{}", "2026-10-07T21:00:00.000Z", now.toISOString(), now.toISOString());
+store.handle.prepare("INSERT INTO routine_fire (routine_id, scheduled_for, outcome, reason, created_at) VALUES (1, ?, 'skipped', 'budget', ?)").run(now.toISOString(), now.toISOString());
+console.log(JSON.stringify({ speaks: SCHEMA_VERSION, chain: store.ledgerChain({ full: true }) }));
+store.close();
+`);
+    writeFileSync(join(older, "read.ts"), `import { openStoreNoMigrate } from "./src/store.ts";
+const read = openStoreNoMigrate(process.argv[2]!);
+console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message }));
+`);
+    const tsx = (script: string) => JSON.parse(execFileSync(join(REPO, "node_modules", ".bin", "tsx"), [join(older, script), file], { cwd: older, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop()!);
+    const seeded = tsx("seed.ts");
+    expect(seeded).toMatchObject({ speaks: 114, chain: { ok: true } });
+
+    // toolroll update takes it: the backup, then the rehearsal on a copy.
+    const backup = join(dir, "orders.backup.db");
+    expect(await verifiedDatabaseBackup(file, backup, GATE, undefined, undefined, updateSafeSchema)).toMatch(/^[a-f0-9]{64}$/);
+    const copy = new DatabaseSync(backup);
+    expect(readSchemaVersion(copy as unknown as Database)).toEqual({ ok: true, version: 114 });
+    const before = historySnapshot(copy);
+    const orphans = copy.prepare("PRAGMA foreign_key_check").all();
+    copy.close();
+    const store = openStore(backup);
+    try {
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(115);
+      expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: seeded.chain.through, head: seeded.chain.head });
+      const moved = store.handle.prepare(`SELECT f.name, t.state, t.next_at, json_extract(t.config_json, '$.schedule') AS schedule, json_extract(t.config_json, '$.order.goal') AS goal,
+        json_extract(t.config_json, '$.order.costCeilingUsd') AS ceiling, json_extract(t.config_json, '$.order.routine') AS routine, t.last_outcome
+        FROM flow f JOIN flow_trigger t ON t.flow = f.id ORDER BY f.id`).all().map(row => ({ ...row }));
+      expect(moved).toEqual([
+        { name: "weekly-review", state: "paused", next_at: "2026-10-12T09:00:00.000Z", schedule: "weekly:1:09:00", goal: "Review the week's merged work", ceiling: 10, routine: 1, last_outcome: "Skipped (as a routine): budget." },
+        { name: "nightly-deps", state: "active", next_at: "2026-10-07T21:00:00.000Z", schedule: "every:60", goal: "Refresh the lockfile", ceiling: null, routine: 2, last_outcome: null },
+      ]);
+      for (const table of V115_DROPPED_TABLES) expect(store.handle.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), table).toBeUndefined();
+    } finally { store.close(); }
+    const after = new DatabaseSync(backup, { readOnly: true });
+    try {
+      expect(changedHistory(after, before)).toEqual([]);
+      expect(after.prepare("PRAGMA integrity_check").get()?.["integrity_check"]).toBe("ok");
+      expect(after.prepare("PRAGMA foreign_key_check").all()).toEqual(orphans);
+    } finally { after.close(); }
+
+    // The release before it no longer reads the migrated file as its own: v115 is newer than it speaks.
+    rmSync(file);
+    execFileSync("cp", [backup, file]);
+    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/v115/) });
+  }, 120_000);
 });

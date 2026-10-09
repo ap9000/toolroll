@@ -4,8 +4,8 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { fileTaskProposal, fileRoutineProposal, shouldPlanTask, validateTaskText } from "./proposal.js";
-import { termsOf, routineDigestOf } from "./routine.js";
+import { fileTaskProposal, shouldPlanTask, validateTaskText } from "./proposal.js";
+import { createScheduledFlow, standingTermsProblems } from "./flow-schedule.js";
 
 const T0 = new Date("2026-08-14T12:00:00.000Z");
 
@@ -136,69 +136,22 @@ describe("the one filing door", () => {
     expect(validateTaskText({ title: "x", touches: Array.from({ length: 51 }, (_, i) => `p${i}`) })).not.toBeNull();
   });
 
-  test("files an unapproved routine, digest computed inside the door", () => {
-    const made = fileRoutineProposal(
-      store,
-      {
-        name: "nightly-deps",
-        repo,
-        goal: "refresh the lockfile and note anything major",
-        outOfScope: null,
-        touches: [],
-        acceptance: [{ id: "c1", statement: "The lockfile is refreshed and anything major is noted.", evidence: ["check"] }],
-        requirements: [],
-        schedule: "daily:03:30",
-        costCeilingUsd: null,
-        filedVia: "template:nightly-deps",
-      },
-      T0,
-    );
-    if (!made.ok) throw new Error(made.reason);
-    const routine = store.getRoutine(made.id);
-    if (routine === null) throw new Error("no routine");
-    expect(routine.approvedAt).toBeNull();
-    expect(routine.filedVia).toBe("template:nightly-deps");
-    // The digest the door computed is exactly the digest of the stored terms.
-    expect(routine.digest).toBe(routineDigestOf(termsOf(routine)));
+  test("a scheduled flow carries its terms with no approval, and its schedule starts paused", () => {
+    const acceptance = [{ id: "c1", statement: "The lockfile is refreshed and anything major is noted.", how: null, evidence: ["check" as const] }];
+    const made = createScheduledFlow(store, { repo, name: "Nightly deps", stem: "nightly-deps", schedule: "daily:03:30", by: "alex",
+      terms: { goal: "refresh the lockfile and note anything major", outOfScope: null, touches: [], requirements: [], acceptance, budgetPerRunMicrousd: null, costCeilingUsd: null } }, T0);
+    if (!made.ok) throw new Error(made.message);
+    expect(store.getFlowTrigger(made.trigger)).toMatchObject({ state: "paused", nextAt: null });
+    expect(JSON.parse(store.getFlowTrigger(made.trigger)!.configJson)).toMatchObject({ order: { approval: null, routine: null, stem: "nightly-deps" } });
   });
 
-  test("a routine's schedule and name are validated in the door", () => {
-    const base = {
-      repo,
-      goal: "g",
-      outOfScope: null,
-      touches: [],
-      requirements: [],
-      costCeilingUsd: null,
-      filedVia: "cli",
-    };
-    expect(
-      fileRoutineProposal(store, { ...base, name: "Bad Name", schedule: "daily:03:30" }, T0),
-    ).toMatchObject({ ok: false, reason: "bad-name" });
-    expect(
-      fileRoutineProposal(store, { ...base, name: "ok-name", schedule: "sometimes" }, T0),
-    ).toMatchObject({ ok: false, reason: "bad-terms" });
-  });
-
-  test("a routine outside the caller's ceiling is refused", () => {
-    expect(
-      fileRoutineProposal(
-        store,
-        {
-          name: "sneaky",
-          repo,
-          goal: "g",
-          outOfScope: null,
-          touches: [],
-          requirements: [],
-          schedule: "every:60",
-          costCeilingUsd: null,
-          filedVia: "console",
-          admittedRepos: [],
-        },
-        T0,
-      ),
-    ).toMatchObject({ ok: false, reason: "outside-ceiling" });
+  test("a scheduled flow's schedule, name and terms are validated, every problem at once", () => {
+    const terms = { goal: "g", outOfScope: null, touches: [], requirements: [], acceptance: [], budgetPerRunMicrousd: null, costCeilingUsd: -1 };
+    expect(standingTermsProblems(terms, "sometimes").map(one => one.split(":")[0])).toEqual(["acceptance", "schedule", "costCeilingUsd"]);
+    expect(standingTermsProblems({ ...terms, goal: "refresh \u202Ethe lockfile", costCeilingUsd: null }, "daily:03:30").map(one => one.split(":")[0])).toEqual(["goal", "acceptance"]);
+    const refused = createScheduledFlow(store, { repo, name: "Bad", stem: "Bad Name", schedule: "daily:03:30", by: "alex", terms: { ...terms, costCeilingUsd: null } }, T0);
+    expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("name: lowercase letters") });
+    expect(store.listFlows([repo])).toHaveLength(0);
   });
 });
 

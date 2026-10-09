@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
-import { acquire, completeFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { quietCardView } from "./chat-quiet.js";
 import { workIndexPage } from "./work-index.js";
@@ -86,7 +86,7 @@ describe("your lead tells you what it's doing", () => {
     if (!took.ok) throw new Error(`claim refused: ${took.reason}`);
     const run = store.startRun({ taskRef: ref(id), leaseId: lease, runner: RUNNER, branch: "so/t", worktree: "/pool/t", ...legacy, now });
     store.finishRun(run, { outcome: "failed", reason: "agent", now });
-    expect(completeFenced(store, lease, "failed", now).ok).toBe(true);
+    expect(finalize(store, lease, { kind: "complete", state: "failed", now: now }).ok).toBe(true);
   };
   /** The console as `viewer` reads it: only their own lead's claim counts. */
   const operator = (viewer = "alex") => ({ principal: "operator" as const, repos: [REPO], viewer });
@@ -251,7 +251,7 @@ describe("your lead tells you what it's doing", () => {
     expect(acquire(store, ref("release-0912"), RUNNER, { now, token: `tok-${RUNNER}`, newLeaseId: () => lease, ttlMs: TTL }).ok).toBe(true);
     const second = store.startRun({ taskRef: ref("release-0912"), leaseId: lease, runner: RUNNER, branch: "so/t", worktree: "/pool/t", ...legacy, now });
     store.finishRun(second, { outcome: "failed", reason: "agent", now });
-    expect(completeFenced(store, lease, "failed", now).ok).toBe(true);
+    expect(finalize(store, lease, { kind: "complete", state: "failed", now: now }).ok).toBe(true);
     expect(second).toBeGreaterThan(first);
     expect((await cli(["assignment", "claim", "release-0912", "--token", token, "--json"])).code).toBe(0);
     const repaint = store.handle.prepare("SELECT id FROM notification WHERE kind = 'lead-on-it' ORDER BY id DESC LIMIT 1").get();

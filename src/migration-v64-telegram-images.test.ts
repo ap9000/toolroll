@@ -49,7 +49,7 @@ describe("v64 Telegram result images", () => {
     propose(db, { taskId: "alpha", goal: "do alpha", touches: ["src/"], acceptance: [{ id: "c1", statement: "It holds", how: null, evidence: ["manual-review"] }], now: NOW });
     const approved = approve(db, "alpha", "alex", NOW, db.getScope("alpha")!.digest, alex.token);
     if (!approved.ok) throw new Error(approved.reason);
-    const route = db.routeAuthorityFor(taskRef, "builder", null);
+    const route = db.routeAuthorityFor(taskRef, "builder");
     if (!route?.ok) throw new Error("route");
     const run = db.startRun({ taskRef, leaseId: "l-alpha", runner: "builder-1", branch: "so/alpha", worktree: "/pool/alpha", route: route.stamp, now: NOW });
     db.finishRun(run, { outcome: "built", committed: true, now: NOW });
@@ -100,7 +100,7 @@ describe("v64 Telegram result images", () => {
     }
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(114);
+    expect(SCHEMA_VERSION).toBe(115);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     const after = store.handle.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[];
     expect(after.map(v63Columns)).toEqual(before.parts.map(v63Columns));

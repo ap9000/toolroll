@@ -34,8 +34,8 @@ import { addApprover, propose, approve, type AcceptanceCriterion } from "./scope
 import { legOf, routeDigestOf, type RouteStamp } from "./phase-routing.js";
 import { acquire, release } from "./claim.js";
 import { register } from "./runner.js";
-import { approveRoutine, fireRoutine } from "./routine.js";
-import { fileTaskProposal, fileRoutineProposal } from "./proposal.js";
+import { createScheduledFlow } from "./flow-schedule.js";
+import { fileTaskProposal } from "./proposal.js";
 import { storeEvidence, budgetedStatJson, imageDimensions, type DiffStat } from "./evidence.js";
 import { parseProof, adjudicate } from "./proof.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
@@ -67,7 +67,7 @@ function presentedRoute(
 ): { route: RouteStamp } {
   // A task with no scope presents the bare word `legacy` for the exact
   // pair it spends as (atomic authority closure) — nothing opens unstamped.
-  const authority = store.routeAuthorityFor(taskRef, role) ?? store.routeAuthorityFor(taskRef, role, null, spend);
+  const authority = store.routeAuthorityFor(taskRef, role) ?? store.routeAuthorityFor(taskRef, role, spend);
   if (authority === null || !authority.ok) throw new Error(`demo seed: ${authority === null ? "no task" : authority.problem}`);
   return { route: authority.stamp };
 }
@@ -469,11 +469,11 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     "Switch the request logger to JSON lines so the collector stops parsing free text. Keep the human console formatter for local dev. Migrate the two dashboards that grep the old format.",
   );
   const plannedRef = store.refFor("built-in", planned).id;
-  // An explainable route (v47): the operator declared elevated risk and
+  // An explainable route (v47): the operator sized the change large and
   // overrode the reviewer, so the ceremony shows a recommended leg, a
   // strong-tier leg, and an overridden leg side by side, with the runner's
   // readiness per provider.
-  store.editTaskRoute(plannedRef, { by: "demo", authenticate: () => ({ ok: true }), risk: "elevated" }, hoursAgo(3.5));
+  store.editTaskRoute(plannedRef, { by: "demo", authenticate: () => ({ ok: true }), size: { size: "large", risky: false } }, hoursAgo(3.5));
   store.editTaskRoute(plannedRef, { by: "demo", authenticate: () => ({ ok: true }), override: { phase: "review", provider: "claude", model: "opus" } }, hoursAgo(3.2));
   store.setPlanState(plannedRef, "drafted");
   const plannerRun = store.startRun({
@@ -1207,31 +1207,17 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
   const held = task("migrate-billing", "Migrate billing exports to the new vendor", repos.api);
   store.hold(store.refFor("built-in", held).id, "waiting on the vendor sandbox account", null, hoursAgo(12));
 
-  // --- a standing order with a track record ------------------------------
-  const routine = fileRoutineProposal(
-    store,
-    {
-      name: "nightly-deps",
-      repo: repos.api,
+  // --- a scheduled flow, waiting for someone to turn its schedule on -----
+  const nightly = createScheduledFlow(store, {
+    repo: realpathSync(repos.api), name: "Nightly dependency refresh", stem: "nightly-deps", schedule: "daily:03:30", by: "demo",
+    terms: {
       goal: "Refresh the lockfile within existing ranges, run the suite, summarize anything notable.",
       outOfScope: "No major version bumps.",
-      touches: [],
-      acceptance: [
-        { id: "c1", statement: "The full test suite passes against the refreshed lockfile.", how: null, evidence: ["check"] },
-      ],
-      requirements: [],
-      schedule: "daily:03:30",
-      costCeilingUsd: null,
-      filedVia: "demo",
+      touches: [], requirements: [], budgetPerRunMicrousd: null, costCeilingUsd: null,
+      acceptance: [{ id: "c1", statement: "The full test suite passes against the refreshed lockfile.", how: null, evidence: ["check"] }],
     },
-    hoursAgo(70),
-  );
-  if (!routine.ok) throw new Error(`seed routine: ${routine.reason}`);
-  approveRoutine(store, routine.id, "demo", hoursAgo(69), routine.digest, token);
-  // Two nightly slots since approval: one fires, the second records its
-  // single-flight skip honestly (the first instance is still open).
-  fireRoutine(store, routine.id, hoursAgo(45));
-  fireRoutine(store, routine.id, hoursAgo(21));
+  }, hoursAgo(70));
+  if (!nightly.ok) throw new Error(`seed scheduled flow: ${nightly.message}`);
 
   // --- the outer loop: an opened PR with observed checks ----------------
   const pub = store.createPublicationIntent(

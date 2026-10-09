@@ -256,7 +256,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     // every one of them lights the destination it now lives under.
     for (const [path, expected] of [
       ["/", "/chat"], ["/inbox", "/work"], ["/work", "/work"], ["/work?view=needs-you", "/work"], ["/tasks", "/work"], ["/tasks?state=queued", "/work"], ["/board", "/work"], ["/board?view=order", "/work"],
-      ["/runs", "/work"], ["/done", "/work"], ["/review", "/work"], ["/activity", "/work"], ["/t/t-a", "/work"], ["/recipes", "/work"], ["/routines", "/work"], ["/ledger", "/work"], ["/workbench", "/work"],
+      ["/runs", "/work"], ["/done", "/work"], ["/review", "/work"], ["/activity", "/work"], ["/t/t-a", "/work"], ["/recipes", "/work"], ["/ledger", "/work"], ["/workbench", "/work"],
       ["/projects", "/projects"], ["/code", "/work"], ["/chat", "/chat"], ["/chat?task=t-a", "/chat"], ["/fleet", undefined], ["/system", undefined], ["/caps", undefined], ["/people", undefined], ["/menu", undefined],
     ] as const) {
       const response = await fetch(url(path), { headers: { cookie } });
@@ -274,7 +274,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(/<details class="nav-group" data-group="settings"([^>]*)>/.exec(fleet)?.[1]).toBe(" open");
     expect(fleet).toContain('<a href="/fleet" aria-label="Fleet" title="Fleet" class="active">Fleet</a>');
     const menu = await page(cookie, "/menu");
-    expect([...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/routines", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
+    expect([...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
     // The queue's old address still answers as before.
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
     expect(queue.status).toBe(303);
@@ -294,7 +294,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(primaryOf(memberWork)).toEqual(["/work", "/flows", "/projects"]);
     expect(tabsOf(memberWork)).toEqual(["/work", "/flows", "/projects"]);
     const memberMenu = await page(member, "/menu");
-    expect([...memberMenu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/inbox", "/board", "/tasks", "/recipes", "/routines", "/ledger", "/settings", "/people"]);
+    expect([...memberMenu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/inbox", "/board", "/tasks", "/recipes", "/ledger", "/settings", "/people"]);
     expect(memberMenu).toContain("/settings");
     expect((await fetch(url("/settings"), { headers: { cookie: member } })).status).toBe(200);
     for (const path of ["/code", "/fleet", "/system", "/caps", "/workbench", "/chat"]) expect((await fetch(url(path), { headers: { cookie: member } })).status, path).toBe(403);
@@ -1183,7 +1183,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(css).toContain("    .work-tools { display: block; }");
     expect(css).not.toMatch(/\.work-tools-menu\s*\{[^}]*left:/);
     expect(work).toContain('<details class="work-tools"><summary>Work tools');
-    expect([...work.matchAll(/<nav class="work-tools-menu">([\s\S]*?)<\/nav>/g)][0]?.[1]?.match(/<a href="/g)).toHaveLength(9);
+    expect([...work.matchAll(/<nav class="work-tools-menu">([\s\S]*?)<\/nav>/g)][0]?.[1]?.match(/<a href="/g)).toHaveLength(8);
     // The visible meta is age/project; exact task identity stays in the
     // title link and row data attribute instead of repeating diagnostics.
     const row = /<article class="work-row" data-task="t-checks"[^>]*>([\s\S]*?)<\/article>/.exec(work)?.[1] ?? "";

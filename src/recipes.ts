@@ -1,13 +1,14 @@
 /** Reusable work definitions. Recipes carry scope, never credentials or grants.
  * A preview freezes the exact copy to file; its durable receipt makes a retry
- * after a lost response return the same task/routine, even after a restart. */
+ * after a lost response return the same task or flow, even after a restart.
+ * A repeating recipe (v115) makes a scheduled flow whose schedule starts paused. */
 import { createHash, randomBytes } from "node:crypto";
 import type { Store } from "./store.js";
 import { TEMPLATES } from "./templates.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { parseAcceptanceCriteria } from "./scope.js";
-import { validateTaskText, fileTaskProposal, fileRoutineProposal } from "./proposal.js";
-import { parseSchedule, firstFireAt, describeSchedule, validateRoutineTerms } from "./routine.js";
+import { validateTaskText, fileTaskProposal } from "./proposal.js";
+import { createScheduledFlow, describeSchedule, firstFireAt, parseSchedule, standingTermsProblems } from "./flow-schedule.js";
 import { applyModeToNewFiling } from "./plan-auto.js";
 import { canonicalProject } from "./project.js";
 import type { ContractIssue } from "./contracts/contract.js";
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS workflow_preview (
   token TEXT PRIMARY KEY, actor TEXT NOT NULL, repo TEXT NOT NULL,
   document TEXT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
-  task_id TEXT REFERENCES task(id), routine_id INTEGER REFERENCES routine(id),
+  -- routine_id: history (routines became scheduled flows in v115; the flow_id column is added after this runs).
+  task_id TEXT REFERENCES task(id), routine_id INTEGER,
   saved_id TEXT, saved_revision INTEGER,
   CHECK(task_id IS NULL OR routine_id IS NULL),
   FOREIGN KEY(saved_id, saved_revision) REFERENCES workflow_recipe(id, revision)
@@ -44,7 +46,7 @@ export type { RecipeDocument, RecipeInput } from "./contracts/recipes.js";
 export const RECIPE_INPUT_LIMIT = RECIPE_LIMITS.inputs;
 export type RecipeAnswers = ReadonlyMap<string, string>;
 export type Recipe = { id: string; revision: number; repo: string | null; document: RecipeDocument; digest: string; author: string };
-export type WorkflowPreview = { token: string; actor: string; repo: string; document: RecipeDocument; digest: string; source: string; expiresAt: string; taskId: string | null; routineId: number | null; savedId: string | null; savedRevision: number | null };
+export type WorkflowPreview = { token: string; actor: string; repo: string; document: RecipeDocument; digest: string; source: string; expiresAt: string; taskId: string | null; flowId: number | null; savedId: string | null; savedRevision: number | null };
 export class RecipeError extends Error {
   constructor(message: string, public readonly status = 400) { super(message); }
 }
@@ -116,8 +118,8 @@ export function parseRecipe(input: unknown): RecipeDocument {
     schedule: fields.schedule, costCeilingUsd: fields.costCeilingUsd, ...(doc.version === 2 ? { inputs: parseRecipeInputs(doc.inputs) } : {}) } as RecipeDocument;
   if (ordered.version === 2) validateInputReferences(ordered);
   if (ordered.schedule !== null) {
-    const problems = validateRoutineTerms({ repo: "/recipe-preview", ...ordered, requirements: [], schedule: ordered.schedule, singleFlight: true });
-    if (problems.length) throw new RecipeError(problems.map(one => `${one.field}: ${one.problem}`).join("; "));
+    const problems = standingTermsProblems({ ...ordered, requirements: [], budgetPerRunMicrousd: null }, ordered.schedule);
+    if (problems.length) throw new RecipeError(problems.join("; "));
   }
   return ordered;
 }
@@ -187,11 +189,11 @@ export function prepareRecipeRun(store: Store, actor: string, repo: string, id: 
   });
 }
 
-const titles: Record<string, string> = { "nightly-deps": "Keep dependencies current", "test-coverage": "Test one overlooked module", "docs-drift": "Keep documentation accurate", "lint-sweep": "Clean up lint and types" };
+const titles: Record<string, string> = { "lint-sweep": "Clean up lint and types" };
 export function starterRecipes(): Recipe[] {
   const recipes: Recipe[] = TEMPLATES.filter(one => one.kind !== "recipe").map(one => {
-    const document = parseRecipe({ format: "standing-orders-recipe", version: 1, name: titles[one.name] ?? one.name, description: one.purpose, goal: one.goal, outOfScope: one.outOfScope, touches: one.touches, acceptance: one.acceptance,
-      planning: "skip", deliverable: "branch", schedule: one.kind === "routine" ? one.schedule : null, costCeilingUsd: null });
+    const document = parseRecipe({ format: "standing-orders-recipe", version: 1, name: one.kind === "scheduled" ? one.title : titles[one.name] ?? one.name, description: one.purpose, goal: one.goal, outOfScope: one.outOfScope, touches: one.touches, acceptance: one.acceptance,
+      planning: "skip", deliverable: "branch", schedule: one.kind === "scheduled" ? one.schedule : null, costCeilingUsd: null });
     return { id: one.name, revision: 1, repo: null, document, digest: recipeDigest(document), author: "Toolroll" };
   });
   for (const [id, document] of [
@@ -215,7 +217,7 @@ function readRecipe(row: Record<string, unknown>): Recipe {
 export function savedRecipes(store: Store, actor: string, repo: string): Recipe[] {
   repo = recipeProject(repo);
   access(store, actor, repo);
-  return store.handle.prepare(`SELECT r.* FROM workflow_recipe r WHERE repo=? AND revision=(SELECT MAX(revision) FROM workflow_recipe WHERE id=r.id) ORDER BY (SELECT MAX(p.created_at) FROM workflow_preview p WHERE p.repo=r.repo AND p.source=r.id AND (p.task_id IS NOT NULL OR p.routine_id IS NOT NULL)) DESC, created_at DESC, id LIMIT 100`).all(repo).map(readRecipe);
+  return store.handle.prepare(`SELECT r.* FROM workflow_recipe r WHERE repo=? AND revision=(SELECT MAX(revision) FROM workflow_recipe WHERE id=r.id) ORDER BY (SELECT MAX(p.created_at) FROM workflow_preview p WHERE p.repo=r.repo AND p.source=r.id AND (p.task_id IS NOT NULL OR p.routine_id IS NOT NULL OR p.flow_id IS NOT NULL)) DESC, created_at DESC, id LIMIT 100`).all(repo).map(readRecipe);
 }
 export function findRecipe(store: Store, actor: string, repo: string | null, id: string, revision?: number): Recipe | null {
   const starter = starterRecipes().find(one => one.id === id);
@@ -233,8 +235,8 @@ export function createWorkflowPreview(store: Store, actor: string, repo: string,
   if (!/^[a-z0-9-]{1,48}$/.test(source)) throw new RecipeError("Unknown recipe source.");
   return store.transact(() => {
     access(store, actor, repo, true);
-    store.handle.prepare("DELETE FROM workflow_preview WHERE actor=? AND expires_at<? AND task_id IS NULL AND routine_id IS NULL AND saved_id IS NULL").run(actor, now.toISOString());
-    const count = store.handle.prepare("SELECT COUNT(*) n FROM workflow_preview WHERE actor=? AND expires_at>? AND task_id IS NULL AND routine_id IS NULL AND saved_id IS NULL").get(actor, now.toISOString());
+    store.handle.prepare("DELETE FROM workflow_preview WHERE actor=? AND expires_at<? AND task_id IS NULL AND routine_id IS NULL AND flow_id IS NULL AND saved_id IS NULL").run(actor, now.toISOString());
+    const count = store.handle.prepare("SELECT COUNT(*) n FROM workflow_preview WHERE actor=? AND expires_at>? AND task_id IS NULL AND routine_id IS NULL AND flow_id IS NULL AND saved_id IS NULL").get(actor, now.toISOString());
     if (Number(count?.n) >= 30) throw new RecipeError("You have 30 open previews. Use one or let it expire before making another.", 429);
     const token = randomBytes(16).toString("hex");
     store.handle.prepare("INSERT INTO workflow_preview(token,actor,repo,document,digest,source,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)")
@@ -249,7 +251,7 @@ export function workflowPreview(store: Store, actor: string, repo: string, token
   if (row === undefined) return null;
   const document = importRecipe(String(row.document));
   if (recipeDigest(document) !== row.digest) throw new RecipeError("This preview has changed. Make a fresh preview.", 409);
-  return { token, actor, repo, document, digest: String(row.digest), source: String(row.source), expiresAt: String(row.expires_at), taskId: row.task_id as string | null, routineId: row.routine_id as number | null, savedId: row.saved_id as string | null, savedRevision: row.saved_revision as number | null };
+  return { token, actor, repo, document, digest: String(row.digest), source: String(row.source), expiresAt: String(row.expires_at), taskId: row.task_id as string | null, flowId: row.flow_id == null ? null : Number(row.flow_id), savedId: row.saved_id as string | null, savedRevision: row.saved_revision as number | null };
 }
 function currentPreview(store: Store, actor: string, repo: string, token: string): WorkflowPreview {
   access(store, actor, repo, true);
@@ -257,16 +259,16 @@ function currentPreview(store: Store, actor: string, repo: string, token: string
   if (preview === null) throw new RecipeError("No preview in this project. Preview the workflow again.", 404);
   return preview;
 }
-export function launchWorkflow(store: Store, actor: string, repo: string, token: string, now: Date, operatorFiling: boolean): { taskId: string | null; routineId: number | null } {
+export function launchWorkflow(store: Store, actor: string, repo: string, token: string, now: Date, operatorFiling: boolean): { taskId: string | null; flowId: number | null } {
   repo = recipeProject(repo);
   return store.transact(() => {
     const preview = currentPreview(store, actor, repo, token);
-    if (preview.taskId !== null || preview.routineId !== null) return { taskId: preview.taskId, routineId: preview.routineId };
+    if (preview.taskId !== null || preview.flowId !== null) return { taskId: preview.taskId, flowId: preview.flowId };
     if (preview.expiresAt <= now.toISOString()) throw new RecipeError("This preview expired. Preview it again before creating work.", 409);
     const d = preview.document;
     if (d.version === 2) throw new RecipeError("Answer the recipe questions and preview the filled-in work before creating it.", 409);
     const provenance = `recipe:${preview.savedId ?? preview.source}`;
-    let taskId: string | null = null, routineId: number | null = null;
+    let taskId: string | null = null, flowId: number | null = null;
     if (d.schedule === null) {
       const made = fileTaskProposal(store, { id: `workflow-${token}`, title: d.name, repo, goal: d.goal, outOfScope: d.outOfScope, touches: d.touches, acceptance: d.acceptance, planning: d.planning, deliverable: d.deliverable, filedVia: provenance, filedBy: { name: actor, kind: "person" as const }, admittedRepos: [repo] }, now);
       if (!made.ok) throw new RecipeError(made.message, made.reason === "backlog-full" ? 429 : 400);
@@ -274,13 +276,15 @@ export function launchWorkflow(store: Store, actor: string, repo: string, token:
       if (operatorFiling) applyModeToNewFiling(store, taskId, actor, now);
     } else {
       const slug = d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "workflow";
-      const made = fileRoutineProposal(store, { name: `${slug}-${token.slice(0, 8)}`, repo, goal: d.goal, outOfScope: d.outOfScope, touches: d.touches, acceptance: d.acceptance, requirements: [], schedule: d.schedule, costCeilingUsd: d.costCeilingUsd, filedVia: provenance, createdBy: actor, admittedRepos: [repo] }, now);
+      // A scheduled flow whose schedule starts paused: nothing repeats until a person turns it on.
+      const made = createScheduledFlow(store, { repo, name: d.name, stem: `${slug}-${token.slice(0, 8)}`, schedule: d.schedule, by: actor,
+        terms: { goal: d.goal, outOfScope: d.outOfScope, touches: d.touches, requirements: [], acceptance: d.acceptance, budgetPerRunMicrousd: null, costCeilingUsd: d.costCeilingUsd } }, now);
       if (!made.ok) throw new RecipeError(made.message);
-      routineId = made.id;
+      flowId = made.flow;
     }
-    store.handle.prepare("UPDATE workflow_preview SET task_id=?,routine_id=? WHERE token=?").run(taskId, routineId, token);
-    store.recordAction({ at: now.toISOString(), actor, repo, taskId, runId: null, action: "workflow created", outcome: routineId === null ? "task" : "routine", source: "work" });
-    return { taskId, routineId };
+    store.handle.prepare("UPDATE workflow_preview SET task_id=?,flow_id=? WHERE token=?").run(taskId, flowId, token);
+    store.recordAction({ at: now.toISOString(), actor, repo, taskId, runId: null, action: "workflow created", outcome: flowId === null ? "task" : "scheduled flow", source: "work" });
+    return { taskId, flowId };
   });
 }
 export function saveWorkflowRecipe(store: Store, actor: string, repo: string, token: string, now: Date): Recipe {
@@ -298,7 +302,7 @@ export function saveWorkflowRecipe(store: Store, actor: string, repo: string, to
 }
 export function workflowSteps(document: RecipeDocument): { title: string; detail: string }[] {
   return [
-    { title: "Authorize", detail: document.schedule === null ? "Your project policy applies. Without a matching policy, review and approve the scope first." : "Approve the repeating scope and exact agents once. New recipes start inactive." },
+    { title: "Authorize", detail: document.schedule === null ? "Your project policy applies. Without a matching policy, review and approve the scope first." : "Turn the schedule on when you're ready. Each run waits for approval under your project's rules." },
     ...(document.deliverable === "report" ? [{ title: "Investigate", detail: "Inspect the project and return a source-backed report." }] : [
       ...(document.schedule === null && document.planning !== "skip" ? [{ title: "Plan", detail: document.planning === "required" ? "Inspect the repository and plan before building." : "Plan first when the scope calls for repository discovery." }] : []),
       { title: "Build", detail: "Work in an isolated branch within the agreed scope." },
@@ -310,5 +314,5 @@ export function workflowSteps(document: RecipeDocument): { title: string; detail
 export function recipeScheduleWords(document: RecipeDocument, now: Date): string {
   if (document.schedule === null) return "Once, after its approval and readiness gates pass";
   const schedule = parseSchedule(document.schedule)!;
-  return `${describeSchedule(schedule)}. If approved now, first due ${firstFireAt(schedule, now)}. Missed slots run once; unfinished work prevents overlap.`;
+  return `${describeSchedule(schedule)}, one at a time (first ${firstFireAt(schedule, now)} if turned on now). Nothing repeats until you turn the schedule on.`;
 }

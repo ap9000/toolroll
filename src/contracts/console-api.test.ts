@@ -195,13 +195,10 @@ describe("over HTTP", () => {
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
     const before = snapshot();
-    // A row with its own protocol (its own caller refusal) proves itself without the shared form guard: only the
-    // attended beat, which checks cookie, approver and Sec-Fetch-Site instead, and still changes nothing here.
+    // Every console POST row goes through the shared form guard: none has its own caller protocol.
     const posts = ROUTES.filter(row => row.stage === "console" && row.method === "POST");
     const guarded = posts.filter(row => row.callerRefusal === undefined);
-    expect(posts.filter(row => !guarded.includes(row)).map(row => row.id)).toEqual(["session.attended-beats"]);
-    const beat = await post(cookie, "/session/attended-beats", new URLSearchParams([["csrf", "0".repeat(64)]]));
-    expect([beat.status, await beat.text()]).toEqual([403, expect.stringContaining("the beat only answers this console")]);
+    expect(guarded).toEqual(posts);
     const fields = { token: password, password, name: "alex", repo: REPO, confirm: "yes" };
     for (const row of guarded) {
       const missing = await post(cookie, row.sample, new URLSearchParams(fields));

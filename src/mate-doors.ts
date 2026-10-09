@@ -24,7 +24,7 @@ import { readProjectAccess } from "./project-access.js";
 import { TeamLeads } from './team-leads.js';
 import { fileTaskProposal } from "./proposal.js";
 import { proposeGuarded } from "./scope.js";
-import { isRiskLevel, isTaskSize, PHASES, riskTitle, specWords } from "./phase-routing.js";
+import { isTaskSize, PHASES, specWords } from "./phase-routing.js";
 import { isProviderId } from "./provider.js";
 import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
@@ -49,7 +49,6 @@ export type DoorRefusal =
   | "stale"
   | "claimed"
   | "not-queued"
-  | "contest-open"
   | "unknown-task"
   | "unknown-decision"
   | "already-answered"
@@ -63,7 +62,6 @@ export type DoorOptions = {
   evidenceRoot?: string;
   /** Only the secure human review endpoint supplies this; never saved or model-authored. */
   actionReview?: SharedActionOptions["review"];
-  held?: import("./task-control.js").StopRequest["held"];
   /** The existing ceremony for an irreversible decision option: `confirm=yes`, typed explicitly (ruling 12). */
   confirm?: boolean;
   /** Which surface answered — recorded on the decision, the stop and the
@@ -381,9 +379,9 @@ function executeProposal(
   const ref = store.lookupRef(taskId);
   if (ref === null || !admitted(ref.repo)) return refuse("unknown-task", "no such task in your projects");
   if (kind === "task_action") {
-    // An attended surface (the console, the paired phone) honours the
+    // A person's own surface (the console, the paired phone) honours the
     // operator's own automatic-approval mode; the CLI keeps its ceremony.
-    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { held: options.held, deferSignal: options.deferSignal, via: options.via, ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
+    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { deferSignal: options.deferSignal, via: options.via, ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 
@@ -449,14 +447,12 @@ function executeProposal(
     const filed = store.fileSteerNote(taskId, verifiedAuthor(actor.name), note, now);
     if (!filed.ok) {
       const said =
-        filed.reason === "contest-open"
-          ? "agents are racing on this task — guidance can be added after the comparison finishes"
-          : filed.reason === "task-finished"
-            ? "this task is finished — guidance has no next attempt to reach"
-            : filed.reason === "invalid-note"
-              ? (filed.problem ?? "that guidance could not be saved")
-              : "no such task";
-      return refuse(filed.reason === "contest-open" ? "contest-open" : "refused", said);
+        filed.reason === "task-finished"
+          ? "this task is finished — guidance has no next attempt to reach"
+          : filed.reason === "invalid-note"
+            ? (filed.problem ?? "that guidance could not be saved")
+            : "no such task";
+      return refuse("refused", said);
     }
     const taskName = payloadString(payload, "taskTitle") ?? taskId;
     return { ok: true, kind, said: `Guidance saved for ${taskName}'s next attempt`, taskId };
@@ -478,9 +474,6 @@ function executeProposal(
       (blockerTask.state !== "failed" && blockerTask.state !== "cancelled")
     ) {
       return refuse("stale", "the task it was waiting for changed since this was proposed — look again");
-    }
-    if (store.openContestFor(ref.id) !== null) {
-      return refuse("contest-open", "a tournament is running on the dependent task — let it finish first");
     }
     if (operation === "retry") {
       const blockerRef = store.lookupRef(blocker);
@@ -522,22 +515,20 @@ function executeProposal(
     // authenticated route-edit transaction — the same door the task page
     // uses. Re-proved here, inside it: the actor's standing (the edit's
     // own authenticate hook), the digest the card was drafted against
-    // (CAS — a scope rewritten meanwhile refuses), a live claim or open
-    // contest (refused inside the store), and — for an agent — that the
+    // (CAS — a scope rewritten meanwhile refuses), a live claim (refused
+    // inside the store), and — for an agent — that the
     // pair is STILL one of the configured, role-valid choices right now.
     // Nothing the mate wrote becomes authority: only a configured pair,
     // recorded under the operator's name, ever reaches the route.
-    const risk = payload["risk"];
     const phase = payload["phase"];
     const clear = payload["clear"] === true;
     const provider = payloadString(payload, "provider");
     const model = payloadString(payload, "model");
     const size = payload["size"];
     const risky = payload["risky"];
-    if (risk !== undefined && !isRiskLevel(risk)) return refuse("refused", "this proposal carries an unknown risk level");
     if (size !== undefined && (!isTaskSize(size) || typeof risky !== "boolean")) return refuse("refused", "this proposal carries an unknown size");
     if (phase !== undefined && (typeof phase !== "string" || !PHASES.includes(phase as Phase))) return refuse("refused", "this proposal names an unknown role");
-    if (risk === undefined && phase === undefined && size === undefined) return refuse("refused", "this proposal changes nothing about the agents");
+    if (phase === undefined && size === undefined) return refuse("refused", "this proposal changes nothing about the agents");
     let override: { phase: Phase; provider: ProviderId; model: string } | { phase: Phase; clear: true } | undefined;
     if (typeof phase === "string") {
       if (clear) {
@@ -555,7 +546,6 @@ function executeProposal(
           const standing = reproveApprover(store, actor);
           return standing.ok ? { ok: true } : { ok: false, reason: `your approver standing changed (${standing.reason}) — sign in again` };
         },
-        ...(isRiskLevel(risk) ? { risk } : {}),
         ...(isTaskSize(size) && typeof risky === "boolean" ? { size: { size, risky } } : {}),
         ...(override === undefined ? {} : { override }),
         expectDigest: payloadString(payload, "sawDigest"),
@@ -570,7 +560,6 @@ function executeProposal(
       if (edited.reason === "not-configured") return refuse("stale", `${specWords({ provider: provider as string, model: model as string })} is no longer one of the configured agents for that role — look again`);
       if (edited.reason === "changed") return refuse("stale", "the scope was rewritten since this was proposed — look again");
       if (edited.reason === "live-claim") return refuse("claimed", "this task is being built right now");
-      if (edited.reason === "contest-open") return refuse("contest-open", "a tournament is running on this task — let it finish first");
       if (edited.reason === "unauthenticated") return refuse("standing", edited.detail);
       if (edited.reason === "no-task") return refuse("unknown-task", "no such task");
       return refuse("refused", edited.detail);
@@ -581,7 +570,6 @@ function executeProposal(
     const taskName = payloadString(payload, "taskTitle") ?? taskId;
     const roleWord = typeof phase === "string" ? ({ plan: "planner", build: "builder", repair: "repair", review: "reviewer" } as Record<string, string>)[phase] ?? phase : null;
     const changed = [
-      ...(isRiskLevel(risk) ? [`risk is now ${riskTitle(risk).toLowerCase()}`] : []),
       ...(isTaskSize(size) ? [`it is now a ${size}${risky === true ? ", risky" : ""} change`] : []),
       ...(roleWord === null ? [] : clear ? [`the ${roleWord} choice was cleared — the recommendation stands again`] : [`the ${roleWord} is now ${specWords({ provider: provider as string, model: model as string })}`]),
     ];
@@ -620,7 +608,6 @@ function refuseFromReason(kind: ProposalKind, reason: string): DoorOutcome {
     changed: { reason: "stale", said: "the scope was rewritten since this was proposed — look again" },
     claimed: { reason: "claimed", said: "this task is being built right now" },
     "not-queued": { reason: "not-queued", said: "only queued work can move — this task is not waiting in the queue" },
-    "contest-open": { reason: "contest-open", said: "a tournament is running on this task — let it finish first" },
     "unknown-task": { reason: "unknown-task", said: "no such task" },
   };
   const typed = known[reason];

@@ -16,7 +16,7 @@ function fixture(projects: string[] | null = null) {
     lookupRef: vi.fn((id: string) => ({ repo: `/task/${id}` })),
     getRun: vi.fn((id: number) => ({ taskRef: id + 100 })), refForId: vi.fn((id: number) => ({ repo: `/run/${id}` })),
     getDecision: vi.fn((id: number) => ({ run: id + 10 })), openIncidents: () => [{ id: 7, run: 20 }],
-    getRoutine: vi.fn((id: number) => ({ repo: `/routine/${id}` })), getFlow: vi.fn((id: number) => ({ repo: `/flow/${id}` })),
+    getFlow: vi.fn((id: number) => ({ repo: `/flow/${id}` })),
     knownRepos: () => ['/allowed'],
   };
   const runtime = { store, defaultProject: '/allowed', liveCeiling: () => ({ repos: ['/allowed'], roots: [] }), ceiling: { repos: ['/allowed'], roots: [] },
@@ -49,7 +49,7 @@ test('project columns resolve saved resource identities, forms and session conte
     ['none', '/', null], ['session', '/', '/allowed'], ['form', '/tasks/add', '/form'],
     ['form-path', '/projects/select', process.cwd()], ['task', '/t/a%2Fb/evidence', '/task/a/b'], ['run', '/r/7', '/run/107'],
     ['decision', '/d/7', '/run/117'], ['incident', '/i/7', '/run/120'],
-    ['routine', '/routines/7', '/routine/7'], ['flow', '/flows/7/live', '/flow/7'],
+    ['flow', '/flows/7/live', '/flow/7'],
     ['proposal', '/chat/action/7', '/saved-owner-project'], ['coding', '/code/session', '/saved-owner-project'], ['conversation', '/chat', '/allowed'],
   ];
   for (const [source, path, expected] of cases) expect(guards.resolveRouteProject(source, new URL(path, 'http://local'), who, request, new URLSearchParams({ repo: '/form', path: process.cwd() })), source).toBe(expected);
@@ -63,7 +63,7 @@ test('the shared gate checks the resolved resource against instance and account 
   for (const projects of [null, ['/allowed']]) {
     const { guards, who, request, response } = fixture(projects);
     const check = () => {
-      for (const [method, path] of [['GET', '/t/other'], ['GET', '/r/7'], ['GET', '/d/7'], ['GET', '/routines/7'], ['GET', '/flows/7/live'], ['POST', '/tasks/add']]) {
+      for (const [method, path] of [['GET', '/t/other'], ['GET', '/r/7'], ['GET', '/d/7'], ['GET', '/flows/7/live'], ['POST', '/tasks/add']]) {
         const row = matchRoute(method!, path!)!;
         expect(guards.projectRequestAllowed(row, row.project, new URL(path!, 'http://local'), who, request, response, new URLSearchParams({ repo: '/outside' })), row.id).toBe(false);
       }

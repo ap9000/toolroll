@@ -152,14 +152,8 @@ describe("prepared candidate observer-gap eligibility is read-only and not exit 
       .run(store.lookupRef("prepared")!.id, runId, START.toISOString(), join(dir, "worktree"));
     expect(assess()).toEqual({ ok: false, reason: "task-still-active-or-held" });
   });
-  test("held supervisor and an exact stop remain fenced", () => {
-    // The historical custody fixture uses schema rows, not an invented ended
-    // process. No probe or shutdown action should run to make it eligible.
-    store.handle.prepare("INSERT INTO attended_authorization (id,task_ref,approver,runner,runner_generation,composite_digest,terms_json,max_session_turns,budget_microusd,created_at,absolute_expiry) VALUES ('unused',?,'operator','builder',1,'fixture','{}',1,0,?,?)")
-      .run(store.lookupRef("prepared")!.id, START.toISOString(), NOW.toISOString());
-    store.openHeldSession({ run: runId, authorizationId: "unused", runner: "builder", leaseId: "prepared-lease", upIncarnation: "test", cookie: "private", socketPath: "/private/unused.sock", now: START });
-    expect(assess()).toEqual({ ok: false, reason: "owned-run-not-settled" });
-    store.handle.prepare("DELETE FROM held_session WHERE run = ?").run(runId);
+  test("an exact stop remains fenced", () => {
+    // No probe or shutdown action should run to make it eligible.
     store.handle.prepare("INSERT INTO run_stop (run,task_ref,requested_at,requested_by,requested_via) VALUES (?,?,?,'operator','cli')")
       .run(runId, store.lookupRef("prepared")!.id, NOW.toISOString());
     expect(assess()).toEqual({ ok: false, reason: "owned-run-not-settled" });

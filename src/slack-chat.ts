@@ -22,7 +22,6 @@ import {
 } from "./chat-channel.js";
 import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
 import { renderReply } from "./reply-shape.js";
-import { type DoorOptions } from "./mate-doors.js";
 import {
   SlackState,
   slackHash,
@@ -62,7 +61,6 @@ export type SlackChatOptions = {
   current: () => boolean;
   origin: () => string | null;
   subscriptionRunner?: SubscriptionMateRunner;
-  held?: DoorOptions["held"];
   canNotify?: () => boolean;
   clock?: () => Date;
   upload?: typeof uploadSlackBytes;

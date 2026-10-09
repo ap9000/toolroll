@@ -30,7 +30,7 @@ import { flowFromSteps } from "./flows.js";
 import { createDecisionServer } from "./serve.js";
 import { requestTaskStop } from "./task-control.js";
 import { register } from "./runner.js";
-import { acquire, finalizeInterruptedFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { approve } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
 import { assignmentOf } from "./assignment.js";
@@ -734,7 +734,7 @@ describe("shared chat action lifecycle", () => {
       true,
     );
     const ref = store.lookupRef(id)!,
-      route = store.routeAuthorityFor(ref.id, "builder", null);
+      route = store.routeAuthorityFor(ref.id, "builder");
     if (!route?.ok) throw Error("route");
     const run = store.startRun({
       taskRef: ref.id,
@@ -792,7 +792,7 @@ describe("shared chat action lifecycle", () => {
         newLeaseId: () => "resume-fixture",
       });
     if (!claim.ok) throw Error(claim.reason);
-    const route = store.routeAuthorityFor(ref.id, "builder", null);
+    const route = store.routeAuthorityFor(ref.id, "builder");
     if (!route?.ok) throw Error("route");
     const run = store.startRun({
       taskRef: ref.id,
@@ -813,8 +813,8 @@ describe("shared chat action lifecycle", () => {
     expect(() => proposal("task_resume", { task: id, run })).toThrow(
       /not ready/,
     );
-    finalizeInterruptedFenced(store, {
-      leaseId: claim.claim.leaseId,
+    finalize(store, claim.claim.leaseId, {
+      kind: "interrupted",
       runId: run,
       taskId: id,
       stopRun: run,

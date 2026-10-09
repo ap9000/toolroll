@@ -3,8 +3,8 @@
  * acceptance 2): an immediate setsid/double-fork helper dies with its
  * root's natural exit, an exact-run stop ends one run's whole object while
  * an independent sibling keeps running, the worker's death takes its
- * objects with it through the janitor, the held supervisor road is
- * covered by the same object, and nothing writes after settlement.
+ * objects with it through the janitor, and nothing writes after
+ * settlement.
  *
  * These tests EXECUTE only where the facility exists — Linux with a
  * delegated cgroup v2 (the CI job delegates one). Anywhere else they
@@ -21,7 +21,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { effectiveContainment, pinContainment, probeContainmentCapability, resetContainmentForTests } from "./containment.js";
 import { containerEmptiness } from "./container-state.js";
-import { run, startClaudeHeldSession, terminateOwnedProcesses } from "./exec.js";
+import { run, terminateOwnedProcesses } from "./exec.js";
 
 const capability = process.platform === "linux" ? probeContainmentCapability() : null;
 const native = capability !== null && capability.available;
@@ -176,41 +176,6 @@ describe("native containment (Linux, delegated cgroup v2)", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  });
-
-  test.skipIf(!native)("c2: the held supervisor road runs inside the object: killHard ends the agent's escaped helper and proves the object empty", async () => {
-    const agent = join(dir, "agent.mjs");
-    writeFileSync(agent, `
-      import { spawn, spawnSync } from "node:child_process";
-      import { writeFileSync } from "node:fs";
-      const dir = ${JSON.stringify(dir)};
-      const child = spawn("/bin/sh", ["-c", 'while true; do echo tick >> "' + dir + '/held-ticks.log"; sleep 0.02; done'], { stdio: "ignore", detached: true });
-      child.unref();
-      writeFileSync(dir + "/held-pids.json", JSON.stringify({ agent: process.pid, escaped: child.pid }));
-      process.stdin.resume();
-      setInterval(() => {}, 1000);
-    `);
-    let id = "";
-    let empties = 0;
-    const started = await startClaudeHeldSession(process.execPath, [agent], {
-      socketPath: join(dir, "h.sock"),
-      cookie: "cookie",
-      graceMs: 1000,
-      readyTimeoutMs: 10_000,
-      onContainer: info => { id = info.id; remember(info); },
-      onContainerEmpty: () => { empties += 1; },
-    });
-    expect(started.ok, started.ok ? "" : started.message).toBe(true);
-    if (!started.ok) return;
-    expect(await waitFor(() => existsSync(join(dir, "held-pids.json")), 10_000)).toBe(true);
-    const pids = JSON.parse(readFileSync(join(dir, "held-pids.json"), "utf8")) as { agent: number; escaped: number };
-    expect(state(id)).toBe("populated");
-    started.handle.killHard();
-    await started.handle.exited;
-    expect(await waitFor(() => !alive(pids.agent) && !alive(pids.escaped), 10_000)).toBe(true);
-    expect(empties).toBe(1);
-    expect(state(id)).toBe("empty");
-    expect(await stableAfterSettlement(join(dir, "held-ticks.log"))).toBe(true);
   });
 
   test.skipIf(!native)("c2: a required policy on a machine whose delegated cgroup vanished refuses per spawn, before any target runs", async () => {

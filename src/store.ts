@@ -51,7 +51,7 @@ import { tokenPurpose, tokenRotationProblem, type TokenPurpose } from "./api-tok
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import { worktreeProcessOccupancy } from "./worktree.js";
@@ -61,8 +61,8 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, canonicalChainJson, chainFromJson, chainDigestOf, entryDigestOf, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type ChainEntry, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
-import { resolveScopeProfile, resolveScopeChain, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
+import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
   canonicalOverridesJson,
   canonicalRouteJson,
@@ -97,7 +97,7 @@ import {
   type RouteOverride,
 } from "./phase-routing.js";
 import { readAuthModeStrict } from "./keys.js";
-import { isFallbackEligible, recognizesEligible, classMatchesAuthMode, type TerminalClass } from "./exhaustion.js";
+import type { TerminalClass } from "./exhaustion.js";
 import { modeDigestOf, modeTermsFromJson } from "./modes.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { isProviderId, type ProviderId } from "./provider.js";
@@ -116,7 +116,7 @@ import { LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V54_COLUMNS, LEDGER_V54_TABLE, LEDG
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
-import { POLICY_SCHEMA, agentRefusal, approvalRefusal, attendedRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
+import { POLICY_SCHEMA, agentRefusal, approvalRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
 import { PROVIDER_AUTH_SCHEMA } from "./provider-auth.js";
 import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
@@ -661,7 +661,18 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v114 names one exact shape, migrated once: a settled run keeps one process summary instead of its exited witnesses,
 // notification's single-destination delivery columns move into legacy receipts, and the workspace revision triggers are gone
 // (the write wrapper bumps the revision). Every later DDL change bumps the version.
-export const SCHEMA_VERSION = 114;
+// v115 removes contests, held sessions, fallback chains and routines (each routine becomes a scheduled flow).
+export const SCHEMA_VERSION = 115;
+
+/** v115: the tables migrateToV115 drops. */
+export const V115_DROPPED_TABLES: readonly string[] = Object.freeze([
+  "tournament_terms", "contest", "contestant",
+  "routine", "routine_fire",
+  "attended_authorization", "session_turn", "held_session",
+  "fallback_config", "fallback_cycle", "fallback_transition",
+]);
+/** The foreign keys other tables kept to removed rows, exactly as their DDL wrote them. */
+const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_terms|session_turn|attended_authorization|held_session|fallback_cycle|fallback_config|fallback_transition|routine|routine_fire)\(id\)(?: ON DELETE CASCADE)?/g;
 
 /**
  * The migrations `toolroll update` may carry a database through in place: each
@@ -681,8 +692,16 @@ export const SCHEMA_VERSION = 114;
  * (rows removed equal the witnesses summarized), and notification drops its
  * delivery columns only after every value moves into one legacy receipt per row
  * (rows and ids carried whole; legacy receipts added equal the rows carried).
+ * v115 removes contests, held sessions, fallback chains and routines, and is
+ * checked under rules named for exactly that: the eleven removed tables may go
+ * whole, every kept flow and trigger row stays as it was, and the only rows
+ * added are one flow and one schedule trigger per saved routine (paused unless
+ * the routine was approved and running). Its other changes add a column or
+ * settle rows in place; a database whose removed features still held a hold
+ * to lift or place changes that table's rows and is refused, so it takes the
+ * separate procedure.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113, 114]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113, 114, 115]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -879,9 +898,7 @@ export type TaskRef = {
   /** What comes back (v34): a branch to publish, or a report to read.
    * Set at filing and never rewritten — a scout's strikes are the task's. */
   deliverable: "branch" | "report";
-  /** The standing order this task is an instance of; null for one-off work. */
-  routineId: number | null;
-  /** The pinned agent, when a fire transaction stamped one. Authoritative. */
+  /** The pinned agent, when an approved standing order stamped one. Authoritative. */
   agentProvider: string | null;
   agentModel: string | null;
   /** Durable per-task override. null means the installation default is used
@@ -891,9 +908,6 @@ export type TaskRef = {
   /** Durable per-task evidence-policy override. null inherits the
    * installation default when a scope is next written. */
   qualityMode?: QualityMode | null;
-  /** v47: the task's declared risk; null reads as routine when the next
-   * scope is filed. The scope stores the signed level. */
-  riskLevel?: RiskLevel | null;
   /** v47: the approver's per-phase route overrides, applied when the next
    * scope is filed and recorded in the sealed route. null = the stored
    * list is malformed; the next filing goes unresolved rather than routing
@@ -919,98 +933,11 @@ export type TaskRef = {
 
 /** A standing order: a pre-approved template whose instances build unattended. */
 
-// ---- tournaments (v14) ----------------------------------------------------
-
-export type TournamentTerms = {
-  id: number;
-  taskRef: number;
-  generation: number;
-  active: boolean;
-  /** v27: 'race' = dollar-capped tournament; 'comparison' = labeled
-   * cross-runtime comparison with no dollar terms. */
-  kind: "race" | "comparison";
-  raceDigest: string;
-  /** Ordered agents: exact model ids, resolved at filing. */
-  agents: { provider: string; model: string; repairModel: string; permissionMode?: UnattendedPermissionMode }[];
-  n: number;
-  perAgentBudgetMicrousd: number;
-  overrunReserveMicrousd: number;
-  totalBudgetMicrousd: number;
-  priceVersion: number;
-  retries: number;
-  publicationPolicy: string;
-  createdAt: string;
-  approvedAt: string | null;
-  approvedBy: string | null;
-  approvedDigest: string | null;
-};
-
-export type ContestState =
-  | "dispatching"
-  | "racing"
-  | "pick-wait"
-  | "decision-wait"
-  | "picked"
-  | "abandoned"
-  | "interrupted"
-  | "exhausted";
-
-export type Contest = {
-  id: number;
-  taskRef: number;
-  terms: number;
-  generation: number;
-  state: ContestState;
-  scopeDigest: string;
-  raceDigest: string;
-  baseSha: string | null;
-  setupDigest: string | null;
-  currentLeaseId: string | null;
-  runner: string | null;
-  incarnation: string | null;
-  createdAt: string;
-  pickedAt: string | null;
-  pickedBy: string | null;
-  winnerContestant: number | null;
-  /** One escalation page per tournament, ever — set with the page. */
-  overduePaged: boolean;
-  /** v27: denormalized from the terms at admission. */
-  kind: "race" | "comparison";
-};
-
-export type ContestantState = "pending" | "ready" | "building" | "parked" | "built" | "failed" | "stopped";
-
-export type Contestant = {
-  /** v24: the contestant's own sealed execution profile. */
-  profile?: ExecutionProfile | null;
-  id: number;
-  contest: number;
-  ordinal: number;
-  provider: string;
-  model: string;
-  repairModel: string;
-  branch: string;
-  worktree: string | null;
-  generation: number;
-  state: ContestantState;
-  activeRun: number | null;
-  budgetMicrousd: number;
-  reserveMicrousd: number;
-  /** What the provider reported — monotonic, never guessed. */
-  measuredMicrousd: number;
-  /** What the ledger charges — the full reservation when unknowable. */
-  accountedMicrousd: number;
-  unknownSpend: boolean;
-  cleanup: "pending" | "done" | "attention" | null;
-  custody: string | null;
-};
-
 export type ExecutionSlot = {
   id: number;
   runner: string;
   state: "reserved" | "running" | "released";
   run: number | null;
-  contestant: number | null;
   incarnation: string | null;
   processGroup: number | null;
   reservedAt: string;
@@ -1062,8 +989,6 @@ export type ChatSnapshot = {
   decisionsSaturated: boolean;
   incidents: { repoIndex: number; kind: string; ageHours: number }[];
   incidentsSaturated: boolean;
-  routines: { repoIndex: number; name: string; schedule: string; status: string; lastFire: string | null }[];
-  routinesSaturated: boolean;
   publications: { repoIndex: number; pr: number | null; checkState: string | null }[];
   publicationsSaturated: boolean;
 };
@@ -1366,78 +1291,10 @@ export type MateTurn = {
   failureReason: string | null;
 };
 
-export type Routine = {
-  id: number;
-  name: string;
-  /** v102: who made it (its instances are filed as theirs); null before v102 or when no person is known. */
-  createdBy: string | null;
-  repo: string;
-  goal: string;
-  outOfScope: string | null;
-  touches: string[];
-  /** v39: the signed rubric every instance's scope copies forward. */
-  acceptance: AcceptanceCriterion[];
-  requirements: string[];
-  /** 'every:<minutes>', 'daily:<HH:MM>[@Zone]', or 'weekly:<0-6>:<HH:MM>[@Zone]' (UTC by default). */
-  schedule: string;
-  singleFlight: boolean;
-  /** Rolling 7-day dollar ceiling; null = none. Enforcement fails closed. */
-  costCeilingUsd: number | null;
-  /** Per-instance dollar cap (v16); copied into each instance's scope. */
-  budgetPerRunMicrousd: number | null;
-  paused: boolean;
-  /** Of every term above. Approval binds to this exact value. */
-  digest: string;
-  approvedAt: string | null;
-  approvedBy: string | null;
-  approvedDigest: string | null;
-  /** The next scheduled occurrence; null until approved. */
-  nextFireAt: string | null;
-  /** Immutable filing provenance (v12); null on rows from before it existed. */
-  filedVia: string | null;
-  createdAt: string;
-  updatedAt: string;
-  /** v24: the working execution profile and the approval's sealed snapshot. */
-  profile?: ExecutionProfile | null;
-  approvedProfile?: ExecutionProfile | null;
-  /** v48: the four-role agent route the digest binds, and the snapshot the
-   * approval sealed. Null on a routine filed before routing froze — such a
-   * routine cannot be approved or fired until it is filed again. A row
-   * carrying unreadable route bytes reads null too, and fails closed. */
-  route?: PhaseRoute | null;
-  approvedRoute?: PhaseRoute | null;
-  /** v48: true when the row CARRIES route or profile bytes that do not
-   * read back — a corrupt snapshot, as distinct from one never taken. Every
-   * surface says which, and both fail closed. */
-  routeUnreadable?: boolean;
-  approvedRouteUnreadable?: boolean;
-  approvedProfileUnreadable?: boolean;
-  /** THE RAW TERMS VERDICT (raw authority repair): null when every stored
-   * term the digest binds read back EXACTLY — touches and requirements as
-   * JSON lists of strings, the rubric as whole criteria with no unknown
-   * key, the flags as 0/1, the ceilings as numbers or null — and the words
-   * when one did not. The integrity projection reads it FIRST: a row whose
-   * terms cannot be read exactly is not approved, not live, not approvable,
-   * and not refreshable, so the lenient fields above can never become a
-   * firing's authority. Undefined on a hand-built routine. */
-  termsProblem?: string | null;
-};
-
-/** One scheduled slot's outcome, fired or skipped — never silent. */
-export type RoutineFire = {
-  id: number;
-  routineId: number;
-  scheduledFor: string;
-  outcome: "fired" | "skipped";
-  reason: string | null;
-  instanceTaskRef: number | null;
-  createdAt: string;
-};
-
 /** Who placed a hold — and therefore who alone may lift it. */
 /** 'stop' (v52) = the pause one exact attempt's operator stop placed — lifted
  * only by resuming THAT attempt, never by `unhold` or by answering a decision. */
-export type HoldOwner = "operator" | "decision" | "incident" | "backoff" | "contest" | "revision" | "stop";
+export type HoldOwner = "operator" | "decision" | "incident" | "backoff" | "revision" | "stop";
 
 export type Hold = {
   id: number;
@@ -1589,7 +1446,6 @@ const LIFECYCLE_HOLD_WORDS: Record<HoldOwner, string> = {
   decision: "an unanswered question",
   incident: "an unresolved incident",
   backoff: "its retry backoff",
-  contest: "a tournament",
   revision: "a plan revision awaiting approval",
   stop: "a stopped attempt that has not been resumed",
 };
@@ -1667,8 +1523,9 @@ export type RunnerWorkRecovery = {
 };
 
 /** How a stop's settlement was established (v52). `interrupted` = the
- * owning worker sealed the attempt after its processes ended; `held` = the
- * held-session supervisor fenced it; `recovered` = dead-incarnation
+ * owning worker sealed the attempt after its processes ended; `held`
+ * (v52-v114, history only) = the removed held-session supervisor fenced it;
+ * `recovered` = dead-incarnation
  * recovery settled a run whose worker is proven gone; `finished` = the
  * attempt reached another ending first (the stop was recorded, but the
  * run's own outcome stands — the words say which). */
@@ -1769,11 +1626,9 @@ export type Run = {
   branch: string | null;
   worktree: string | null;
   model: string | null;
-  /** 'interrupted' (v25) = a held attended session cut down mid-flight. */
+  /** 'interrupted' (v25–v114) = a held session cut down mid-flight; kept so old rows read. */
   outcome: "built" | "failed" | "refused" | "parked" | "no-change" | "interrupted" | null;
   reason: string | null;
-  /** The attended authorization this run consumed (v25); null = ordinary dispatch. */
-  attendedAuthorization?: string | null;
   committed: boolean | null;
   startedAt: string;
   finishedAt: string | null;
@@ -1789,8 +1644,6 @@ export type Run = {
   headRevision: string | null;
   /** The validated terminal handoff's conclusion. */
   handoff: string | null;
-  /** When racing: which tournament agent this run belongs to. */
-  contestant: number | null;
   /**
    * Where the machine is in ITS OWN state machine — stamped by the control
    * plane at boundaries it owns, never parsed from a provider stream (M5.4).
@@ -1798,26 +1651,14 @@ export type Run = {
    */
   phase: RunPhase | null;
   /**
-   * The fallback-chain metadata (v30), NULL on every run outside a chain.
-   * `chainCycle`/`chainIndex`/`entryDigest` are stamped at admission (or at
-   * base-cycle open) and bind the run to exactly one entry of an immutable
-   * approved chain — the runtime re-derives authority from the snapshot,
-   * never from these, but reads them to know which entry ran.
-   */
-  chainCycle?: number | null;
-  chainIndex?: number | null;
-  entryDigest?: string | null;
-  /**
    * How this attempt authenticated (v30) — 'subscription' or 'api-key' —
    * stamped by the gateway. Decides which exhaustion class a match yields.
    */
   authMode?: "subscription" | "api-key" | null;
   /**
    * The gateway's honest classification of how this attempt ENDED (v30),
-   * computed at disposal from the structural terminal + the authoritative
-   * version + auth mode (exhaustion.ts). Fail-closed: 'unknown' until a
-   * fixture-backed recognizer exists. NEVER an authority by itself — the
-   * dispatch's C8 gate re-checks hasRecognizer before any advance.
+   * computed where the structural terminal still exists (exhaustion.ts).
+   * `auth-expired` pauses its provider; every other class is a record.
    */
   terminalClass?: TerminalClass | null;
   /** v44 (adaptive execution plans): the exact plan revision this attempt's
@@ -1839,102 +1680,6 @@ export const RUN_PHASES = [
   "correcting-proof",
 ] as const;
 export type RunPhase = (typeof RUN_PHASES)[number];
-
-// ---- attended core (v25, Parity II Phase 2) --------------------------------
-
-/**
- * One person's signed authority for ONE watched attempt (ruling 12). The id
- * is a pre-minted UUID — it IS the attempt identity the dispatch proof
- * consumes. Consumed (attemptRun set) is NOT closed: the authorization
- * stays active across its held session; closure is explicit and terminal.
- */
-export type AttendedAuthorization = {
-  id: string;
-  taskRef: number;
-  approver: string;
-  runner: string;
-  runnerGeneration: number;
-  compositeDigest: string;
-  termsJson: string;
-  maxSessionTurns: number;
-  /** A STOP THRESHOLD, not a ceiling: the agent halts when its total crosses it. */
-  budgetMicrousd: number;
-  /** Continuation: the finished parent attempt, also inside the signed terms. */
-  parentRun: number | null;
-  followup: string | null;
-  createdAt: string;
-  absoluteExpiry: string;
-  lastBeatAt: string | null;
-  attemptRun: number | null;
-  consumedAt: string | null;
-  closedAt: string | null;
-  endReason: string | null;
-};
-
-/**
- * One stdin injection into a held session (ruling 15). Author is a verified
- * operator name for 'operator' turns ONLY — brief and repair turns are
- * machine-authored and say so with null. 'uncertain' is TERMINAL: written
- * (or accepted) but never proven settled; charged at its reservation and
- * NEVER reinjected.
- */
-export type SessionTurn = {
-  id: number;
-  run: number;
-  seq: number;
-  sourceKind: "brief" | "answer" | "operator" | "repair";
-  /** The decision id for 'answer' turns, the triggering decision for 'repair'. */
-  sourceId: number | null;
-  author: string | null;
-  text: string;
-  reservedMicrousd: number;
-  accountedMicrousd: number | null;
-  accountedAt: string | null;
-  recordedAt: string;
-  writtenAt: string | null;
-  acceptedAt: string | null;
-  settledAt: string | null;
-  /** Marginal delta from the held session's durable cumulative baseline. */
-  measuredMicrousd: number | null;
-  outputTokens: number | null;
-  state: "recorded" | "written" | "accepted" | "settled" | "uncertain" | "cancelled";
-};
-
-/**
- * Durable crash custody for one held session (ruling 15). The orphan
- * predicate is lease-based; 'fencing' is a helpable, leased state with
- * deadline takeover. cumulativeMicrousd is the settlement baseline the
- * provider's cumulative totals are diffed against.
- */
-export type HeldSession = {
-  run: number;
-  authorizationId: string;
-  runner: string;
-  leaseId: string;
-  upIncarnation: string;
-  cookie: string;
-  socketPath: string;
-  supervisorPid: number | null;
-  agentPgid: number | null;
-  cumulativeMicrousd: number;
-  cumulativeTokensOut: number;
-  state: "open" | "fencing";
-  fencer: string | null;
-  fencingDeadline: string | null;
-  startedAt: string;
-  endedAt: string | null;
-  endReason: string | null;
-};
-
-export type RecordTurnRefusal =
-  | "no-held-session"
-  | "fenced"
-  | "turn-cap"
-  | "turn-open"
-  | "budget-exhausted"
-  | "decision-open"
-  | "repair-exhausted"
-  | "answer-delivered";
 
 /**
  * One operator steering note (arc 1, v22). Attached ≠ delivered: attachment
@@ -2345,12 +2090,6 @@ export class RunAdmissionRefused extends Error {
   }
 }
 
-/** A present fallback-chain row carries this many entries after the base
- * (atomic authority closure) — the same bound `config set fallback`
- * enforces at the CLI, held again at the store's read and write so a row
- * outside it is a stated problem, never an empty chain. */
-export const FALLBACK_ENTRIES_MIN = 1;
-export const FALLBACK_ENTRIES_MAX = 3;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -2426,12 +2165,12 @@ CREATE TABLE IF NOT EXISTS task_ref (
   -- Planning failures count separately from build strikes: a planner that
   -- cannot finish must never spend the builder's three attempts.
   plan_strikes            INTEGER NOT NULL DEFAULT 0,
-  -- The standing order this task is an instance of, when it is one (v8).
-  -- Ordinary one-off work carries NULL; the board uses this to keep
-  -- instances in their track row instead of the main lanes.
-  routine_id              INTEGER REFERENCES routine(id),
+  -- History (v8–v114): the routine this task was an instance of. Routines
+  -- became scheduled flows in v115; their earlier tasks keep the number so
+  -- they still count toward the moved order's one-at-a-time and ceiling.
+  routine_id              INTEGER,
   -- The pinned agent (v9): which provider/model this task's builds run on,
-  -- stamped by the routine fire transaction (digest-authoritative) — a
+  -- stamped when an approved standing order files it (digest-authoritative) — a
   -- runtime flag never overrides a pin. NULL = resolve from config.
   agent_provider          TEXT,
   agent_model             TEXT,
@@ -2443,8 +2182,8 @@ CREATE TABLE IF NOT EXISTS task_ref (
   -- default when the next scope is filed; the scope stores the concrete
   -- signed choice.
   quality_mode            TEXT CHECK (quality_mode IN ('default','strict')),
-  -- Per-task declared risk (v47, phase routing). NULL reads as routine
-  -- when the next scope is filed; the scope stores the signed level.
+  -- Per-task declared risk (v47-v114; removed in v115): history only,
+  -- never read or written now — size drives routing.
   risk_level              TEXT CHECK (risk_level IN ('routine','elevated','high')),
   -- An approver's explicit per-phase route overrides (v47): a JSON list of
   -- {phase, provider, model, by, at}, at most one per phase. Read when the
@@ -2528,22 +2267,6 @@ CREATE TABLE IF NOT EXISTS phase_config (
   PRIMARY KEY (scope, phase)
 );
 
--- The fallback chain configuration (v30): the ORDERED fallback entries
--- AFTER the base (which the ordinary phase resolution supplies). Stored as
--- JSON per (scope, phase) — each entry names a provider, model, auth mode,
--- and optional repair model. Resolution folds base + these into the
--- ChainEntry[] the approval seals; nothing dispatches on it until an
--- approval binds it. A new table: it arrives by IF NOT EXISTS on fresh AND
--- upgraded databases alike.
-CREATE TABLE IF NOT EXISTS fallback_config (
-  scope       TEXT NOT NULL,
-  phase       TEXT NOT NULL CHECK (phase IN ('build')),
-  entries_json TEXT NOT NULL,
-  updated_at  TEXT NOT NULL,
-  updated_by  TEXT NOT NULL,
-  PRIMARY KEY (scope, phase)
-);
-
 -- The STRONG candidate tier (v47, phase routing): the operator's named
 -- strongest agent per phase, project or installation scoped, exactly like
 -- phase_config rows (which remain the routine tier). Strength is never
@@ -2579,8 +2302,8 @@ CREATE TABLE IF NOT EXISTS provider_readiness (
 
 -- Route provenance per run (v47): which sealed route a run spent under and
 -- the exact leg it used — the actual provider and model, and whether that
--- leg was recommended, overridden, pinned, an approved fallback entry, or
--- a legacy resolution. One row per run, written IN the admission
+-- leg was recommended, overridden, pinned, or a legacy resolution
+-- ('fallback' named an approved fallback entry before v115; history). One row per run, written IN the admission
 -- transaction that opens the run (startRun) so provenance can never lag
 -- authority, and IMMUTABLE set-once: an identical restamp is idempotent, a
 -- conflicting one refuses execution.
@@ -2592,59 +2315,6 @@ CREATE TABLE IF NOT EXISTS run_route (
   model        TEXT,
   chosen       TEXT NOT NULL CHECK (chosen IN ('recommended','override','pinned','legacy','fallback')),
   stamped_at   TEXT NOT NULL
-);
-
--- A standing order (v8): a pre-approved template whose instances build
--- without asking, because the operator agreed to the TEMPLATE — schedule,
--- budget, and "each firing builds unattended" restated at the yes. The
--- digest covers every term that constrains the order, and approval binds to
--- it exactly as a scope approval does: editing any term strands the yes.
-CREATE TABLE IF NOT EXISTS routine (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  name             TEXT NOT NULL UNIQUE,
-  repo             TEXT NOT NULL,
-  goal             TEXT NOT NULL,
-  out_of_scope     TEXT,
-  touches          TEXT NOT NULL DEFAULT '[]',
-  requirements     TEXT NOT NULL DEFAULT '[]',
-  -- 'every:<minutes>', 'daily:<HH:MM>[@Zone]', or 'weekly:<0-6>:<HH:MM>[@Zone]' (UTC by default). Parsed, never guessed at.
-  schedule         TEXT NOT NULL,
-  single_flight    INTEGER NOT NULL DEFAULT 1,
-  -- Rolling 7-day ceiling in dollars. NULL is honestly "no ceiling";
-  -- enforcement FAILS CLOSED on unmeasured paid runs (finding 5).
-  cost_ceiling_usd REAL,
-  -- Per-INSTANCE dollar cap (v16): copied into each instance's scope as
-  -- its digest-bound budget term, enforced by the same native-cap
-  -- plumbing as any scope budget. NULL = only the global backstop.
-  budget_per_run_microusd INTEGER,
-  paused           INTEGER NOT NULL DEFAULT 0,
-  digest           TEXT NOT NULL,
-  approved_at      TEXT,
-  approved_by      TEXT,
-  approved_digest  TEXT,
-  -- v24: the routine's execution profile; firings stamp instances FROM
-  -- the APPROVED snapshot, never from fresh resolution.
-  profile_json          TEXT,
-  approved_profile_json TEXT,
-  digest_version        INTEGER NOT NULL DEFAULT 1,
-  profile_provenance    TEXT,
-  -- v48: the routine's four-role agent route, and the snapshot approval
-  -- sealed. Every firing copies the APPROVED route onto its instance, so a
-  -- configuration change after the yes can never re-route a firing.
-  route_json            TEXT,
-  approved_route_json   TEXT,
-  -- The next scheduled occurrence. NULL until approved; advanced by the
-  -- fire transaction and nothing else, aligned to cadence (finding 10).
-  next_fire_at     TEXT,
-  created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL,
-  -- Immutable provenance (v12), same contract as task_ref.filed_via.
-  filed_via        TEXT,
-  -- v39: the signed rubric every instance's scope copies forward. A
-  -- routine is validated mandatory-non-empty at creation/edit time
-  -- (validateRoutineTerms) -- by the time a firing reads this column it
-  -- is guaranteed present, so fireRoutine never re-checks it.
-  acceptance_json  TEXT
 );
 
 -- Append-only installation facts (v12): set-once markers about THIS
@@ -2659,117 +2329,7 @@ CREATE TABLE IF NOT EXISTS installation_fact (
 );
 
 
--- Tournament builds (v14). Internal names stay technical; every screen
--- says "tournament", "agents", and "worker processes" in plain words.
---
--- The approved terms are a durable row of their own (round-3 finding 31):
--- immutable once written, one ACTIVE row per task, approved by the same
--- ceremony that approves the scope — the approval binds a joint digest
--- over both. Money is integer micro-dollars; the overrun reserve is the
--- worst one API call the pinned envelope permits, held apart from the
--- spendable budget and never granted to a later invocation.
-CREATE TABLE IF NOT EXISTS tournament_terms (
-  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref                  INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  generation                INTEGER NOT NULL,
-  active                    INTEGER NOT NULL DEFAULT 1,
-  -- v27: 'race' = dollar-capped tournament (money contract required);
-  -- 'comparison' = labeled cross-runtime comparison (no dollar terms
-  -- exist; each lane's sealed clock is its bound). The money CHECK is
-  -- kind-aware: races keep their positive budgets, comparisons pin 0.
-  kind                      TEXT NOT NULL DEFAULT 'race' CHECK (kind IN ('race','comparison')),
-  race_digest               TEXT NOT NULL,
-  -- The ordered agents, JSON: [{provider, model, repairModel}] — exact
-  -- model ids, resolved at filing, priced at price_version.
-  agents                    TEXT NOT NULL,
-  n                         INTEGER NOT NULL CHECK (n BETWEEN 2 AND 4),
-  per_agent_budget_microusd INTEGER NOT NULL,
-  overrun_reserve_microusd  INTEGER NOT NULL,
-  total_budget_microusd     INTEGER NOT NULL,
-  price_version             INTEGER NOT NULL,
-  retries                   INTEGER NOT NULL CHECK (retries = 0),
-  -- 'none', or the JSON of the publication grant constraints in force.
-  publication_policy        TEXT NOT NULL,
-  created_at                TEXT NOT NULL,
-  approved_at               TEXT,
-  approved_by               TEXT,
-  approved_digest           TEXT,
-  CHECK ((kind = 'race' AND per_agent_budget_microusd > 0 AND overrun_reserve_microusd > 0 AND total_budget_microusd > 0)
-      OR (kind = 'comparison' AND per_agent_budget_microusd = 0 AND overrun_reserve_microusd = 0 AND total_budget_microusd = 0))
-);
-
--- One active terms row per task (the whole table is new, so this partial
--- index may live here — the v11c trap only bites indexes over columns
--- that older files gain later by addColumn).
-CREATE UNIQUE INDEX IF NOT EXISTS tournament_terms_one_active
-  ON tournament_terms (task_ref) WHERE active = 1;
-
--- A running tournament. States are stable machine tokens (envelopes need
--- them); screens translate to plain words at render. The current lease
--- identity lives HERE so aggregation, reaping, and crash recovery all
--- fence on the same facts (finding 17/27).
-CREATE TABLE IF NOT EXISTS contest (
-  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref           INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  terms              INTEGER NOT NULL REFERENCES tournament_terms(id),
-  generation         INTEGER NOT NULL DEFAULT 1,
-  state              TEXT NOT NULL CHECK (state IN
-    ('dispatching','racing','pick-wait','decision-wait','picked','abandoned','interrupted','exhausted')),
-  scope_digest       TEXT NOT NULL,
-  race_digest        TEXT NOT NULL,
-  base_sha           TEXT,
-  setup_digest       TEXT,
-  current_lease_id   TEXT,
-  runner             TEXT,
-  incarnation        TEXT,
-  created_at         TEXT NOT NULL,
-  picked_at          TEXT,
-  picked_by          TEXT,
-  winner_contestant  INTEGER,
-  overdue_paged      INTEGER NOT NULL DEFAULT 0,
-  -- v24: 1 = legacy race digest (provider/model/repair only) — admission
-  -- keeps byte-comparing the stored fingerprint; 2 = full-profile terms.
-  race_semantics     INTEGER NOT NULL DEFAULT 1,
-  -- v27: denormalized from the terms at admission, so screens, holds,
-  -- and recovery speak the right words without a join.
-  kind               TEXT NOT NULL DEFAULT 'race'
-);
-
-CREATE INDEX IF NOT EXISTS contest_by_task ON contest (task_ref, id DESC);
-
--- One racing agent. Money is three columns kept deliberately apart
--- (finding 25): measured = what the provider reported, monotonic;
--- accounted = what the ledger charges (the full reservation when the
--- real figure is unknowable); unknown_spend = the honest flag that the
--- two differ. Custody (finding 29) records who owns the checkout while
--- a parked agent waits on an answer.
-CREATE TABLE IF NOT EXISTS contestant (
-  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  contest             INTEGER NOT NULL REFERENCES contest(id) ON DELETE CASCADE,
-  ordinal             INTEGER NOT NULL,
-  provider            TEXT NOT NULL,
-  model               TEXT NOT NULL,
-  repair_model        TEXT NOT NULL,
-  -- v24: the contestant's full execution-profile snapshot (canonical JSON).
-  profile_json        TEXT,
-  branch              TEXT NOT NULL,
-  worktree            TEXT,
-  generation          INTEGER NOT NULL DEFAULT 1,
-  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN
-    ('pending','ready','building','parked','built','failed','stopped')),
-  active_run          INTEGER REFERENCES run(id),
-  budget_microusd     INTEGER NOT NULL,
-  reserve_microusd    INTEGER NOT NULL,
-  measured_microusd   INTEGER NOT NULL DEFAULT 0,
-  accounted_microusd  INTEGER NOT NULL DEFAULT 0,
-  unknown_spend       INTEGER NOT NULL DEFAULT 0,
-  cleanup             TEXT CHECK (cleanup IN ('pending','done','attention')),
-  custody             TEXT,
-  UNIQUE (contest, ordinal)
-);
-
--- One row per worker process, ordinary builds and tournaments alike
--- (finding 26): reserved before anything spawns, running once the
+-- One row per worker process (finding 26): reserved before anything spawns, running once the
 -- process exists (with its group id, so recovery can check the OS
 -- before calling the capacity back), released on observed exit. The
 -- capacity a runner enforces in 'processes' mode counts these rows.
@@ -2778,7 +2338,8 @@ CREATE TABLE IF NOT EXISTS execution_slot (
   runner        TEXT NOT NULL,
   state         TEXT NOT NULL DEFAULT 'reserved' CHECK (state IN ('reserved','running','released')),
   run           INTEGER REFERENCES run(id),
-  contestant    INTEGER REFERENCES contestant(id),
+  -- v14-v114: the raced agent this slot served (contests were removed in v115); history only.
+  contestant    INTEGER,
   incarnation   TEXT,
   process_group INTEGER,
   reserved_at   TEXT NOT NULL,
@@ -3115,6 +2676,9 @@ CREATE TABLE IF NOT EXISTS flow_trigger_event (
   card       INTEGER REFERENCES flow_card(id),
   note       TEXT,
   at         TEXT NOT NULL,
+  -- v115: the task a schedule's standing order filed with this card. Written
+  -- once with the event; the card's own task moves on, this never does.
+  task       TEXT,
   PRIMARY KEY (trigger, key)
 );
 -- v91: a card's email conversation. Each email a Send email step sent (its
@@ -3388,24 +2952,6 @@ CREATE TABLE IF NOT EXISTS mate_turn (
 );
 CREATE INDEX IF NOT EXISTS mate_turn_live ON mate_turn (approver, state);
 
--- The firing ledger (v8): one row per scheduled slot, fired or skipped.
--- UNIQUE (routine_id, scheduled_for) is the idempotency — two passes both
--- finding the same due slot insert once, and the second learns it lost.
--- Skips are recorded, not silent: a budget block or a single-flight block
--- must render as a hollow dot, not read as "covered" (finding 10).
-CREATE TABLE IF NOT EXISTS routine_fire (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  routine_id        INTEGER NOT NULL REFERENCES routine(id) ON DELETE CASCADE,
-  scheduled_for     TEXT NOT NULL,
-  outcome           TEXT NOT NULL CHECK (outcome IN ('fired','skipped')),
-  reason            TEXT,
-  instance_task_ref INTEGER REFERENCES task_ref(id),
-  created_at        TEXT NOT NULL,
-  UNIQUE (routine_id, scheduled_for)
-);
-
-CREATE INDEX IF NOT EXISTS routine_fire_recent ON routine_fire (routine_id, id DESC);
-
 -- A hold is an operational pause, not a claim about the work's structure,
 -- which is why it may live out here while dependency edges may not.
 --
@@ -3418,6 +2964,7 @@ CREATE INDEX IF NOT EXISTS routine_fire_recent ON routine_fire (routine_id, id D
 CREATE TABLE IF NOT EXISTS hold (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  -- 'contest' stays allowed only so old files keep their shape; v115 removed contests and nothing writes it.
   owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff','contest','revision','stop')),
   owner_id   TEXT NOT NULL,
   reason     TEXT NOT NULL,
@@ -3523,18 +3070,17 @@ CREATE TABLE IF NOT EXISTS run (
   worktree      TEXT,
   model         TEXT,
   phase         TEXT,
-  contestant    INTEGER REFERENCES contestant(id),
-  -- 'interrupted' (v25) is a held attended session cut down mid-flight —
-  -- fence, expiry, crash custody, or shutdown. A real word, never a
-  -- synthesized park; the one-shot road keeps writing failed/interrupted
-  -- as outcome+reason exactly as before.
+  -- v14-v114: the raced agent this run belonged to (contests were removed in v115); history only.
+  contestant    INTEGER,
+  -- 'interrupted' (v25-v114) was a held session cut down mid-flight; held
+  -- sessions were removed in v115 and the word stays readable as history.
+  -- Every road writes failed/interrupted as outcome+reason.
   outcome       TEXT CHECK (outcome IN ('built','failed','refused','parked','no-change','interrupted')),
   reason        TEXT,
   committed     INTEGER,
-  -- The attended authorization this run consumed (v25) — the ruling-12
-  -- attempt identity, stamped in the same transaction that consumes the
-  -- one attempt. NULL = ordinary approved/tournament dispatch.
-  attended_authorization TEXT REFERENCES attended_authorization(id),
+  -- v25-v114: the watched-session authorization this run consumed (held
+  -- sessions were removed in v115); history only, never written.
+  attended_authorization TEXT,
   started_at    TEXT NOT NULL,
   finished_at   TEXT,
   -- Stamped by the invocation gateway the instant before the provider
@@ -3555,10 +3101,11 @@ CREATE TABLE IF NOT EXISTS run (
   -- The validated terminal handoff's conclusion — bounded, typed at
   -- ingestion, and the only agent prose a PR body may quote.
   handoff       TEXT,
-  -- The fallback-chain and credential stamps (v30), inline since v34 —
-  -- the same columns ALTER appended on older files; the v34 rebuild
-  -- recognizes both placements as one shape.
-  chain_cycle INTEGER REFERENCES fallback_cycle(id), chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT,
+  -- The credential stamps (v30), inline since v34 — the same columns ALTER
+  -- appended on older files; the v34 rebuild recognizes both placements as
+  -- one shape. chain_cycle, chain_index and entry_digest named a fallback
+  -- chain entry (v30-v114; chains were removed in v115): history only.
+  chain_cycle INTEGER, chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT,
   -- v29 (the reviewer role): artifact-only runs carry NO workspace,
   -- honestly — every other role requires both (exclusive, no sentinels).
   CHECK ((role = 'reviewer' AND branch IS NULL AND worktree IS NULL)
@@ -3570,10 +3117,9 @@ CREATE TABLE IF NOT EXISTS run (
 -- the decision's whole identity — task, repo, branch, and lease are reached
 -- by joining through it, never stored again here, because two copies of an
 -- identity is how a decision ends up holding one task while showing another
--- task's evidence. v25 dropped the one-decision-per-run UNIQUE: a held
--- attended session parks, is answered, continues, and parks again — many
--- decisions, one run. At most ONE unresolved decision per run (partial
--- unique, post-migration block).
+-- task's evidence. v25 dropped the one-decision-per-run UNIQUE (a run may
+-- park, be answered, and park again). At most ONE unresolved decision per
+-- run (partial unique, post-migration block).
 CREATE TABLE IF NOT EXISTS decision (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
@@ -3591,22 +3137,18 @@ CREATE TABLE IF NOT EXISTS decision (
   created_at     TEXT NOT NULL,
   answered_at    TEXT,
   answered_by    TEXT,
-  -- Which racing agent asked (v14); lets one-open-question-per-agent be a
-  -- real database rule instead of a hope (finding 28). NULL = ordinary.
-  contestant     INTEGER REFERENCES contestant(id),
+  -- v14-v114: which raced agent asked (contests were removed in v115); history only.
+  contestant     INTEGER,
   -- Typed closure (v14): 'excluded' = the operator stopped the asking
-  -- agent instead of answering. Never a fake option.
+  -- raced agent instead of answering (history only since v115). Never a fake option.
   closed_reason  TEXT CHECK (closed_reason IN ('excluded')),
   answered_via   TEXT CHECK (answered_via IN ('cli','web','telegram')),
   choice         TEXT,
   note           TEXT,
-  -- v25 held-session linkage. session_turn = the turn whose settlement
-  -- produced this park (causal, held runs only). delivered_turn = the
-  -- answer turn that claimed delivery into the live session — the
-  -- delivery-CAS target: set once (WHERE delivered_turn IS NULL), reverted
-  -- only when that turn terminally never reached acceptance.
-  session_turn   INTEGER REFERENCES session_turn(id),
-  delivered_turn INTEGER REFERENCES session_turn(id)
+  -- v25-v114: held-session turn links (held sessions were removed in v115);
+  -- history only, never written.
+  session_turn   INTEGER,
+  delivered_turn INTEGER
 );
 
 -- Evidence, by reference (§4): the file lives on the runner under the
@@ -3924,14 +3466,11 @@ CREATE TABLE IF NOT EXISTS task_scope (
   approved_profile_json TEXT,
   digest_version        INTEGER NOT NULL DEFAULT 1,
   profile_provenance    TEXT,
-  -- The EXPLICIT fallback chain (v30, fallback chains). proposed_chain_json
-  -- is the WORKING snapshot saveScope binds the digest to when the repo has
-  -- configured fallbacks (mirrors profile_json); approved_chain_json is the
-  -- immutable snapshot the approval COPIED from it (mirrors
-  -- approved_profile_json = profile_json), so what is sealed is exactly what
-  -- the signed digest bound — never re-resolved. Both NULL = a legacy
-  -- single-profile (or no-profile) scope, untouched. approval_kind names
-  -- which the approval sealed: 'profile' (legacy) or 'chain'.
+  -- The fallback chain (v30-v114; removed in v115), history only:
+  -- proposed_chain_json was the working snapshot, approved_chain_json the
+  -- sealed one, and approval_kind 'chain' marked a chain approval. Nothing
+  -- writes a chain now: filings leave them NULL and an approval writes
+  -- 'profile'.
   proposed_chain_json   TEXT,
   approved_chain_json   TEXT,
   -- The signed acceptance rubric (v39, Acceptance Contract v2): the SAME
@@ -3940,16 +3479,17 @@ CREATE TABLE IF NOT EXISTS task_scope (
   -- has -- grandfathering is this column simply not existing on a row
   -- nobody has rewritten since. What makes a rubric MANDATORY going
   -- forward is enforced by the authoring roads (proposeGuarded,
-  -- createConsoleTask, routine firing, the planner), never by this
+  -- createConsoleTask, a schedule's standing order, the planner), never by this
   -- schema or by saveScope itself.
   acceptance_json       TEXT,
   -- The concrete quality policy (v41), folded into digest only when strict
   -- so every historical/default approval remains byte-identical.
   quality_mode          TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict')),
   approval_kind         TEXT NOT NULL DEFAULT 'profile' CHECK (approval_kind IN ('profile','chain')),
-  -- The phase route (v47, explainable risk-aware routing). risk_level is
-  -- the signed risk; proposed_route_json is the WORKING canonical route
-  -- saveScope computed from risk, quality, evidence, publication, the
+  -- The phase route (v47, explainable routing). risk_level is the signed
+  -- risk ('routine' on every filing since v115; older rows keep what they
+  -- signed); proposed_route_json is the WORKING canonical route saveScope
+  -- computed from size, quality, evidence, publication, the
   -- configured candidate tiers, and the task's overrides; EVERY route
   -- filed since v47 folds its digest into the scope digest, routine-shaped
   -- ones included. approved_route_json is the immutable snapshot the seal
@@ -4379,9 +3919,9 @@ CREATE TABLE IF NOT EXISTS quota (
   runner      TEXT NOT NULL,
   provider    TEXT NOT NULL,
   scope       TEXT NOT NULL DEFAULT '',
-  -- v30 (fallback chains): quota identity must distinguish a subscription
-  -- from an API key, else exhausting a claude subscription would wrongly
-  -- block a claude api-key fallback. auth_mode + a stable NON-SECRET
+  -- v30: quota identity distinguishes a subscription from an API key, so
+  -- exhausting a claude subscription never blocks the same provider's API
+  -- key. auth_mode + a stable NON-SECRET
   -- credential fingerprint join the key. Defaults keep every pre-v30 row
   -- identical (mode 'subscription', empty fp) since that is what they were.
   auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key')),
@@ -4391,56 +3931,6 @@ CREATE TABLE IF NOT EXISTS quota (
   observed_at TEXT NOT NULL,
   reset_at    TEXT,
   PRIMARY KEY (runner, provider, scope, auth_mode, credential_fp)
-);
-
--- A fallback CYCLE (v30): one durable attempt to walk an approved chain
--- for one task. The STATE MACHINE (design C7) lives here; every move is a
--- fenced CAS proving the exact from-state. transition_generation is
--- monotonic — a stale writer cannot re-move a state it already left.
-CREATE TABLE IF NOT EXISTS fallback_cycle (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  -- The approved chain this cycle walks; the cycle is void if the approval
-  -- moves (the CAS re-proves it).
-  chain_digest  TEXT NOT NULL,
-  cursor        INTEGER NOT NULL DEFAULT 0,
-  state         TEXT NOT NULL CHECK (state IN ('open','sanitizing','awaiting-release','pending-admission','incident','closed')),
-  transition_generation INTEGER NOT NULL DEFAULT 0,
-  -- The current tail run (the entry running, or the predecessor being
-  -- sanitized). NULL only transiently at pending-admission before the next
-  -- run opens.
-  tail_run      INTEGER REFERENCES run(id),
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL,
-  closed_reason TEXT
-);
-
--- One immutable fallback TRANSITION (v30): the audit + the single-use
--- authority for the next entry. Inserted inside advanceFallbackFenced /
--- quota-skip; consumed once at admission. Uniqueness on (cycle, from_index)
--- makes a transition one-per-step; consumed_by makes the authority one-shot.
-CREATE TABLE IF NOT EXISTS fallback_transition (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  cycle         INTEGER NOT NULL REFERENCES fallback_cycle(id) ON DELETE CASCADE,
-  kind          TEXT NOT NULL CHECK (kind IN ('exhaustion','quota-skip')),
-  from_index    INTEGER NOT NULL,
-  to_index      INTEGER NOT NULL,
-  -- The predecessor run whose exhaustion (or whose skip evidence) earned
-  -- this step; NULL for a fresh cycle's index-0 (there is no transition
-  -- into index 0 — a cycle starts there).
-  predecessor_run INTEGER REFERENCES run(id),
-  -- The gateway-stamped terminal class + proven evidence identity that
-  -- authorized an 'exhaustion' step (NULL for quota-skip, which cites
-  -- durable quota evidence instead).
-  terminal_class  TEXT,
-  evidence_provider TEXT,
-  evidence_version  TEXT,
-  evidence_auth_mode TEXT,
-  evidence_fp     TEXT,
-  created_at    TEXT NOT NULL,
-  -- The run that consumed this transition's authority (single-use). NULL
-  -- until admission; set once, in the same txn that opens the next run.
-  consumed_by   INTEGER REFERENCES run(id)
 );
 
 -- One watch, as an episode with edges (§6): the night is a row, not "the
@@ -4956,110 +4446,13 @@ CREATE TABLE IF NOT EXISTS mutation (
   created_at      TEXT NOT NULL
 );
 
--- The attended authorization (v25, Parity II Phase 2 ruling 12): one person,
--- one password, signing EVERY rendered term of one watched attempt — repo,
--- task, runner + its generation, scope digest, execution profile, budget as
--- a STOP THRESHOLD (the agent halts when its total crosses it; the final
--- step may run a little past), a per-session turn cap, per-turn clock, the
--- exact head it builds from, and an absolute expiry. The id is a pre-minted
--- UUID: it IS the attempt identity the dispatch proof consumes. "Live" is a
--- liveness.ts computation over last_beat_at/absolute_expiry — never an
--- index predicate. A CONSUMED authorization (attempt_run set) stays OPEN
--- across its held session; closure is explicit (run end, expiry,
--- revocation), and minting closes an expired predecessor transactionally.
-CREATE TABLE IF NOT EXISTS attended_authorization (
-  id                TEXT PRIMARY KEY,
-  task_ref          INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  approver          TEXT NOT NULL,
-  runner            TEXT NOT NULL,
-  runner_generation INTEGER NOT NULL,
-  composite_digest  TEXT NOT NULL,
-  terms_json        TEXT NOT NULL,
-  max_session_turns INTEGER NOT NULL,
-  budget_microusd   INTEGER NOT NULL,
-  -- Continuation (A4): the finished parent attempt this authorization
-  -- continues, and the follow-up text — BOTH also inside the signed
-  -- terms_json; these columns exist so admission can join without parsing.
-  parent_run        INTEGER REFERENCES run(id),
-  followup          TEXT,
-  created_at        TEXT NOT NULL,
-  absolute_expiry   TEXT NOT NULL,
-  last_beat_at      TEXT,
-  attempt_run       INTEGER UNIQUE REFERENCES run(id),
-  consumed_at       TEXT,
-  closed_at         TEXT,
-  end_reason        TEXT
-);
-
--- The turn ledger (v25, ruling 15): every stdin injection into a held
--- session is a row — the initial brief, every decision answer, every
--- operator turn, every machine repair turn. Recorded DURABLY before any
--- write; the recording transaction is where the turn cap, the single-flight
--- rule, the budget reservation, and the lease re-proof all gate. The
--- input-acceptance boundary (spike fact 5): stdin-write success is NOT
--- acceptance — acceptance is THIS turn's system/init (or its result,
--- retroactively). A written turn whose acceptance never arrives settles
--- terminal 'uncertain': charged at its reservation, NEVER reinjected.
--- measured_microusd is the MARGINAL delta from held_session's durable
--- cumulative baseline (the provider's totals are cumulative per process).
-CREATE TABLE IF NOT EXISTS session_turn (
-  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-  run                INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-  seq                INTEGER NOT NULL,
-  source_kind        TEXT NOT NULL CHECK (source_kind IN ('brief','answer','operator','repair')),
-  source_id          INTEGER,
-  -- Verified operator name for source_kind 'operator' ONLY; brief and
-  -- repair turns are machine-authored and say so with NULL.
-  author             TEXT,
-  text               TEXT NOT NULL,
-  reserved_microusd  INTEGER NOT NULL,
-  accounted_microusd INTEGER,
-  accounted_at       TEXT,
-  recorded_at        TEXT NOT NULL,
-  written_at         TEXT,
-  accepted_at        TEXT,
-  settled_at         TEXT,
-  measured_microusd  INTEGER,
-  output_tokens      INTEGER,
-  state              TEXT NOT NULL DEFAULT 'recorded'
-                       CHECK (state IN ('recorded','written','accepted','settled','uncertain','cancelled')),
-  UNIQUE (run, seq)
-);
-
--- Crash custody for held sessions (v25, ruling 15): written as a custody
--- INTENT in the same transaction as the dispatch proof, stamped with the
--- supervisor pid + agent process group immediately after spawn. The orphan
--- predicate is LEASE-BASED (the recorded lease is no longer the task's
--- current live lease) — never mere incarnation difference, because two live
--- up processes may share this database. 'fencing' is a helpable, leased
--- state: a fencer that dies is taken over at its deadline, and every step
--- is CAS-protected so a loser stops only while a live fencer owns the work.
-CREATE TABLE IF NOT EXISTS held_session (
-  run                   INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
-  authorization_id      TEXT NOT NULL REFERENCES attended_authorization(id),
-  runner                TEXT NOT NULL,
-  lease_id              TEXT NOT NULL,
-  up_incarnation        TEXT NOT NULL,
-  cookie                TEXT NOT NULL,
-  socket_path           TEXT NOT NULL,
-  supervisor_pid        INTEGER,
-  agent_pgid            INTEGER,
-  cumulative_microusd   INTEGER NOT NULL DEFAULT 0,
-  cumulative_tokens_out INTEGER NOT NULL DEFAULT 0,
-  state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','fencing')),
-  fencer                TEXT,
-  fencing_deadline      TEXT,
-  started_at            TEXT NOT NULL,
-  ended_at              TEXT,
-  end_reason            TEXT
-);
-
 -- v52 (safe task stop and resume): an operator's stop, bound to ONE exact
 -- attempt. The row is durable BEFORE any process is signalled, so a crash
 -- between the request and the kill still settles as a stop, never as a
 -- success. settled_at lands only once the attempt's owned processes are
--- established gone — the worker's own fenced interruption seal, the held
--- supervisor's fence, or dead-incarnation recovery — and the successor a
+-- established gone — the worker's own fenced interruption seal or
+-- dead-incarnation recovery ('held', v52-v114, was the removed held-session
+-- supervisor's fence; history only) — and the successor a
 -- resume admits is never named here: it inherits the draft through the
 -- ordinary recovered-draft road with a fresh lease. Repair turns and
 -- reviewer corrections inherit their parent's stop by sharing its lease;
@@ -5528,6 +4921,10 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "invite", "projects_json", "TEXT");
   db.exec(LEDGER_SCHEMA);
   db.exec(RECIPE_SCHEMA);
+  // v115: a repeating recipe makes a scheduled flow; its receipt names the flow (routine_id stays as history).
+  addColumn(db, "workflow_preview", "flow_id", "INTEGER");
+  // v115: the task each standing-order firing filed, kept on the firing itself (a card's task changes as it moves).
+  addColumn(db, "flow_trigger_event", "task", "TEXT");
   db.exec(PLAN_AUTO_SCHEMA);
   installLedgerTriggers(db);
   // Attention/history indexes come AFTER migration: on a database whose
@@ -5558,38 +4955,17 @@ CREATE INDEX IF NOT EXISTS run_started ON run (started_at, id);
 -- task's attempts. The newest release check is indexed on run_check itself.
 CREATE INDEX IF NOT EXISTS lead_status_task_run ON run (task_ref, id DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS diff_comment_source ON diff_comment (source_key) WHERE source_key IS NOT NULL;
--- One open question per racing agent (v14, finding 28) — lives here, after
--- the migration, because decision.contestant arrives by addColumn on
--- existing files (the v11c lesson).
-CREATE UNIQUE INDEX IF NOT EXISTS one_open_decision_per_contestant
-  ON decision (contestant) WHERE contestant IS NOT NULL AND state IN ('open','expired');
 -- Pending steering, in filing order (arc 1, v22) — after migration because
 -- task_steer arrives by CREATE TABLE IF NOT EXISTS on existing files.
 CREATE INDEX IF NOT EXISTS task_steer_pending
   ON task_steer (task_ref, id) WHERE delivered_at IS NULL AND superseded_at IS NULL;
--- v25 attended-core uniqueness rules — after migration because decision is
--- rebuilt there and the new tables arrive by IF NOT EXISTS on existing files.
--- One OPEN authorization per task (closure is explicit, so this is a plain
--- column predicate, never a time computation).
-CREATE UNIQUE INDEX IF NOT EXISTS one_open_authorization_per_task
-  ON attended_authorization (task_ref) WHERE closed_at IS NULL;
--- Answer exactly-once: a retried answer cannot inject twice while a prior
--- injection is live or proven. Terminal failures (uncertain never-accepted,
--- cancelled) release the slot — the delivery-CAS on decision.delivered_turn
--- is the live gate, this index the backstop (v6 W5).
+-- After migration because merge_blocker and decision are rebuilt there.
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_merge_blocker
   ON merge_blocker (publication) WHERE lifted_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS session_turn_answer_once
-  ON session_turn (source_kind, source_id)
-  WHERE source_kind = 'answer' AND state NOT IN ('uncertain','cancelled');
 -- Many decisions per run (v25 rebuild dropped the UNIQUE), but at most one
 -- UNRESOLVED at a time.
 CREATE UNIQUE INDEX IF NOT EXISTS one_open_decision_per_run
   ON decision (run) WHERE state IN ('open','expired');
--- The coordinator's per-pulse scan: resolved decisions on held runs whose
--- answer has not yet been injected.
-CREATE INDEX IF NOT EXISTS decision_undelivered
-  ON decision (run, id) WHERE state = 'answered' AND delivered_turn IS NULL;
 -- v29 (the reviewer role) — after migration because run is rebuilt there
 -- and review_request arrives by IF NOT EXISTS on existing files. One
 -- OPEN request per run at a time.
@@ -5612,16 +4988,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_correction_per_reviewer
   ON run (parent_run) WHERE role = 'reviewer' AND review_attempt IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS one_root_review_per_request
   ON review_request (reviewer_run) WHERE reviewer_run IS NOT NULL;
--- v30 (fallback chains): one transition per (cycle, from_index) — the
--- durable backstop the fenced advance/skip CAS relies on (Codex foundation
--- review, finding 1). After migration, since fallback_transition arrives by
--- IF NOT EXISTS on existing files.
-CREATE UNIQUE INDEX IF NOT EXISTS fallback_transition_step
-  ON fallback_transition (cycle, from_index);
--- One LIVE cycle per task (Codex E1 review, finding 5): the DB backstop
--- behind openFallbackCycle's transact guard.
-CREATE UNIQUE INDEX IF NOT EXISTS one_live_fallback_cycle_per_task
-  ON fallback_cycle (task_ref) WHERE state NOT IN ('closed','incident');
 -- v44 (adaptive execution plans) — after migration because plan_revision and
 -- run_checkpoint arrive by IF NOT EXISTS on existing files. At most one
 -- revision 'blocked' at a time (a second proposal waits for the first to
@@ -5632,8 +4998,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_blocked_revision_per_task
   ON plan_revision (task_ref) WHERE status = 'blocked';
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_run ON run_checkpoint (run, id);
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, id);`);
+  if (preflight !== null) migrateToV114(db);
+  // v115: the removed features' tables go, after every older step has had its say.
+  migrateToV115(db);
   if (preflight !== null) {
-    migrateToV114(db);
     // Keep the epoch until reclamation succeeds, including a retry after compaction already committed.
     reclaimDatabase(db, "migration");
   }
@@ -6003,19 +5371,16 @@ function migrate(db: Database, origin: number | null): void {
      )`,
     ["id", "run", "kind", "created_at", "resolved_at", "resolved_by"],
   );
-  // v8 (routines): purely additive — two new tables arrive through the fresh
-  // SCHEMA's CREATE TABLE IF NOT EXISTS (they did not exist before, so the
-  // recognizer story of the CHECK widenings does not apply), and task_ref
-  // grows the nullable instance link. The routine table exists by the time
-  // this runs because openStore executes SCHEMA first.
-  addColumn(db, "task_ref", "routine_id", "INTEGER REFERENCES routine(id)");
+  // v8 (routines, removed in v115 — their tables only ever arrived through the
+  // fresh SCHEMA): task_ref grows the nullable instance link, kept as history.
+  addColumn(db, "task_ref", "routine_id", "INTEGER");
   // v9 (providers): run.provider rides all three canonical shapes — fresh
   // SCHEMA, V4_RUN_DDL, V4_RUN_COLUMNS — AND this additive column for
   // databases whose run table is already current (the rebuilds only fire
   // on pre-v7 shapes; ordering per the Codex provider review, Q7). The
   // default backfills history truthfully: only claude ever spawned.
   addColumn(db, "run", "provider", "TEXT NOT NULL DEFAULT 'claude'");
-  // The instance/task agent pin: stamped at routine fire time so a firing
+  // The instance/task agent pin: stamped when an approved standing order files a task, so a firing
   // resolved under approved terms cannot be re-routed by later flags.
   addColumn(db, "task_ref", "agent_provider", "TEXT");
   addColumn(db, "task_ref", "agent_model", "TEXT");
@@ -6096,19 +5461,19 @@ function migrate(db: Database, origin: number | null): void {
   // v12 (adoption review, finding 7): immutable filing provenance, additive.
   // installation_fact arrives through the fresh SCHEMA's IF NOT EXISTS.
   addColumn(db, "task_ref", "filed_via", "TEXT");
-  addColumn(db, "routine", "filed_via", "TEXT");
   // v13 (fleet chat): purely additive — chat_config and chat_turn arrive
   // through the fresh SCHEMA's IF NOT EXISTS; no existing table changes.
   // v13b: the pinned per-token price joins the config row, additive.
   addColumn(db, "chat_config", "price_in_microusd", "INTEGER");
   addColumn(db, "chat_config", "price_out_microusd", "INTEGER");
-  // v14 (tournaments): five new tables ride the fresh SCHEMA's IF NOT
-  // EXISTS; existing tables gain nullable columns here; and hold's
+  // v14 (tournaments, removed in v115 — the fresh SCHEMA no longer creates
+  // their tables): existing tables gain nullable columns here; and hold's
   // owner_kind CHECK is WIDENED by the recognized-exactly rebuild — v14
   // is deliberately NOT purely additive, and this is the one place that
   // says so.
-  addColumn(db, "run", "contestant", "INTEGER REFERENCES contestant(id)");
-  addColumn(db, "decision", "contestant", "INTEGER REFERENCES contestant(id)");
+  // (Their contestant columns are plain history since v115 removed contests.)
+  addColumn(db, "run", "contestant", "INTEGER");
+  addColumn(db, "decision", "contestant", "INTEGER");
   addColumn(db, "decision", "closed_reason", "TEXT CHECK (closed_reason IN ('excluded'))");
   addColumn(db, "artifact", "capture_status", "TEXT CHECK (capture_status IN ('ok','failed'))");
   addColumn(db, "runner", "capacity_mode", "TEXT NOT NULL DEFAULT 'tasks'");
@@ -6132,10 +5497,8 @@ function migrate(db: Database, origin: number | null): void {
   // v15 (budgets, operator request): the per-attempt dollar cap joins the
   // scope, and spend_defaults arrives via the fresh SCHEMA's IF NOT EXISTS.
   addColumn(db, "task_scope", "budget_microusd", "INTEGER");
-  // v16 (stage 6 + operator request): the default competing-agent count,
-  // and the per-instance dollar cap on standing orders.
+  // v16 (stage 6 + operator request): the default competing-agent count.
   addColumn(db, "spend_defaults", "race_agents", "INTEGER CHECK (race_agents BETWEEN 2 AND 4)");
-  addColumn(db, "routine", "budget_per_run_microusd", "INTEGER");
   // v17 (live peek): the occupancy fence on checkouts, and artifact.kind
   // admits 'base-tree' (the enveloped dispatch-time snapshot the peek
   // consumes) — same recognized-exactly CHECK-widening recipe as v11's,
@@ -6349,12 +5712,6 @@ function migrate(db: Database, origin: number | null): void {
   addColumn(db, "task_scope", "approved_profile_json", "TEXT");
   addColumn(db, "task_scope", "digest_version", "INTEGER NOT NULL DEFAULT 1");
   addColumn(db, "task_scope", "profile_provenance", "TEXT");
-  addColumn(db, "routine", "profile_json", "TEXT");
-  addColumn(db, "routine", "approved_profile_json", "TEXT");
-  addColumn(db, "routine", "digest_version", "INTEGER NOT NULL DEFAULT 1");
-  addColumn(db, "routine", "profile_provenance", "TEXT");
-  addColumn(db, "contest", "race_semantics", "INTEGER NOT NULL DEFAULT 1");
-  addColumn(db, "contestant", "profile_json", "TEXT");
   addColumn(db, "run", "scope_digest", "TEXT");
   addColumn(db, "run", "profile_digest", "TEXT");
   addColumn(db, "run", "provider_version", "TEXT");
@@ -6376,10 +5733,9 @@ function migrate(db: Database, origin: number | null): void {
 
   // v25 (attended core): two shape rebuilds, each recognized exactly and
   // idempotent, ordered AFTER every addColumn above so the only pre-v25
-  // shape they ever see is the full v24 one. The three new tables arrive
-  // through the fresh SCHEMA's IF NOT EXISTS (the v8 routines precedent);
-  // their foreign keys into `run` survive the rename-swap by name, and the
-  // rebuild's own foreign_key_check proves it.
+  // shape they ever see is the full v24 one. (Its three held-session tables
+  // are gone since v115: the fresh SCHEMA no longer creates them, and the
+  // run/decision columns that pointed at them stay as history.)
   rebuildForV4(
     db,
     "run",
@@ -6393,15 +5749,9 @@ function migrate(db: Database, origin: number | null): void {
   // v26 (attested runtime): phase_config's provider CHECK gains 'gemini'.
   rebuildPhaseConfigForV26(db);
 
-  // v27 (labeled comparisons): tournament_terms gains kind + kind-aware
-  // money CHECKs (a rebuild — the old positive-budget CHECKs live in the
-  // DDL); contest gains the denormalized kind additively.
-  addColumn(db, "contest", "kind", "TEXT NOT NULL DEFAULT 'race' CHECK (kind IN ('race','comparison'))");
-  rebuildTournamentTermsForV27(db);
-
-  // v28 (parallel attended sessions): the one-held-session-per-runner
-  // bound is withdrawn — parallelism is many tasks, each with its own
-  // signed envelope; per-task and per-run singulars all stay.
+  // v28 (parallel watched sessions, removed in v115): the
+  // one-held-session-per-runner index is withdrawn. Dropping it is
+  // harmless on any file, so the step stays.
   db.exec("DROP INDEX IF EXISTS one_held_session_per_runner");
 
   // v29 (operating modes + the reviewer role + multi-user): additive
@@ -6410,8 +5760,6 @@ function migrate(db: Database, origin: number | null): void {
   addColumn(db, "approver", "role", "TEXT NOT NULL DEFAULT 'approver' CHECK (role IN ('approver','viewer'))");
   addColumn(db, "approver", "revoked_at", "TEXT");
   addColumn(db, "approver", "revoked_by", "TEXT");
-  addColumn(db, "attended_authorization", "authority_basis", "TEXT NOT NULL DEFAULT 'password' CHECK (authority_basis IN ('password','mode'))");
-  addColumn(db, "attended_authorization", "mode_digest", "TEXT");
   addColumn(db, "task_scope", "approval_basis", "TEXT");
   addColumn(db, "task_scope", "mode_digest", "TEXT");
   addColumn(db, "diff_comment", "reviewer_run", "INTEGER REFERENCES run(id)");
@@ -6440,10 +5788,8 @@ function migrate(db: Database, origin: number | null): void {
   rebuildMergeIntentForV29(db);
   rebuildMergeBlockerForV29(db);
 
-  // v30 (fallback chains): additive columns on top of the v29 shapes; the
-  // three new tables (fallback_cycle, fallback_transition) + the quota
-  // identity rebuild arrive through the fresh SCHEMA's IF NOT EXISTS on a
-  // fresh DB, and here on an upgrade. Quota needs a RECOGNIZED rebuild (its
+  // v30 (fallback chains, removed in v115): additive columns on top of the
+  // v29 shapes (kept as history) and the quota identity rebuild. Quota needs a RECOGNIZED rebuild (its
   // PK changes) — additive columns cannot change a primary key.
   // v31 (MCP gateway): the coordinator linkage column; the three new
   // tables arrive through the fresh SCHEMA's IF NOT EXISTS on both roads.
@@ -6451,7 +5797,7 @@ function migrate(db: Database, origin: number | null): void {
   addColumn(db, "task_scope", "proposed_chain_json", "TEXT");
   addColumn(db, "task_scope", "approved_chain_json", "TEXT");
   addColumn(db, "task_scope", "approval_kind", "TEXT NOT NULL DEFAULT 'profile' CHECK (approval_kind IN ('profile','chain'))");
-  addColumn(db, "run", "chain_cycle", "INTEGER REFERENCES fallback_cycle(id)");
+  addColumn(db, "run", "chain_cycle", "INTEGER");
   addColumn(db, "run", "chain_index", "INTEGER");
   addColumn(db, "run", "entry_digest", "TEXT");
   addColumn(db, "run", "auth_mode", "TEXT");
@@ -6483,7 +5829,6 @@ function migrate(db: Database, origin: number | null): void {
   // promises: every row from before this code existed keeps the digest it
   // already has.
   addColumn(db, "task_scope", "acceptance_json", "TEXT");
-  addColumn(db, "routine", "acceptance_json", "TEXT");
   addColumn(db, "proof_verdict", "matrix_json", "TEXT");
 
   // v40 (evidence-review-v1): purely additive, no CHECK widening, no table
@@ -6597,14 +5942,9 @@ function migrate(db: Database, origin: number | null): void {
   addColumn(db, "task_scope", "candidate", "TEXT");
   addColumn(db, "review_request", "route_digest", "TEXT");
 
-  // v48 (routing authority): a routine freezes its four-role agent route
-  // at filing and approval seals it — two additive columns, NULL on every
-  // routine that predates this migration (such a routine cannot fire again
-  // until approved afresh, in words). Chat may propose one confirmed agent
-  // change, so `agents` joins the proposal kinds through the same exact,
-  // row-preserving copy-rename every earlier widening used.
-  addColumn(db, "routine", "route_json", "TEXT");
-  addColumn(db, "routine", "approved_route_json", "TEXT");
+  // v48 (routing authority): chat may propose one confirmed agent change, so
+  // `agents` joins the proposal kinds through the same exact, row-preserving
+  // copy-rename every earlier widening used.
   rebuildMateProposalForV48(db);
   rebuildMateProposalForV60(db);
   rebuildMateProposalForV66(db);
@@ -6826,8 +6166,6 @@ function migrate(db: Database, origin: number | null): void {
   // v102: who filed a task (a person, or the person a coordinator acts for; null when no person is known) and what kind of filer.
   addColumn(db, "task_ref", "filed_by", "TEXT");
   addColumn(db, "task_ref", "filed_by_kind", "TEXT");
-  // v102: who made a standing order (its instances are filed as theirs).
-  addColumn(db, "routine", "created_by", "TEXT");
   // v98: where Telegram pushes this bot's updates, as the bridge last found it.
   addColumn(db, "bridge_lease", "push_url", "TEXT");
   addColumn(db, "bridge_lease", "push_at", "TEXT");
@@ -8105,103 +7443,6 @@ function rebuildMergeBlockerForV29(db: Database): void {
   }
 }
 
-const TOURNAMENT_TERMS_V26_DDL = `CREATE TABLE tournament_terms (
-  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref                  INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  generation                INTEGER NOT NULL,
-  active                    INTEGER NOT NULL DEFAULT 1,
-  race_digest               TEXT NOT NULL,
-  -- The ordered agents, JSON: [{provider, model, repairModel}] — exact
-  -- model ids, resolved at filing, priced at price_version.
-  agents                    TEXT NOT NULL,
-  n                         INTEGER NOT NULL CHECK (n BETWEEN 2 AND 4),
-  per_agent_budget_microusd INTEGER NOT NULL CHECK (per_agent_budget_microusd > 0),
-  overrun_reserve_microusd  INTEGER NOT NULL CHECK (overrun_reserve_microusd > 0),
-  total_budget_microusd     INTEGER NOT NULL CHECK (total_budget_microusd > 0),
-  price_version             INTEGER NOT NULL,
-  retries                   INTEGER NOT NULL CHECK (retries = 0),
-  -- 'none', or the JSON of the publication grant constraints in force.
-  publication_policy        TEXT NOT NULL,
-  created_at                TEXT NOT NULL,
-  approved_at               TEXT,
-  approved_by               TEXT,
-  approved_digest           TEXT
-)`;
-
-const TOURNAMENT_TERMS_V27_DDL = `CREATE TABLE tournament_terms_next (
-  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_ref                  INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  generation                INTEGER NOT NULL,
-  active                    INTEGER NOT NULL DEFAULT 1,
-  -- v27: 'race' = dollar-capped tournament (money contract required);
-  -- 'comparison' = labeled cross-runtime comparison (no dollar terms
-  -- exist; each lane's sealed clock is its bound). The money CHECK is
-  -- kind-aware: races keep their positive budgets, comparisons pin 0.
-  kind                      TEXT NOT NULL DEFAULT 'race' CHECK (kind IN ('race','comparison')),
-  race_digest               TEXT NOT NULL,
-  -- The ordered agents, JSON: [{provider, model, repairModel}] — exact
-  -- model ids, resolved at filing, priced at price_version.
-  agents                    TEXT NOT NULL,
-  n                         INTEGER NOT NULL CHECK (n BETWEEN 2 AND 4),
-  per_agent_budget_microusd INTEGER NOT NULL,
-  overrun_reserve_microusd  INTEGER NOT NULL,
-  total_budget_microusd     INTEGER NOT NULL,
-  price_version             INTEGER NOT NULL,
-  retries                   INTEGER NOT NULL CHECK (retries = 0),
-  -- 'none', or the JSON of the publication grant constraints in force.
-  publication_policy        TEXT NOT NULL,
-  created_at                TEXT NOT NULL,
-  approved_at               TEXT,
-  approved_by               TEXT,
-  approved_digest           TEXT,
-  CHECK ((kind = 'race' AND per_agent_budget_microusd > 0 AND overrun_reserve_microusd > 0 AND total_budget_microusd > 0)
-      OR (kind = 'comparison' AND per_agent_budget_microusd = 0 AND overrun_reserve_microusd = 0 AND total_budget_microusd = 0))
-)`;
-
-const TOURNAMENT_TERMS_V27_COLUMNS =
-  "task_ref, generation, active, race_digest, agents, n, per_agent_budget_microusd, " +
-  "overrun_reserve_microusd, total_budget_microusd, price_version, retries, " +
-  "publication_policy, created_at, approved_at, approved_by, approved_digest";
-
-/**
- * The v27 rebuild: tournament_terms recognized by FULL canonical-DDL
- * equality in BOTH directions (the v26 lesson — a substring check is not
- * a recognizer): the v27 form returns untouched, the v26 form rebuilds,
- * anything else refuses. Rows copy verbatim; kind defaults to 'race'.
- */
-function rebuildTournamentTermsForV27(db: Database): void {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tournament_terms'")
-    .get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  if (stored === canonicalDdl(TOURNAMENT_TERMS_V27_DDL).replace("tournament_terms_next", "tournament_terms")) return;
-  if (stored !== canonicalDdl(TOURNAMENT_TERMS_V26_DDL)) {
-    throw new Error("the tournament_terms table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(TOURNAMENT_TERMS_V27_DDL);
-      db.exec(
-        `INSERT INTO tournament_terms_next (id, ${TOURNAMENT_TERMS_V27_COLUMNS})
-         SELECT id, ${TOURNAMENT_TERMS_V27_COLUMNS} FROM tournament_terms`,
-      );
-      db.exec("DROP TABLE tournament_terms");
-      db.exec("ALTER TABLE tournament_terms_next RENAME TO tournament_terms");
-      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS tournament_terms_one_active
-        ON tournament_terms (task_ref) WHERE active = 1`);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
 /** Whitespace-collapsed, IF-NOT-EXISTS-stripped DDL for full-equality
  * comparison — a doctored constraint that merely CONTAINS the expected
  * CHECK text must not pass (Phase 3 round-3 finding: the substring
@@ -8209,6 +7450,8 @@ function rebuildTournamentTermsForV27(db: Database): void {
 function canonicalDdl(sql: string): string {
   return sql
     .replace(/--[^\n]*/g, "") // comments are prose, not shape (v29)
+    // v115 removed the tables these pointed at; a column keeps its shape with or without the reference.
+    .replace(V115_DROPPED_REFERENCES, "")
     .replace(/\bIF NOT EXISTS\b/i, "")
     .replace(/"([A-Za-z_][A-Za-z0-9_]*)"/g, "$1") // RENAME re-quotes the name
     .replace(/\s+/g, " ")
@@ -8456,7 +7699,7 @@ function rebuildPhaseConfigForV26(db: Database): void {
  * per database — idempotent because every UPDATE keys on the legacy state
  * it is classifying away from.
  *
- * - APPROVED scopes/routines (the full predicate: approved_digest equals
+ * - APPROVED scopes (the full predicate: approved_digest equals
  *   the stored digest — reproposal keeps historical approval fields, so
  *   approved_at alone lies) get their EFFECTIVE profile resolved with
  *   today's precedence (pin > project > installation > default) and
@@ -8465,8 +7708,6 @@ function rebuildPhaseConfigForV26(db: Database): void {
  *   dispatchable, not re-approvable, until restated.
  * - UNAPPROVED scopes get a working profile and their digest RECOMPUTED to
  *   v2 (nothing signed is altered — there is no live approval).
- * - Legacy contestants get per-contestant snapshots under race semantics 1;
- *   stored race fingerprints stay byte-identical.
  * - Every pre-v24 steer note is unverified-legacy (the column default);
  *   UNDELIVERED ones are additionally superseded so they can never enter
  *   a future brief (ruling 11's quarantine).
@@ -8587,65 +7828,6 @@ function migrateToV24(db: Database): void {
       );
       stampUnapproved.run(snapshot, recomputed, provenance, row.taskId);
     }
-  }
-
-  // -- routines ----------------------------------------------------------
-  const routines = db
-    .prepare(
-      `SELECT id, repo, digest, approved_digest AS approvedDigest FROM routine
-        WHERE profile_json IS NULL AND approved_profile_json IS NULL`,
-    )
-    .all() as { id: number; repo: string; digest: string; approvedDigest: string | null }[];
-  const pinRoutine = db.prepare(
-    "UPDATE routine SET profile_json = ?, approved_profile_json = ?, profile_provenance = ? WHERE id = ?",
-  );
-  const parkRoutine = db.prepare(
-    `UPDATE routine SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, next_fire_at = NULL,
-            profile_provenance = ? WHERE id = ?`,
-  );
-  const stampRoutine = db.prepare("UPDATE routine SET profile_json = ?, profile_provenance = ? WHERE id = ?");
-  for (const row of routines) {
-    const approved = row.approvedDigest !== null && row.approvedDigest === row.digest;
-    const resolved = effective(row.repo, null, null);
-    if (!resolved.ok) {
-      if (approved) {
-        // A standing order may not keep firing on floating authority
-        // (ruling 10): the approval is demoted, said in provenance; the
-        // routines screen shows it pending like any unapproved routine.
-        parkRoutine.run(JSON.stringify({ demoted: "profile-unresolved", reason: resolved.reason, at: now }), row.id);
-      } else {
-        stampRoutine.run(null, JSON.stringify({ unresolved: resolved.reason, at: now }), row.id);
-      }
-      continue;
-    }
-    const snapshot = canonicalProfileJson(resolved.profile);
-    const provenance = JSON.stringify({ resolvedFrom: resolved.resolvedFrom, grandfathered: approved, pinnedAt: now });
-    if (approved) pinRoutine.run(snapshot, snapshot, provenance, row.id);
-    else stampRoutine.run(snapshot, provenance, row.id);
-  }
-
-  // -- legacy contestants: exact provider/model/repair already stored -----
-  const contestants = db
-    .prepare("SELECT id, provider, model, repair_model AS repairModel FROM contestant WHERE profile_json IS NULL")
-    .all() as { id: number; provider: string; model: string; repairModel: string }[];
-  const stampContestant = db.prepare("UPDATE contestant SET profile_json = ? WHERE id = ?");
-  for (const row of contestants) {
-    if (!KNOWN.has(row.provider)) continue; // stays null; admission keeps byte-comparing v1 fingerprints
-    const profile: ExecutionProfile =
-      row.provider === "claude"
-        ? {
-            provider: "claude", model: row.model, permissionArgv: "acceptEdits",
-            maxTurns: CLAUDE_LIMITS.maxTurns, repairMaxTurns: CLAUDE_LIMITS.repairMaxTurns,
-            timeoutSeconds: CLAUDE_LIMITS.timeoutSeconds, repairTimeoutSeconds: CLAUDE_LIMITS.repairTimeoutSeconds,
-            repairModel: row.repairModel,
-          }
-        : {
-            provider: row.provider as "codex" | "openrouter", model: row.model,
-            sandboxMode: "workspace-write", maxTurns: "unsupported", repairMaxTurns: "unsupported",
-            timeoutSeconds: CODEX_SHAPED_LIMITS.timeoutSeconds, repairTimeoutSeconds: CODEX_SHAPED_LIMITS.repairTimeoutSeconds,
-            repairModel: row.repairModel,
-          };
-    stampContestant.run(canonicalProfileJson(profile), row.id);
   }
 }
 
@@ -9026,6 +8208,276 @@ function rebuild(db: Database): void {
     }
   } finally {
     db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+/**
+ * v115 (simplification): contests, held sessions, fallback chains and routines are gone. Every routine becomes an
+ * equivalent scheduled flow first (moveRoutinesToFlows); every task, claim or slot one of the removed features still
+ * owned is settled to an ordinary state a person can see and recover from; the references other tables kept to the
+ * removed rows lose their foreign key (the columns stay, so old runs, decisions and ledger rows read as before); and
+ * then the tables are dropped. One transaction: a crash part-way leaves the v114 shape whole and the next open
+ * repeats the step. A database that already has none of these tables has nothing to do.
+ */
+/**
+ * v115 (D2): every routine becomes an equivalent scheduled flow — one build step that follows the task each firing files,
+ * then Done — and a schedule trigger carrying the routine's exact terms as its standing order: goal, exclusions,
+ * touches, requirements, success checks, per-run budget, rolling 7-day ceiling, one at a time, who made it, and its
+ * next time. A routine's approval moves over only as it was stamped (its digest, the agents it froze, who and when);
+ * each firing re-checks it whole, so an approval that no longer verifies files ordinary proposals that wait for the
+ * project's approval rules. Nothing is inferred: a routine that was paused or never approved arrives paused (it never
+ * fired; a person turning it on is the yes), an approved active one stays on at its next time. Its earlier tasks keep
+ * their routine number (task_ref.routine_id), which the order names, so they still count toward one-at-a-time and the
+ * ceiling. Its last firing is kept as the trigger's last outcome.
+ */
+function moveRoutinesToFlows(db: Database, now: Date): void {
+  const text = (value: unknown): string | null => value === null || value === undefined ? null : String(value);
+  const list = (value: unknown): unknown[] => { try { const read: unknown = JSON.parse(String(value ?? "[]")); return Array.isArray(read) ? read : []; } catch { return []; } };
+  const strings = (value: unknown): string[] => list(value).map(one => String(one));
+  const stamp = now.toISOString();
+  const lastFire = tableExists(db, "routine_fire") ? db.prepare("SELECT outcome, reason, created_at FROM routine_fire WHERE routine_id = ? ORDER BY id DESC LIMIT 1") : null;
+  const addFlow = db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at, owner) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?, ?)");
+  const addTrigger = db.prepare("INSERT INTO flow_trigger (flow, kind, config_json, state, next_at, last_at, last_outcome, created_by, created_at, updated_at) VALUES (?, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?)");
+  for (const row of db.prepare("SELECT * FROM routine ORDER BY id").all()) {
+    const name = String(row["name"]);
+    const stem = /^[a-z0-9][a-z0-9-]{0,40}$/.test(name) ? name : name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").slice(0, 41) || "routine";
+    const createdBy = text(row["created_by"]);
+    const approved = row["approved_at"] !== null && row["approved_digest"] !== null && row["approved_digest"] === row["digest"]
+      && typeof row["approved_profile_json"] === "string" && typeof row["approved_route_json"] === "string";
+    const order = {
+      stem,
+      goal: String(row["goal"]),
+      outOfScope: text(row["out_of_scope"]),
+      touches: strings(row["touches"]),
+      requirements: strings(row["requirements"]),
+      acceptance: list(row["acceptance_json"]),
+      budgetPerRunMicrousd: row["budget_per_run_microusd"] === null || row["budget_per_run_microusd"] === undefined ? null : Number(row["budget_per_run_microusd"]),
+      costCeilingUsd: row["cost_ceiling_usd"] === null ? null : Number(row["cost_ceiling_usd"]),
+      singleFlight: true,
+      filedBy: createdBy,
+      routine: Number(row["id"]),
+      approval: approved ? { digest: String(row["approved_digest"]), by: text(row["approved_by"]), at: String(row["approved_at"]), profileJson: String(row["approved_profile_json"]), routeJson: String(row["approved_route_json"]) } : null,
+    };
+    const zone = (x: number, color: string) => ({ x, y: 0, w: 260, h: 300, color });
+    const definition = { version: 1, start: "build", stages: [
+      { id: "build", title: "Build", kind: "task", zone: zone(0, "blue"), instructions: order.goal.trim() === "" ? name : order.goal, planning: "skip", approver: null, message: null, close: null, script: null, sort: null, next: "done", onFail: null },
+      { id: "done", title: "Done", kind: "done", zone: zone(420, "green"), instructions: null, planning: null, approver: null, message: null, close: null, script: null, sort: null, next: null, onFail: null },
+    ] };
+    const by = createdBy ?? text(row["approved_by"]) ?? "toolroll";
+    // Stamped with the routine's own times, so the move is deterministic: the same routine always becomes the same rows.
+    const made = text(row["created_at"]) ?? stamp, changed = text(row["updated_at"]) ?? made;
+    const flow = Number(addFlow.run(String(row["repo"]), name, flowDefinitionForStore(JSON.stringify(definition)), by, made, by, changed, createdBy).lastInsertRowid);
+    const on = approved && Number(row["paused"]) === 0;
+    const last = lastFire?.get(Number(row["id"]));
+    const lastOutcome = last === undefined ? null : last["outcome"] === "fired" ? "Filed a task (as a routine)." : `Skipped (as a routine)${last["reason"] == null ? "" : `: ${String(last["reason"])}`}.`;
+    addTrigger.run(flow, JSON.stringify({ kind: "schedule", schedule: String(row["schedule"]), title: name, description: null, zone: "build", order }), on ? "active" : "paused",
+      text(row["next_fire_at"]), last === undefined ? null : String(last["created_at"]), lastOutcome, by, made, changed);
+  }
+}
+
+function migrateToV115(db: Database): void {
+  const present = V115_DROPPED_TABLES.filter(table => tableExists(db, table));
+  const referring = (db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL").all() as { name: string; sql: string }[])
+    .filter(row => !V115_DROPPED_TABLES.includes(row.name) && new RegExp(V115_DROPPED_REFERENCES.source).test(row.sql));
+  if (present.length === 0 && referring.length === 0) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      // Settled before anything is dropped, while the removed features' rows can still be read.
+      // (Each removed feature's settlement is added here.)
+      if (tableExists(db, "routine")) moveRoutinesToFlows(db, new Date());
+      if (tableExists(db, "contest") || tableExists(db, "tournament_terms")) settleContestsForV115(db, new Date());
+      if (tableExists(db, "held_session")) settleHeldSessionsForV115(db, new Date());
+      if (tableExists(db, "fallback_cycle") || tableExists(db, "fallback_config")) settleFallbackChainsForV115(db, new Date());
+      // The held-session index on decision (a kept table) goes with the feature.
+      db.exec("DROP INDEX IF EXISTS decision_undelivered");
+      // The references lose their foreign key in place (SQLite's documented procedure for removing a constraint, which
+      // leaves every stored row as it is); the columns keep what they held.
+      const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+      // Node 24's SQLite opens in defensive mode, which forbids this documented procedure; lift it for the rewrite only.
+      const defensive = (db as unknown as { enableDefensive?: (active: boolean) => void }).enableDefensive?.bind(db);
+      defensive?.(false);
+      db.exec("PRAGMA writable_schema = ON");
+      try {
+        const rewrite = db.prepare("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?");
+        for (const row of referring) rewrite.run(row.sql.replace(V115_DROPPED_REFERENCES, ""), row.name);
+        db.exec(`PRAGMA schema_version = ${version + 1}`);
+      } finally {
+        db.exec("PRAGMA writable_schema = OFF");
+        defensive?.(true);
+      }
+      // A trigger on another table that still names a removed table would fail its next write.
+      // (A table named after FROM, JOIN, INTO or UPDATE: "routine" is also a tier's name inside some triggers' text.)
+      const removed = new RegExp(`\\b(?:FROM|JOIN|INTO|UPDATE)\\s+"?(?:${V115_DROPPED_TABLES.join("|")})"?(?![A-Za-z0-9_])`, "i");
+      for (const trigger of db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger'").all() as { name: string; tbl_name: string; sql: string | null }[]) {
+        if (!V115_DROPPED_TABLES.includes(trigger.tbl_name) && trigger.sql !== null && removed.test(trigger.sql)) db.exec(`DROP TRIGGER IF EXISTS "${trigger.name.replace(/"/g, '""')}"`);
+      }
+      for (const table of present) db.exec(`DROP TABLE IF EXISTS ${table}`);
+      if (tableExists(db, "sqlite_sequence")) {
+        const forget = db.prepare("DELETE FROM sqlite_sequence WHERE name = ?");
+        for (const table of present) forget.run(table);
+      }
+      const broken = db.prepare("PRAGMA foreign_key_check").all();
+      if (broken.length > 0) throw new Error("foreign keys did not survive the v115 removals");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+  const check = db.prepare("PRAGMA integrity_check").all().map(row => String(row["integrity_check"]));
+  if (check.length !== 1 || check[0] !== "ok") throw new Error(`the v115 removals left the database damaged (${check.slice(0, 3).join("; ")})`);
+}
+
+/**
+ * v115: contests (several agents racing on one task) are gone. Inside migrateToV115's transaction, before their
+ * tables drop, whatever an undecided contest or standing race terms still owned is settled so the task is ordinary,
+ * visible and recoverable: nothing races, nothing waits on a pick that can no longer be made, and nothing builds
+ * on the old race approval until a person says so. Runs, decisions and their contestant columns stay as history.
+ */
+function settleContestsForV115(db: Database, now: Date): void {
+  const at = now.toISOString();
+  const open = "('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')";
+  const contests = tableExists(db, "contest");
+  // The unfinished tasks a contest still owned: an undecided contest, or active race terms not yet decided.
+  const owned = [
+    ...(contests ? [`SELECT task_ref FROM contest WHERE state IN ${open}`] : []),
+    ...(tableExists(db, "tournament_terms") ? ["SELECT task_ref FROM tournament_terms WHERE active = 1"] : []),
+  ].join(" UNION ");
+  const tasks = (db.prepare(
+    `SELECT task_ref.id AS ref, task.id AS id, task.state AS state FROM task_ref
+       JOIN task ON task_ref.backend = 'built-in' AND task.id = task_ref.external_id
+      WHERE task_ref.id IN (${owned}) AND task.state IN ('queued','running')
+      ORDER BY task_ref.id`,
+  ).all() as { ref: number; id: string; state: string }[]);
+  // 1. A raced agent's attempt still open ends as interrupted, like any attempt cut down mid-flight.
+  db.prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE outcome IS NULL AND contestant IS NOT NULL").run(at);
+  // 2. Its worker-process slots give their capacity back.
+  if (hasColumn(db, "execution_slot", "contestant")) {
+    db.prepare("UPDATE execution_slot SET state = 'released', released_at = ? WHERE state IN ('reserved','running') AND contestant IS NOT NULL").run(at);
+  }
+  // 3. The claim an undecided contest held is handed back.
+  if (contests) {
+    db.prepare(
+      `UPDATE claim SET released_at = ?, released_by = 'recovered'
+        WHERE released_at IS NULL AND lease_id IN (SELECT current_lease_id FROM contest WHERE state IN ${open} AND current_lease_id IS NOT NULL)`,
+    ).run(at);
+  }
+  // 4. A raced agent's unanswered question closes the way the exclude act closed one (typed, never a fake answer),
+  //    and with it the hold and the page it owned.
+  const questions = (db.prepare("SELECT id FROM decision WHERE contestant IS NOT NULL AND state IN ('open','expired') ORDER BY id").all() as { id: number }[]).map(row => Number(row.id));
+  const close = db.prepare("UPDATE decision SET state = 'answered', answered_at = ?, answered_by = 'toolroll update', closed_reason = 'excluded' WHERE id = ?");
+  const unhold = db.prepare("DELETE FROM hold WHERE owner_kind = 'decision' AND owner_id = ?");
+  const unpage = db.prepare("UPDATE notification SET resolved_at = ? WHERE dedupe_key = ? AND resolved_at IS NULL");
+  for (const id of questions) {
+    close.run(at, id);
+    unhold.run(String(id));
+    unpage.run(at, `decision:${id}`);
+  }
+  // 5. Contest holds lift, and a "compare and pick" page still waiting to be sent is settled (its page is gone).
+  db.prepare("DELETE FROM hold WHERE owner_kind = 'contest'").run();
+  db.prepare("UPDATE notification SET resolved_at = ? WHERE dedupe_key LIKE 'contest-%' AND resolved_at IS NULL").run(at);
+  // 6. Each owned task is queued again under an operator hold that says why: visible, and one action from an
+  //    ordinary one-agent build (or a cancel) — the old race approval never starts a build on its own.
+  const requeue = db.prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'");
+  const hold = db.prepare(
+    `INSERT OR IGNORE INTO hold (task_ref, owner_kind, owner_id, reason, until, held_at) VALUES (?, 'operator', ?, ?, NULL, ?)`,
+  );
+  for (const task of tasks) {
+    requeue.run(at, task.id);
+    hold.run(task.ref, String(task.ref), "Several agents were set to build this task. That option was removed in this update; remove this hold to build it with one agent.", at);
+  }
+  // 7. The one-open-question-per-raced-agent rule lived on decision, which stays.
+  db.exec("DROP INDEX IF EXISTS one_open_decision_per_contestant");
+}
+
+/**
+ * v115: held (watched) sessions are gone. Inside migrateToV115's transaction, before held_session drops, an attempt a
+ * held session still owned ends the way dead-runner recovery ends one: the run fails as 'interrupted', its claim is
+ * handed back, its checkout is released unverified (the work stays on disk for the next attempt), and a task left
+ * 'running' with no live claim is queued again. Open authorizations simply go with their table; decisions stay as
+ * they are (ordinary decisions now); finished runs and every column of history are untouched.
+ */
+function settleHeldSessionsForV115(db: Database, now: Date): void {
+  const at = now.toISOString();
+  const owned = (db.prepare(
+    `SELECT run.id AS run, run.task_ref AS ref, run.runner AS runner, held_session.lease_id AS lease FROM held_session
+       JOIN run ON run.id = held_session.run
+      WHERE run.outcome IS NULL ORDER BY run.id`,
+  ).all() as { run: number; ref: number; runner: string; lease: string }[]);
+  const finish = db.prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE id = ? AND outcome IS NULL");
+  const unclaim = db.prepare("UPDATE claim SET released_at = ?, released_by = 'interrupted' WHERE lease_id = ? AND released_at IS NULL");
+  const unlease = db.prepare("UPDATE worktree SET released_at = ?, verified = 0 WHERE runner = ? AND task_ref = ? AND released_at IS NULL");
+  const requeue = db.prepare(
+    `UPDATE task SET state = 'queued', updated_at = ? WHERE state = 'running'
+        AND id = (SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in')
+        AND NOT EXISTS (SELECT 1 FROM claim WHERE claim.task_ref = ? AND claim.released_at IS NULL AND claim.expires_at > ?)`,
+  );
+  for (const one of owned) {
+    // 1. The attempt ends as interrupted, the same words dead-runner recovery writes.
+    finish.run(at, one.run);
+    // 2. Its claim is handed back, and 3. its checkout released unverified.
+    unclaim.run(at, one.lease);
+    unlease.run(at, one.runner, one.ref);
+    // 4. The task returns to the queue unless some other live claim owns it.
+    requeue.run(at, one.ref, one.ref, at);
+  }
+}
+
+/**
+ * v115: fallback chains (and the declared risk level) are gone. Inside migrateToV115's transaction, before the
+ * fallback tables drop, whatever a chain still owned ends ordinary and recoverable:
+ *   1. An attempt still open under a chain (base or fallback entry) ends the way dead-runner recovery ends one: the run
+ *      fails as 'interrupted', its claim is handed back, its checkout released unverified (the work stays on disk),
+ *      and a task left 'running' with no live claim is queued again. A cycle waiting to admit its next entry owned no
+ *      run; its task already sits in the queue under its ordinary failure backoff.
+ *   2. An unfinished task whose scope was filed or approved with fallback agents can no longer build on those terms:
+ *      the chain snapshot is cleared, a chain approval is withdrawn (never silently narrowed to its first agent), and
+ *      the scope is marked unresolved with words that say how to recover (save the scope again, then approve it).
+ * Finished and cancelled tasks keep every column as history; runs keep their chain columns; old approvals still
+ * decode and verify.
+ */
+function settleFallbackChainsForV115(db: Database, now: Date): void {
+  const at = now.toISOString();
+  // 1. Open attempts a chain owned.
+  if (hasColumn(db, "run", "chain_cycle")) {
+    const owned = (db.prepare(
+      "SELECT id AS run, task_ref AS ref, runner, lease_id AS lease FROM run WHERE outcome IS NULL AND chain_cycle IS NOT NULL ORDER BY id",
+    ).all() as { run: number; ref: number; runner: string; lease: string }[]);
+    const finish = db.prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE id = ? AND outcome IS NULL");
+    const unclaim = db.prepare("UPDATE claim SET released_at = ?, released_by = 'interrupted' WHERE lease_id = ? AND released_at IS NULL");
+    const unlease = db.prepare("UPDATE worktree SET released_at = ?, verified = 0 WHERE runner = ? AND task_ref = ? AND released_at IS NULL");
+    const requeue = db.prepare(
+      `UPDATE task SET state = 'queued', updated_at = ? WHERE state = 'running'
+          AND id = (SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in')
+          AND NOT EXISTS (SELECT 1 FROM claim WHERE claim.task_ref = ? AND claim.released_at IS NULL AND claim.expires_at > ?)`,
+    );
+    for (const one of owned) {
+      finish.run(at, one.run);
+      unclaim.run(at, one.lease);
+      unlease.run(at, one.runner, one.ref);
+      requeue.run(at, one.ref, one.ref, at);
+    }
+  }
+  // 2. Unfinished tasks filed or approved with fallback agents.
+  if (hasColumn(db, "task_scope", "proposed_chain_json")) {
+    const chainKind = hasColumn(db, "task_scope", "approval_kind") ? "task_scope.approval_kind = 'chain'" : "0";
+    const unfinished = `task_scope.task_id IN (SELECT id FROM task WHERE state NOT IN ('done','cancelled'))`;
+    const withdraw = ["approved_at", "approved_by", "approved_digest", "approved_profile_json", "approved_chain_json", "approved_route_json", "approval_basis", "mode_digest"]
+      .filter(column => hasColumn(db, "task_scope", column))
+      .map(column => `${column} = NULL`);
+    // A chain approval is withdrawn first (while approval_kind still says so) …
+    if (chainKind !== "0") {
+      db.prepare(`UPDATE task_scope SET ${[...withdraw, "approval_kind = 'profile'"].join(", ")} WHERE ${chainKind} AND ${unfinished}`).run();
+    }
+    // … then every unfinished chain filing says why it cannot run until it is saved again.
+    db.prepare(
+      `UPDATE task_scope SET proposed_chain_json = NULL, profile_state = 'unresolved', unresolved_reason = ?
+        WHERE proposed_chain_json IS NOT NULL AND ${unfinished}`,
+    ).run("This scope named fallback agents, which Toolroll no longer uses. Save the scope again to choose its agents, then approve it.");
   }
 }
 
@@ -9518,7 +8970,7 @@ export class Store {
    * rank any still-dispatchable task holds, computed and written in ONE
    * transaction (two racing "next" calls get distinct ranks; the later
    * ask wins). Scheduling only: it refuses anything not plainly queued —
-   * building, finished, failed, cancelled, or racing a tournament — and
+   * building, finished, failed, or cancelled — and
    * never touches updated_at, which the board reads as the stall clock.
    */
   moveTaskNext(taskId: string, now: Date, mutation: Mutation = {}): { ok: true; priority: number } | { ok: false; reason: string } {
@@ -9534,13 +8986,6 @@ export class Store {
           // it running, so "claimed" would otherwise be unreachable and the
           // operator would read the less honest "not queued".
           if (this.currentLiveLease(Number(ref["id"]), now) !== null) return { ok: false as const, reason: "claimed" };
-          const racing = this.db
-            .prepare(
-              `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-                AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-            )
-            .get(Number(ref["id"]));
-          if (racing !== undefined) return { ok: false as const, reason: "contest-open" };
         }
         if (String(task["state"]) !== "queued") return { ok: false as const, reason: "not-queued" };
         // Rank is per COLUMN (assigned worker + repo partition) — "next"
@@ -9611,7 +9056,7 @@ export class Store {
    * One atomic queue move (queue-columns review, findings 3/9/13): the
    * revision CAS, every refusal, the assignment write, and the rerank of
    * BOTH affected columns are one transaction. The rerank member set is
-   * the FREE members only — anything live-claimed or racing a tournament
+   * the FREE members only — anything live-claimed
    * keeps its rank untouched, so a drag can never rewrite work being
    * taken (a setup-failure release rejoins with the rank the operator
    * last gave it — intent, not a bug). Scheduling, never authority.
@@ -9636,13 +9081,6 @@ export class Store {
         // honest word for mid-build work is "claimed" (same rule as next).
         if (this.currentLiveLease(Number(ref["id"]), now) !== null) return { ok: false as const, reason: "claimed" };
         if (String(task["state"]) !== "queued") return { ok: false as const, reason: "not-queued" };
-        const racing = this.db
-          .prepare(
-            `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-              AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-          )
-          .get(Number(ref["id"]));
-        if (racing !== undefined) return { ok: false as const, reason: "contest-open" };
         if (args.toRunner !== null) {
           const worker = this.db.prepare("SELECT retired_at FROM runner WHERE name = ?").get(args.toRunner);
           if (worker === undefined) return { ok: false as const, reason: "no-such-worker" };
@@ -9667,9 +9105,6 @@ export class Store {
                       AND claim.lease_generation = (
                         SELECT MAX(newest.lease_generation) FROM claim AS newest
                         WHERE newest.task_ref = task_ref.id))
-                  AND NOT EXISTS (
-                    SELECT 1 FROM contest WHERE contest.task_ref = task_ref.id
-                      AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted'))
                 ORDER BY task.priority DESC, task.created_at, task_ref.id`,
             )
             .all(BUILT_IN, runner, repo, now.toISOString())
@@ -9732,9 +9167,7 @@ export class Store {
                 (EXISTS (SELECT 1 FROM claim WHERE claim.task_ref = task_ref.id
                     AND claim.released_at IS NULL AND claim.expires_at > ?
                     AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest
-                      WHERE newest.task_ref = task_ref.id))
-                 OR EXISTS (SELECT 1 FROM contest WHERE contest.task_ref = task_ref.id
-                    AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted'))) AS taken
+                      WHERE newest.task_ref = task_ref.id))) AS taken
            FROM task JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
           WHERE task.state = 'queued'
             AND (? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)
@@ -9822,9 +9255,7 @@ export class Store {
                 (EXISTS (SELECT 1 FROM claim WHERE claim.task_ref = task_ref.id
                     AND claim.released_at IS NULL AND claim.expires_at > ?
                     AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest
-                      WHERE newest.task_ref = task_ref.id))
-                 OR EXISTS (SELECT 1 FROM contest WHERE contest.task_ref = task_ref.id
-                    AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted'))) AS taken
+                      WHERE newest.task_ref = task_ref.id))) AS taken
            FROM task JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
           WHERE task.state = 'queued'
           ORDER BY task.priority DESC, task.created_at, task_ref.id
@@ -10091,7 +9522,7 @@ export class Store {
         now.toISOString(),
       );
     // Only the OPERATOR'S pause speaks here (Telegram task updates): a
-    // decision, incident, backoff, contest, revision or stop hold arrives
+    // decision, incident, backoff, revision or stop hold arrives
     // beside its own page or its own stop fact, and repeating those would
     // teach a phone to skim. A repeat of the same pause is the same state.
     if (hold.ownerKind !== "operator") return;
@@ -10102,7 +9533,7 @@ export class Store {
     if (taskId === null) return;
     this.noteLifecycle(
       {
-        taskRef: hold.taskRef, run: this.runsFor(hold.taskRef).find(one => one.role === "builder" && one.contestant === null)?.id ?? null,
+        taskRef: hold.taskRef, run: this.runsFor(hold.taskRef).find(one => one.role === "builder")?.id ?? null,
         kind: "task-held", identity: `t${hold.taskRef}`,
         subject: until === null ? "Paused" : `Paused until ${until.slice(0, 16).replace("T", " ")} UTC`,
         body: "The next attempt waits until the hold is released. An attempt already running is not stopped by this.",
@@ -10135,7 +9566,7 @@ export class Store {
           const others = this.activeHolds(taskRef, at).map(one => LIFECYCLE_HOLD_WORDS[one.ownerKind]);
           this.noteLifecycle(
             {
-              taskRef, run: this.runsFor(taskRef).find(one => one.role === "builder" && one.contestant === null)?.id ?? null,
+              taskRef, run: this.runsFor(taskRef).find(one => one.role === "builder")?.id ?? null,
               kind: "task-released", identity: `t${taskRef}`,
               subject: "Hold released",
               body: others.length === 0 ? "The next attempt can start." : `It still waits on ${[...new Set(others)].join(" and ")}.`,
@@ -10234,8 +9665,7 @@ export class Store {
    * Establish a mirror: the ONE act that makes a local task stand for a
    * tracker item. Identity and provenance are immutable after this row
    * (trigger-enforced); labels and titles may nominate work, only this
-   * establishes whose it is. Refuses tasks carrying race terms or an open
-   * tournament (D1 — external work does not race in this release).
+   * establishes whose it is.
    */
   establishMirror(
     mirror: {
@@ -10249,22 +9679,12 @@ export class Store {
       syncGeneration?: number;
     },
     now: Date,
-  ): { ok: true } | { ok: false; reason: "unknown-task" | "duplicate" | "racing" } {
+  ): { ok: true } | { ok: false; reason: "unknown-task" | "duplicate" } {
     return this.transact(() => {
       const ref = this.db
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, mirror.localTaskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
-      const racing = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-            AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-        )
-        .get(Number(ref["id"]));
-      const terms = this.db
-        .prepare("SELECT 1 AS hit FROM tournament_terms WHERE task_ref = ? AND active = 1 LIMIT 1")
-        .get(Number(ref["id"]));
-      if (racing !== undefined || terms !== undefined) return { ok: false as const, reason: "racing" as const };
       const inserted = this.db
         .prepare(
           `INSERT OR IGNORE INTO external_mirror
@@ -10334,13 +9754,7 @@ export class Store {
         .get(BUILT_IN, localTaskId);
       if (ref === undefined) return;
       const live = this.currentLiveLease(Number(ref["id"]), now) !== null;
-      const contested = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-            AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-        )
-        .get(Number(ref["id"]));
-      if (!live && contested === undefined) {
+      if (!live) {
         this.applyCancellation(
           localTaskId,
           { kind: "machine", code: "mirror-latched" },
@@ -10363,7 +9777,7 @@ export class Store {
   /**
    * The reopen act (v3 §7 + findings 18/30): an authenticated CAS that
    * requires the tracker to have been SEEN open again after the close,
-   * and the task to be clean — no live claim, no open tournament, no
+   * and the task to be clean — no live claim, no
    * active hold, no open question, no unresolved incident. It reconciles
    * task state from any admitted state back to queued; the approved
    * scope is preserved (its digest never changed) — this act is the
@@ -10373,7 +9787,7 @@ export class Store {
     localTaskId: string,
     by: string,
     now: Date,
-  ): { ok: true } | { ok: false; reason: "unknown-task" | "not-latched" | "not-seen-open" | "claimed" | "contest-open" | "held" | "question-open" | "incident-open" | "bad-state" } {
+  ): { ok: true } | { ok: false; reason: "unknown-task" | "not-latched" | "not-seen-open" | "claimed" | "held" | "question-open" | "incident-open" | "bad-state" } {
     return this.transact(() => {
       const mirror = this.mirrorByTask(localTaskId);
       if (mirror === null) return { ok: false as const, reason: "unknown-task" as const };
@@ -10387,13 +9801,6 @@ export class Store {
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
       const taskRef = Number(ref["id"]);
       if (this.currentLiveLease(taskRef, now) !== null) return { ok: false as const, reason: "claimed" as const };
-      const contested = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-            AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-        )
-        .get(taskRef);
-      if (contested !== undefined) return { ok: false as const, reason: "contest-open" as const };
       if (this.activeHolds(taskRef, now).length > 0) return { ok: false as const, reason: "held" as const };
       const question = this.db
         .prepare(
@@ -10554,7 +9961,7 @@ export class Store {
   }
 
   /** Whether a fresh completion may stand as done (v4 §24) — read INSIDE
-   * completeFenced's transaction. Non-mirrors always complete. */
+   * finalize's complete-ending transaction. Non-mirrors always complete. */
   mirrorAllowsCompletion(taskId: string): boolean {
     const row = this.db
       .prepare("SELECT remote_state, dispatch_ok FROM external_mirror WHERE local_task_id = ?")
@@ -10658,14 +10065,13 @@ export class Store {
     mutation: Mutation = {},
     options: {
       profile?: ExecutionProfile;
-      /** v48: a FROZEN route — a routine firing's approved snapshot —
+      /** v48: a FROZEN route — an approved standing order's snapshot —
        * filed verbatim instead of being recommended afresh from today's
        * configuration. Requires an explicit profile, and the two must
        * agree exactly (the same belt every other road wears). */
       route?: PhaseRoute;
       permissionMode?: UnattendedPermissionMode;
       qualityMode?: QualityMode;
-      riskLevel?: RiskLevel;
       posture?: "escalated";
       proposedVia?: "mate" | "coordinator" | "scout" | null;
     } = {},
@@ -10677,7 +10083,7 @@ export class Store {
       // reason in words — saved atomically either way, because refusing
       // after the caller already validated everything else would strand
       // planner and revision output (finding 19). An explicit options
-      // profile wins (routine firings stamp the routine's APPROVED
+      // profile wins (an approved standing order stamps its APPROVED
       // profile; demo stamps its illustrative one); otherwise resolution
       // runs pin > project > installation > default with the exact-model
       // rule.
@@ -10705,7 +10111,7 @@ export class Store {
       if (options.qualityMode !== undefined && ref !== null) {
         this.db.prepare("UPDATE task_ref SET quality_mode = ? WHERE id = ?").run(options.qualityMode, ref.id);
       }
-      // THE ROUTE (v47): recommended once, here, from signed facts — risk,
+      // THE ROUTE (v47): recommended once, here, from signed facts — size,
       // quality, the rubric's evidence needs, publication authority — over
       // the CONFIGURED candidate tiers, the task's recorded overrides, and
       // its pins. EVERY leg is exact (provider and model id); the build and
@@ -10713,13 +10119,9 @@ export class Store {
       // profile and the sealed route can never disagree. A configuration
       // that cannot make an exact, runnable route files the scope
       // UNRESOLVED with the words — never a guess, never a substitution.
-      const riskLevel: RiskLevel = options.riskLevel ?? ref?.riskLevel ?? "routine";
-      if (options.riskLevel !== undefined && ref !== null) {
-        this.db.prepare("UPDATE task_ref SET risk_level = ? WHERE id = ?").run(options.riskLevel, ref.id);
-      }
       let route: PhaseRoute | null = null;
       const overrides = ref === null || ref.routeOverrides === undefined ? [] : ref.routeOverrides;
-      // An explicit profile (a routine firing's APPROVED profile, the
+      // An explicit profile (an approved standing order's profile, the
       // demo's illustrative one) is the build AND repair pin: the route
       // restates it exactly, never re-resolves it.
       const buildPin =
@@ -10734,7 +10136,7 @@ export class Store {
           ? { ok: false, phase: "build", problem: "a frozen route never consults today's configuration" }
           : resolveRouteCandidates(this, ref?.repo ?? null, { plan: planPin.ok ? planPin.pin : null, build: buildPin.ok ? buildPin.pin : null });
       if (options.route !== undefined) {
-        // The frozen road (v48): a routine firing files the route its
+        // The frozen road (v48): an approved standing order files the route its
         // approval sealed, byte for byte. Nothing here re-reads
         // configuration — a later `config set` cannot touch a firing.
         if (options.profile === undefined) {
@@ -10754,7 +10156,6 @@ export class Store {
         unresolvedReason = planPin.problem;
       } else {
         route = recommendRoute({
-          risk: riskLevel,
           qualityMode,
           evidence: [...new Set(scope.acceptance.flatMap(one => one.evidence))] as RouteEvidenceKind[],
           publication: this.publicationAuthorityOf(ref?.repo ?? null, new Date(scope.proposedAt)),
@@ -10817,7 +10218,7 @@ export class Store {
           }
         }
       }
-      // Explicit profiles normally win byte-for-byte (routine firings and
+      // Explicit profiles normally win byte-for-byte (standing orders and
       // demo fixtures depend on that). The signed operating mode's
       // escalated posture is the one exception, retained from C7: it must
       // apply even when a CLI caller supplied a concrete profile.
@@ -10852,79 +10253,19 @@ export class Store {
         profile === null
           ? route !== null || qualityMode === "strict" ? digestOf(digestInput, null, route) : scope.digest
           : digestOf(digestInput, profile, route);
-      // The fallback-chain binding (v30): when the scope resolved FROM CONFIG
-      // (not an explicit routine/demo profile) and the repo has configured
-      // fallbacks, the scope files as a CHAIN — the digest binds the whole
-      // ordered chain, and the WORKING snapshot is stored so the seal copies
-      // it verbatim (never re-resolves), exactly as approved_profile_json
-      // mirrors profile_json. Inert until an operator configures fallbacks:
-      // with none — every repo today — proposedChainJson stays NULL and the
-      // digest is the byte-identical single-profile binding. A malformed or
-      // duplicate chain config does NOT corrupt the scope: it files honestly
-      // as the single profile, and the config error surfaces at the config
-      // surface, never here.
-      let proposedChainJson: string | null = null;
-      let boundDigest = digest;
       // THE AUTH MODE AT FILING (atomic authority closure): the credential
       // the resolved profile's provider would spend under is read strictly
       // here, on every road — explicit profile or resolved — so a present
       // mode file that says neither word files the scope UNRESOLVED in its
       // words rather than sealing a credential nobody chose. The seal, the
       // consent door, and the spawn read the same way.
+      let boundDigest = digest;
       if (profile !== null) {
         const filedAuth = readAuthModeStrict(profile.provider);
         if (!filedAuth.ok) {
           profile = null;
           unresolvedReason = filedAuth.problem;
           boundDigest = digestOf(digestInput, null, route);
-        }
-      }
-      if (options.profile === undefined && profile !== null) {
-        const chainRef = this.lookupRef(scope.taskId);
-        const chainRepo = chainRef?.repo ?? null;
-        // A fallback row that cannot be READ is a stated problem (v48):
-        // the scope files unresolved in its words rather than sealing a
-        // single profile as if nothing had been configured.
-        const fallbackProblem = chainRepo === null ? null : this.fallbackConfigProblem(chainRepo);
-        if (fallbackProblem !== null) {
-          profile = null;
-          unresolvedReason = `the configured fallback chain cannot file: ${fallbackProblem}`;
-          boundDigest = digestOf(digestInput, null, route);
-        } else if (chainRepo !== null && this.fallbackConfig(chainRepo).length > 0) {
-          // The base entry's auth mode is read STRICTLY (raw authority
-          // repair): a stored auth-mode file that says neither word is a
-          // stated problem, never the subscription default — the scope
-          // files unresolved in its words rather than sealing a credential
-          // the operator never chose.
-          const baseAuth = readAuthModeStrict(profile.provider);
-          const chain = baseAuth.ok
-            ? resolveScopeChain(
-                this,
-                chainRepo,
-                chainRef === null ? undefined : { agentProvider: chainRef.agentProvider, agentModel: chainRef.agentModel },
-                { permissionMode, provider: profile.provider, model: profile.model, repairModel: profile.repairModel },
-                baseAuth.mode,
-              )
-            : { ok: false as const, reason: "bad-auth-mode" as const, problem: baseAuth.problem };
-          if (chain.ok && chain.kind === "chain") {
-            chain.chain = chain.chain.map(entry => ({ ...entry, profile: lowered(entry.profile) }));
-            proposedChainJson = canonicalChainJson(chain.chain);
-            boundDigest = digestOf(
-              { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, qualityMode },
-              { chain: chain.chain },
-              route,
-            );
-          } else if (!chain.ok) {
-            // The operator CONFIGURED fallbacks that cannot file (F+G
-            // review, finding 4): silently filing single-profile would
-            // approve something other than what they believe they set. The
-            // scope goes VISIBLY unresolved — dispatch and approval both
-            // blocked, the reason in words — until the config or the base
-            // routing is fixed.
-            profile = null;
-            unresolvedReason = `the configured fallback chain cannot file: ${chain.problem} — fix \`config set fallback\` for this repository, or clear it`;
-            boundDigest = digestOf(digestInput, null, route);
-          }
         }
       }
       this.db
@@ -10963,10 +10304,13 @@ export class Store {
           unresolvedReason,
           profile === null ? 1 : 2,
           provenance,
-          proposedChainJson,
+          // Fallback chains (v30-v114) are gone: no filing names one.
+          null,
           scope.acceptance.length === 0 ? null : JSON.stringify(scope.acceptance),
           qualityMode,
-          riskLevel,
+          // The declared risk level is gone (v115): every route is filed at
+          // routine risk, the value its signed terms always carried.
+          "routine",
           route === null ? null : canonicalRouteJson(route),
           // The durable era: every row this method writes is a routed row.
           ROUTE_ERA,
@@ -11034,17 +10378,16 @@ export class Store {
         // around it exists: a project's rules can refuse the requester, and
         // protected work seals only once two people approved these exact
         // bytes (the ceremony records each vote first) — never on a mode,
-        // a routine or an AI teammate's word.
+        // a schedule or an AI teammate's word.
         const kind: ApproverKind = approverKind ?? (basis !== undefined ? "mode" : by.endsWith(" (AI)") ? "ai" : "person");
         if (this.approvalGate(taskId, by, kind).verdict !== "seal") return false;
         // Sprint 8: the organisation policy, on every road that seals (a person's yes says why first).
         if (this.scopePolicyRefusal(taskId) !== null) return false;
         // THE SEAL'S BELT (v47, one strict projection since the v48
         // integrity repair): the row seals only what `scopeAuthorityOf`
-        // proves from its raw bytes — exact-key profile, chain, and route;
-        // safe integers and timer-safe clocks; a well-formed auth mode on
-        // every chain entry; build/repair parity between route and
-        // profile; the profile as the chain's entry zero; and the digest
+        // proves from its raw bytes — exact-key profile and route;
+        // safe integers and timer-safe clocks; build/repair parity between
+        // route and profile; and the digest
         // re-derived, complete, from those very values. A row that
         // predates routing (no era) cannot take a NEW yes: an approval now
         // names exactly which agent plans, builds, repairs, and reviews,
@@ -11062,18 +10405,13 @@ export class Store {
                 SET approved_at = ?, approved_by = ?, approved_digest = digest,
                     approved_profile_json = profile_json,
                     approval_basis = ?, mode_digest = ?,
-                    -- The chain snapshot seals exactly as the profile does:
-                    -- COPY the working proposed_chain_json into the immutable
-                    -- approved_chain_json, and set approval_kind from whether
-                    -- one exists. Because saveScope bound the signed digest to
-                    -- that same proposed chain, what is sealed is byte-for-byte
-                    -- what the approver agreed to — never re-resolved. A
-                    -- rewritten-then-reapproved scope re-seals from its CURRENT
-                    -- working snapshot, so a stale chain can never survive.
-                    approved_chain_json = proposed_chain_json,
-                    approval_kind = CASE WHEN proposed_chain_json IS NOT NULL THEN 'chain' ELSE 'profile' END,
-                    -- The ROUTE seals exactly as the profile and chain do
-                    -- (v47): copied, never re-resolved.
+                    -- A profile approval, always (fallback-chain approvals
+                    -- were removed in v115); a re-approval clears an old
+                    -- chain snapshot.
+                    approved_chain_json = NULL,
+                    approval_kind = 'profile',
+                    -- The ROUTE seals exactly as the profile does (v47):
+                    -- copied, never re-resolved.
                     approved_route_json = proposed_route_json
               WHERE task_id = ?`,
           )
@@ -11536,7 +10874,6 @@ export class Store {
         .run(access === null ? null : JSON.stringify(access), name);
       // End derived sessions/grants, preserving completed, explicitly signed
       // instance promises exactly as account revocation already does.
-      this.db.prepare("UPDATE attended_authorization SET closed_at = ?, end_reason = 'approver-revoked' WHERE approver = ? AND closed_at IS NULL").run(now.toISOString(), name);
       this.db.prepare("UPDATE invite SET revoked_at = ? WHERE minted_by = ? AND revoked_at IS NULL AND consumed_at IS NULL").run(now.toISOString(), name);
       for (const row of this.db.prepare("SELECT repo FROM operating_mode WHERE signed_by = ? AND revoked_at IS NULL").all(name)) {
         this.revokeMode(String(row["repo"]), by, "operator", now);
@@ -12375,8 +11712,8 @@ export class Store {
   /**
    * The revocation that actually severs (D7), one transaction: the stamp
    * plus a generation bump (live console sessions die at their next
-   * lookup; bearer credentials die at authenticateAccount), their open
-   * attended authorizations close, their unconsumed invites die, every
+   * lookup; bearer credentials die at authenticateAccount), their
+   * unconsumed invites die, every
    * mode THEY signed is revoked with the typed 'signer-revoked' event —
    * demoting its derived merge authority through the one reconciliation
    * road — and the derived-authority sweep clears Telegram and push.
@@ -12389,7 +11726,7 @@ export class Store {
    * invites, modes and everything mode-derived (their sealed filings
    * demote through the reconciliation road), Telegram, push. Standing
    * acts they completed WITH full ceremony — publication/backend/intake
-   * grants, worktree setups, approved routines, approved scopes sealed by
+   * grants, worktree setups, approved standing orders, approved scopes sealed by
    * password — deliberately survive: those are the instance's promises,
    * approved as themselves, and undoing history is not what revocation
    * means. An operator who distrusts those acts revokes them by their own
@@ -12400,7 +11737,7 @@ export class Store {
     by: string,
     now: Date,
   ):
-    | { ok: true; modesRevoked: number; authorizationsClosed: number; invitesRevoked: number }
+    | { ok: true; modesRevoked: number; invitesRevoked: number }
     | { ok: false; reason: "unknown" | "already-revoked" | "last-approver" } {
     return this.transact(() => {
       const account = this.db.prepare("SELECT role, revoked_at, projects_json FROM approver WHERE name = ?").get(name);
@@ -12416,9 +11753,6 @@ export class Store {
       this.db
         .prepare("UPDATE approver SET revoked_at = ?, revoked_by = ?, generation = generation + 1 WHERE name = ?")
         .run(stamp, by, name);
-      const closed = this.db
-        .prepare("UPDATE attended_authorization SET closed_at = ?, end_reason = 'approver-revoked' WHERE approver = ? AND closed_at IS NULL")
-        .run(stamp, name);
       const invites = this.db
         .prepare("UPDATE invite SET revoked_at = ? WHERE minted_by = ? AND revoked_at IS NULL AND consumed_at IS NULL")
         .run(stamp, name);
@@ -12442,26 +11776,9 @@ export class Store {
       return {
         ok: true as const,
         modesRevoked: modes.length,
-        authorizationsClosed: Number(closed.changes),
         invitesRevoked: Number(invites.changes),
       };
     });
-  }
-
-  /** One person's open attended sessions, for their People card. */
-  openAttendedOf(name: string): { taskId: string; createdAt: string; lastBeatAt: string | null }[] {
-    return this.db
-      .prepare(
-        `SELECT task_ref.external_id AS taskId, aa.created_at, aa.last_beat_at
-           FROM attended_authorization aa JOIN task_ref ON task_ref.id = aa.task_ref
-          WHERE aa.approver = ? AND aa.closed_at IS NULL ORDER BY aa.created_at DESC`,
-      )
-      .all(name)
-      .map(row => ({
-        taskId: String(row["taskId"]),
-        createdAt: String(row["created_at"]),
-        lastBeatAt: row["last_beat_at"] === null ? null : String(row["last_beat_at"]),
-      }));
   }
 
   /**
@@ -13490,965 +12807,6 @@ export class Store {
     return consumed;
   }
 
-  // ---- fallback chains: the fenced cycle state machine (v30, C7) --------
-
-  /** The open cycle for a task, if one exists (the runtime's read). */
-  fallbackCycleFor(taskRef: number): FallbackCycle | null {
-    const row = this.db
-      .prepare("SELECT * FROM fallback_cycle WHERE task_ref = ? AND state NOT IN ('closed','incident') ORDER BY id DESC LIMIT 1")
-      .get(taskRef);
-    return row === undefined ? null : readFallbackCycle(row as Record<string, unknown>);
-  }
-
-  /** Open a fresh cycle at index 0 for a running base attempt. One live
-   * cycle per task — the SELECT-then-INSERT under BEGIN IMMEDIATE
-   * serializes writers, and the one_live_fallback_cycle_per_task partial
-   * unique index is the durable backstop (finding 5). A second refuses. */
-  openFallbackCycle(taskRef: number, chainDigest: string, tailRun: number | null, now: Date): { ok: true; id: number } | { ok: false } {
-    return this.transact(() => {
-      const existing = this.db
-        .prepare("SELECT 1 AS hit FROM fallback_cycle WHERE task_ref = ? AND state NOT IN ('closed','incident') LIMIT 1")
-        .get(taskRef);
-      if (existing !== undefined) return { ok: false as const };
-      const inserted = this.db
-        .prepare(
-          `INSERT INTO fallback_cycle (task_ref, chain_digest, cursor, state, transition_generation, tail_run, created_at, updated_at)
-           VALUES (?, ?, 0, 'open', 0, ?, ?, ?)`,
-        )
-        .run(taskRef, chainDigest, tailRun, now.toISOString(), now.toISOString());
-      return { ok: true as const, id: Number(inserted.lastInsertRowid) };
-    });
-  }
-
-  /**
-   * The task's IMMUTABLE approved chain — the runtime's single source of
-   * truth for chain length and per-entry authority (never mutable config).
-   * Returns the rehydrated entries when the approval sealed a chain and the
-   * snapshot still rehydrates strictly; null otherwise (a single-profile
-   * approval, or a snapshot that fails the strict rehydrator — fail closed,
-   * so a corrupt chain dispatches nothing).
-   */
-  approvedChainOf(taskId: string): ChainEntry[] | null {
-    const scope = this.getScope(taskId);
-    if (scope === null || scope.termsProblem != null || scope.approvalKind !== "chain" || scope.approvedChainJson == null) return null;
-    // The approval must still STAND (Codex E2/E3 review, finding 2): a scope
-    // rewritten without reapproval has withdrawn its authority — chain
-    // snapshot included — so a stale approved_chain_json can never remain
-    // fallback authority. approvedDigest === digest is the same freshness the
-    // build gate proves.
-    if (scope.approvedAt === null || scope.approvedDigest === null || scope.approvedDigest !== scope.digest) {
-      return null;
-    }
-    const chain = chainFromJson(scope.approvedChainJson);
-    if (chain === null) return null;
-    // The snapshot must be the one the SIGNED digest binds — recompute from
-    // the current scope fields + this chain and require an exact match, so a
-    // snapshot that does not correspond to the approved digest never governs.
-    const rederived = digestOf(
-      { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" },
-      { chain },
-      routeFromJson(scope.approvedRouteJson ?? null),
-    );
-    if (rederived !== scope.approvedDigest) return null;
-    // THE MIRROR MUST STAND (v48 integrity): a chain approval also seals
-    // the profile column as a mirror of the chain's base entry. A mirror
-    // that is missing, cannot be read exactly, or names another profile
-    // is a tampered seal — the chain is NOT downgraded to "chain-only
-    // authority"; nothing dispatches on it until it is approved again.
-    const base = chain[0];
-    const mirrored = profileFromJson(scope.approvedProfileJson === undefined ? (scope.approvedProfile == null ? null : canonicalProfileJson(scope.approvedProfile)) : scope.approvedProfileJson);
-    if (base === undefined || mirrored === null || profileDigestOf(mirrored) !== profileDigestOf(base.profile)) return null;
-    return chain;
-  }
-
-  /**
-   * The ONE chain-cycle resolver at a run's end (E3c/E3d): every concluded
-   * tail resolves its cycle — success closes it, an ordinary end closes it
-   * (the retry road runs the BASE entry under a FRESH cycle; a concluded
-   * tail can never be re-tagged, so leaving it open would only strand it),
-   * a parked tail is a PAUSED lineage and stays open for repair, and a
-   * recognized eligible exhaustion advances. Both the disposition hook and
-   * the crash reconciler call THIS method, so a crash between disposition
-   * and resolution re-derives the same answer from durable state.
-   *
-   * The advance is FAIL CLOSED at every gate:
-   *   - an OPEN cycle whose tail is exactly this finished run;
-   *   - the run genuinely finished (outcome + finished_at +
-   *     provider_started_at, same task) — never live custody;
-   *   - a fallback-ELIGIBLE class consistent with the run's auth mode;
-   *   - the C8 re-check: THIS build recognizes the exact class/auth for the
-   *     run's (provider, version) — a downgrade severs to incident;
-   *   - the LIVE signed mode's paid-fallback grant, re-read IN-transaction;
-   *   - a next entry in the IMMUTABLE approved chain (else exhausted-end).
-   * The fenced custody walk — sanitize, advance, release-to-pending — runs
-   * atomically inside ONE transaction; a lost inner CAS rolls the whole
-   * walk back. It NEVER dispatches: the admission pass creates the run.
-   */
-  resolveChainOnRunEnd(
-    taskRef: number,
-    taskId: string,
-    repo: string | null,
-    finishedRunId: number,
-    now: Date,
-  ):
-    | { kind: "advanced"; toIndex: number }
-    | { kind: "exhausted-end" }
-    | { kind: "closed"; reason: "succeeded" | "entry-ended" }
-    | { kind: "blocked"; reason: "no-recognizer" | "grant-withheld" | "corrupt-chain" | "cycle-mismatch" }
-    | { kind: "parked-tail" }
-    | { kind: "no-cycle" } {
-    try {
-      return this.transact(() => {
-        const cycle = this.fallbackCycleFor(taskRef);
-        if (cycle === null || cycle.state !== "open" || cycle.tailRun !== finishedRunId) {
-          return { kind: "no-cycle" as const };
-        }
-        const run = this.getRun(finishedRunId);
-        if (run === null) return { kind: "no-cycle" as const };
-        // The predecessor must be genuinely FINISHED (Codex E2/E3 review,
-        // finding 7): a run whose outcome is still open — or that never
-        // spawned a provider — is live custody, and advancing off it could
-        // start the next entry beside a running predecessor. Its task must be
-        // this task, too. (A success that never spawned — a no-change without
-        // a provider — still closes below; the started-at proof gates only
-        // the ADVANCE road.)
-        if (run.taskRef !== taskRef || run.outcome === null || run.finishedAt === null) {
-          return { kind: "no-cycle" as const };
-        }
-        // A successful tail: the chain did its job — closed, terminally.
-        if (run.outcome === "built" || run.outcome === "no-change") {
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "succeeded", now);
-          return { kind: "closed" as const, reason: "succeeded" as const };
-        }
-        // A parked tail is a PAUSED lineage, not an ended one: repair resumes
-        // the same custody, and the cycle stays open for it.
-        if (run.outcome === "parked") return { kind: "parked-tail" as const };
-        // An operator-stopped tail (v52) ends the cycle as an ordinary end:
-        // a stop never advances a chain, spends a fallback edge, or counts
-        // as the exhaustion the chain was approved to survive. The resumed
-        // attempt opens its own cycle at the base, under the same approval.
-        if (this.applicableStopFor(finishedRunId) !== null) {
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "entry-ended", now);
-          return { kind: "closed" as const, reason: "entry-ended" as const };
-        }
-        const cls: TerminalClass = run.terminalClass ?? "unknown";
-        // A chain-bound tail carries its pinned auth mode from admission; a
-        // row whose auth mode does not read (v48 authority repair) is a corrupt stamp and
-        // ends the cycle as an ordinary end — never as a subscription run.
-        const authMode = run.authMode ?? null;
-        // An ordinary end (failure, refusal, interruption) — or a corrupt
-        // class/auth pairing, which must READ as ordinary (finding 8) —
-        // ends the cycle. The retry road opens a fresh one at the base.
-        if (authMode === null || !isFallbackEligible(cls) || !classMatchesAuthMode(cls, authMode)) {
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "entry-ended", now);
-          return { kind: "closed" as const, reason: "entry-ended" as const };
-        }
-        // The ADVANCE road requires a proven provider spawn.
-        if (run.providerStartedAt === null) {
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "entry-ended", now);
-          return { kind: "closed" as const, reason: "entry-ended" as const };
-        }
-        // C8 re-check at the authority point (findings 1/8): THIS build must
-        // recognize the EXACT eligible class for this auth mode — not merely
-        // "some eligible recognizer exists." A build with no such fixture
-        // (every real build) severs the cycle to incident, loudly.
-        if (!recognizesEligible(run.provider as ProviderId, run.providerVersion, authMode)) {
-          this.incidentFallback(cycle.id, cycle.transitionGeneration, "recognizer-absent-at-advance", now);
-          return { kind: "blocked" as const, reason: "no-recognizer" as const };
-        }
-        // The paid-fallback grant is re-proved from the LIVE signed mode
-        // INSIDE this transaction (finding 4): a boolean read before the
-        // transaction is a TOCTOU — a mode revoked or replaced meanwhile must
-        // deny the advance.
-        const liveGrant =
-          repo === null
-            ? false
-            : modeTermsFromJson(this.activeMode(repo, now)?.termsJson ?? null)?.allowPaidFallback === true;
-        if (!liveGrant) {
-          // No live grant: the cycle ends here, cleanly, and the run disposes
-          // as the ordinary exhaustion it is.
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "grant-withheld", now);
-          return { kind: "blocked" as const, reason: "grant-withheld" as const };
-        }
-        const chain = this.approvedChainOf(taskId);
-        if (chain === null) {
-          // A chain we can no longer re-derive (or whose approval was
-          // withdrawn) is never advanced on.
-          this.incidentFallback(cycle.id, cycle.transitionGeneration, "approved-chain-unrehydratable", now);
-          return { kind: "blocked" as const, reason: "corrupt-chain" as const };
-        }
-        // The open cycle must belong to THIS approved chain (finding 2,
-        // scenario B): a scope reapproved under a different chain must not
-        // let an old cycle admit into the new one.
-        if (cycle.chainDigest !== chainDigestOf(chain)) {
-          this.incidentFallback(cycle.id, cycle.transitionGeneration, "cycle-chain-digest-mismatch", now);
-          return { kind: "blocked" as const, reason: "cycle-mismatch" as const };
-        }
-        const chainLength = chain.length;
-        if (cycle.cursor + 1 >= chainLength) {
-          // Eligible, but the whole chain is spent — the exhausted terminal.
-          this.closeFallbackCycle(cycle.id, cycle.transitionGeneration, "chain-exhausted", now);
-          return { kind: "exhausted-end" as const };
-        }
-        const g0 = cycle.transitionGeneration;
-        if (!this.beginFallbackSanitize(cycle.id, g0, finishedRunId, now)) {
-          throw new Error("fallback sanitize lost its CAS");
-        }
-        const adv = this.advanceFallbackFenced(
-          {
-            cycleId: cycle.id,
-            expectGeneration: g0 + 1,
-            fromIndex: cycle.cursor,
-            chainLength,
-            predecessorRun: finishedRunId,
-            terminalClass: cls,
-            evidence: {
-              provider: run.provider,
-              version: run.providerVersion,
-              authMode: run.authMode ?? "subscription",
-              fp: "",
-            },
-          },
-          now,
-        );
-        if (!adv.ok) throw new Error(`fallback advance lost: ${adv.reason}`);
-        if (!this.releaseFallbackToPending(cycle.id, g0 + 2, now)) {
-          throw new Error("fallback release lost its CAS");
-        }
-        return { kind: "advanced" as const, toIndex: adv.toIndex };
-      });
-    } catch {
-      // A lost CAS rolled the whole walk back (the cycle is untouched at its
-      // generation): another authority raced us. Do nothing — next tick.
-      return { kind: "no-cycle" as const };
-    }
-  }
-
-  /**
-   * The crash reconciler's read (E3d, review finding 3): OPEN cycles whose
-   * tail run CONCLUDED (non-parked) but whose cycle was never resolved — the
-   * window a crash between disposition and resolveChainOnRunEnd leaves. The
-   * reconciler feeds each through the SAME resolver, so nothing is decided
-   * twice or differently.
-   */
-  strandedChainCycles(repo: string): { cycleId: number; taskRef: number; taskId: string; tailRun: number }[] {
-    return this.db
-      .prepare(
-        `SELECT fc.id AS cycle_id, fc.task_ref AS task_ref, tr.external_id AS task_id, fc.tail_run AS tail_run
-           FROM fallback_cycle fc
-           JOIN run r ON r.id = fc.tail_run
-           JOIN task_ref tr ON tr.id = fc.task_ref AND tr.backend = ? AND tr.repo = ?
-          WHERE fc.state = 'open' AND r.outcome IS NOT NULL AND r.outcome <> 'parked'`,
-      )
-      .all(BUILT_IN, repo)
-      .map(row => ({
-        cycleId: Number((row as Record<string, unknown>)["cycle_id"]),
-        taskRef: Number((row as Record<string, unknown>)["task_ref"]),
-        taskId: String((row as Record<string, unknown>)["task_id"]),
-        tailRun: Number((row as Record<string, unknown>)["tail_run"]),
-      }));
-  }
-
-  /**
-   * The chain reconciler in ONE callable piece (F+G review, finding 5): the
-   * EXACT code the tick runs each pass, so the fault tests drive the same
-   * road production does — deleting the tick's call would fail them.
-   * Resolves every open cycle whose tail concluded (non-parked) through the
-   * one resolver; returns how many it fed through.
-   */
-  reconcileStrandedChains(repo: string, now: Date): number {
-    let fed = 0;
-    for (const stranded of this.strandedChainCycles(repo)) {
-      this.resolveChainOnRunEnd(stranded.taskRef, stranded.taskId, repo, stranded.tailRun, now);
-      fed++;
-    }
-    return fed;
-  }
-
-  /** Cycles awaiting their next entry's admission, for one repo — what the
-   * tick's chain admission pass walks. */
-  pendingChainAdmissions(repo: string): { cycleId: number; taskRef: number; taskId: string; cursor: number }[] {
-    return this.db
-      .prepare(
-        `SELECT fc.id AS cycle_id, fc.task_ref AS task_ref, tr.external_id AS task_id, fc.cursor AS cursor
-           FROM fallback_cycle fc
-           JOIN task_ref tr ON tr.id = fc.task_ref AND tr.backend = ? AND tr.repo = ?
-          WHERE fc.state = 'pending-admission'
-          ORDER BY fc.id`,
-      )
-      .all(BUILT_IN, repo)
-      .map(row => ({
-        cycleId: Number((row as Record<string, unknown>)["cycle_id"]),
-        taskRef: Number((row as Record<string, unknown>)["task_ref"]),
-        taskId: String((row as Record<string, unknown>)["task_id"]),
-        cursor: Number((row as Record<string, unknown>)["cursor"]),
-      }));
-  }
-
-  /**
-   * The PROVING admission (E3d): create the next entry's run from a
-   * pending-admission cycle, with EVERY authority re-derived inside one
-   * transaction — the approved chain must still stand and match the cycle's
-   * digest, the entry at the cursor must exist, the LIVE signed mode must
-   * still grant the paid fallback (revocation between advance and admission
-   * denies), and the exact unconsumed pending edge is consumed by the run
-   * it creates (admitFallback's single-use CAS). The caller carries only
-   * claim, worktree, and rail; nothing it asserts becomes authority.
-   */
-  admitNextChainEntry(
-    cycleId: number,
-    run: { leaseId: string; runner: string; branch: string; worktree: string; recoveredFrom?: number },
-    now: Date,
-  ):
-    | { ok: true; runId: number; taskId: string; provider: string; model: string }
-    | { ok: false; reason: "not-pending" | "stale-approval" | "grant-withheld" | "no-edge" | "raced" | "provider-unavailable"; detail?: string } {
-    return this.transact(() => {
-      const cycle = this.db.prepare("SELECT * FROM fallback_cycle WHERE id = ?").get(cycleId);
-      if (cycle === undefined) return { ok: false as const, reason: "not-pending" as const };
-      const c = readFallbackCycle(cycle as Record<string, unknown>);
-      if (c.state !== "pending-admission") return { ok: false as const, reason: "not-pending" as const };
-      // Task and repo are DERIVED from the cycle's own task_ref (Codex E3d
-      // review, finding 7) — never accepted from the caller, so a mismatched
-      // call can't marry task B's approval to task A's cycle.
-      const owner = this.db
-        .prepare("SELECT external_id, repo FROM task_ref WHERE id = ? AND backend = ?")
-        .get(c.taskRef, BUILT_IN);
-      const taskId = owner === undefined ? null : String((owner as Record<string, unknown>)["external_id"]);
-      const repo = owner === undefined ? null : ((owner as Record<string, unknown>)["repo"] as string | null);
-      if (taskId === null || repo === null) {
-        this.incidentFallback(c.id, c.transitionGeneration, "cycle-task-unresolvable", now);
-        return { ok: false as const, reason: "stale-approval" as const };
-      }
-      const chain = this.approvedChainOf(taskId);
-      if (chain === null || chainDigestOf(chain) !== c.chainDigest) {
-        this.incidentFallback(c.id, c.transitionGeneration, "approved-chain-invalid-at-admission", now);
-        return { ok: false as const, reason: "stale-approval" as const };
-      }
-      const entry = chain[c.cursor];
-      if (entry === undefined) {
-        this.incidentFallback(c.id, c.transitionGeneration, "cursor-beyond-approved-chain", now);
-        return { ok: false as const, reason: "stale-approval" as const };
-      }
-      // The paid-fallback grant, re-proved at the MONEY moment: an advance
-      // was granted, but a mode revoked since must still deny the spend.
-      const liveGrant = modeTermsFromJson(this.activeMode(repo, now)?.termsJson ?? null)?.allowPaidFallback === true;
-      if (!liveGrant) {
-        this.closeFallbackCycle(c.id, c.transitionGeneration, "grant-withheld", now);
-        return { ok: false as const, reason: "grant-withheld" as const };
-      }
-      // The entry's provider is re-checked INSIDE admission (v47): the
-      // approved chain is the only substitution road, and it still never
-      // opens a run on a provider this runner reports unavailable. The
-      // cycle stays pending for a runner that can.
-      const readiness = this.runnerReadinessOf(run.runner, entry.profile.provider);
-      if (readiness !== null && readiness.state === "unavailable") {
-        return {
-          ok: false as const,
-          reason: "provider-unavailable" as const,
-          detail: `${entry.profile.provider} is reported unavailable on ${run.runner} (${readiness.reason}; observed ${readiness.observedAt}) — the approved fallback entry cannot run here`,
-        };
-      }
-      const edge = this.db
-        .prepare("SELECT id FROM fallback_transition WHERE cycle = ? AND to_index = ? AND consumed_by IS NULL ORDER BY id DESC LIMIT 1")
-        .get(c.id, c.cursor);
-      if (edge === undefined) {
-        this.incidentFallback(c.id, c.transitionGeneration, "no-unconsumed-edge-at-admission", now);
-        return { ok: false as const, reason: "no-edge" as const };
-      }
-      // Route provenance (v47/v48), proved and written INSIDE the admission
-      // savepoint, before the row: an approved fallback entry spends as
-      // `fallback` under the SEALED route, bound to exactly this cursor's
-      // entry. There is no chain-only digest (raw authority repair): a
-      // chain approval whose raw profile mirror, chain, and route do not
-      // form one strict parity-valid sealed authority — a pre-routing chain,
-      // a mirror that does not read or match, a route whose build and
-      // repair legs are not the sealed profile's pairs — admits nothing.
-      // The refusal is words alone: no run, no consumed edge, and no cycle
-      // transition — the cycle stays exactly as it was.
-      const sealed = this.sealedRouteOf(taskId);
-      const mirror = this.getScope(taskId)?.approvedProfile ?? null;
-      if (!sealed.ok || mirror === null) {
-        return {
-          ok: false as const,
-          reason: "stale-approval" as const,
-          detail: !sealed.ok
-            ? `the chain approval's sealed agent route does not stand (${sealed.detail}) — nothing spends as a fallback under a chain-only digest; re-file the scope and approve it again`
-            : "the approval's sealed agent profile mirror cannot be read — re-file the scope and approve it again",
-        };
-      }
-      const admitted = this.admitFallback(
-        {
-          kind: "entry",
-          cycleId: c.id,
-          expectGeneration: c.transitionGeneration,
-          expectCursor: c.cursor,
-          expectTail: c.tailRun,
-          transitionId: Number((edge as Record<string, unknown>)["id"]),
-          run: {
-            taskRef: c.taskRef,
-            leaseId: run.leaseId,
-            runner: run.runner,
-            branch: run.branch,
-            worktree: run.worktree,
-            provider: entry.profile.provider,
-            model: entry.profile.model,
-            ...(run.recoveredFrom === undefined ? {} : { recoveredFrom: run.recoveredFrom }),
-          },
-          entryDigest: entryDigestOf(entry),
-          authMode: entry.authMode,
-          repairModel: entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel,
-          approved: { chainDigest: chainDigestOf(chain), profile: mirror },
-          route: { routeDigest: routeDigestOf(sealed.route), phase: "build", provider: entry.profile.provider, model: entry.profile.model, chosen: "fallback" },
-        },
-        now,
-      );
-      if (!admitted.ok) {
-        if (admitted.reason === "refused") throw new Error(admitted.problem);
-        return { ok: false as const, reason: "raced" as const };
-      }
-      return { ok: true as const, runId: admitted.runId, taskId, provider: entry.profile.provider, model: entry.profile.model };
-    });
-  }
-
-  /**
-   * The PRE-SPAWN custody proof (Codex E3d review, finding 3): the LAST
-   * gate before a chain-bound run's provider process starts, coupled to the
-   * start stamp in ONE transaction so nothing can lapse between the proof
-   * and the money. Re-derives, from durable state only: the approved chain
-   * still stands (freshness + digest); the run's cycle is live and OPEN
-   * with THIS run as tail at THIS run's index; the entry digest and pinned
-   * auth mode still match; and — for any entry past the base — the LIVE
-   * signed mode still grants the paid fallback (a base entry is the
-   * ordinary approved work and needs no grant). Only when every fact stands
-   * is provider_started_at stamped (first-write, with the version when the
-   * gateway proved one). Returns false — and stamps NOTHING — otherwise.
-   */
-  proveChainCustodyForSpawn(runId: number, now: Date, providerVersion?: string): boolean {
-    return this.transact(() => {
-      const run = this.getRun(runId);
-      if (run === null || run.chainCycle == null || run.outcome !== null) return false;
-      const owner = this.db
-        .prepare("SELECT external_id, repo FROM task_ref WHERE id = ? AND backend = ?")
-        .get(run.taskRef, BUILT_IN);
-      if (owner === undefined) return false;
-      const taskId = String((owner as Record<string, unknown>)["external_id"]);
-      const repo = (owner as Record<string, unknown>)["repo"] as string | null;
-      const chain = this.approvedChainOf(taskId);
-      if (chain === null) return false;
-      const cycle = this.fallbackCycleFor(run.taskRef);
-      // The custody holder is normally the run itself — but a bounded
-      // REPAIR turn spends under its PARENT'S custody (verify round, R2):
-      // the parent is still the cycle's open tail while its own attempt
-      // mends, and it vouches for exactly its child. Anything else refuses.
-      const tailHolds =
-        cycle !== null &&
-        (cycle.tailRun === runId ||
-          (run.role === "repair" && run.parentRun !== null && cycle.tailRun === run.parentRun));
-      if (
-        cycle === null ||
-        cycle.id !== run.chainCycle ||
-        cycle.state !== "open" ||
-        cycle.cursor !== run.chainIndex ||
-        !tailHolds ||
-        cycle.chainDigest !== chainDigestOf(chain)
-      ) {
-        return false;
-      }
-      const entry = chain[run.chainIndex ?? -1];
-      if (entry === undefined || entryDigestOf(entry) !== run.entryDigest || entry.authMode !== run.authMode) {
-        return false;
-      }
-      if ((run.chainIndex ?? 0) > 0) {
-        const liveGrant =
-          repo !== null && modeTermsFromJson(this.activeMode(repo, now)?.termsJson ?? null)?.allowPaidFallback === true;
-        if (!liveGrant) return false;
-      }
-      if (providerVersion !== undefined) {
-        this.db
-          .prepare("UPDATE run SET provider_started_at = COALESCE(provider_started_at, ?), provider_version = ? WHERE id = ?")
-          .run(now.toISOString(), providerVersion, runId);
-      } else {
-        this.db
-          .prepare("UPDATE run SET provider_started_at = COALESCE(provider_started_at, ?) WHERE id = ?")
-          .run(now.toISOString(), runId);
-      }
-      return true;
-    });
-  }
-
-  /**
-   * open -> sanitizing (C7): a recognized ELIGIBLE exhaustion of the tail
-   * run begins the sanitizer. CAS proves exact state, generation, and tail
-   * run; a stale caller loses. Marks the cycle sanitizing so ordinary
-   * admission is blocked even if the claim later expires.
-   */
-  beginFallbackSanitize(cycleId: number, expectGeneration: number, tailRun: number, now: Date): boolean {
-    return (
-      Number(
-        this.db
-          .prepare(
-            `UPDATE fallback_cycle SET state = 'sanitizing', transition_generation = transition_generation + 1, updated_at = ?
-              WHERE id = ? AND state = 'open' AND transition_generation = ? AND tail_run = ?`,
-          )
-          .run(now.toISOString(), cycleId, expectGeneration, tailRun).changes,
-      ) > 0
-    );
-  }
-
-  /**
-   * sanitizing -> awaiting-release (C2/C7): the durable one-step advance.
-   * ONE transaction: prove the cycle is sanitizing at this generation and
-   * cursor i with this tail run; insert the immutable transition (unique
-   * per (cycle, from_index)); advance the cursor to i+1; bump generation.
-   * The target index MUST be < chainLength (proven by the caller from the
-   * approved snapshot). Returns the new transition id, or null on a lost
-   * CAS or an already-recorded step.
-   */
-  advanceFallbackFenced(
-    args: {
-      cycleId: number;
-      expectGeneration: number;
-      fromIndex: number;
-      chainLength: number;
-      predecessorRun: number;
-      terminalClass: string;
-      evidence: { provider: string; version: string | null; authMode: string; fp: string };
-    },
-    now: Date,
-  ): { ok: true; transitionId: number; toIndex: number } | { ok: false; reason: "raced" | "at-end" | "dup" } {
-    if (args.fromIndex + 1 >= args.chainLength) return { ok: false as const, reason: "at-end" as const };
-    // A SAVEPOINT (finding 4): a UNIQUE(cycle, from_index) conflict rolls
-    // the cursor move back too, even inside an outer transaction a caller
-    // might catch around — never a committed cursor without its transition.
-    return this.savepoint(() => {
-      // Prove the from-state (no move yet); the state cannot change under
-      // us inside the savepoint's serialized transaction.
-      const at = this.db
-        .prepare("SELECT 1 AS hit FROM fallback_cycle WHERE id = ? AND state = 'sanitizing' AND transition_generation = ? AND cursor = ? AND tail_run = ?")
-        .get(args.cycleId, args.expectGeneration, args.fromIndex, args.predecessorRun);
-      if (at === undefined) return { ok: false as const, reason: "raced" as const };
-      // Insert the transition FIRST: its UNIQUE(cycle, from_index) is the
-      // double-advance guard, and on a dup NOTHING has moved yet.
-      let transitionId: number;
-      try {
-        const inserted = this.db
-          .prepare(
-            `INSERT INTO fallback_transition (cycle, kind, from_index, to_index, predecessor_run, terminal_class, evidence_provider, evidence_version, evidence_auth_mode, evidence_fp, created_at)
-             VALUES (?, 'exhaustion', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            args.cycleId,
-            args.fromIndex,
-            args.fromIndex + 1,
-            args.predecessorRun,
-            args.terminalClass,
-            args.evidence.provider,
-            args.evidence.version,
-            args.evidence.authMode,
-            args.evidence.fp,
-            now.toISOString(),
-          );
-        transitionId = Number(inserted.lastInsertRowid);
-      } catch {
-        return { ok: false as const, reason: "dup" as const };
-      }
-      // Only now move the cursor. If this CAS somehow fails, throw so the
-      // savepoint rolls the inserted transition back too.
-      const moved = this.db
-        .prepare(
-          `UPDATE fallback_cycle SET state = 'awaiting-release', cursor = cursor + 1, transition_generation = transition_generation + 1, updated_at = ?
-            WHERE id = ? AND state = 'sanitizing' AND transition_generation = ? AND cursor = ? AND tail_run = ?`,
-        )
-        .run(now.toISOString(), args.cycleId, args.expectGeneration, args.fromIndex, args.predecessorRun);
-      if (Number(moved.changes) === 0) throw new Error("fallback advance raced its own from-state");
-      return { ok: true as const, transitionId, toIndex: args.fromIndex + 1 };
-    });
-  }
-
-  /** awaiting-release -> pending-admission (C7): the epoch-fenced custody
-   * release completed; the next entry is now admittable. */
-  releaseFallbackToPending(cycleId: number, expectGeneration: number, now: Date): boolean {
-    return (
-      Number(
-        this.db
-          .prepare(
-            `UPDATE fallback_cycle SET state = 'pending-admission', tail_run = NULL, transition_generation = transition_generation + 1, updated_at = ?
-              WHERE id = ? AND state = 'awaiting-release' AND transition_generation = ?`,
-          )
-          .run(now.toISOString(), cycleId, expectGeneration).changes,
-      ) > 0
-    );
-  }
-
-  /**
-   * pending-admission -> open at the new index (C3): the SINGLE-USE
-   * admission. ONE transaction: prove pending at this generation, consume
-   * the transition (consumed_by set once — a replay finds it consumed and
-   * loses), and open the cycle at the new tail. Returns false on a lost
-   * CAS or an already-consumed transition.
-   */
-  /**
-   * THE FALLBACK ADMISSION (E3d; the ONE insert path for `fallback`
-   * provenance since the v48 integrity repair). Every run bound to a
-   * NON-primary entry of the approved chain — the entry's own admission
-   * from a pending edge, a parked tail's successor, a repair turn under
-   * the live tail — is created here and nowhere else; the generic
-   * admission refuses `fallback` outright.
-   *
-   * EVERYTHING the caller states is re-proved against durable state
-   * before any row exists, and one disagreement creates no run and
-   * consumes no edge: the cycle is the task's own and live; the approved
-   * chain still stands, is the cycle's, and its base entry is mirrored by
-   * the sealed profile exactly as the caller presents it; the cursor,
-   * the tail, the entry digest, the auth mode, the provider, the EXACT
-   * model (required, never defaulted), and the repair binding all equal
-   * the approved entry at the cursor; the presented stamp is `fallback`
-   * on exactly that entry for the phase this run spends as; and the
-   * kind-specific custody fact holds — an unconsumed pending edge at the
-   * cursor, a parked tail the cycle still names, or a live parent tail.
-   * The run is opened WITH its chain metadata (cycle, index, entry
-   * digest, auth mode) and its route in one body, so nothing downstream
-   * can substitute a foreign run.
-   */
-  admitFallback(
-    args: {
-      run: {
-        taskRef: number;
-        leaseId: string;
-        runner: string;
-        branch: string;
-        worktree: string;
-        provider: string;
-        model: string;
-        sessionId?: string;
-        /** The interrupted attempt whose draft this entry or resume
-         * recovers (raw authority repair): proved this task's own run and
-         * written as the row's parent in this same insert — never stamped
-         * later. A repair turn's parent is its live tail; it recovers none. */
-        recoveredFrom?: number;
-      };
-      cycleId: number;
-      /** The cursor the caller understands the cycle to stand at — the
-       * entry index this run binds to. */
-      expectCursor: number;
-      /** The cycle's tail as the caller understands it: null for an entry
-       * admitted from a pending edge, the parked run for a resume, the
-       * live parent for a repair turn. */
-      expectTail: number | null;
-      entryDigest: string;
-      authMode: "subscription" | "api-key";
-      /** The entry's effective repair model as the caller understands it —
-       * `inherit` resolved to the build model — proved against the approved
-       * entry so a repair turn later spends as exactly what was approved. */
-      repairModel: string;
-      /** The approved authority as the caller holds it: the chain's digest
-       * and the FULL sealed-profile mirror (the chain's base entry). */
-      approved: { chainDigest: string; profile: ExecutionProfile };
-      /** The run's `fallback` route provenance, proved against the exact
-       * entry this admission binds (cursor + entry digest) BEFORE the row
-       * exists and written beside it. Required: nothing is dictated here. */
-      route: RouteStamp;
-    } & (
-      | { kind: "entry"; expectGeneration: number; transitionId: number }
-      | { kind: "resume"; parkedRun: number }
-      | { kind: "repair"; parentRun: number }
-    ),
-    now: Date,
-  ): { ok: true; runId: number } | { ok: false; reason: "refused" | "raced"; problem: string } {
-    // The savepoint rides inside a (reentrant) transaction so the route
-    // write nests instead of colliding with it; every refusal below
-    // happens BEFORE any write, so nothing is ever rolled back partially.
-    return this.transact(() => this.savepoint(() => {
-      const refuse = (problem: string): { ok: false; reason: "refused"; problem: string } => ({ ok: false as const, reason: "refused" as const, problem: `fallback admission refused for task_ref ${args.run.taskRef}: ${problem}` });
-      const role: "builder" | "repair" = args.kind === "repair" ? "repair" : "builder";
-      const cycleRow = this.db.prepare("SELECT * FROM fallback_cycle WHERE id = ?").get(args.cycleId) as Record<string, unknown> | undefined;
-      if (cycleRow === undefined) return refuse(`no fallback cycle ${args.cycleId} exists`);
-      const cycle = readFallbackCycle(cycleRow);
-      // The exact task: the cycle's own owner, never the caller's word.
-      if (cycle.taskRef !== args.run.taskRef) return refuse(`cycle ${args.cycleId} belongs to task_ref ${cycle.taskRef}, not ${args.run.taskRef}`);
-      const owner = this.refForId(args.run.taskRef);
-      if (owner === null) return refuse("no such task");
-      const live = this.fallbackCycleFor(args.run.taskRef);
-      if (live === null || live.id !== cycle.id) return refuse(`cycle ${args.cycleId} is not this task's live fallback cycle`);
-      const chain = this.approvedChainOf(owner.externalId);
-      if (chain === null) return refuse("the chain approval no longer stands (or its sealed profile mirror does not verify) — nothing is admitted under it");
-      const chainDigest = chainDigestOf(chain);
-      if (chainDigest !== args.approved.chainDigest) return refuse(`the caller holds chain ${args.approved.chainDigest}, but the approved chain is ${chainDigest}`);
-      if (chainDigest !== cycle.chainDigest) return refuse(`the live cycle was opened under chain ${cycle.chainDigest}, but the approved chain is ${chainDigest}`);
-      const scope = this.getScope(owner.externalId);
-      const base = chain[0];
-      const mirror = scope?.approvedProfile ?? null;
-      if (base === undefined || mirror === null || profileDigestOf(mirror) !== profileDigestOf(base.profile)) return refuse("the approval's sealed profile does not mirror the chain's base entry");
-      // ONE sealed authority (raw authority repair): the raw profile
-      // mirror, the chain, and the route must verify together as the
-      // sealed route — a chain approval with no sealed route (pre-routing),
-      // or whose route's build and repair legs are not the sealed
-      // profile's exact pairs, admits nothing. There is no chain-only
-      // route digest to fall back to.
-      const sealed = this.sealedRouteOf(owner.externalId);
-      if (!sealed.ok) return refuse(`the chain approval's sealed agent route does not stand (${sealed.detail}) — nothing spends as a fallback under a chain-only digest`);
-      if (profileDigestOf(args.approved.profile) !== profileDigestOf(mirror)) return refuse(`the caller's sealed-profile mirror (${args.approved.profile.provider} · ${args.approved.profile.model}) is not the approval's (${mirror.provider} · ${mirror.model})`);
-      if (cycle.cursor !== args.expectCursor) return refuse(`the cycle stands at entry ${cycle.cursor}, not ${args.expectCursor}`);
-      if (cycle.tailRun !== args.expectTail) return refuse(`the cycle's tail is ${cycle.tailRun ?? "none"}, not ${args.expectTail ?? "none"}`);
-      const entry = chain[args.expectCursor];
-      if (entry === undefined) return refuse(`the approved chain has no entry ${args.expectCursor}`);
-      if (args.expectCursor === 0) return refuse("entry 0 is the chain's primary — it is dispatched as the base, never admitted as a fallback");
-      if (entryDigestOf(entry) !== args.entryDigest) return refuse(`the stated entry digest ${args.entryDigest} is not the approved entry ${args.expectCursor}'s ${entryDigestOf(entry)}`);
-      if (entry.authMode !== args.authMode) return refuse(`the approved entry ${args.expectCursor} is pinned to ${entry.authMode}, not ${args.authMode}`);
-      if (entry.profile.provider !== args.run.provider) return refuse(`the approved entry ${args.expectCursor} runs ${entry.profile.provider}, not ${args.run.provider}`);
-      const entryRepairModel = entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel;
-      const spendsAs = role === "repair" ? entryRepairModel : entry.profile.model;
-      if (typeof args.run.model !== "string" || args.run.model === "") return refuse("the caller names no exact model — nothing is defaulted here");
-      if (args.run.model !== spendsAs) return refuse(`the approved entry ${args.expectCursor} ${role === "repair" ? "repairs" : "runs"} on ${entry.profile.provider} · ${spendsAs}, not ${args.run.provider} · ${args.run.model}`);
-      if (entryRepairModel !== args.repairModel) return refuse(`the approved entry ${args.expectCursor} repairs on ${entry.profile.provider} · ${entryRepairModel}, not ${args.repairModel}`);
-      // THE ADMISSION PROOF (v48, authority repair), before the row: the presented stamp
-      // must be `fallback` on exactly the entry this admission binds, as
-      // the pair the run will spend as. A stamp that cannot be proved
-      // opens nothing.
-      const bound = { index: args.expectCursor, entryDigest: args.entryDigest };
-      const stamp: RouteStamp = args.route;
-      if ((stamp as { chosen?: unknown }).chosen !== "fallback") return refuse(`an admitted fallback entry spends as \`fallback\`, not \`${String((stamp as { chosen?: unknown }).chosen)}\``);
-      const problem = this.routeAdmissionProblem({ taskRef: args.run.taskRef, role, provider: args.run.provider, model: args.run.model, contestant: null, chain: bound }, stamp, now);
-      if (problem !== null) return refuse(problem);
-      // The kind-specific custody fact, proved before the row.
-      let parentRun: number | null = null;
-      if (args.run.recoveredFrom !== undefined) {
-        if (args.kind === "repair") return refuse("a repair turn mends its live tail — it recovers no interrupted attempt");
-        const recovered = this.getRun(args.run.recoveredFrom);
-        if (recovered === null || recovered.taskRef !== args.run.taskRef) return refuse(`run #${args.run.recoveredFrom} is not one of this task's attempts — nothing recovers its draft`);
-        // THE SAME RECOVERY GRANT the recovered-draft admission proves
-        // (final authority closure): a same-task run is not authority by
-        // itself — it must be this task's interrupted builder or repair
-        // turn in this very workspace, and an open one only under a lease
-        // nobody holds. A failed planner, a parked run, a live attempt, or
-        // a foreign worktree recovers nothing, and the edge stays unconsumed.
-        const grant = this.recoveryGrantProblem(recovered, { taskRef: args.run.taskRef, branch: args.run.branch, worktree: args.run.worktree }, now);
-        if (grant !== null) return refuse(grant);
-        parentRun = recovered.id;
-      }
-      if (args.kind === "entry") {
-        if (args.expectTail !== null) return refuse("an entry admitted from a pending edge follows no tail — the cycle's tail is cleared by the advance");
-        const edge = this.db
-          .prepare(
-            `SELECT 1 AS hit FROM fallback_transition t JOIN fallback_cycle c ON c.id = t.cycle
-              WHERE t.id = ? AND t.cycle = ? AND t.consumed_by IS NULL AND t.to_index = c.cursor
-                AND c.state = 'pending-admission' AND c.transition_generation = ? AND c.cursor = ?`,
-          )
-          .get(args.transitionId, args.cycleId, args.expectGeneration, args.expectCursor);
-        if (edge === undefined) return { ok: false as const, reason: "raced" as const, problem: `fallback admission refused for task_ref ${args.run.taskRef}: no unconsumed pending edge ${args.transitionId} stands at entry ${args.expectCursor} of cycle ${args.cycleId} at generation ${args.expectGeneration}` };
-      } else {
-        if (cycle.state !== "open") return refuse(`the cycle is ${cycle.state}, not open — nothing continues its tail`);
-        const holder = this.getRun(args.kind === "resume" ? args.parkedRun : args.parentRun);
-        const word = args.kind === "resume" ? "parked tail" : "repair parent";
-        if (holder === null || holder.taskRef !== args.run.taskRef) return refuse(`the ${word} is not one of this task's runs`);
-        if (args.kind === "resume" && holder.outcome !== "parked") return refuse(`run #${holder.id} did not park — nothing resumes it`);
-        if (args.kind === "repair" && holder.outcome !== null) return refuse(`run #${holder.id} has ended — a repair turn mends a live attempt only`);
-        if (holder.id !== args.expectTail) return refuse(`the ${word} #${holder.id} is not the tail the caller names (${args.expectTail ?? "none"})`);
-        if (holder.chainCycle !== cycle.id || holder.chainIndex !== args.expectCursor || holder.entryDigest !== args.entryDigest || holder.authMode !== args.authMode) {
-          return refuse(`run #${holder.id} is not bound to entry ${args.expectCursor} of cycle ${cycle.id} under digest ${args.entryDigest} (${args.authMode})`);
-        }
-        if (args.kind === "repair") {
-          // THE ONE REPAIR RULE (final authority closure), the same words
-          // admitRepair refuses in: a fallback entry's repair turn mends
-          // its live tail under the tail's own runner and lease, and that
-          // lease must be the task's CURRENT live claim — an attempt whose
-          // claim was released, expired, or superseded is one nobody is
-          // building, and copying its identity proves nothing.
-          if (holder.runner !== args.run.runner) return refuse(`run #${holder.id} runs on ${holder.runner} — its repair turn on ${args.run.runner} is another machine's`);
-          if (holder.leaseId !== args.run.leaseId) return refuse(`run #${holder.id} holds lease ${holder.leaseId} — a repair turn under lease ${args.run.leaseId} is not its own`);
-          const holding = this.currentLiveLease(args.run.taskRef, now);
-          if (holding !== holder.leaseId) {
-            return refuse(`run #${holder.id}'s lease ${holder.leaseId} is not this task's current live claim (${holding === null ? "nothing holds it" : `${holding} does`}) — a repair turn mends an attempt still being built under its claim`);
-          }
-          parentRun = holder.id;
-        }
-      }
-      // THE CURRENT CLAIM, for every kind (final admission closure): the
-      // entry, the resume, and the repair turn alike open only under the
-      // lease that holds the task now, on the runner that claim names —
-      // proved here, before the row, so a mismatched, expired, released,
-      // or superseded claim creates no run and consumes no edge.
-      const custody = this.custodyClaimProblem(args.run, now, `a fallback ${args.kind === "repair" ? "repair turn" : args.kind === "resume" ? "resume" : "entry"}`);
-      if (custody !== null) return refuse(custody);
-      // Open the fallback run WITH its chain metadata, in the same body.
-      const inserted = this.db
-        .prepare(
-          `INSERT INTO run (task_ref, lease_id, runner, branch, worktree, model, role, provider, parent_run, session_id, chain_cycle, chain_index, entry_digest, auth_mode, started_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          args.run.taskRef,
-          args.run.leaseId,
-          args.run.runner,
-          args.run.branch,
-          args.run.worktree,
-          args.run.model,
-          role,
-          args.run.provider,
-          parentRun,
-          args.run.sessionId ?? null,
-          args.cycleId,
-          args.expectCursor,
-          args.entryDigest,
-          args.authMode,
-          now.toISOString(),
-        );
-      const runId = Number(inserted.lastInsertRowid);
-      this.writeRunRoute(runId, stamp, now);
-      if (args.kind === "entry") {
-        // Consume the edge with the real run id — the WHERE re-proves it is
-        // still the unconsumed edge at the current cursor (single-use).
-        const consumed = this.db
-          .prepare(
-            `UPDATE fallback_transition SET consumed_by = ?
-              WHERE id = ? AND cycle = ? AND consumed_by IS NULL
-                AND to_index = (SELECT cursor FROM fallback_cycle WHERE id = ?)`,
-          )
-          .run(runId, args.transitionId, args.cycleId, args.cycleId);
-        if (Number(consumed.changes) === 0) throw new Error("the fallback edge was consumed under us");
-        const moved = this.db
-          .prepare(
-            `UPDATE fallback_cycle SET state = 'open', tail_run = ?, transition_generation = transition_generation + 1, updated_at = ?
-              WHERE id = ? AND state = 'pending-admission' AND transition_generation = ? AND cursor = ?`,
-          )
-          .run(runId, now.toISOString(), args.cycleId, args.expectGeneration, args.expectCursor);
-        if (Number(moved.changes) === 0) throw new Error("admission raced the cycle state");
-      } else if (args.kind === "resume") {
-        // The parked-resume transfer: the tail moves to the successor
-        // through a CAS on the very tail proved above.
-        const moved = this.db
-          .prepare("UPDATE fallback_cycle SET tail_run = ?, updated_at = ? WHERE id = ? AND state = 'open' AND tail_run = ?")
-          .run(runId, now.toISOString(), args.cycleId, args.parkedRun);
-        if (Number(moved.changes) === 0) throw new Error("the parked tail moved under us");
-      }
-      // A repair turn spends under its parent's custody: the parent stays
-      // the tail, and the pre-spawn proof vouches for exactly its child.
-      return { ok: true as const, runId };
-    }));
-  }
-
-  /**
-   * THE UNAVAILABLE-PRIMARY TRANSITION (v47): the approved chain's base
-   * entry runs a provider THIS runner has reported unavailable, so the
-   * task moves — before any claim, run, or spend — to the EXPLICITLY
-   * APPROVED next entry, and only that one: a fresh cycle opens at index 0
-   * with no tail and skips, one step, to pending-admission at index 1,
-   * citing the readiness observation as its evidence. The admission pass
-   * then re-proves everything (approved chain standing, live paid-fallback
-   * grant, the next entry's own readiness) before it runs. Every other
-   * case fails closed with the words: no approved chain, a live cycle
-   * already, a base that is not actually unavailable, no next entry, a
-   * next entry that is unavailable too, or no live grant — nothing
-   * substitutes outside the approved chain.
-   */
-  skipUnavailablePrimary(
-    taskRef: number,
-    taskId: string,
-    repo: string | null,
-    runner: string,
-    now: Date,
-  ):
-    | { ok: true; cycleId: number; toIndex: number; next: { provider: string; model: string } }
-    | { ok: false; reason: "no-chain" | "cycle-live" | "primary-available" | "at-end" | "next-unavailable" | "grant-withheld" | "raced"; detail: string } {
-    return this.transact(() => {
-      const chain = this.approvedChainOf(taskId);
-      if (chain === null) return { ok: false as const, reason: "no-chain" as const, detail: "no approved fallback chain stands for this task — nothing substitutes" };
-      if (this.fallbackCycleFor(taskRef) !== null) return { ok: false as const, reason: "cycle-live" as const, detail: "a fallback cycle is already live for this task" };
-      const primary = chain[0];
-      if (primary === undefined) return { ok: false as const, reason: "no-chain" as const, detail: "the approved chain is empty" };
-      const seen = this.runnerReadinessOf(runner, primary.profile.provider);
-      if (seen === null || seen.state !== "unavailable") return { ok: false as const, reason: "primary-available" as const, detail: `${primary.profile.provider} is not reported unavailable on ${runner}` };
-      const next = chain[1];
-      if (next === undefined) return { ok: false as const, reason: "at-end" as const, detail: `the approved chain names no entry after ${primary.profile.provider} · ${primary.profile.model} — nothing substitutes` };
-      const nextSeen = this.runnerReadinessOf(runner, next.profile.provider);
-      if (nextSeen !== null && nextSeen.state === "unavailable") {
-        return { ok: false as const, reason: "next-unavailable" as const, detail: `the approved fallback ${next.profile.provider} · ${next.profile.model} is also reported unavailable on ${runner} (${nextSeen.reason}) — nothing substitutes` };
-      }
-      const liveGrant = repo === null ? false : modeTermsFromJson(this.activeMode(repo, now)?.termsJson ?? null)?.allowPaidFallback === true;
-      if (!liveGrant) return { ok: false as const, reason: "grant-withheld" as const, detail: `the approved fallback ${next.profile.provider} · ${next.profile.model} needs a live operating mode that allows paid fallback — none stands` };
-      const inserted = this.db
-        .prepare(
-          `INSERT INTO fallback_cycle (task_ref, chain_digest, cursor, state, transition_generation, tail_run, created_at, updated_at)
-           VALUES (?, ?, 0, 'open', 0, NULL, ?, ?)`,
-        )
-        .run(taskRef, chainDigestOf(chain), now.toISOString(), now.toISOString());
-      const cycleId = Number(inserted.lastInsertRowid);
-      const skipped = this.quotaSkipFallback(
-        { cycleId, expectGeneration: 0, fromIndex: 0, chainLength: chain.length, tailRun: null, evidence: { provider: primary.profile.provider, fp: `readiness:${runner}:${seen.observedAt}:${seen.reason}` } },
-        now,
-      );
-      if (!skipped.ok) return { ok: false as const, reason: "raced" as const, detail: `the fallback transition lost its race (${skipped.reason})` };
-      this.bumpWake();
-      return { ok: true as const, cycleId, toIndex: skipped.toIndex, next: { provider: next.profile.provider, model: next.profile.model } };
-    });
-  }
-
-  /** open -> open at i+1 via a quota-skip (C7): index 0 (or any) already
-   * durably exhausted before dispatch is skipped, one step, recorded. */
-  quotaSkipFallback(
-    args: { cycleId: number; expectGeneration: number; fromIndex: number; chainLength: number; tailRun: number | null; evidence?: { provider: string; fp: string } },
-    now: Date,
-  ): { ok: true; toIndex: number; transitionId: number } | { ok: false; reason: "raced" | "at-end" | "dup" } {
-    if (args.fromIndex + 1 >= args.chainLength) return { ok: false as const, reason: "at-end" as const };
-    return this.savepoint(() => {
-      const at = this.db
-        .prepare("SELECT 1 AS hit FROM fallback_cycle WHERE id = ? AND state = 'open' AND transition_generation = ? AND cursor = ?")
-        .get(args.cycleId, args.expectGeneration, args.fromIndex);
-      if (at === undefined) return { ok: false as const, reason: "raced" as const };
-      // Insert FIRST (the UNIQUE(cycle, from_index) guard); on a dup nothing
-      // moved. Nothing RAN at this index, so we go STRAIGHT to
-      // pending-admission with the tail cleared — admission is the ONE road
-      // that installs the next tail (Codex E1 review, finding 3).
-      let transitionId: number;
-      try {
-        const inserted = this.db
-          .prepare("INSERT INTO fallback_transition (cycle, kind, from_index, to_index, predecessor_run, evidence_provider, evidence_fp, created_at) VALUES (?, 'quota-skip', ?, ?, ?, ?, ?, ?)")
-          .run(args.cycleId, args.fromIndex, args.fromIndex + 1, args.tailRun, args.evidence?.provider ?? null, args.evidence?.fp ?? null, now.toISOString());
-        transitionId = Number(inserted.lastInsertRowid);
-      } catch {
-        return { ok: false as const, reason: "dup" as const };
-      }
-      const moved = this.db
-        .prepare(
-          `UPDATE fallback_cycle SET state = 'pending-admission', tail_run = NULL, cursor = cursor + 1, transition_generation = transition_generation + 1, updated_at = ?
-            WHERE id = ? AND state = 'open' AND transition_generation = ? AND cursor = ?`,
-        )
-        .run(now.toISOString(), args.cycleId, args.expectGeneration, args.fromIndex);
-      if (Number(moved.changes) === 0) throw new Error("quota-skip raced its own from-state");
-      return { ok: true as const, toIndex: args.fromIndex + 1, transitionId };
-    });
-  }
-
-  /** Any nonterminal state -> incident (C8): a sanitizer failure, a
-   * severed grant, or a policy downgrade pages a human; never silent. */
-  /** Any nonterminal -> incident (C8): CAS on the exact generation so a
-   * STALE observer cannot terminate a cycle that has since advanced
-   * (Codex E1 review, finding 1). */
-  incidentFallback(cycleId: number, expectGeneration: number, reason: string, now: Date): boolean {
-    return (
-      Number(
-        this.db
-          .prepare(
-            "UPDATE fallback_cycle SET state = 'incident', closed_reason = ?, transition_generation = transition_generation + 1, updated_at = ? WHERE id = ? AND state NOT IN ('closed','incident') AND transition_generation = ?",
-          )
-          .run(reason, now.toISOString(), cycleId, expectGeneration).changes,
-      ) > 0
-    );
-  }
-
-  /** A cycle succeeds or exhausts its chain: closed, terminally — CAS on
-   * the exact generation (finding 1: a stale success observer cannot close
-   * after an advance + admit). */
-  closeFallbackCycle(cycleId: number, expectGeneration: number, reason: string, now: Date): boolean {
-    return (
-      Number(
-        this.db
-          .prepare("UPDATE fallback_cycle SET state = 'closed', closed_reason = ?, transition_generation = transition_generation + 1, updated_at = ? WHERE id = ? AND state NOT IN ('closed','incident') AND transition_generation = ?")
-          .run(reason, now.toISOString(), cycleId, expectGeneration).changes,
-      ) > 0
-    );
-  }
-
   // ---- the reviewer role (v29) --------------------------------------------
 
   /**
@@ -15181,7 +13539,7 @@ export class Store {
    * exactly one wins; the loser refuses in words with zero rows.
    *
    * The child is filed UNAPPROVED, always: this method never stamps an
-   * approval, never mints an attended authorization, never touches a
+   * approval, never touches a
    * publication or merge grant. Only the normal approval roads — the
    * password ceremony, or a live mode's own filing coverage re-proved by
    * the caller inside its own transaction — can approve the child.
@@ -15302,7 +13660,6 @@ export class Store {
               budgetMicrousd: terms.budgetMicrousd,
               permissionMode: terms.permissionMode,
               qualityMode: terms.qualityMode,
-              riskLevel: terms.riskLevel,
               routeOverridesJson: terms.routeOverridesJson,
               agentPin: terms.agentPin,
               planPin: terms.planPin,
@@ -15603,7 +13960,6 @@ export class Store {
         scope === null
           ? null
           : {
-              riskLevel: scope.riskLevel ?? "routine",
               qualityMode: scope.qualityMode ?? "default",
               // The posture that will actually run: the working profile's
               // (a live mode's escalation rides it), else the durable choice.
@@ -16152,12 +14508,10 @@ export class Store {
        * default when the scope is filed. */
       qualityMode?: QualityMode;
       /** The revision road's inherited declarations (contract handoff task
-       * 2): the source's declared risk, the approver's per-phase route
-       * overrides, and its build/plan pins — stamped on the ref BEFORE the
+       * 2): the approver's per-phase route overrides, and its build/plan pins — stamped on the ref BEFORE the
        * scope resolves, so the child's route is recommended over them
        * exactly as the source's was, never over the installation's
        * defaults of the day. */
-      riskLevel?: RiskLevel;
       /** How big the change is, sized at filing (v2 routing). */
       sizing?: TaskSizing;
       routeOverridesJson?: string | null;
@@ -16257,9 +14611,6 @@ export class Store {
       if (spec.qualityMode !== undefined) {
         this.db.prepare("UPDATE task_ref SET quality_mode = ? WHERE id = ?").run(spec.qualityMode, ref.id);
       }
-      if (spec.riskLevel !== undefined) {
-        this.db.prepare("UPDATE task_ref SET risk_level = ? WHERE id = ?").run(spec.riskLevel, ref.id);
-      }
       if (spec.routeOverridesJson !== undefined && spec.routeOverridesJson !== null) {
         this.db.prepare("UPDATE task_ref SET route_overrides_json = ? WHERE id = ?").run(spec.routeOverridesJson, ref.id);
       }
@@ -16290,7 +14641,6 @@ export class Store {
           {
             ...(spec.permissionMode === undefined ? {} : { permissionMode: spec.permissionMode }),
             ...(spec.qualityMode === undefined ? {} : { qualityMode: spec.qualityMode }),
-            ...(spec.riskLevel === undefined ? {} : { riskLevel: spec.riskLevel }),
             ...(spec.posture === undefined ? {} : { posture: spec.posture }),
             proposedVia: spec.proposedVia ?? null,
           },
@@ -16451,7 +14801,7 @@ export class Store {
         // Filing speaks once the project is known (Telegram task updates):
         // the FIRST placement is the moment a task becomes deliverable to
         // that project's phones, whichever door filed it — console form,
-        // CLI add, a proposal, a revision, a routine firing, an external
+        // CLI add, a proposal, a revision, a schedule's firing, an external
         // mirror. A same-repo repeat changes nothing and says nothing.
         if (Number(changes) > 0 && external !== undefined && already === null) {
           const taskId = String(external["external_id"]);
@@ -16567,98 +14917,6 @@ export class Store {
            updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
       )
       .run(scope, phase, provider, model, now.toISOString(), by);
-  }
-
-  /** The ordered FALLBACK entries after the base, for a scope's build
-   * phase (v30). Each entry: {provider, model, authMode, repairModel?}.
-   * Returns [] when none configured — a chain-of-one is the base alone. */
-  fallbackConfig(scope: string): { provider: string; model: string; authMode: "subscription" | "api-key"; repairModel?: string }[] {
-    const read = this.readFallbackConfig(scope);
-    return read.ok ? read.entries : [];
-  }
-
-  /**
-   * The configured fallback entries, or the words for why the row on file
-   * cannot be read (v48): a row that EXISTS but is not a list of
-   * well-shaped entries — corrupt JSON, a non-list, an entry missing its
-   * provider, model, or auth mode — is a stated problem, never an empty
-   * list. Filing a scope under such a row refuses in these words rather
-   * than silently sealing a single-profile approval the operator did not
-   * configure; the chain the person believes they set never shrinks to
-   * nothing behind their back.
-   */
-  fallbackConfigProblem(scope: string): string | null {
-    const read = this.readFallbackConfig(scope);
-    return read.ok ? null : read.problem;
-  }
-
-  private readFallbackConfig(scope: string): { ok: true; entries: { provider: string; model: string; authMode: "subscription" | "api-key"; repairModel?: string }[] } | { ok: false; problem: string } {
-    const row = this.db.prepare("SELECT entries_json FROM fallback_config WHERE scope = ? AND phase = 'build'").get(scope);
-    if (row === undefined) return { ok: true, entries: [] };
-    const read = readStoreColumn("fallback_config.entries_json", row["entries_json"]);
-    if (!read.ok && read.malformed) return { ok: false, problem: `the fallback configuration for ${scope} is not valid JSON — set it again with \`config set fallback\`, or clear it` };
-    const parsed: unknown = read.ok ? read.value : null;
-    if (!Array.isArray(parsed)) return { ok: false, problem: `the fallback configuration for ${scope} is not a list of entries — set it again with \`config set fallback\`, or clear it` };
-    // A PRESENT row carries one to three entries (atomic authority
-    // closure) — the very bound `config set fallback` enforces. An empty
-    // list is not "no fallback": it is a row this code never wrote, and
-    // the chain the operator believes they set must not shrink to nothing
-    // behind their back; too many entries is the same corruption.
-    if (parsed.length < FALLBACK_ENTRIES_MIN || parsed.length > FALLBACK_ENTRIES_MAX) {
-      return { ok: false, problem: `the fallback configuration for ${scope} carries ${parsed.length} entries, not ${FALLBACK_ENTRIES_MIN} to ${FALLBACK_ENTRIES_MAX} — set it again with \`config set fallback\`, or clear it` };
-    }
-    const entries: { provider: string; model: string; authMode: "subscription" | "api-key"; repairModel?: string }[] = [];
-    for (const [index, entry] of parsed.entries()) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return { ok: false, problem: `fallback entry ${index + 1} for ${scope} is not an object — set the chain again with \`config set fallback\`` };
-      const e = entry as Record<string, unknown>;
-      // EXACT (raw authority repair): exactly the keys this code writes, a
-      // provider this build knows, an exact model id (the shape every
-      // argv accepts), an optional exact repair model id, and one of the
-      // two auth modes — a row carrying anything else is a stated problem,
-      // never the known part of itself.
-      if (["provider", "model", "authMode"].some(key => !(key in e))) {
-        return { ok: false, problem: `fallback entry ${index + 1} for ${scope} is malformed (provider, model, and auth mode are required) — set the chain again with \`config set fallback\`` };
-      }
-      if (!exactKeys(e, ["provider", "model", "authMode"], ["repairModel"])) {
-        return { ok: false, problem: `fallback entry ${index + 1} for ${scope} carries a key this code never writes — set the chain again with \`config set fallback\`` };
-      }
-      if (typeof e["provider"] !== "string" || !isProviderId(e["provider"])) {
-        return { ok: false, problem: `fallback entry ${index + 1} for ${scope} names an unknown provider — set the chain again with \`config set fallback\`` };
-      }
-      if (!exactModelId(e["model"]) || (e["repairModel"] !== undefined && !exactModelId(e["repairModel"]))) {
-        return { ok: false, problem: `fallback entry ${index + 1} for ${scope} names a model that is not an exact model id — set the chain again with \`config set fallback\`` };
-      }
-      if (e["authMode"] !== "subscription" && e["authMode"] !== "api-key") {
-        return { ok: false, problem: `fallback entry ${index + 1} for ${scope} is malformed (provider, model, and auth mode are required) — set the chain again with \`config set fallback\`` };
-      }
-      entries.push({ provider: e["provider"], model: e["model"], authMode: e["authMode"], ...(e["repairModel"] !== undefined ? { repairModel: e["repairModel"] } : {}) });
-    }
-    return { ok: true, entries };
-  }
-
-  setFallbackConfig(
-    scope: string,
-    entries: { provider: string; model: string; authMode: "subscription" | "api-key"; repairModel?: string }[],
-    by: string,
-    now: Date,
-  ): void {
-    // The store writes only what it will read back (atomic authority
-    // closure): a present row carries one to three entries, never none.
-    if (entries.length < FALLBACK_ENTRIES_MIN || entries.length > FALLBACK_ENTRIES_MAX) {
-      throw new Error(`a fallback chain carries ${FALLBACK_ENTRIES_MIN} to ${FALLBACK_ENTRIES_MAX} entries, not ${entries.length} — clear the configuration to have none`);
-    }
-    this.db
-      .prepare(
-        `INSERT INTO fallback_config (scope, phase, entries_json, updated_at, updated_by)
-         VALUES (?, 'build', ?, ?, ?)
-         ON CONFLICT (scope, phase) DO UPDATE SET
-           entries_json = excluded.entries_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-      )
-      .run(scope, JSON.stringify(entries), now.toISOString(), by);
-  }
-
-  clearFallbackConfig(scope: string): boolean {
-    return Number(this.db.prepare("DELETE FROM fallback_config WHERE scope = ? AND phase = 'build'").run(scope).changes) > 0;
   }
 
   clearPhaseConfig(scope: string, phase: string): boolean {
@@ -16777,7 +15035,7 @@ export class Store {
   }
 
   /**
-   * THE ROUTE EDIT (v47): declare the task's risk, override one phase to an
+   * THE ROUTE EDIT (v47): set the task's size, override one phase to an
    * exact agent, or clear an override — ONE authenticated transaction that
    * re-proves the editor's authority, CAS-checks the scope digest the
    * editor saw (a string to match, null = "I saw no scope", undefined =
@@ -16787,14 +15045,13 @@ export class Store {
    * is recomputed and the prior approval goes stale by digest, and — when
    * a drafted plan came from the old planner — asks for a real re-plan.
    * No claimant can observe a half-updated authority: it is all or
-   * nothing, and refused under a live claim or tournament terms.
+   * nothing, and refused under a live claim.
    */
   editTaskRoute(
     taskRef: number,
     edit: {
       by: string;
       authenticate: () => { ok: true } | { ok: false; reason: string };
-      risk?: RiskLevel;
       /** v2: a person's size for the task — it outranks the classifier's. */
       size?: { size: TaskSize; risky: boolean };
       override?: { phase: RouteOverride["phase"]; provider: ProviderId; model: string } | { phase: RouteOverride["phase"]; clear: true };
@@ -16809,15 +15066,14 @@ export class Store {
     now: Date,
   ):
     | { ok: true; scope: Scope | null; staled: boolean; replanned: boolean; overrides: RouteOverride[] }
-    | { ok: false; reason: "unauthenticated" | "no-task" | "live-claim" | "contest-open" | "changed" | "nothing" | "not-configured"; detail: string; choices?: { provider: string; model: string }[] } {
+    | { ok: false; reason: "unauthenticated" | "no-task" | "live-claim" | "changed" | "nothing" | "not-configured"; detail: string; choices?: { provider: string; model: string }[] } {
     return this.transact(() => {
       const authenticated = edit.authenticate();
       if (!authenticated.ok) return { ok: false as const, reason: "unauthenticated" as const, detail: authenticated.reason };
       const ref = this.refForId(taskRef);
       if (ref === null) return { ok: false as const, reason: "no-task" as const, detail: "no such task" };
-      if (edit.risk === undefined && edit.override === undefined && edit.size === undefined) return { ok: false as const, reason: "nothing" as const, detail: "nothing to change" };
+      if (edit.override === undefined && edit.size === undefined) return { ok: false as const, reason: "nothing" as const, detail: "nothing to change" };
       if (this.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "live-claim" as const, detail: "this task is running — the agents cannot change under a live claim" };
-      if (this.activeTournamentTerms(taskRef) !== null) return { ok: false as const, reason: "contest-open" as const, detail: "tournament terms are on file — its lanes decide the agents; exclude or settle the contest first" };
       const before = this.getScope(ref.externalId);
       const currentDigest = before?.digest ?? null;
       if (edit.expectDigest !== undefined && edit.expectDigest !== currentDigest) {
@@ -16844,9 +15100,6 @@ export class Store {
           };
         }
       }
-      if (edit.risk !== undefined) {
-        this.db.prepare("UPDATE task_ref SET risk_level = ? WHERE id = ?").run(edit.risk, taskRef);
-      }
       if (edit.size !== undefined) {
         this.writeSizing(taskRef, { size: edit.size.size, risky: edit.size.risky, source: "person", reason: `set by ${edit.by}` });
       }
@@ -16866,9 +15119,9 @@ export class Store {
       const wasApproved = before !== null && before.approvedAt !== null && before.approvedDigest === before.digest;
       const refiled = before === null ? null : this.refileScope(ref.externalId, now);
       const staled = wasApproved && refiled !== null && refiled.approvedDigest !== refiled.digest;
-      // Planning follows a new size, and elevated or high risk always plans — after the re-file, so an approval
-      // this edit staled does not refuse the plan request.
-      if (edit.size !== undefined || (edit.risk !== undefined && edit.risk !== "routine")) this.planToSizing(taskRef, now);
+      // Planning follows a new size — after the re-file, so an approval this edit staled does not refuse the plan
+      // request.
+      if (edit.size !== undefined) this.planToSizing(taskRef, now);
       // A plan drafted by the previous planner is not relabeled: a plan
       // override (set or cleared) asks for a REAL re-plan.
       let replanned = false;
@@ -16888,20 +15141,19 @@ export class Store {
       .run(sizing.size, sizing.risky ? 1 : 0, sizing.source, sizing.reason.slice(0, 300), taskRef);
   }
 
-  /** Planning follows the size and risk while nothing has run: a small
-   * change at routine risk drops a plan that is only requested; a large or
-   * risky one, or any task at elevated or high risk, asks for a plan. A
+  /** Planning follows the size while nothing has run: a small change drops
+   * a plan that is only requested; a large or risky one asks for a plan. A
    * drafted plan is never discarded. */
   private planToSizing(taskRef: number, now: Date): "requested" | "cleared" | null {
     const ref = this.refForId(taskRef);
     if (ref === null || ref.repo === null || ref.deliverable === "report") return null;
     const sizing = ref.sizing ?? null;
-    if (makesNoPlan(sizing, ref.riskLevel ?? "routine")) {
+    if (makesNoPlan(sizing, "routine")) {
       if (ref.plan !== "requested" || this.hasLiveClaim(taskRef, now)) return null;
       this.db.prepare("UPDATE task_ref SET plan = NULL WHERE id = ? AND plan = 'requested'").run(taskRef);
       return "cleared";
     }
-    const wanted = (ref.riskLevel ?? "routine") !== "routine" || (sizing !== null && (sizing.size === "large" || sizing.risky));
+    const wanted = sizing !== null && (sizing.size === "large" || sizing.risky);
     if (wanted && ref.plan === null) return this.requestPlan(taskRef, now).ok ? "requested" : null;
     return null;
   }
@@ -17037,11 +15289,9 @@ export class Store {
    *     phase's exact leg. A planner may also run under the working
    *     proposed route, or — with no scope yet — the live recommendation,
    *     re-derived here from durable state. Nothing else.
-   *   fallback — the task's approved chain: the digest is the sealed
-   *     route's (or the chain's, when no route is sealed) and the pair is
-   *     a NON-primary entry of that chain (its repair model for a repair).
-   *   legacy — only a row proven to predate routing, a task with no scope,
-   *     a tournament lane, or an attended session; never a routed row.
+   *   fallback — never (fallback chains were removed in v115).
+   *   legacy — only a row proven to predate routing or a task with no
+   *     scope; never a routed row.
    */
   private routeAdmissionProblem(
     run: {
@@ -17049,12 +15299,6 @@ export class Store {
       role: Run["role"] | "scout";
       provider: string;
       model: string | null;
-      contestant: number | null;
-      /** The chain entry the run is bound to, when it is: a fallback stamp
-       * must name THIS entry's exact pair — never any entry that happens to
-       * share a provider and model under a different auth mode or repair
-       * model. */
-      chain?: { index: number; entryDigest: string } | null;
     },
     stamp: unknown,
     now: Date,
@@ -17089,7 +15333,7 @@ export class Store {
         if (!routed) return "a row that predates agent routing plans as legacy, never as a routed leg";
         // THE STRICT WORKING PROJECTION (final authority closure): a
         // planner's proposed route is believed only as the whole scope
-        // re-proves — exact terms, profile, chain, route, parity, digest,
+        // re-proves — exact terms, profile, route, parity, digest,
         // and auth mode — never parsed from the route column alone.
         const working = this.workingPlanRouteOf(taskId);
         if (!working.ok) return working.problem;
@@ -17100,107 +15344,20 @@ export class Store {
       // it spends as, never a live recommendation re-derived here.
       return "a task with no scope plans as the word legacy — nothing spends as a routed plan leg on it";
     }
-    if (leg.chosen === "fallback") {
-      const chain = this.approvedChainOf(taskId);
-      if (chain === null) return "no approved fallback chain stands for this task — nothing spends as a fallback";
-      // No chain-only digest (raw authority repair): a fallback spends
-      // under the SEALED route or not at all.
-      if (!sealed.ok) return `the chain approval's sealed agent route does not stand (${sealed.detail}) — nothing spends as a fallback under a chain-only digest`;
-      const expectedDigest = routeDigestOf(sealed.route);
-      if (leg.routeDigest !== expectedDigest) return `the fallback stamp's route ${leg.routeDigest} is not the approved authority ${expectedDigest}`;
-      if (phase !== "build" && phase !== "repair") return `an approved fallback entry builds and repairs — it does not ${phase}`;
-      const pairOf = (entry: ChainEntry): { provider: string; model: string } => ({
-        provider: entry.profile.provider,
-        model: phase === "repair" ? (entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel) : entry.profile.model,
-      });
-      // A run bound to a chain entry spends as THAT entry: the index must
-      // exist, its digest must be the bound one, and its pair must be the
-      // stamp's. Two entries that share a provider and model but differ in
-      // auth mode or repair model are different authorities — a stamp
-      // cannot borrow one's pair under the other's binding.
-      const bound = run.chain ?? null;
-      if (bound !== null) {
-        const entry = chain[bound.index];
-        if (entry === undefined) return `the run is bound to chain entry ${bound.index}, which the approved chain does not have`;
-        if (entryDigestOf(entry) !== bound.entryDigest) return `the run is bound to chain entry ${bound.index} under digest ${bound.entryDigest}, but the approved entry there is ${entryDigestOf(entry)}`;
-        if (bound.index === 0) return `${leg.provider} · ${leg.model ?? "(none)"} is the chain's primary entry — it spends as the sealed build leg, not as a fallback`;
-        const pair = pairOf(entry);
-        if (pair.provider !== leg.provider || pair.model !== leg.model) return `the bound chain entry ${bound.index} is ${pair.provider} · ${pair.model}, not ${leg.provider} · ${leg.model ?? "(none)"}`;
-        return null;
-      }
-      // Unbound: the pair must name exactly ONE non-primary entry — an
-      // ambiguous pair (duplicates differing in auth mode or repair model)
-      // proves nothing, because the stamp cannot say which one spends.
-      const matches = chain.map((entry, index) => ({ entry, index })).filter(({ entry }) => {
-        const pair = pairOf(entry);
-        return pair.provider === leg.provider && pair.model === leg.model;
-      });
-      if (matches.length === 0) return `${leg.provider} · ${leg.model ?? "(none)"} is not an entry of the approved fallback chain`;
-      if (matches.some(one => one.index === 0)) return `${leg.provider} · ${leg.model ?? "(none)"} is the chain's primary entry — it spends as the sealed build leg, not as a fallback`;
-      if (matches.length > 1) return `${leg.provider} · ${leg.model ?? "(none)"} names ${matches.length} entries of the approved fallback chain (they differ in auth mode or repair model) — a fallback run is bound to exactly one entry`;
-      return null;
-    }
+    if (leg.chosen === "fallback") return "fallback chains were removed — nothing spends as a fallback";
     // legacy
     if (leg.routeDigest !== "legacy" && !leg.routeDigest.startsWith("profile:")) return `a legacy stamp names a profile digest or the word legacy, not ${leg.routeDigest}`;
-    // A CONTEST LANE spends under its race-approved profile, exactly (v48
-    // integrity): the lane is this task's, the stamp names that profile's
-    // digest, and a build pair is the lane's own.
-    if (run.contestant !== null) {
-      const lane = this.getContestant(run.contestant);
-      const contest = lane === null ? null : this.getContest(lane.contest);
-      if (lane === null || contest === null || contest.taskRef !== run.taskRef) return `contestant ${run.contestant} is not one of this task's racing agents`;
-      // The STORED sealed profile alone (atomic authority closure): no
-      // synthesized profile is accepted beside it.
-      if (lane.profile == null) return `contestant ${lane.id} carries no sealed profile — nothing spends on the lane`;
-      const laneProblem = laneAuthorityProblem(lane);
-      if (laneProblem !== null) return laneProblem;
-      if (leg.routeDigest !== `profile:${profileDigestOf(lane.profile)}`) return `a contest lane spends under its race-approved profile, not ${leg.routeDigest}`;
-      if ((phase === "build" || phase === "repair") && (leg.provider !== lane.provider || leg.model !== (phase === "repair" ? lane.repairModel : lane.model))) {
-        return `the racing agent is ${lane.provider} · ${phase === "repair" ? lane.repairModel : lane.model}, not ${leg.provider} · ${leg.model ?? "(none)"}`;
-      }
-      return null;
-    }
-    // An ATTENDED SESSION spends under the authorization's pinned profile,
-    // exactly (v48 integrity), when the authorization pins one; an
-    // authorization that pins none falls to the ordinary rules below and
-    // spends nothing (the coordinator's proof refuses it).
-    const open = this.openAuthorizationFor(run.taskRef);
-    if (open !== null) {
-      let pinned: ExecutionProfile | null = null;
-      try {
-        const terms = parseStoreColumn("attended_authorization.terms_json", open.termsJson);
-        pinned = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
-      } catch {
-        pinned = null;
-      }
-      if (pinned !== null) {
-        if (leg.routeDigest !== `profile:${profileDigestOf(pinned)}`) return `an attended session spends under the authorization's pinned profile profile:${profileDigestOf(pinned)}, not ${leg.routeDigest}`;
-        const expectedModel = phase === "repair" ? (pinned.repairModel === "inherit" ? pinned.model : pinned.repairModel) : pinned.model;
-        if ((phase === "build" || phase === "repair") && (leg.provider !== pinned.provider || leg.model !== expectedModel)) {
-          return `the authorization pins ${pinned.provider} · ${expectedModel}, not ${leg.provider} · ${leg.model ?? "(none)"}`;
-        }
-        return null;
-      }
-    }
     if (routed) {
       return sealed.ok ? "a sealed agent route governs this task — nothing spends as legacy under it" : "this task is filed under agent routing — nothing spends as legacy on it";
     }
     // EXACT legacy authority (v48 authority repair): an ordinary run on a pre-routing row
-    // names the very profile that governs it — the sealed profile's digest
-    // (the bound chain entry's for a chain-bound run), and for a build or
+    // names the very profile that governs it — the sealed profile's digest,
+    // and for a build or
     // repair its exact pair — or nothing. The bare word `legacy` belongs to
     // a task with no scope at all.
     if (scope === null) return leg.routeDigest === "legacy" ? null : "a task with no scope spends as the word legacy, not under a profile digest";
-    const chain = this.approvedChainOf(taskId);
-    const boundEntry = run.chain != null && chain !== null ? chain[run.chain.index] : undefined;
-    if (run.chain != null && (chain === null || boundEntry === undefined || entryDigestOf(boundEntry) !== run.chain.entryDigest)) {
-      return `the run is bound to chain entry ${run.chain.index}, which the approved chain does not carry under that digest`;
-    }
-    if (run.chain != null && run.chain.index > 0) {
-      return "this pre-routing chain approval seals no agent route — nothing spends as a fallback under a chain-only digest; re-file the scope and approve it again";
-    }
     const approved = scope.termsProblem == null && scope.approvedAt !== null && scope.approvedDigest !== null && scope.approvedDigest === scope.digest;
-    const governing = boundEntry !== undefined ? boundEntry.profile : approved ? (scope.approvedProfile ?? null) : null;
+    const governing = approved ? (scope.approvedProfile ?? null) : null;
     if (governing === null) return "no sealed profile governs this pre-routing row — nothing spends as legacy on it";
     const expected = `profile:${profileDigestOf(governing)}`;
     if (leg.routeDigest !== expected) return `the legacy stamp names ${leg.routeDigest}, but the sealed profile is ${expected}`;
@@ -17314,77 +15471,6 @@ export class Store {
       .run(provider, model, taskRef);
   }
 
-  // ---- routines -----------------------------------------------------------
-
-  /**
-   * File a standing order, unapproved. The digest is computed by the caller
-   * (routineDigestOf) from exactly the terms stored here; approval later
-   * binds to it. Nothing fires until a person agrees to the template.
-   */
-  createRoutine(
-    spec: {
-      name: string;
-      repo: string;
-      goal: string;
-      outOfScope: string | null;
-      touches: string[];
-      acceptance: AcceptanceCriterion[];
-      requirements: string[];
-      schedule: string;
-      singleFlight: boolean;
-      costCeilingUsd: number | null;
-      budgetPerRunMicrousd?: number | null;
-      digest: string;
-      /** Immutable provenance (v12), same contract as createConsoleTask's. */
-      filedVia?: string;
-      /** v102: who made it; its instances are filed as theirs. */
-      createdBy?: string | null;
-      /** v24: resolved at filing by the caller who computed the digest —
-       * stored verbatim so digest and profile can never disagree. */
-      profile?: ExecutionProfile;
-      /** v48: the four-role route the digest binds, computed by the same
-       * caller from the same configuration — stored verbatim. */
-      route?: PhaseRoute;
-    },
-    now: Date,
-  ): { ok: true; id: number } | { ok: false; reason: "duplicate" } {
-    return this.transact(() => {
-      const existing = this.db.prepare("SELECT 1 AS hit FROM routine WHERE name = ?").get(spec.name);
-      if (existing !== undefined) return { ok: false as const, reason: "duplicate" as const };
-      const stamp = now.toISOString();
-      const inserted = this.db
-        .prepare(
-          `INSERT INTO routine
-             (name, repo, goal, out_of_scope, touches, requirements, schedule,
-              single_flight, cost_ceiling_usd, budget_per_run_microusd, digest, created_at, updated_at, filed_via,
-              profile_json, digest_version, acceptance_json, route_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          spec.name,
-          spec.repo,
-          spec.goal,
-          spec.outOfScope,
-          JSON.stringify(spec.touches),
-          JSON.stringify(spec.requirements),
-          spec.schedule,
-          spec.singleFlight ? 1 : 0,
-          spec.costCeilingUsd,
-          spec.budgetPerRunMicrousd ?? null,
-          spec.digest,
-          stamp,
-          stamp,
-          spec.filedVia ?? null,
-          spec.profile === undefined ? null : canonicalProfileJson(spec.profile),
-          spec.profile === undefined ? 1 : 2,
-          spec.acceptance.length === 0 ? null : JSON.stringify(spec.acceptance),
-          spec.route === undefined ? null : canonicalRouteJson(spec.route),
-        );
-      if (spec.createdBy != null && spec.createdBy !== "") this.db.prepare("UPDATE routine SET created_by = ? WHERE id = ?").run(spec.createdBy, Number(inserted.lastInsertRowid));
-      return { ok: true as const, id: Number(inserted.lastInsertRowid) };
-    });
-  }
-
   /**
    * Set-once installation markers (v12). INSERT OR IGNORE is the whole
    * contract: the first write wins forever, there is no update and no
@@ -17411,412 +15497,33 @@ export class Store {
   // ---- spend defaults (v15) ----------------------------------------------
 
   setSpendDefaults(
-    defaults: { buildPerRunMicrousd: number | null; racePerAgentMicrousd: number | null; raceTotalMicrousd: number | null; raceAgents?: number | null },
+    defaults: { buildPerRunMicrousd: number | null },
     by: string,
     now: Date,
   ): void {
     const before = this.getSpendDefaults();
     this.db
       .prepare(
-        `INSERT INTO spend_defaults (id, build_per_run_microusd, race_per_agent_microusd, race_total_microusd, race_agents, updated_at, updated_by)
-         VALUES (1, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO spend_defaults (id, build_per_run_microusd, updated_at, updated_by)
+         VALUES (1, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            build_per_run_microusd = excluded.build_per_run_microusd,
-           race_per_agent_microusd = excluded.race_per_agent_microusd,
-           race_total_microusd = excluded.race_total_microusd,
-           race_agents = excluded.race_agents,
            updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
       )
-      .run(defaults.buildPerRunMicrousd, defaults.racePerAgentMicrousd, defaults.raceTotalMicrousd, defaults.raceAgents ?? null, now.toISOString(), by);
+      .run(defaults.buildPerRunMicrousd, now.toISOString(), by);
     const dollars = (micro: number | null) => micro === null ? "none" : `$${(micro / 1_000_000).toFixed(2)}`;
-    const words = (row: { buildPerRunMicrousd: number | null; racePerAgentMicrousd: number | null; raceTotalMicrousd: number | null } | null) => row === null ? "not set"
-      : `per build ${dollars(row.buildPerRunMicrousd)}, per race agent ${dollars(row.racePerAgentMicrousd)}, per race ${dollars(row.raceTotalMicrousd)}`;
+    const words = (row: { buildPerRunMicrousd: number | null } | null) => row === null ? "not set" : `per build ${dollars(row.buildPerRunMicrousd)}`;
     this.recordPolicy(by, null, "spend limits changed", words(before), words(defaults), now);
   }
 
-  getSpendDefaults(): { buildPerRunMicrousd: number | null; racePerAgentMicrousd: number | null; raceTotalMicrousd: number | null; raceAgents: number | null; updatedBy: string } | null {
+  getSpendDefaults(): { buildPerRunMicrousd: number | null; updatedBy: string } | null {
     const row = this.db.prepare("SELECT * FROM spend_defaults WHERE id = 1").get();
     if (row === undefined) return null;
     const maybe = (key: string): number | null => (row[key] === null || row[key] === undefined ? null : Number(row[key]));
     return {
       buildPerRunMicrousd: maybe("build_per_run_microusd"),
-      racePerAgentMicrousd: maybe("race_per_agent_microusd"),
-      raceTotalMicrousd: maybe("race_total_microusd"),
-      raceAgents: maybe("race_agents"),
       updatedBy: String(row["updated_by"]),
     };
-  }
-
-  // ---- tournaments (v14): persistence + the CAS primitives ---------------
-
-  /**
-   * File a new terms row: the previous active row (if any) deactivates in
-   * the same transaction — rows are immutable, the ACTIVE pointer moves.
-   * Approval lands later, by the same ceremony that approves the scope.
-   */
-  /** Withdraw the standing race: the row survives deactivated, exactly as
-   * a superseding filing would leave it — the task returns to the ordinary
-   * one-agent path. */
-  retractTournamentTerms(taskRef: number): boolean {
-    const changed = this.db
-      .prepare("UPDATE tournament_terms SET active = 0 WHERE task_ref = ? AND active = 1")
-      .run(taskRef);
-    return Number(changed.changes) > 0;
-  }
-
-  fileTournamentTerms(
-    spec: {
-      taskRef: number;
-      /** v27: absent = 'race' (every historical caller). */
-      kind?: "race" | "comparison";
-      raceDigest: string;
-      agents: { provider: string; model: string; repairModel: string; permissionMode?: UnattendedPermissionMode }[];
-      perAgentBudgetMicrousd: number;
-      overrunReserveMicrousd: number;
-      totalBudgetMicrousd: number;
-      priceVersion: number;
-      publicationPolicy: string;
-    },
-    now: Date,
-  ): number {
-    return this.transact(() => {
-      // D1 (external dispatch, finding 40): external work does not race in
-      // this release — the STORE refuses, so no forged POST and no future
-      // caller can file race terms on a mirror. UI hiding is convenience.
-      const external = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM external_mirror
-            JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = external_mirror.local_task_id
-           WHERE task_ref.id = ? LIMIT 1`,
-        )
-        .get(BUILT_IN, spec.taskRef);
-      if (external !== undefined) {
-        throw new Error("external work races in a follow-up release — file the tournament on a local task");
-      }
-      const previous = this.db
-        .prepare("SELECT id, generation FROM tournament_terms WHERE task_ref = ? AND active = 1")
-        .get(spec.taskRef);
-      if (previous !== undefined) {
-        this.db.prepare("UPDATE tournament_terms SET active = 0 WHERE id = ?").run(Number(previous["id"]));
-      }
-      const generation = previous === undefined ? 1 : Number(previous["generation"]) + 1;
-      const inserted = this.db
-        .prepare(
-          `INSERT INTO tournament_terms
-             (task_ref, generation, active, kind, race_digest, agents, n, per_agent_budget_microusd,
-              overrun_reserve_microusd, total_budget_microusd, price_version, retries,
-              publication_policy, created_at)
-           VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-        )
-        .run(
-          spec.taskRef,
-          generation,
-          spec.kind ?? "race",
-          spec.raceDigest,
-          JSON.stringify(spec.agents),
-          spec.agents.length,
-          spec.perAgentBudgetMicrousd,
-          spec.overrunReserveMicrousd,
-          spec.totalBudgetMicrousd,
-          spec.priceVersion,
-          spec.publicationPolicy,
-          now.toISOString(),
-        );
-      return Number(inserted.lastInsertRowid);
-    });
-  }
-
-  activeTournamentTerms(taskRef: number): TournamentTerms | null {
-    const row = this.db.prepare("SELECT * FROM tournament_terms WHERE task_ref = ? AND active = 1").get(taskRef);
-    return row === undefined ? null : readTournamentTerms(row);
-  }
-
-  /** Approval persistence only — the restating ceremony wires in later. */
-  approveTournamentTerms(id: number, by: string, sawDigest: string, now: Date): boolean {
-    const changed = this.db
-      .prepare(
-        "UPDATE tournament_terms SET approved_at = ?, approved_by = ?, approved_digest = ? WHERE id = ? AND active = 1 AND race_digest = ?",
-      )
-      .run(now.toISOString(), by, sawDigest, id, sawDigest);
-    return Number(changed.changes) === 1;
-  }
-
-  createContest(
-    spec: { taskRef: number; terms: number; scopeDigest: string; raceDigest: string; kind?: "race" | "comparison" },
-    now: Date,
-  ): number {
-    const inserted = this.db
-      .prepare(
-        `INSERT INTO contest (task_ref, terms, state, scope_digest, race_digest, created_at, race_semantics, kind)
-         VALUES (?, ?, 'dispatching', ?, ?, ?, 2, ?)`,
-      )
-      .run(spec.taskRef, spec.terms, spec.scopeDigest, spec.raceDigest, now.toISOString(), spec.kind ?? "race");
-    return Number(inserted.lastInsertRowid);
-  }
-
-  getContest(id: number): Contest | null {
-    const row = this.db.prepare("SELECT * FROM contest WHERE id = ?").get(id);
-    return row === undefined ? null : readContest(row);
-  }
-
-  /** The one non-finished tournament for a task, when one exists. */
-  /** The newest tournament still owed to an operator — open states plus
-   * the two that end with nothing pickable and wait for a human verdict. */
-  contestNeedingOperator(taskRef: number): Contest | null {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM contest WHERE task_ref = ?
-           AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(taskRef);
-    return row === undefined ? null : readContest(row);
-  }
-
-  openContestFor(taskRef: number): Contest | null {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM contest WHERE task_ref = ?
-           AND state IN ('dispatching','racing','pick-wait','decision-wait')
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(taskRef);
-    return row === undefined ? null : readContest(row);
-  }
-
-  /**
-   * Every state change is a compare-and-swap on (state, generation): the
-   * caller proves what it believes, the write bumps the generation, and
-   * whichever of aggregation, reaping, or crash recovery loses the race
-   * changes nothing (finding 17/27).
-   */
-  casContestState(id: number, from: readonly ContestState[], to: ContestState, expectedGeneration: number): boolean {
-    const marks = from.map(() => "?").join(",");
-    const changed = this.db
-      .prepare(
-        `UPDATE contest SET state = ?, generation = generation + 1
-          WHERE id = ? AND generation = ? AND state IN (${marks})`,
-      )
-      .run(to, id, expectedGeneration, ...from);
-    return Number(changed.changes) === 1;
-  }
-
-  stampContestLease(id: number, leaseId: string, runner: string, incarnation: string | null): void {
-    this.db
-      .prepare("UPDATE contest SET current_lease_id = ?, runner = ?, incarnation = ? WHERE id = ?")
-      .run(leaseId, runner, incarnation, id);
-  }
-
-  stampContestDispatch(id: number, baseSha: string, setupDigest: string | null): void {
-    this.db.prepare("UPDATE contest SET base_sha = ?, setup_digest = ? WHERE id = ?").run(baseSha, setupDigest, id);
-  }
-
-  createContestants(
-    contest: number,
-    agents: { provider: string; model: string; repairModel: string; permissionMode?: UnattendedPermissionMode; branch: string; budgetMicrousd: number; reserveMicrousd: number; unknownSpend?: boolean }[],
-  ): number[] {
-    return this.transact(() =>
-      agents.map((agent, index) => {
-        const inserted = this.db
-          .prepare(
-            `INSERT INTO contestant
-               (contest, ordinal, provider, model, repair_model, branch, budget_microusd, reserve_microusd, unknown_spend, profile_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            contest,
-            index + 1,
-            agent.provider,
-            agent.model,
-            agent.repairModel,
-            agent.branch,
-            agent.budgetMicrousd,
-            agent.reserveMicrousd,
-            // v27 (comparisons): a lane whose harness reports no dollars is
-            // PRE-latched — unmeasured is a fact of the lane, not a
-            // wait-and-see. Race lanes stay 0 and measure normally.
-            agent.unknownSpend === true ? 1 : 0,
-            // v24: the contestant's OWN sealed profile — race terms carry
-            // exact models already; the effective limits join them here so
-            // the dispatch proof holds each lane to its lane.
-            canonicalProfileJson(contestantProfileOf(agent.provider, agent.model, agent.repairModel, agent.permissionMode)),
-          );
-        return Number(inserted.lastInsertRowid);
-      }),
-    );
-  }
-
-  /** The lane's CUMULATIVE wall clock across its whole lineage — main
-   * attempt, resumes, and repair children (Phase 3 slice B, Codex
-   * finding 1): three sealed clocks bound a comparison lane. */
-  contestantCumulativeMs(contestantId: number): number {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(
-           MAX(0, (julianday(COALESCE(finished_at, provider_started_at)) - julianday(provider_started_at)) * 86400000)
-         ), 0) AS total
-           FROM run
-          WHERE provider_started_at IS NOT NULL
-            AND (contestant = ? OR parent_run IN (SELECT id FROM run WHERE contestant = ?))`,
-      )
-      .get(contestantId, contestantId);
-    return Math.round(Number(row?.["total"] ?? 0));
-  }
-
-  /** The lane's money and tokens across its WHOLE lineage — main attempt,
-   * resumes, and repair children (Codex slice-B finding 6): a lane's cell
-   * that reads only the newest run under-reports every park cycle. */
-  contestantSpendRollup(contestantId: number): { costMicrousd: number; tokensIn: number; tokensOut: number; measuredRuns: number; totalRuns: number } {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN 0 ELSE CAST(ROUND(cost_usd * 1000000) AS INTEGER) END), 0) AS cost,
-                COALESCE(SUM(COALESCE(tokens_in, 0)), 0) AS tin,
-                COALESCE(SUM(COALESCE(tokens_out, 0)), 0) AS tout,
-                SUM(CASE WHEN cost_usd IS NULL THEN 0 ELSE 1 END) AS measured,
-                COUNT(*) AS total
-           FROM run
-          WHERE provider_started_at IS NOT NULL
-            AND (contestant = ? OR parent_run IN (SELECT id FROM run WHERE contestant = ?))`,
-      )
-      .get(contestantId, contestantId);
-    return {
-      costMicrousd: Number(row?.["cost"] ?? 0),
-      tokensIn: Number(row?.["tin"] ?? 0),
-      tokensOut: Number(row?.["tout"] ?? 0),
-      measuredRuns: Number(row?.["measured"] ?? 0),
-      totalRuns: Number(row?.["total"] ?? 0),
-    };
-  }
-
-  contestants(contest: number): Contestant[] {
-    return this.db.prepare("SELECT * FROM contestant WHERE contest = ? ORDER BY ordinal").all(contest).map(readContestant);
-  }
-
-  getContestant(id: number): Contestant | null {
-    const row = this.db.prepare("SELECT * FROM contestant WHERE id = ?").get(id);
-    return row === undefined ? null : readContestant(row);
-  }
-
-  casContestantState(
-    id: number,
-    from: readonly ContestantState[],
-    to: ContestantState,
-    expectedGeneration: number,
-  ): boolean {
-    const marks = from.map(() => "?").join(",");
-    const changed = this.db
-      .prepare(
-        `UPDATE contestant SET state = ?, generation = generation + 1
-          WHERE id = ? AND generation = ? AND state IN (${marks})`,
-      )
-      .run(to, id, expectedGeneration, ...from);
-    return Number(changed.changes) === 1;
-  }
-
-  // Exactly one live run per agent (finding 22): the lane's pointer is
-  // bound by `startRun` alone (raw authority repair) — a run admitted with
-  // `contestant` takes the lane inside its own insert, a held lane admits
-  // no second run, and there is no post-insert claim road.
-
-  /**
-   * The exact authority a contest lane PRESENTS at admission (raw
-   * authority repair): its race-approved profile's digest as a `legacy`
-   * stamp, with the pair the lane spends as for the phase — the same
-   * facts `startRun` re-proves against the lane before the row exists.
-   * Null for no such lane.
-   */
-  laneAuthorityFor(contestantId: number, phase: "build" | "repair" = "build"): RouteStamp | null {
-    const lane = this.getContestant(contestantId);
-    // The STORED sealed profile, or nothing (atomic authority closure): a
-    // lane with no readable profile has no authority to present, and no
-    // synthesized profile stands in for the one the race approved. A lane
-    // that has ended, or whose stored profile disagrees with its own
-    // provider, model, or repair-model columns, presents nothing either
-    // (final authority closure) — the admission refuses the same row in
-    // words, so nothing derived here can be accepted there.
-    if (lane === null || lane.profile == null || laneAuthorityProblem(lane) !== null) return null;
-    const profile = lane.profile;
-    return { routeDigest: `profile:${profileDigestOf(profile)}`, phase, provider: lane.provider, model: phase === "repair" ? lane.repairModel : lane.model, chosen: "legacy" };
-  }
-
-  releaseContestantRun(id: number, runId: number): void {
-    this.db.prepare("UPDATE contestant SET active_run = NULL WHERE id = ? AND active_run = ?").run(id, runId);
-  }
-
-  setContestantWorktree(id: number, worktree: string): void {
-    this.db.prepare("UPDATE contestant SET worktree = ? WHERE id = ?").run(worktree, id);
-  }
-
-  /** The lineage meter (finding 25 + round-2 finding on repairs): each
-   * finished invocation settles ONCE, and the agent's total is the SUM
-   * across its whole lineage — a park's spend and its resume's spend are
-   * both real money. Accounted tracks at least the measured total. */
-  recordContestantSpend(id: number, invocationMicrousd: number): void {
-    this.db
-      .prepare(
-        `UPDATE contestant SET
-           measured_microusd = measured_microusd + ?,
-           accounted_microusd = MAX(accounted_microusd, measured_microusd + ?)
-         WHERE id = ?`,
-      )
-      .run(Math.max(0, invocationMicrousd), Math.max(0, invocationMicrousd), id);
-  }
-
-  /** A started invocation that never reported: the ledger charges the FULL
-   * reservation — never the remaining amount — and says the real figure is
-   * unknown (finding 25). Idempotent; never lowers a larger accounting. */
-  latchContestantUnknownSpend(id: number): void {
-    this.db
-      .prepare(
-        `UPDATE contestant SET
-           accounted_microusd = MAX(accounted_microusd, budget_microusd + reserve_microusd),
-           unknown_spend = 1
-         WHERE id = ?`,
-      )
-      .run(id);
-  }
-
-  setContestantCustody(id: number, custody: string | null): void {
-    this.db.prepare("UPDATE contestant SET custody = ? WHERE id = ?").run(custody, id);
-  }
-
-  /** The cleanup queue (stage 6): agents of DECIDED tournaments whose
-   * checkouts still sit outside the pool. Terminal contest states only —
-   * an undecided tournament's evidence is never touched. */
-  contestantsForCleanup(): Contestant[] {
-    return this.db
-      .prepare(
-        `SELECT contestant.* FROM contestant
-         JOIN contest ON contest.id = contestant.contest
-         WHERE contest.state IN ('picked','abandoned') AND contestant.cleanup = 'pending'
-         ORDER BY contestant.id`,
-      )
-      .all()
-      .map(readContestant);
-  }
-
-  /** Exactly-once overdue escalation: the mark rides the page (stage 6). */
-  markContestOverduePaged(contestId: number): boolean {
-    const changed = this.db
-      .prepare("UPDATE contest SET overdue_paged = 1 WHERE id = ? AND overdue_paged = 0")
-      .run(contestId);
-    return Number(changed.changes) === 1;
-  }
-
-  /** The pick, stamped: who chose, when, and which agent won. */
-  setContestWinner(contestId: number, contestantId: number, approver: string, now: Date): void {
-    this.db
-      .prepare("UPDATE contest SET winner_contestant = ?, picked_by = ?, picked_at = ? WHERE id = ?")
-      .run(contestantId, approver, now.toISOString(), contestId);
-  }
-
-  setContestantCleanup(id: number, cleanup: "pending" | "done" | "attention"): void {
-    this.db.prepare("UPDATE contestant SET cleanup = ? WHERE id = ?").run(cleanup, id);
-  }
-
-  contestsInStates(states: readonly ContestState[]): Contest[] {
-    const marks = states.map(() => "?").join(",");
-    return this.db.prepare(`SELECT * FROM contest WHERE state IN (${marks}) ORDER BY id`).all(...states).map(readContest);
   }
 
   /** The still-live claim behind a lease id, or null — recovery's question.
@@ -17829,73 +15536,6 @@ export class Store {
     return row === undefined ? null : { leaseId: String(row["lease_id"]) };
   }
 
-
-  /**
-   * Close a racing agent's question WITHOUT answering it (the exclude
-   * ceremony, round-3 finding 28): typed closure, never a fake option.
-   * The caller owns authentication and the contestant's stop.
-   */
-  excludeDecision(id: number, by: string, now: Date): boolean {
-    return this.transact(() => {
-      const changed = this.db
-        .prepare(
-          `UPDATE decision SET state = 'answered', answered_at = ?, answered_by = ?, closed_reason = 'excluded'
-            WHERE id = ? AND state IN ('open','expired') AND contestant IS NOT NULL`,
-        )
-        .run(now.toISOString(), by, id);
-      if (Number(changed.changes) !== 1) return false;
-      // Closure clears what an answer would have cleared (external
-      // dispatch review, finding 43): the decision-owned hold and the
-      // page episode — an excluded question must not hold work forever.
-      this.releaseOwnedHold("decision", String(id));
-      this.resolveEpisode(`decision:${id}`, now);
-      this.bumpWake();
-      return true;
-    });
-  }
-
-  /** A racing agent's answered-but-undelivered question, for the resume pass. */
-  answeredDecisionForContestant(contestantId: number): number | null {
-    const row = this.db
-      .prepare(
-        `SELECT decision.id AS id FROM decision
-          WHERE decision.contestant = ? AND decision.state = 'answered'
-            AND (decision.closed_reason IS NULL OR decision.closed_reason != 'excluded')
-            AND NOT EXISTS (
-              SELECT 1 FROM run_decision
-              JOIN run AS delivered ON delivered.id = run_decision.run
-              WHERE run_decision.decision = decision.id AND delivered.outcome IS NOT NULL
-            )
-          LIMIT 1`,
-      )
-      .get(contestantId);
-    return row === undefined ? null : Number(row["id"]);
-  }
-
-  /** A racing agent's one open (or expired-but-unanswered) question. */
-  openDecisionForContestant(contestantId: number): number | null {
-    const row = this.db
-      .prepare("SELECT id FROM decision WHERE contestant = ? AND state IN ('open','expired') LIMIT 1")
-      .get(contestantId);
-    return row === undefined ? null : Number(row["id"]);
-  }
-
-  /** Admission binds each reserved slot to its agent, so recovery can
-   * find and free every one of them (nothing reserved is ever orphaned). */
-  assignSlotContestant(slotId: number, contestantId: number): void {
-    this.db.prepare("UPDATE execution_slot SET contestant = ? WHERE id = ?").run(contestantId, slotId);
-  }
-
-  releaseSlotsForContest(contestId: number, now: Date): number {
-    const changed = this.db
-      .prepare(
-        `UPDATE execution_slot SET state = 'released', released_at = ?
-          WHERE state IN ('reserved','running')
-            AND contestant IN (SELECT id FROM contestant WHERE contest = ?)`,
-      )
-      .run(now.toISOString(), contestId);
-    return Number(changed.changes);
-  }
 
   // ---- worker-process slots (v14, finding 26) ----------------------------
 
@@ -17916,26 +15556,26 @@ export class Store {
    * the process group so recovery can ask the OS before freeing capacity. */
   markSlotRunning(
     id: number,
-    facts: { run: number; contestant?: number | null; incarnation?: string | null; processGroup?: number | null },
+    facts: { run: number; incarnation?: string | null; processGroup?: number | null },
     now: Date,
   ): boolean {
     const changed = this.db
       .prepare(
-        `UPDATE execution_slot SET state = 'running', run = ?, contestant = ?, incarnation = ?, process_group = ?, running_at = ?
+        `UPDATE execution_slot SET state = 'running', run = ?, incarnation = ?, process_group = ?, running_at = ?
           WHERE id = ? AND state = 'reserved'`,
       )
-      .run(facts.run, facts.contestant ?? null, facts.incarnation ?? null, facts.processGroup ?? null, now.toISOString(), id);
+      .run(facts.run, facts.incarnation ?? null, facts.processGroup ?? null, now.toISOString(), id);
     return Number(changed.changes) === 1;
   }
 
   /** A correction process replaces the exited provider in the same open
    * root attempt. It may refresh only that attempt's exact occupied slot. */
-  refreshSlotProcess(id: number, facts: { run: number; contestant?: number | null; incarnation?: string | null; processGroup: number }): boolean {
+  refreshSlotProcess(id: number, facts: { run: number; incarnation?: string | null; processGroup: number }): boolean {
     if (!Number.isInteger(facts.processGroup) || facts.processGroup <= 0) return false;
     const changed = this.db.prepare(`UPDATE execution_slot SET process_group = ?
-      WHERE id = ? AND state = 'running' AND run = ? AND contestant IS ? AND incarnation IS ?
+      WHERE id = ? AND state = 'running' AND run = ? AND incarnation IS ?
         AND EXISTS (SELECT 1 FROM run WHERE id = ? AND outcome IS NULL)`)
-      .run(facts.processGroup, id, facts.run, facts.contestant ?? null, facts.incarnation ?? null, facts.run);
+      .run(facts.processGroup, id, facts.run, facts.incarnation ?? null, facts.run);
     return Number(changed.changes) === 1;
   }
 
@@ -18059,12 +15699,6 @@ export class Store {
             ORDER BY incident.id DESC LIMIT 21`,
         )
         .all(...admittedRepos);
-      const routineRows = this.db
-        .prepare(
-          `SELECT id, name, schedule, paused, digest, approved_at, approved_digest, repo
-             FROM routine WHERE repo IN (${marks}) ORDER BY id LIMIT 31`,
-        )
-        .all(...admittedRepos);
       const publicationRows = this.db
         .prepare(
           `SELECT publication.pr_number AS pr, publication.last_check_state AS check_state, task_ref.repo AS repo
@@ -18113,18 +15747,6 @@ export class Store {
           ageHours: hours(row["created_at"]),
         })),
         incidentsSaturated: incidentRows.length > 20,
-        routines: routineRows.slice(0, 30).map(row => {
-          const approved = row["approved_at"] !== null && row["approved_digest"] === row["digest"];
-          const fires = this.routineFires(Number(row["id"]), 1);
-          return {
-            repoIndex: indexOf(row["repo"]),
-            name: String(row["name"]),
-            schedule: String(row["schedule"]),
-            status: Number(row["paused"]) === 1 ? "paused" : approved ? "live" : "awaiting approval",
-            lastFire: fires.length === 0 ? null : `${fires[0]?.outcome}${fires[0]?.reason === null ? "" : `: ${fires[0]?.reason}`}`,
-          };
-        }),
-        routinesSaturated: routineRows.length > 30,
         publications: publicationRows.slice(0, 20).map(row => ({
           repoIndex: indexOf(row["repo"]),
           pr: row["pr"] === null ? null : Number(row["pr"]),
@@ -18439,10 +16061,9 @@ export class Store {
       .map(one => ({ id: one.root.id, title: one.root.title, repo: one.root.repo }));
   }
 
-  /** Whether any work was ever filed — task or routine. */
+  /** Whether any work was ever filed. */
   hasAnyWork(): boolean {
-    if (this.db.prepare("SELECT 1 AS hit FROM task LIMIT 1").get() !== undefined) return true;
-    return this.db.prepare("SELECT 1 AS hit FROM routine LIMIT 1").get() !== undefined;
+    return this.db.prepare("SELECT 1 AS hit FROM task LIMIT 1").get() !== undefined;
   }
 
   /** Which door filed a task; null for history from before v12. */
@@ -18472,349 +16093,6 @@ export class Store {
       .prepare("SELECT filed_via FROM task_ref WHERE backend = ? AND external_id = ?")
       .get(BUILT_IN, taskId);
     return row === undefined || row["filed_via"] === null ? null : String(row["filed_via"]);
-  }
-
-  getRoutine(id: number): Routine | null {
-    const row = this.db.prepare("SELECT * FROM routine WHERE id = ?").get(id);
-    return row === undefined ? null : readRoutine(row);
-  }
-
-  routineByName(name: string): Routine | null {
-    const row = this.db.prepare("SELECT * FROM routine WHERE name = ?").get(name);
-    return row === undefined ? null : readRoutine(row);
-  }
-
-  /** Every routine one view may see. NULL repo filter means "no filter". */
-  listRoutines(repo: string | null, admitted: string[] | null = null): Routine[] {
-    const where =
-      admitted === null
-        ? "WHERE (? IS NULL OR routine.repo = ?)"
-        : `WHERE routine.repo IN (${admitted.map(() => "?").join(",") || "''"})`;
-    const params = admitted === null ? [repo, repo] : admitted;
-    return this.db
-      .prepare(`SELECT * FROM routine ${where} ORDER BY routine.name`)
-      .all(...params)
-      .map(readRoutine);
-  }
-
-  /**
-   * Rewrite a template's terms. The new digest rides along, and the old
-   * approval is kept — invalidated by the mismatch, exactly like a scope
-   * edit, so the refusal can say "approved, then edited" rather than
-   * "never approved". The firing transaction re-proves the match.
-   */
-  updateRoutineTerms(
-    id: number,
-    terms: {
-      goal: string;
-      outOfScope: string | null;
-      touches: string[];
-      /** v39: absent leaves the stored rubric untouched (a caller editing
-       * goal/touches without an opinion on acceptance); present REPLACES
-       * it — never merged, so the digest the caller computed from these
-       * exact terms is what ends up stored. */
-      acceptance?: AcceptanceCriterion[];
-      requirements: string[];
-      schedule: string;
-      costCeilingUsd: number | null;
-      digest: string;
-      /** v24: restatement carries the profile its digest binds. */
-      profile?: ExecutionProfile | null;
-      /** v48: restatement carries the route its digest binds; absent or
-       * null leaves the stored route untouched. */
-      route?: PhaseRoute | null;
-    },
-    now: Date,
-  ): boolean {
-    const { changes } = this.db
-      .prepare(
-        `UPDATE routine SET goal = ?, out_of_scope = ?, touches = ?, requirements = ?,
-                            schedule = ?, cost_ceiling_usd = ?, digest = ?, updated_at = ?,
-                            profile_json = COALESCE(?, profile_json),
-                            acceptance_json = COALESCE(?, acceptance_json),
-                            route_json = COALESCE(?, route_json)
-          WHERE id = ?`,
-      )
-      .run(
-        terms.goal,
-        terms.outOfScope,
-        JSON.stringify(terms.touches),
-        JSON.stringify(terms.requirements),
-        terms.schedule,
-        terms.costCeilingUsd,
-        terms.digest,
-        now.toISOString(),
-        terms.profile === undefined || terms.profile === null ? null : canonicalProfileJson(terms.profile),
-        terms.acceptance === undefined ? null : terms.acceptance.length === 0 ? null : JSON.stringify(terms.acceptance),
-        terms.route === undefined || terms.route === null ? null : canonicalRouteJson(terms.route),
-        id,
-      );
-    return Number(changes) > 0;
-  }
-
-  /**
-   * The approval stamp, raw. Callers own the ceremony — credential,
-   * digest re-read, and the transaction — in approveRoutine (routine.ts).
-   */
-  stampRoutineApproval(id: number, by: string, digest: string, nextFireAt: string, now: Date): void {
-    this.db
-      .prepare(
-        `UPDATE routine SET approved_at = ?, approved_by = ?, approved_digest = ?,
-                            approved_profile_json = profile_json,
-                            approved_route_json = route_json,
-                            next_fire_at = ?, updated_at = ?
-          WHERE id = ?`,
-      )
-      .run(now.toISOString(), by, digest, nextFireAt, now.toISOString(), id);
-  }
-
-  /**
-   * WITHDRAW an approval that no longer verifies (v48 authority repair): the refresh road
-   * clears the approval's authority — its digest, its frozen snapshot, the
-   * armed schedule — so a corrupt or never-taken snapshot cannot keep
-   * reading as approved while the working agents happen to be unchanged.
-   * `approved_at`/`approved_by` stay as history: the page reads "approved,
-   * then refreshed — approve again", never "never approved".
-   */
-  withdrawRoutineApproval(id: number, now: Date): boolean {
-    const { changes } = this.db
-      .prepare(
-        `UPDATE routine SET approved_digest = NULL, approved_profile_json = NULL, approved_route_json = NULL,
-                            next_fire_at = NULL, updated_at = ?
-          WHERE id = ?`,
-      )
-      .run(now.toISOString(), id);
-    return Number(changes) > 0;
-  }
-
-  /** Pausing is instant and needs no ceremony; resuming re-arms the schedule. */
-  setRoutinePaused(id: number, paused: boolean, now: Date): boolean {
-    const { changes } = this.db
-      .prepare("UPDATE routine SET paused = ?, updated_at = ? WHERE id = ?")
-      .run(paused ? 1 : 0, now.toISOString(), id);
-    if (Number(changes) > 0) this.bumpWake();
-    return Number(changes) > 0;
-  }
-
-  /**
-   * Routines a pass should try to fire: approved (digest intact), unpaused,
-   * due, and placed in this pass's repository. Each candidate is re-proved
-   * inside fireRoutine's own transaction — this list only nominates.
-   */
-  dueRoutines(repo: string, now: Date): Routine[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM routine
-         WHERE repo = ? AND paused = 0
-           AND approved_at IS NOT NULL AND approved_digest = digest
-           AND next_fire_at IS NOT NULL AND next_fire_at <= ?
-         ORDER BY next_fire_at, id`,
-      )
-      .all(repo, now.toISOString())
-      .map(readRoutine);
-  }
-
-  /** The last firings, newest first — the board's run-history strip. */
-  routineFires(routineId: number, limit = 14): (RoutineFire & { instanceTaskId: string | null; instanceState: string | null })[] {
-    return this.db
-      .prepare(
-        `SELECT routine_fire.*, task_ref.external_id AS instance_task_id, task.state AS instance_state
-           FROM routine_fire
-           LEFT JOIN task_ref ON task_ref.id = routine_fire.instance_task_ref
-           LEFT JOIN task ON task.id = task_ref.external_id
-          WHERE routine_fire.routine_id = ?
-          ORDER BY routine_fire.id DESC LIMIT ?`,
-      )
-      .all(routineId, Math.max(1, Math.min(limit, 100)))
-      .map(row => ({
-        ...readRoutineFire(row),
-        instanceTaskId: row["instance_task_id"] === null || row["instance_task_id"] === undefined ? null : String(row["instance_task_id"]),
-        instanceState: row["instance_state"] === null || row["instance_state"] === undefined ? null : String(row["instance_state"]),
-      }));
-  }
-
-  /**
-   * What one routine's instances actually cost in a window, and whether any
-   * paid run in it is unmeasured. NULL costs are counted, not summed over:
-   * a sum that silently omits them reads as headroom that may not exist
-   * (finding 5 — the arithmetic behind failing closed).
-   */
-  routineSpend(routineId: number, sinceIso: string): { costUsd: number; unmeasuredRuns: number; totalRuns: number } {
-    // The window is anchored to provider_started_at — the exact stamp money
-    // can move — never to when the run row was opened (Codex Phase C
-    // review, M2): a run opened before the cutoff whose provider started
-    // inside it is spend inside the window, measured or not.
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(run.cost_usd), 0) AS cost,
-                SUM(CASE WHEN run.cost_usd IS NULL THEN 1 ELSE 0 END) AS unmeasured,
-                COUNT(*) AS invoked
-           FROM run
-           JOIN task_ref ON task_ref.id = run.task_ref
-          WHERE task_ref.routine_id = ?
-            AND run.provider_started_at IS NOT NULL AND run.provider_started_at >= ?`,
-      )
-      .get(routineId, sinceIso);
-    return {
-      costUsd: Number(row?.["cost"] ?? 0),
-      unmeasuredRuns: Number(row?.["unmeasured"] ?? 0),
-      totalRuns: Number(row?.["invoked"] ?? 0),
-    };
-  }
-
-  /**
-   * The single-flight question: the oldest instance not successfully
-   * completed nor explicitly abandoned — queued, running, held, parked,
-   * and failed instances all block (finding 9's definition, verbatim).
-   * A LIVE CLAIM blocks regardless of task state (Codex Phase C review,
-   * H2): a state string written over a running build — `task state <id>
-   * done` bypassing the guarded cancel — must not conjure a twin beside
-   * a provider that is still spending.
-   */
-  routineBlocker(routineId: number, now: Date): { taskId: string; state: string } | null {
-    const row = this.db
-      .prepare(
-        `SELECT task.id, task.state FROM task
-           JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
-          WHERE task_ref.routine_id = ?
-            AND (
-              task.state NOT IN ('done','cancelled')
-              OR EXISTS (
-                SELECT 1 FROM claim
-                WHERE claim.task_ref = task_ref.id
-                  AND claim.released_at IS NULL AND claim.expires_at > ?
-                  AND claim.lease_generation = (
-                    SELECT MAX(newest.lease_generation) FROM claim AS newest
-                    WHERE newest.task_ref = task_ref.id
-                  )
-              )
-            )
-          ORDER BY task.created_at LIMIT 1`,
-      )
-      .get(BUILT_IN, routineId, now.toISOString());
-    return row === undefined
-      ? null
-      : { taskId: String(row["id"]), state: String(row["state"]) };
-  }
-
-  /**
-   * Whether a slot is still unrecorded. Only sound inside the fire
-   * transaction — the IMMEDIATE lock is what makes read-then-insert atomic.
-   */
-  routineSlotOpen(routineId: number, scheduledFor: string): boolean {
-    return (
-      this.db
-        .prepare("SELECT 1 AS hit FROM routine_fire WHERE routine_id = ? AND scheduled_for = ?")
-        .get(routineId, scheduledFor) === undefined
-    );
-  }
-
-  /** Record one slot's outcome. False: the slot was already recorded — the caller lost the race. */
-  recordRoutineFire(
-    fire: {
-      routineId: number;
-      scheduledFor: string;
-      outcome: "fired" | "skipped";
-      reason: string | null;
-      instanceTaskRef: number | null;
-    },
-    now: Date,
-  ): boolean {
-    const { changes } = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO routine_fire
-           (routine_id, scheduled_for, outcome, reason, instance_task_ref, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(fire.routineId, fire.scheduledFor, fire.outcome, fire.reason, fire.instanceTaskRef, now.toISOString());
-    return Number(changes) > 0;
-  }
-
-  /** Advance the schedule. The fire transaction is the only caller. */
-  setRoutineNextFire(id: number, nextFireAt: string, now: Date): void {
-    this.db
-      .prepare("UPDATE routine SET next_fire_at = ?, updated_at = ? WHERE id = ?")
-      .run(nextFireAt, now.toISOString(), id);
-  }
-
-  /** Stamp which routine a task is an instance of. Set at spawn, never after. */
-  linkRoutineInstance(taskRef: number, routineId: number): void {
-    this.db.prepare("UPDATE task_ref SET routine_id = ? WHERE id = ?").run(routineId, taskRef);
-  }
-
-  /**
-   * Page a blocked track once per EPISODE: an open episode under this
-   * prefix already nags, so nothing enqueues; a resolved one is history,
-   * and the fresh suffix keys a new row past the dedupe uniqueness — a
-   * recurrence after recovery pages again (Codex Phase C review, L1).
-   * Prefix matching is exact-bytes (substr), never LIKE — task ids may
-   * contain `_`, which LIKE would read as a wildcard.
-   */
-  enqueueRoutineEpisode(
-    prefix: string,
-    notification: Omit<NotificationInput, "dedupeKey">,
-    suffix: string,
-    now: Date,
-  ): boolean {
-    return this.transact(() => {
-      const head = `${prefix}:`;
-      const open = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM notification
-            WHERE substr(dedupe_key, 1, ?) = ? AND resolved_at IS NULL LIMIT 1`,
-        )
-        .get(head.length, head);
-      if (open !== undefined) return false;
-      return this.enqueueNotification({ dedupeKey: `${head}${suffix}`, ...notification }, now);
-    });
-  }
-
-  /**
-   * Close every blocked-track episode for a routine — called when a firing
-   * succeeds, because success is the proof the blocker is gone (budget
-   * cleared, blocking instance finished). Receipts stay; only the "wants a
-   * person" bit resolves.
-   */
-  resolveRoutineEpisodes(routineId: number, now: Date): void {
-    for (const prefix of [
-      `routine-budget:${routineId}:`,
-      `routine-unmeasured:${routineId}:`,
-      `routine-singleflight:${routineId}:`,
-      `routine-route:${routineId}:`,
-    ]) {
-      this.db
-        .prepare(
-          `UPDATE notification SET resolved_at = ?
-            WHERE resolved_at IS NULL AND substr(dedupe_key, 1, ?) = ?`,
-        )
-        .run(now.toISOString(), prefix.length, prefix);
-    }
-  }
-
-  /**
-   * Everything the board's track rows need, in one snapshot: each routine
-   * with its recent firings, its rolling-window spend, and the instance
-   * blocking it, if any. The caller applies the ceiling row by row.
-   */
-  routineTracks(
-    repo: string | null,
-    now: Date,
-    admitted: string[] | null = null,
-  ): {
-    routine: Routine;
-    fires: ReturnType<Store["routineFires"]>;
-    spend: { costUsd: number; unmeasuredRuns: number; totalRuns: number };
-    blocker: { taskId: string; state: string } | null;
-  }[] {
-    const since = new Date(now.getTime() - 7 * 24 * 60 * 60_000).toISOString();
-    return this.transact(() =>
-      this.listRoutines(repo, admitted).map(routine => ({
-        routine,
-        fires: this.routineFires(routine.id, 14),
-        spend: this.routineSpend(routine.id, since),
-        blocker: this.routineBlocker(routine.id, now),
-      })),
-    );
   }
 
   // ---- lifecycle updates ---------------------------------------------------
@@ -18917,8 +16195,8 @@ export class Store {
    * not failed. Failures, refusals, parks, plans and reports already page
    * through their own producers (build-failed, stalled, commit-failure,
    * malformed-*, plan-ready, report-ready, fenced, external-closed) and are
-   * not repeated here. Contest lanes and repair/correction children are the
-   * attempt's own and say nothing on their own.
+   * not repeated here. Repair/correction children are the attempt's own
+   * and say nothing on their own.
    */
   private noteRunEnding(
     id: number,
@@ -18926,7 +16204,6 @@ export class Store {
     result: { outcome: string; reason?: string; committed?: boolean },
     now: Date,
   ): void {
-    if (prior["contestant"] !== null && prior["contestant"] !== undefined) return;
     const taskRef = Number(prior["task_ref"]);
     const taskId = this.externalIdFor(taskRef);
     if (taskId === null) return;
@@ -19126,13 +16403,12 @@ export class Store {
    * mid-flight, visible the next morning instead of vanished.
    *
    * THE GENERIC ADMISSION (atomic authority closure) opens exactly four
-   * shapes: an ordinary builder (no parent, no lane, no open attended
-   * authorization on its task), a planner (optionally continuing its own
+   * shapes: an ordinary builder (no parent, no lane), a planner (optionally continuing its own
    * same-task planner run), a scout, and a ROOT reviewer answering an open
    * review request. Every other shape has its own admission that proves
    * and consumes or binds its exact authority in one transaction —
-   * `admitRepair`, `admitAttended`, `admitCorrection`, `admitContestLane`,
-   * `admitRecoveredBuilder`, `admitFallback` — and this road refuses it in
+   * `admitRepair`, `admitCorrection`,
+   * `admitRecoveredBuilder` — and this road refuses it in
    * words before any row exists. Every run PRESENTS its route authority: a
    * task with no scope presents the bare word `legacy` for the exact pair
    * it spends as; nothing opens unstamped anywhere.
@@ -19154,15 +16430,6 @@ export class Store {
        * a caller can spread the authority it resolved; absent at runtime
        * it refuses in words. */
       route?: RouteStamp;
-      /** v48 authority repair: how this run takes fallback-chain custody, proved and
-       * persisted in this same insert — `base` opens the task's cycle at
-       * the approved chain's first entry (inert without a chain approval),
-       * `resume` takes a parked BASE tail's custody through the proven
-       * transfer. A binding that cannot be proved rolls the insert back.
-       * Builder-only: no other role takes custody. Every run bound to a
-       * NON-primary entry — the entry's own admission, a parked tail's
-       * successor, a repair turn — is admitted by admitFallback alone. */
-      custody?: { kind: "base" } | { kind: "resume"; parkedRun: number };
       now: Date;
     } & (
       | {
@@ -19201,12 +16468,7 @@ export class Store {
    * this task's, is a builder, is still open, and this turn runs under
    * the parent's own runner and lease — which must be the task's CURRENT
    * live claim, on the runner that claim names (repair custody closure:
-   * the same tuple invariant every fallback admission proves). An
-   * attended parent's authorization
-   * must have spent its one attempt on that parent; a racing lane's
-   * parent must be the lane's live run; a chain-bound parent must be the
-   * live base tail (a fallback entry's repair is admitFallback's). The
-   * stamp is the repair leg of the authority the parent spent under.
+   * the exact claim tuple). The stamp is the repair leg of the authority the parent spent under.
    * Value-shaped: a refusal names its reason and leaves zero rows.
    */
   admitRepair(
@@ -19225,37 +16487,6 @@ export class Store {
     },
   ): { ok: true; runId: number } | { ok: false; problem: string } {
     return this.admission(() => this.admitRun({ ...run, role: "repair" }, { road: "repair" }));
-  }
-
-  /**
-   * THE ATTENDED ADMISSION (atomic authority closure): one watched attempt
-   * opens under exactly ONE live authorization the caller names — open on
-   * this task, unexpired, unspent, minted for this runner at this
-   * generation, pinning a readable profile the stamp restates as its
-   * legacy authority; a continuation names the finished parent the
-   * authorization continues, nothing else names a parent. The insert
-   * binds the row to the authorization and CONSUMES its one attempt in
-   * the same transaction: `run.attended_authorization` and
-   * `authorization.attempt_run` move together or not at all.
-   */
-  admitAttended(
-    run: {
-      taskRef: number;
-      leaseId: string;
-      runner: string;
-      branch: string;
-      worktree: string;
-      provider: string;
-      model?: string;
-      sessionId?: string;
-      parentRun?: number;
-      authorization: { id: string; runner: string; generation: number };
-      route: RouteStamp;
-      now: Date;
-    },
-  ): { ok: true; runId: number } | { ok: false; problem: string } {
-    const { authorization, ...rest } = run;
-    return this.admission(() => this.admitRun({ ...rest, role: "builder" }, { road: "attended", authorization }));
   }
 
   /**
@@ -19284,37 +16515,6 @@ export class Store {
   }
 
   /**
-   * THE CONTEST LANE ADMISSION (atomic authority closure): a racing agent's
-   * run opens on ITS lane, in a contest still dispatching or racing, under
-   * the contest's live custody — the caller's lease, runner, and watch
-   * incarnation are exactly the ones the contest was stamped with — and it
-   * presents the lane's STORED sealed profile as its legacy authority: no
-   * synthesized profile, no other digest. The lane's pointer moves to the
-   * row inside the insert (from free, or from the parked attempt this run
-   * resumes); a lane that moved rolls the row back.
-   */
-  admitContestLane(
-    run: {
-      taskRef: number;
-      leaseId: string;
-      runner: string;
-      incarnation: string | null;
-      branch: string;
-      worktree: string;
-      provider: string;
-      model?: string;
-      sessionId?: string;
-      contestant: number;
-      parentRun?: number;
-      route: RouteStamp;
-      now: Date;
-    },
-  ): { ok: true; runId: number } | { ok: false; problem: string } {
-    const { incarnation, ...rest } = run;
-    return this.admission(() => this.admitRun({ ...rest, role: "builder" }, { road: "contest", incarnation }));
-  }
-
-  /**
    * THE RECOVERED-DRAFT ADMISSION (atomic authority closure): a fresh
    * builder attempt that inherits an INTERRUPTED attempt's draft names it
    * as its parent — this task's own builder (or its repair turn), left in
@@ -19334,7 +16534,6 @@ export class Store {
       model?: string;
       sessionId?: string;
       recoveredFrom: number;
-      custody?: { kind: "base" } | { kind: "resume"; parkedRun: number };
       route: RouteStamp;
       now: Date;
     },
@@ -19362,9 +16561,7 @@ export class Store {
       model?: string;
       provider?: string;
       sessionId?: string;
-      contestant?: number;
       route?: RouteStamp;
-      custody?: { kind: "base" } | { kind: "resume"; parkedRun: number };
       now: Date;
       role?: "builder" | "repair" | "planner" | "scout" | "reviewer";
       branch?: string | undefined;
@@ -19375,9 +16572,7 @@ export class Store {
     road:
       | { road: "generic" }
       | { road: "repair" }
-      | { road: "attended"; authorization: { id: string; runner: string; generation: number } }
       | { road: "correction" }
-      | { road: "contest"; incarnation: string | null }
       | { road: "recovered" },
   ): number {
     const role = run.role ?? "builder";
@@ -19385,22 +16580,17 @@ export class Store {
     // the authority the task holds BEFORE the row exists — the stamp's
     // shape, its phase against the role, its exact provider and model
     // against what the run will spend as, and its digest and leg against
-    // the sealed route, the approved chain's base entry the run is bound
-    // to, or a proven pre-routing row. A stamp that cannot be proved opens
+    // the sealed route or a proven pre-routing row. A stamp that cannot be proved opens
     // no run: nothing spends with provenance that disagrees with authority.
     // The stamp is the authority for the provider and model columns when
     // the caller left them unsaid; a caller who says otherwise is refused.
     //
     // The store DICTATES nothing (v48 authority repair): the caller PRESENTS the exact
     // route authority it holds — the sealed leg for its phase, the working
-    // plan leg before approval, the sealed profile of a pre-routing row, a
-    // contest lane's or attended session's pinned profile, the bare word
-    // `legacy` on a task with no scope — or no row opens, in words.
-    //
-    // `fallback` provenance NEVER enters here (v48 integrity): a run bound
-    // to a non-primary chain entry is admitted by admitFallback alone,
-    // which re-proves the live cycle, tail, index, digest, auth mode,
-    // provider, model, repair binding, and approved mirror in one body.
+    // plan leg before approval, the sealed profile of a pre-routing row, the
+    // bare word `legacy` on a task with no scope — or no row opens, in words.
+    // `fallback` provenance (an approved fallback entry, before v115) opens
+    // nothing.
     const refuse: (problem: string) => never = problem => {
       throw new RunAdmissionRefused(`run admission refused for task_ref ${run.taskRef} (${role}): ${problem}`);
     };
@@ -19410,31 +16600,22 @@ export class Store {
     if (ref === null) throw new RunAdmissionRefused(`run admission refused: task_ref ${run.taskRef} is not a task`);
     const taskId = ref.externalId;
     const scope = this.getScope(taskId);
-    const contestant = run.contestant ?? null;
     // THE ROAD (atomic authority closure): every shape with its own
     // admission is refused here in words when it arrives by any other
     // door — the generic road opens nothing a dedicated road proves.
     if (role === "repair" && road.road !== "repair") refuse("a repair turn is admitted by admitRepair — the generic admission opens no repair");
-    if (contestant !== null && road.road !== "contest") refuse("a contest lane's run is admitted by admitContestLane — the generic admission opens nothing on a lane");
-    if (road.road === "contest" && contestant === null) refuse("a contest lane admission names its lane");
     if (road.road === "correction" && role !== "reviewer") refuse("a correction child is a reviewer");
     if (road.road === "recovered" && role !== "builder") refuse("a recovered draft is a builder's");
-    if (road.road === "attended" && role !== "builder") refuse("an attended attempt is a builder's");
     if (road.road === "repair" && run.parentRun === undefined) refuse("a repair turn mends exactly one live builder attempt — none was named");
-    const openAuthorization = this.openAuthorizationFor(run.taskRef);
-    if (road.road === "generic" && openAuthorization !== null && role === "builder") {
-      refuse(`the task holds an open attended authorization ${openAuthorization.id} — an attended attempt is admitted by admitAttended, and nothing else builds beside it`);
-    }
-    if (road.road === "attended" && openAuthorization === null) refuse("this task holds no open attended authorization — nothing opens as an attended attempt");
     if (run.route !== undefined && (run.route as { chosen?: unknown }).chosen === "fallback") {
-      refuse("an approved fallback entry is admitted only through admitFallback — the generic admission opens nothing as `fallback`");
+      refuse("fallback chains were removed — nothing opens as `fallback`");
     }
     // EVERY run presents (atomic authority closure): a task with no scope
     // presents the bare word `legacy` for the pair it spends as; a task
     // with a scope presents the leg its authority names. Nothing opens
     // unstamped — the words say what the caller would have had to hold.
     if (run.route === undefined) {
-      const could = this.routeAuthorityFor(run.taskRef, role, null, { provider: provider ?? "claude", model });
+      const could = this.routeAuthorityFor(run.taskRef, role, { provider: provider ?? "claude", model });
       refuse(
         scope === null
           ? "this task has no scope and the caller presented no route authority — a run on such a task presents the bare word legacy for the exact pair it spends as"
@@ -19443,17 +16624,13 @@ export class Store {
             }`,
       );
     }
-    const custody = run.custody ?? null;
-    if (custody !== null && role !== "builder") refuse(`chain custody is a builder's to take — a ${role} run takes none`);
-    if (custody !== null && (contestant !== null || road.road === "attended")) refuse("a contest lane or attended session spends under its own authority — it takes no chain custody");
     const parent = run.parentRun === undefined ? null : this.getRun(run.parentRun);
     if (run.parentRun !== undefined && parent === null) refuse(`run #${run.parentRun} does not exist — nothing continues it`);
     // A parent is this task's own (raw authority repair): every lineage is
     // proved here, in the insert, and no later stamp can bind one. Which
     // lineages the generic road admits at all is narrow (atomic authority
     // closure): a planner continuing its own planner run. A builder's
-    // parent is a recovered draft (admitRecoveredBuilder) or a
-    // continuation's finished attempt (admitAttended); a scout has none.
+    // parent is a recovered draft (admitRecoveredBuilder); a scout has none.
     if (parent !== null && parent.taskRef !== run.taskRef) {
       refuse(`run #${parent.id} belongs to task_ref ${parent.taskRef} — a ${role} run continues its own task's run only`);
     }
@@ -19550,87 +16727,10 @@ export class Store {
       // held by ONE runner, and the parent row's runner column is not
       // that fact — a claim re-taken under the same lease id by another
       // machine, or a row written beside a claim it never held, would
-      // pass the copy above. The same tuple invariant every fallback
-      // admission proves: this task, this lease, on the runner the claim
+      // pass the copy above. This task, this lease, on the runner the claim
       // names — or no row, in the same words.
       const claimProblem = this.custodyClaimProblem({ taskRef: run.taskRef, leaseId: run.leaseId, runner: run.runner }, run.now, "a repair turn");
       if (claimProblem !== null) refuse(claimProblem);
-    }
-    // THE LIVE AUTHORIZATION (atomic authority closure): an attended
-    // attempt opens under exactly the authorization the caller names —
-    // open on this task, unexpired by its own clock, its one attempt
-    // unspent, minted for THIS runner at THIS generation, pinning a
-    // readable profile the run presents as its `legacy` authority. A
-    // repair turn on an attended parent runs under the authorization that
-    // spent its attempt on that parent. Any other road on a task with an
-    // open authorization refused above.
-    let authorizationToConsume: AttendedAuthorization | null = null;
-    if (road.road === "attended") {
-      const live = openAuthorization as AttendedAuthorization;
-      const named = road.authorization;
-      if (live.id !== named.id) refuse(`the task's open attended authorization is ${live.id}, not ${named.id}`);
-      if (live.closedAt !== null) refuse(`the attended authorization ${live.id} is closed — nothing spends under it`);
-      if (Date.parse(live.absoluteExpiry) <= run.now.getTime()) refuse(`the attended authorization ${live.id} expired at ${live.absoluteExpiry} — nothing spends under it`);
-      if (live.attemptRun !== null) refuse(`the attended authorization ${live.id} already spent its one attempt on run #${live.attemptRun} — nothing else opens under it`);
-      if (live.runner !== run.runner || named.runner !== run.runner) refuse(`the attended authorization ${live.id} names runner ${live.runner} — an attempt on ${run.runner}${named.runner !== run.runner ? ` presented as ${named.runner}` : ""} is not its own`);
-      if (live.runnerGeneration !== named.generation) refuse(`the attended authorization ${live.id} was minted for ${live.runner} at generation ${live.runnerGeneration}, not ${named.generation}`);
-      let pinned: ExecutionProfile | null = null;
-      try {
-        const terms = parseStoreColumn("attended_authorization.terms_json", live.termsJson);
-        pinned = profileFromJson(typeof terms.profileJson === "string" ? terms.profileJson : null);
-      } catch {
-        pinned = null;
-      }
-      if (pinned === null) refuse(`the attended authorization ${live.id} pins no readable profile — nothing spends under it`);
-      if ((run.route as { chosen?: unknown }).chosen !== "legacy") refuse(`an attended builder spends under the authorization's pinned profile (a legacy stamp), not as a ${String((run.route as { chosen?: unknown }).chosen)} leg`);
-      if (live.parentRun === null) {
-        if (parent !== null) refuse(`the attended authorization ${live.id} continues nothing — an attempt under it names no parent`);
-      } else {
-        if (parent === null || parent.id !== live.parentRun) refuse(`the attended authorization ${live.id} continues run #${live.parentRun} — ${parent === null ? "no parent was named" : `run #${parent.id} is not it`}`);
-        if (parent.outcome === null) refuse(`run #${parent.id} is still open — a continuation continues a finished attempt`);
-      }
-      authorizationToConsume = live;
-    } else if (road.road === "repair" && openAuthorization !== null) {
-      const live = openAuthorization;
-      if (Date.parse(live.absoluteExpiry) <= run.now.getTime()) refuse(`the attended authorization ${live.id} expired at ${live.absoluteExpiry} — nothing spends under it`);
-      if (parent === null || live.attemptRun !== parent.id) refuse(`the attended authorization ${live.id} spent its attempt on run #${live.attemptRun ?? "none"} — a repair turn mends that attempt only`);
-      if ((run.route as { chosen?: unknown }).chosen !== "legacy") refuse(`an attended repair spends under the authorization's pinned profile (a legacy stamp), not as a ${String((run.route as { chosen?: unknown }).chosen)} leg`);
-    }
-    // THE LANE (atomic authority closure): a contest lane's run is one of
-    // THIS task's racing agents, in a contest still dispatching or racing,
-    // under the contest's live custody — the lease, runner, and watch
-    // incarnation the contest was stamped with — on a lane whose pointer
-    // is free or held by exactly the parked attempt this run resumes, and
-    // it presents the lane's STORED sealed profile as its `legacy`
-    // authority. The pointer moves to the row below, in this transaction.
-    let lane: Contestant | null = null;
-    if (road.road === "contest") {
-      lane = this.getContestant(contestant as number);
-      const contest = lane === null ? null : this.getContest(lane.contest);
-      if (lane === null || contest === null || contest.taskRef !== run.taskRef) refuse(`contestant ${contestant} is not one of this task's racing agents`);
-      if (contest.state !== "dispatching" && contest.state !== "racing") refuse(`the contest is ${contest.state} — its lanes admit nothing`);
-      if (contest.currentLeaseId === null || contest.currentLeaseId !== run.leaseId) refuse(`the contest holds lease ${contest.currentLeaseId ?? "none"} — a lane run under lease ${run.leaseId} is not its custody`);
-      if (contest.runner === null || contest.runner !== run.runner) refuse(`the contest runs on ${contest.runner ?? "no runner"} — a lane run on ${run.runner} is another machine's`);
-      if ((contest.incarnation ?? null) !== (road.incarnation ?? null)) refuse(`the contest was dispatched by watch incarnation ${contest.incarnation ?? "none"}, not ${road.incarnation ?? "none"}`);
-      if (lane.profile == null) refuse(`contestant ${lane.id} carries no sealed profile — nothing spends on the lane`);
-      // THE LIVE LANE, exactly (final authority closure): a lane that has
-      // ended admits nothing; a stored profile whose provider, model, or
-      // repair model disagrees with the lane's own columns is a row two
-      // authorities wrote, and no stamp is derived from or accepted on it;
-      // and the contest's stamped lease must be the task's CURRENT live
-      // claim, not merely the lease the contest remembers.
-      const laneProblem = laneAuthorityProblem(lane);
-      if (laneProblem !== null) refuse(laneProblem);
-      const laneHolding = this.currentLiveLease(run.taskRef, run.now);
-      if (laneHolding !== run.leaseId) refuse(`the contest's lease ${run.leaseId} is not this task's current live claim (${laneHolding === null ? "nothing holds it" : `${laneHolding} does`}) — a lane run opens under live custody only`);
-      if (lane.activeRun !== null && !(parent !== null && lane.activeRun === parent.id && parent.outcome === "parked")) {
-        refuse(`contestant ${contestant} already holds run #${lane.activeRun} — one live run per racing agent`);
-      }
-      if (parent !== null && (parent.contestant !== lane.id || parent.outcome !== "parked")) refuse(`run #${parent.id} is not this lane's parked attempt — nothing resumes it`);
-      const leg = run.route as RouteStamp;
-      if (leg.chosen !== "legacy") refuse(`a contest lane spends under its race-approved profile (a legacy stamp), not as a ${String(leg.chosen)} leg`);
-      const expected = `profile:${profileDigestOf(lane.profile)}`;
-      if (leg.routeDigest !== expected) refuse(`a contest lane spends under its race-approved profile, not ${leg.routeDigest}`);
     }
     // THE RECOVERY GRANT (atomic authority closure): the interrupted
     // attempt whose draft this builder inherits — this task's own builder
@@ -19642,75 +16742,12 @@ export class Store {
       const grant = this.recoveryGrantProblem(parent, { taskRef: run.taskRef, branch: run.branch ?? "", worktree: run.worktree ?? "" }, run.now);
       if (grant !== null) refuse(grant);
     }
-    // CHAIN CUSTODY, decided before the row (v48 authority repair): a repair turn inherits
-    // exactly its SAME-TASK parent's binding — and only while that parent IS
-    // the live tail of the task's open cycle under the approved chain (v48
-    // integrity): a parent whose custody has moved, ended, or never existed
-    // vouches for nothing. A reviewer, planner, or builder child never
-    // inherits. Base and parked-resume custody are proved here and
-    // written below, in this transaction.
-    let binding: { cycle: number | null; index: number; entryDigest: string; authMode: "subscription" | "api-key" | null } | null = null;
-    if (role === "repair" && parent !== null) {
-      if (parent.chainCycle != null || parent.chainIndex != null || parent.entryDigest != null) {
-        if (parent.chainCycle == null || parent.chainIndex == null || parent.entryDigest == null) {
-          refuse(`run #${parent.id}'s chain binding is not whole — nothing repairs under it`);
-        }
-        if (parent.chainIndex > 0) {
-          refuse(`run #${parent.id} is bound to fallback entry ${parent.chainIndex} — its repair turn is admitted only through admitFallback`);
-        }
-        const tail = this.liveTailProblem(run.taskRef, taskId, parent);
-        if (tail !== null) refuse(tail);
-        binding = { cycle: parent.chainCycle, index: parent.chainIndex, entryDigest: parent.entryDigest, authMode: parent.authMode ?? null };
-      }
-    }
-    const chain = role === "builder" && contestant === null && road.road !== "attended" ? this.approvedChainOf(taskId) : null;
-    // A CHAIN approval dispatches only through its cycle (v48 integrity):
-    // a builder on such a task PRESENTS its custody — the base, or the
-    // parked base tail it resumes — or no row opens. A row outside the
-    // cycle would be one nothing could spend on, and it is not created.
-    if (chain !== null && custody === null) {
-      refuse("this task's approval sealed a fallback chain — a build takes the chain's custody (base, or the parked tail it resumes) or opens nothing");
-    }
-    let parkedTail: Run | null = null;
-    if (custody !== null && custody.kind === "resume") {
-      parkedTail = this.getRun(custody.parkedRun);
-      if (parkedTail === null || parkedTail.taskRef !== run.taskRef || parkedTail.outcome !== "parked" || parkedTail.chainCycle == null || parkedTail.chainIndex == null || parkedTail.entryDigest == null) {
-        refuse(`run #${custody.parkedRun} is not this task's parked chain tail — nothing resumes its custody`);
-      }
-      if (chain === null) refuse("the chain approval no longer stands — nothing resumes custody under it");
-      if (parkedTail.chainIndex > 0) {
-        refuse(`run #${parkedTail.id} parked on fallback entry ${parkedTail.chainIndex} — its successor is admitted only through admitFallback`);
-      }
-      const entry = chain[parkedTail.chainIndex];
-      if (entry === undefined || entryDigestOf(entry) !== parkedTail.entryDigest) {
-        refuse(`the parked tail is bound to chain entry ${parkedTail.chainIndex} under a digest the approved chain no longer carries`);
-      }
-      const tail = this.liveTailProblem(run.taskRef, taskId, parkedTail);
-      if (tail !== null) refuse(tail);
-      binding = { cycle: parkedTail.chainCycle, index: parkedTail.chainIndex, entryDigest: parkedTail.entryDigest, authMode: parkedTail.authMode ?? null };
-    } else if (custody !== null && custody.kind === "base" && chain !== null) {
-      const base = chain[0];
-      if (base === undefined) refuse("the approved chain has no base entry");
-      binding = { cycle: null, index: 0, entryDigest: entryDigestOf(base), authMode: base.authMode };
-    }
-    const bound = binding === null ? null : { index: binding.index, entryDigest: binding.entryDigest };
     const stampProvider = typeof (run.route as { provider?: unknown }).provider === "string" ? (run.route as { provider: string }).provider : null;
     const stampModel = (run.route as { model?: unknown }).model;
     provider = provider ?? stampProvider;
     model = model ?? (typeof stampModel === "string" ? stampModel : null);
-    // A racing lane's repair turn is proved against the lane exactly as
-    // its build was (atomic authority closure): the parent's lane is the
-    // authority the repair leg spends under.
-    const proofLane = contestant ?? (road.road === "repair" && parent !== null ? parent.contestant : null);
-    if (proofLane !== null && contestant === null) {
-      const parentLane = this.getContestant(proofLane);
-      const parentContest = parentLane === null ? null : this.getContest(parentLane.contest);
-      if (parentLane === null || parentContest === null || parentContest.taskRef !== run.taskRef) refuse(`contestant ${proofLane} is not one of this task's racing agents`);
-      if (parentContest.state !== "dispatching" && parentContest.state !== "racing") refuse(`the contest is ${parentContest.state} — its lanes admit nothing`);
-      if (parentLane.activeRun !== (parent as Run).id) refuse(`contestant ${proofLane} holds run #${parentLane.activeRun ?? "none"} — a repair turn mends the lane's live attempt only`);
-    }
     const problem = this.routeAdmissionProblem(
-      { taskRef: run.taskRef, role, provider: provider ?? "claude", model, contestant: proofLane, chain: bound },
+      { taskRef: run.taskRef, role, provider: provider ?? "claude", model },
       run.route,
       run.now,
     );
@@ -19729,29 +16766,11 @@ export class Store {
               .get(BUILT_IN, run.taskRef);
             return row?.["quality_mode"] === "strict" ? "strict" : "default";
           })();
-    // THE CURRENT CLAIM (final admission closure): custody that changes
-    // fallback state — the base that opens the cycle, the resume that
-    // moves its tail — is taken only under the lease that holds the task
-    // now, on the runner that claim names; proved before any write.
-    if (custody !== null && ((custody.kind === "base" && chain !== null && binding !== null) || (custody.kind === "resume" && parkedTail !== null))) {
-      const claimProblem = this.custodyClaimProblem({ taskRef: run.taskRef, leaseId: run.leaseId, runner: run.runner }, run.now, custody.kind === "base" ? "base custody" : "a parked tail's resume");
-      if (claimProblem !== null) refuse(claimProblem);
-    }
-    // THE CUSTODY WRITE (v48 authority repair), before the row and in the
-    // same transaction: a base cycle that cannot open (one is live already)
-    // throws, and no row is ever created outside the custody it was
-    // admitted under.
-    let cycleId: number | null = binding?.cycle ?? null;
-    if (custody !== null && custody.kind === "base" && chain !== null && binding !== null) {
-      const opened = this.openFallbackCycle(run.taskRef, chainDigestOf(chain), null, run.now);
-      if (!opened.ok) refuse("the task's fallback cycle is live — base custody cannot open beside it");
-      cycleId = opened.id;
-    }
     const inserted = this.db
       .prepare(
-        `INSERT INTO run (task_ref, lease_id, runner, branch, worktree, model, role, provider, parent_run, session_id, contestant, quality_mode,
-                          chain_cycle, chain_index, entry_digest, auth_mode, attended_authorization, started_at, review_attempt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO run (task_ref, lease_id, runner, branch, worktree, model, role, provider, parent_run, session_id, quality_mode,
+                          started_at, review_attempt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.taskRef,
@@ -19764,15 +16783,7 @@ export class Store {
         provider ?? "claude",
         run.parentRun ?? null,
         run.sessionId ?? null,
-        contestant,
         qualityMode,
-        cycleId,
-        binding === null || cycleId === null ? null : binding.index,
-        binding === null || cycleId === null ? null : binding.entryDigest,
-        binding === null || cycleId === null ? null : binding.authMode,
-        // The attended binding rides the insert (atomic authority closure):
-        // a row admitted under an authorization is bound to it from birth.
-        authorizationToConsume === null ? null : authorizationToConsume.id,
         run.now.toISOString(),
         // The root reviewer's ordinal (v50) rides the insert: a root and
         // its attempt number are one fact, and the ordinal index refuses a
@@ -19797,48 +16808,11 @@ export class Store {
         .run(run.now.toISOString(), id, requestToConsume, run.parentRun ?? null);
       if (Number(consumed.changes) !== 1) refuse(`review request #${requestToConsume} was consumed under this admission — nothing reviews without it`);
     }
-    if (authorizationToConsume !== null) {
-      // THE ONE ATTEMPT, consumed by the very row that spends it (atomic
-      // authority closure): a CAS on the open, unspent authorization
-      // proved above — one that moved under us rolls the row back, and
-      // `run.attended_authorization` and `authorization.attempt_run` can
-      // never disagree.
-      const consumed = this.db
-        .prepare(
-          `UPDATE attended_authorization SET attempt_run = ?, consumed_at = ?
-            WHERE id = ? AND closed_at IS NULL AND attempt_run IS NULL AND runner = ? AND runner_generation = ?`,
-        )
-        .run(id, run.now.toISOString(), authorizationToConsume.id, run.runner, authorizationToConsume.runnerGeneration);
-      if (Number(consumed.changes) !== 1) refuse(`the attended authorization ${authorizationToConsume.id} moved under this admission — its attempt did not bind`);
-    }
-    if (lane !== null) {
-      // The lane's pointer moves to this row — from free, or from the parked
-      // attempt this run resumes — through a CAS on the generation proved
-      // above; a lane that moved under us rolls the row back.
-      const claimed = this.db
-        .prepare("UPDATE contestant SET active_run = ?, generation = generation + 1 WHERE id = ? AND generation = ? AND (active_run IS NULL OR active_run = ?)")
-        .run(id, lane.id, lane.generation, lane.activeRun);
-      if (Number(claimed.changes) !== 1) refuse(`contestant ${lane.id} moved under this admission — its lane did not bind`);
-    }
-    if (custody !== null && custody.kind === "base" && cycleId !== null) {
-      const tailed = this.db
-        .prepare("UPDATE fallback_cycle SET tail_run = ?, updated_at = ? WHERE id = ? AND state = 'open' AND tail_run IS NULL AND cursor = 0")
-        .run(id, run.now.toISOString(), cycleId);
-      if (Number(tailed.changes) === 0) refuse("the task's fallback cycle moved under this admission — base custody did not bind");
-    } else if (custody !== null && custody.kind === "resume" && parkedTail !== null) {
-      // The parked-resume transfer: the tail moves to this run through a
-      // CAS on the very tail proved above.
-      const moved = this.db
-        .prepare("UPDATE fallback_cycle SET tail_run = ?, updated_at = ? WHERE id = ? AND state = 'open' AND tail_run = ?")
-        .run(id, run.now.toISOString(), parkedTail.chainCycle, parkedTail.id);
-      if (Number(moved.changes) === 0) refuse(`run #${parkedTail.id}'s cycle is not open with it as the parked tail — nothing resumes its custody`);
-    }
     // The start fact (Telegram task updates), after every proof above so a
     // refused admission says nothing: one per ATTEMPT — a builder, planner
     // or scout head, or a root reviewer. A repair turn and a correction
-    // child are the attempt's own; a contest lane is the tournament's; a
-    // planner correction continues its own run.
-    if (road.road !== "repair" && road.road !== "correction" && contestant === null && !(role === "planner" && parent !== null)) {
+    // child are the attempt's own; a planner correction continues its own run.
+    if (road.road !== "repair" && road.road !== "correction" && !(role === "planner" && parent !== null)) {
       const agent = lifecycleWords(`${provider ?? "claude"}${model === null ? "" : ` · ${model}`}`, 60);
       const words =
         role === "reviewer"
@@ -19854,17 +16828,12 @@ export class Store {
   }
 
   /**
-   * THE CURRENT CLAIM, exactly (final admission closure): every admission
-   * that changes fallback state — the base that opens a cycle, an entry
-   * admitted from a pending edge, a parked tail's resume, a repair turn
-   * under the live tail — proves in its own transaction that the run it
-   * opens is the task's, under the lease that holds the task RIGHT NOW,
-   * on the runner that claim names. A lease nobody holds, one released,
-   * expired, or superseded by a newer generation, or a claim another
-   * machine holds admits nothing: the words say which, and no cycle,
-   * edge, tail, or claim moves. Shared by the fallback road, the primary
-   * repair road, and the generic road's custody so all refuse in the
-   * same words.
+   * THE CURRENT CLAIM, exactly (final admission closure): a repair turn
+   * proves in its own transaction that the run it opens is the task's,
+   * under the lease that holds the task RIGHT NOW, on the runner that
+   * claim names. A lease nobody holds, one released, expired, or
+   * superseded by a newer generation, or a claim another machine holds
+   * admits nothing: the words say which.
    */
   private custodyClaimProblem(run: { taskRef: number; leaseId: string; runner: string }, now: Date, what: string): string | null {
     const holding = this.currentLiveLease(run.taskRef, now);
@@ -19879,7 +16848,7 @@ export class Store {
 
   /**
    * THE ONE RECOVERY GRANT (final authority closure), shared by the
-   * recovered-draft admission and the fallback admission's `recoveredFrom`:
+   * recovered-draft admission's `recoveredFrom`:
    * the interrupted attempt whose draft a fresh run inherits is THIS
    * task's own builder or repair turn, left in this very worktree on this
    * branch, either ended as `failed` for `interrupted` (or `no-handoff`) or still open under
@@ -19906,39 +16875,14 @@ export class Store {
   }
 
   /**
-   * Whether `holder` is the LIVE tail of its task's open fallback cycle
-   * under the approved chain — the words when it is not (v48 integrity).
-   * Re-derived from durable state only: the task's one live cycle is the
-   * holder's cycle, open, its cursor at the holder's index, the holder as
-   * its tail, its digest the approved chain's, and the approved entry at
-   * that index carrying exactly the holder's digest and auth mode.
-   */
-  private liveTailProblem(taskRef: number, taskId: string, holder: Run): string | null {
-    if (holder.chainCycle == null || holder.chainIndex == null || holder.entryDigest == null) return `run #${holder.id} carries no chain binding`;
-    const cycle = this.fallbackCycleFor(taskRef);
-    if (cycle === null || cycle.id !== holder.chainCycle) return `run #${holder.id}'s cycle is not this task's live fallback cycle`;
-    if (cycle.state !== "open") return `run #${holder.id}'s cycle is ${cycle.state}, not open`;
-    if (cycle.cursor !== holder.chainIndex || cycle.tailRun !== holder.id) return `run #${holder.id} is not the live tail of its fallback cycle (the cycle is at entry ${cycle.cursor}, tail ${cycle.tailRun ?? "none"})`;
-    const chain = this.approvedChainOf(taskId);
-    if (chain === null) return "the chain approval no longer stands";
-    if (cycle.chainDigest !== chainDigestOf(chain)) return `the live cycle was opened under chain ${cycle.chainDigest}, but the approved chain is ${chainDigestOf(chain)}`;
-    const entry = chain[holder.chainIndex];
-    if (entry === undefined || entryDigestOf(entry) !== holder.entryDigest || entry.authMode !== holder.authMode) {
-      return `run #${holder.id} is bound to chain entry ${holder.chainIndex} under a digest or auth mode the approved chain does not carry there`;
-    }
-    return null;
-  }
-
-  /**
    * THE WORKING PLAN AUTHORITY (final authority closure): the route a
    * planner runs under before any approval, believed only as the ONE strict
    * stored-scope projection proves it — exact raw terms (a proposed-via
    * marker this code never writes is a terms problem), a resolved profile,
-   * a whole fallback chain (an empty or malformed one is no chain), a
-   * readable route whose build and repair legs are the profile's exact
+   * a readable route whose build and repair legs are the profile's exact
    * pairs and whose signed risk and quality are the row's, the digest
    * re-derived from those very values, the operator's live auth mode read
-   * strictly and agreeing with a chain's pinned base mode, and no leg
+   * strictly, and no leg
    * stating a problem. The claim, the admission, and the invocation all
    * ask this same question; one disagreement is the words, and nothing
    * opens or spawns on it. A sealed route is not this road's business —
@@ -19968,10 +16912,7 @@ export class Store {
     const stamped = this.runRoute(runId);
     if (stamped === null) return { ok: false, problem: `run #${runId} carries no route provenance — nothing spends unstamped` };
     const { stampedAt: _stampedAt, ...leg } = stamped;
-    const parent = run.parentRun === null ? null : this.getRun(run.parentRun);
-    const proofLane = run.contestant ?? (run.role === "repair" && parent !== null ? parent.contestant : null);
-    const bound = run.chainIndex != null && run.entryDigest != null ? { index: run.chainIndex, entryDigest: run.entryDigest } : null;
-    const problem = this.routeAdmissionProblem({ taskRef: run.taskRef, role: run.role, provider: run.provider, model: run.model, contestant: proofLane, chain: bound }, leg, now);
+    const problem = this.routeAdmissionProblem({ taskRef: run.taskRef, role: run.role, provider: run.provider, model: run.model }, leg, now);
     return problem === null ? { ok: true } : { ok: false, problem };
   }
 
@@ -19979,8 +16920,7 @@ export class Store {
    * The exact route authority a task holds for one run, in the caller's
    * hands (v48 authority repair): the sealed route's leg for the run's phase when the
    * approval stands; the working proposed route's plan leg for a planner
-   * before any approval; for a run bound to a NON-primary chain entry, that
-   * entry's `fallback` provenance for its phase. The store never applies
+   * before any approval. The store never applies
    * this on a caller's behalf — `startRun` requires the caller to PRESENT
    * it and proves the presented stamp against the same durable state, so
    * a caller that holds no authority opens nothing. Null when the task is
@@ -19991,7 +16931,6 @@ export class Store {
   routeAuthorityFor(
     taskRef: number,
     role: Run["role"] | "scout",
-    bound: { index: number; entryDigest: string } | null = null,
     /** What the run would spend as, for the roads no profile governs: the
      * bare word `legacy` on a task with no scope, and the plan/review
      * pair of a pre-routing row (its profile names only build and
@@ -20009,24 +16948,11 @@ export class Store {
     }
     if (scope.routeEra == null) {
       // A row proven to predate routing (v48 integrity): its SEALED
-      // profile alone governs, named exactly — the bound chain entry's
-      // profile for a chain-bound run, else the approved snapshot while
+      // profile alone governs, named exactly — the approved snapshot while
       // the approval stands. Nothing governs an unapproved pre-routing
       // row; re-filing routes it.
       const approved = scope.termsProblem == null && scope.approvedAt !== null && scope.approvedDigest !== null && scope.approvedDigest === scope.digest;
-      const chain = this.approvedChainOf(ref.externalId);
-      const boundEntry = bound !== null && chain !== null ? chain[bound.index] : undefined;
-      if (bound !== null && (boundEntry === undefined || entryDigestOf(boundEntry) !== bound.entryDigest)) {
-        return { ok: false, problem: `the run is bound to chain entry ${bound.index}, which the approved chain does not carry under that digest` };
-      }
-      // A NON-primary entry of a pre-routing chain has no sealed route to
-      // spend under and no chain-only digest to borrow (raw authority
-      // repair): nothing governs it until the scope is re-filed and
-      // approved under a route.
-      if (bound !== null && bound.index > 0) {
-        return { ok: false, problem: "this pre-routing chain approval seals no agent route — nothing spends as a fallback under a chain-only digest; re-file the scope and approve it again" };
-      }
-      const governing = boundEntry !== undefined ? boundEntry.profile : approved ? (scope.approvedProfile ?? null) : null;
+      const governing = approved ? (scope.approvedProfile ?? null) : null;
       if (governing === null) return { ok: false, problem: "no sealed profile governs this pre-routing row — nothing spends as legacy on it; re-file the scope to route it" };
       const pair =
         phase === "build"
@@ -20037,15 +16963,6 @@ export class Store {
       return { ok: true, stamp: { routeDigest: `profile:${profileDigestOf(governing)}`, phase, ...pair, chosen: "legacy" } };
     }
     const sealed = this.sealedRouteOf(ref.externalId);
-    if (bound !== null && bound.index > 0 && (phase === "build" || phase === "repair")) {
-      const chain = this.approvedChainOf(ref.externalId);
-      const entry = chain === null ? undefined : chain[bound.index];
-      if (chain === null || entry === undefined) return { ok: false, problem: "the run is bound to a fallback chain entry the task's approved chain does not have" };
-      if (entryDigestOf(entry) !== bound.entryDigest) return { ok: false, problem: `the run is bound to chain entry ${bound.index} under digest ${bound.entryDigest}, but the approved entry there is ${entryDigestOf(entry)}` };
-      const model = phase === "repair" ? (entry.profile.repairModel === "inherit" ? entry.profile.model : entry.profile.repairModel) : entry.profile.model;
-      if (!sealed.ok) return { ok: false, problem: `the chain approval's sealed agent route does not stand (${sealed.detail}) — nothing spends as a fallback under a chain-only digest` };
-      return { ok: true, stamp: { routeDigest: routeDigestOf(sealed.route), phase, provider: entry.profile.provider, model, chosen: "fallback" } };
-    }
     if (sealed.ok) {
       const leg = legOf(sealed.route, phase);
       return { ok: true, stamp: { routeDigest: routeDigestOf(sealed.route), phase, provider: leg.provider, model: leg.model, chosen: leg.chosen } };
@@ -20199,8 +17116,7 @@ export class Store {
       committed?: boolean;
       now: Date;
       /** v52: how this ending settles a pending operator stop on the run,
-       * when one stands. The fenced interruption seal and the held fence
-       * name their own word; every other road settles it as `finished` —
+       * when one stands. The fenced interruption seal names its own word; every other road settles it as `finished` —
        * the attempt reached this ending first, and its outcome stands. */
       stopSettlement?: StopSettlement;
     },
@@ -20211,7 +17127,7 @@ export class Store {
     // (a report's "task external-closed" suffix, a re-dispose) is the same
     // ending and says nothing again.
     const prior = this.db
-      .prepare("SELECT task_ref, role, parent_run, contestant, review_attempt, outcome FROM run WHERE id = ?")
+      .prepare("SELECT task_ref, role, parent_run, review_attempt, outcome FROM run WHERE id = ?")
       .get(id);
     this.settleRunSpend(id, result.now);
     this.db
@@ -20225,7 +17141,7 @@ export class Store {
       );
     // An outcome alone does not prove subprocess exit. Settlement checks
     // retained witnesses and every owned run; recovery revisits a pending
-    // stop after an orphan or held supervisor finishes shutdown.
+    // stop after an orphan finishes shutdown.
     this.recordRunProcessExits(id, result.now);
     // Use the existing reconciliation proof now, while exits are fresh. In
     // particular, a returned --candidate check need not await the next scan.
@@ -20240,10 +17156,6 @@ export class Store {
     // gate reads it inside a claim transaction and must never trust a number
     // something else remembered to update.
     if (result.outcome === "parked" || result.outcome === "built" || result.outcome === "no-change") {
-      // Continuation runs are EXCLUDED (Phase 2E, v4 Q7/v5 P5): a watched
-      // follow-up neither counts toward nor triggers the parent task's
-      // measured park rate — "never mutates the parent task" includes its
-      // derived statistics.
       this.db
         .prepare(
           `UPDATE task_ref SET park_rate = COALESCE((
@@ -20252,13 +17164,8 @@ export class Store {
               WHERE run.task_ref = task_ref.id
                 AND run.role = 'builder'
                 AND run.outcome IN ('built', 'parked', 'no-change')
-                AND NOT EXISTS (SELECT 1 FROM attended_authorization aa
-                                 WHERE aa.id = run.attended_authorization AND aa.parent_run IS NOT NULL)
            ), 0)
-           WHERE id = (SELECT task_ref FROM run
-                        WHERE run.id = ? AND run.role = 'builder'
-                          AND NOT EXISTS (SELECT 1 FROM attended_authorization aa
-                                           WHERE aa.id = run.attended_authorization AND aa.parent_run IS NOT NULL))`,
+           WHERE id = (SELECT task_ref FROM run WHERE run.id = ? AND run.role = 'builder')`,
         )
         .run(id);
     }
@@ -20318,23 +17225,18 @@ export class Store {
   }
 
   /**
-   * The gateway's honest disposal record for the fallback taxonomy (E2):
-   * how this attempt authenticated, and the class its terminal fell into.
-   * Recorded where the evidence still exists — the gateway holds the
-   * structural terminal, the authoritative version, and the auth mode — and
-   * NEVER re-derived in disposal, by which time the structural signal is
-   * gone. Purely observational: the class is stamped on EVERY finished
-   * attempt (usually 'unknown'/'not-exhausted', since the recognizers ship
-   * empty), and it authorizes NOTHING on its own — the dispatch's C8 gate
-   * re-proves hasRecognizer before any advance ever reads it.
+   * The gateway's honest disposal record (E2): how this attempt
+   * authenticated, and the class its terminal fell into. Recorded where the
+   * evidence still exists — the gateway holds the structural terminal and
+   * the auth mode — and NEVER re-derived in disposal, by which time the
+   * structural signal is gone. `auth-expired` pauses its provider; every
+   * other class is observational.
    */
   stampTerminalClass(id: number, authMode: "subscription" | "api-key", terminalClass: TerminalClass): void {
     // FIRST-WRITE only (Codex E2/E3 review, finding 8): the gateway stamps
     // the disposal class exactly once, before disposition; nothing may
     // overwrite it into a class/auth pairing the recognizer never produced.
-    // auth_mode is NEVER overwritten if already set — a fallback run's
-    // admitted pin is authority (finding 5), so COALESCE keeps it and only a
-    // never-stamped (base) run takes the gateway's mode.
+    // auth_mode is NEVER overwritten if already set (COALESCE).
     this.db
       .prepare("UPDATE run SET auth_mode = COALESCE(auth_mode, ?), terminal_class = ? WHERE id = ? AND terminal_class IS NULL")
       .run(authMode, terminalClass, id);
@@ -20477,16 +17379,13 @@ export class Store {
       }));
   }
 
-  /** Why the policy stops a task's approved terms (its profile, every fallback entry, every routed leg), or null. */
+  /** Why the policy stops a task's approved terms (its profile, every routed leg), or null. */
   scopePolicyRefusal(taskId: string): string | null {
     const policy = this.orgPolicy();
     const scope = this.getScope(taskId);
     if (scope === null) return null;
-    const profiles = [scope.profile ?? null, ...(chainFromJson(scope.proposedChainJson ?? null) ?? []).map(entry => entry.profile)].filter((one): one is ExecutionProfile => one !== null);
-    const ref = this.lookupRef(taskId);
-    // A race's lanes are legs too: each names its provider and model in the terms signed with the scope.
-    const lanes = ref === null ? [] : (this.activeTournamentTerms(ref.id)?.agents ?? []).map(agent => ({ provider: agent.provider, model: agent.model }));
-    const legs = [...(routeFromJson(scope.proposedRouteJson ?? null)?.legs.map(leg => ({ provider: leg.provider, model: leg.model })) ?? []), ...lanes];
+    const profiles = scope.profile == null ? [] : [scope.profile];
+    const legs = routeFromJson(scope.proposedRouteJson ?? null)?.legs.map(leg => ({ provider: leg.provider, model: leg.model })) ?? [];
     return approvalRefusal(policy, profiles, legs);
   }
 
@@ -20499,11 +17398,6 @@ export class Store {
   sessionPolicyRefusal(provider: string, model: string | null, what: string): string | null {
     const policy = this.orgPolicy();
     return agentRefusal(policy, provider, model) ?? sessionCeilingRefusal(policy, provider, what);
-  }
-
-  /** Why the policy stops an attended session's signed profile, or null (it is never lowered: see policy.attendedRefusal). */
-  attendedPolicyRefusal(profile: ExecutionProfile): string | null {
-    return attendedRefusal(this.orgPolicy(), profile);
   }
 
   /** The policy's word on a profile about to run: refused, or what runs (lowered under the ceiling, with words). */
@@ -20937,15 +17831,13 @@ export class Store {
       recommendation: string;
       assignee?: string;
       deadline?: string;
-      /** Which racing agent asked (v14); absent = ordinary. */
-      contestant?: number;
     },
     now: Date,
   ): number {
     const inserted = this.db
       .prepare(
-        `INSERT INTO decision (run, urgency, recap, question, options, recommendation, assignee, deadline, contestant, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO decision (run, urgency, recap, question, options, recommendation, assignee, deadline, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         decision.run,
@@ -20956,7 +17848,6 @@ export class Store {
         decision.recommendation,
         decision.assignee ?? null,
         decision.deadline ?? null,
-        decision.contestant ?? null,
         now.toISOString(),
       );
     return Number(inserted.lastInsertRowid);
@@ -21330,18 +18221,15 @@ export class Store {
    * fails and a second decision is answered in between.
    */
   attachAnswers(runId: number, taskRef: number): (Decision & { taskId: string })[] {
-    // Lineage filter (tournament round-2 finding 7): a racing agent's
-    // answers reach only ITS runs; ordinary runs see only ordinary
-    // decisions. NULL matches NULL — the two worlds never cross.
-    const receiving = this.db.prepare("SELECT contestant FROM run WHERE id = ?").get(runId);
-    const contestant = receiving === undefined || receiving["contestant"] === null ? null : Number(receiving["contestant"]);
+    // An answer a raced agent received before v115 removed contests (decision.contestant set) was that agent's
+    // alone; it never reaches an ordinary run.
     const rows = this.db
       .prepare(
         `SELECT decision.*, task_ref.external_id AS task_id FROM decision
          JOIN run ON run.id = decision.run
          JOIN task_ref ON task_ref.id = run.task_ref
          WHERE run.task_ref = ? AND decision.state = 'answered'
-           AND (decision.contestant IS ? OR decision.contestant = ?)
+           AND decision.contestant IS NULL
            AND NOT EXISTS (
              SELECT 1 FROM run_decision
              JOIN run AS delivered ON delivered.id = run_decision.run
@@ -21349,7 +18237,7 @@ export class Store {
            )
          ORDER BY decision.id`,
       )
-      .all(taskRef, contestant, contestant);
+      .all(taskRef);
     for (const row of rows) {
       this.db
         .prepare(
@@ -21360,691 +18248,9 @@ export class Store {
     return rows.map(row => ({ ...readDecision(row), taskId: String(row["task_id"]) }));
   }
 
-  // ---- attended core (v25) -------------------------------------------------
-
-  /**
-   * Mint one attended authorization. Expired predecessors are closed in the
-   * SAME transaction (end reason 'expired'); a live one refuses — revoke
-   * first, never silently supersede a signature.
-   */
-  mintAttendedAuthorization(
-    input: {
-      id: string;
-      taskRef: number;
-      approver: string;
-      runner: string;
-      runnerGeneration: number;
-      compositeDigest: string;
-      termsJson: string;
-      maxSessionTurns: number;
-      budgetMicrousd: number;
-      parentRun?: number | null;
-      followup?: string | null;
-      absoluteExpiry: string;
-      /** Quick mint (C2/M4): the mode signature substitutes for the
-       * per-mint password — RE-PROVED here, in the mint transaction
-       * itself, never a pre-checked flag: the mode must be live, its
-       * digest exact, and the minting approver must BE the signer. */
-      basis?: { kind: "mode"; digest: string };
-      now: Date;
-    },
-    mutation: Mutation = {},
-  ): { ok: true; authorization: AttendedAuthorization } | { ok: false; reason: "authorization-open" | "mode-ended" | "approval-rules" } {
-    return this.once(mutation, "mintAttendedAuthorization", () =>
-      this.transact(() => {
-        const now = input.now.toISOString();
-        // v102: a watched run is one person's yes, so a project's approval rules bind it like a seal:
-        // never the requester's where that's refused, never protected work (which takes two people).
-        const externalId = this.externalIdFor(input.taskRef);
-        if (externalId !== null) {
-          const gate = this.approvalGate(externalId, input.approver, input.basis === undefined ? "person" : "mode");
-          // Protected work runs only on a scope two people sealed; a watched run is never the second yes.
-          if (gate.verdict !== "seal" || (gate.protectedWork && !this.scopeSealed(externalId))) return { ok: false as const, reason: "approval-rules" as const };
-        }
-        if (input.basis !== undefined) {
-          const ref = this.refForId(input.taskRef);
-          const mode = ref === null || ref.repo === null ? null : this.activeMode(ref.repo, input.now);
-          let quickMint = false;
-          if (mode !== null && mode.digest === input.basis.digest && mode.signedBy === input.approver) {
-            try {
-              quickMint = (parseStoreColumn("operating_mode.terms_json", mode.termsJson) as { quickMint?: unknown }).quickMint === true;
-            } catch {
-              quickMint = false;
-            }
-          }
-          if (!quickMint) return { ok: false as const, reason: "mode-ended" as const };
-        }
-        this.db
-          .prepare(
-            `UPDATE attended_authorization SET closed_at = ?, end_reason = 'expired'
-              WHERE task_ref = ? AND closed_at IS NULL AND absolute_expiry <= ?`,
-          )
-          .run(now, input.taskRef, now);
-        const open = this.db
-          .prepare("SELECT 1 AS hit FROM attended_authorization WHERE task_ref = ? AND closed_at IS NULL LIMIT 1")
-          .get(input.taskRef);
-        if (open !== undefined) return { ok: false as const, reason: "authorization-open" as const };
-        this.db
-          .prepare(
-            `INSERT INTO attended_authorization
-               (id, task_ref, approver, runner, runner_generation, composite_digest, terms_json,
-                max_session_turns, budget_microusd, parent_run, followup, created_at, absolute_expiry,
-                authority_basis, mode_digest)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            input.id,
-            input.taskRef,
-            input.approver,
-            input.runner,
-            input.runnerGeneration,
-            input.compositeDigest,
-            input.termsJson,
-            input.maxSessionTurns,
-            input.budgetMicrousd,
-            input.parentRun ?? null,
-            input.followup ?? null,
-            now,
-            input.absoluteExpiry,
-            input.basis === undefined ? "password" : "mode",
-            input.basis === undefined ? null : input.basis.digest,
-          );
-        const minted = this.readAuthorization(input.id);
-        if (minted === null) throw new Error("attended authorization vanished inside its own mint");
-        return { ok: true as const, authorization: minted };
-      }),
-      result => result.ok,
-    );
-  }
-
-  /** Close every authorization past its absolute expiry (round-6 finding
-   * 8): the durable closure the gates and the partial unique rely on —
-   * an expired corpse must not keep a task locked to its named runner. */
-  sweepExpiredAuthorizations(now: Date): number {
-    const stamp = now.toISOString();
-    const { changes } = this.db
-      .prepare(
-        `UPDATE attended_authorization SET closed_at = ?, end_reason = 'expired'
-          WHERE closed_at IS NULL AND absolute_expiry <= ?`,
-      )
-      .run(stamp, stamp);
-    return Number(changes);
-  }
-
-  readAuthorization(id: string): AttendedAuthorization | null {
-    const row = this.db.prepare("SELECT * FROM attended_authorization WHERE id = ?").get(id);
-    return row === undefined ? null : readAuthorizationRow(row);
-  }
-
-  /** Open continuation authorizations named to this runner (Phase 2E, A4):
-   * unconsumed, carrying a parent attempt — tick's continuation pass reads
-   * this; liveness is the caller's check, as everywhere. */
-  openContinuationAuthorizations(runner: string): AttendedAuthorization[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM attended_authorization
-          WHERE closed_at IS NULL AND attempt_run IS NULL AND parent_run IS NOT NULL AND runner = ?
-          ORDER BY created_at`,
-      )
-      .all(runner)
-      .map(readAuthorizationRow);
-  }
-
-  /**
-   * Why a finished run cannot be continued right now, in words — or null.
-   * The ENUMERATED non-terminal publication states (round-3 R7 demanded
-   * the concrete list, not "open intents"): a publication still moving
-   * ('intended','pushed', or 'opened' with the remote not yet settled) and
-   * a merge intent still live ('pending','claimed') both block.
-   */
-  continuationBlockOf(runId: number): string | null {
-    const publication = this.db
-      .prepare(
-        `SELECT state, remote_state FROM publication WHERE run = ?
-          ORDER BY id DESC LIMIT 1`,
-      )
-      .get(runId);
-    if (publication !== undefined) {
-      const state = String(publication["state"]);
-      const remote = publication["remote_state"] === null ? null : String(publication["remote_state"]);
-      if (state === "intended" || state === "pushed") {
-        return `this attempt is being published (${state}) — continue after the pull request settles`;
-      }
-      if (state === "opened" && (remote === null || remote === "open")) {
-        return "this attempt's pull request is open — review it there, or close it before continuing";
-      }
-      const intent = this.db
-        .prepare(
-          `SELECT merge_intent.state AS state FROM merge_intent
-            JOIN publication ON publication.id = merge_intent.publication
-           WHERE publication.run = ? AND merge_intent.state IN ('pending','claimed') LIMIT 1`,
-        )
-        .get(runId);
-      if (intent !== undefined) return "a merge is in flight for this attempt — continue after it settles";
-    }
-    return null;
-  }
-
-  /** The one OPEN authorization for a task, or null. */
-  openAuthorizationFor(taskRef: number): AttendedAuthorization | null {
-    const row = this.db
-      .prepare("SELECT * FROM attended_authorization WHERE task_ref = ? AND closed_at IS NULL")
-      .get(taskRef);
-    return row === undefined ? null : readAuthorizationRow(row);
-  }
-
-  /**
-   * One durable liveness beat. The DURABLE COLUMN IS THE AUTHORITATIVE
-   * CLOCK; the only suppressed writes are duplicate-tab beats landing
-   * within 5 seconds of the stored value, so observed grace never shrinks
-   * below 40 of the nominal 45 seconds.
-   */
-  beatAuthorization(id: string, now: Date): boolean {
-    const cutoff = new Date(now.getTime() - 5_000).toISOString();
-    const { changes } = this.db
-      .prepare(
-        `UPDATE attended_authorization SET last_beat_at = ?
-          WHERE id = ? AND closed_at IS NULL
-            AND (last_beat_at IS NULL OR last_beat_at <= ?)`,
-      )
-      .run(now.toISOString(), id, cutoff);
-    return Number(changes) > 0;
-  }
-
-  /** Explicit terminal closure — run end, expiry, or revocation. CAS on open. */
-  closeAuthorization(id: string, endReason: string, now: Date): boolean {
-    const { changes } = this.db
-      .prepare("UPDATE attended_authorization SET closed_at = ?, end_reason = ? WHERE id = ? AND closed_at IS NULL")
-      .run(now.toISOString(), endReason, id);
-    return Number(changes) > 0;
-  }
-
-  // The one attempt is consumed and bound by `admitAttended` alone (final
-  // authority closure): there is no post-insert consume road — a two-write
-  // path that could bind a foreign run, or leave `attempt_run` set while
-  // the run's own binding stayed null, does not exist.
-
-  /**
-   * Money already committed against an authorization: settled and uncertain
-   * turns at their accounted charge, plus the live reservation of any
-   * unsettled turn. The budget gate reads THIS, never run.cost_usd.
-   */
-  authorizationSpendMicrousd(id: string): number {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(CASE
-            WHEN st.state IN ('settled','uncertain') THEN COALESCE(st.accounted_microusd, 0)
-            WHEN st.state IN ('recorded','written','accepted') THEN st.reserved_microusd
-            ELSE 0 END), 0) AS spent
-           FROM session_turn st JOIN run r ON r.id = st.run
-          WHERE r.attended_authorization = ?`,
-      )
-      .get(id);
-    return Number(row?.["spent"] ?? 0);
-  }
-
-  /**
-   * Record one turn — the gate where the cap, the single-flight rule, the
-   * budget reservation, the lease re-proof, and the open-decision rule all
-   * hold or refuse ATOMICALLY (v6 W6: a fenced coordinator fails inside
-   * this transaction, not at its next poll). For 'answer' turns the
-   * delivery-CAS on decision.delivered_turn happens here; run_decision
-   * attaches only at ACCEPTANCE (v6 W5).
-   */
-  recordSessionTurn(input: {
-    run: number;
-    sourceKind: SessionTurn["sourceKind"];
-    sourceId?: number | null;
-    author?: string | null;
-    text: string;
-    repairLimit?: number;
-    now: Date;
-  }): { ok: true; turn: SessionTurn } | { ok: false; reason: RecordTurnRefusal } {
-    return this.transact(() => {
-      const now = input.now.toISOString();
-      const held = this.heldSessionOf(input.run);
-      if (held === null || held.endedAt !== null) return { ok: false as const, reason: "no-held-session" as const };
-      if (held.state !== "open") return { ok: false as const, reason: "fenced" as const };
-      const run = this.db.prepare("SELECT task_ref, attended_authorization FROM run WHERE id = ?").get(input.run);
-      if (run === undefined || run["attended_authorization"] === null) {
-        return { ok: false as const, reason: "no-held-session" as const };
-      }
-      const authorization = this.readAuthorization(String(run["attended_authorization"]));
-      if (authorization === null || authorization.closedAt !== null) {
-        return { ok: false as const, reason: "fenced" as const };
-      }
-      // The synchronous lease re-proof (v6 W6): the recorded lease must be
-      // the task's current live lease at this instant.
-      if (this.currentLiveLease(Number(run["task_ref"]), input.now) !== held.leaseId) {
-        return { ok: false as const, reason: "fenced" as const };
-      }
-      // The per-authorization turn cap counts EVERY injection across the
-      // authorization's runs.
-      const counted = this.db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM session_turn st JOIN run r ON r.id = st.run
-            WHERE r.attended_authorization = ?`,
-        )
-        .get(authorization.id);
-      if (Number(counted?.["n"] ?? 0) >= authorization.maxSessionTurns) {
-        return { ok: false as const, reason: "turn-cap" as const };
-      }
-      // Single flight: one unsettled turn at a time, by design.
-      const unsettled = this.db
-        .prepare(
-          `SELECT 1 AS hit FROM session_turn
-            WHERE run = ? AND state IN ('recorded','written','accepted') LIMIT 1`,
-        )
-        .get(input.run);
-      if (unsettled !== undefined) return { ok: false as const, reason: "turn-open" as const };
-      // A waiting question outranks free-form speech: answer it first.
-      if (input.sourceKind === "operator") {
-        const open = this.db
-          .prepare("SELECT 1 AS hit FROM decision WHERE run = ? AND state IN ('open','expired') LIMIT 1")
-          .get(input.run);
-        if (open !== undefined) return { ok: false as const, reason: "decision-open" as const };
-      }
-      // Machine repair is bounded per triggering decision, like REPAIR_TURNS.
-      if (input.sourceKind === "repair") {
-        const limit = input.repairLimit ?? 2;
-        const prior = this.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM session_turn WHERE run = ? AND source_kind = 'repair' AND source_id IS ?",
-          )
-          .get(input.run, input.sourceId ?? null);
-        if (Number(prior?.["n"] ?? 0) >= limit) return { ok: false as const, reason: "repair-exhausted" as const };
-      }
-      // Reservation = remaining budget: under the stop-threshold semantic
-      // and the CLI's cumulative cap, that is the true worst case.
-      const spent = this.authorizationSpendMicrousd(authorization.id);
-      const remaining = authorization.budgetMicrousd - spent;
-      if (remaining <= 0) return { ok: false as const, reason: "budget-exhausted" as const };
-      // Answer exactly-once: the delivery-CAS (v6 W5). This whole method is
-      // one transaction, so read-then-set is serialized; the partial unique
-      // index is the backstop.
-      if (input.sourceKind === "answer") {
-        const decision = this.db
-          .prepare("SELECT delivered_turn FROM decision WHERE id = ?")
-          .get(input.sourceId ?? -1);
-        if (decision === undefined || decision["delivered_turn"] !== null) {
-          return { ok: false as const, reason: "answer-delivered" as const };
-        }
-      }
-      const top = this.db.prepare("SELECT MAX(seq) AS top FROM session_turn WHERE run = ?").get(input.run);
-      const seq = Number(top?.["top"] ?? 0) + 1;
-      const { lastInsertRowid } = this.db
-        .prepare(
-          `INSERT INTO session_turn
-             (run, seq, source_kind, source_id, author, text, reserved_microusd, recorded_at, state)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'recorded')`,
-        )
-        .run(
-          input.run,
-          seq,
-          input.sourceKind,
-          input.sourceId ?? null,
-          input.author ?? null,
-          input.text,
-          remaining,
-          now,
-        );
-      const id = Number(lastInsertRowid);
-      if (input.sourceKind === "answer") {
-        const claimed = this.db
-          .prepare("UPDATE decision SET delivered_turn = ? WHERE id = ? AND delivered_turn IS NULL")
-          .run(id, input.sourceId ?? -1);
-        if (Number(claimed.changes) === 0) throw new Error("answer delivery lost a race inside its own transaction");
-      }
-      const turn = this.readSessionTurn(id);
-      if (turn === null) throw new Error("session turn vanished inside its own recording");
-      return { ok: true as const, turn };
-    });
-  }
-
-  /** Answered decisions on a held run whose answer has not yet been
-   * injected — the coordinator's per-pulse scan (v3 R3). */
-  undeliveredDecisionsOf(run: number): Decision[] {
-    return this.db
-      .prepare("SELECT * FROM decision WHERE run = ? AND state = 'answered' AND delivered_turn IS NULL ORDER BY id")
-      .all(run)
-      .map(readDecision);
-  }
-
-  readSessionTurn(id: number): SessionTurn | null {
-    const row = this.db.prepare("SELECT * FROM session_turn WHERE id = ?").get(id);
-    return row === undefined ? null : readSessionTurnRow(row);
-  }
-
-  sessionTurnsOf(run: number): SessionTurn[] {
-    return this.db
-      .prepare("SELECT * FROM session_turn WHERE run = ? ORDER BY seq")
-      .all(run)
-      .map(readSessionTurnRow);
-  }
-
-  /** Bytes flushed to stdin. Write success is NOT acceptance (spike fact 5). */
-  markTurnWritten(id: number, now: Date): boolean {
-    const { changes } = this.db
-      .prepare("UPDATE session_turn SET state = 'written', written_at = ? WHERE id = ? AND state = 'recorded'")
-      .run(now.toISOString(), id);
-    return Number(changes) > 0;
-  }
-
-  /**
-   * Bind pending answers to the BRIEF turn (round-6 finding 2): a held
-   * build's brief carries every answered-but-undelivered decision, and the
-   * builder's ordinary pre-spawn attach would claim delivery the agent
-   * never proved. The pre-attached run_decision rows are WITHDRAWN here and
-   * each decision's delivery-CAS points at the brief turn — run_decision
-   * re-attaches only at that turn's acceptance, exactly like answer turns.
-   */
-  bindBriefDeliveries(runId: number, briefTurn: number, decisionIds: readonly number[]): void {
-    if (decisionIds.length === 0) return;
-    this.transact(() => {
-      for (const decision of decisionIds) {
-        this.db.prepare("DELETE FROM run_decision WHERE run = ? AND decision = ?").run(runId, decision);
-        this.db
-          .prepare("UPDATE decision SET delivered_turn = ? WHERE id = ? AND delivered_turn IS NULL")
-          .run(briefTurn, decision);
-      }
-    });
-  }
-
-  /**
-   * Acceptance — THIS turn's system/init (or its result, retroactively).
-   * This is also where run_decision attaches, for EVERY decision whose
-   * delivery-CAS points at this turn (answer turns claim one at recording;
-   * a brief turn claims every pending answer it carried): delivery is
-   * claimed only once the agent provably received the words (v6 W5).
-   */
-  markTurnAccepted(id: number, now: Date): boolean {
-    return this.transact(() => {
-      const { changes } = this.db
-        .prepare(
-          `UPDATE session_turn SET state = 'accepted', accepted_at = ?
-            WHERE id = ? AND state IN ('recorded','written')`,
-        )
-        .run(now.toISOString(), id);
-      if (Number(changes) === 0) return false;
-      const turn = this.readSessionTurn(id);
-      if (turn !== null) this.attachDeliveriesOf(turn.run, id);
-      return true;
-    });
-  }
-
-  private attachDeliveriesOf(runId: number, turnId: number): void {
-    const carried = this.db
-      .prepare("SELECT id, choice, note FROM decision WHERE delivered_turn = ?")
-      .all(turnId);
-    for (const decision of carried) {
-      this.db
-        .prepare("INSERT OR IGNORE INTO run_decision (run, decision, choice, note) VALUES (?, ?, ?, ?)")
-        .run(runId, Number(decision["id"]), decision["choice"], decision["note"]);
-    }
-  }
-
-  /**
-   * Settle a turn from its result. The provider's totals are CUMULATIVE per
-   * process, so the measured charge is the marginal delta from the held
-   * session's durable baseline, advanced here atomically. A missing or
-   * regressing total is a TELEMETRY FAILURE: the turn settles uncertain at
-   * its reservation, the baseline stays, and the caller must end the hold.
-   * Run aggregates gain the same delta so attended spend never disappears
-   * from routine reporting (v3 R4).
-   */
-  settleTurn(
-    id: number,
-    result: { cumulativeMicrousd: number | null; outputTokens: number | null; now: Date },
-  ): { ok: true; measuredMicrousd: number } | { ok: false; reason: "telemetry" | "not-unsettled" } {
-    return this.transact(() => {
-      const turn = this.readSessionTurn(id);
-      if (turn === null || !["recorded", "written", "accepted"].includes(turn.state)) {
-        return { ok: false as const, reason: "not-unsettled" as const };
-      }
-      const held = this.heldSessionOf(turn.run);
-      if (held === null) return { ok: false as const, reason: "not-unsettled" as const };
-      const now = result.now.toISOString();
-      if (result.cumulativeMicrousd === null || result.cumulativeMicrousd < held.cumulativeMicrousd) {
-        // Conservative posture: charge the reservation, never invent zero.
-        this.db
-          .prepare(
-            `UPDATE session_turn SET state = 'uncertain', settled_at = ?,
-                    accounted_microusd = reserved_microusd, accounted_at = ? WHERE id = ?`,
-          )
-          .run(now, now, id);
-        this.chargeRunAggregates(turn.run, turn.reservedMicrousd, 0);
-        return { ok: false as const, reason: "telemetry" as const };
-      }
-      const measured = result.cumulativeMicrousd - held.cumulativeMicrousd;
-      const tokens = result.outputTokens ?? 0;
-      // Result proves acceptance when the init was missed (spike-consistent).
-      this.db
-        .prepare(
-          `UPDATE session_turn SET state = 'settled', settled_at = ?,
-                  accepted_at = COALESCE(accepted_at, ?),
-                  measured_microusd = ?, output_tokens = ?,
-                  accounted_microusd = ?, accounted_at = ? WHERE id = ?`,
-        )
-        .run(now, now, measured, result.outputTokens ?? null, measured, now, id);
-      if (turn.acceptedAt === null) {
-        // The acceptance this settlement back-filled attaches whatever
-        // deliveries the turn carried (answers, or a brief's pending set).
-        this.attachDeliveriesOf(turn.run, id);
-      }
-      this.db
-        .prepare(
-          `UPDATE held_session SET cumulative_microusd = ?, cumulative_tokens_out = cumulative_tokens_out + ?
-            WHERE run = ?`,
-        )
-        .run(result.cumulativeMicrousd, tokens, turn.run);
-      this.chargeRunAggregates(turn.run, measured, tokens);
-      return { ok: true as const, measuredMicrousd: measured };
-    });
-  }
-
-  /**
-   * Terminal conservative settlement on process exit (ruling 15).
-   * 'cancelled' = recorded but never written: charged zero. 'uncertain' =
-   * written or accepted but never proven settled: charged its reservation.
-   * A turn that never reached ACCEPTANCE reverts its delivery claim so the
-   * ordinary road can deliver the answer later (v6 W5); an accepted turn
-   * keeps its attach — acceptance is the proof.
-   */
-  settleTurnTerminal(id: number, terminal: "uncertain" | "cancelled", now: Date): boolean {
-    return this.transact(() => {
-      const turn = this.readSessionTurn(id);
-      if (turn === null || !["recorded", "written", "accepted"].includes(turn.state)) return false;
-      const at = now.toISOString();
-      const charge = terminal === "uncertain" ? turn.reservedMicrousd : 0;
-      this.db
-        .prepare(
-          `UPDATE session_turn SET state = ?, settled_at = ?, accounted_microusd = ?, accounted_at = ?
-            WHERE id = ?`,
-        )
-        .run(terminal, at, charge, at, id);
-      if (turn.acceptedAt === null) {
-        // Never-accepted: EVERY delivery claim this turn held reverts —
-        // an answer turn's one decision, or a brief turn's pending set —
-        // so the ordinary road can deliver later (v6 W5, round-6 f2).
-        this.db.prepare("UPDATE decision SET delivered_turn = NULL WHERE delivered_turn = ?").run(id);
-      }
-      if (charge > 0) this.chargeRunAggregates(turn.run, charge, 0);
-      return true;
-    });
-  }
-
-  private chargeRunAggregates(run: number, microusd: number, tokensOut: number): void {
-    this.db
-      .prepare(
-        `UPDATE run SET cost_usd = COALESCE(cost_usd, 0) + ?,
-                tokens_out = COALESCE(tokens_out, 0) + ? WHERE id = ?`,
-      )
-      .run(microusd / 1_000_000, tokensOut, run);
-    this.settleRunSpend(run, new Date());
-  }
-
-  /**
-   * Custody intent — INSERTed in the final dispatch-proof transaction,
-   * before spawn. The run-held partial unique refuses a
-   * second hold typed, not by accident.
-   */
-  openHeldSession(input: {
-    run: number;
-    authorizationId: string;
-    runner: string;
-    leaseId: string;
-    upIncarnation: string;
-    cookie: string;
-    socketPath: string;
-    now: Date;
-  }): { ok: true } | { ok: false; reason: "run-held" } {
-    try {
-      this.db
-        .prepare(
-          `INSERT INTO held_session
-             (run, authorization_id, runner, lease_id, up_incarnation, cookie, socket_path, started_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          input.run,
-          input.authorizationId,
-          input.runner,
-          input.leaseId,
-          input.upIncarnation,
-          input.cookie,
-          input.socketPath,
-          input.now.toISOString(),
-        );
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // SQLite names the COLUMN in unique violations, never the index.
-
-      if (message.includes("UNIQUE") || message.includes("PRIMARY KEY")) return { ok: false, reason: "run-held" };
-      throw error;
-    }
-  }
-
-  /** Stamp pids after spawn. False = the row closed underneath the spawn — kill the child. */
-  stampHeldSession(run: number, supervisorPid: number, agentPgid: number): boolean {
-    return this.transact(() => {
-      const { changes } = this.db
-        .prepare("UPDATE held_session SET supervisor_pid = ?, agent_pgid = ? WHERE run = ? AND ended_at IS NULL")
-        .run(supervisorPid, agentPgid, run);
-      if (Number(changes) === 0) return false;
-      this.recordRunProcess(run, supervisorPid, new Date(), false);
-      this.recordRunProcess(run, agentPgid, new Date());
-      return true;
-    });
-  }
-
-  heldSessionOf(run: number): HeldSession | null {
-    const row = this.db.prepare("SELECT * FROM held_session WHERE run = ?").get(run);
-    return row === undefined ? null : readHeldSessionRow(row);
-  }
-
-  /** Every un-ended custody row — the fence sweep's and hard-stop's read. */
-  /** The durable session gauge (v28): open custody rows for this runner —
-   * a restarted `up` with orphans pending must count them, so the
-   * in-process map is never the truth. */
-  openHeldSessionCount(runner: string): number {
-    const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM held_session WHERE runner = ? AND ended_at IS NULL")
-      .get(runner);
-    return Number(row?.["n"] ?? 0);
-  }
-
-  /** Every open authorization on this runner — the beat-all's worklist. */
-  openAuthorizationsOf(runner: string): AttendedAuthorization[] {
-    return this.db
-      .prepare("SELECT * FROM attended_authorization WHERE runner = ? AND closed_at IS NULL")
-      .all(runner)
-      .map(readAuthorizationRow);
-  }
-
-  openHeldSessions(): HeldSession[] {
-    return this.db
-      .prepare("SELECT * FROM held_session WHERE ended_at IS NULL ORDER BY run")
-      .all()
-      .map(readHeldSessionRow);
-  }
-
-  /** Ordinary close by the owning coordinator. CAS on un-ended. */
-  endHeldSession(run: number, endReason: string, now: Date): boolean {
-    const { changes } = this.db
-      .prepare("UPDATE held_session SET ended_at = ?, end_reason = ? WHERE run = ? AND ended_at IS NULL")
-      .run(now.toISOString(), endReason, run);
-    return Number(changes) > 0;
-  }
-
-  /**
-   * SEIZE custody for fencing (v6, after v4 Q5): CAS open→fencing AND fence
-   * the recorded lease in ONE transaction, so a wedged owner's heartbeat
-   * revival and every later coordinator write fail before any kill happens.
-   */
-  seizeHeldSession(
-    run: number,
-    fencer: string,
-    deadline: Date,
-    now: Date,
-  ): { ok: true; session: HeldSession } | { ok: false; reason: "not-open" } {
-    return this.transact(() => {
-      const { changes } = this.db
-        .prepare(
-          `UPDATE held_session SET state = 'fencing', fencer = ?, fencing_deadline = ?
-            WHERE run = ? AND state = 'open' AND ended_at IS NULL`,
-        )
-        .run(fencer, deadline.toISOString(), run);
-      if (Number(changes) === 0) return { ok: false as const, reason: "not-open" as const };
-      const session = this.heldSessionOf(run);
-      if (session === null) throw new Error("held session vanished inside its own seize");
-      this.db
-        .prepare("UPDATE claim SET released_at = ?, released_by = 'held-fence' WHERE lease_id = ? AND released_at IS NULL")
-        .run(now.toISOString(), session.leaseId);
-      return { ok: true as const, session };
-    });
-  }
-
-  /**
-   * Take over a fencing operation whose owner went quiet (v5 P3): CAS on
-   * the EXPIRED deadline. A loser stops only while a live fencer owns it.
-   */
-  takeoverHeldFencing(run: number, fencer: string, deadline: Date, now: Date): boolean {
-    const { changes } = this.db
-      .prepare(
-        `UPDATE held_session SET fencer = ?, fencing_deadline = ?
-          WHERE run = ? AND state = 'fencing' AND ended_at IS NULL AND fencing_deadline <= ?`,
-      )
-      .run(fencer, deadline.toISOString(), run, now.toISOString());
-    return Number(changes) > 0;
-  }
-
-  /** Re-arm the fencing deadline while the work continues. Owner-CASed. */
-  renewHeldFencing(run: number, fencer: string, deadline: Date): boolean {
-    const { changes } = this.db
-      .prepare(
-        "UPDATE held_session SET fencing_deadline = ? WHERE run = ? AND state = 'fencing' AND fencer = ?",
-      )
-      .run(deadline.toISOString(), run, fencer);
-    return Number(changes) > 0;
-  }
-
-  /** Final close of a fenced session — owner-CASed, after kill + settlement. */
-  closeHeldFencing(run: number, fencer: string, endReason: string, now: Date): boolean {
-    const { changes } = this.db
-      .prepare(
-        `UPDATE held_session SET ended_at = ?, end_reason = ?
-          WHERE run = ? AND state = 'fencing' AND fencer = ? AND ended_at IS NULL`,
-      )
-      .run(now.toISOString(), endReason, run, fencer);
-    return Number(changes) > 0;
-  }
-
   /**
    * File one steering note (arc 1). Validation is validateNote EXACTLY —
-   * no bespoke rule — and filing refuses on finished tasks and during open
-   * tournaments (contestants share a task; all-racer delivery is a future
-   * many-to-many, not a silent single-racer lie).
+   * no bespoke rule — and filing refuses on finished tasks.
    */
   fileSteerNote(
     taskId: string,
@@ -22052,7 +18258,7 @@ export class Store {
     note: string,
     now: Date,
     mutation: Mutation = {},
-  ): { ok: true; id: number } | { ok: false; reason: "unknown-task" | "task-finished" | "contest-open" | "invalid-note"; problem?: string } {
+  ): { ok: true; id: number } | { ok: false; reason: "unknown-task" | "task-finished" | "invalid-note"; problem?: string } {
     return this.once(
       mutation,
       "fileSteerNote",
@@ -22067,13 +18273,6 @@ export class Store {
           if (task === undefined || ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
           const state = String(task["state"]);
           if (state === "done" || state === "cancelled") return { ok: false as const, reason: "task-finished" as const };
-          const racing = this.db
-            .prepare(
-              `SELECT 1 AS hit FROM contest WHERE task_ref = ?
-                AND state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted') LIMIT 1`,
-            )
-            .get(Number(ref["id"]));
-          if (racing !== undefined) return { ok: false as const, reason: "contest-open" as const };
           const inserted = this.db
             .prepare("INSERT INTO task_steer (task_ref, author, note, created_at, authorship_state) VALUES (?, ?, ?, ?, 'verified')")
             .run(Number(ref["id"]), author as unknown as string, valid.note, now.toISOString());
@@ -22092,7 +18291,7 @@ export class Store {
       .map(readSteerNote);
   }
 
-  /** Undelivered, unsuperseded notes — the admitContest refusal predicate. */
+  /** Undelivered, unsuperseded notes. */
   pendingSteerCount(taskRef: number): number {
     const row = this.db
       .prepare("SELECT COUNT(*) AS n FROM task_steer WHERE task_ref = ? AND delivered_at IS NULL AND superseded_at IS NULL")
@@ -24482,9 +20681,12 @@ export class Store {
     return row === undefined ? null : readFlowTriggerRow(row as Record<string, unknown>);
   }
 
-  /** Record what a trigger did with one outside thing: the card it made, or why it made none. False when it was already recorded. */
-  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date): boolean {
-    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at) VALUES (?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString());
+  /**
+   * Record what a trigger did with one outside thing: the card it made, or why it made none, and (a standing order's
+   * firing) the task it filed. False when it was already recorded.
+   */
+  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null): boolean {
+    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task) VALUES (?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task);
     return Number(changes) === 1;
   }
 
@@ -24492,6 +20694,47 @@ export class Store {
   lastFlowTriggerCard(trigger: number): number | null {
     const row = this.db.prepare("SELECT card FROM flow_trigger_event WHERE trigger = ? AND card IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(trigger);
     return row === undefined ? null : Number(row["card"]);
+  }
+
+  /**
+   * v115: the tasks a schedule's standing order filed — each firing's own record, never its card's current task (which
+   * a card move clears) — and, for one moved from a routine, that routine's earlier tasks (task_ref.routine_id), as
+   * task_ref ids.
+   */
+  #standingOrderRefs = `SELECT task_ref.id FROM flow_trigger_event
+      JOIN task_ref ON task_ref.backend = '${BUILT_IN}' AND task_ref.external_id = flow_trigger_event.task
+     WHERE flow_trigger_event.trigger = :trigger
+    UNION SELECT task_ref.id FROM task_ref WHERE :routine IS NOT NULL AND task_ref.routine_id = :routine`;
+
+  /**
+   * One at a time (v115, from routines): the oldest task a standing order filed that has neither finished nor been
+   * cancelled — queued, running, held, parked and failed ones all count. A live claim counts whatever the task's state
+   * says, so a state written over a running build can't start a twin beside it.
+   */
+  standingOrderBlocker(trigger: number, routine: number | null, now: Date): { taskId: string; state: string } | null {
+    const row = this.db.prepare(
+      `SELECT task.id, task.state FROM task
+         JOIN task_ref ON task_ref.backend = :backend AND task_ref.external_id = task.id
+        WHERE task_ref.id IN (${this.#standingOrderRefs})
+          AND (task.state NOT IN ('done','cancelled')
+               OR EXISTS (SELECT 1 FROM claim WHERE claim.task_ref = task_ref.id AND claim.released_at IS NULL AND claim.expires_at > :now
+                           AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest WHERE newest.task_ref = task_ref.id)))
+        ORDER BY task.created_at LIMIT 1`,
+    ).get({ backend: BUILT_IN, trigger, routine, now: now.toISOString() });
+    return row === undefined ? null : { taskId: String(row["id"]), state: String(row["state"]) };
+  }
+
+  /**
+   * What a standing order's tasks spent since `sinceIso` (v115, from routines), anchored to when each provider started:
+   * a paid run whose cost never landed is counted as unmeasured, and a ceiling fails closed on it.
+   */
+  standingOrderSpend(trigger: number, routine: number | null, sinceIso: string): { costUsd: number; unmeasuredRuns: number } {
+    const row = this.db.prepare(
+      `SELECT COALESCE(SUM(run.cost_usd), 0) AS cost, SUM(CASE WHEN run.cost_usd IS NULL THEN 1 ELSE 0 END) AS unmeasured
+         FROM run WHERE run.task_ref IN (${this.#standingOrderRefs})
+          AND run.provider_started_at IS NOT NULL AND run.provider_started_at >= :since`,
+    ).get({ trigger, routine, since: sinceIso });
+    return { costUsd: Number(row?.["cost"] ?? 0), unmeasuredRuns: Number(row?.["unmeasured"] ?? 0) };
   }
 
   // ---- project tools (v80) -------------------------------------------------
@@ -25557,8 +21800,6 @@ export class Store {
              (SELECT MIN(incident.created_at) FROM incident JOIN run ON run.id = incident.run
                WHERE run.task_ref = task_ref.id AND incident.resolved_at IS NULL) AS oldest_incident_at,
              task_ref.plan AS plan_state,
-             task_ref.routine_id AS routine_id,
-             (SELECT routine.name FROM routine WHERE routine.id = task_ref.routine_id) AS routine_name,
              live.runner AS claim_runner, live.acquired_at AS claim_at, live.lease_id AS claim_lease,
              claim_run.model AS claim_model, claim_run.branch AS claim_branch, claim_run.worktree AS claim_worktree,
              claim_run.role AS claim_role, claim_run.provider AS claim_provider, claim_run.phase AS claim_phase,
@@ -25586,19 +21827,6 @@ export class Store {
                JOIN task_ref AS blocker_ref ON blocker_ref.backend = task_ref.backend AND blocker_ref.external_id = task_edge.blocker
                WHERE task_edge.blocked = task.id AND blocker_task.state != 'done'
                ORDER BY task_edge.blocker LIMIT 1) AS blocker_repo,
-             (SELECT contest.id FROM contest WHERE contest.task_ref = task_ref.id
-                AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')
-               ORDER BY contest.id DESC LIMIT 1) AS contest_id,
-             (SELECT contest.state FROM contest WHERE contest.task_ref = task_ref.id
-                AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')
-               ORDER BY contest.id DESC LIMIT 1) AS contest_state,
-             (SELECT contest.kind FROM contest WHERE contest.task_ref = task_ref.id
-                AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')
-               ORDER BY contest.id DESC LIMIT 1) AS contest_kind,
-             (SELECT COUNT(*) FROM contestant WHERE contestant.contest =
-               (SELECT contest.id FROM contest WHERE contest.task_ref = task_ref.id
-                  AND contest.state IN ('dispatching','racing','pick-wait','decision-wait','exhausted','interrupted')
-                ORDER BY contest.id DESC LIMIT 1)) AS contest_agents,
              (SELECT requirement.value FROM json_each(task_ref.capability_requirements) AS requirement
                WHERE task_ref.repo IS NOT NULL AND NOT EXISTS (
                  SELECT 1 FROM capability
@@ -25729,15 +21957,6 @@ export class Store {
         blockerState: text(row, "blocker_state"),
         blockerRepo: text(row, "blocker_repo"),
         missingRequirement: text(row, "missing_requirement"),
-        contest:
-          row["contest_id"] === null || row["contest_id"] === undefined
-            ? null
-            : { id: Number(row["contest_id"]), state: String(row["contest_state"]), agents: Number(row["contest_agents"]), kind: (String(row["contest_kind"] ?? "race") === "comparison" ? "comparison" : "race") as "race" | "comparison" },
-        routineId:
-          row["routine_id"] === null || row["routine_id"] === undefined
-            ? null
-            : Number(row["routine_id"]),
-        routineName: text(row, "routine_name"),
       }));
       return {
         tasks,
@@ -26037,9 +22256,8 @@ export class Store {
    * built-in task ids it returned to the queue — rather than a bare count.
    * Nothing here decides liveness: the caller proves the runner is gone (or
    * is taking its name over) inside the transaction that calls this. What it
-   * never does: touch a run that already has an outcome, a run under a live
-   * held session, another runner's rows, or a task some newer live lease
-   * owns. A second pass over the same runner settles nothing and says so.
+   * never does: touch a run that already has an outcome, another runner's
+   * rows, or a task some newer live lease owns. A second pass over the same runner settles nothing and says so.
    */
   recoverRunnerWork(runner: string, now: Date): RunnerWorkRecovery {
     return this.transact(() => {
@@ -26059,9 +22277,7 @@ export class Store {
       };
       const open = this.db
         .prepare(
-          `SELECT id, task_ref FROM run WHERE runner = ? AND outcome IS NULL
-            AND NOT EXISTS (SELECT 1 FROM held_session WHERE held_session.run = run.id AND held_session.ended_at IS NULL)
-            ORDER BY id`,
+          `SELECT id, task_ref FROM run WHERE runner = ? AND outcome IS NULL ORDER BY id`,
         )
         .all(runner);
       for (const row of open) {
@@ -26089,10 +22305,7 @@ export class Store {
             WHERE task.state = 'running'
               AND (SELECT claim.runner FROM claim WHERE claim.task_ref = task_ref.id
                     ORDER BY claim.lease_generation DESC LIMIT 1) = ?
-              AND NOT EXISTS (SELECT 1 FROM run WHERE run.task_ref = task_ref.id AND run.outcome IS NULL)
-              AND NOT EXISTS (SELECT 1 FROM held_session
-                              JOIN run AS held_run ON held_run.id = held_session.run
-                              WHERE held_run.task_ref = task_ref.id AND held_session.ended_at IS NULL)`,
+              AND NOT EXISTS (SELECT 1 FROM run WHERE run.task_ref = task_ref.id AND run.outcome IS NULL)`,
         )
         .all(BUILT_IN, runner);
       for (const row of stranded) requeueUnowned(Number(row["ref"]));
@@ -26237,8 +22450,7 @@ export class Store {
       const pending = this.db.prepare("SELECT run FROM run_stop WHERE settled_at IS NULL ORDER BY run").all();
       for (const row of pending) {
         const id = Number(row["run"]);
-        const kind = this.heldSessionOf(id) === null ? "recovered" : "held";
-        if (this.settleRunStop(id, kind, now)) settled++;
+        if (this.settleRunStop(id, "recovered", now)) settled++;
       }
       if (settled > 0) this.bumpWake();
       return settled;
@@ -26299,8 +22511,7 @@ export class Store {
    * durably with who asked and when BEFORE any process is signalled. The
    * transaction proves the run is this task's, is still open, holds the
    * task's CURRENT live claim (a reviewer's synthetic lease counts through
-   * its open outcome alone), is not a racing lane (tournaments keep their
-   * own controls), and has admitted no publication — an external request
+   * its open outcome alone), and has admitted no publication — an external request
    * in flight is never recalled by a stop, and the words say so. The
    * stop's hold rides the same write, owned by this run, so nothing
    * automatic retries the task while it is paused; a repeated request
@@ -26311,7 +22522,7 @@ export class Store {
     now: Date,
   ):
     | { ok: true; stop: RunStop; repeated: boolean }
-    | { ok: false; reason: "no-run" | "wrong-task" | "finished" | "not-live" | "tournament" | "publication"; detail: string } {
+    | { ok: false; reason: "no-run" | "wrong-task" | "finished" | "not-live" | "publication"; detail: string } {
     return this.transact(() => {
       const run = this.getRun(args.runId);
       if (run === null) return { ok: false as const, reason: "no-run" as const, detail: `no run #${args.runId}` };
@@ -26324,7 +22535,6 @@ export class Store {
       if (run.outcome !== null) {
         return { ok: false as const, reason: "finished" as const, detail: `run #${args.runId} already ended (${run.outcome}${run.reason === null ? "" : ` · ${run.reason}`}) — a finished attempt is never rewritten by a stop` };
       }
-      if (run.contestant !== null) return { ok: false as const, reason: "tournament" as const, detail: `run #${args.runId} is a racing lane — tournaments are stopped through their own pick/abandon controls` };
       if (run.role !== "reviewer") {
         const holding = this.currentLiveLease(run.taskRef, now);
         if (holding !== run.leaseId) {
@@ -26403,8 +22613,6 @@ export class Store {
       const run = this.getRun(id)!;
       if (run.outcome === null) return fact(id, "open", `run #${id} is still open`);
       if (ownedProcessCount(runOwnerTag(this, id)) > 0) return fact(id, "alive", `run #${id} still has an owned subprocess`);
-      const held = this.heldSessionOf(id);
-      if (held !== null && held.endedAt === null) return fact(id, "alive", `run #${id}'s held supervisor has not finished shutdown`);
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
       let incompleteSpawn = false;
       if (run.providerStartedAt !== null && witnesses.length === 0 && !this.processesSummarized(id)) {
@@ -26582,8 +22790,6 @@ export class Store {
    * their fences; only an observed single-process exit avoids a new probe. */
   private settleableUnspawnedWitnesses(run: Run, rows: Record<string, unknown>[]): Record<string, unknown>[] {
     if (run.outcome === null || run.finishedAt === null || ownedProcessCount(runOwnerTag(this, run.id)) > 0) return [];
-    const held = this.heldSessionOf(run.id);
-    if (held !== null && held.endedAt === null) return [];
     const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && row["host"] === hostname());
     const others = rows.filter(row => !pidless.includes(row));
     if (pidless.length === 0 || others.length === 0 || others.some(row => row["exited_at"] === null)) return [];
@@ -26606,8 +22812,6 @@ export class Store {
       if (run.outcome === null) return { ok: false as const, reason: "still-running" as const, detail: `run #${args.runId} is still open` };
       const alive = (detail: string) => ({ ok: false as const, reason: "alive" as const, detail });
       if (ownedProcessCount(runOwnerTag(this, args.runId)) > 0) return alive(`run #${args.runId} still has an owned subprocess`);
-      const held = this.heldSessionOf(args.runId);
-      if (held !== null && held.endedAt === null) return alive(`run #${args.runId}'s held supervisor has not finished shutdown`);
       const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(args.runId);
       const open = rows.filter(row => row["exited_at"] === null);
       for (const row of rows) {
@@ -26901,10 +23105,7 @@ export class Store {
 
   /**
    * Live claims this runner holds right now — the occupied slots of §8's
-   * capacity gate. A claim whose run is a HELD attended session is EXCLUDED
-   * (v6 W2): capacity governs unattended work; the attended bound is the
-   * session's own signed envelope (v28: any number of them), so watched
-   * conversations never freeze the runner's queue.
+   * capacity gate.
    */
   liveClaimCount(runner: string, now: Date): number {
     const row = this.db
@@ -26914,8 +23115,7 @@ export class Store {
             AND lease_generation = (
               SELECT MAX(newest.lease_generation) FROM claim AS newest
               WHERE newest.task_ref = claim.task_ref
-            )
-            AND lease_id NOT IN (SELECT lease_id FROM held_session WHERE ended_at IS NULL)`,
+            )`,
       )
       .get(runner, now.toISOString());
     return Number(row?.["n"] ?? 0);
@@ -26932,7 +23132,6 @@ export class Store {
               SELECT MAX(newest.lease_generation) FROM claim AS newest
               WHERE newest.task_ref = claim.task_ref
             )
-            AND claim.lease_id NOT IN (SELECT lease_id FROM held_session WHERE ended_at IS NULL)
           GROUP BY task_ref.repo`,
       )
       .all(runner, now.toISOString());
@@ -26952,7 +23151,6 @@ export class Store {
               SELECT MAX(newest.lease_generation) FROM claim AS newest
               WHERE newest.task_ref = claim.task_ref
             )
-            AND claim.lease_id NOT IN (SELECT lease_id FROM held_session WHERE ended_at IS NULL)
           GROUP BY task_ref.repo`,
       )
       .all(now.toISOString());
@@ -27398,7 +23596,7 @@ export class Store {
     const source = row.run === null ? null : this.getRun(row.run);
     const result = source?.role === "reviewer" && source.reviewAttempt != null && source.parentRun !== null
       ? this.getRun(source.parentRun) : source;
-    return result?.role === "builder" && result.contestant === null && result.taskRef === row.taskRef && source?.taskRef === row.taskRef ? result : null;
+    return result?.role === "builder" && result.taskRef === row.taskRef && source?.taskRef === row.taskRef ? result : null;
   }
 
   /** Reuse a confirmed message in this exact destination. A mixed digest,
@@ -27626,7 +23824,7 @@ export class Store {
   private enqueueResultShots(source: Notification, now: Date): void {
     if (source.run === null || source.taskRef === null || source.project === null || source.recipient !== null) return;
     const run = this.getRun(source.run);
-    if (run === null || run.contestant !== null) return;
+    if (run === null) return;
     // One path per role (review 826): a scout's report is its result, so only its "report ready" carries the
     // screenshots it saved; a build's are carried by its finished or failed message.
     const carries = run.role === "scout" ? source.kind === "report-ready"
@@ -28359,7 +24557,6 @@ function readRun(row: Record<string, unknown>): Run {
     provider: String(row["provider"] ?? "claude"),
     parentRun: row["parent_run"] === null || row["parent_run"] === undefined ? null : Number(row["parent_run"]),
     sessionId: row["session_id"] === null || row["session_id"] === undefined ? null : String(row["session_id"]),
-    contestant: row["contestant"] === null || row["contestant"] === undefined ? null : Number(row["contestant"]),
     baseRevision:
       row["base_revision"] === null || row["base_revision"] === undefined
         ? null
@@ -28367,10 +24564,6 @@ function readRun(row: Record<string, unknown>): Run {
     scopeDigest: row["scope_digest"] === null || row["scope_digest"] === undefined ? null : String(row["scope_digest"]),
     profileDigest: row["profile_digest"] === null || row["profile_digest"] === undefined ? null : String(row["profile_digest"]),
     qualityMode: row["quality_mode"] === "strict" ? "strict" : "default",
-    attendedAuthorization:
-      row["attended_authorization"] === null || row["attended_authorization"] === undefined
-        ? null
-        : String(row["attended_authorization"]),
     branch: row["branch"] === null ? null : String(row["branch"]),
     worktree: row["worktree"] === null ? null : String(row["worktree"]),
     model: row["model"] === null ? null : String(row["model"]),
@@ -28401,14 +24594,7 @@ function readRun(row: Record<string, unknown>): Run {
         : (RUN_PHASES as readonly string[]).includes(String(row["phase"]))
           ? (String(row["phase"]) as RunPhase)
           : null,
-    // The chain binding is read STRICTLY (v48 authority repair): a cycle id and an index
-    // are non-negative integers, an entry digest is a non-empty string, an
-    // auth mode is exactly one of the two words — anything else reads as
-    // no binding at all, which every custody proof refuses, never as the
-    // base entry or the subscription credential.
-    chainCycle: wholeNumber(row["chain_cycle"]),
-    chainIndex: wholeNumber(row["chain_index"]),
-    entryDigest: row["entry_digest"] === null || row["entry_digest"] === undefined || String(row["entry_digest"]) === "" ? null : String(row["entry_digest"]),
+    // An auth mode is exactly one of the two words — anything else reads as unknown.
     authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "subscription" ? "subscription" : null,
     terminalClass:
       row["terminal_class"] === null || row["terminal_class"] === undefined
@@ -28419,72 +24605,8 @@ function readRun(row: Record<string, unknown>): Run {
   };
 }
 
-function readAuthorizationRow(row: Record<string, unknown>): AttendedAuthorization {
-  return {
-    id: String(row["id"]),
-    taskRef: Number(row["task_ref"]),
-    approver: String(row["approver"]),
-    runner: String(row["runner"]),
-    runnerGeneration: Number(row["runner_generation"]),
-    compositeDigest: String(row["composite_digest"]),
-    termsJson: String(row["terms_json"]),
-    maxSessionTurns: Number(row["max_session_turns"]),
-    budgetMicrousd: Number(row["budget_microusd"]),
-    parentRun: row["parent_run"] === null ? null : Number(row["parent_run"]),
-    followup: row["followup"] === null ? null : String(row["followup"]),
-    createdAt: String(row["created_at"]),
-    absoluteExpiry: String(row["absolute_expiry"]),
-    lastBeatAt: row["last_beat_at"] === null ? null : String(row["last_beat_at"]),
-    attemptRun: row["attempt_run"] === null ? null : Number(row["attempt_run"]),
-    consumedAt: row["consumed_at"] === null ? null : String(row["consumed_at"]),
-    closedAt: row["closed_at"] === null ? null : String(row["closed_at"]),
-    endReason: row["end_reason"] === null ? null : String(row["end_reason"]),
-  };
-}
 
-function readSessionTurnRow(row: Record<string, unknown>): SessionTurn {
-  return {
-    id: Number(row["id"]),
-    run: Number(row["run"]),
-    seq: Number(row["seq"]),
-    sourceKind: String(row["source_kind"]) as SessionTurn["sourceKind"],
-    sourceId: row["source_id"] === null ? null : Number(row["source_id"]),
-    author: row["author"] === null ? null : String(row["author"]),
-    text: String(row["text"]),
-    reservedMicrousd: Number(row["reserved_microusd"]),
-    accountedMicrousd: row["accounted_microusd"] === null ? null : Number(row["accounted_microusd"]),
-    accountedAt: row["accounted_at"] === null ? null : String(row["accounted_at"]),
-    recordedAt: String(row["recorded_at"]),
-    writtenAt: row["written_at"] === null ? null : String(row["written_at"]),
-    acceptedAt: row["accepted_at"] === null ? null : String(row["accepted_at"]),
-    settledAt: row["settled_at"] === null ? null : String(row["settled_at"]),
-    measuredMicrousd: row["measured_microusd"] === null ? null : Number(row["measured_microusd"]),
-    outputTokens: row["output_tokens"] === null ? null : Number(row["output_tokens"]),
-    state: String(row["state"]) as SessionTurn["state"],
-  };
-}
 
-function readHeldSessionRow(row: Record<string, unknown>): HeldSession {
-  return {
-    run: Number(row["run"]),
-    authorizationId: String(row["authorization_id"]),
-    runner: String(row["runner"]),
-    leaseId: String(row["lease_id"]),
-    upIncarnation: String(row["up_incarnation"]),
-    cookie: String(row["cookie"]),
-    socketPath: String(row["socket_path"]),
-    supervisorPid: row["supervisor_pid"] === null ? null : Number(row["supervisor_pid"]),
-    agentPgid: row["agent_pgid"] === null ? null : Number(row["agent_pgid"]),
-    cumulativeMicrousd: Number(row["cumulative_microusd"]),
-    cumulativeTokensOut: Number(row["cumulative_tokens_out"]),
-    state: String(row["state"]) as HeldSession["state"],
-    fencer: row["fencer"] === null ? null : String(row["fencer"]),
-    fencingDeadline: row["fencing_deadline"] === null ? null : String(row["fencing_deadline"]),
-    startedAt: String(row["started_at"]),
-    endedAt: row["ended_at"] === null ? null : String(row["ended_at"]),
-    endReason: row["end_reason"] === null ? null : String(row["end_reason"]),
-  };
-}
 
 function readHold(row: Record<string, unknown>): Hold {
   return {
@@ -28951,10 +25073,6 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
     planStrikes: Number(row["plan_strikes"] ?? 0),
     deliverable: row["deliverable"] === "report" ? "report" : "branch",
     strikes: Number(row["strikes"] ?? 0),
-    routineId:
-      row["routine_id"] === null || row["routine_id"] === undefined
-        ? null
-        : Number(row["routine_id"]),
     agentProvider:
       row["agent_provider"] === null || row["agent_provider"] === undefined
         ? null
@@ -28971,7 +25089,6 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
       row["quality_mode"] === "default" || row["quality_mode"] === "strict"
         ? row["quality_mode"]
         : null,
-    riskLevel: isRiskLevel(row["risk_level"]) ? row["risk_level"] : null,
     routeOverrides: overridesFromJson(
       row["route_overrides_json"] === null || row["route_overrides_json"] === undefined ? null : String(row["route_overrides_json"]),
     ),
@@ -28997,168 +25114,7 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
   };
 }
 
-/**
- * The raw terms verdict for one stored routine row (raw authority repair):
- * every term the digest binds, proved exactly — or the words. See
- * `Routine.termsProblem`.
- */
-function routineTermsProblem(row: Record<string, unknown>): string | null {
-  const touches = exactStringList(row["touches"], "touches");
-  if (!touches.ok) return touches.problem;
-  const requirements = exactStringList(row["requirements"], "requirements");
-  if (!requirements.ok) return requirements.problem;
-  const acceptance = exactAcceptance(row["acceptance_json"]);
-  if (!acceptance.ok) return acceptance.problem;
-  for (const column of ["name", "repo", "goal", "schedule", "digest", "created_at", "updated_at"]) {
-    if (typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
-  }
-  if (row["out_of_scope"] !== null && typeof row["out_of_scope"] !== "string") return "the out-of-scope text is not stored as text";
-  if (row["single_flight"] !== 0 && row["single_flight"] !== 1) return "the single-flight flag is not 0 or 1";
-  if (row["paused"] !== 0 && row["paused"] !== 1) return "the paused flag is not 0 or 1";
-  if (row["cost_ceiling_usd"] !== null && (typeof row["cost_ceiling_usd"] !== "number" || !Number.isFinite(row["cost_ceiling_usd"]))) return "the cost ceiling is not a number";
-  const budget = exactSafeIntegerOrNull(row["budget_per_run_microusd"], "the per-run budget");
-  if (budget !== null) return budget;
-  if (row["digest_version"] !== 1 && row["digest_version"] !== 2) return "the digest version is not one this code writes";
-  for (const column of ["approved_at", "approved_by", "approved_digest", "next_fire_at", "filed_via", "profile_json", "approved_profile_json", "route_json", "approved_route_json"]) {
-    if (row[column] !== null && row[column] !== undefined && typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
-  }
-  return null;
-}
 
-function readRoutine(row: Record<string, unknown>): Routine {
-  return {
-    termsProblem: routineTermsProblem(row),
-    id: Number(row["id"]),
-    name: String(row["name"]),
-    repo: String(row["repo"]),
-    goal: String(row["goal"]),
-    outOfScope: row["out_of_scope"] === null ? null : String(row["out_of_scope"]),
-    touches: readStoreTextList("routine.touches", row["touches"]),
-    acceptance: readAcceptance("routine.acceptance_json", row["acceptance_json"]),
-    requirements: readStoreTextList("routine.requirements", row["requirements"]),
-    schedule: String(row["schedule"]),
-    singleFlight: Number(row["single_flight"]) === 1,
-    costCeilingUsd: row["cost_ceiling_usd"] === null ? null : Number(row["cost_ceiling_usd"]),
-    budgetPerRunMicrousd:
-      row["budget_per_run_microusd"] === null || row["budget_per_run_microusd"] === undefined
-        ? null
-        : Number(row["budget_per_run_microusd"]),
-    paused: Number(row["paused"]) === 1,
-    digest: String(row["digest"]),
-    approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
-    approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),
-    createdBy: row["created_by"] == null ? null : String(row["created_by"]),
-    approvedDigest: row["approved_digest"] === null ? null : String(row["approved_digest"]),
-    nextFireAt: row["next_fire_at"] === null ? null : String(row["next_fire_at"]),
-    filedVia: row["filed_via"] === null || row["filed_via"] === undefined ? null : String(row["filed_via"]),
-    createdAt: String(row["created_at"]),
-    updatedAt: String(row["updated_at"]),
-    profile: profileFromJson(row["profile_json"] === null || row["profile_json"] === undefined ? null : String(row["profile_json"])),
-    approvedProfile: profileFromJson(
-      row["approved_profile_json"] === null || row["approved_profile_json"] === undefined ? null : String(row["approved_profile_json"]),
-    ),
-    route: routeFromJson(row["route_json"] === null || row["route_json"] === undefined ? null : String(row["route_json"])),
-    approvedRoute: routeFromJson(row["approved_route_json"] === null || row["approved_route_json"] === undefined ? null : String(row["approved_route_json"])),
-    routeUnreadable: row["route_json"] != null && routeFromJson(String(row["route_json"])) === null,
-    approvedRouteUnreadable: row["approved_route_json"] != null && routeFromJson(String(row["approved_route_json"])) === null,
-    approvedProfileUnreadable: row["approved_profile_json"] != null && profileFromJson(String(row["approved_profile_json"])) === null,
-  };
-}
-
-
-function readTournamentTerms(row: Record<string, unknown>): TournamentTerms {
-  return {
-    id: Number(row["id"]),
-    taskRef: Number(row["task_ref"]),
-    generation: Number(row["generation"]),
-    active: Number(row["active"]) === 1,
-    kind: String(row["kind"] ?? "race") === "comparison" ? "comparison" : "race",
-    raceDigest: String(row["race_digest"]),
-    agents: parseStoreColumn("tournament_terms.agents", row["agents"]) as TournamentTerms["agents"],
-    n: Number(row["n"]),
-    perAgentBudgetMicrousd: Number(row["per_agent_budget_microusd"]),
-    overrunReserveMicrousd: Number(row["overrun_reserve_microusd"]),
-    totalBudgetMicrousd: Number(row["total_budget_microusd"]),
-    priceVersion: Number(row["price_version"]),
-    retries: Number(row["retries"]),
-    publicationPolicy: String(row["publication_policy"]),
-    createdAt: String(row["created_at"]),
-    approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
-    approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),
-    approvedDigest: row["approved_digest"] === null ? null : String(row["approved_digest"]),
-  };
-}
-
-function readContest(row: Record<string, unknown>): Contest {
-  const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
-  return {
-    id: Number(row["id"]),
-    taskRef: Number(row["task_ref"]),
-    terms: Number(row["terms"]),
-    generation: Number(row["generation"]),
-    state: String(row["state"]) as ContestState,
-    scopeDigest: String(row["scope_digest"]),
-    raceDigest: String(row["race_digest"]),
-    baseSha: maybe("base_sha"),
-    setupDigest: maybe("setup_digest"),
-    currentLeaseId: maybe("current_lease_id"),
-    runner: maybe("runner"),
-    incarnation: maybe("incarnation"),
-    createdAt: String(row["created_at"]),
-    pickedAt: maybe("picked_at"),
-    pickedBy: maybe("picked_by"),
-    winnerContestant: row["winner_contestant"] === null ? null : Number(row["winner_contestant"]),
-    overduePaged: Number(row["overdue_paged"] ?? 0) === 1,
-    kind: String(row["kind"] ?? "race") === "comparison" ? "comparison" : "race",
-  };
-}
-
-/** The lane states a run may still open on: a built, failed, or stopped
- * lane is terminal and admits nothing more. */
-const LIVE_LANE_STATES: ReadonlySet<ContestantState> = new Set(["pending", "ready", "building", "parked"]);
-
-/**
- * Why a contest lane cannot present or accept authority (final authority
- * closure), or null when it can: the lane must be nonterminal, carry a
- * readable stored profile, and that profile's provider, model, and
- * effective repair model must BE the lane's own columns. A profile_json
- * copied from another agent beside stale provider/model columns is a row
- * two authorities wrote; nothing spends on it.
- */
-export function laneAuthorityProblem(lane: Contestant): string | null {
-  if (!LIVE_LANE_STATES.has(lane.state)) return `contestant ${lane.id} is ${lane.state} — a lane that has ended admits nothing`;
-  const profile = lane.profile ?? null;
-  if (profile === null) return `contestant ${lane.id} carries no sealed profile — nothing spends on the lane`;
-  const repairModel = profile.repairModel === "inherit" ? profile.model : profile.repairModel;
-  if (profile.provider !== lane.provider || profile.model !== lane.model || repairModel !== lane.repairModel) {
-    return `contestant ${lane.id}'s stored profile (${profile.provider} · ${profile.model}, repair ${repairModel}) is not the lane's own agent (${lane.provider} · ${lane.model}, repair ${lane.repairModel}) — nothing spends on a lane two authorities wrote`;
-  }
-  return null;
-}
-
-function readContestant(row: Record<string, unknown>): Contestant {
-  return {
-    id: Number(row["id"]),
-    contest: Number(row["contest"]),
-    ordinal: Number(row["ordinal"]),
-    provider: String(row["provider"]),
-    profile: profileFromJson(row["profile_json"] === null || row["profile_json"] === undefined ? null : String(row["profile_json"])),
-    model: String(row["model"]),
-    repairModel: String(row["repair_model"]),
-    branch: String(row["branch"]),
-    worktree: row["worktree"] === null ? null : String(row["worktree"]),
-    generation: Number(row["generation"]),
-    state: String(row["state"]) as ContestantState,
-    activeRun: row["active_run"] === null ? null : Number(row["active_run"]),
-    budgetMicrousd: Number(row["budget_microusd"]),
-    reserveMicrousd: Number(row["reserve_microusd"]),
-    measuredMicrousd: Number(row["measured_microusd"]),
-    accountedMicrousd: Number(row["accounted_microusd"]),
-    unknownSpend: Number(row["unknown_spend"]) === 1,
-    cleanup: row["cleanup"] === null ? null : (String(row["cleanup"]) as "pending" | "done" | "attention"),
-    custody: row["custody"] === null ? null : String(row["custody"]),
-  };
-}
 
 function readExecutionSlot(row: Record<string, unknown>): ExecutionSlot {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
@@ -29167,7 +25123,6 @@ function readExecutionSlot(row: Record<string, unknown>): ExecutionSlot {
     runner: String(row["runner"]),
     state: String(row["state"]) as ExecutionSlot["state"],
     run: row["run"] === null ? null : Number(row["run"]),
-    contestant: row["contestant"] === null ? null : Number(row["contestant"]),
     incarnation: maybe("incarnation"),
     processGroup: row["process_group"] === null ? null : Number(row["process_group"]),
     reservedAt: String(row["reserved_at"]),
@@ -29297,17 +25252,6 @@ function readMateTurn(row: Record<string, unknown>): MateTurn {
   };
 }
 
-function readRoutineFire(row: Record<string, unknown>): RoutineFire {
-  return {
-    id: Number(row["id"]),
-    routineId: Number(row["routine_id"]),
-    scheduledFor: String(row["scheduled_for"]),
-    outcome: String(row["outcome"]) as "fired" | "skipped",
-    reason: row["reason"] === null ? null : String(row["reason"]),
-    instanceTaskRef: row["instance_task_ref"] === null ? null : Number(row["instance_task_ref"]),
-    createdAt: String(row["created_at"]),
-  };
-}
 
 export type WorktreeRow = {
   path: string;
@@ -29343,30 +25287,6 @@ export type IntakeGrant = {
 };
 
 /** A review comment bound to the exact bytes of an immutable terminal diff. */
-export type FallbackCycle = {
-  id: number;
-  taskRef: number;
-  chainDigest: string;
-  cursor: number;
-  state: "open" | "sanitizing" | "awaiting-release" | "pending-admission" | "incident" | "closed";
-  transitionGeneration: number;
-  tailRun: number | null;
-  closedReason: string | null;
-};
-
-function readFallbackCycle(row: Record<string, unknown>): FallbackCycle {
-  return {
-    id: Number(row["id"]),
-    taskRef: Number(row["task_ref"]),
-    chainDigest: String(row["chain_digest"]),
-    cursor: Number(row["cursor"]),
-    state: String(row["state"]) as FallbackCycle["state"],
-    transitionGeneration: Number(row["transition_generation"]),
-    tailRun: row["tail_run"] === null || row["tail_run"] === undefined ? null : Number(row["tail_run"]),
-    closedReason: row["closed_reason"] === null || row["closed_reason"] === undefined ? null : String(row["closed_reason"]),
-  };
-}
-
 export type DiffComment = {
   id: number;
   artifact: number;
@@ -29595,21 +25515,19 @@ class RevisionRaced extends Error {}
  *   INHERITED, verbatim, from the source (declared requirements and
  *   constraints — never the installation's defaults of the day):
  *     goal (the child appends its explicitly described repair), exclusions,
- *     touches, the exact rubric, declared risk (never below the source's
- *     signed level or its durable task choice), quality mode (strict stays
+ *     touches, the exact rubric, quality mode (strict stays
  *     strict), permission posture (the source's durable choice, else the
  *     posture its sealed profile ran under — never wider), the per-attempt
  *     budget ceiling (never lifted; a mode's filing default may only
  *     tighten it), the approver's per-phase route overrides, and the
  *     build/plan agent pins.
  *   RE-RESOLVED at filing, then approved afresh: the phase route and its
- *     execution profile (recommended over the inherited risk, quality,
- *     overrides, and pins under today's configuration), the fallback
- *     chain (from the repository's configuration, never copied), and the
+ *     execution profile (recommended over the inherited quality,
+ *     overrides, and pins under today's configuration), and the
  *     auth mode. The child's digest binds what it resolved to; a yes on
  *     the source never covers it.
- *   NEVER INHERITED: the approval stamp and its basis, attended
- *     authorizations, publication and merge grants, the plan document and
+ *   NEVER INHERITED: the approval stamp and its basis,
+ *     publication and merge grants, the plan document and
  *     its revision ledger (a revision is planned afresh, if at all; the
  *     brief plus the source scope are its contract), strikes, holds.
  *   FRESH from a live mode, only when the caller re-proved coverage inside
@@ -29624,7 +25542,6 @@ export type RevisionTerms = {
   outOfScope: string | null;
   touches: string[];
   acceptance: AcceptanceCriterion[];
-  riskLevel: RiskLevel;
   qualityMode: QualityMode;
   permissionMode: UnattendedPermissionMode;
   budgetMicrousd: number | null;
@@ -29648,18 +25565,13 @@ export function permissionModeOfProfile(profile: ExecutionProfile | null): Unatt
   return profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto";
 }
 
-const RISK_RANK: Record<RiskLevel, number> = { routine: 0, elevated: 1, high: 2 };
-
 export function revisionTermsOf(
-  sourceRef: Pick<TaskRef, "riskLevel" | "qualityMode" | "permissionMode" | "routeOverrides" | "agentProvider" | "agentModel" | "planProvider" | "planModel">,
+  sourceRef: Pick<TaskRef, "qualityMode" | "permissionMode" | "routeOverrides" | "agentProvider" | "agentModel" | "planProvider" | "planModel">,
   sourceScope: Scope | null,
   coverage: { defaultBudgetMicrousd: number | null; escalated: boolean } | null,
   permissionDefault: UnattendedPermissionMode,
   qualityDefault: QualityMode,
 ): RevisionTerms {
-  const scopeRisk: RiskLevel = sourceScope?.riskLevel ?? "routine";
-  const refRisk: RiskLevel = sourceRef.riskLevel ?? "routine";
-  const riskLevel: RiskLevel = RISK_RANK[refRisk] > RISK_RANK[scopeRisk] ? refRisk : scopeRisk;
   const qualityMode: QualityMode =
     sourceScope === null
       ? sourceRef.qualityMode ?? qualityDefault
@@ -29678,7 +25590,6 @@ export function revisionTermsOf(
     outOfScope: sourceScope?.outOfScope ?? null,
     touches: sourceScope === null ? [] : [...sourceScope.touches],
     acceptance: sourceScope !== null && sourceScope.acceptance.length > 0 ? sourceScope.acceptance.map(one => ({ ...one, evidence: [...one.evidence] })) : REVISION_PLACEHOLDER_RUBRIC.map(one => ({ ...one, evidence: [...one.evidence] })),
-    riskLevel,
     qualityMode,
     permissionMode,
     budgetMicrousd,
@@ -29711,7 +25622,6 @@ export type RevisionLineage = {
   ancestors: string[];
   root: string;
   terms: {
-    riskLevel: RiskLevel;
     qualityMode: QualityMode;
     permissionMode: UnattendedPermissionMode;
     budgetMicrousd: number | null;
@@ -29765,59 +25675,10 @@ export type ProofAcceptanceRow = {
   acceptedAt: string;
 };
 
-/** A contestant's execution profile (v24): exact ids from the race terms,
- * effective limits from the same constants every dispatch uses. */
-export function contestantProfileOf(
-  provider: string,
-  model: string,
-  repairModel: string,
-  permissionMode: UnattendedPermissionMode = "auto",
-): ExecutionProfile {
-  return provider === "claude"
-    ? {
-        provider: "claude",
-        model,
-        permissionArgv: permissionMode,
-        maxTurns: CLAUDE_LIMITS.maxTurns,
-        repairMaxTurns: CLAUDE_LIMITS.repairMaxTurns,
-        timeoutSeconds: CLAUDE_LIMITS.timeoutSeconds,
-        timeoutKind: "idle",
-        repairTimeoutSeconds: CLAUDE_LIMITS.repairTimeoutSeconds,
-        repairModel,
-      }
-    : provider === "gemini"
-      ? {
-          // v27 (comparisons): gemini's OWN shape — before this branch a
-          // gemini string would have flowed into the codex profile via
-          // the fallthrough, unreachable while tournaments refused it,
-          // reachable the moment comparisons admitted it.
-          provider: "gemini",
-          model,
-          approvalArgv: permissionMode === "bypassPermissions" ? "yolo" : "auto_edit",
-          maxTurns: "unsupported",
-          repairMaxTurns: "unsupported",
-          timeoutSeconds: GEMINI_LIMITS.timeoutSeconds,
-          timeoutKind: "idle",
-          repairTimeoutSeconds: GEMINI_LIMITS.repairTimeoutSeconds,
-          repairModel,
-        }
-      : {
-          provider: provider === "openrouter" ? "openrouter" : "codex",
-          model,
-          sandboxMode: permissionMode === "bypassPermissions" ? "danger-full-access" : "workspace-write",
-          maxTurns: "unsupported",
-          repairMaxTurns: "unsupported",
-          timeoutSeconds: CODEX_SHAPED_LIMITS.timeoutSeconds,
-          timeoutKind: "idle",
-          repairTimeoutSeconds: CODEX_SHAPED_LIMITS.repairTimeoutSeconds,
-          repairModel,
-        };
-}
-
 /** The stored rubric, re-proved through the same strict parser that admits
  * one on the way in — never trusted bytes back out. Malformed or absent
  * reads back as `[]`, matching every rubric-less scope. */
-function readAcceptance(column: "task_scope.acceptance_json" | "routine.acceptance_json", value: unknown): AcceptanceCriterion[] {
+function readAcceptance(column: "task_scope.acceptance_json", value: unknown): AcceptanceCriterion[] {
   if (value === null || value === undefined) return [];
   try {
     return parseAcceptanceCriteria(parseStoreColumn(column, value)).criteria;

@@ -81,7 +81,6 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         `<p class="meta">Operators with all-project access also manage the instance.</p><fieldset><legend>Projects</legend>${projectChoices.length === 0 ? `<p class="meta">Add a project before granting selected access.</p>` : projectChoices.map(repo => `<label class="row"><input type="checkbox" name="projects" value="${escape(repo)}"${selected?.includes(repo) ? " checked" : ""}>${escape(projectName(repo))}</label>`).join("")}</fieldset>`;
       const cards = accounts.map(one => {
         const seen = lastSeenOf(one.name);
-        const attended = store.openAttendedOf(one.name);
         const acts = store.recentActsOf(one.name);
         const standing =
           one.revokedAt !== null
@@ -96,9 +95,6 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
           approverView && one.revokedAt === null ? `<details><summary>Edit project access</summary><form method="post" action="/people/projects">${hiddenFields({ csrf, name: one.name })}${accessFields(one.projects)}<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><p class="meta">Changing access signs this person out and ends their derived sessions and modes. Previously approved work stays recorded.</p><button type="submit">Save project access</button></form></details>` : "",
           `<p class="meta">${seen === null ? "not signed in right now" : `signed in \u2014 active ${escape(new Date(seen).toISOString().slice(11, 16))} UTC`} \u00b7 joined ${escape(one.addedAt.slice(0, 10))}</p>`,
           `<p><a href="${escape(personHref(one.name))}">Tokens and remote activity</a></p>`,
-          attended.length === 0
-            ? ""
-            : `<p class="row">watching now: ${attended.map(session => `<a href="/t/${escape(session.taskId)}">${escape(session.taskId)}</a>`).join(", ")}</p>`,
           acts.length === 0
             ? `<p class="meta">No recorded acts yet</p>`
             : acts.map(act => `<p class="row meta">${escape(act.kind)} ${escape(act.subject)} \u00b7 ${escape(act.at.slice(0, 16).replace("T", " "))}</p>`).join("\n"),

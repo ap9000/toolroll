@@ -184,7 +184,6 @@ export function createSharedGuards(runtime: GuardsRuntime) {
       case 'run': return runRepo(id);
       case 'decision': return runRepo(runtime.store.getDecision(id)?.run);
       case 'incident': return runRepo(runtime.store.openIncidents().find(one => one.id === id)?.run);
-      case 'routine': return runtime.store.getRoutine(id)?.repo ?? null;
       case 'flow': return runtime.store.getFlow(id)?.repo ?? null;
       case 'proposal': case 'coding': return runtime.actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget)).repo;
       case 'conversation': return projectOf(who, request) ?? null;

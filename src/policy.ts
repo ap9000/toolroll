@@ -15,8 +15,7 @@
  * (lowered), or, when there is none, doesn't run (refused); the words say which.
  *
  * Every road that admits work asks here: scope approval, the tick before a
- * run starts (and build() as the last look), fallback entries, race lanes,
- * attended sessions, the lead and project chats, teammates and flow steps.
+ * run starts (and build() as the last look), the lead and project chats, teammates and flow steps.
  */
 import type { Database } from "./store.js";
 import type { ExecutionProfile } from "./scope.js";
@@ -209,14 +208,6 @@ export function profileVerdict(policy: OrgPolicy, profile: ExecutionProfile): Ce
   const repair = profile.repairModel === "inherit" || profile.repairModel === profile.model ? null : agentRefusal(policy, profile.provider, profile.repairModel);
   if (repair !== null) return { ok: false, message: `Its repairs: ${repair.charAt(0).toLowerCase()}${repair.slice(1)}` };
   return underCeiling(policy, profile);
-}
-
-/** An attended session runs at exactly what the person signed, so nothing is lowered: it runs as signed, or is refused. */
-export function attendedRefusal(policy: OrgPolicy, profile: ExecutionProfile): string | null {
-  const verdict = profileVerdict(policy, profile);
-  if (!verdict.ok) return verdict.message;
-  return verdict.lowered === null ? null
-    : `This session asks for ${levelWords(profile)}, above the organisation policy's permission ceiling (${LEVEL_NAMES[policy.ceiling]}). Authorise it again with a lower permission, or ${WHERE.charAt(0).toLowerCase()}${WHERE.slice(1)}`;
 }
 
 /** At approval, a person signs exact terms: anything above the ceiling is refused with words (a new filing is lowered). */

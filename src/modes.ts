@@ -31,7 +31,8 @@ export type ModeTerms = {
   /** Explicit opt-in: a verified planner may approve a plan that preserves
    * the signer's pre-authorized filed contract and execution terms exactly. */
   planAuto: boolean;
-  /** Attended mint without the per-mint password — signer only (D8). */
+  /** Historical signed field (watched sessions without a per-session
+   * password, removed in v115); new modes leave it false and nothing reads it. */
   quickMint: boolean;
   /** Historical signed field; new modes leave it false and no worker consumes
    * it. Automatic review is the project's review switch (review-switch.ts),
@@ -51,15 +52,13 @@ export type ModeTerms = {
    * "automerge" = the mode's signature substitutes for the per-merge
    * human authorization, through the grant machinery only (D1/E1). */
   publication: "notify" | "automerge";
-  /** Whether this mode AUTHORIZES automatic PAID fallback (a
-   * subscription->api-key or api-key->api-key switch that spends). v30,
-   * fallback chains R8: legacy modes default FALSE — a paid substitution
-   * must be an explicit, freshly-signed grant. A subscription->subscription
-   * fallback is not "paid" and needs no grant. */
+  /** Historical signed term (v30-v114: a grant for automatic paid
+   * fallback; fallback chains were removed in v115). Always false on new
+   * modes; retained for digest and audit compatibility. */
   allowPaidFallback: boolean;
   /** Whether this mode AUTHORIZES the bounded repair loop to draft AND
    * auto-approve its own repair attempts (v40, evidence-review-v1) — the
-   * allowPaidFallback precedent, verbatim: legacy modes default FALSE, a
+   * same precedent as the old paid-fallback grant: legacy modes default FALSE, a
    * new authority is never inherited, only freshly signed. Without it, a
    * short/refuted run with named unresolved criteria still gets exactly
    * one drafted repair — it simply waits unapproved. */
@@ -89,7 +88,7 @@ export function presetTerms(name: ModeName, absoluteExpiry: string): ModeTerms {
         permissionDefault: "safe",
         autoApproveFiling: false,
         planAuto: false,
-        quickMint: true,
+        quickMint: false,
         reviewAuto: false,
         reviewRetryAuto: false,
         perAttemptBudgetMicrousd: null,
@@ -107,7 +106,7 @@ export function presetTerms(name: ModeName, absoluteExpiry: string): ModeTerms {
         permissionDefault: "escalated",
         autoApproveFiling: true,
         planAuto: false,
-        quickMint: true,
+        quickMint: false,
         reviewAuto: false,
         reviewRetryAuto: false,
         perAttemptBudgetMicrousd: null,
@@ -175,10 +174,8 @@ export function modeTermsFromJson(json: string | null): ModeTerms | null {
     measured !== undefined &&
     runs !== undefined &&
     (t["publication"] === "notify" || t["publication"] === "automerge") &&
-    // allowPaidFallback: a legacy mode has NO such field — that MUST read
-    // as false (R8: a paid substitution is only ever an explicit,
-    // freshly-signed grant). A present value must be a strict boolean;
-    // anything else is a bad envelope, null.
+    // allowPaidFallback (historical): absent reads as false; a present
+    // value must be a strict boolean, anything else is a bad envelope.
     (t["allowPaidFallback"] === undefined || typeof t["allowPaidFallback"] === "boolean") &&
     // repairAuto/repairMaxAttempts: the SAME precedent, verbatim (v40). A
     // legacy mode has NO such fields — that MUST read as false/0, never
@@ -224,11 +221,8 @@ export function modeWords(terms: ModeTerms): string[] {
     terms.autoApproveFiling
       ? "every scope YOU file — signed-in console or credentialed CLI — is approved the moment you file it; while this mode is active, your signed-in browser session becomes a spend credential for this repository"
       : "filings still wait for their own approval ceremony",
-    terms.quickMint
-      ? "you start watched sessions without re-typing your password — the confirm screen still shows every term"
-      : "watched sessions keep the per-session password",
     terms.planAuto
-      ? "plans for your pre-authorized filings auto-approve only when the goal, exclusions, paths, acceptance criteria, risk, budget, and agent route remain exactly unchanged; provide a goal, paths and acceptance criteria upfront; amendments and unresolved questions still wait for you"
+      ? "plans for your pre-authorized filings auto-approve only when the goal, exclusions, paths, acceptance criteria, budget, and agent route remain exactly unchanged; provide a goal, paths and acceptance criteria upfront; amendments and unresolved questions still wait for you"
       : "planner-generated plans wait for your approval",
     terms.name === "hands-off"
       ? "automatic review is on for this project unless you turn it off (`toolroll review off --repo <path>`): each finished build whose check passes (or that finishes, with checks Off) gets one read-only review by the project's review agent; a HIGH finding sends it back once as a revision filed under this mode, a HIGH on that revision comes to you, MEDIUM and LOW findings come to you as suggested follow-ups, and a review that fails or times out never holds the work — it reaches you marked not reviewed"
@@ -247,9 +241,8 @@ export function modeWords(terms: ModeTerms): string[] {
     terms.publication === "automerge"
       ? "pull requests merge THEMSELVES when CI is seen green on the exact commit — you are told afterwards (requires a merge-capable publication grant)"
       : "merges wait for you — even where a grant could merge on its own, while this mode is active",
-    terms.allowPaidFallback
-      ? "when a subscription is exhausted mid-build, an approved fallback that spends (an API key) may run automatically — spend moves to that account"
-      : "automatic fallback never switches to a paid API key on its own; a subscription that runs out stops and waits for you",
+    ...(terms.allowPaidFallback
+      ? ["a historical paid-fallback grant is retained on record but no longer used"] : []),
     ...(terms.repairAuto
       ? ["historical automatic repair grants are retained on record but no longer schedule work"] : []),
     ...(terms.chatApprove

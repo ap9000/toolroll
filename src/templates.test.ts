@@ -6,7 +6,8 @@ import { openStore, type Store } from "./store.js";
 import { runOperate, EXIT } from "./operate.js";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { validateTaskText } from "./proposal.js";
-import { validateRoutineTerms } from "./routine.js";
+import { standingTermsProblems } from "./flow-schedule.js";
+import { runScheduleNow, setFlowTriggerOn, triggerConfigOf } from "./flow-triggers.js";
 import { hasDisguisedText } from "./decision.js";
 
 const T0 = new Date("2026-08-14T12:00:00.000Z");
@@ -19,19 +20,9 @@ describe("the template library is honest data", () => {
           validateTaskText({ title: one.title, goal: one.goal, outOfScope: one.outOfScope, touches: one.touches }),
           one.name,
         ).toBeNull();
-      } else if (one.kind === "routine") {
+      } else if (one.kind === "scheduled") {
         expect(
-          validateRoutineTerms({
-            repo: "/anywhere",
-            goal: one.goal,
-            outOfScope: one.outOfScope,
-            touches: one.touches,
-            acceptance: one.acceptance,
-            requirements: one.requirements,
-            schedule: one.schedule,
-            singleFlight: true,
-            costCeilingUsd: one.costCeilingUsd,
-          }),
+          standingTermsProblems({ goal: one.goal, outOfScope: one.outOfScope, touches: one.touches, acceptance: one.acceptance, requirements: one.requirements, budgetPerRunMicrousd: null, costCeilingUsd: one.costCeilingUsd }, one.schedule),
           one.name,
         ).toEqual([]);
       } else {
@@ -81,25 +72,41 @@ describe("template — preview by default, --file files unapproved", () => {
     expect(payload().templates.length).toBeGreaterThanOrEqual(6);
     lines = [];
     expect(await run(["template", "show", "nightly-deps", "--json"])).toBe(EXIT.ok);
-    expect(payload().template.kind).toBe("routine");
+    expect(payload().template.kind).toBe("scheduled");
   });
 
   test("apply previews by default: exit 3, reason unconfirmed, nothing filed", async () => {
     const code = await run(["template", "apply", "nightly-deps", "--repo", repo, "--json"]);
     expect(code).toBe(3);
     expect(payload()).toMatchObject({ ok: false, reason: "unconfirmed" });
-    expect(store.listRoutines(null)).toHaveLength(0);
+    expect(store.listFlows([repo])).toHaveLength(0);
   });
 
-  test("apply --file files an UNAPPROVED routine with template provenance", async () => {
+  test("apply --file makes a scheduled flow whose schedule starts paused, carrying the terms with no approval", async () => {
     const code = await run(["template", "apply", "nightly-deps", "--repo", repo, "--file", "--json"]);
     expect(code).toBe(EXIT.ok);
-    expect(payload()).toMatchObject({ ok: true, filed: "routine", approved: false });
-    const routine = store.routineByName("nightly-deps");
-    expect(routine?.approvedAt).toBeNull();
-    expect(routine?.filedVia).toBe("template:nightly-deps");
-    // Overrides won: the default schedule came from the template.
-    expect(routine?.schedule).toBe("daily:03:30");
+    expect(payload()).toMatchObject({ ok: true, filed: "scheduled flow", on: false });
+    const flow = store.getFlow(payload().flow as number)!;
+    expect(flow).toMatchObject({ repo, name: "Keep dependencies current", state: "active" });
+    const [trigger] = store.flowTriggers(flow.id);
+    // Nothing repeats until a person turns the schedule on, and it has no time until then.
+    expect(trigger).toMatchObject({ kind: "schedule", state: "paused", nextAt: null });
+    const config = triggerConfigOf(trigger!);
+    expect(config).toMatchObject({ kind: "schedule", schedule: "daily:03:30", zone: "build", order: { stem: "nightly-deps", approval: null, routine: null, filedBy: null, singleFlight: true } });
+    // `flows show` says what each run files.
+    store.upsertProject(repo, "repo", T0);
+    lines = [];
+    expect(await run(["flows", "show", String(flow.id)])).toBe(EXIT.ok);
+    expect(lines.join("\n")).toContain("Builds: Update dependencies conservatively");
+    expect(lines.join("\n")).toContain("Each run waits for approval under the project's rules.");
+    // Turned on, it starts counting; a run files an ordinary proposal that waits for approval.
+    setFlowTriggerOn(store, trigger!, true, T0);
+    expect(store.getFlowTrigger(trigger!.id)).toMatchObject({ state: "active", nextAt: expect.any(String) });
+    const ran = runScheduleNow(store, store.getFlowTrigger(trigger!.id)!, "alex", T0);
+    expect(ran.ok).toBe(true);
+    const task = store.listTasks().find(one => one.id.startsWith("nightly-deps-"))!;
+    expect(task).toBeDefined();
+    expect(store.getScope(task.id)?.approvedAt ?? null).toBeNull();
   });
 
   test("apply --file with overrides files the edited draft, not the template", async () => {

@@ -18,7 +18,6 @@ import { register } from "./runner.js";
 import type { Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { digestOf } from "./scope.js";
-import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-09-03T00:00:00.000Z");
@@ -187,7 +186,13 @@ describe("a sealed route governs dispatch (v47)", () => {
     await run(["approver", "add", "alex", "--json"]);
     const approverToken = payload().token as string;
     await run(["task", "add", "harden payouts", "--id", "payouts", "--repo", repo, "--json"]);
-    await run(["task", "scope", "payouts", "--goal", "Harden the payouts", "--acceptance", "c1: guarded | check", "--risk", "high", "--json"]);
+    {
+      // A large change: its route builds on the strong tier.
+      const store = openStore(db);
+      store.writeSizing(store.refFor("built-in", "payouts").id, { size: "large", risky: false, source: "person", reason: "set by alex" });
+      store.close();
+    }
+    await run(["task", "scope", "payouts", "--goal", "Harden the payouts", "--acceptance", "c1: guarded | check", "--json"]);
     const before = openStore(db);
     const digest = before.getScope("payouts")?.digest as string;
     before.close();
@@ -245,77 +250,6 @@ describe("a sealed route governs dispatch (v47)", () => {
     expect(build).toMatchObject({ provider: "claude", model: "opus" });
     // Provenance: the run names the sealed route and its exact leg.
     expect(store.runRoute(build.id)).toMatchObject({ phase: "build", provider: "claude", model: "opus", chosen: "recommended", routeDigest: routeDigestOf(store.approvedRouteOf("payouts")!) });
-    store.close();
-  });
-
-  test("an unavailable primary under an APPROVED fallback chain moves to the exact approved next entry — and only under a live paid-fallback grant; without one it halts", async () => {
-    const runnerToken = "tok-builder-1";
-    {
-      const store = openStore(db);
-      register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => runnerToken });
-      store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", T0);
-      store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", T0);
-      store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
-      store.setFallbackConfig(repo, [{ provider: "codex", model: "gpt-5-codex", authMode: "api-key" }], "test", T0);
-      store.close();
-    }
-    await run(["approver", "add", "alex", "--json"]);
-    const approverToken = payload().token as string;
-    await run(["task", "add", "harden payouts", "--id", "payouts", "--repo", repo, "--json"]);
-    await run(["task", "scope", "payouts", "--goal", "Harden the payouts", "--acceptance", "c1: guarded | check", "--json"]);
-    const before = openStore(db);
-    const digest = before.getScope("payouts")?.digest as string;
-    expect(before.getScope("payouts")?.proposedChainJson).not.toBeNull();
-    before.close();
-    await run(["task", "approve", "payouts", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"]);
-    expect(payload().ok).toBe(true);
-    {
-      const store = openStore(db);
-      expect(store.approvedChainOf("payouts")).toHaveLength(2);
-      store.recordProviderReadiness("builder-1", [{ provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "version" }], T0);
-      store.close();
-    }
-    const tick = (now: Date, agent: Runner = neverCalled) => run(["tick", "--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool, "--json"], now, agent);
-    // No live mode grants paid fallback: the approved chain does not move,
-    // and the words say what is missing.
-    await tick(new Date(T0.getTime() + 60_000));
-    const halted = payload().dispatched.find((one: { id: string }) => one.id === "payouts");
-    expect(halted).toMatchObject({ outcome: "skipped", reason: "provider-unavailable" });
-    expect(halted.detail).toContain("nothing substitutes");
-    expect(halted.detail).toContain("needs a live operating mode that allows paid fallback");
-    {
-      const store = openStore(db);
-      const ref = store.refFor("built-in", "payouts");
-      expect(store.fallbackCycleFor(ref.id)).toBeNull();
-      expect(store.runsFor(ref.id)).toHaveLength(0);
-      // The grant: a hands-off mode that allows paid fallback.
-      const terms = { ...presetTerms("hands-off", new Date(T0.getTime() + 24 * 60 * 60_000).toISOString()), allowPaidFallback: true };
-      store.signMode({ repo, name: "hands-off", termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "alex", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, T0);
-      store.close();
-    }
-    const spawned: string[][] = [];
-    const codexAgent: Runner = async (_file, args) => {
-      spawned.push([...args]);
-      return { ...OK, stdout: "" };
-    };
-    await tick(new Date(T0.getTime() + 120_000), codexAgent);
-    const moved = payload().dispatched.find((one: { id: string; reason?: string }) => one.id === "payouts" && one.reason === "provider-unavailable");
-    expect(moved).toBeDefined();
-    expect(moved.detail).toContain("moving to the approved fallback codex · gpt-5-codex");
-    const store = openStore(db);
-    const ref = store.refFor("built-in", "payouts");
-    const cycle = store.raw().prepare("SELECT * FROM fallback_cycle WHERE task_ref = ? ORDER BY id DESC LIMIT 1").get(ref.id) as Record<string, unknown>;
-    expect(Number(cycle["cursor"])).toBe(1);
-    // The SAME pass admitted the approved entry — never the primary: the one
-    // run it opened is codex · gpt-5-codex, stamped `fallback` in admission.
-    const runs = store.runsFor(ref.id);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ provider: "codex", model: "gpt-5-codex", chainIndex: 1 });
-    expect(store.runRoute(runs[0]!.id)).toMatchObject({ phase: "build", provider: "codex", model: "gpt-5-codex", chosen: "fallback", routeDigest: routeDigestOf(store.approvedRouteOf("payouts")!) });
-    // Whatever the codex harness did here (this fixture has none installed),
-    // nothing ever asked for the primary's model.
-    for (const args of spawned) expect(args.join(" ")).not.toContain("sonnet");
-    expect(payload().dispatched.map((one: { id: string; outcome: string; reason?: string }) => `${one.id}:${one.outcome}:${one.reason ?? ""}`)).toEqual(["payouts:skipped:provider-unavailable", "payouts:failed:fallback-attempt"]);
     store.close();
   });
 });

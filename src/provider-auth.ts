@@ -109,7 +109,7 @@ export function authPauseOf(store: Store, provider: string): AuthPause | null {
 /**
  * SQL: whether the pause `pause` (a provider_auth_pause alias) is on one of
  * the task_ref `taskRef`'s current providers — its pins, its working profile,
- * route legs and fallback entries — so a task re-routed to another provider
+ * and route legs — so a task re-routed to another provider
  * stops saying it waits on the old one. A task that names none yet (an
  * unpinned planner, whose agent comes from configuration) keeps what the gate
  * found.
@@ -120,9 +120,7 @@ export function pauseOnTaskProviders(pause: string, taskRef: string): string {
     UNION ALL SELECT json_extract(ts.profile_json, '$.provider') FROM task_ref r JOIN task_scope ts ON ts.task_id = r.external_id
       WHERE r.id = ${taskRef} AND json_valid(ts.profile_json)
     UNION ALL SELECT json_extract(leg.value, '$.provider') FROM task_ref r JOIN task_scope ts ON ts.task_id = r.external_id,
-      json_each(CASE WHEN json_valid(ts.proposed_route_json) THEN ts.proposed_route_json ELSE '{}' END, '$.legs') leg WHERE r.id = ${taskRef}
-    UNION ALL SELECT json_extract(entry.value, '$.profile.provider') FROM task_ref r JOIN task_scope ts ON ts.task_id = r.external_id,
-      json_each(CASE WHEN json_valid(ts.proposed_chain_json) THEN ts.proposed_chain_json ELSE '{}' END, '$.chain') entry WHERE r.id = ${taskRef}`;
+      json_each(CASE WHEN json_valid(ts.proposed_route_json) THEN ts.proposed_route_json ELSE '{}' END, '$.legs') leg WHERE r.id = ${taskRef}`;
   return `(${pause}.provider IN (SELECT provider FROM (${providers}) WHERE provider IS NOT NULL)
     OR NOT EXISTS (SELECT 1 FROM (${providers}) WHERE provider IS NOT NULL))`;
 }
@@ -286,8 +284,8 @@ export type SignInGate = { waiting: AuthPause | null; giveBack: () => void };
 
 /**
  * The sign-in gate every road that starts an agent asks before it claims
- * anything: the tick's queue, and the roads beside it (fallback entries,
- * attended continuations, contest resumes). Waits when a provider is paused,
+ * anything: the tick's queue and the roads beside it.
+ * Waits when a provider is paused,
  * unless this is the pause's one trial. A waiting task is noted on its
  * task_ref, so the work index says exactly what the gate decided; a task let
  * through is un-noted. A road whose claim fails after a trial calls giveBack.

@@ -6,7 +6,7 @@
  * exactly as it talks to the real CLIs (src/provider.ts, src/invoke.ts, src/exec.ts, src/subscription-chat.ts,
  * src/teammates.ts, src/flow-draft.ts, src/task-sizing.ts):
  *
- *   claude  -p … --output-format json | stream-json [--input-format stream-json] [--json-schema …] [--resume <id>]
+ *   claude  -p … --output-format json | stream-json [--json-schema …] [--resume <id>]
  *   codex   exec [resume <id>] --json … [--output-schema <file>] <brief | ->
  *
  * It answers at once from the world's script: rules a journey adds (`add`) before it acts, each matching a kind of
@@ -149,7 +149,7 @@ export function readCall(provider, argv) {
     const inline = at !== -1 && at + 1 < argv.length && !argv[at + 1].startsWith("-") ? argv[at + 1] : null;
     const format = value("--output-format") ?? "text";
     return {
-      provider, prompt: inline, held: value("--input-format") === "stream-json", format,
+      provider, prompt: inline, format,
       schema: json(value("--json-schema") ?? "null"), resume: value("--resume"), session: value("--session-id"),
       mcp: all("--mcp-config"), tools: value("--tools"), permission: value("--permission-mode"),
     };
@@ -158,7 +158,7 @@ export function readCall(provider, argv) {
   const last = argv.at(-1);
   const schemaFile = value("--output-schema");
   return {
-    provider, prompt: last === "-" || last === undefined || last.startsWith("-") ? null : last, held: false, format: "codex",
+    provider, prompt: last === "-" || last === undefined || last.startsWith("-") ? null : last, format: "codex",
     schema: schemaFile === null ? null : json(readFileSync(schemaFile, "utf8")), resume: resumeAt === -1 ? null : argv[resumeAt], session: null,
     mcp: [], tools: null, permission: null,
   };
@@ -404,7 +404,7 @@ async function plain(provider, argv) {
 function passThrough(dir, provider, argv) {
   const call = readCall(provider, argv);
   const isTurn = provider === "claude" ? argv.includes("-p") || argv.includes("--print") : argv[0] === "exec";
-  appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.calls ? "lead" : call.held ? "held" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true })}\n`);
+  appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.calls ? "lead" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true })}\n`);
   const env = { ...process.env };
   const real = env[REAL_ENV];
   delete env[COUNT_ENV]; delete env[REAL_ENV];
@@ -423,18 +423,6 @@ async function main([provider, ...argv]) {
   const call = readCall(provider, argv);
   const cwd = process.cwd();
   const session = call.resume ?? call.session ?? randomUUID();
-  if (call.held) {
-    // An attended session: one turn per stdin line, each answered with its init and its result, until stdin ends.
-    let cost = 0;
-    for await (const line of createInterface({ input: process.stdin })) {
-      let message; try { message = JSON.parse(line); } catch { continue; }
-      const text = (message.message?.content ?? []).map(one => one.text ?? "").join("\n");
-      const done = await turn(dir, call, text, cwd);
-      cost += 0.001;
-      say(init(session, cwd)); say(assistant(session, messageOf(done) || done.error)); say(claudeResult(done, session, cost));
-    }
-    return;
-  }
   const prompt = call.prompt ?? await readStdin();
   const done = await turn(dir, call, prompt, cwd);
   if (!done.ok) process.stderr.write(`scripted ${provider}: ${done.error}\n`);

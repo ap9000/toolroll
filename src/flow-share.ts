@@ -25,7 +25,7 @@ import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWor
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_FILE_FORMAT, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
-import { parseSchedule } from "./routine.js";
+import { parseSchedule } from "./flow-schedule.js";
 import type { FlowRow, Store } from "./store.js";
 
 export { FLOW_FILE_FORMAT, FLOW_FILE_VERSION };

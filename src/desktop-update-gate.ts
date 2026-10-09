@@ -54,7 +54,6 @@ export function activeUpdateWork(db: Database): Record<string, number> {
     runs: count("SELECT count(*) n FROM run WHERE outcome IS NULL"),
     claims: count("SELECT count(*) n FROM claim WHERE released_at IS NULL"),
     conversations: count("SELECT count(*) n FROM mate_turn WHERE state IN ('queued','running')") + count("SELECT count(*) n FROM chat_turn WHERE state IN ('queued','running')"),
-    sessions: count("SELECT count(*) n FROM held_session WHERE ended_at IS NULL"),
     stopping: count("SELECT count(*) n FROM run_stop WHERE settled_at IS NULL"),
     ...activeCodingUpdateWork(db),
   };

@@ -359,7 +359,7 @@ describe("execution profiles (foundations, findings 13/14/17/21)", () => {
     expect(withProfile).toBe("6d7cc772f312c1295df747e243a49717");
   });
 
-  test("fallback chains (v30): a chain digest is domain-separated and a chain-of-one is a DISTINCT explicit target", () => {
+  test("history — fallback chains (v30-v114): a chain digest is domain-separated and a chain-of-one is a DISTINCT explicit target", () => {
     const chain = [{ profile: claude, authMode: "subscription" as const }];
     // A chain digest can never collide with the single-profile digest.
     expect(chainDigestOf(chain)).not.toBe(profileDigestOf(claude));
@@ -517,7 +517,7 @@ describe("exact-key, safe-integer, timer-safe rehydration (v48 integrity)", () =
     store.close();
   });
 
-  test("scopeAuthorityOf is the one strict projection: it re-parses the raw bytes, requires parity, entry-zero identity, and a digest that re-derives — and the seal refuses whatever it refuses", () => {
+  test("scopeAuthorityOf is the one strict projection: it re-parses the raw bytes, requires parity and a digest that re-derives — and the seal refuses whatever it refuses", () => {
     const store = openStore(":memory:");
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "alex", T0);
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "alex", T0);
@@ -530,7 +530,7 @@ describe("exact-key, safe-integer, timer-safe rehydration (v48 integrity)", () =
     propose(store, { taskId: "p", goal: "g", acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: T0 });
     const sound = store.getScope("p")!;
     const authority = scopeAuthorityOf(sound);
-    expect(authority).toMatchObject({ ok: true, chain: null, digest: sound.digest });
+    expect(authority).toMatchObject({ ok: true, digest: sound.digest });
     const raw = store.raw();
     const stored = raw.prepare("SELECT profile_json, proposed_route_json, digest FROM task_scope WHERE task_id = 'p'").get() as { profile_json: string; proposed_route_json: string; digest: string };
     const restore = () => raw.prepare("UPDATE task_scope SET profile_json = ?, proposed_route_json = ?, digest = ?, proposed_chain_json = NULL, route_era = 1 WHERE task_id = 'p'").run(stored.profile_json, stored.proposed_route_json, stored.digest);
@@ -543,9 +543,8 @@ describe("exact-key, safe-integer, timer-safe rehydration (v48 integrity)", () =
       ["route", "route with an extra key", () => raw.prepare("UPDATE task_scope SET proposed_route_json = ? WHERE task_id = 'p'").run(JSON.stringify({ ...route, extra: 1 }))],
       ["route", "no route on a routed row", () => raw.prepare("UPDATE task_scope SET proposed_route_json = NULL WHERE task_id = 'p'").run()],
       ["parity", "repair leg not the profile's", () => raw.prepare("UPDATE task_scope SET proposed_route_json = ? WHERE task_id = 'p'").run(JSON.stringify({ ...route, legs: (route["legs"] as Record<string, unknown>[]).map(leg => (leg["phase"] === "repair" ? { ...leg, model: "opus" } : leg)) }))],
-      ["chain", "chain with a malformed auth mode", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 'p'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: profile.profile, authMode: "bogus" }] }))],
-      ["parity", "chain whose entry zero is another profile", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 'p'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: { ...profile.profile, model: "opus" }, authMode: "subscription" }] }))],
-      ["digest", "a chain the digest never bound", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 'p'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: profile.profile, authMode: "subscription" }] }))],
+      // A filing that names fallback agents (v30-v114) holds no authority now, whole or not.
+      ["chain", "a chain filing from before v115", () => raw.prepare("UPDATE task_scope SET proposed_chain_json = ? WHERE task_id = 'p'").run(JSON.stringify({ digestVersion: 1, chain: [{ profile: profile.profile, authMode: "subscription" }] }))],
       ["digest", "a digest that does not re-derive", () => raw.prepare("UPDATE task_scope SET digest = ? WHERE task_id = 'p'").run("f".repeat(32))],
       ["unrouted", "a pre-routing row", () => raw.prepare("UPDATE task_scope SET route_era = NULL WHERE task_id = 'p'").run()],
       // THE RAW TERMS (raw authority repair): corruption the lenient
@@ -624,120 +623,6 @@ describe("the gemini execution profile (Phase 3)", () => {
   });
 });
 
-describe("filing under a fallback chain (E3a): the digest binds it, the seal copies it", () => {
-  let store: Store;
-  const REPO = "/repos/chain";
-  beforeEach(() => {
-    store = openStore(":memory:");
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "alex", T0);
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "alex", T0); // v47: every phase names an exact model
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "alex", T0);
-  });
-  afterEach(() => store.close());
-
-  const placeAndPropose = (id: string, goal: string) => {
-    store.createTask({ id, title: goal }, T0);
-    const ref = store.refFor("built-in", id).id;
-    store.placeTask(ref, REPO);
-    propose(store, { taskId: id, goal, now: T0 });
-    return store.getScope(id)!;
-  };
-
-  test("no configured fallbacks: BYTE-IDENTICAL legacy filing — profile digest, no chain snapshot", () => {
-    const scope = placeAndPropose("t-plain", "a guard");
-    expect(scope.approvalKind).toBe("profile");
-    expect(scope.proposedChainJson ?? null).toBeNull();
-    // The digest is exactly the single-profile binding plus the exact
-    // agent route every fresh row binds (v47).
-    expect(scope.digest).toBe(
-      digestOf({ goal: "a guard", outOfScope: null, touches: [], budgetMicrousd: null }, scope.profile ?? null, routeFromJson(scope.proposedRouteJson ?? null)),
-    );
-  });
-
-  test("with fallbacks: the proposed digest binds the WHOLE chain and stores the working snapshot", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "alex", T0);
-    const scope = placeAndPropose("t-chain", "a guard");
-    expect(scope.proposedChainJson).not.toBeNull();
-    // The stored snapshot re-hydrates strictly, base first.
-    const chain = chainFromJson(scope.proposedChainJson!);
-    expect(chain).not.toBeNull();
-    expect(chain).toHaveLength(2);
-    expect(chain![0]?.profile.provider).toBe("claude");
-    expect(chain![1]?.profile.provider).toBe("gemini");
-    // The digest binds that exact chain — and DIFFERS from the single-profile
-    // binding a plain filing would carry.
-    const route = routeFromJson(scope.proposedRouteJson ?? null);
-    expect(scope.digest).toBe(
-      digestOf({ goal: "a guard", outOfScope: null, touches: [], budgetMicrousd: null }, { chain: chain! }, route),
-    );
-    expect(scope.digest).not.toBe(
-      digestOf({ goal: "a guard", outOfScope: null, touches: [], budgetMicrousd: null }, scope.profile ?? null, route),
-    );
-    // Not yet approved: the approved snapshot stays empty until the seal.
-    expect(scope.approvedChainJson ?? null).toBeNull();
-    expect(scope.approvalKind).toBe("profile");
-  });
-
-  test("the seal COPIES the working chain into the immutable approved snapshot — never re-resolves", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "alex", T0);
-    const scope = placeAndPropose("t-seal", "a guard");
-    const token = bootstrapApprover(store);
-    expect(approve(store, "t-seal", "alex", T0, scope.digest, token).ok).toBe(true);
-    const approved = store.getScope("t-seal")!;
-    expect(approved.approvalKind).toBe("chain");
-    // Byte-for-byte the working snapshot the signed digest bound.
-    expect(approved.approvedChainJson).toBe(scope.proposedChainJson);
-    // Mutating the config AFTER approval never moves the sealed snapshot.
-    store.setFallbackConfig(REPO, [{ provider: "codex", model: "gpt-5-codex", authMode: "subscription" }], "alex", later(1_000));
-    expect(store.getScope("t-seal")!.approvedChainJson).toBe(scope.proposedChainJson);
-  });
-
-  test("the approval card SAYS the chain — every entry, credential included (Layer F)", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "alex", T0);
-    const scope = placeAndPropose("t-words", "a guard");
-    const words = describeScope(scope).join("\n");
-    expect(words).toContain("runs on      claude (sonnet) — your subscription");
-    expect(words).toContain("falls back to gemini (gemini-2.5-pro) — your API key; spend moves to that account");
-    // A plain scope says nothing about chains.
-    const plain = placeAndPropose("t-words-plain", "a guard");
-    store.clearFallbackConfig(REPO);
-    propose(store, { taskId: "t-words-plain", goal: "a guard", now: later(1_000) });
-    expect(describeScope(store.getScope("t-words-plain")!).join("\n")).not.toContain("falls back");
-    void plain;
-  });
-
-  test("a configured chain that CANNOT file makes the scope visibly UNRESOLVED — never a silent single-profile approval (F+G finding 4)", () => {
-    // The config road validates, but the store can be reached directly (or
-    // the base can change after a valid set): a duplicate-of-base chain.
-    store.setFallbackConfig(REPO, [{ provider: "claude", model: "sonnet", authMode: "subscription" }], "alex", T0);
-    const scope = placeAndPropose("t-unfileable", "a guard");
-    expect(scope.profileState).toBe("unresolved");
-    expect(scope.unresolvedReason).toContain("fallback chain cannot file");
-    expect(scope.proposedChainJson ?? null).toBeNull();
-    // Unresolved blocks approval — the operator sees WHY instead of signing
-    // something other than what they configured.
-    const token = bootstrapApprover(store);
-    expect(approve(store, "t-unfileable", "alex", T0, scope.digest, token)).toMatchObject({ ok: false, reason: "profile-unresolved" });
-  });
-
-  test("a re-approved plain scope re-seals to 'profile' — a stale chain can never survive a rewrite", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "alex", T0);
-    const scope = placeAndPropose("t-rewrite", "a guard");
-    const token = bootstrapApprover(store);
-    expect(approve(store, "t-rewrite", "alex", T0, scope.digest, token).ok).toBe(true);
-    expect(store.getScope("t-rewrite")!.approvalKind).toBe("chain");
-    // The operator clears the fallbacks, then rewrites + re-approves the scope.
-    store.clearFallbackConfig(REPO);
-    propose(store, { taskId: "t-rewrite", goal: "a narrower guard", now: later(2_000) });
-    const rewritten = store.getScope("t-rewrite")!;
-    expect(rewritten.proposedChainJson ?? null).toBeNull();
-    expect(approve(store, "t-rewrite", "alex", later(2_000), rewritten.digest, token).ok).toBe(true);
-    const resealed = store.getScope("t-rewrite")!;
-    expect(resealed.approvalKind).toBe("profile");
-    expect(resealed.approvedChainJson ?? null).toBeNull();
-  });
-});
-
 describe("the phase route is a signed term (v47): the digest binds it, the seal copies it, later changes stale it", () => {
   let store: Store;
   const REPO = "/repos/routed";
@@ -753,15 +638,16 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
   });
   afterEach(() => store.close());
 
-  const file = (id: string, options: { risk?: "routine" | "elevated" | "high"; qualityMode?: "default" | "strict" } = {}) => {
+  const file = (id: string, options: { size?: "small" | "medium" | "large"; qualityMode?: "default" | "strict" } = {}) => {
     store.createTask({ id, title: id }, T0);
     const ref = store.refFor("built-in", id).id;
     store.placeTask(ref, REPO);
-    propose(store, { taskId: id, goal: "a guard", acceptance: [{ id: "c1", statement: "guarded", how: null, evidence: ["check"] }], now: T0, ...(options.risk === undefined ? {} : { riskLevel: options.risk }), ...(options.qualityMode === undefined ? {} : { qualityMode: options.qualityMode }) });
+    if (options.size !== undefined) store.writeSizing(ref, { size: options.size, risky: false, source: "person", reason: "" });
+    propose(store, { taskId: id, goal: "a guard", acceptance: [{ id: "c1", statement: "guarded", how: null, evidence: ["check"] }], now: T0, ...(options.qualityMode === undefined ? {} : { qualityMode: options.qualityMode }) });
     return { ref, scope: store.getScope(id)! };
   };
 
-  test("EVERY route binds into the digest — a routine-shaped one included — and the route drives the profile; a high-risk route selects the strong build agent", () => {
+  test("EVERY route binds into the digest — a routine-shaped one included — and the route drives the profile; a large change selects the strong build agent", () => {
     const routine = file("t-routine");
     const routineRoute = routeFromJson(routine.scope.proposedRouteJson ?? null)!;
     expect(routine.scope.routeEra).toBe(1);
@@ -780,9 +666,10 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
       ["review", "claude", "sonnet"],
     ]);
 
-    const risky = file("t-high", { risk: "high" });
+    const risky = file("t-high", { size: "large" });
     const riskyRoute = routeFromJson(risky.scope.proposedRouteJson ?? null)!;
-    expect(risky.scope.riskLevel).toBe("high");
+    // Every route is filed at routine risk; the size lifts it.
+    expect(riskyRoute.risk).toBe("routine");
     // The strong tier drove the SEALED profile — route and profile agree.
     expect(risky.scope.profile?.model).toBe("opus");
     expect(riskyRoute.legs.find(one => one.phase === "build")).toMatchObject({ provider: "claude", model: "opus", tier: "strong" });
@@ -825,7 +712,7 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
   });
 
   test("approval seals the exact route bytes; a task-level route edit stales it; a global config change cannot rewrite the sealed route", () => {
-    const { ref, scope } = file("t-seal", { risk: "elevated" });
+    const { ref, scope } = file("t-seal", { qualityMode: "strict" });
     expect(store.approvedRouteOf("t-seal")).toBeNull();
     expect(approve(store, "t-seal", "alex", T0, scope.digest, "tok-alex").ok).toBe(true);
     const sealed = store.getScope("t-seal")!;
@@ -859,28 +746,27 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
     expect(store.approvedRouteOf("t-seal")!.overrides).toHaveLength(1);
   });
 
-  test("a risk change stales the approval exactly as a goal edit does — even from routine to elevated", () => {
+  test("a size change stales the approval exactly as a goal edit does", () => {
+    const large = { size: "large" as const, risky: false };
     const { ref, scope } = file("t-risk");
     expect(approve(store, "t-risk", "alex", T0, scope.digest, "tok-alex").ok).toBe(true);
     // The digest-CAS: an edit made against a digest the editor never saw
     // is refused; null means "I saw no scope" and is not the same as a digest.
-    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), risk: "elevated", expectDigest: "0".repeat(32) }, T0)).toMatchObject({ ok: false, reason: "changed" });
-    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), risk: "elevated", expectDigest: null }, T0)).toMatchObject({ ok: false, reason: "changed" });
-    expect(store.getScope("t-risk")!.riskLevel).toBe("routine");
+    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), size: large, expectDigest: "0".repeat(32) }, T0)).toMatchObject({ ok: false, reason: "changed" });
+    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), size: large, expectDigest: null }, T0)).toMatchObject({ ok: false, reason: "changed" });
     // An editor who is no longer an approver changes nothing either.
-    expect(store.editTaskRoute(ref, { by: "mallory", authenticate: () => ({ ok: false, reason: "not-an-approver" }), risk: "elevated" }, T0)).toMatchObject({ ok: false, reason: "unauthenticated" });
-    const edited = store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), risk: "elevated", expectDigest: scope.digest }, T0);
+    expect(store.editTaskRoute(ref, { by: "mallory", authenticate: () => ({ ok: false, reason: "not-an-approver" }), size: large }, T0)).toMatchObject({ ok: false, reason: "unauthenticated" });
+    const edited = store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), size: large, expectDigest: scope.digest }, T0);
     expect(edited.ok).toBe(true);
     if (!edited.ok) return;
     const refiled = edited.scope!;
-    expect(refiled.riskLevel).toBe("elevated");
+    expect(refiled.riskLevel).toBe("routine");
     expect(approvalOf(refiled)).toMatchObject({ approved: false, reason: "changed" });
     // The words in the approval card say the route and its reasons.
     const words = describeScope(refiled);
-    expect(words).toContain("  risk         elevated");
-    // Elevated risk lifts planning and building to the strong tier.
+    // A large change lifts planning and building to the strong tier.
     expect(words.some(line => line.includes("build  claude · opus  [recommended · strong]"))).toBe(true);
-    expect(words.some(line => line.includes("risk is elevated — planning and building use the strongest configured agent"))).toBe(true);
+    expect(words.some(line => line.includes("a large change — planning and building use the strongest configured agent"))).toBe(true);
     expect(words.some(line => /review codex|strongest configured reviewer/.test(line))).toBe(false);
   });
 
@@ -903,12 +789,12 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
   });
 
   test("a tampered approved route snapshot no longer proves — the seal is the digest, not the column", () => {
-    const { scope } = file("t-tamper", { risk: "high" });
+    const { scope } = file("t-tamper", { size: "large" });
     expect(approve(store, "t-tamper", "alex", T0, scope.digest, "tok-alex").ok).toBe(true);
     expect(store.approvedRouteOf("t-tamper")).not.toBeNull();
-    store.raw().prepare("UPDATE task_scope SET approved_route_json = REPLACE(approved_route_json, '\"risk\":\"high\"', '\"risk\":\"elevated\"') WHERE task_id = 't-tamper'").run();
+    store.raw().prepare("UPDATE task_scope SET approved_route_json = REPLACE(approved_route_json, '\"risk\":\"routine\"', '\"risk\":\"elevated\"') WHERE task_id = 't-tamper'").run();
     expect(store.approvedRouteOf("t-tamper")).toBeNull();
-    expect(proveApprovedProfile(store.getScope("t-tamper"), null, { provider: "claude", model: "opus", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false });
+    expect(proveApprovedProfile(store.getScope("t-tamper"), { provider: "claude", model: "opus", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false });
   });
 
   test("route edits are refused under a live claim", () => {
@@ -917,7 +803,7 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
     store.saveScope({ ...store.getScope("t-live")!, approvedAt: T0.toISOString(), approvedBy: "alex", approvedDigest: store.getScope("t-live")!.digest });
     const taken = acquire(store, ref, "r", { token: "tok-r", now: T0 });
     expect(taken.ok).toBe(true);
-    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), risk: "high" }, T0)).toMatchObject({ ok: false, reason: "live-claim" });
+    expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), size: { size: "large", risky: false } }, T0)).toMatchObject({ ok: false, reason: "live-claim" });
     expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), override: { phase: "build", provider: "codex", model: "gpt-5" } }, T0)).toMatchObject({ ok: false, reason: "live-claim" });
   });
 
@@ -1040,35 +926,6 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
     expect(approve(store, "t-auth", "alex", T0, store.getScope("t-auth")!.digest, "tok-alex").ok).toBe(true);
   });
 
-  test("a present fallback row outside one to three exact entries is a stated problem — an empty list never shrinks a configured chain to no fallback", () => {
-    const raw = store.raw();
-    const write = (entries: string) =>
-      raw.prepare("INSERT INTO fallback_config (scope, phase, entries_json, updated_at, updated_by) VALUES (?, 'build', ?, ?, 'alex') ON CONFLICT (scope, phase) DO UPDATE SET entries_json = excluded.entries_json").run(REPO, entries, T0.toISOString());
-    const entry = (model: string) => ({ provider: "gemini", model, authMode: "api-key" });
-    // The store refuses to write what it would not read back.
-    expect(() => store.setFallbackConfig(REPO, [], "alex", T0)).toThrow(/1 to 3 entries, not 0/);
-    expect(() => store.setFallbackConfig(REPO, [entry("a"), entry("b"), entry("c"), entry("d")], "alex", T0)).toThrow(/1 to 3 entries, not 4/);
-    expect(store.fallbackConfigProblem(REPO)).toBeNull();
-    // The reproduction: a present row whose list is empty.
-    write("[]");
-    expect(store.fallbackConfigProblem(REPO)).toMatch(/carries 0 entries, not 1 to 3/);
-    expect(store.fallbackConfig(REPO)).toEqual([]);
-    const { ref, scope } = file("t-empty-chain");
-    expect(scope.profileState).toBe("unresolved");
-    expect(scope.unresolvedReason).toMatch(/the configured fallback chain cannot file: .*carries 0 entries, not 1 to 3/);
-    expect(scope.proposedChainJson ?? null).toBeNull();
-    everyDoorClosed("t-empty-chain", ref, "unresolved", /carries 0 entries/);
-    // Four entries is the same corruption.
-    write(JSON.stringify([entry("a"), entry("b"), entry("c"), entry("d")]));
-    expect(store.fallbackConfigProblem(REPO)).toMatch(/carries 4 entries, not 1 to 3/);
-    // One well-formed entry files a chain as before.
-    store.setFallbackConfig(REPO, [entry("gemini-2.5-pro")], "alex", T0);
-    expect(store.fallbackConfigProblem(REPO)).toBeNull();
-    const { scope: chained } = file("t-chain-ok");
-    expect(chained.profileState).toBe("resolved");
-    expect(chainFromJson(chained.proposedChainJson!)).toHaveLength(2);
-  });
-
   test("a risk level or quality mode that disagrees with the route it was filed beside is a parity problem on the working side, the sealed side, and the dispatch proof", () => {
     const { ref, scope } = file("t-risk");
     expect(routeFromJson(scope.proposedRouteJson ?? null)!.risk).toBe("routine");
@@ -1084,7 +941,7 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
     expect(store.sealedRouteOf("t-risk").ok).toBe(true);
     raw.prepare("UPDATE task_scope SET risk_level = 'high' WHERE task_id = 't-risk'").run();
     expect(store.sealedRouteOf("t-risk")).toMatchObject({ ok: false, reason: "unreadable", detail: expect.stringMatching(/recommended for routine risk but the scope's risk level is high/) });
-    expect(proveApprovedProfile(store.getScope("t-risk"), null, { provider: "claude", model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false, message: expect.stringMatching(/recommended for routine risk .* \(stale-approval\)/) });
+    expect(proveApprovedProfile(store.getScope("t-risk"), { provider: "claude", model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false })).toMatchObject({ ok: false, message: expect.stringMatching(/recommended for routine risk .* \(stale-approval\)/) });
     expect(store.routeAuthorityFor(ref, "builder")).toMatchObject({ ok: false });
     expect(() =>
       store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", branch: "b", worktree: "/w", provider: "claude", model: "sonnet", now: T0, route: { routeDigest: routeDigestOf(routeFromJson(scope.proposedRouteJson ?? null)!), phase: "build", provider: "claude", model: "sonnet", chosen: "recommended" } }),
@@ -1094,38 +951,7 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
     expect(store.sealedRouteOf("t-risk").ok).toBe(true);
   });
 
-  test("auth parity (final authority closure): a chain filed under one credential for its base entry, read beside a live mode file that now says the other, holds no authority — no seal, no plan authority, no run — until it is filed again under today's mode", () => {
-    store.setFallbackConfig(REPO, [{ provider: "gemini", model: "gemini-2.5-pro", authMode: "api-key" }], "alex", T0);
-    const { ref, scope } = file("t-auth-parity");
-    expect(scope.profileState).toBe("resolved");
-    const chain = chainFromJson(scope.proposedChainJson ?? null)!;
-    expect(chain[0]).toMatchObject({ authMode: "subscription" });
-    expect(scopeAuthorityOf(scope, strictEnv)).toMatchObject({ ok: true, authMode: "subscription" });
-    const planLeg = store.routeAuthorityFor(ref, "planner");
-    expect(planLeg).toMatchObject({ ok: true, stamp: { phase: "plan", chosen: "recommended" } });
-    if (planLeg === null || !planLeg.ok) throw new Error("plan leg");
-    // The reproduction: the operator moves claude to an API key AFTER the
-    // chain was filed pinned to the subscription.
-    writeFileSync(authFile(), "api-key");
-    const words = /fallback chain pins its base entry to your subscription for claude, but the live auth mode is now your API key — re-file the scope under today's mode/;
-    everyDoorClosed("t-auth-parity", ref, "auth-mode", words);
-    // The planner's claim, admission, and spawn-time proof all refuse it.
-    expect(store.workingPlanRouteOf("t-auth-parity")).toMatchObject({ ok: false, problem: expect.stringMatching(words) });
-    expect(store.routeAuthorityFor(ref, "planner")).toMatchObject({ ok: false, problem: expect.stringMatching(words) });
-    expect(() =>
-      store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", role: "planner", branch: "b", worktree: "/w", provider: "claude", model: "sonnet", now: T0, route: planLeg.stamp }),
-    ).toThrow(words);
-    expect(runs()).toBe(0);
-    // Restated to the pinned mode, the same scope proves and seals.
-    writeFileSync(authFile(), "subscription");
-    expect(scopeAuthorityOf(store.getScope("t-auth-parity")!, strictEnv)).toMatchObject({ ok: true, authMode: "subscription" });
-    expect(approve(store, "t-auth-parity", "alex", T0, store.getScope("t-auth-parity")!.digest, "tok-alex").ok).toBe(true);
-    // Sealed side: the live mode moving after the yes stales the seal too.
-    writeFileSync(authFile(), "api-key");
-    expect(scopeAuthorityOf(store.getScope("t-auth-parity")!, strictEnv)).toMatchObject({ ok: false, reason: "auth-mode" });
-  });
-
-  test("the planner re-proves the strict scope projection at the claim, the admission, and the invocation (final authority closure): a corrupt proposed-via marker, a risk the route was not recommended for, and an unresolved fallback `[]` each create no run and invoke no provider", async () => {
+  test("the planner re-proves the strict scope projection at the claim, the admission, and the invocation (final authority closure): a corrupt proposed-via marker, a risk the route was not recommended for, and a fallback filing from before v115 each create no run and invoke no provider", async () => {
     register(store, { name: "r", host: "test", capacity: 9, repos: [REPO], now: T0, newToken: () => "tok-r" });
     const { ref, scope } = file("t-plan");
     const raw = store.raw();
@@ -1138,7 +964,7 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
     const cases: [string, string, RegExp][] = [
       ["a corrupt proposed-via marker", "UPDATE task_scope SET proposed_via = 'bogus' WHERE task_id = 't-plan'", /proposed-via marker is not one this code writes/],
       ["a risk the route was not recommended for", "UPDATE task_scope SET risk_level = 'high' WHERE task_id = 't-plan'", /recommended for routine risk but the scope's risk level is high/],
-      ["an unresolved fallback []", `UPDATE task_scope SET proposed_chain_json = '${JSON.stringify({ digestVersion: 1, chain: [] })}' WHERE task_id = 't-plan'`, /fallback chain cannot be read exactly/],
+      ["a fallback filing from before v115", `UPDATE task_scope SET proposed_chain_json = '${JSON.stringify({ digestVersion: 1, chain: [] })}' WHERE task_id = 't-plan'`, /named fallback agents/],
     ];
     for (const [label, sql, words] of cases) {
       restore();
@@ -1205,7 +1031,7 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
       store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", role: "planner", branch: "b", worktree: "/w", provider: "claude", model: "sonnet", now: T0, route: { routeDigest: "profile:" + "0".repeat(32), phase: "plan", provider: "claude", model: "sonnet", chosen: "legacy" } }),
     ).toThrow(/a task with no scope spends as the word legacy, not under a profile digest/);
     expect(runs()).toBe(0);
-    const legacy = store.routeAuthorityFor(ref, "planner", null, { provider: "claude", model: "sonnet" });
+    const legacy = store.routeAuthorityFor(ref, "planner", { provider: "claude", model: "sonnet" });
     expect(legacy).toMatchObject({ ok: true, stamp: { routeDigest: "legacy", phase: "plan", provider: "claude", model: "sonnet", chosen: "legacy" } });
     if (legacy === null || !legacy.ok) throw new Error("legacy");
     const planner = store.startRun({ taskRef: ref, leaseId: "lease", runner: "r", role: "planner", branch: "b", worktree: "/w", provider: "claude", model: "sonnet", now: T0, route: legacy.stamp });

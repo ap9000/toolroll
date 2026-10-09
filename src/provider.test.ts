@@ -885,14 +885,12 @@ describe("the gemini dialect (Phase 3, attested at 0.57.0)", () => {
     expect(validateSpec({ provider: "gemini", model: "gemini-2.5-flash" }).ok).toBe(true);
   });
 
-  test("money honesty: tokens only, no cap to hold, never in a tournament", () => {
+  test("money honesty: tokens only, no cap to hold", () => {
     expect(reportsCost("gemini")).toBe(false);
     expect(MONEY_CAPABILITIES.gemini).toMatchObject({
       nativeDollarCapFlag: null,
       usageSemantics: "per-invocation",
-      tournamentEligible: false,
     });
-    expect(MONEY_CAPABILITIES.gemini.whyIneligible).toContain("tokens");
   });
 
   test("the audit states the posture: init event, NATIVE resume (S1 proved), required terminal, minted identity", () => {

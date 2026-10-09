@@ -45,7 +45,7 @@ function candidates(options: { light?: boolean; strong?: boolean; strongPlanCode
 const sized = (size: TaskSizing["size"], risky = false): TaskSizing => ({ size, risky, source: "classifier", reason: "copy change in one file" });
 
 function input(over: Partial<RouteInput> = {}): RouteInput {
-  return { risk: "routine", qualityMode: "default", evidence: ["check"], publication: "none", candidates: candidates(), overrides: [], ...over };
+  return { qualityMode: "default", evidence: ["check"], publication: "none", candidates: candidates(), overrides: [], ...over };
 }
 
 describe("tiers by size", () => {
@@ -88,11 +88,25 @@ describe("tiers by size", () => {
     expect(recommendRoute(input({ size: sized("medium", true) })).demands).toContain("a risky change — planning and building use the strongest configured agent");
   });
 
-  test("elevated risk also lifts planning and building", () => {
-    const route = recommendRoute(input({ risk: "elevated" }));
-    expect(legOf(route, "plan").tier).toBe("strong");
-    expect(legOf(route, "build").tier).toBe("strong");
-    expect(route.demands[0]).toBe("risk is elevated — planning and building use the strongest configured agent");
+  test("every route is recommended at routine risk: a declared risk level no longer exists as an input", () => {
+    const route = recommendRoute(input());
+    expect(route.risk).toBe("routine");
+    expect(legOf(route, "build").tier).toBe("routine");
+    // The economy reason still says routine risk, so a route's words (and its digest) are what they always were.
+    expect(legOf(route, "build").reasons[0]).toBe("risk is routine, quality is default — the configured builder is economical enough");
+  });
+
+  test("history: a route sealed at elevated or high risk before v115 still decodes, digests the same, and renders its risk", () => {
+    for (const risk of ["elevated", "high"] as const) {
+      const old = { ...recommendRoute(input({ size: sized("small", true) })), risk };
+      const bytes = canonicalRouteJson(old);
+      const decoded = routeFromJson(bytes);
+      expect(decoded).toEqual(old);
+      expect(routeDigestOf(decoded!)).toBe(routeDigestOf(old));
+      const projection = projectRoute(decoded!, NO_READINESS);
+      expect(projection.riskTitle).toBe(risk === "high" ? "High risk" : "Elevated risk");
+      expect(routeWords(projection)[0]).toContain(`route        ${risk === "high" ? "high risk" : "elevated risk"} · `);
+    }
   });
 
   test("route headers name risky sizing without changing the declared risk or sealed route", () => {
@@ -106,10 +120,6 @@ describe("tiers by size", () => {
     }
     expect(projectRoute(recommendRoute(input({ size: sized("large") })), NO_READINESS).riskTitle).toBe("Routine");
     expect(projectRoute(recommendRoute(input()), NO_READINESS).riskTitle).toBe("Routine");
-    for (const risk of ["elevated", "high"] as const) {
-      expect(projectRoute(recommendRoute(input({ risk, size: sized("small", true) })), NO_READINESS).riskTitle)
-        .toBe(risk === "high" ? "High risk" : "Elevated risk");
-    }
   });
 
   test("a demanding fact outranks a small size, and a person's override outranks the tier", () => {
@@ -121,16 +131,7 @@ describe("tiers by size", () => {
     expect(legOf(overridden, "build")).toMatchObject({ model: "sonnet", chosen: "override", recommended: { model: "haiku", tier: "light" } });
   });
 
-  test("elevated or high risk plans a small change too, and the card says so", () => {
-    for (const risk of ["elevated", "high"] as const) {
-      const route = recommendRoute(input({ risk, size: sized("small") }));
-      expect(legOf(route, "plan")).toMatchObject({ model: "opus", tier: "strong" });
-      expect(legOf(route, "plan").reasons[0]).not.toContain("no plan");
-      const projection = projectRoute(route, NO_READINESS);
-      expect(projection.sizeWords).toBe("Small change: strongest agents plan and build");
-      // The planner works on it, so the summary names it.
-      expect(projection.summary).toBe("claude · opus plans, builds, and repairs");
-    }
+  test("a small change makes no plan unless it is risky (or, on a route sealed before v115, at elevated or high risk)", () => {
     expect(makesNoPlan(sized("small"), "routine")).toBe(true);
     expect(makesNoPlan(sized("small"), "elevated")).toBe(false);
     expect(makesNoPlan(sized("small", true), "routine")).toBe(false);
@@ -180,7 +181,7 @@ describe("plan headroom", () => {
   });
 
   test("headroom never moves a phase to a weaker tier, or past one tier stronger", () => {
-    const strongOnly = recommendRoute(input({ risk: "high", candidates: { ...both(), build: { routine: c("codex", "gpt-5-mini"), strong: c("claude", "opus", "installation (strong)") } }, headroom: room([95, 10], [1, 1]) }));
+    const strongOnly = recommendRoute(input({ size: sized("large"), candidates: { ...both(), build: { routine: c("codex", "gpt-5-mini"), strong: c("claude", "opus", "installation (strong)") } }, headroom: room([95, 10], [1, 1]) }));
     expect(legOf(strongOnly, "build")).toMatchObject({ provider: "claude", model: "opus" });
   });
 
@@ -201,7 +202,7 @@ describe("plan headroom", () => {
     expect(legOf(route, "repair")).toMatchObject({ provider: "codex", model: "gpt-5.6", problem: null });
     expect(routeFromJson(canonicalRouteJson(route))).toEqual(route);
     // The strong tier spreads the same way.
-    expect(legOf(recommendRoute(input({ risk: "high", candidates: pair(), headroom: room([30, 40], [5, 1]) })), "build")).toMatchObject({ provider: "codex", model: "gpt-5.6-pro", tier: "strong" });
+    expect(legOf(recommendRoute(input({ size: sized("large"), candidates: pair(), headroom: room([30, 40], [5, 1]) })), "build")).toMatchObject({ provider: "codex", model: "gpt-5.6-pro", tier: "strong" });
   });
 
   test("more room means lower use: the tier's own candidate stays when it has as much or more, or the other is unknown", () => {
@@ -337,31 +338,6 @@ describe("the store", () => {
       expect(store.clearPhaseTierAlternates("installation", "build", "routine", "codex")).toBe(1);
       expect(() => store.setPhaseTierConfig("installation", "plan", "light", "claude", "haiku", "ops", T0)).toThrow(/build phase only/);
       expect(() => store.setPhaseTierAlternate("installation", "plan", "light", "codex", "gpt-5.6-mini", "ops", T0)).toThrow(/build phase only/);
-    } finally {
-      store.close();
-    }
-  });
-
-  test("elevated or high risk asks for a plan whatever the size; a size edit keeps planning at that risk", () => {
-    const store = openStore(":memory:");
-    try {
-      store.setPhaseConfig("installation", "plan", "claude", "sonnet", "ops", T0);
-      store.setPhaseConfig("installation", "build", "claude", "sonnet", "ops", T0);
-      store.setPhaseTierConfig("installation", "build", "light", "claude", "haiku", "ops", T0);
-      expect(store.createConsoleTask({ id: "copy", title: "Fix the button label", repo: "/repo/shop", goal: "Say Save", acceptance: [{ id: "c1", statement: "It says Save", evidence: ["check"] }], sizing: sized("small") }, T0).ok).toBe(true);
-      const ref = store.refFor("built-in", "copy");
-      expect(ref.plan).toBeNull();
-      const person = { by: "alex", authenticate: () => ({ ok: true }) as const };
-      expect(store.editTaskRoute(ref.id, { ...person, risk: "elevated" }, T0).ok).toBe(true);
-      expect(store.refFor("built-in", "copy").plan).toBe("requested");
-      // Saying it is small again does not drop the plan while risk is elevated.
-      expect(store.editTaskRoute(ref.id, { ...person, size: { size: "small", risky: false } }, T0).ok).toBe(true);
-      expect(store.refFor("built-in", "copy").plan).toBe("requested");
-      // Neither does the classifier.
-      expect(store.applySizing("copy", sized("small"), { followPlanning: true }, T0)).toEqual({ ok: false, reason: "person" });
-      // Back at routine risk, a small size drops the requested plan.
-      expect(store.editTaskRoute(ref.id, { ...person, risk: "routine", size: { size: "small", risky: false } }, T0).ok).toBe(true);
-      expect(store.refFor("built-in", "copy").plan).toBeNull();
     } finally {
       store.close();
     }

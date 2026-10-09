@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { register } from "./runner.js";
-import { acquire, completeFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { withActor } from "./actor.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
@@ -173,7 +173,7 @@ describe("chat voice on Telegram", () => {
     if (!took.ok) throw new Error(`claim refused: ${took.reason}`);
     const run = store.startRun({ taskRef: ref, leaseId: lease, runner: RUNNER, branch: "so/t", worktree: "/pool/t", ...legacy, now });
     store.finishRun(run, { outcome: "built", committed: true, now });
-    expect(completeFenced(store, lease, "done", now).ok).toBe(true);
+    expect(finalize(store, lease, { kind: "complete", state: "done", now: now }).ok).toBe(true);
     return run;
   };
 

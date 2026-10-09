@@ -65,7 +65,7 @@ describe("shared result image selection", () => {
   };
   /** One finished builder result of a task; artifacts are the caller's. */
   const finished = (id: string, ref: number, lease: string): number => {
-    const route = store.routeAuthorityFor(ref, "builder", null);
+    const route = store.routeAuthorityFor(ref, "builder");
     if (!route?.ok) throw new Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: lease, runner: "builder-1", branch: `so/${id}`, worktree: `/pool/${id}`, route: route.stamp, now: T0 });
     store.stampRun(run, { scopeDigest: store.getScope(id)!.digest });

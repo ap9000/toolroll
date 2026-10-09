@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
+import { createScheduledFlow } from "./flow-schedule.js";
 import { flowFallbackHtml, flowView } from "./flows-ui.js";
 import { openStore, type Store } from "./store.js";
 
@@ -50,4 +51,13 @@ test("a card without a task keeps its filing error, and an empty zone stays empt
   store.updateFlowCard(fixture.card, { task: null, waiting: "Couldn't file the work: the backlog is full" }, now);
   expect(view().cards[0]!.waiting).toBe("Couldn't file the work: the backlog is full");
   expect(view().cards.filter(card => card.stage === "empty")).toEqual([]);
+});
+
+test("a scheduled flow's trigger says it's paused and what each run files, on demand", () => {
+  const made = createScheduledFlow(store, { repo: "/repo/sched", name: "Nightly deps", stem: "nightly-deps", schedule: "daily:03:30", by: "alex",
+    terms: { goal: "Refresh the lockfile.", outOfScope: "No major bumps.", touches: [], requirements: [], acceptance: [{ id: "c1", statement: "The suite passes.", how: null, evidence: ["check"] }], budgetPerRunMicrousd: null, costCeilingUsd: 5 } }, now);
+  if (!made.ok) throw new Error(made.message);
+  const [trigger] = flowView(store, store.getFlow(made.flow)!, { name: "alex", approver: true }, null).triggers;
+  expect(trigger).toMatchObject({ state: "paused", name: "Daily at 03:30", detail: "Files “Nightly deps”" });
+  expect(trigger!.order).toEqual(["Builds: Refresh the lockfile.", "Not this: No major bumps.", "Every 7 days: up to $5.00", "One at a time: it skips while the last one is unfinished.", "Each run waits for approval under the project's rules."]);
 });

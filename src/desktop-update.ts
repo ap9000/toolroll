@@ -249,7 +249,6 @@ export function plainLingering(fallbackRun: number, problem: string): LingeringR
   if (/workspace is still held/.test(problem)) return { run, on: `Run #${run} finished, but process ${pid ?? "?"} is still using its folder`, action: null };
   if (/workspace occupancy/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll can't check whether its folder is still in use`, action: null };
   if (/may still be running|owned subprocess/.test(problem)) return { run, on: `Run #${run} finished, but ${pid ? `its process ${pid}` : "one of its processes"} is still running`, action: null };
-  if (/held supervisor/.test(problem)) return { run, on: `Run #${run} is still shutting down`, action: null };
   if (/still open/.test(problem)) return { run, on: `Run #${run} is still running`, action: null };
   return { run, on: `Run #${run} hasn't finished shutting down`, action: null };
 }
@@ -615,7 +614,7 @@ export async function runDesktopUpdate(stateDir: string, hooks: UpdateHooks = {}
         if (!lingering) delete j.waiting;
         else if (j.waiting?.run !== lingering.run || j.waiting.on !== lingering.on) j.waiting = { ...lingering, since: now().toISOString() };
         if (j.waiting && now().getTime() - Date.parse(j.waiting.since) >= LINGERING_LIMIT_MS) stuck = lingering;
-        else save(j, "draining", lingering ? `New work is paused. Waiting for run #${lingering.run}: ${lingeringWords(lingering)} No process is being killed.` : `Waiting for current work: ${active.runs} runs, ${active.claims} leases, ${active.conversations} chat requests, ${active.sessions} sessions, ${active.stopping} shutdowns, ${active.coding} coding sessions, ${active.codingDeliveries} unconfirmed messages. Nothing is being cancelled.`);
+        else save(j, "draining", lingering ? `New work is paused. Waiting for run #${lingering.run}: ${lingeringWords(lingering)} No process is being killed.` : `Waiting for current work: ${active.runs} runs, ${active.claims} leases, ${active.conversations} chat requests, ${active.stopping} shutdowns, ${active.coding} coding sessions, ${active.codingDeliveries} unconfirmed messages. Nothing is being cancelled.`);
       } finally { checking.close(); }
       // Waiting longer proves nothing more: new work resumes, and the one thing in the way is named.
       if (stuck) { await release("cancelled", stoppedWaitingWords(stuck)); return; }

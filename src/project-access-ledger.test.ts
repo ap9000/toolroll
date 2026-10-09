@@ -80,14 +80,13 @@ describe("project access and the action ledger", () => {
     const home = await get("/");
     expect(home.status).toBe(303);
     expect(home.headers.get("location")).toBe("/work");
-    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/done", "/routines", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
+    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/done", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
       const response = await get(path);
       expect(response.status, path).toBe(200);
       const text = await response.text();
       expect(text, path).not.toContain("BETA PRIVATE WORK");
       expect(text, path).not.toContain(beta);
       expect(text, path).not.toContain("beta-task");
-      expect(text, path).not.toContain("/session/attended-beats");
     }
     expect((await get("/t/beta-task")).status).toBe(404);
     expect((await get("/ledger?project=" + encodeURIComponent(beta))).status).toBe(403);

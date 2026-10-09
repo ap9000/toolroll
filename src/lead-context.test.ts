@@ -9,7 +9,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { firstNameOf, leadChannelOf, leadContext, LEAD_CONTEXT_MAX_BYTES } from "./lead-context.js";
 import { firstSentenceOf } from "./assignment-brief.js";
 import { register } from "./runner.js";
-import { acquire, completeFenced } from "./claim.js";
+import { acquire, finalize } from "./claim.js";
 import { leadClaim } from "./lead-voice.js";
 import { checkLeadIdentity, DEFAULT_LEAD_NAME, DEFAULT_LEAD_PERSONA, leadIdentityOf } from "./lead-identity.js";
 import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
@@ -118,7 +118,7 @@ describe("the lead's bundle", () => {
       const run = store.startRun({ taskRef: ref, leaseId: `lease-${id}`, runner: "w", branch: "so/t", worktree: "/pool/t",
         route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: T0 });
       store.finishRun(run, { outcome: "failed", reason: "agent", now: T0 });
-      expect(completeFenced(store, `lease-${id}`, "failed", T0).ok).toBe(true);
+      expect(finalize(store, `lease-${id}`, { kind: "complete", state: "failed", now: T0 }).ok).toBe(true);
     };
     failed("release", "Release 0.9.16");
     failed("flags", "Drop old flags");

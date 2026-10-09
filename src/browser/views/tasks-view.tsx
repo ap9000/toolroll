@@ -5,7 +5,7 @@
  * step is one quiet button. Filtering and paging stay server-side (real
  * URLs), so Back and bookmarks work. Usage folds to one line on a desk and
  * sits below the list on a phone, so the first task is near the top. */
-import { ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, ListTodo, Plus, Repeat, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, ListTodo, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { BrowserLimits, BrowserLimitTile, BrowserTasksView } from "../../browser-workspace.js";
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, cn } from "../components/ui/index.js";
@@ -13,7 +13,7 @@ import { HeadlineBadge } from "./status-summary.js";
 
 const TOOL_ICONS: Record<string, ReactNode> = {
   "/inbox": <Inbox />, "/code": <Code2 />, "/board": <LayoutGrid />, "/board?view=order": <ListOrdered />,
-  "/tasks": <ListTodo />, "/recipes": <Sparkles />, "/routines": <Repeat />, "/workbench": <Briefcase />,
+  "/tasks": <ListTodo />, "/recipes": <Sparkles />, "/workbench": <Briefcase />,
 };
 
 const LIMIT_FILL: Record<BrowserLimitTile["tone"], string> = { neutral: "bg-foreground", warning: "bg-warning", danger: "bg-destructive" };

@@ -27,7 +27,7 @@ for (let index = 2; index < process.argv.length; index++) {
 assert(Number.isSafeInteger(rounds) && rounds > 0 && rounds <= 1000, "rounds must be an integer from 1 to 1000");
 const { openStore } = await import(pathToFileURL(join(root, "dist/store.js")));
 const { register, recoverDead, DEFAULT_LIVENESS_MS } = await import(pathToFileURL(join(root, "dist/runner.js")));
-const { acquire, completeFenced } = await import(pathToFileURL(join(root, "dist/claim.js")));
+const { acquire, finalize } = await import(pathToFileURL(join(root, "dist/claim.js")));
 const { WorktreePool } = await import(pathToFileURL(join(root, "dist/worktree.js")));
 const { run } = await import(pathToFileURL(join(root, "dist/exec.js")));
 const { HANDOFF_PREFIX } = await import(pathToFileURL(join(root, "dist/evidence.js")));
@@ -101,7 +101,7 @@ try {
       const blocked = await pool.lease(request);
       assert.equal(blocked.ok, false);
       assert.equal(blocked.reason, "in-use");
-      assert.equal(completeFenced(store, "old-lease", "done", expired).ok, false);
+      assert.equal(finalize(store, "old-lease", { kind: "complete", state: "done", now: expired }).ok, false);
       assert.notEqual(store.getTask("work").state, "done");
       writer.kill("SIGKILL");
       await exited;
@@ -114,7 +114,7 @@ try {
       assert.equal(await readFile(join(path, "draft.txt"), "utf8"), draft);
       assert.equal(await git(path, ["rev-parse", "HEAD"]), head);
       assert((await readFile(resumed.reclaimed, "utf8")).includes(draft.trim()));
-      assert.equal(completeFenced(store, "new-lease", "failed", expired).ok, true);
+      assert.equal(finalize(store, "new-lease", { kind: "complete", state: "failed", now: expired }).ok, true);
       await pool.release(path, expired);
       cases.push({ round: index + 1, scenario, passed: true, oldCompletion: "fenced", liveWriter: "refused-reuse", draft: "preserved", commit: "preserved" });
     } finally {

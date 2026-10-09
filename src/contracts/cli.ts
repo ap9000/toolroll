@@ -163,7 +163,6 @@ const taskShowOutput = answers("task show", {
   position: z.unknown(),
   reservedFor: nullable(str),
   approval: z.looseObject({ approved: z.boolean() }),
-  risk: str,
   route: z.unknown(),
   runs: list,
   deliverable: str,
@@ -214,7 +213,6 @@ export const COMMAND_OUTPUTS = {
   "flows show": answers("flows show", { flow: z.looseObject({ id: int, name: str, repo: str, project: str, readable: z.boolean(), zones: list, triggers: list }) }),
   grants: answers("grants", { count: int, grants: list }),
   "runner list": answers("runner list", { count: int, runners: list }),
-  "routine list": answers("routine list", { routines: list }),
   "incident list": answers("incident list", { incidents: list }),
   "outbox list": answers("outbox list", { notifications: rows({ id: int, kind: str, subject: str, createdAt: str }) }),
   // A pass with failed deliveries answers ok: false with its counts and no reason.

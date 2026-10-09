@@ -1150,7 +1150,8 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
   useEffect(() => { if (focus !== null) document.querySelector(`[data-trigger-row="${focus}"]`)?.scrollIntoView({ block: "nearest" }); }, [focus]);
   return <div className="flex flex-col gap-4" data-flow-triggers>
     <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">Triggers</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
-    <p className="text-[13px] text-muted-foreground">Triggers add cards to this flow on their own. The work they start still waits for your usual approvals.</p>
+    {/* A schedule's standing order says its own approval terms beside it (one may build without asking). */}
+    <p className="text-[13px] text-muted-foreground">Triggers add cards to this flow on their own.{live.some(one => one.order !== undefined) ? "" : " The work they start still waits for your usual approvals."}</p>
     {reveal !== null && <RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} />}
     {live.length > 0 && <ul className="flex flex-col gap-3">{live.map(trigger => <li key={trigger.id} className={cn("rounded-lg border p-3", focus === trigger.id && "ring-2 ring-primary/50")} data-trigger-row={trigger.id}>
       <div className="flex items-start gap-2">
@@ -1161,6 +1162,12 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
           {trigger.status !== null && <p className={cn("text-[12px]", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
         </div>
       </div>
+      {/* Its approval is what turning it on agrees to, so it stays in view; the terms each run files open on demand. */}
+      {trigger.order !== undefined && <p className="mt-2 text-[12px] break-words" data-trigger-approval>{trigger.order.at(-1)}</p>}
+      {trigger.order !== undefined && <details className="mt-2 rounded-md border px-3 py-2" data-trigger-order>
+        <summary className="cursor-pointer text-[13px] font-medium">What each run files</summary>
+        <ul className="mt-1 flex flex-col gap-1 text-[12px] text-muted-foreground">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
+      </details>}
       {trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {trigger.button !== null && trigger.state === "active" && <Button size="sm" onClick={() => onPress(trigger.id)}>Start</Button>}
@@ -1627,6 +1634,12 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   const card = open === null ? null : view.cards.find(one => one.id === open) ?? null;
   const button = pressing === null ? null : view.triggers.find(one => one.id === pressing && one.button !== null && one.state === "active") ?? null;
   const live = view.triggers.filter(one => one.state !== "removed");
+  const [busy, setBusy] = useState(false);
+  const toggle = async (trigger: BrowserFlowTrigger) => {
+    setBusy(true);
+    apply(await send(`${view.flow.href}/triggers/${trigger.id}/${trigger.state === "paused" ? "resume" : "pause"}`, {}, csrf));
+    setBusy(false);
+  };
   if (button !== null) return <div className="p-4"><PressPanel trigger={button} view={view} csrf={csrf} apply={apply} onClose={() => setPressing(null)} /></div>;
   if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} /></div>;
   return <div className="flex flex-col gap-3 p-4" data-flow={view.flow.id}>
@@ -1649,8 +1662,17 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     })}
     {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
       <h2 className="text-[14px] font-semibold">Triggers</h2>
-      <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-[13px]"><span className="font-medium">{one.name}</span> · {one.detail}
-        <div className={cn("text-[12px]", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div></li>)}</ul>
+      <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-[13px]" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
+        <div className={cn("text-[12px]", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
+        {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
+        {one.order !== undefined && <>
+          <p className="mt-1 text-[12px] break-words" data-trigger-approval>{one.order.at(-1)}</p>
+          <details className="mt-1.5 rounded-md border px-3 py-2" data-trigger-order>
+            <summary className="flex min-h-11 cursor-pointer items-center text-[13px] font-medium">What each run files</summary>
+            <ul className="flex flex-col gap-1 pb-1 text-[12px] text-muted-foreground">{one.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
+          </details>
+          {view.canEdit && <Button size="sm" variant="outline" className="mt-1.5 min-h-11" disabled={busy} onClick={() => void toggle(one)}>{one.state === "paused" ? "Turn on" : "Pause"}</Button>}
+        </>}</li>)}</ul>
     </section>}
   </div>;
 }

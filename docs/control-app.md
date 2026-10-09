@@ -326,10 +326,9 @@ setup does not invent alternative policies for them.
 
 ## Calendar schedules
 
-The routines form supports daily, weekly, and custom interval schedules. Forms
-work without JavaScript; scripts only hide irrelevant fields and suggest the
-browser's local timezone for a fresh schedule. Validation failures retain the
-operator's entries. Template schedules retain their original timezone.
+A flow's schedule trigger supports daily, weekly, and custom interval
+schedules, in this computer's timezone unless you name one. Template
+schedules retain their original timezone.
 
 The same parser is used by the CLI and approval digest:
 

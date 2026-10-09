@@ -154,7 +154,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const ref = store.lookupRef("a")!.id;
     const claim = acquire(store, ref, "worker", { token: "worker-token", now: clock() });
     if (!claim.ok) throw new Error(claim.reason);
-    const route = store.routeAuthorityFor(ref, "builder", null);
+    const route = store.routeAuthorityFor(ref, "builder");
     if (!route?.ok) throw new Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: "worker", branch: "branch", worktree: "/pool/a", route: route.stamp, now: clock() });
     const id = pending("task_action", { task: "a", operation: "stop", run, stamp: chatTaskStamp(store, who, "a") });
@@ -405,7 +405,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(store.getDecision(3)?.state).toBe("open");
   });
 
-  test("chat-steer: get_agents reads risk and agents in the route's own words; propose_agents drafts only a configured, role-valid choice; the confirmed card changes the agents through the authenticated route edit and stales the approval", () => {
+  test("chat-steer: get_agents reads the size and agents in the route's own words; propose_agents drafts only a configured, role-valid choice; the confirmed card changes the agents through the authenticated route edit and stales the approval", () => {
     // A routed installation: everyday and strong agents named once, in configuration.
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "ops", T0);
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "ops", T0);
@@ -425,14 +425,15 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const body = read.body as Record<string, unknown>;
     expect(body).toMatchObject({
       task: "a",
-      risk: { level: "routine", title: "Routine", consequence: expect.stringContaining("everyday configured agent") },
       standing: "awaiting approval",
       // A short, single-path goal is a small change: it makes no plan, so no planner works on it.
       summary: "claude · sonnet builds and repairs",
       editable: true,
       approval: "not approved",
     });
-    expect((body["riskChoices"] as { risk: string; consequence: string }[]).map(one => one.risk)).toEqual(["routine", "elevated", "high"]);
+    // A declared risk level is gone (v115): nothing to read or choose.
+    expect(body["risk"]).toBeUndefined();
+    expect(body["riskChoices"]).toBeUndefined();
     expect((body["agents"] as { role: string; provider: string; reasons: string[] }[]).map(one => one.role)).toEqual(["planner", "builder", "repair"]);
     const choices = body["choices"] as Record<string, { provider: string; model: string; current: boolean }[]>;
     // Only active roles are offered; historical reviewer configuration stays out of the choices.
@@ -447,7 +448,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "opus" } })).toMatchObject({ ok: false, message: expect.stringContaining("one of the builder choices") });
     expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "codex", model: "gpt-5-codex" } })).toMatchObject({ ok: false });
     expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "sonnet" } })).toMatchObject({ ok: false, message: expect.stringContaining("already runs") });
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", risk: "routine" })).toMatchObject({ ok: false, message: expect.stringContaining("already declared") });
+    expect(executeMateTool(ctx, "propose_agents", { task: "a", risk: "high" })).toMatchObject({ ok: false, message: expect.stringContaining("say what changes") });
     expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", clear: true })).toMatchObject({ ok: false, message: expect.stringContaining("nothing to clear") });
     // Approve the scope as it stands, then propose a real change.
     const first = store.getScope("a")!;
@@ -466,17 +467,16 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const borrowed = pending("agents", { task: "a", phase: "build", role: "builder", provider: "codex", model: "gpt-5-codex", sawDigest: first.digest });
     expect(confirmMateProposal(store, who, borrowed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(approvalOf(store.getScope("a")!).approved).toBe(true);
-    const proposed = executeMateTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", risk: "high", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, why: "payouts move money" });
-    expect(proposed).toMatchObject({ ok: true, body: { kind: "agents", task: "a", risk: "high", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, awaiting: expect.stringContaining("renewing") } });
+    const proposed = executeMateTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, why: "payouts move money" });
+    expect(proposed).toMatchObject({ ok: true, body: { kind: "agents", task: "a", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, awaiting: expect.stringContaining("renewing") } });
     if (!proposed.ok) return;
     const id = (proposed.body as { proposal: number }).proposal;
-    expect(store.getMateProposal(id)?.payload).toMatchObject({ task: "a", risk: "high", phase: "build", role: "builder", provider: "gemini", model: "gemini-2.5-pro", sawDigest: first.digest, approval: "approved" });
+    expect(store.getMateProposal(id)?.payload).toMatchObject({ task: "a", phase: "build", role: "builder", provider: "gemini", model: "gemini-2.5-pro", sawDigest: first.digest, approval: "approved" });
     // Confirmed: the ONE authenticated route edit — recorded as the
     // operator, the approval staled, the sealed route gone.
     const outcome = confirmMateProposal(store, who, id, clock(), { via: "web" });
-    expect(outcome).toMatchObject({ ok: true, kind: "agents", taskId: "a", said: expect.stringContaining("risk is now high risk; the builder is now gemini · gemini-2.5-pro — the earlier approval no longer covers this task; approve it again") });
+    expect(outcome).toMatchObject({ ok: true, kind: "agents", taskId: "a", said: expect.stringContaining("the builder is now gemini · gemini-2.5-pro — the earlier approval no longer covers this task; approve it again") });
     const ref = store.refFor("built-in", "a");
-    expect(ref.riskLevel).toBe("high");
     expect(ref.routeOverrides).toEqual([expect.objectContaining({ phase: "build", provider: "gemini", model: "gemini-2.5-pro", by: "alex" })]);
     const after = store.getScope("a")!;
     expect(approvalOf(after)).toMatchObject({ approved: false, reason: "changed" });

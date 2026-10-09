@@ -6,8 +6,8 @@ export { validateTaskText } from "./task-text.js";
  *
  * Before this module, each filing surface — CLI, console, intake — validated
  * what it happened to think of: createConsoleTask checked title and goal but
- * not disguised text, the routine command checked terms but nothing checked a
- * repo against the caller's ceiling, and nothing stamped who filed what. The
+ * not disguised text, nothing checked a repo against the caller's ceiling,
+ * and nothing stamped who filed what. The
  * review's ruling: one canonical service that every filer calls, with an
  * exact field allowlist, so a careless caller CANNOT spread a template or
  * model object into scope rows and smuggle approval metadata.
@@ -29,18 +29,10 @@ export { validateTaskText } from "./task-text.js";
  * and stays inert until the operator's own ceremony says otherwise.
  */
 
-import { resolveRoutineAuthority } from "./agentconfig.js";
 import { resolve } from "node:path";
-import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
 import { canonicalProject } from "./project.js";
-import {
-  ROUTINE_NAME,
-  routineDigestOf,
-  validateRoutineTerms,
-  type RoutineTerms,
-} from "./routine.js";
 import type { Store } from "./store.js";
-import { parseAcceptanceCriteria, type UnattendedPermissionMode } from "./scope.js";
+import type { UnattendedPermissionMode } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { TaskSizing } from "./phase-routing.js";
 import { heuristicSizing, planningSignals, refineFiledSizing } from "./task-sizing.js";
@@ -106,6 +98,9 @@ export type TaskProposalInput = {
    * which is the fail-closed reading of an empty ceiling (finding 4).
    */
   admittedRepos?: readonly string[];
+  /** A per-task dollar cap in micro-USD, bound into the scope's digest (a
+   * scheduled flow's standing order carries one, v115). */
+  budgetMicrousd?: number | null;
   /** v2 routing: the task's size when the caller already knows it (a
    * person's choice). Absent, filing sizes it from the description at
    * once and the process's classifier refines it within five seconds. */
@@ -132,42 +127,8 @@ export function shouldPlanTask(input: TaskProposalInput, sizing?: TaskSizing): b
   return planningSignals(input);
 }
 
-export type RoutineProposalInput = {
-  name: string;
-  /** v102: who is making it (its instances are filed as theirs). */
-  createdBy?: string | null;
-  repo: string;
-  goal: string;
-  outOfScope: string | null;
-  touches: string[];
-  /** v39: the signed rubric every instance's scope copies forward. */
-  acceptance: unknown;
-  requirements: string[];
-  schedule: string;
-  costCeilingUsd: number | null;
-  /** Per-instance dollar cap in micro-USD (v16); optional, digest-bound. */
-  budgetPerRunMicrousd?: number | null;
-  filedVia: string;
-  admittedRepos?: readonly string[];
-};
-
 function refuse(reason: ProposalRefusal["reason"], message: string): ProposalRefusal {
   return { ok: false, reason, message };
-}
-
-/** The fields an approver reads must BE what they appear to be: no control
- * characters anywhere, no invisible or direction-override text either. */
-function dishonest(text: string): boolean {
-  return hasForbiddenControls(text) || hasDisguisedText(text);
-}
-
-/** Byte caps beside the character caps (Codex v3 review, change 8): a
- * 2000-character goal of astral-plane text is 8000 bytes — model-authored
- * fields must bound STORAGE, not just what a screen shows. */
-const BYTE_CAPS = { title: 800, name: 200, text: 8_000, path: 800, requirement: 400 } as const;
-
-function overBytes(text: string, cap: number): boolean {
-  return Buffer.byteLength(text, "utf8") > cap;
 }
 
 function checkRepo(
@@ -220,6 +181,7 @@ export function fileTaskProposal(
       ...(input.goal === undefined ? {} : { goal: input.goal }),
       ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.qualityMode === undefined ? {} : { qualityMode: input.qualityMode }),
+      ...(input.budgetMicrousd == null ? {} : { budgetMicrousd: input.budgetMicrousd }),
       outOfScope,
       touches,
       acceptance: input.acceptance,
@@ -257,83 +219,4 @@ export function fileTaskProposal(
     void refineFiledSizing(store, made.id, placed, input.planning === undefined || input.planning === "auto");
   }
   return { ok: true, id: made.id, planning, sizing };
-}
-
-export function fileRoutineProposal(
-  store: Store,
-  input: RoutineProposalInput,
-  now: Date,
-): { ok: true; id: number; digest: string } | ProposalRefusal {
-  if (!FILED_VIA.test(input.filedVia)) {
-    return refuse("bad-provenance", "filedVia is an audit token: lowercase letters, digits, dashes, colons");
-  }
-  const repo = checkRepo(input.repo, input.admittedRepos);
-  if (!repo.ok) return repo;
-  if (repo.repo === undefined) return refuse("bad-repo", "a routine needs the repository it runs in");
-
-  const acceptanceParse = parseAcceptanceCriteria(input.acceptance);
-
-  const terms: RoutineTerms = {
-    repo: repo.repo,
-    goal: input.goal,
-    outOfScope: input.outOfScope,
-    touches: input.touches,
-    acceptance: acceptanceParse.criteria,
-    requirements: input.requirements,
-    schedule: input.schedule,
-    // v1 routines run one instance at a time, period — hardcoded, not accepted.
-    singleFlight: true,
-    costCeilingUsd: input.costCeilingUsd,
-    ...(input.budgetPerRunMicrousd == null ? {} : { budgetPerRunMicrousd: input.budgetPerRunMicrousd }),
-  };
-  // EVERY problem at once — an operator fixing a form deserves the whole
-  // list, not one complaint per submission.
-  const problems = validateRoutineTerms(terms);
-  if (acceptanceParse.problems.length > 0) {
-    problems.push({ field: "acceptance", problem: acceptanceParse.problems.map(p => p.message).join("; ") });
-  }
-  if (!ROUTINE_NAME.test(input.name)) {
-    problems.unshift({ field: "name", problem: "lowercase letters, digits, and dashes — it becomes each instance's id" });
-  }
-  if (
-    dishonest(input.goal) ||
-    overBytes(input.goal, BYTE_CAPS.text) ||
-    (input.outOfScope !== null && (dishonest(input.outOfScope) || overBytes(input.outOfScope, BYTE_CAPS.text)))
-  ) {
-    problems.push({ field: "goal", problem: "no control or disguised text, bounded bytes" });
-  }
-  // The v3 review, change 8: touches and requirements are approver-read
-  // text too — the door holds them to the same honesty everywhere.
-  if (input.touches.some(one => dishonest(one) || overBytes(one, BYTE_CAPS.path))) {
-    problems.push({ field: "touches", problem: "no control or disguised text, bounded bytes" });
-  }
-  if (input.requirements.some(one => dishonest(one) || overBytes(one, BYTE_CAPS.requirement))) {
-    problems.push({ field: "requirements", problem: "no control or disguised text, bounded bytes" });
-  }
-  if (problems.length > 0) {
-    const named = problems.map(one => `${one.field}: ${one.problem}`).join("; ");
-    return refuse(problems.some(one => one.field === "name") ? "bad-name" : "bad-terms", named);
-  }
-  // v24 filing invariant, routine flavor — since v48 the whole four-role
-  // ROUTE: resolve which agents plan, build, repair, and review a firing
-  // once, here, from the configuration of this moment, and bind route and
-  // profile into the digest a person will sign. Unresolved saves too
-  // (finding 19) — approval then refuses until the routine is restated.
-  const authority = resolveRoutineAuthority(store, repo.repo, terms.acceptance, now);
-  const routineProfile = authority.ok ? authority.profile : null;
-  const routineRoute = authority.ok ? authority.route : null;
-  const created = store.createRoutine(
-    {
-      name: input.name,
-      ...terms,
-      digest: routineDigestOf(terms, routineProfile, routineRoute),
-      filedVia: input.filedVia,
-      createdBy: input.createdBy ?? null,
-      ...(routineProfile === null ? {} : { profile: routineProfile }),
-      ...(routineRoute === null ? {} : { route: routineRoute }),
-    },
-    now,
-  );
-  if (!created.ok) return refuse("duplicate", `a routine named ${input.name} already exists`);
-  return { ok: true, id: created.id, digest: routineDigestOf(terms, routineProfile, routineRoute) };
 }

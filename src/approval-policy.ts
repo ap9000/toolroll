@@ -13,7 +13,7 @@
 
 /** Who filed a task, as far as anyone can tell: a person (browser, chat, a
  * revision), a coordinator acting for the person who made it, an AI
- * teammate, or automation that names no person (a routine, the CLI, a flow
+ * teammate, or automation that names no person (a schedule, the CLI, a flow
  * with no owner). The requester rule binds only a named person. */
 export type FilerKind = "person" | "coordinator" | "teammate" | "automation";
 export type Filer = { name: string | null; kind: FilerKind };
@@ -128,5 +128,5 @@ export function gateWords(gate: Exclude<ApprovalGate, { verdict: "seal" }>): str
     : `Your approval is recorded (${gate.have} of ${gate.need}). This work is protected, so a second person needs to approve it.`;
   return gate.reason === "requester"
     ? "You filed this task, and this project needs someone else to approve it."
-    : "This work is protected: a person has to approve it, not an operating mode, a routine or an AI teammate.";
+    : "This work is protected: a person has to approve it, not an operating mode, a schedule or an AI teammate.";
 }
