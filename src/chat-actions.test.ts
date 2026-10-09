@@ -21,11 +21,11 @@ import {
   sharedActionNeedsReview,
   type ChatAction,
 } from "./chat-actions.js";
-import { confirmMateProposal } from "./mate-doors.js";
+import { confirmLeadProposal } from "./lead-doors.js";
 import { projectToolsOf } from "./project-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
 import { knowledgeView, changeKnowledge } from "./project-knowledge.js";
-import { executeMateTool, MATE_TOOLS } from "./mate-tools.js";
+import { executeLeadTool, LEAD_TOOLS } from "./lead-tools.js";
 import { flowFromSteps } from "./flows.js";
 import { createDecisionServer } from "./serve.js";
 import { requestTaskStop } from "./task-control.js";
@@ -34,7 +34,7 @@ import { acquire, finalize } from "./claim.js";
 import { approve } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
 import { assignmentOf } from "./assignment.js";
-import { routinesOf } from "./teammate-desk.js";
+import { routinesOf } from "./subagent-desk.js";
 import { readSharedAction } from "./contracts/chat-actions.js";
 const bareLegacy = (
   phase: "build",
@@ -101,7 +101,7 @@ describe("shared chat action lifecycle", () => {
     );
     if (!verified.ok) throw Error("identity");
     who = verified.who;
-    session = store.mintMateSession(
+    session = store.mintLeadSession(
       {
         approver: who.name,
         approverGeneration: who.generation,
@@ -112,7 +112,7 @@ describe("shared chat action lifecycle", () => {
       },
       now,
     );
-    thread = store.openMateThread(who.name, who.ceilingDigest, now).thread.id;
+    thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
   });
   afterEach(() => {
     store.close();
@@ -143,7 +143,7 @@ describe("shared chat action lifecycle", () => {
       root,
       now,
     );
-    const turn = store.openMateTurn(
+    const turn = store.openLeadTurn(
       {
         approver: who.name,
         session,
@@ -157,9 +157,9 @@ describe("shared chat action lifecycle", () => {
       now,
     );
     if (!turn.ok) throw Error(turn.reason);
-    const started = store.startMateTurn(turn.id, now);
+    const started = store.startLeadTurn(turn.id, now);
     if (!started.ok) throw Error("start");
-    const id = store.draftMateProposal(
+    const id = store.draftLeadProposal(
       {
         thread,
         turn: turn.id,
@@ -169,7 +169,7 @@ describe("shared chat action lifecycle", () => {
       },
       now,
     );
-    store.finalizeMateTurn(
+    store.finalizeLeadTurn(
       turn.id,
       started.generation,
       {
@@ -187,7 +187,7 @@ describe("shared chat action lifecycle", () => {
     const review = secure
       ? mintSharedActionReview(store, who, id, root, now)
       : null;
-    return confirmMateProposal(store, who, id, now, {
+    return confirmLeadProposal(store, who, id, now, {
       via: secure ? "web" : "telegram",
       evidenceRoot: root,
       ...(review
@@ -200,7 +200,7 @@ describe("shared chat action lifecycle", () => {
   }
   test("the lead proposes a project tool as a card that needs the password screen; removal is an ordinary card", () => {
     const add = proposal("tool_add", { repo, catalog: "github" });
-    const saved = store.getMateProposal(add)!.payload as { title: string; terms: string[] };
+    const saved = store.getLeadProposal(add)!.payload as { title: string; terms: string[] };
     expect(saved.title).toBe(`Add github to ${repo.split("/").at(-1)}`);
     expect(saved.terms.join("\n")).toContain("Starts: https://api.githubcopilot.com/mcp/ (signs in with GITHUB_TOKEN)");
     expect(saved.terms.join("\n")).toContain("Needs GITHUB_TOKEN. Set it on the Tools page after adding, never in chat.");
@@ -222,10 +222,10 @@ describe("shared chat action lifecycle", () => {
   });
   test("0.9.36 ignored optionals and watching defaults still prepare the same actions", () => {
     const prepare = (operation: ChatAction, input: Record<string, unknown>) => prepareSharedAction(store, who, operation, input, root, now);
-    const template = prepare("teammate_create", { repo, template: "support" });
+    const template = prepare("subagent_create", { repo, template: "support" });
     for (const ignored of [null, false, 0, {}]) {
-      expect(prepare("teammate_create", { repo, template: "support", name: ignored, soul: ignored })).toEqual(template);
-      expect(prepare("teammate_create", { repo, template: ignored, name: ignored, soul: template.request["soul"] })).toEqual(template);
+      expect(prepare("subagent_create", { repo, template: "support", name: ignored, soul: ignored })).toEqual(template);
+      expect(prepare("subagent_create", { repo, template: ignored, name: ignored, soul: template.request["soul"] })).toEqual(template);
     }
     const localTool = { repo, name: "shop", command: "node" };
     expect(prepare("tool_add", { ...localTool, url: null, about: null, args: null, secrets: null })).toEqual(prepare("tool_add", localTool));
@@ -252,89 +252,89 @@ describe("shared chat action lifecycle", () => {
     expect(prepareSharedAction(store, who, "flow_card_send_back", { card, note }, root, now).request).toMatchObject({ note: note.trim() });
     expect(() => prepareSharedAction(store, who, "flow_card_send_back", { card, note: `${note}!` }, root, now)).toThrow("The note is 4,001 characters; the limit is 4,000. Shorten it and propose again.");
     // The chat tools state the same limit they are held to.
-    for (const name of ["propose_action", "propose_flow"]) expect(MATE_TOOLS.find(one => one.name === name)!.inputSchema).toMatchObject({ properties: { note: { maxLength: 4_000, description: expect.stringContaining("At most 4000 characters") } } });
+    for (const name of ["propose_action", "propose_flow"]) expect(LEAD_TOOLS.find(one => one.name === name)!.inputSchema).toMatchObject({ properties: { note: { maxLength: 4_000, description: expect.stringContaining("At most 4000 characters") } } });
   });
 
-  test("the lead lets a teammate use a tool and sets one action's rule, each as a card; a card drafted before a change is refused (v94)", () => {
-    const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
+  test("the lead lets a subagent use a tool and sets one action's rule, each as a card; a card drafted before a change is refused (v94)", () => {
+    const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
     expect(confirm(proposal("tool_add", { repo, catalog: "github" }), true)).toMatchObject({ ok: true });
-    expect(() => prepareSharedAction(store, who, "teammate_tools", { teammate: mate, tool: "github", change: "grant" }, root, now)).toThrow("github hasn't said what it can do yet. Test it on the Tools page first.");
+    expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "grant" }, root, now)).toThrow("github hasn't said what it can do yet. Test it on the Tools page first.");
     store.recordProjectToolTest(repo, "github", JSON.stringify({ at: now.toISOString(), ok: true, tools: ["list_issues", "create_issue"], problem: null }));
-    const grantRequest = { teammate: mate, tool: "github", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null };
-    const grant = proposal("teammate_tools", grantRequest);
-    const { version: _version, ...legacy } = store.getMateProposal(grant)!.payload;
+    const grantRequest = { subagent: mate, tool: "github", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null };
+    const grant = proposal("subagent_tools", grantRequest);
+    const { version: _version, ...legacy } = store.getLeadProposal(grant)!.payload;
     const read = readSharedAction(legacy);
     expect(read).toMatchObject({ ok: true, value: { request: grantRequest, stamp: legacy["stamp"] } });
     expect(JSON.stringify(legacy["request"])).toBe(JSON.stringify(grantRequest));
-    expect(store.getMateProposal(grant)!.payload).toMatchObject({ title: "Let Maya use github", terms: expect.arrayContaining(["list_issues: does it", "create_issue: asks you first"]) });
-    const stale = proposal("teammate_tools", { teammate: mate, tool: "github", change: "grant" });
+    expect(store.getLeadProposal(grant)!.payload).toMatchObject({ title: "Let Maya use github", terms: expect.arrayContaining(["list_issues: does it", "create_issue: asks you first"]) });
+    const stale = proposal("subagent_tools", { subagent: mate, tool: "github", change: "grant" });
     expect(confirm(grant)).toMatchObject({ ok: true });
-    expect(store.teammateGrant(mate, "github")?.rules).toEqual({ list_issues: { use: "free" }, create_issue: { use: "ask" } });
+    expect(store.subagentGrant(mate, "github")?.rules).toEqual({ list_issues: { use: "free" }, create_issue: { use: "ask" } });
     expect(confirm(stale)).toMatchObject({ ok: false });
-    expect(() => prepareSharedAction(store, who, "teammate_tools", { teammate: mate, tool: "github", change: "rule", action: "delete_repo", use: "free" }, root, now)).toThrow("github has no action called delete_repo. Its actions: list_issues, create_issue.");
-    const rule = proposal("teammate_tools", { teammate: mate, tool: "github", change: "rule", action: "create_issue", use: "never", undoWith: null, limitField: null, limitOver: null });
-    expect(store.getMateProposal(rule)!.payload).toMatchObject({ title: "Maya: create_issue — never" });
+    expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "delete_repo", use: "free" }, root, now)).toThrow("github has no action called delete_repo. Its actions: list_issues, create_issue.");
+    const rule = proposal("subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "create_issue", use: "never", undoWith: null, limitField: null, limitOver: null });
+    expect(store.getLeadProposal(rule)!.payload).toMatchObject({ title: "Maya: create_issue — never" });
     expect(confirm(rule)).toMatchObject({ ok: true });
-    expect(store.teammateGrant(mate, "github")?.rules["create_issue"]).toEqual({ use: "never" });
+    expect(store.subagentGrant(mate, "github")?.rules["create_issue"]).toEqual({ use: "never" });
     // The lead names the action where the tool goes, or both at once: either is read as github's create_issue.
     const drafted: Record<string, unknown>[] = [];
     const ctx = { store, who, now, step: 1, readDecisions: new Map<number, number>(), evidenceRoot: root, draft: (_kind: unknown, payload: Record<string, unknown>) => { drafted.push(payload); return drafted.length; } };
     for (const named of [{ tool: "create_issue" }, { tool: "github.create_issue" }, { tool: "github", action: "github.create_issue" }]) {
-      expect(executeMateTool(ctx, "propose_teammate", { operation: "tool_rule", teammate: mate, ...named, use: "ask" })).toMatchObject({ ok: true });
+      expect(executeLeadTool(ctx, "propose_subagent", { operation: "tool_rule", subagent: mate, ...named, use: "ask" })).toMatchObject({ ok: true });
       expect(drafted.at(-1)).toMatchObject({ title: "Maya: create_issue — a person approves each call first" });
     }
-    expect(executeMateTool(ctx, "propose_teammate", { operation: "tool_rule", teammate: mate, tool: "jira", action: "create_issue", use: "ask" })).toMatchObject({ ok: false, message: "Maya doesn't use a tool called jira. Maya uses github (actions: list_issues, create_issue)." });
-    expect(confirm(proposal("teammate_tools", { teammate: mate, tool: "github", change: "revoke" }))).toMatchObject({ ok: true });
-    expect(store.teammateGrants(mate)).toEqual([]);
+    expect(executeLeadTool(ctx, "propose_subagent", { operation: "tool_rule", subagent: mate, tool: "jira", action: "create_issue", use: "ask" })).toMatchObject({ ok: false, message: "Maya doesn't use a tool called jira. Maya uses github (actions: list_issues, create_issue)." });
+    expect(confirm(proposal("subagent_tools", { subagent: mate, tool: "github", change: "revoke" }))).toMatchObject({ ok: true });
+    expect(store.subagentGrants(mate)).toEqual([]);
   });
-  test("the lead tells a teammate something, fixes what it remembers and has it forget, each as a card; a card drafted before a change is refused (v95)", () => {
-    const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
-    expect(confirm(proposal("teammate_note", { teammate: mate, note: "Offer free shipping this week." }))).toMatchObject({ ok: true });
-    const [told] = store.teammateMemories(mate);
+  test("the lead tells a subagent something, fixes what it remembers and has it forget, each as a card; a card drafted before a change is refused (v95)", () => {
+    const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
+    expect(confirm(proposal("subagent_note", { subagent: mate, note: "Offer free shipping this week." }))).toMatchObject({ ok: true });
+    const [told] = store.subagentMemories(mate);
     expect(told).toMatchObject({ source: "person", text: "Offer free shipping this week.", createdBy: who.name });
-    expect(() => prepareSharedAction(store, who, "teammate_note", { teammate: mate, note: "x".repeat(301) }, root, now)).toThrow("Keep a memory to 300 characters");
-    const edit = proposal("teammate_memory", { teammate: mate, memory: told!.id, change: "edit", text: "Offer free shipping until Sunday." });
-    expect(store.getMateProposal(edit)!.payload).toMatchObject({ title: "Change what Maya remembers", terms: ["Was: Offer free shipping this week.", "Now: Offer free shipping until Sunday."] });
-    const forget = proposal("teammate_memory", { teammate: mate, memory: told!.id, change: "forget" });
+    expect(() => prepareSharedAction(store, who, "subagent_note", { subagent: mate, note: "x".repeat(301) }, root, now)).toThrow("Keep a memory to 300 characters");
+    const edit = proposal("subagent_memory", { subagent: mate, memory: told!.id, change: "edit", text: "Offer free shipping until Sunday." });
+    expect(store.getLeadProposal(edit)!.payload).toMatchObject({ title: "Change what Maya remembers", terms: ["Was: Offer free shipping this week.", "Now: Offer free shipping until Sunday."] });
+    const forget = proposal("subagent_memory", { subagent: mate, memory: told!.id, change: "forget" });
     expect(confirm(edit)).toMatchObject({ ok: true });
-    expect(store.teammateMemory(told!.id)?.text).toBe("Offer free shipping until Sunday.");
+    expect(store.subagentMemory(told!.id)?.text).toBe("Offer free shipping until Sunday.");
     expect(confirm(forget)).toMatchObject({ ok: false });
-    expect(confirm(proposal("teammate_memory", { teammate: mate, memory: told!.id, change: "forget" }))).toMatchObject({ ok: true });
-    expect(store.teammateMemories(mate)).toEqual([]);
+    expect(confirm(proposal("subagent_memory", { subagent: mate, memory: told!.id, change: "forget" }))).toMatchObject({ ok: true });
+    expect(store.subagentMemories(mate)).toEqual([]);
   });
-  test("the lead asks to undo a teammate's call only where its action has an undo; the worker makes it (v97)", () => {
-    const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
+  test("the lead asks to undo a subagent's call only where its action has an undo; the worker makes it (v97)", () => {
+    const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
     const flow = store.createFlow({ repo, name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: who.name }, now);
     const card = store.addFlowCard({ flow, title: "Label it", description: null, stage: "inbox", by: who.name }, now);
-    const call = store.addTeammateCall({ teammate: mate, card, entry: 1, tool: "desk", action: "add_label", input: { ticket: "T-1", label: "urgent" }, rule: "free", why: "Urgent.", state: "done", result: "added" }, now);
-    expect(() => prepareSharedAction(store, who, "teammate_undo", { teammate: mate, call }, root, now)).toThrow("its action has no undo set");
-    store.saveTeammateGrant({ teammate: mate, tool: "desk", actions: [{ name: "add_label", about: "", input: null, readOnly: false }, { name: "remove_label", about: "", input: null, readOnly: false }],
+    const call = store.addSubagentCall({ subagent: mate, card, entry: 1, tool: "desk", action: "add_label", input: { ticket: "T-1", label: "urgent" }, rule: "free", why: "Urgent.", state: "done", result: "added" }, now);
+    expect(() => prepareSharedAction(store, who, "subagent_undo", { subagent: mate, call }, root, now)).toThrow("its action has no undo set");
+    store.saveSubagentGrant({ subagent: mate, tool: "desk", actions: [{ name: "add_label", about: "", input: null, readOnly: false }, { name: "remove_label", about: "", input: null, readOnly: false }],
       rules: { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } } }, who.name, now);
-    const undo = proposal("teammate_undo", { teammate: mate, call });
-    expect(store.getMateProposal(undo)!.payload).toMatchObject({ title: "Undo Maya's add_label", terms: expect.arrayContaining(["By calling: desk → remove_label · ticket T-1 · label urgent"]) });
+    const undo = proposal("subagent_undo", { subagent: mate, call });
+    expect(store.getLeadProposal(undo)!.payload).toMatchObject({ title: "Undo Maya's add_label", terms: expect.arrayContaining(["By calling: desk → remove_label · ticket T-1 · label urgent"]) });
     expect(confirm(undo)).toMatchObject({ ok: true });
-    expect(store.pendingTeammateUndos().map(one => [one.action, one.undoOf, one.decidedBy])).toEqual([["remove_label", call, who.name]]);
-    expect(store.teammateCall(call)?.undoneBy).toBe(who.name);
+    expect(store.pendingSubagentUndos().map(one => [one.action, one.undoOf, one.decidedBy])).toEqual([["remove_label", call, who.name]]);
+    expect(store.subagentCall(call)?.undoneBy).toBe(who.name);
   });
-  test("the lead sets a starter kit up as one card: its teammate, its flow and its buttons; a second card is refused", () => {
+  test("the lead sets a starter kit up as one card: its subagent, its flow and its buttons; a second card is refused", () => {
     expect(() => prepareSharedAction(store, who, "kit_setup", { repo, kit: "nope" }, root, now)).toThrow("Choose a kit");
     const card = proposal("kit_setup", { repo, kit: "ops-requests" });
-    expect(store.getMateProposal(card)!.payload).toMatchObject({ title: `Set up Ops requests in ${repo.split("/").at(-1)}`, terms: expect.arrayContaining([expect.stringContaining("Adds Ada (ops coordinator) and the Ops requests flow with its “Ask for something” button.")]) });
+    expect(store.getLeadProposal(card)!.payload).toMatchObject({ title: `Set up Ops requests in ${repo.split("/").at(-1)}`, terms: expect.arrayContaining([expect.stringContaining("Adds Ada (ops coordinator) and the Ops requests flow with its “Ask for something” button.")]) });
     expect(confirm(card)).toMatchObject({ ok: true, said: expect.stringContaining("Ops requests is ready") });
-    expect(store.teammateByHandle(repo, "ada")).not.toBeNull();
+    expect(store.subagentByHandle(repo, "ada")).not.toBeNull();
     expect(store.listFlows([repo]).map(one => one.name)).toEqual(["Ops requests"]);
     expect(() => prepareSharedAction(store, who, "kit_setup", { repo, kit: "ops-requests" }, root, now)).toThrow("Ops requests is already set up");
   });
-  test("the lead gives a teammate a routine and stops it, each as a card (v96)", () => {
-    const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
-    expect(() => prepareSharedAction(store, who, "teammate_routine", { teammate: mate, change: "add", schedule: "now and then", text: "Count refunds" }, root, now)).toThrow("Say the schedule like");
-    const add = proposal("teammate_routine", { teammate: mate, change: "add", schedule: "weekdays 09:00 UTC", text: "Count yesterday's refunds" });
-    expect(store.getMateProposal(add)!.payload).toMatchObject({ title: "Maya: Count yesterday's refunds", terms: expect.arrayContaining(["When: weekdays at 09:00 UTC", "What: Count yesterday's refunds"]) });
+  test("the lead gives a subagent a routine and stops it, each as a card (v96)", () => {
+    const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
+    expect(() => prepareSharedAction(store, who, "subagent_routine", { subagent: mate, change: "add", schedule: "now and then", text: "Count refunds" }, root, now)).toThrow("Say the schedule like");
+    const add = proposal("subagent_routine", { subagent: mate, change: "add", schedule: "weekdays 09:00 UTC", text: "Count yesterday's refunds" });
+    expect(store.getLeadProposal(add)!.payload).toMatchObject({ title: "Maya: Count yesterday's refunds", terms: expect.arrayContaining(["When: weekdays at 09:00 UTC", "What: Count yesterday's refunds"]) });
     expect(confirm(add)).toMatchObject({ ok: true });
-    const [routine] = routinesOf(store, store.getTeammate(mate)!);
+    const [routine] = routinesOf(store, store.getSubagent(mate)!);
     expect(routine).toMatchObject({ schedule: "weekdays:09:00", text: "Count yesterday's refunds" });
-    expect(confirm(proposal("teammate_routine", { teammate: mate, change: "remove", routine: routine!.id }))).toMatchObject({ ok: true });
-    expect(routinesOf(store, store.getTeammate(mate)!)).toEqual([]);
+    expect(confirm(proposal("subagent_routine", { subagent: mate, change: "remove", routine: routine!.id }))).toMatchObject({ ok: true });
+    expect(routinesOf(store, store.getSubagent(mate)!)).toEqual([]);
   });
   function skill() {
     return importSkill(
@@ -472,7 +472,7 @@ describe("shared chat action lifecycle", () => {
     const review = mintSharedActionReview(store, who, id, root, now);
     expect(review.payload.terms.join("\n")).toContain(instructions);
     expect(
-      confirmMateProposal(store, who, id, now, {
+      confirmLeadProposal(store, who, id, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -530,7 +530,7 @@ describe("shared chat action lifecycle", () => {
       review = mintSharedActionReview(store, who, action, root, now);
     propose(store, { now, taskId: id, goal: "Different scope" });
     expect(
-      confirmMateProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -567,11 +567,11 @@ describe("shared chat action lifecycle", () => {
       run = ready(id);
     expect(assignment(id)?.state).toBe("ready-to-check");
     const action = proposal("result_accept", { task: id, run });
-    expect(store.getMateProposal(action)?.payload["terms"]).toEqual(expect.arrayContaining([expect.stringContaining("Marks this exact result complete")]));
+    expect(store.getLeadProposal(action)?.payload["terms"]).toEqual(expect.arrayContaining([expect.stringContaining("Marks this exact result complete")]));
     expect(confirm(action)).toMatchObject({ ok: false, reason: "needs-confirm" });
     expect(assignment(id)?.state).toBe("ready-to-check");
     const before = store.proofVerdictFor(run);
-    expect(confirmMateProposal(store, who, action, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: true, said: "Accepted and finished. The recorded checks are unchanged." });
+    expect(confirmLeadProposal(store, who, action, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: true, said: "Accepted and finished. The recorded checks are unchanged." });
     expect(assignment(id)).toMatchObject({ state: "complete", completion: { actor: "operator:operator" } });
     expect(store.proofVerdictFor(run)).toEqual(before);
     expect(store.proofAcceptance(run)).toBeNull();
@@ -586,7 +586,7 @@ describe("shared chat action lifecycle", () => {
     expect(() => proposal("result_accept", { task: id, run })).toThrow("already marked complete");
     const other = task(),
       cancel = proposal("task_cancel", { task: other });
-    expect(confirmMateProposal(store, who, cancel, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(confirmLeadProposal(store, who, cancel, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: false, reason: "needs-confirm" });
     expect(store.getTask(other)?.state).not.toBe("cancelled");
   });
   test("a successor result invalidates completion, without completing either run", () => {
@@ -596,7 +596,7 @@ describe("shared chat action lifecycle", () => {
       review = mintSharedActionReview(store, who, action, root, now),
       next = attempt(id, store.getScope(id)!.digest);
     expect(
-      confirmMateProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -606,7 +606,7 @@ describe("shared chat action lifecycle", () => {
     expect(assignment(id)?.state).not.toBe("complete");
     expect(store.proofAcceptance(run)).toBeNull();
     expect(store.proofAcceptance(next)).toBeNull();
-    expect(store.getMateProposal(action)?.state).toBe("refused");
+    expect(store.getLeadProposal(action)?.state).toBe("refused");
   });
   test("cancel requires an exact one-use review and preserves the task record", () => {
     const id = task(),
@@ -624,14 +624,14 @@ describe("shared chat action lifecycle", () => {
       two = proposal("task_cancel", { task: task() }),
       review = mintSharedActionReview(store, who, one, root, now);
     expect(
-      confirmMateProposal(store, who, two, now, {
+      confirmLeadProposal(store, who, two, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
         actionReview: { nonce: review.nonce, password: "" },
       }),
     ).toMatchObject({ ok: false, reason: "needs-confirm" });
-    expect(store.getMateProposal(two)?.state).toBe("pending");
+    expect(store.getLeadProposal(two)?.state).toBe("pending");
   });
   test("review receipts expire and a recreated process retains pending actions", () => {
     const action = proposal("task_cancel", { task: task() }),
@@ -639,7 +639,7 @@ describe("shared chat action lifecycle", () => {
     store.close();
     store = openStore(db);
     expect(
-      confirmMateProposal(
+      confirmLeadProposal(
         store,
         who,
         action,
@@ -652,7 +652,7 @@ describe("shared chat action lifecycle", () => {
         },
       ),
     ).toMatchObject({ ok: false, reason: "needs-confirm" });
-    expect(store.getMateProposal(action)?.state).toBe("pending");
+    expect(store.getLeadProposal(action)?.state).toBe("pending");
   });
   test("forged principals and changed credential generations cannot change projects", () => {
     expect(() =>
@@ -683,7 +683,7 @@ describe("shared chat action lifecycle", () => {
       confirm(proposal("skill_disable", { repo, version: saved.sha })).ok,
     ).toBe(true);
     const action = proposal("skill_restore", { repo, restore: 1 });
-    expect(JSON.stringify(store.getMateProposal(action)?.payload)).toContain(
+    expect(JSON.stringify(store.getLeadProposal(action)?.payload)).toContain(
       saved.sha,
     );
     expect(confirm(action)).toMatchObject({
@@ -714,7 +714,7 @@ describe("shared chat action lifecycle", () => {
       ).ok,
     ).toBe(true);
     const action = proposal("knowledge_restore", { repo, restore: 1 });
-    expect(JSON.stringify(store.getMateProposal(action)?.payload)).toContain(
+    expect(JSON.stringify(store.getLeadProposal(action)?.payload)).toContain(
       "Short titles first.",
     );
     expect(confirm(action).ok).toBe(true);
@@ -875,7 +875,7 @@ describe("shared chat action lifecycle", () => {
       "Different plan",
     );
     expect(
-      confirmMateProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -902,7 +902,7 @@ describe("shared chat action lifecycle", () => {
     expect(
       executeSharedAction(store, who, id, payload, now, { via: "telegram" }).ok,
     ).toBe(false);
-    store.endMateSessionsFor(who.name, who.name, now);
+    store.endLeadSessionsFor(who.name, who.name, now);
     expect(confirm(id)).toMatchObject({ ok: false, reason: "session-ended" });
     expect(knowledgeView(store, repo, who.name).revision).toBe(0);
   });
@@ -938,8 +938,8 @@ describe("shared chat action lifecycle", () => {
       const verified = verifyApproverStanding(store, who.name, who.generation, repos);
       if (!verified.ok) throw Error("identity");
       who = verified.who;
-      session = store.mintMateSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "shared-fixture", ceilingMicrousd: 10000000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
-      thread = store.openMateThread(who.name, who.ceilingDigest, now).thread.id;
+      session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "shared-fixture", ceilingMicrousd: 10000000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
+      thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
     }
     const id = task(),
       action = proposal("task_cancel", { task: id });
@@ -999,7 +999,7 @@ describe("shared chat action lifecycle", () => {
       expect(receipt).toContain("Task cancelled.");
       expect(receipt).not.toContain('name="confirm"');
       expect((await post({ csrf, nonce, confirm: "yes" })).status).toBe(303);
-      expect(store.getMateProposal(action)?.outcome).toMatchObject({
+      expect(store.getLeadProposal(action)?.outcome).toMatchObject({
         ok: true,
         via: "web",
       });
@@ -1034,7 +1034,7 @@ describe("shared chat action lifecycle", () => {
     const review = mintSharedActionReview(store, who, action, root, now);
     expect(review.payload.terms.join("\n")).toContain(instructions);
     expect(
-      confirmMateProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, {
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -1060,7 +1060,7 @@ describe("shared chat action lifecycle", () => {
       },
     };
     expect(
-      executeMateTool(ctx, "propose_action", {
+      executeLeadTool(ctx, "propose_action", {
         operation: "knowledge_instructions",
         repo: "r1",
         instructions: "Use clear labels.",
@@ -1068,7 +1068,7 @@ describe("shared chat action lifecycle", () => {
     ).toMatchObject({ ok: true, body: { executed: false } });
     expect(draft[0]?.["repo"]).toBe(repo);
     expect(
-      executeMateTool(ctx, "propose_action", {
+      executeLeadTool(ctx, "propose_action", {
         operation: "knowledge_instructions",
         repo: "r1",
         instructions: "bad",
@@ -1076,7 +1076,7 @@ describe("shared chat action lifecycle", () => {
       }).ok,
     ).toBe(false);
     expect(
-      executeMateTool(ctx, "propose_action", {
+      executeLeadTool(ctx, "propose_action", {
         operation: "knowledge_instructions",
         repo: "r2",
         instructions: "bad",

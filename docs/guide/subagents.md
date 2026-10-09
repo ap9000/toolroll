@@ -1,15 +1,21 @@
-# AI teammates
+# Subagents
 
-An AI teammate works your flows' cards the way an employee would, within
-rules you write for it. It reads each card, decides, writes replies and moves
-cards on, and it comes to you when its rules say to ask first. Open
-**Teammates** (from the Flows page) to add one, or start from a
-[starter kit](getting-started.md#start-from-a-kit), which adds a teammate
+Your lead can have subagents: named helpers, each with its own personality,
+instructions and rules. Ask your lead to hand one something ("ask Maya where
+order 2201 is"), or put one on a flow step, where it works cards the way an
+employee would: it reads each card, decides, writes replies and moves cards
+on, and comes to you when its rules say to ask first. Add one in
+**Settings → Lead → Subagents**, or start from a
+[starter kit](getting-started.md#start-from-a-kit), which adds a subagent
 together with the flow it works.
 
-## Who a teammate is: its soul file
+Subagents used to be called AI teammates. Each one carried over with
+its name, soul file, memory, tools, desk and history; old links to its page
+still open it.
 
-Each teammate is a soul file: a short Markdown document it reads every turn.
+## Who a subagent is: its soul file
+
+Each subagent is a soul file: a short Markdown document it reads every turn.
 
 ```markdown
 ---
@@ -37,18 +43,18 @@ You look after this team's customers. You're warm, calm and quick.
 ```
 
 Start from a template (Support rep, Sales rep, Ops coordinator, Triage lead)
-or a blank file, and make it yours on the teammate's page. Every save is a new
+or a blank file, and make it yours on the subagent's page. Every save is a new
 version, and **Download** gives you the file. Keep secrets out: a soul file
 that looks like it holds a key is refused.
 
-## Putting a teammate to work
+## Putting a subagent to work
 
 - **On a decision:** in a flow, open a "Person decides" zone and choose the
-  teammate under **Who decides**. It approves (sending the draft as written,
+  subagent under **Who decides**. It approves (sending the draft as written,
   or as it rewrote it), sends the card back with a note, or hands it to the
   flow's owner with what it would do and why. Your decision then arrives in
-  your chat app as always, with the teammate's note.
-- **On its own zone:** add a **Teammate handles it** zone. Say what to do there
+  your chat app as always, with the subagent's note.
+- **On its own zone:** add a **Subagent handles it** zone. Say what to do there
   and list the answers it can pick, each leading to a zone. It picks one and
   writes what the next zones send (the email body is then
   `{{stage.<zone id>}}`). When its rules say to ask, it asks you a question
@@ -58,11 +64,11 @@ that looks like it holds a key is refused.
   lead. It carries on with your answer.
 
 Every decision is written down with its reason: in the card's history ("Approved
-by Maya (AI): within my $50 limit") and on the teammate's page.
+by Maya (AI): within my $50 limit") and on the subagent's page.
 
-## Letting a teammate use tools
+## Letting a subagent use tools
 
-A teammate can use your project's tools (the MCP servers on the **Tools** page:
+A subagent can use your project's tools (the MCP servers on the **Tools** page:
 a shop, a CRM, a mailbox, an issue tracker) under a rule you set for each
 action. On its page, under **Tools**, pick a tool and **Add tool**. Each of its
 actions then has one rule:
@@ -78,16 +84,16 @@ actions then has one rule:
 - **Never:** it isn't offered the action at all.
 
 Actions that only read start as **Do it**; everything else starts as **Ask
-first**. The teammate never calls a tool itself: it asks for a call on its
+first**. The subagent never calls a tool itself: it asks for a call on its
 turn, Toolroll checks the rule and makes it (or asks you), and the
-teammate reads the answer before it decides. Every call, made or not, is a
+subagent reads the answer before it decides. Every call, made or not, is a
 receipt: under **Tool calls** on the card, and in **What it did** on its page.
 A visit to a card allows up to 12 calls; after that it decides with what it
 has.
 
-## What a teammate remembers
+## What a subagent remembers
 
-Each teammate has a memory, on its page under **Memory**:
+Each subagent has a memory, on its page under **Memory**:
 
 - **What you tell it.** "Tell Maya something" keeps a line ("this week, offer
   free shipping instead of a refund"). Every turn reads the latest ten things
@@ -103,7 +109,7 @@ its oldest; what you told it stays until you forget it.
 ## It learns from your approvals
 
 When you approve the same ask-first tool action five times in a row without
-turning one down, the teammate suggests the rule that would have let it act
+turning one down, the subagent suggests the rule that would have let it act
 alone: "You approved my last 5 refund_order calls on shop (amount 58 to 72).
 May I make them on my own up to amount 75, and ask you above that?" It reaches
 its manager in their chat app and on its page. **Yes, change it** changes only
@@ -111,16 +117,15 @@ that rule (and only if it's still what it was); **Not now** leaves it, and any
 words you add are kept in its memory. It asks again only after five more
 approvals.
 
-## Its desk: message it by name, give it routines
+## Its desk: ask it through your lead, give it routines
 
-Each teammate has a desk: its own flow, made the first time it's needed.
+Each subagent has a desk: its own flow, made the first time it's needed.
 
-- **Message it by name** in your chat with Toolroll on Telegram, Slack,
-  Discord or Teams: start with `@maya` or `Maya,` ("@maya where's order
-  2201?"). It lands on Maya's desk as a card. Maya works it within its rules
-  and tools, and its answer comes back to you there. A message that only
-  starts with the name ("Maya can refund up to $100 now") still goes to the
-  lead.
+- **Ask it through your lead**, in the console, the terminal or your chat app:
+  "ask Maya where order 2201 is", or "@maya where's order 2201?". The lead
+  shows a card with exactly what goes to Maya. Once you confirm, it lands on
+  Maya's desk as a card; Maya works it within its rules and tools, and its
+  answer comes back to you. Confirming twice asks once.
 - **Routines**, on its page under **Desk and routines**: "weekdays 09:00 —
   Look up yesterday's refunds and tell me the total". Each time, a card lands
   on its desk, and the answer goes to its manager. **Run now** tries one at
@@ -133,8 +138,8 @@ Each teammate has a desk: its own flow, made the first time it's needed.
   trigger so labelled issues land on Maya's desk, and an Update zone so its
   answer is posted on the issue.
 
-Any "Teammate handles it" zone can also **Answer whoever asked**: what the
-teammate writes goes back to the person who added the card.
+Any "Subagent handles it" zone can also **Answer whoever asked**: what the
+subagent writes goes back to the person who added the card.
 
 ## Its week, and undo
 
@@ -155,31 +160,31 @@ same input, as you, and both calls keep their receipts. If the tool says the
 undo failed, the original call stands. From chat, the lead can ask to undo a
 call; it's made on the worker's next pass.
 
-## Talking to your teammates
+## Talking to your subagents
 
 - Its questions and hand-offs reach you in your chat app, under its name
   ("Maya · Support: …").
 - **Tell Maya something** on its page adds to its memory for the next turns
   ("this week, offer free shipping instead of a refund"). Lasting rules belong
   in the soul file.
-- The lead chat can add teammates, change one section of a soul file ("Maya can
+- Your lead can add subagents, change one section of a soul file ("Maya can
   approve refunds up to $100 now"), let one use a tool or stop, change an
   action's rule ("Maya can refund up to $100 in the shop without asking"),
   pause or resume one, pass on a note, fix or forget something it remembers,
   or answer its question for you. Each is a card you confirm.
-- Each teammate sends its manager a summary after 5 pm: what it decided,
+- Each subagent sends its manager a summary after 5 pm: what it decided,
   handled and handed over, and the tool calls it made. **Send today's
   summary** sends one now.
 
 ## Limits
 
-- Teammates do flow work only: they never approve a code task, a merge or
+- Subagents do flow work only: they never approve a code task, a merge or
   spending. Those stay with people, or a signed hands-off mode.
-- **Pause** stops a teammate: decisions it would make go to people, and zones
+- **Pause** stops a subagent: decisions it would make go to people, and zones
   it handles wait until you resume it.
-- Each teammate has a daily limit of turns (200 by default, in **Settings** on
+- Each subagent has a daily limit of turns (200 by default, in **Settings** on
   its page); past it, its decisions go to people until tomorrow.
-- A teammate reads each card through Claude on this computer's sign-in, with
+- A subagent reads each card through Claude on this computer's sign-in, with
   no tools of its own, no files and no internet: it only decides, and Standing
   Orders does what it decided within the zone's choices, and makes the tool
   calls its rules allow. The card and what tools answer are data to it, never

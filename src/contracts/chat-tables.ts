@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS chat_part_message ON chat_part(provider, message);
 -- A button rides its planned part, or (Telegram) the binding, chat and message it was placed on.
 CREATE TABLE IF NOT EXISTS chat_action (
  ${PROVIDER}, token TEXT NOT NULL, part INTEGER, binding INTEGER, chat TEXT, message TEXT,
- proposal INTEGER REFERENCES mate_proposal(id) ON DELETE CASCADE,
+ proposal INTEGER REFERENCES lead_proposal(id) ON DELETE CASCADE,
  decision INTEGER REFERENCES decision(id) ON DELETE CASCADE, option_id TEXT, note_digest TEXT,
  phase TEXT NOT NULL CHECK (phase IN ('confirm','dismiss','yes','cancel','choose')),
  created TEXT, expires TEXT, consumed TEXT,
@@ -139,17 +139,17 @@ CREATE TABLE IF NOT EXISTS chat_flow_note (
  FOREIGN KEY (provider, part) REFERENCES chat_part(provider, id)
 );
 CREATE INDEX IF NOT EXISTS chat_flow_note_visit ON chat_flow_note(card, entry);
--- A teammate's question: one button per option and one to answer in words (choice NULL).
+-- A subagent's question: one button per option and one to answer in words (choice NULL).
 CREATE TABLE IF NOT EXISTS chat_question_action (
  ${PROVIDER}, token TEXT NOT NULL, part INTEGER, binding INTEGER, chat TEXT, message TEXT,
- question INTEGER NOT NULL REFERENCES teammate_question(id), choice TEXT, created TEXT, expires TEXT NOT NULL, consumed TEXT,
+ question INTEGER NOT NULL REFERENCES subagent_question(id), choice TEXT, created TEXT, expires TEXT NOT NULL, consumed TEXT,
  PRIMARY KEY (provider, token),
  FOREIGN KEY (provider, part) REFERENCES chat_part(provider, id)
 );
 CREATE INDEX IF NOT EXISTS chat_question_action_question ON chat_question_action(question);
 CREATE TABLE IF NOT EXISTS chat_question_prompt (
  ${PROVIDER}, id INTEGER NOT NULL, binding INTEGER NOT NULL, chat TEXT, message TEXT,
- question INTEGER NOT NULL REFERENCES teammate_question(id), created TEXT NOT NULL, expires TEXT NOT NULL, consumed TEXT,
+ question INTEGER NOT NULL REFERENCES subagent_question(id), created TEXT NOT NULL, expires TEXT NOT NULL, consumed TEXT,
  PRIMARY KEY (provider, id)
 );
 CREATE INDEX IF NOT EXISTS chat_question_prompt_open ON chat_question_prompt(provider, binding, consumed);

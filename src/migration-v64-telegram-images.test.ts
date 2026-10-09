@@ -8,7 +8,7 @@ import { addLegacyChatTables, windChatsBack } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, TELEGRAM_CONVERSATION_PART_V63_COLUMNS, type Store, type TelegramConversationPart } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
-import { telegramRequestId } from "./telegram-mate.js";
+import { telegramRequestId } from "./telegram-lead.js";
 
 const NOW = new Date("2026-09-16T09:00:00Z");
 const BOT = "777000";
@@ -19,7 +19,7 @@ const V63_PARTS = `CREATE TABLE telegram_conversation_part (
   kind            TEXT NOT NULL CHECK (kind IN ('reply','card')),
   text            TEXT NOT NULL,
   reply_to        TEXT,
-  proposal        INTEGER REFERENCES mate_proposal(id) ON DELETE SET NULL,
+  proposal        INTEGER REFERENCES lead_proposal(id) ON DELETE SET NULL,
   keyboard_json   TEXT,
   state           TEXT NOT NULL CHECK (state IN ('pending','sent','dropped')),
   message_id      TEXT,
@@ -78,7 +78,7 @@ describe("v64 Telegram result images", () => {
     old.exec(`INSERT INTO telegram_conversation_part_v63 (${columns}) SELECT ${columns} FROM telegram_conversation_part`);
     old.exec("DROP TABLE telegram_conversation_part");
     old.exec("ALTER TABLE telegram_conversation_part_v63 RENAME TO telegram_conversation_part");
-    old.exec("DROP TABLE mate_turn_evidence");
+    old.exec("DROP TABLE lead_turn_evidence");
     old.exec("DROP TABLE service_cursor");
     old.prepare("UPDATE schema_version SET version = ?").run(version);
     const parts = old.prepare("SELECT * FROM telegram_conversation_part ORDER BY ordinal").all() as Record<string, unknown>[];
@@ -99,18 +99,18 @@ describe("v64 Telegram result images", () => {
     {
       const old = new DatabaseSync(file);
       expect(String(old.prepare("SELECT sql FROM sqlite_master WHERE name = 'telegram_conversation_part'").get()?.["sql"])).not.toContain("artifact");
-      expect(old.prepare("SELECT name FROM sqlite_master WHERE name = 'mate_turn_evidence'").get()).toBeUndefined();
+      expect(old.prepare("SELECT name FROM sqlite_master WHERE name = 'lead_turn_evidence'").get()).toBeUndefined();
       expect(old.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(version);
       old.close();
     }
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(116);
+    expect(SCHEMA_VERSION).toBe(117);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     // Every part, receipt, attempt and uncertain count carried into the shared chat tables (v114), read back as it was.
     expect(store.listTelegramConversationParts(before.conversation)).toEqual(before.parts);
     expect(before.parts.map(row => [row.taskId, row.run, row.artifact, row.sha256])).toEqual([[null, null, null, null], [null, null, null, null]]);
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn_evidence").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_turn_evidence").get()?.["n"]).toBe(0);
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     // Typed identity is a contract, not a convention: an image that misses any of it is refused when read, never guessed.
     const insert = store.handle.prepare("INSERT INTO chat_part (provider, id, event, ordinal, payload, created) VALUES ('telegram', 99, ?, 9, ?, ?)");
@@ -152,10 +152,10 @@ describe("v64 Telegram result images", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v64-missing-"));
     const file = join(dir, "orders.db");
     store = openStore(file); store.close(); store = undefined;
-    let db = new DatabaseSync(file); db.exec("DROP TABLE mate_turn_evidence"); db.close();
+    let db = new DatabaseSync(file); db.exec("DROP TABLE lead_turn_evidence"); db.close();
     expect(() => openStore(file)).toThrow("Telegram image history is missing");
     db = new DatabaseSync(file);
-    db.exec("CREATE TABLE IF NOT EXISTS mate_turn_evidence (turn INTEGER, ordinal INTEGER)");
+    db.exec("CREATE TABLE IF NOT EXISTS lead_turn_evidence (turn INTEGER, ordinal INTEGER)");
     addLegacyChatTables(db);
     db.exec("UPDATE schema_version SET version = 113");
     db.exec("PRAGMA foreign_keys = OFF");

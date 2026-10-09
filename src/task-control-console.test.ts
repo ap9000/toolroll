@@ -161,7 +161,7 @@ describe("the exact-run control on the console (v52)", () => {
   });
 
   test("chat proposals stop once and open the shared resume ceremony without granting resume authority", async () => {
-    const { executeMateTool } = await import("./mate-tools.js");
+    const { executeLeadTool } = await import("./lead-tools.js");
     const { verifyApproverStanding } = await import("./principal.js");
     const { subscriptionCredentialKey } = await import("./converse.js");
     const ref = seed("payouts"), { runId, leaseId } = live("payouts", ref);
@@ -169,19 +169,19 @@ describe("the exact-run control on the console (v52)", () => {
     const verified = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [resolve("/repo/main")]);
     if (!verified.ok) throw new Error(verified.reason);
     const who = verified.who, credentialKey = subscriptionCredentialKey("codex-subscription");
-    const session = store.mintMateSession({ approver: "alex", approverGeneration: who.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: who.ceilingDigest, termsDigest: "test" }, now);
-    const thread = store.openMateThread("alex", who.ceilingDigest, now).thread;
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: who.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: who.ceilingDigest, termsDigest: "test" }, now);
+    const thread = store.openLeadThread("alex", who.ceilingDigest, now).thread;
     const make = (operation: "stop" | "resume") => {
-      const opened = store.openMateTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+      const opened = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
       if (!opened.ok) throw new Error(opened.reason);
-      const started = store.startMateTurn(opened.id, now);
+      const started = store.startLeadTurn(opened.id, now);
       if (!started.ok) throw new Error("start failed");
       let id = 0;
-      const made = executeMateTool({ store, who, now, step: 1, readDecisions: new Map(), draft: (kind, payload) => {
-        id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, now); return id;
+      const made = executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft: (kind, payload) => {
+        id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, now); return id;
       } }, "propose_task_action", { task: "payouts", operation, run: runId });
       expect(made).toMatchObject({ ok: true });
-      store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
+      store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
       return id;
     };
     const cookie = await loginAs("alex", approverToken), csrf = csrfOf(await page(cookie, "/t/payouts"));
@@ -190,12 +190,12 @@ describe("the exact-run control on the console (v52)", () => {
     expect((await post(cookie, `/chat/proposal/${stop}/confirm`, { csrf: "bad" })).status).toBe(403);
     expect(store.stopOf(runId)).toBeNull();
     expect((await post(cookie, `/chat/proposal/${stop}/confirm`, { csrf })).status).toBe(303);
-    expect(store.getMateProposal(stop)?.outcome).toMatchObject({ said: expect.stringContaining("Stop requested") });
+    expect(store.getLeadProposal(stop)?.outcome).toMatchObject({ said: expect.stringContaining("Stop requested") });
     expect(store.stopOf(runId)?.settledAt).toBeNull();
     await post(cookie, `/chat/proposal/${stop}/confirm`, { csrf });
     await post(cookie, `/chat/proposal/${staleStop}/confirm`, { csrf });
     expect(store.stopsForTask(ref)).toHaveLength(1);
-    expect(store.getMateProposal(staleStop)?.state).toBe("refused");
+    expect(store.getLeadProposal(staleStop)?.state).toBe("refused");
     finalize(store, leaseId, { kind: "interrupted", runId, taskId: "payouts", stopRun: runId, now });
     const resume = make("resume");
     const armed = await post(cookie, `/chat/proposal/${resume}/confirm`, { csrf });

@@ -30,8 +30,8 @@ test.each([110, -110])("v%s: the request-budget tables are added and every saved
   expect(updateSafeSchema(110)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(112);
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'request_budget_%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["request_budget_limit", "request_budget_usage"]);
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });

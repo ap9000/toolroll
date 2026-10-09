@@ -41,7 +41,9 @@ export type LeadFormFacts = {
 export function leadSettingsHtml(data: { config: import("../store.js").ChatConfig | null; facts: LeadFormFacts; words: string | null; signedIn: string | null; command: string; said: string | null;
   saved?: boolean; identity?: LeadIdentity;
   about?: string[]; aboutSaved?: boolean;
-  promises?: { id: number; what: string; when: string; until: string }[] }): Html {
+  promises?: { id: number; what: string; when: string; until: string }[];
+  /** D5: the lead's subagents in the projects this person can use: name and role, project, and whether it's paused. */
+  subagents?: { id: number; label: string; project: string; paused: boolean }[] }): Html {
   const { config, facts } = data;
   const returnTo = "/settings/lead";
   const summary = config === null
@@ -71,6 +73,11 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
     (data.promises ?? []).length === 0 ? "" : html`<section class="card lead-promises" data-lead-promises><h2>Promises</h2><ul class="lead-promise-list">${data.promises!.map(one =>
       html`<li data-promise="${one.id}"><p>${one.what}</p><p class="meta">${one.when.charAt(0).toUpperCase() + one.when.slice(1)} · <span class="nowrap">until ${new Date(one.until).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}</span></p>\
 ${postForm("/settings/lead/promise/cancel", html`<button type="submit" class="secondary">Cancel</button>`, { attrs: { class: "inline" }, returnTo, hidden: { promise: one.id } })}</li>`)}</ul></section>`,
+    // D5: the lead's subagents, one line each; everything else about one is on its own page.
+    data.subagents === undefined ? "" : html`<section class="card lead-subagents" id="subagents" data-lead-subagents><h2>Subagents</h2>${
+      data.subagents.length === 0 ? html`<p class="meta">None yet. Your lead can ask one for help once it's here.</p>`
+        : html`<ul class="lead-subagent-list">${data.subagents.map(one => html`<li data-subagent="${one.id}"><a href="/settings/lead/subagents/${one.id}">${one.label}</a><span class="meta">${one.project}${one.paused ? " · Paused" : ""}</span></li>`)}</ul>`
+    }<p><a class="button-link" href="/settings/lead/subagents?add=1#add" data-add-subagent>Add subagent</a></p></section>`,
     html`<details class="lead-advanced" data-lead-advanced><summary>Advanced</summary>`,
     leadConfigForm(config, facts),
     config === null ? "" : postForm("/chat/config", html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password"><button type="submit" class="secondary">Turn the lead off</button>`,

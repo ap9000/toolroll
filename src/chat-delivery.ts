@@ -1,9 +1,9 @@
 /** Shared saved replies, explicit confirmations and progress for private chat transports. */
-import { answerChatQuestionPrompt, applyChatQuestionTap, questionParts } from "./teammate-question.js";
+import { answerChatQuestionPrompt, applyChatQuestionTap, questionParts } from "./subagent-question.js";
 import { applyChatAskTap, chatAskText } from "./chat-ask.js";
 import {
   channelRepos,
-  resolveChannelMate,
+  resolveChannelLead,
   proposalPreview,
   proposalOutcomeText,
   confirmedLink,
@@ -14,13 +14,13 @@ import {
   taskInCeiling,
   tooLongText,
 } from "./chat-channel.js";
-import { MATE_MESSAGE_MAX_CHARS, mateFailureText, runMateTurn, type MateChannelProblem } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
 import { shapeReplyParts } from "./reply-shape.js";
 import { warmTurn, type WarmHooks } from "./chat-warmth.js";
 import {
-  confirmMateProposal,
-  dismissMateProposal,
-} from "./mate-doors.js";
+  confirmLeadProposal,
+  dismissLeadProposal,
+} from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import {
   ChatState,
@@ -47,9 +47,8 @@ import { phoneText, PHONE_HELP, phoneCommand, phoneStatus, phoneTaskView, phoneT
 import { applyRoomInbound, conversationRow, roomCardApprover, roomCommand, roomGrantAllowed, roomMessagesAfter, roomMessageText, teamDomain } from "./chat-rooms.js";
 import { isTelegramProgressNotification, proposalTaskOf, type Notification, type Store } from "./store.js";
 import { isShotsKind, resultShotsFor } from "./result-shots.js";
-import { messageTeammate } from "./teammate-desk.js";
 import { CHAT_APP_NAMES } from "./flow-triggers.js";
-import type { SubscriptionMateRunner } from "./subscription-chat.js";
+import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
@@ -69,7 +68,7 @@ export type ChatDeliveryOptions = {
   evidenceRoot: string;
   current: () => boolean;
   origin: () => string | null;
-  subscriptionRunner?: SubscriptionMateRunner;
+  subscriptionRunner?: SubscriptionLeadRunner;
   canNotify?: () => boolean;
   clock?: () => Date;
   partSize?: number;
@@ -281,7 +280,7 @@ export async function processChatEvent(
       return true;
     }
     const text = String(input.text ?? "");
-    // A teammate's question asked for this person's next message (v93): it is the answer.
+    // A subagent's question asked for this person's next message (v93): it is the answer.
     if (answerChatQuestionPrompt({ store, state, label: options.label }, event, binding,
       { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}) }, nowOf(options))) return true;
     // A flow decision asked for this person's next message (Edit, Send back): it is the draft or the note.
@@ -300,14 +299,8 @@ export async function processChatEvent(
     // A "Person chooses" notice's thread reply is the note; the first other message after it is asked about (chat-flow.ts).
     if (answerChoiceMessage({ store, state, label: options.label }, event, binding,
       { text, ...(typeof input.originalLength === "number" ? { originalLength: input.originalLength } : {}), lead: input.lead === true }, nowOf(options), repos)) return true;
-    // A message to a teammate by name (v96), in someone's own chat with Toolroll: a card on its desk.
-    if (event.channel === binding.channel) {
-      const handed = messageTeammate(store, { who: binding.approver, repos, via: CHAT_APP_NAMES[state.provider] ?? "Chat" }, text, nowOf(options));
-      if (handed !== null) {
-        state.plan(event.id, [{ text: handed.said, ...(handed.link === undefined ? {} : { link: handed.link }) }], nowOf(options));
-        return true;
-      }
-    }
+    // D5: a message naming a subagent ("@rosa …") is the lead's to read like any other: it asks the subagent for its
+    // person with a card they confirm (propose_subagent ask), never by the transport passing it on unseen.
     // The task this message's turn is about, once chosen (kept on the event,
     // so a reply planned after a restart names the same task).
     let about: { task: string; run: number | null } | null =
@@ -357,7 +350,7 @@ export async function processChatEvent(
         return true;
       }
     }
-    if (text.length > MATE_MESSAGE_MAX_CHARS) {
+    if (text.length > LEAD_MESSAGE_MAX_CHARS) {
       state.plan(
         event.id,
         [
@@ -377,7 +370,7 @@ export async function processChatEvent(
     let receipt =
       event.session === null
         ? null
-        : store.mateRequestReceipt(event.session, request);
+        : store.leadRequestReceipt(event.session, request);
     if (!receipt) {
       if (new Date(event.created).getTime() + 600_000 < now.getTime()) {
         state.plan(
@@ -391,7 +384,7 @@ export async function processChatEvent(
         );
         return true;
       }
-      const resolved = resolveChannelMate(
+      const resolved = resolveChannelLead(
         store,
         { approver: binding.approver, approverGeneration: binding.generation },
         repos,
@@ -442,7 +435,7 @@ export async function processChatEvent(
         // A card is about the task it names, or the one confirming it filed.
         .map((c) => {
           if (c.task || c.proposal === undefined) return c;
-          const about = proposalTaskOf(store.getMateProposal(c.proposal));
+          const about = proposalTaskOf(store.getLeadProposal(c.proposal));
           return about === null ? c : { ...c, task: about.task, ...(about.run === null ? {} : { run: about.run }) };
         });
       const targets = [
@@ -479,7 +472,7 @@ export async function processChatEvent(
       // Only ever the owner's own message in their own chat: never the bot's, never a room.
       const warm = warmTurn(options.warm !== undefined && event.kind === "message" && event.member !== identity.bot && event.member === binding.member && event.channel === binding.channel
         ? options.warm(event, binding) : {});
-      const outcome = await runMateTurn({
+      const outcome = await runLeadTurn({
         store,
         who: resolved.who,
         session: resolved.session,
@@ -505,7 +498,7 @@ export async function processChatEvent(
             return { ok: true };
           } catch (error) {
             const code = error instanceof ChatDeliveryError ? error.code : "";
-            const reason: MateChannelProblem = code === "Connected projects changed" ? "projects-changed"
+            const reason: LeadChannelProblem = code === "Connected projects changed" ? "projects-changed"
               : code.endsWith("account access changed") ? "member-changed" : "access-changed";
             return { ok: false, reason };
           }
@@ -530,7 +523,7 @@ export async function processChatEvent(
         );
         return true;
       }
-      receipt = store.mateRequestReceipt(resolved.session.id, request);
+      receipt = store.leadRequestReceipt(resolved.session.id, request);
       if (!receipt) {
         state.plan(
           event.id,
@@ -546,8 +539,8 @@ export async function processChatEvent(
         return true;
       }
     }
-    store.sweepStaleMateTurns(nowOf(options));
-    const turn = store.getMateTurn(receipt.turn);
+    store.sweepStaleLeadTurns(nowOf(options));
+    const turn = store.getLeadTurn(receipt.turn);
     if (turn?.state === "running" || turn?.state === "queued") {
       state.defer(
         event.id,
@@ -561,14 +554,14 @@ export async function processChatEvent(
         event.id,
         [
           {
-            text: mateFailureText(turn?.failureReason ?? null),
+            text: leadFailureText(turn?.failureReason ?? null),
           },
         ],
         nowOf(options),
       );
       return true;
     }
-    const session = store.getMateSession(turn.session);
+    const session = store.getLeadSession(turn.session);
     if (!session) {
       state.finish(event.id, true);
       return true;
@@ -576,7 +569,7 @@ export async function processChatEvent(
     await channelAccess(options, binding, session.ceilingDigest);
     const reply =
       store
-        .listMateMessages(turn.thread, 200)
+        .listLeadMessages(turn.thread, 200)
         .find(
           (message) => message.turn === turn.id && message.role === "assistant",
         )?.text ?? "The reply is no longer in the saved thread.";
@@ -588,11 +581,11 @@ export async function processChatEvent(
     );
     // The lead's question to its owner: its options as buttons, then "Something else", in their own chat (any thread);
     // in a room a tap is not their message, so the question and its options go out as text.
-    const ask = store.mateAsk(turn.id);
+    const ask = store.leadAsk(turn.id);
     if (ask !== null)
       parts.push({ ...(event.channel === binding.channel ? { text: phoneText(ask.question, 1000), ask: { turn: ask.turn, options: ask.options } } : { text: phoneText(chatAskText(ask), 1000) }),
         ...(about === null ? {} : { task: about.task, ...(about.run === null ? {} : { run: about.run }) }) });
-    for (const image of store.listMateTurnEvidence(turn.id))
+    for (const image of store.listLeadTurnEvidence(turn.id))
       parts.push({
         text: image.caption,
         image: {
@@ -605,7 +598,7 @@ export async function processChatEvent(
         run: image.run,
       });
     for (const proposal of store
-      .listMateProposals(turn.thread, ["pending"])
+      .listLeadProposals(turn.thread, ["pending"])
       .filter((p) => p.turn === turn.id))
       parts.push({ text: "", proposal: proposal.id });
     state.plan(event.id, parts, nowOf(options));
@@ -713,7 +706,7 @@ export function applyChatAction(
     }
     // A flow decision's button (v88) is answered by the flow's own door.
     if (applyChatFlowTap({ store, state, label: options.label }, event, binding, token, repos, now)) return;
-    // A teammate's question's button (v93) is answered by the question's own door.
+    // A subagent's question's button (v93) is answered by the question's own door.
     if (applyChatQuestionTap({ store, state, label: options.label }, event, binding, token, now)) return;
     // The lead's question to its owner: the tapped option becomes their next message.
     if (applyChatAskTap({ store, state }, event, binding, token, now)) return;
@@ -745,7 +738,7 @@ export function applyChatAction(
       );
       return;
     }
-    const proposal = store.getMateProposal(action.proposal);
+    const proposal = store.getLeadProposal(action.proposal);
     const verified = verifyApproverStanding(
       store,
       binding.approver,
@@ -778,7 +771,7 @@ export function applyChatAction(
         now,
       );
     } else if (phase === "dismiss") {
-      const dismissed = dismissMateProposal(
+      const dismissed = dismissLeadProposal(
         store,
         verified.who,
         proposal.id,
@@ -798,7 +791,7 @@ export function applyChatAction(
       content = { ...content, phase: "armed" };
       state.tokens(action.part, proposal.id, ["yes", "cancel"], now);
     } else {
-      const outcome = confirmMateProposal(
+      const outcome = confirmLeadProposal(
         store,
         verified.who,
         proposal.id,
@@ -883,7 +876,7 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
         else parts.push({ text, channel: room.chat });
       }
       if (message.role === "assistant" && message.turn !== null)
-        for (const proposal of store.listMateProposals(row.thread, ["pending"]).filter(one => one.turn === message.turn)) parts.push({ text: "", proposal: proposal.id, channel: room.chat });
+        for (const proposal of store.listLeadProposals(row.thread, ["pending"]).filter(one => one.turn === message.turn)) parts.push({ text: "", proposal: proposal.id, channel: room.chat });
       const id = chatHash(`${state.provider}:room:${room.id}:${message.id}`);
       const target = carrier;
       store.transact(() => {
@@ -1175,7 +1168,7 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
             ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, flowSendParts(store, notification, state.provider)!, now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
-          // A teammate's question (v93): its options and "Answer in words" on the notice, for the person it asks.
+          // A subagent's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
             ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, questionParts(store, notification, binding)!, now);

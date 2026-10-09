@@ -25,7 +25,7 @@ import { keptDraft } from "./flow-draft.js";
 import { decideFlowCard, draftFor, flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { chooseFlowCard, flowChoiceAt, flowPersonOf, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
 import { deciderOf, FLOW_END, replyTarget, type FlowStage } from "./flows.js";
-import { phoneLinkButton, type InlineButton } from "./telegram-mate.js";
+import { phoneLinkButton, type InlineButton } from "./telegram-lead.js";
 import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
 import { telegramButton, type TelegramCallbackButton } from "./contracts/telegram-callback.js";
 
@@ -54,8 +54,8 @@ function decisionTerms(waiting: Waiting): string {
 
 /**
  * A flow decision as Telegram shows it: the action and where each button takes the card first, then the draft (as
- * the card holds it now, so what is approved is what is read) and why a teammate handed it over, then the flow and
- * zone. `said` is the saved notice's body: the words before its instruction are the teammate's handoff.
+ * the card holds it now, so what is approved is what is read) and why a subagent handed it over, then the flow and
+ * zone. `said` is the saved notice's body: the words before its instruction are the subagent's handoff.
  */
 export function flowDecisionText(waiting: Waiting, said: string | null, head = `Approve “${waiting.card.title}”`): string {
   const at = said === null ? -1 : said.indexOf(`${waiting.stage.title}: approve`);

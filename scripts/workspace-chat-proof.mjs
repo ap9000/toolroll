@@ -130,9 +130,9 @@ async function postFrom(page, path, fields) {
   }, [path, fields]);
 }
 const csrfOf = page => page.evaluate(() => document.querySelector('input[name="csrf"]')?.value ?? '');
-const mateTurns = () => fixture.store.recentMateTurns(fixture.name, 50).length;
-/** Wait until no mate turn is live (a slow scripted reply from an earlier step). */
-const settled = async () => { for (let i = 0; i < 60 && fixture.store.liveMateTurnFor(fixture.name) !== null; i++) await new Promise(resolve => setTimeout(resolve, 500)); };
+const leadTurns = () => fixture.store.recentLeadTurns(fixture.name, 50).length;
+/** Wait until no lead turn is live (a slow scripted reply from an earlier step). */
+const settled = async () => { for (let i = 0; i < 60 && fixture.store.liveLeadTurnFor(fixture.name) !== null; i++) await new Promise(resolve => setTimeout(resolve, 500)); };
 const createdTasks = title => fixture.store.listTasks().filter(one => one.title === title);
 const TASK_TITLE = 'Add a header row to every CSV export';
 
@@ -256,7 +256,7 @@ try {
   check('c2 after several polls the composer draft is intact and the live card is still pending', await sameDocument(page, token) && polled.same && polled.value === 'Now check the proof for' && polled.card, JSON.stringify(polled));
   await scrollTo(page, '.proposal-scope');
   await submit(page, '.proposal-scope form[action$="/confirm"] button[type="submit"]');
-  check('c2 the live card confirmed once through its own form after multiple polls', (await page.$('.proposal-scope.confirmed')) !== null && fixture.store.getMateProposal(3)?.state === 'confirmed');
+  check('c2 the live card confirmed once through its own form after multiple polls', (await page.$('.proposal-scope.confirmed')) !== null && fixture.store.getLeadProposal(3)?.state === 'confirmed');
   await second.close();
   await live.ctx.close();
 
@@ -264,7 +264,7 @@ try {
   const lost = await context(VIEWPORTS.desktop);
   page = lost.page;
   await freshConversation(page);
-  const turnsBefore = mateTurns();
+  const turnsBefore = leadTurns();
   // The server handles the POST; the page never sees the answer. The
   // status poll is slowed so the unconfirmed state is observable before
   // the receipt settles it (the poll is otherwise fast enough to win).
@@ -280,7 +280,7 @@ try {
   check('c3 a lost send response keeps the draft as submitted and says it is not confirmed — no automatic retry', unconfirmed.value === 'Brief me.' && unconfirmed.stored?.submitted === true, JSON.stringify(unconfirmed));
   await page.waitForFunction(() => document.querySelector('.composer textarea').value === '', null, { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('.chat-thinking') === null && document.querySelectorAll('.msg').length >= 2, null, { timeout: 20000 });
-  check('c3 the receipt poll cleared the draft once the server had the message; exactly one turn ran', mateTurns() === turnsBefore + 1, `turns ${turnsBefore} → ${mateTurns()}`);
+  check('c3 the receipt poll cleared the draft once the server had the message; exactly one turn ran', leadTurns() === turnsBefore + 1, `turns ${turnsBefore} → ${leadTurns()}`);
   await page.unroute('**/chat/mate/status*');
   // Reload with a submitted draft restored: the receipt settles it; no second turn.
   const requestKey = 'c'.repeat(32);
@@ -298,12 +298,12 @@ try {
   const restored = await page.evaluate(() => document.querySelector('.composer textarea').value);
   await page.waitForFunction(() => document.querySelector('.composer textarea').value === '', null, { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('.chat-thinking') === null, null, { timeout: 20000 });
-  const receipt = fixture.store.mateRequestReceipt(fixture.store.activeMateSession(fixture.name).id, requestKey);
-  check('c3 after a reload the restored submitted draft settled on its durable receipt: one turn for that key, no second dispatch', (restored === 'Brief me.' || restored === '') && receipt !== null && mateTurns() === turnsBefore + 2, JSON.stringify({ restored, receipt: receipt !== null, turns: mateTurns() - turnsBefore }));
+  const receipt = fixture.store.leadRequestReceipt(fixture.store.activeLeadSession(fixture.name).id, requestKey);
+  check('c3 after a reload the restored submitted draft settled on its durable receipt: one turn for that key, no second dispatch', (restored === 'Brief me.' || restored === '') && receipt !== null && leadTurns() === turnsBefore + 2, JSON.stringify({ restored, receipt: receipt !== null, turns: leadTurns() - turnsBefore }));
   // Resending the SAME key by hand is the same turn (replayed), never a second one.
   const replay = await postFrom(page, '/chat', { csrf: await csrfOf(page), message: 'Brief me.', request: requestKey, 'request-session': await page.evaluate(() => document.querySelector('.composer').getAttribute('data-chat-session')) });
   await page.waitForTimeout(800);
-  check('c3 a repeated send with the same request key replays instead of dispatching again', (replay.status === 0 || replay.status === 303) && mateTurns() === turnsBefore + 2, JSON.stringify({ replay, turns: mateTurns() - turnsBefore }));
+  check('c3 a repeated send with the same request key replays instead of dispatching again', (replay.status === 0 || replay.status === 303) && leadTurns() === turnsBefore + 2, JSON.stringify({ replay, turns: leadTurns() - turnsBefore }));
   // A newer edit survives the older send's receipt.
   await page.route('**/chat', dropPost);
   await page.route('**/chat/mate/status*', slowPoll);
@@ -315,7 +315,7 @@ try {
   await page.unroute('**/chat/mate/status*');
   await page.waitForFunction(() => document.querySelector('.chat-thinking') === null && !/not confirmed/.test(document.getElementById('chat-connection')?.textContent ?? ''), null, { timeout: 25000 });
   const edited = await page.evaluate(() => ({ value: document.querySelector('.composer textarea').value, status: document.getElementById('chat-connection').textContent }));
-  check('c3 a newer unsent edit survives the older send\'s receipt', edited.value === 'Brief me slowly, then the proof.' && mateTurns() === turnsBefore + 3, JSON.stringify({ edited, turns: mateTurns() - turnsBefore }));
+  check('c3 a newer unsent edit survives the older send\'s receipt', edited.value === 'Brief me slowly, then the proof.' && leadTurns() === turnsBefore + 3, JSON.stringify({ edited, turns: leadTurns() - turnsBefore }));
   // Offline, then online: sending waits, the draft stays, the poll resumes.
   await lost.ctx.setOffline(true);
   await page.waitForFunction(() => /Offline|Connection lost/.test(document.getElementById('chat-connection')?.textContent ?? ''), null, { timeout: 15000 });
@@ -414,10 +414,10 @@ try {
   await submit(other, 'form[action="/chat/mate/end"] button[type="submit"]');
   await page.waitForFunction(() => /changed or ended/.test(document.getElementById('chat-connection')?.textContent ?? ''), null, { timeout: 15000 });
   const ended = await page.evaluate(() => ({ value: document.querySelector('.composer textarea').value, disabled: document.querySelector('.composer button[type="submit"]').disabled, reconnect: !document.getElementById('chat-reconnect').hidden, stored: sessionStorage.length }));
-  const turnsAtEnd = mateTurns();
+  const turnsAtEnd = leadTurns();
   await page.click('.composer button[type="submit"]', { force: true }).catch(() => undefined);
   await page.waitForTimeout(500);
-  check('c6 an ended session keeps the visible draft, disables sending until an explicit reconnection, and dispatches nothing', await sameDocument(page, token) && ended.value === 'A draft that must survive.' && ended.disabled && ended.reconnect && ended.stored >= 1 && mateTurns() === turnsAtEnd, JSON.stringify(ended));
+  check('c6 an ended session keeps the visible draft, disables sending until an explicit reconnection, and dispatches nothing', await sameDocument(page, token) && ended.value === 'A draft that must survive.' && ended.disabled && ended.reconnect && ended.stored >= 1 && leadTurns() === turnsAtEnd, JSON.stringify(ended));
   // The FULL reconnection (revision): Reconnect reloads onto the mint card
   // (no composer, nothing sent); minting again for the SAME account brings
   // the words back as a new unsent draft under the new session and a fresh
@@ -436,7 +436,7 @@ try {
     const session = composer.getAttribute('data-chat-session');
     return { value: composer.querySelector('textarea').value, session, user: composer.getAttribute('data-chat-user'), request: composer.querySelector('[name="request"]').value, carry: sessionStorage.getItem('standing-orders:chat-carry:'), stored: JSON.parse(sessionStorage.getItem(`standing-orders:chat-draft:${session}:`) ?? 'null'), disabled: composer.querySelector('button[type="submit"]').disabled };
   });
-  check('c6 the full reconnection — Reconnect, the mint card, mint again — restores the same account\'s words unsent under the new session with a fresh key, the carry consumed, nothing dispatched', atMint.mint && !atMint.composer && atMint.carry?.owner === fixture.name && atMint.carry?.text === 'A draft that must survive.' && reconnected.value === 'A draft that must survive.' && reconnected.session !== endedSession && reconnected.user === fixture.name && /^[a-f0-9]{32}$/.test(reconnected.request) && reconnected.stored?.submitted === false && reconnected.carry === null && !reconnected.disabled && mateTurns() === turnsAtEnd, JSON.stringify({ atMint, reconnected, endedSession }));
+  check('c6 the full reconnection — Reconnect, the mint card, mint again — restores the same account\'s words unsent under the new session with a fresh key, the carry consumed, nothing dispatched', atMint.mint && !atMint.composer && atMint.carry?.owner === fixture.name && atMint.carry?.text === 'A draft that must survive.' && reconnected.value === 'A draft that must survive.' && reconnected.session !== endedSession && reconnected.user === fixture.name && /^[a-f0-9]{32}$/.test(reconnected.request) && reconnected.stored?.submitted === false && reconnected.carry === null && !reconnected.disabled && leadTurns() === turnsAtEnd, JSON.stringify({ atMint, reconnected, endedSession }));
   // Another account on the SAME tab inherits nothing: the first account's
   // Reconnect leaves its carry behind; the second signs in, mints, and its
   // composer is empty — the record is discarded, not shown.
@@ -471,11 +471,11 @@ try {
   await freshConversation(page);
   await page.fill('.composer textarea', 'Brief me.');
   const deniedWords = await statusText(page);
-  const turnsBeforeDenied = mateTurns();
+  const turnsBeforeDenied = leadTurns();
   await page.click('.composer button[type="submit"]');
   await page.waitForFunction(() => document.querySelector('.composer textarea').value === '', null, { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('.chat-thinking') === null, null, { timeout: 20000 });
-  check('c6 storage denial says the draft stays on this page only, and the send still goes through exactly once', /storage is unavailable/.test(deniedWords) && mateTurns() === turnsBeforeDenied + 1, deniedWords);
+  check('c6 storage denial says the draft stays on this page only, and the send still goes through exactly once', /storage is unavailable/.test(deniedWords) && leadTurns() === turnsBeforeDenied + 1, deniedWords);
   await denied.ctx.close();
   // ---- c7: phone journey screenshots and overflow -------------------------
   const phone = await context(VIEWPORTS.phone);
@@ -532,7 +532,7 @@ try {
   if (await page.$('form[action="/chat/mate/end"]')) { await page.click('.chat-session-details > summary'); await submit(page, 'form[action="/chat/mate/end"] button[type="submit"]'); }
   await page.fill('form[action="/chat/mate/mint"] input[name="token"]', fixture.password);
   await submit(page, 'form[action="/chat/mate/mint"] button[type="submit"]');
-  const turnsNoScript = mateTurns();
+  const turnsNoScript = leadTurns();
   await page.fill('.composer textarea', 'Brief me.');
   await submit(page, '.composer button[type="submit"]');
   const nativeRedirect = page.url().endsWith('/chat#latest');
@@ -545,7 +545,7 @@ try {
   const nativeReply = nativeState !== null && !nativeState.thinking && nativeState.messages.includes('msg mate');
   await page.goto(`${fixture.url}/chat?task=${phoneTask}`);
   const noScriptPlan = await page.evaluate(() => ({ plan: document.querySelector('.chat-plan') !== null, review: document.querySelector('.chat-plan details.chat-approval > summary') !== null, form: document.querySelector('form.approve-form input[type="password"]') !== null, composer: document.querySelector('.composer textarea') !== null }));
-  check('c6 without JavaScript the native send redirects and dispatches once, the reply reads after a reload, and the task focus keeps its native Review plan disclosure and password form', nativeRedirect && mateTurns() === turnsNoScript + 1 && nativeReply && noScriptPlan.plan && noScriptPlan.review && noScriptPlan.form && noScriptPlan.composer, JSON.stringify({ nativeRedirect, nativeReply, nativeState, turns: mateTurns() - turnsNoScript, noScriptPlan }));
+  check('c6 without JavaScript the native send redirects and dispatches once, the reply reads after a reload, and the task focus keeps its native Review plan disclosure and password form', nativeRedirect && leadTurns() === turnsNoScript + 1 && nativeReply && noScriptPlan.plan && noScriptPlan.review && noScriptPlan.form && noScriptPlan.composer, JSON.stringify({ nativeRedirect, nativeReply, nativeState, turns: leadTurns() - turnsNoScript, noScriptPlan }));
   await noScript.close();
 
   // 320×740: overflow on the same surfaces.
@@ -608,7 +608,7 @@ try {
     await scrollTo(page, '#task-chat-action');
     await shot(page, 'desktop-all-projects-task-focus', 'Desktop 1440×900: All projects (none chosen) on a two-project fixture — the task focus polls and says Connected (fixture)');
     // Sending from All projects dispatches once and clears on the receipt.
-    const multiTurns = () => multi.store.recentMateTurns(multi.name, 50).length;
+    const multiTurns = () => multi.store.recentLeadTurns(multi.name, 50).length;
     const turnsAll = multiTurns();
     await page.goto(`${multi.url}/chat`);
     await page.fill('.composer textarea', 'Brief me.');

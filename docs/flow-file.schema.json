@@ -27,7 +27,7 @@
       "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f​-‏‪-‮⁦-⁩]*$"
     },
     "needs": {
-      "description": "What the flow needs to run: github, linear, openrouter, email, tool:<server>, secret:<NAME>, teammate:<handle>, script:<name>.",
+      "description": "What the flow needs to run: github, linear, openrouter, email, tool:<server>, secret:<NAME>, subagent:<handle>, script:<name>.",
       "maxItems": 40,
       "type": "array",
       "items": {
@@ -357,7 +357,7 @@
                   }
                 ]
               },
-              "teammate": {
+              "subagent": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 40
@@ -1417,9 +1417,9 @@
               },
               "kind": {
                 "type": "string",
-                "const": "teammate"
+                "const": "subagent"
               },
-              "teammate": {
+              "subagent": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 40

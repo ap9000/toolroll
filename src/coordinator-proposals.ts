@@ -1,18 +1,18 @@
 import { TASK_TEXT_LIMITS, validateScopeText } from "./task-text.js";
 /**
  * Proposals over the MCP gateway (mate arc v3, §9). A coordinator may
- * propose what the mate may propose — next, reserve, hold, unhold, scope,
+ * propose what the lead may propose — next, reserve, hold, unhold, scope,
  * cancel, answer — and a row is all it writes: any approver whose ceiling
  * admits the repo confirms it through `confirmCoordinatorProposal`. The
  * token re-authenticates INSIDE the transaction (the session's `who` is a
  * courtesy, exactly as for filing); the proposal counts against the
  * credential's hourly filing rate and a per-credential pending cap; the
- * payload carries the same CAS material the mate's does, so a stale row
+ * payload carries the same CAS material the lead's does, so a stale row
  * refuses at the door in the same words.
  */
 import type { CoordinatorProposalKind, Store } from "./store.js";
 import { authenticateCoordinator, type VerifiedCoordinator } from "./coordinator.js";
-import { decisionOver, honestText, readTouches, readAcceptanceArg } from "./mate-tools.js";
+import { decisionOver, honestText, readTouches, readAcceptanceArg } from "./lead-tools.js";
 
 export const PER_CID_PENDING_PROPOSALS = 20;
 

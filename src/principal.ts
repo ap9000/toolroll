@@ -1,7 +1,7 @@
 /**
  * The branded approver principal (mate arc, ruling 3).
  *
- * Every act the mate proposes and every confirmation an operator taps
+ * Every act the lead proposes and every confirmation an operator taps
  * runs under a principal that PROVES it was authenticated — a password
  * ceremony, or a cookie session the edge already proved (csrf, role,
  * generation) and this module re-proves against the approver row. The
@@ -29,7 +29,7 @@ export type VerifiedApprover = {
   readonly ceilingDigest: string;
 };
 
-/** The mate's ceiling digest: the admitted repos IN ORDER, hashed — `rN`
+/** The lead's ceiling digest: the admitted repos IN ORDER, hashed — `rN`
  * is an index, so two surfaces naming the same repos in a different order
  * hold different ceilings (slice-2 review, finding 3). */
 export function ceilingDigestOf(repos: readonly string[]): string {

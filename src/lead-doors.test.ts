@@ -3,10 +3,10 @@ import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { credentialKeyOf, subscriptionCredentialKey } from "./converse.js";
-import { confirmMateProposal, dismissMateProposal, proposalActGate, PROPOSAL_CHAT_REASON, PROPOSAL_WAIT_REASON, TEAM_UNBOUND_CLAIM_MS } from "./mate-doors.js";
+import { confirmLeadProposal, dismissLeadProposal, proposalActGate, PROPOSAL_CHAT_REASON, PROPOSAL_WAIT_REASON, TEAM_UNBOUND_CLAIM_MS } from "./lead-doors.js";
 import { TeamLeads } from './team-leads.js';
 import { teamChatAuthorization, subscriptionTeamChatProvider } from './team-chat-authorization.js';
-import { executeMateTool } from "./mate-tools.js";
+import { executeLeadTool } from "./lead-tools.js";
 import { approve, approvalOf, hashToken, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
@@ -24,7 +24,7 @@ const T0 = new Date("2026-09-02T12:00:00.000Z");
 const REPO = "/repo/doors";
 const CREDENTIAL = credentialKeyOf("anthropic-api", "sk-test");
 
-describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => {
+describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => {
   let store: Store;
   let who: VerifiedApprover;
   let clockAt = T0.getTime();
@@ -36,17 +36,17 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     return verified.who;
   };
   const session = () =>
-    store.mintMateSession({ approver: "alex", approverGeneration: who.generation, credentialKey: CREDENTIAL, ceilingMicrousd: 5_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "t".repeat(64) }, clock());
+    store.mintLeadSession({ approver: "alex", approverGeneration: who.generation, credentialKey: CREDENTIAL, ceilingMicrousd: 5_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "t".repeat(64) }, clock());
   /** An answered turn holding one pending proposal of the given kind. */
-  const pending = (kind: "task" | "next" | "reserve" | "hold" | "steer" | "answer" | "repair" | "agents" | "task_action" | "control", payload: Record<string, unknown>, scope?: import("./store.js").MateThreadScope): number => {
-    const thread = store.openMateThread("alex", who.ceilingDigest, clock(), scope).thread;
-    const live = store.activeMateSession("alex")!;
-    const opened = store.openMateTurn({ approver: "alex", session: live.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+  const pending = (kind: "task" | "next" | "reserve" | "hold" | "steer" | "answer" | "repair" | "agents" | "task_action" | "control", payload: Record<string, unknown>, scope?: import("./store.js").LeadThreadScope): number => {
+    const thread = store.openLeadThread("alex", who.ceilingDigest, clock(), scope).thread;
+    const live = store.activeLeadSession("alex")!;
+    const opened = store.openLeadTurn({ approver: "alex", session: live.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, clock());
+    const started = store.startLeadTurn(opened.id, clock());
     if (!started.ok) throw new Error("start");
-    const id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, clock());
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
+    const id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, clock());
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
     return id;
   };
 
@@ -66,83 +66,83 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
   test("a card about a task confirmed outside that task's chat is recorded there, and the lead can read that chat", () => {
     session();
     const fromPhone = pending("steer", { task: "a", taskTitle: "task a", note: "Start with the mobile flow." });
-    expect(confirmMateProposal(store, who, fromPhone, clock(), { via: "telegram" })).toMatchObject({ ok: true });
-    const taskChat = store.liveMateThreadFor("alex", { kind: "task", key: "a" })!;
-    expect(store.listMateMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([["assistant", expect.stringMatching(/^From Telegram — Guidance for the next attempt: \S/)]]);
+    expect(confirmLeadProposal(store, who, fromPhone, clock(), { via: "telegram" })).toMatchObject({ ok: true });
+    const taskChat = store.liveLeadThreadFor("alex", { kind: "task", key: "a" })!;
+    expect(store.listLeadMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([["assistant", expect.stringMatching(/^From Telegram — Guidance for the next attempt: \S/)]]);
     const ctx = { store, who, now: clock(), step: 1, readDecisions: new Map(), draft: () => 1 };
-    expect(executeMateTool(ctx, "get_task_conversation", { task: "a" })).toMatchObject({ ok: true, body: { task: "a", title: "task a", messages: [{ from: "lead", text: expect.stringContaining("From Telegram") }] } });
-    expect(executeMateTool(ctx, "get_task_conversation", { task: "b" })).toMatchObject({ ok: true, body: { messages: [], notice: "No conversation about this task yet." } });
-    expect(executeMateTool(ctx, "get_task_conversation", { task: "nope" })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "get_task_conversation", { task: "a" })).toMatchObject({ ok: true, body: { task: "a", title: "task a", messages: [{ from: "lead", text: expect.stringContaining("From Telegram") }] } });
+    expect(executeLeadTool(ctx, "get_task_conversation", { task: "b" })).toMatchObject({ ok: true, body: { messages: [], notice: "No conversation about this task yet." } });
+    expect(executeLeadTool(ctx, "get_task_conversation", { task: "nope" })).toMatchObject({ ok: false });
     // A card drafted in the task's own chat is already there: nothing is added.
     clockAt += 60_000;
     const inPlace = pending("steer", { task: "a", taskTitle: "task a", note: "Then the desktop flow." }, { kind: "task", key: "a" });
-    expect(confirmMateProposal(store, who, inPlace, clock(), { via: "web" })).toMatchObject({ ok: true });
-    expect(store.listMateMessages(taskChat.id, 10)).toHaveLength(1);
+    expect(confirmLeadProposal(store, who, inPlace, clock(), { via: "web" })).toMatchObject({ ok: true });
+    expect(store.listLeadMessages(taskChat.id, 10)).toHaveLength(1);
     // From the lead chat on the web it says so.
     clockAt += 60_000;
     const fromLead = pending("steer", { task: "b", taskTitle: "task b", note: "Keep it small." });
-    expect(confirmMateProposal(store, who, fromLead, clock(), { via: "web" })).toMatchObject({ ok: true });
-    expect(store.listMateMessages(store.liveMateThreadFor("alex", { kind: "task", key: "b" })!.id, 10)[0]!.text).toMatch(/^From the lead chat — Guidance for the next attempt: /);
+    expect(confirmLeadProposal(store, who, fromLead, clock(), { via: "web" })).toMatchObject({ ok: true });
+    expect(store.listLeadMessages(store.liveLeadThreadFor("alex", { kind: "task", key: "b" })!.id, 10)[0]!.text).toMatch(/^From the lead chat — Guidance for the next attempt: /);
   });
 
   test("a proposal kept by a turn stopped at its deadline confirms; a draft of a turn that failed otherwise never existed", () => {
     session();
     const turnWith = (outcome: { failureReason: string; keepProposals: boolean }) => {
-      const thread = store.openMateThread("alex", who.ceilingDigest, clock()).thread;
-      const opened = store.openMateTurn({ approver: "alex", session: store.activeMateSession("alex")!.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+      const thread = store.openLeadThread("alex", who.ceilingDigest, clock()).thread;
+      const opened = store.openLeadTurn({ approver: "alex", session: store.activeLeadSession("alex")!.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
       if (!opened.ok) throw new Error(opened.reason);
-      const started = store.startMateTurn(opened.id, clock());
+      const started = store.startLeadTurn(opened.id, clock());
       if (!started.ok) throw new Error("start");
-      const id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind: "hold", payload: { task: "a", reason: "later" }, ceilingDigest: who.ceilingDigest }, clock());
-      store.finalizeMateTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, ...outcome }, clock());
+      const id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind: "hold", payload: { task: "a", reason: "later" }, ceilingDigest: who.ceilingDigest }, clock());
+      store.finalizeLeadTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, ...outcome }, clock());
       clockAt += 1_000;
       return id;
     };
     const kept = turnWith({ failureReason: "timeout", keepProposals: true });
-    expect(store.getMateProposal(kept)?.state).toBe("pending");
-    expect(confirmMateProposal(store, who, kept, clock(), { via: "web" })).toMatchObject({ ok: true });
+    expect(store.getLeadProposal(kept)?.state).toBe("pending");
+    expect(confirmLeadProposal(store, who, kept, clock(), { via: "web" })).toMatchObject({ ok: true });
     const dropped = turnWith({ failureReason: "malformed-reply", keepProposals: false });
-    expect(store.getMateProposal(dropped)).toBeNull();
-    expect(confirmMateProposal(store, who, dropped, clock(), { via: "web" })).toMatchObject({ ok: false });
+    expect(store.getLeadProposal(dropped)).toBeNull();
+    expect(confirmLeadProposal(store, who, dropped, clock(), { via: "web" })).toMatchObject({ ok: false });
   });
 
   test("chat task actions share retry, planning and dependency records; stale cards and cycles refuse", () => {
     session();
     const make = (task: string, operation: string, dependency?: string) => {
       let payload: Record<string, unknown> | null = null;
-      const result = executeMateTool({ store, who, now: clock(), step: 1, readDecisions: new Map(),
+      const result = executeLeadTool({ store, who, now: clock(), step: 1, readDecisions: new Map(),
         draft: (_kind, value) => { payload = value; return 1; } }, "propose_task_action", { task, operation, ...(dependency ? { dependency } : {}) });
       expect(result).toMatchObject({ ok: true });
       return pending("task_action", payload!);
     };
     const wait = make("a", "wait_for", "b");
     expect(store.blockers("a")).toEqual([]);
-    expect(confirmMateProposal(store, who, wait, clock(), { via: "cli" })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, wait, clock(), { via: "cli" })).toMatchObject({ ok: true });
     expect(store.blockers("a")).toEqual(["b"]);
     const cycle = make("b", "wait_for", "a");
-    expect(confirmMateProposal(store, who, cycle, clock(), { via: "cli" })).toMatchObject({ ok: false });
+    expect(confirmLeadProposal(store, who, cycle, clock(), { via: "cli" })).toMatchObject({ ok: false });
     expect(store.blockers("b")).toEqual([]);
     const remove = make("a", "stop_waiting", "b");
-    expect(confirmMateProposal(store, who, remove, clock(), { via: "cli" })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, remove, clock(), { via: "cli" })).toMatchObject({ ok: true });
     expect(store.blockers("a")).toEqual([]);
     const plan = make("a", "plan");
-    expect(confirmMateProposal(store, who, plan, clock(), { via: "cli" })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, plan, clock(), { via: "cli" })).toMatchObject({ ok: true });
     expect(store.lookupRef("a")?.plan).toBe("requested");
     store.setTaskState("b", "failed", clock());
     const retry = make("b", "retry");
-    expect(confirmMateProposal(store, who, retry, clock(), { via: "cli" })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, retry, clock(), { via: "cli" })).toMatchObject({ ok: true });
     expect(store.getTask("b")?.state).toBe("queued");
     const stale = make("c", "plan");
     store.setTaskState("c", "done", clock());
-    expect(confirmMateProposal(store, who, stale, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, stale, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
     const controls = pending("control", { control: "providers", task: "" });
-    expect(confirmMateProposal(store, who, controls, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-confirmable" });
+    expect(confirmLeadProposal(store, who, controls, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-confirmable" });
     fileTaskProposal(store, { id: "private-task", title: "Private title", repo: "/not-admitted", filedVia: "cli" }, T0);
     const ctx = { store, who, now: clock(), step: 1, readDecisions: new Map(), draft: () => 1 };
-    expect(executeMateTool(ctx, "show_control", { control: "projects", task: "private-task" })).toMatchObject({ ok: false });
-    expect(executeMateTool(ctx, "propose_task_action", { task: "b", operation: "retry", dependency: "private-task" })).toMatchObject({ ok: false });
-    expect(executeMateTool(ctx, "show_control", { control: "https://example.com" })).toMatchObject({ ok: false });
-    expect(executeMateTool(ctx, "show_control", { control: "providers" })).toMatchObject({ ok: true });
+    expect(executeLeadTool(ctx, "show_control", { control: "projects", task: "private-task" })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "propose_task_action", { task: "b", operation: "retry", dependency: "private-task" })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "show_control", { control: "https://example.com" })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "show_control", { control: "providers" })).toMatchObject({ ok: true });
   });
 
   test("stop confirmation commits its receipt before signalling; rollback and replay signal nothing", () => {
@@ -158,25 +158,25 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     if (!route?.ok) throw new Error("route");
     const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: "worker", branch: "branch", worktree: "/pool/a", route: route.stamp, now: clock() });
     const id = pending("task_action", { task: "a", operation: "stop", run, stamp: chatTaskStamp(store, who, "a") });
-    const signal = vi.fn(() => expect(store.getMateProposal(id)?.state).toBe("confirmed"));
+    const signal = vi.fn(() => expect(store.getLeadProposal(id)?.state).toBe("confirmed"));
     const original = taskControls.requestTaskStop;
     const service = vi.spyOn(taskControls, "requestTaskStop").mockImplementation((s, request, now) => original(s, { ...request,
       deferSignal: effect => request.deferSignal!(() => { signal(); effect(); }),
     }, now));
-    const cas = store.casMateProposal.bind(store);
-    const failing = vi.spyOn(store, "casMateProposal").mockImplementation((...args) => {
+    const cas = store.casLeadProposal.bind(store);
+    const failing = vi.spyOn(store, "casLeadProposal").mockImplementation((...args) => {
       if (args[2] === "confirmed") throw new Error("receipt failed");
       return cas(...args);
     });
     try {
-      expect(() => confirmMateProposal(store, who, id, clock(), { via: "web" })).toThrow("receipt failed");
+      expect(() => confirmLeadProposal(store, who, id, clock(), { via: "web" })).toThrow("receipt failed");
       expect(signal).not.toHaveBeenCalled();
       expect(store.stopOf(run)).toBeNull();
-      expect(store.getMateProposal(id)?.state).toBe("pending");
+      expect(store.getLeadProposal(id)?.state).toBe("pending");
       failing.mockRestore();
-      expect(confirmMateProposal(store, who, id, clock(), { via: "web" }).ok).toBe(true);
+      expect(confirmLeadProposal(store, who, id, clock(), { via: "web" }).ok).toBe(true);
       expect(signal).toHaveBeenCalledTimes(1);
-      expect(confirmMateProposal(store, who, id, clock(), { via: "web" }).ok).toBe(false);
+      expect(confirmLeadProposal(store, who, id, clock(), { via: "web" }).ok).toBe(false);
       expect(signal).toHaveBeenCalledTimes(1);
     } finally { failing.mockRestore(); service.mockRestore(); }
   });
@@ -184,16 +184,16 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
   test("every surface meets the card's gate: a live turn in the thread refuses with the card's words until it finishes", () => {
     session();
     const id = pending("steer", { task: "a", taskTitle: "task a", note: "Start with the mobile flow." });
-    const live = store.activeMateSession("alex")!;
-    const opened = store.openMateTurn({ approver: "alex", session: live.id, thread: store.getMateProposal(id)!.thread, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+    const live = store.activeLeadSession("alex")!;
+    const opened = store.openLeadTurn({ approver: "alex", session: live.id, thread: store.getLeadProposal(id)!.thread, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, clock());
+    const started = store.startLeadTurn(opened.id, clock());
     if (!started.ok) throw new Error("start");
-    expect(proposalActGate(store, who, store.getMateProposal(id)!.thread, clock())).toEqual({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
-    for (const via of ["cli", "telegram"] as const) expect(confirmMateProposal(store, who, id, clock(), { via })).toMatchObject({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
-    expect(store.getMateProposal(id)?.state).toBe("pending");
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
-    expect(confirmMateProposal(store, who, id, clock(), { via: "telegram" })).toMatchObject({ ok: true });
+    expect(proposalActGate(store, who, store.getLeadProposal(id)!.thread, clock())).toEqual({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
+    for (const via of ["cli", "telegram"] as const) expect(confirmLeadProposal(store, who, id, clock(), { via })).toMatchObject({ ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON });
+    expect(store.getLeadProposal(id)?.state).toBe("pending");
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, clock());
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "telegram" })).toMatchObject({ ok: true });
   });
 
   const teamProposal = () => {
@@ -207,14 +207,14 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const credentialKey = subscriptionCredentialKey('claude-subscription');
     const session = store.mintTeamMateSession({ approver: who.name, approverGeneration: who.generation, thread: conversation.threadId, credentialKey, ceilingMicrousd: 0, ceilingDigest: who.ceilingDigest, termsDigest: terms.termsDigest }, clock());
     const open = () => {
-      const turn = store.openMateTurn({ approver: who.name, session, thread: conversation.threadId, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, clock());
+      const turn = store.openLeadTurn({ approver: who.name, session, thread: conversation.threadId, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, clock());
       if (!turn.ok) throw Error(turn.reason);
       return turn.id;
     };
-    const turn = open(), started = store.startMateTurn(turn, clock());
+    const turn = open(), started = store.startLeadTurn(turn, clock());
     if (!started.ok) throw Error('start');
-    const proposal = store.draftMateProposal({ thread: conversation.threadId, turn, kind: 'hold', payload: { task: 'a', reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: who.ceilingDigest }, clock());
-    store.finalizeMateTurn(turn, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
+    const proposal = store.draftLeadProposal({ thread: conversation.threadId, turn, kind: 'hold', payload: { task: 'a', reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: who.ceilingDigest }, clock());
+    store.finalizeLeadTurn(turn, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
     return { domain, conversation, proposal, open };
   };
 
@@ -224,26 +224,26 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(proposalActGate(store, who, conversation.threadId, clock())).toEqual({ ok: true });
     store.setChatConfig({ ...config, dailyTurns: config.dailyTurns + 1 }, 'alex', clock());
     expect(proposalActGate(store, who, conversation.threadId, clock())).toEqual({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
-    const before = store.getMateProposal(proposal);
+    const before = store.getLeadProposal(proposal);
     for (const via of ['web', 'cli', 'telegram', 'slack', 'discord', 'teams'] as const) {
-      expect(confirmMateProposal(store, who, proposal, clock(), { via })).toMatchObject({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
-      expect(store.getMateProposal(proposal)).toEqual(before);
+      expect(confirmLeadProposal(store, who, proposal, clock(), { via })).toMatchObject({ ok: false, reason: 'session-ended', said: PROPOSAL_CHAT_REASON });
+      expect(store.getLeadProposal(proposal)).toEqual(before);
       expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
     }
     store.setChatConfig(config, 'alex', clock());
-    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
-    expect(store.getMateProposal(proposal)?.state).toBe('confirmed');
+    expect(confirmLeadProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
+    expect(store.getLeadProposal(proposal)?.state).toBe('confirmed');
   });
 
   test('an unbound team claim blocks only before its deadline; bound queued and running turns still block after it', () => {
     const { domain, conversation, proposal, open } = teamProposal();
     domain.execute(who, { operation: 'send', args: { conversationId: conversation.id, text: 'Check the launch plan.', requestId: 'unbound' } }, clock());
     const claim = domain.claimNext('fixture', clock())!;
-    const before = store.getMateProposal(proposal);
+    const before = store.getLeadProposal(proposal);
     const gate = () => proposalActGate(store, who, conversation.threadId, clock());
     clockAt += TEAM_UNBOUND_CLAIM_MS - 1;
-    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
-    expect(store.getMateProposal(proposal)).toEqual(before);
+    expect(confirmLeadProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
+    expect(store.getLeadProposal(proposal)).toEqual(before);
     clockAt += 1;
     expect(gate()).toEqual({ ok: true });
     clockAt += 1;
@@ -251,22 +251,22 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const bound = open();
     expect(domain.bindTurn(claim, bound)).toBe(true);
     expect(gate()).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
-    const started = store.startMateTurn(bound, clock());
+    const started = store.startLeadTurn(bound, clock());
     if (!started.ok) throw Error('start');
     clockAt += TEAM_UNBOUND_CLAIM_MS * 2;
-    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'telegram' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
-    store.finalizeMateTurn(bound, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
+    expect(confirmLeadProposal(store, who, proposal, clock(), { via: 'telegram' })).toMatchObject({ ok: false, said: PROPOSAL_WAIT_REASON });
+    store.finalizeLeadTurn(bound, started.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, clock());
     expect(store.handle.prepare('SELECT status FROM team_message WHERE message=?').get(claim.messageId)).toMatchObject({ status: 'running' });
-    expect(confirmMateProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, proposal, clock(), { via: 'cli' })).toMatchObject({ ok: true });
   });
 
   test("an explicitly ended conversation refuses an old card although the principal still stands", () => {
     const sessionId = session();
     const seen = store.transact(() => ({ queueRevision: store.queueRevision(), position: store.queuePosition("c")! }));
     const id = pending("next", { task: "c", queueRevision: seen.queueRevision, position: seen.position.position, column: seen.position.column });
-    store.endMateSession(sessionId, "alex", clock());
-    expect(confirmMateProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "session-ended" });
-    expect(store.getMateProposal(id)?.state).toBe("pending");
+    store.endLeadSession(sessionId, "alex", clock());
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "session-ended" });
+    expect(store.getLeadProposal(id)?.state).toBe("pending");
     expect(store.queuePosition("c")?.position).toBe(3);
   });
 
@@ -275,16 +275,16 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const seen = store.transact(() => ({ queueRevision: store.queueRevision(), position: store.queuePosition("c")! }));
     const id = pending("next", { task: "c", queueRevision: seen.queueRevision, position: seen.position.position, column: seen.position.column });
     store.saveApprover("alex", "n".repeat(64), clock());
-    expect(store.activeMateSession("alex")).toBeNull();
-    expect(store.getMateProposal(id)).toBeNull();
-    expect(confirmMateProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "standing" });
+    expect(store.activeLeadSession("alex")).toBeNull();
+    expect(store.getLeadProposal(id)).toBeNull();
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "standing" });
     // The new generation mints its own principal and finds nothing to confirm.
     const fresh = principal();
     expect(fresh.generation).toBe(who.generation + 1);
-    expect(confirmMateProposal(store, fresh, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-yours" });
+    expect(confirmLeadProposal(store, fresh, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-yours" });
   });
 
-  test("the place the mate saw is part of the CAS: a neighbour leaving the queue refuses a stale next", () => {
+  test("the place the lead saw is part of the CAS: a neighbour leaving the queue refuses a stale next", () => {
     session();
     const seen = store.transact(() => ({ queueRevision: store.queueRevision(), position: store.queuePosition("c")! }));
     const id = pending("next", { task: "c", queueRevision: seen.queueRevision, position: seen.position.position, column: seen.position.column });
@@ -292,21 +292,21 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(store.cancelTask("b", clock())).toMatchObject({ ok: true });
     expect(store.queueRevision()).toBe(seen.queueRevision);
     expect(store.queuePosition("c")?.position).toBe(2);
-    expect(confirmMateProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
-    expect(store.getMateProposal(id)?.state).toBe("refused");
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(store.getLeadProposal(id)?.state).toBe("refused");
   });
 
   test("a hold card confirms as the operator's own hold, once; a second confirm and a dismiss both answer in words", () => {
     session();
     const id = pending("hold", { task: "a", reason: "wait", sawHold: null });
-    expect(confirmMateProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: true, said: "a held: wait" });
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: true, said: "a held: wait" });
     expect(store.activeHolds(store.refFor("built-in", "a").id, clock()).map(one => one.reason)).toEqual(["wait"]);
-    expect(confirmMateProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-pending" });
-    expect(dismissMateProposal(store, who, id, clock())).toBe(false);
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "not-pending" });
+    expect(dismissLeadProposal(store, who, id, clock())).toBe(false);
     // A hand-placed hold after the proposal: the stale card must not overwrite it.
     const again = pending("hold", { task: "b", reason: "model text", sawHold: null });
     store.hold(store.refFor("built-in", "b").id, "by hand", null, clock());
-    expect(confirmMateProposal(store, who, again, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, again, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "stale" });
     expect(store.activeHolds(store.refFor("built-in", "b").id, clock()).map(one => one.reason)).toEqual(["by hand"]);
   });
 
@@ -323,7 +323,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
       planning: "required",
       report: false,
     });
-    const outcome = confirmMateProposal(store, who, id, clock(), { via: "web" });
+    const outcome = confirmLeadProposal(store, who, id, clock(), { via: "web" });
     expect(outcome).toMatchObject({
       ok: true,
       said: expect.stringContaining("the planner is reading the project before you approve anything"),
@@ -338,7 +338,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     session();
     const id = pending("steer", { task: "a", taskTitle: "task a", note: "Start with the mobile flow." });
     expect(store.listSteerNotes(store.refFor("built-in", "a").id)).toEqual([]);
-    expect(confirmMateProposal(store, who, id, clock(), { via: "web" })).toMatchObject({
+    expect(confirmLeadProposal(store, who, id, clock(), { via: "web" })).toMatchObject({
       ok: true,
       said: "Guidance saved for task a's next attempt",
       taskId: "a",
@@ -353,24 +353,24 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     store.setTaskState("a", "failed", clock());
     store.addEdge("b", "a");
     const retry = pending("repair", { task: "b", blocker: "a", operation: "retry", sawBlockerState: "failed" });
-    expect(confirmMateProposal(store, who, retry, clock(), { via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("queued again") });
+    expect(confirmLeadProposal(store, who, retry, clock(), { via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("queued again") });
     expect(store.getTask("a")?.state).toBe("queued");
     expect(store.blockers("b")).toEqual(["a"]);
 
     store.setTaskState("a", "cancelled", clock());
     const replace = pending("repair", { task: "b", blocker: "a", operation: "replace", replacement: "c", sawBlockerState: "cancelled" });
-    expect(confirmMateProposal(store, who, replace, clock(), { via: "web" })).toMatchObject({ ok: true, said: "b will now wait for c instead of a" });
+    expect(confirmLeadProposal(store, who, replace, clock(), { via: "web" })).toMatchObject({ ok: true, said: "b will now wait for c instead of a" });
     expect(store.blockers("b")).toEqual(["c"]);
 
     store.setTaskState("c", "cancelled", clock());
     const unlink = pending("repair", { task: "b", blocker: "c", operation: "unlink", sawBlockerState: "cancelled" });
-    expect(confirmMateProposal(store, who, unlink, clock(), { via: "web" })).toMatchObject({ ok: true, said: "b can now continue without c" });
+    expect(confirmLeadProposal(store, who, unlink, clock(), { via: "web" })).toMatchObject({ ok: true, said: "b can now continue without c" });
     expect(store.blockers("b")).toEqual([]);
 
     store.addEdge("b", "a");
     const stale = pending("repair", { task: "b", blocker: "a", operation: "unlink", sawBlockerState: "cancelled" });
     store.removeEdge("b", "a");
-    expect(confirmMateProposal(store, who, stale, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, stale, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(store.blockers("b")).toEqual([]);
   });
 
@@ -382,26 +382,26 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
       T0,
     );
     const irreversible = pending("answer", { decision: 1, task: "a", option: "y", optionLabel: "Y", reversible: false, rationale: "because" });
-    expect(confirmMateProposal(store, who, irreversible, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "needs-confirm" });
-    expect(store.getMateProposal(irreversible)?.state).toBe("pending");
+    expect(confirmLeadProposal(store, who, irreversible, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(store.getLeadProposal(irreversible)?.state).toBe("pending");
     expect(store.getDecision(1)?.state).toBe("open");
-    expect(confirmMateProposal(store, who, irreversible, clock(), { confirm: true, via: "cli" })).toMatchObject({ ok: true, said: "decision #1 answered: Y", taskId: "a" });
+    expect(confirmLeadProposal(store, who, irreversible, clock(), { confirm: true, via: "cli" })).toMatchObject({ ok: true, said: "decision #1 answered: Y", taskId: "a" });
     expect(store.getDecision(1)).toMatchObject({ state: "answered", answeredBy: "alex", answeredVia: "cli" });
     const late = pending("answer", { decision: 1, task: "a", option: "x", optionLabel: "X", reversible: true, rationale: "too late" });
-    expect(confirmMateProposal(store, who, late, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "already-answered" });
+    expect(confirmLeadProposal(store, who, late, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "already-answered" });
     // The SAME choice landing first elsewhere is not this card's answer either (v3 review, finding 5).
     const run2 = store.startRun({ taskRef: store.refFor("built-in", "b").id, leaseId: "l2", runner: "r", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: T0 });
     store.saveDecision({ run: run2, urgency: "blocking", recap: "r", question: "Again?", options: [{ id: "x", label: "X", consequence: "cx", reversible: true }], recommendation: "x" }, T0);
     const same = pending("answer", { decision: 2, task: "b", option: "x", optionLabel: "X", reversible: true, rationale: "x" });
     store.answerDecision({ id: 2, choice: "x", by: "root", via: "cli" }, clock());
-    expect(confirmMateProposal(store, who, same, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "already-answered" });
+    expect(confirmLeadProposal(store, who, same, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "already-answered" });
     expect(store.getDecision(2)).toMatchObject({ answeredBy: "root", answeredVia: "cli" });
     // A decision past its deadline is not "open" for a card, swept or not (finding 7).
     const run3 = store.startRun({ taskRef: store.refFor("built-in", "c").id, leaseId: "l3", runner: "r", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: T0 });
     store.saveDecision({ run: run3, urgency: "blocking", recap: "r", question: "Late?", options: [{ id: "x", label: "X", consequence: "cx", reversible: true }], recommendation: "x", deadline: new Date(clockAt + 60_000).toISOString() }, T0);
     const timed = pending("answer", { decision: 3, task: "c", option: "x", optionLabel: "X", reversible: true, rationale: "x" });
     clockAt += 120_000;
-    expect(confirmMateProposal(store, who, timed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, timed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(store.getDecision(3)?.state).toBe("open");
   });
 
@@ -419,7 +419,7 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     propose(store, { taskId: "a", goal: "Harden the payouts flow", acceptance: [{ id: "c1", statement: "Payouts never double-send", how: null, evidence: ["check"] }], now: T0 });
     session();
     const ctx = { store, who, now: clock(), draft: (kind: string, payload: Record<string, unknown>) => pending(kind as "agents", payload), step: 1, readDecisions: new Map<number, number>() };
-    const read = executeMateTool(ctx, "get_agents", { task: "a" });
+    const read = executeLeadTool(ctx, "get_agents", { task: "a" });
     expect(read.ok).toBe(true);
     if (!read.ok) return;
     const body = read.body as Record<string, unknown>;
@@ -438,18 +438,18 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const choices = body["choices"] as Record<string, { provider: string; model: string; current: boolean }[]>;
     // Only active roles are offered; historical reviewer configuration stays out of the choices.
     expect(choices["reviewer"]).toBeUndefined();
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "reviewer", agent: { provider: "claude", model: "sonnet" } })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", role: "reviewer", agent: { provider: "claude", model: "sonnet" } })).toMatchObject({ ok: false });
     expect(choices["builder"]).toEqual([{ provider: "claude", model: "sonnet", current: true }, { provider: "gemini", model: "gemini-2.5-pro", current: false }]);
     expect(choices["planner"]).toEqual([{ provider: "claude", model: "sonnet", current: true }, { provider: "codex", model: "gpt-5", current: false }]);
     expect(choices["repair"]).toEqual([{ provider: "claude", model: "sonnet", current: true }]);
     // The planner's strong agent is the planner's — never offered to build.
     expect(choices["builder"].some(one => one.model === "gpt-5")).toBe(false);
     // An unlisted agent is refused, naming the choices; so is a no-op.
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "opus" } })).toMatchObject({ ok: false, message: expect.stringContaining("one of the builder choices") });
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "codex", model: "gpt-5-codex" } })).toMatchObject({ ok: false });
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "sonnet" } })).toMatchObject({ ok: false, message: expect.stringContaining("already runs") });
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", risk: "high" })).toMatchObject({ ok: false, message: expect.stringContaining("say what changes") });
-    expect(executeMateTool(ctx, "propose_agents", { task: "a", role: "builder", clear: true })).toMatchObject({ ok: false, message: expect.stringContaining("nothing to clear") });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "opus" } })).toMatchObject({ ok: false, message: expect.stringContaining("one of the builder choices") });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "codex", model: "gpt-5-codex" } })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", role: "builder", agent: { provider: "claude", model: "sonnet" } })).toMatchObject({ ok: false, message: expect.stringContaining("already runs") });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", risk: "high" })).toMatchObject({ ok: false, message: expect.stringContaining("say what changes") });
+    expect(executeLeadTool(ctx, "propose_agents", { task: "a", role: "builder", clear: true })).toMatchObject({ ok: false, message: expect.stringContaining("nothing to clear") });
     // Approve the scope as it stands, then propose a real change.
     const first = store.getScope("a")!;
     expect(approve(store, "a", "alex", T0, first.digest, "alex-password").ok).toBe(true);
@@ -460,21 +460,21 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     // configuration standing at confirmation, not at drafting.
     const gone = pending("agents", { task: "a", phase: "plan", role: "planner", provider: "codex", model: "gpt-5", sawDigest: first.digest });
     store.clearPhaseTierConfig("installation", "plan", "strong");
-    expect(confirmMateProposal(store, who, gone, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale", said: expect.stringContaining("no longer one of the configured agents") });
+    expect(confirmLeadProposal(store, who, gone, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale", said: expect.stringContaining("no longer one of the configured agents") });
     expect(approvalOf(store.getScope("a")!).approved).toBe(true);
     expect(store.refFor("built-in", "a").routeOverrides ?? []).toHaveLength(0);
     // A pair configured for ANOTHER role is not this role's choice either.
     const borrowed = pending("agents", { task: "a", phase: "build", role: "builder", provider: "codex", model: "gpt-5-codex", sawDigest: first.digest });
-    expect(confirmMateProposal(store, who, borrowed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, borrowed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(approvalOf(store.getScope("a")!).approved).toBe(true);
-    const proposed = executeMateTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, why: "payouts move money" });
+    const proposed = executeLeadTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, why: "payouts move money" });
     expect(proposed).toMatchObject({ ok: true, body: { kind: "agents", task: "a", role: "builder", agent: { provider: "gemini", model: "gemini-2.5-pro" }, awaiting: expect.stringContaining("renewing") } });
     if (!proposed.ok) return;
     const id = (proposed.body as { proposal: number }).proposal;
-    expect(store.getMateProposal(id)?.payload).toMatchObject({ task: "a", phase: "build", role: "builder", provider: "gemini", model: "gemini-2.5-pro", sawDigest: first.digest, approval: "approved" });
+    expect(store.getLeadProposal(id)?.payload).toMatchObject({ task: "a", phase: "build", role: "builder", provider: "gemini", model: "gemini-2.5-pro", sawDigest: first.digest, approval: "approved" });
     // Confirmed: the ONE authenticated route edit — recorded as the
     // operator, the approval staled, the sealed route gone.
-    const outcome = confirmMateProposal(store, who, id, clock(), { via: "web" });
+    const outcome = confirmLeadProposal(store, who, id, clock(), { via: "web" });
     expect(outcome).toMatchObject({ ok: true, kind: "agents", taskId: "a", said: expect.stringContaining("the builder is now gemini · gemini-2.5-pro — the earlier approval no longer covers this task; approve it again") });
     const ref = store.refFor("built-in", "a");
     expect(ref.routeOverrides).toEqual([expect.objectContaining({ phase: "build", provider: "gemini", model: "gemini-2.5-pro", by: "alex" })]);
@@ -484,13 +484,13 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(routeDigestOf(sealedBefore)).not.toBe(after.proposedRouteJson === null ? "" : routeDigestOf(JSON.parse(after.proposedRouteJson!) as never));
     // A stale card — drafted against the earlier digest — refuses; nothing moves again.
     const stale = pending("agents", { task: "a", phase: "build", role: "builder", provider: "claude", model: "sonnet", sawDigest: first.digest });
-    expect(confirmMateProposal(store, who, stale, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, stale, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(store.refFor("built-in", "a").routeOverrides).toHaveLength(1);
     // Clearing the hand-picked builder restores the recommendation.
-    const clear = executeMateTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", role: "builder", clear: true });
+    const clear = executeLeadTool({ ...ctx, now: clock() }, "propose_agents", { task: "a", role: "builder", clear: true });
     expect(clear).toMatchObject({ ok: true, body: { role: "builder", clear: true } });
     if (!clear.ok) return;
-    expect(confirmMateProposal(store, who, (clear.body as { proposal: number }).proposal, clock(), { via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("the builder choice was cleared") });
+    expect(confirmLeadProposal(store, who, (clear.body as { proposal: number }).proposal, clock(), { via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("the builder choice was cleared") });
     expect(store.refFor("built-in", "a").routeOverrides).toEqual([]);
   });
 
@@ -498,8 +498,8 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     session();
     const id = pending("hold", { task: "a", reason: "wait", sawHold: null });
     const copy = { ...who } as unknown as VerifiedApprover;
-    expect(confirmMateProposal(store, copy, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "standing" });
-    expect(store.getMateProposal(id)?.state).toBe("pending");
+    expect(confirmLeadProposal(store, copy, id, clock(), { via: "cli" })).toMatchObject({ ok: false, reason: "standing" });
+    expect(store.getLeadProposal(id)?.state).toBe("pending");
   });
 
   test("the paired phone is a door surface of its own: the outcome names it, the decision records it, and a composing caller's commit hook orders the stop signal after its own commit", () => {
@@ -508,15 +508,15 @@ describe("the mate's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     store.saveDecision({ run, urgency: "blocking", recap: "r", question: "Which?", options: [{ id: "x", label: "X", consequence: "cx", reversible: true }], recommendation: "x" }, T0);
     const decision = store.listDecisions("open")[0]!.id;
     const answer = pending("answer", { decision, task: "a", option: "x", optionLabel: "X", reversible: true, rationale: "x" });
-    expect(confirmMateProposal(store, who, answer, clock(), { via: "telegram" })).toMatchObject({ ok: true, kind: "answer" });
+    expect(confirmLeadProposal(store, who, answer, clock(), { via: "telegram" })).toMatchObject({ ok: true, kind: "answer" });
     expect(store.getDecision(decision)).toMatchObject({ answeredBy: "alex", answeredVia: "telegram" });
-    expect(store.getMateProposal(answer)?.outcome).toMatchObject({ ok: true, via: "telegram" });
+    expect(store.getLeadProposal(answer)?.outcome).toMatchObject({ ok: true, via: "telegram" });
     // A caller already inside a transaction hands the door its commit hook: nothing signals until it commits.
     const hold = pending("hold", { task: "b", reason: "wait", sawHold: null });
     const deferred: (() => void)[] = [];
-    const outcome = store.transact(() => confirmMateProposal(store, who, hold, clock(), { via: "telegram", deferSignal: signal => deferred.push(signal) }));
+    const outcome = store.transact(() => confirmLeadProposal(store, who, hold, clock(), { via: "telegram", deferSignal: signal => deferred.push(signal) }));
     expect(outcome).toMatchObject({ ok: true, kind: "hold" });
-    expect(store.getMateProposal(hold)?.outcome).toMatchObject({ said: "b held: wait", via: "telegram" });
+    expect(store.getLeadProposal(hold)?.outcome).toMatchObject({ said: "b held: wait", via: "telegram" });
     expect(deferred).toEqual([]);
   });
 });

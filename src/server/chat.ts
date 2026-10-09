@@ -1,4 +1,5 @@
 import { handlersOf } from './handler-registry.js';
+import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
 import { randomBytes } from "node:crypto";
 import { chmodSync,rmSync as rmFileSync,writeFileSync as writeFsFileSync } from "node:fs";
@@ -30,9 +31,9 @@ import { leadBriefHtml } from '../lead-context.js';
 import { configureLeadFollow,leadFollowStatus } from '../lead-follow.js';
 import { leadActivity } from "../lead-voice.js";
 import { limitsView } from "../limits-ui.js";
-import { confirmCoordinatorProposal,confirmMateProposal,dismissCoordinatorProposal,dismissMateProposal } from "../mate-doors.js";
-import type { MateProgress } from "../mate-progress.js";
-import { MATE_MESSAGE_MAX_CHARS,runMateTurn } from "../mate.js";
+import { confirmCoordinatorProposal,confirmLeadProposal,dismissCoordinatorProposal,dismissLeadProposal } from "../lead-doors.js";
+import type { LeadProgress } from "../lead-progress.js";
+import { LEAD_MESSAGE_MAX_CHARS,runLeadTurn } from "../lead.js";
 import { livePin,modelOptions } from "../model-catalog.js";
 import { verifyApproverByPassword,verifyApproverStanding,type VerifiedApprover } from "../principal.js";
 import {
@@ -60,12 +61,12 @@ import { html,htmlString,postForm } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,type Screen } from "./chrome.js";
 import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
-import { chatAckPage,chatPage,coordinatorProposalsSection,decisionsFor,mateAfterComposerHtml,mateChatVersion,mateMintCard,matePage,mateThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
+import { chatAckPage,chatPage,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {
-  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, mateSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, matePrincipal, taskChatFocus, chatScopeOf, mateConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startMateConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
+  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
 
   // The read-only refresh (package 2): the same JSON status as before —
   // session binding, the send receipt, the live turn — plus a version
@@ -76,14 +77,14 @@ export function createChatHandlers(runtime: ServerRuntime) {
   async function mateStatus(ctx: HandlerContext): Promise<void> {
     const { url, response, now } = ctx;
     const who = browserCaller(ctx.who);
-    const session = store.activeMateSession(who.name);
-    const principal = matePrincipal(who);
+    const session = store.activeLeadSession(who.name);
+    const principal = leadPrincipal(who);
     if (session === null || principal === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation) {
       return respond(response, 200, "application/json", JSON.stringify({ session: null }));
     }
-    store.sweepStaleMateTurns(now);
+    store.sweepStaleLeadTurns(now);
     const request = url.searchParams.get("request") ?? "";
-    const receipt = /^[a-f0-9]{32}$/.test(request) ? store.mateRequestReceipt(session.id, request) : null;
+    const receipt = /^[a-f0-9]{32}$/.test(request) ? store.leadRequestReceipt(session.id, request) : null;
     const requestedTask = url.searchParams.get("task");
     const focusTask = requestedTask === null || requestedTask === "" ? null : taskChatFocus(requestedTask, now, who, { mintNonce: false });
     if (requestedTask !== null && requestedTask !== "" && focusTask === null) {
@@ -93,15 +94,15 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     const chatProject = focusTask !== null ? null : chatProjectOf(url.searchParams.getAll("project").filter(one => one !== ""));
     if (chatProject === undefined) return respond(response, 200, "application/json", JSON.stringify({ session: session.id, unavailable: true, received: receipt !== null }));
-    const rows = mateConversationRows(who, principal, focusTask, now, chatProject);
-    const version = mateChatVersion({ ...rows, focusTask });
+    const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
+    const version = leadChatVersion({ ...rows, focusTask });
     const known = url.searchParams.get("version") ?? "";
     const csrf = who.session.csrf;
     const fragments = known === version
       ? null
       : {
-          thread: htmlString(mateThreadHtml({ ...rows, focusTask, csrf, now, problem: takeMateNote(csrf, session.id), chatProject })),
-          after: htmlString(mateAfterComposerHtml({ messages: rows.messages, pending: rows.pending, focusTask })),
+          thread: htmlString(leadThreadHtml({ ...rows, focusTask, csrf, now, problem: takeLeadNote(csrf, session.id), chatProject })),
+          after: htmlString(leadAfterComposerHtml({ messages: rows.messages, pending: rows.pending, focusTask })),
           live: focusTask === null ? null : htmlString(taskChatLiveRegion(focusTask, csrf, true, rows.pending !== null)),
         };
     return respond(response, 200, "application/json", JSON.stringify({
@@ -139,7 +140,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // Cookie sessions only (Codex v3 review, change 7): drafts live in
     // THIS session's memory; a bearer caller has nowhere to keep them.
     if (who.via !== "cookie") return refuse(response, who, 403, "chat is a browser surface — it keeps your drafts in the session");
-    if (url.searchParams.get('private') !== '1' && !url.searchParams.has('task') && !url.searchParams.has('result') && !url.searchParams.has('project')) {
+    const teamAsked = url.searchParams.get('team') === '1' || url.searchParams.has('conversation') || url.searchParams.has('lead') || url.searchParams.has('proposal');
+    if (teamAsked && url.searchParams.get('private') !== '1' && !url.searchParams.has('task') && !url.searchParams.has('result') && !url.searchParams.has('project')) {
       const reply = teamBrowserReply(await team.execute({ name: who.name, generation: who.session.generation }, {
         operation: url.searchParams.has('conversation') ? 'show' : 'list',
         args: { ...(url.searchParams.has('conversation') ? { conversationId: url.searchParams.get('conversation') } : {}),
@@ -148,22 +150,20 @@ export function createChatHandlers(runtime: ServerRuntime) {
       if (!reply.ok || !reply.snapshot) return refuse(response, who, 403, reply.message, '/chat?private=1');
       if (url.searchParams.has('proposal')) {
         const id = Number(url.searchParams.get('proposal')), selected = reply.snapshot.selected;
-        const proposal = Number.isSafeInteger(id) && id > 0 ? store.getMateProposal(id) : null;
+        const proposal = Number.isSafeInteger(id) && id > 0 ? store.getLeadProposal(id) : null;
         if (!selected || !proposal || proposal.thread !== selected.threadId) return refuse(response, who, 404, 'This proposal is unavailable.', '/chat');
         const back = '/chat?conversation=' + encodeURIComponent(selected.id);
         const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
         const card = teamProposalCardParts(store, { name: who.name, generation: who.session.generation }, proposal, reply.snapshot, who.session.csrf, decision, clock(), teamChatProvider).html;
         return sendScreen(response, 200, screen('Review action', html`<p><a href="${back}">Back to conversation</a></p>${card}`, { chrome: chromeFor(null, 'chat', undefined, 'all') }));
       }
-      if (reply.snapshot.leads.length > 0 || url.searchParams.has('conversation') || url.searchParams.get('team') === '1') {
-        const said = url.searchParams.get('said')?.slice(0, 1_000);
-        return sendScreen(response, 200, screen('Chat', html`${said ? html`<p role="alert">${said}</p>` : ''}${teamWorkspaceHtml(reply.snapshot)}`, {
-          chrome: chromeFor(null, 'chat', undefined, 'all'), workspace: { team: reply.snapshot, ...(said ? { notices: [said] } : {}) },
-        }));
-      }
+      const said = url.searchParams.get('said')?.slice(0, 1_000);
+      return sendScreen(response, 200, screen('Chat', html`<p class="problem" role="status" data-deprecated="team">${DEPRECATED_PAGE.team}</p>${said ? html`<p role="alert">${said}</p>` : ''}${teamWorkspaceHtml(reply.snapshot)}`, {
+        chrome: chromeFor(null, 'chat', undefined, 'all'), workspace: { team: reply.snapshot, notices: [DEPRECATED_PAGE.team, ...(said ? [said] : [])] },
+      }));
     }
     store.sweepStaleChatTurns(now);
-    store.sweepStaleMateTurns(now);
+    store.sweepStaleLeadTurns(now);
     store.sweepCoordinatorProposals(now);
     sweepChatDrafts(Date.now());
     const requestedTask = url.searchParams.get("task");
@@ -246,8 +246,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The mate (mate arc §5): while a mate session is live, /chat IS the
     // thread — the same rows the CLI reads. Without one, fleet chat as
     // before, plus the card that mints a session.
-    let mateSession = enabled.ok && who.role === "approver" ? store.activeMateSession(who.name) : null;
-    const principal = enabled.ok && who.role === "approver" ? matePrincipal(who) : null;
+    let leadSession = enabled.ok && who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    const principal = enabled.ok && who.role === "approver" ? leadPrincipal(who) : null;
     // Chat opens ready to talk (2026-09-23): an approver in good standing
     // needs no second password to start their own conversation. The one
     // exception to "a GET writes nothing": the strict same-site session
@@ -256,14 +256,14 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // Membership chat only: it spends no dollars. Direct-API chat keeps a
     // one-tap Start with its visible spending limit (no password).
     const settingsView = url.searchParams.get("settings") === "1";
-    if (!settingsView && enabled.ok && enabled.billing === "subscription" && principal !== null && (mateSession === null || mateSession.ceilingDigest !== principal.ceilingDigest) && !requestContext.getStore()?.workspaceRead) {
-      startMateConversation(who, principal, enabled, 0, false, now);
-      mateSession = store.activeMateSession(who.name);
+    if (!settingsView && enabled.ok && enabled.billing === "subscription" && principal !== null && (leadSession === null || leadSession.ceilingDigest !== principal.ceilingDigest) && !requestContext.getStore()?.workspaceRead) {
+      startLeadConversation(who, principal, enabled, 0, false, now);
+      leadSession = store.activeLeadSession(who.name);
     }
     // A session under another ceiling is not continuable from here; a GET
     // writes nothing (slice-2 review, finding 7) — the mint card below
     // starts a new conversation, and minting ends the old session.
-    const ceilingStale = enabled.ok && mateSession !== null && principal !== null && mateSession.ceilingDigest !== principal.ceilingDigest;
+    const ceilingStale = enabled.ok && leadSession !== null && principal !== null && leadSession.ceilingDigest !== principal.ceilingDigest;
     const catchUp = leadBriefHtml(assignmentCatchUp(store, now, { principal: "operator", repos }, { limit: 6 }, evidenceRoot));
     const chatProjects = repos.map((repo, index) => {
       let peek: ProjectPeek | null = null;
@@ -296,15 +296,15 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const withFirstRun = (shown: Screen): Screen => firstRun === undefined && phone === undefined && home === null ? shown
       : { ...shown, ...(home === null ? {} : { refreshSeconds: liveRefreshSeconds() }),
         workspace: { ...shown.workspace, ...(firstRun === undefined ? {} : { firstRun }), ...(phone === undefined ? {} : { phone }), ...(home === null ? {} : { home }) } };
-    if (enabled.ok && mateSession !== null && principal !== null && !ceilingStale) {
+    if (enabled.ok && leadSession !== null && principal !== null && !ceilingStale) {
       {
-        const said = takeMateNote(who.session.csrf, mateSession.id);
+        const said = takeLeadNote(who.session.csrf, leadSession.id);
         return sendScreen(
           response,
           200,
-          withFirstRun(matePage(chromeFor(null, "chat", undefined, "all"), {
-            session: mateSession,
-            ...mateConversationRows(who, principal, focusTask, now, chatProject),
+          withFirstRun(leadPage(chromeFor(null, "chat", undefined, "all"), {
+            session: leadSession,
+            ...leadConversationRows(who, principal, focusTask, now, chatProject),
             chatProject,
             latched,
             config: enabled.config,
@@ -358,9 +358,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
           url.searchParams.get("said") ??
           focusProblem ??
           (ceilingStale ? "Project access changed. Your tasks and results are saved. Start a conversation with the current projects to continue." : null) ??
-          takeMateNote(who.session.csrf, null),
+          takeLeadNote(who.session.csrf, null),
         resultPanel,
-        ...(enabled.ok && who.role === "approver" ? { mateMint: mateMintCard(enabled, focusTask === null ? "/chat" : taskChatHref(focusTask.id)) } : {}),
+        ...(enabled.ok && who.role === "approver" ? { leadMint: leadMintCard(enabled, focusTask === null ? "/chat" : taskChatHref(focusTask.id)) } : {}),
         ...(who.role === "approver" ? { coordinatorProposals: coordinatorProposalsSection(coordinatorRows, decisionsFor(store, coordinatorRows), now, true, focusTask === null ? null : taskChatHref(focusTask.id)) } : {}),
       })),
     );
@@ -381,7 +381,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const { url, response } = ctx;
     const who = browserCaller(ctx.who);
     const proposalId = Number(url.pathname.split("/")[3]);
-    const reviewProposal = store.getMateProposal(proposalId);
+    const reviewProposal = store.getLeadProposal(proposalId);
     const sharedConversation = reviewProposal ? store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(reviewProposal.thread) : null;
     let principal: VerifiedApprover | null = null;
     if (sharedConversation) {
@@ -390,11 +390,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
         const checked = verifyApproverStanding(store, who.name, who.session.generation, access.conversation.projects);
         principal = checked.ok ? checked.who : null;
       } catch { return refuse(response, who, 404, 'This proposal is unavailable.', '/chat'); }
-    } else principal = matePrincipal(who);
+    } else principal = leadPrincipal(who);
     if(principal===null)return refuse(response,who,403,'Your access changed. Sign in again.','/chat');
     try {
-      const id=proposalId,saved=store.getMateProposal(id),savedAction=saved?.kind==='action'?sharedActionPayload(saved.payload):null;
-      if(saved&&savedAction&&saved.state!=='pending'&&(sharedConversation!==null||store.getMateThread(saved.thread)?.approver===principal.name)&&principal.repos.includes(savedAction.repo)&&store.accountCanAccess(principal.name,savedAction.repo)) {
+      const id=proposalId,saved=store.getLeadProposal(id),savedAction=saved?.kind==='action'?sharedActionPayload(saved.payload):null;
+      if(saved&&savedAction&&saved.state!=='pending'&&(sharedConversation!==null||store.getLeadThread(saved.thread)?.approver===principal.name)&&principal.repos.includes(savedAction.repo)&&store.accountCanAccess(principal.name,savedAction.repo)) {
         const task = typeof saved.outcome?.['taskId']==='string' ? saved.outcome['taskId'] : typeof savedAction.request['task']==='string' ? savedAction.request['task'] : null;
         const destination = task ? taskHref(task) : `/settings/${savedAction.operation.startsWith('skill_')?'skills':'knowledge'}?repo=${encodeURIComponent(savedAction.repo)}`;
         const said = typeof saved.outcome?.['said']==='string' ? saved.outcome['said'] : saved.state==='dismissed'?'Action dismissed.':saved.state==='expired'?'This proposal expired. Ask for a fresh proposal.':'This action has no completed outcome yet.';
@@ -461,7 +461,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       : verb === "change" ? lead.change(id, note, now)
       : verb === "revise" ? lead.requestChanges(id, note, now)
       : lead.complete(id, now, (taskId, runId) => {
-        const principal = matePrincipal(who);
+        const principal = leadPrincipal(who);
         if (principal === null) return { ok: false, message: "Your access changed. Sign in again." };
         const current = assignmentOf(store, taskId, now, { principal: "operator", repos: principal.repos }, evidenceRoot);
         if (current?.receipt?.runId !== runId) return { ok: false, message: "This result changed. Reload before marking it complete." };
@@ -610,10 +610,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
     return redirect(response, back);
   }
   // ---- the mate (mate arc §5) ------------------------------------------
-  async function mateMint(ctx: HandlerContext): Promise<void> {
+  async function leadMint(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.mateMint);
-    if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
+    const body = readForm(posted, CONSOLE_FORMS.leadMint);
+    if (who.via !== "cookie") return refuse(response, who, 403, "the lead is a browser surface");
     const back = safeChatReturn(body.get("return"));
     const enabled = chatEnablement();
     if (!enabled.ok) return redirect(response, chatReturnWithSaid(back, enabled.why));
@@ -630,55 +630,55 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const token = body.get("token") ?? "";
     const verified = token === "" ? verifyApproverStanding(store, who.name, who.session.generation, managedRepos()) : verifyApproverByPassword(store, who.name, token, managedRepos());
     if (!verified.ok) return redirect(response, chatReturnWithSaid(back, token === "" ? "Your access changed. Sign in again to start chat." : "That password did not match."));
-    startMateConversation(who, verified.who, enabled, ceilingUsd, body.get("follow") === "yes", now);
+    startLeadConversation(who, verified.who, enabled, ceilingUsd, body.get("follow") === "yes", now);
     return redirect(response, back);
   }
-  async function mateFollow(ctx: HandlerContext): Promise<void> {
+  async function leadFollow(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.mateFollow);
+    const body = readForm(posted, CONSOLE_FORMS.leadFollow);
     if (who.via !== "cookie") return refuse(response, who, 403, "Open the conversation to change automatic updates.");
-    const principal = matePrincipal(who), session = store.activeMateSession(who.name), thread = store.liveMateThreadFor(who.name);
+    const principal = leadPrincipal(who), session = store.activeLeadSession(who.name), thread = store.liveLeadThreadFor(who.name);
     if (!principal || !session || !thread || !configureLeadFollow(store, principal, session, thread, body.get("enabled") === "yes", now)) return refuse(response, who, 409, "Conversation access changed. Start chat again.", "/chat");
     return redirect(response, safeChatReturn(body.get("return")));
   }
-  async function mateEnd(ctx: HandlerContext): Promise<void> {
+  async function leadEnd(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.mateEnd);
-    if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
+    const body = readForm(posted, CONSOLE_FORMS.leadEnd);
+    if (who.via !== "cookie") return refuse(response, who, 403, "the lead is a browser surface");
     const back = safeChatReturn(body.get("return"));
     // Ending spend and forgetting the thread takes no password: any
     // approver may revoke (§1), and the thread is theirs to drop (ruling 11).
-    store.failLiveMateTurnsFor(who.name, "ended", now);
-    store.endMateSessionsFor(who.name, who.name, now);
-    store.closeMateThreadsFor(who.name, now);
-    mateSaid.delete(who.session.csrf);
+    store.failLiveLeadTurnsFor(who.name, "ended", now);
+    store.endLeadSessionsFor(who.name, who.name, now);
+    store.closeLeadThreadsFor(who.name, now);
+    leadSaid.delete(who.session.csrf);
     return redirect(response, back);
   }
-  async function mateStop(ctx: HandlerContext): Promise<void> {
+  async function leadStop(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.mateStop);
-    if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
+    const body = readForm(posted, CONSOLE_FORMS.leadStop);
+    if (who.via !== "cookie") return refuse(response, who, 403, "the lead is a browser surface");
     const back = safeChatReturn(body.get("return"));
     const wanted = Number(body.get("turn") ?? "");
-    const live = store.liveMateTurnFor(who.name);
+    const live = store.liveLeadTurnFor(who.name);
     if (!Number.isInteger(wanted) || live === null || live.id !== wanted) {
-      noteMate(who.session.csrf, null, "that turn has already finished");
+      noteLead(who.session.csrf, null, "that turn has already finished");
       return redirect(response, chatReturnWithLatest(back));
     }
     // A stopped direct-API turn is conservatively charged its reserved
     // worst case: dispatch may already have happened. Membership turns
     // reserve zero. The conversation itself stays live.
-    store.failLiveMateTurnsFor(who.name, "stopped", now);
-    noteMate(who.session.csrf, live.id, "stopped — the conversation is still open");
+    store.failLiveLeadTurnsFor(who.name, "stopped", now);
+    noteLead(who.session.csrf, live.id, "stopped — the conversation is still open");
     return redirect(response, chatReturnWithLatest(back));
   }
   const chatProposalAct = (op: "confirm" | "dismiss") => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, request, response, now, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.mateProposal);
-    if (who.via !== "cookie") return refuse(response, who, 403, "the mate is a browser surface");
+    const body = readForm(posted, CONSOLE_FORMS.leadProposal);
+    if (who.via !== "cookie") return refuse(response, who, 403, "the lead is a browser surface");
     const back = safeChatReturn(body.get("return"));
     const id = Number(url.pathname.split("/")[3]);
-    const proposalRow=store.getMateProposal(id);
+    const proposalRow=store.getLeadProposal(id);
     const shared=proposalRow&&store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(proposalRow.thread);
     const proposalTaskHref = (taskId: string) => taskChatHref(taskId) + (shared ? '&conversation=' + encodeURIComponent(String(shared['id'])) : '');
     let principal:VerifiedApprover|null=null;
@@ -686,7 +686,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       try { const access=team.domain.access({name:who.name,generation:who.session.generation},String(shared['id']),'contributor');
         const proof=verifyApproverStanding(store,who.name,who.session.generation,access.conversation.projects); principal=proof.ok?proof.who:null;
       } catch { return refuse(response,who,404,'This proposal is unavailable.',back); }
-    } else principal=matePrincipal(who);
+    } else principal=leadPrincipal(who);
     // Confirm in place (chat cards): the same door and checks, answered in
     // JSON so the conversation stays where it is; the card's refreshed
     // state carries the result. The secure review screen stays a form.
@@ -695,12 +695,12 @@ export function createChatHandlers(runtime: ServerRuntime) {
       respond(response, status, "application/json", JSON.stringify({ ok, said, taskId }));
     if (principal === null) return cardJson ? cardAnswer(403, false, "Your approver standing changed. Sign in again.") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
     if (op === "dismiss") {
-      const dismissed = dismissMateProposal(store, principal, id, now);
+      const dismissed = dismissLeadProposal(store, principal, id, now);
       if (cardJson) return cardAnswer(dismissed ? 200 : 409, dismissed, dismissed ? "Dismissed." : "That card was already acted on.");
-      if (!dismissed) noteMate(who.session.csrf, null, "that proposal was already acted on");
+      if (!dismissed) noteLead(who.session.csrf, null, "that proposal was already acted on");
       return redirect(response, chatReturnWithLatest(back));
     }
-    const outcome = confirmMateProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+    const outcome = confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
     if (cardJson) {
       if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
       return cardAnswer(200, true, outcome.said, outcome.taskId);
@@ -713,7 +713,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       return redirect(response,sharedActionReviewPath(id));
     }
     if (!outcome.ok && shared) return redirect(response, chatReturnWithSaid(back, outcome.said));
-    if (!outcome.ok && outcome.reason === "needs-confirm") noteMate(who.session.csrf, null, outcome.said);
+    if (!outcome.ok && outcome.reason === "needs-confirm") noteLead(who.session.csrf, null, outcome.said);
     // A confirmed task proposal leads to the task it actually created
     // (package 2): the lens over this same conversation, whose journey
     // and plan are the next step. The id is the door's recorded
@@ -724,7 +724,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       return redirect(response, `${proposalTaskHref(outcome.taskId)}#task-chat-live`);
     }
     if (outcome.ok && outcome.kind === "review" && outcome.taskId !== null) {
-      const proposal = store.getMateProposal(id)!;
+      const proposal = store.getLeadProposal(id)!;
       // A revision confirmed here returns to its receipt: the newest
       // reply, whose confirmed card names the revision and links to the
       // plan. Landing at the top left that message under the phone's
@@ -734,7 +734,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         : `${proposalTaskHref(outcome.taskId)}&result=${Number(proposal.payload["run"])}#request-changes`);
     }
     if (outcome.ok && outcome.kind === "task_action" && outcome.taskId !== null) {
-      const proposal = store.getMateProposal(id)!;
+      const proposal = store.getLeadProposal(id)!;
       if (proposal.payload["operation"] === "resume") {
         return armTaskResume(response, who, outcome.taskId, String(proposal.payload["run"]), "chat", now);
       }
@@ -748,7 +748,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const { url, who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.coordinatorProposal);
     if (who.via !== "cookie") return refuse(response, who, 403, "proposals are confirmed from the browser or the CLI");
-    const principal = matePrincipal(who);
+    const principal = leadPrincipal(who);
     if (principal === null) return refuse(response, who, 403, "your approver standing changed — sign in again", "/chat");
     const id = Number(url.pathname.split("/")[2]);
     store.sweepCoordinatorProposals(now);
@@ -808,31 +808,31 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // A live mate session: the message is a mate turn — no password, the
     // session's ceremony already covered it (§1); the engine refuses on
     // its own terms and the thread shows why.
-    const mateSession = who.role === "approver" ? store.activeMateSession(who.name) : null;
-    if (mateSession !== null) {
+    const leadSession = who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    if (leadSession !== null) {
       const requestId = body.get("request");
-      if (requestId !== null && (body.getAll("request").length !== 1 || body.getAll("request-session").length !== 1 || body.get("request-session") !== String(mateSession.id))) {
+      if (requestId !== null && (body.getAll("request").length !== 1 || body.getAll("request-session").length !== 1 || body.get("request-session") !== String(leadSession.id))) {
         return said(409, "This conversation changed. Reload it before sending your message.");
       }
-      const principal = matePrincipal(who);
+      const principal = leadPrincipal(who);
       if (principal === null) return wantsJson ? said(403, "your approver standing changed — sign in again") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
       const message = (body.get("message") ?? "").trim();
-      if (message === "" || message.length > MATE_MESSAGE_MAX_CHARS) {
-        return said(400, `a message is 1 to ${MATE_MESSAGE_MAX_CHARS} characters`, mateSession.id);
+      if (message === "" || message.length > LEAD_MESSAGE_MAX_CHARS) {
+        return said(400, `a message is 1 to ${LEAD_MESSAGE_MAX_CHARS} characters`, leadSession.id);
       }
-      const opened = store.openMateThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
+      const opened = store.openLeadThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
       const onProgress = beginLiveTurn(opened.thread.id);
-      void runMateTurn({ store, who: principal, session: mateSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot })
+      void runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot })
         .then(outcome => {
           // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
-          if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteMate(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
+          if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteLead(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
           endLiveTurn(opened.thread.id, outcome.ok);
         })
-        .catch(() => { noteMate(who.session.csrf, null, "the turn failed unexpectedly"); endLiveTurn(opened.thread.id, false); });
+        .catch(() => { noteLead(who.session.csrf, null, "the turn failed unexpectedly"); endLiveTurn(opened.thread.id, false); });
       // Accepted for the engine, not received: the receipt is written by
       // the turn's own admission, and the status poll is where the page
       // learns of it — the same road as after a native send.
-      if (wantsJson) return respond(response, 202, "application/json", JSON.stringify({ ok: true, session: mateSession.id, task: focusTask?.id ?? "", ...(chatProject === null ? {} : { project: chatProject }), request: requestId }));
+      if (wantsJson) return respond(response, 202, "application/json", JSON.stringify({ ok: true, session: leadSession.id, task: focusTask?.id ?? "", ...(chatProject === null ? {} : { project: chatProject }), request: requestId }));
       return redirect(response, chatReturnWithLatest(back));
     }
     if (wantsJson) return said(409, "This conversation ended. Reload to continue.");
@@ -1012,7 +1012,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const wanted = values[0] ?? "";
     return values.length === 1 && visible(wanted) && managedRepos().includes(wanted) ? wanted : undefined;
   }
-  function beginLiveTurn(thread: number): (event: MateProgress) => void {
+  function beginLiveTurn(thread: number): (event: LeadProgress) => void {
     const previous = liveTurns.get(thread);
     if (previous?.expiry) clearTimeout(previous.expiry);
     const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set() };
@@ -1047,19 +1047,19 @@ export function createChatHandlers(runtime: ServerRuntime) {
     live.expiry = setTimeout(() => { if (liveTurns.get(thread) === live) liveTurns.delete(thread); }, 60_000);
     live.expiry.unref();
   }
-  function noteMate(csrf: string, turn: number | null, message: string): void {
-    if (mateSaid.size >= 500) {
-      const oldest = mateSaid.keys().next().value;
-      if (oldest !== undefined) mateSaid.delete(oldest);
+  function noteLead(csrf: string, turn: number | null, message: string): void {
+    if (leadSaid.size >= 500) {
+      const oldest = leadSaid.keys().next().value;
+      if (oldest !== undefined) leadSaid.delete(oldest);
     }
-    mateSaid.set(csrf, { turn, message });
+    leadSaid.set(csrf, { turn, message });
   }
-  function takeMateNote(csrf: string, liveSession: number | null): string | null {
-    const noted = mateSaid.get(csrf);
+  function takeLeadNote(csrf: string, liveSession: number | null): string | null {
+    const noted = leadSaid.get(csrf);
     if (noted === undefined) return null;
-    mateSaid.delete(csrf);
+    leadSaid.delete(csrf);
     if (noted.turn === null) return noted.message;
-    const turn = store.getMateTurn(noted.turn);
+    const turn = store.getLeadTurn(noted.turn);
     return turn !== null && turn.session === liveSession ? noted.message : null;
   }
   /** A finished demo exchange's result, read back from the evidence its run actually stored. */
@@ -1264,7 +1264,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         return href === null ? null : { label: one.primaryAction!.label, href };
       })(),
     }));
-    const windows = who.via === "cookie" && store.isInstanceOperator(who.name) ? limitsView(store.providerLimits(), [], { project: projectName, teammate: id => `Teammate ${id}` }, now) : null;
+    const windows = who.via === "cookie" && store.isInstanceOperator(who.name) ? limitsView(store.providerLimits(), [], { project: projectName, subagent: id => `Subagent ${id}` }, now) : null;
     // One line: what this person's lead is doing now and when it last acted.
     const activity = leadActivity(store, who.name);
     const leadTask = activity?.taskId == null ? null : store.lookupRef(activity.taskId);
@@ -1331,10 +1331,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
     "push.remove": pushRemove,
     "onboarding.phone-dismiss": phoneDismiss,
     "chat.config": chatConfig,
-    "chat.mate-mint": mateMint,
-    "chat.mate-follow": mateFollow,
-    "chat.mate-end": mateEnd,
-    "chat.mate-stop": mateStop,
+    "chat.mate-mint": leadMint,
+    "chat.mate-follow": leadFollow,
+    "chat.mate-end": leadEnd,
+    "chat.mate-stop": leadStop,
     "chat.proposal.confirm": chatProposalAct("confirm"),
     "chat.proposal.dismiss": chatProposalAct("dismiss"),
     "coordinator.proposal.confirm": coordinatorProposalAct("confirm"),
@@ -1343,5 +1343,5 @@ export function createChatHandlers(runtime: ServerRuntime) {
     "chat.file": chatFile,
     "chat.ack-send": chatAckSend,
   });
-  return { registrations, chatFirstRun, phoneCard, chatProjectOf, beginLiveTurn, endLiveTurn, noteMate, takeMateNote, demoResultView, storeChatKey, forgetChatKey, sweepChatDrafts, runChatTurn, chatHomeOf, firstTasksFor, approverCandidateCount, evictOldestCandidate };
+  return { registrations, chatFirstRun, phoneCard, chatProjectOf, beginLiveTurn, endLiveTurn, noteLead, takeLeadNote, demoResultView, storeChatKey, forgetChatKey, sweepChatDrafts, runChatTurn, chatHomeOf, firstTasksFor, approverCandidateCount, evictOldestCandidate };
 }

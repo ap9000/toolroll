@@ -1,10 +1,10 @@
 /** Durable crew updates for the built-in lead. Idle scans use no model.
- * Delivery replays reuse the saved mate request; they never dispatch a task. */
+ * Delivery replays reuse the saved lead request; they never dispatch a task. */
 import { createHash } from 'node:crypto';
-import { LEAD_FOLLOW_MESSAGE, type Store, type MateSession, type MateThread, type ChatConfig } from './store.js';
+import { LEAD_FOLLOW_MESSAGE, type Store, type LeadSession, type LeadThread, type ChatConfig } from './store.js';
 import { isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from './principal.js';
 import { assignmentOf } from './assignment.js';
-import { runMateTurn, type MateTurnInput, type MateTurnOutcome } from './mate.js';
+import { runLeadTurn, type LeadTurnInput, type LeadTurnOutcome } from './lead.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
 import { checkLeadCommitments } from './lead-commitments.js';
 
@@ -14,7 +14,7 @@ type Grant = { id: number; at: string; actor: string; session: number; thread: n
 type Event = { id: number; task: string; repo: string; state: string; detail: string; result: number | null };
 type Batch = { id: number; request: string; through: number; events: Event[]; context: string };
 
-export function configureLeadFollow(store: Store, who: VerifiedApprover, session: MateSession, thread: MateThread, enabled: boolean, now: Date): boolean {
+export function configureLeadFollow(store: Store, who: VerifiedApprover, session: LeadSession, thread: LeadThread, enabled: boolean, now: Date): boolean {
   if (!isVerifiedApprover(who) || !reproveApprover(store, who).ok || session.approver !== who.name || thread.approver !== who.name ||
     session.approverGeneration !== who.generation || session.ceilingDigest !== who.ceilingDigest || thread.ceilingDigest !== who.ceilingDigest ||
     !liveBinding(store, who, session.id, thread.id) ||
@@ -26,7 +26,7 @@ export function configureLeadFollow(store: Store, who: VerifiedApprover, session
 
 /** Surface snapshots never establish session/thread ownership. */
 function liveBinding(store: Store, who: VerifiedApprover, sessionId: number, threadId: number) {
-  const session = store.getMateSession(sessionId), thread = store.getMateThread(threadId);
+  const session = store.getLeadSession(sessionId), thread = store.getLeadThread(threadId);
   return session && thread && session.approver === who.name && thread.approver === who.name &&
     session.approverGeneration === who.generation && session.ceilingDigest === who.ceilingDigest && thread.ceilingDigest === who.ceilingDigest &&
     session.endedAt === null && thread.closedAt === null ? { session, thread } : null;
@@ -116,14 +116,14 @@ function nextBatch(store: Store, grant: Grant, now: Date): Batch | null {
 export type LeadFollowInput = {
   store: Store; repos: () => readonly string[]; evidenceRoot: string; clock?: () => Date;
   provider: () => { config: ChatConfig; key: string | null } | null;
-  runTurn?: (input: MateTurnInput) => Promise<MateTurnOutcome>;
-  subscriptionRunner?: MateTurnInput['subscriptionRunner']; fetcher?: typeof fetch;
+  runTurn?: (input: LeadTurnInput) => Promise<LeadTurnOutcome>;
+  subscriptionRunner?: LeadTurnInput['subscriptionRunner']; fetcher?: typeof fetch;
 };
 
 export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   const { store } = input, clock = input.clock ?? (() => new Date());
   if (store.isDemo() || updateAdmissionPaused(store.raw())) return;
-  store.sweepStaleMateTurns(clock());
+  store.sweepStaleLeadTurns(clock());
   // The lead's own promises are kept whether or not automatic crew updates are on: no model, one line when met.
   checkLeadCommitments(store, clock(), input.evidenceRoot);
   const grants = store.handle.prepare("SELECT a.* FROM action_ledger a WHERE a.action=? AND a.source='work' AND a.id=(SELECT MAX(b.id) FROM action_ledger b WHERE b.actor=a.actor AND b.action=a.action AND b.source=a.source) ORDER BY a.id").all(CONFIG).map(readGrant).filter((one): one is Grant => one !== null && one.enabled);
@@ -135,12 +135,12 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
     if (!batch) continue;
     // A replay after process exit reads the saved turn; even a failed turn is
     // terminal for this delivery. Human chat remains available for follow-up.
-    const saved = store.mateRequestReceipt(grant.session, batch.request);
-    let turn = saved ? store.getMateTurn(saved.turn) : null;
+    const saved = store.leadRequestReceipt(grant.session, batch.request);
+    let turn = saved ? store.getLeadTurn(saved.turn) : null;
     if (!turn) {
       const provider = input.provider();
       if (!provider) continue;
-      const result = await (input.runTurn ?? runMateTurn)({ store, ...access, ...provider, evidenceRoot: input.evidenceRoot, clock,
+      const result = await (input.runTurn ?? runLeadTurn)({ store, ...access, ...provider, evidenceRoot: input.evidenceRoot, clock,
         requestId: batch.request, message: LEAD_FOLLOW_MESSAGE,
         context: batch.context, revalidate: async () => !updateAdmissionPaused(store.raw()) && authorized(store, grant, input.repos()) !== null ? { ok: true as const } : { ok: false as const, reason: 'access-changed' as const },
         ...(input.fetcher ? { fetcher: input.fetcher } : {}), ...(input.subscriptionRunner ? { subscriptionRunner: input.subscriptionRunner } : {}) });
@@ -150,7 +150,7 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
         if (last?.['outcome'] !== status) store.recordAction({ at: clock().toISOString(), actor: grant.actor, repo: null, taskId: null, runId: null, action: `lead delivery status:${grant.id}`, outcome: status, source: 'work' });
         continue;
       }
-      turn = store.getMateTurn(result.turn);
+      turn = store.getLeadTurn(result.turn);
     }
     if (!turn || turn.state === 'queued' || turn.state === 'running') continue;
     store.transact(() => {
@@ -160,7 +160,7 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
       store.setServiceCursor(`lead:${grant.id}:events`, batch.through, clock());
       const status = turn.state === 'answered' ? 'Crew updates handled.' : 'The lead response stopped. Open chat to continue; crew work was not rerun.';
       store.recordAction({ at: clock().toISOString(), actor: grant.actor, repo: null, taskId: null, runId: null, action: `lead delivery status:${grant.id}`, outcome: status, source: 'work' });
-      if (turn.state !== 'answered' && authorized(store, grant, input.repos())) store.appendMateMessage({ thread: grant.thread, turn: null, role: 'assistant', text: status }, clock());
+      if (turn.state !== 'answered' && authorized(store, grant, input.repos())) store.appendLeadMessage({ thread: grant.thread, turn: null, role: 'assistant', text: status }, clock());
     });
   }
 }

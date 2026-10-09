@@ -1,7 +1,7 @@
 /**
  * Separation of duties (v102): who filed each task is kept; a project can
  * refuse the requester's own approval; protected work needs two people to
- * approve the same scope, and never a mode, an AI teammate or a watched run;
+ * approve the same scope, and never a mode, a subagent or a watched run;
  * an instance operator sets the rules with a step-up, and the ledger keeps
  * every change.
  */
@@ -14,7 +14,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { decideFlowCard } from "./flow-engine.js";
-import { TEAMMATE_TEMPLATES } from "./teammates.js";
+import { SUBAGENT_TEMPLATES } from "./subagents.js";
 import { isProtectedWork, touchesProtected } from "./approval-policy.js";
 import { createScheduledFlow } from "./flow-schedule.js";
 import { runScheduleNow, setFlowTriggerOn } from "./flow-triggers.js";
@@ -141,7 +141,7 @@ test("protected work needs two people to approve the same scope; a changed scope
   expect((await approveAs("alex", alex, unsaid)).status).toBe(200);
 });
 
-test("on a protected project no mode or AI teammate stands in for two people", async () => {
+test("on a protected project no mode or subagent stands in for two people", async () => {
   store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", new Date());
   const alex = await signIn("alex");
   const id = await fileAsAlex(alex, "Rotate the keys", ["src/keys.ts"]);
@@ -150,13 +150,13 @@ test("on a protected project no mode or AI teammate stands in for two people", a
   expect(store.sealScopeApproval(id, "alex", now, {}, { kind: "mode", modeDigest: "any" })).toBe(false);
   expect(store.sealScopeApproval(id, "alex", now)).toBe(false);
   expect(store.approvalGate(id, "Maya (AI)", "ai")).toEqual({ verdict: "refuse", reason: "person-required" });
-  // A flow's decision zone staffed by a teammate: the person decides instead.
+  // A flow's decision zone staffed by a subagent: the person decides instead.
   const stage = (sid: string, kind: string, rest: Record<string, unknown> = {}) => ({ id: sid, title: sid, kind, zone: {}, next: null, onFail: null, ...rest });
   const flow = store.createFlow({ repo: REPO, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
-    stage("maya-decides", "approval", { teammate: "maya", toOwner: true, next: "done", onFail: "done" }), stage("done", "inbox")] }) }, now);
-  store.createTeammate({ repo: REPO, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+    stage("maya-decides", "approval", { subagent: "maya", toOwner: true, next: "done", onFail: "done" }), stage("done", "inbox")] }) }, now);
+  store.createSubagent({ repo: REPO, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
   const card = store.addFlowCard({ flow, title: "Refund $30", description: null, stage: "maya-decides", by: "alex" }, now);
-  expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "Maya (AI)", repos: [REPO], teammate: "maya" }, now)).toEqual({ ok: false, message: "This project is protected: a person decides here." });
+  expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "Maya (AI)", repos: [REPO], subagent: "maya" }, now)).toEqual({ ok: false, message: "This project is protected: a person decides here." });
   expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "alex", repos: [REPO] }, now)).toMatchObject({ ok: true });
 });
 

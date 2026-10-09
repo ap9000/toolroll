@@ -31,7 +31,7 @@ const toneOf = (percent: number, reached: boolean): BrowserLimitTile["tone"] => 
 export function limitsView(
   windows: readonly { provider: string; window: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null; reached: boolean; plan: string | null; observedAt: string }[],
   budgets: readonly BudgetState[],
-  names: { project: (repo: string) => string; teammate: (id: number) => string },
+  names: { project: (repo: string) => string; subagent: (id: number) => string },
   now: Date,
 ): BrowserLimits | null {
   const tiles: BrowserLimitTile[] = [];
@@ -53,7 +53,7 @@ export function limitsView(
   for (const budget of budgets) {
     const over = budget.spentMicrousd >= budget.limitMicrousd;
     const name = budget.scope === "installation" ? "Everything" : budget.scope === "project" ? names.project(budget.key)
-      : budget.scope === "teammate" ? names.teammate(Number(budget.key)) : budget.key;
+      : budget.scope === "subagent" ? names.subagent(Number(budget.key)) : budget.key;
     tiles.push({
       key: `budget:${budget.id}`, name, window: "Budget", value: usd(budget.spentMicrousd), unit: `of ${usd(budget.limitMicrousd)}`,
       percent: budget.percent, tone: over ? (budget.hardStop ? "danger" : "warning") : budget.percent >= 80 ? "warning" : "neutral", marks: [50, 80], href: "/spend",

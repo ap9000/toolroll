@@ -10,8 +10,8 @@
  * Fixture transport, not a phone: nothing here is a live Telegram proof.
  */
 import { notifyPeople } from "./flow-people.js";
-import { TEAMMATE_TEMPLATES } from "./teammates.js";
-import { replyToAsker } from "./teammate-desk.js";
+import { SUBAGENT_TEMPLATES } from "./subagents.js";
+import { replyToAsker } from "./subagent-desk.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -19,18 +19,18 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MATE_ASK_TTL_MS, openStore, type Store, type TelegramBinding } from "./store.js";
+import { LEAD_ASK_TTL_MS, openStore, type Store, type TelegramBinding } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { bridgePass, createTransport, followBridge, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, saveBotToken, TOKEN_ENV, type TelegramTransport, type TelegramUpload } from "./telegram.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { subscriptionCredentialKey } from "./converse.js";
-import { MATE_CHANNEL_COPY, MATE_FAILURE_COPY, mateFailureText } from "./mate.js";
+import { LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, leadFailureText } from "./lead.js";
 import { knowledgeView } from './project-knowledge.js';
 import { mintSharedActionReview, prepareSharedAction } from './chat-actions.js';
 import { assignmentOf } from './assignment.js';
-import { confirmMateProposal } from "./mate-doors.js";
-import { MATE_TOOL_SCHEMAS, executeMateTool } from "./mate-tools.js";
-import { runMateCli } from "./mate-cli.js";
+import { confirmLeadProposal } from "./lead-doors.js";
+import { LEAD_TOOL_SCHEMAS, executeLeadTool } from "./lead-tools.js";
+import { runLeadCli } from "./lead-cli.js";
 import { readChatResult } from "./chat-review.js";
 import { resultTaskLabel } from "./chat-evidence.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
@@ -39,10 +39,10 @@ import { acquire } from "./claim.js";
 import { runOperate, EXIT } from "./operate.js";
 import { saveRepos } from "./repos.js";
 import { run as exec } from "./exec.js";
-import { CONVERSATION_CLAIM_MS, NO_PHONE_LINK, NO_TASK_LINK, PART_RETRY_MS, TELEGRAM_ACTION_PARITY, mintCardTokens, parityGaps, proposalPreview, telegramRequestId } from "./telegram-mate.js";
+import { CONVERSATION_CLAIM_MS, NO_PHONE_LINK, NO_TASK_LINK, PART_RETRY_MS, TELEGRAM_ACTION_PARITY, mintCardTokens, parityGaps, proposalPreview, telegramRequestId } from "./telegram-lead.js";
 import { saveConsoleUrl, CONSOLE_URL_ENV } from "./webhooks.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
-import type { SubscriptionMateRequest, SubscriptionMateRunner } from "./subscription-chat.js";
+import type { SubscriptionLeadRequest, SubscriptionLeadRunner } from "./subscription-chat.js";
 import { TURN_WALL_CLOCK_MS } from "./converse.js";
 
 const T0 = new Date("2026-09-16T09:00:00.000Z");
@@ -126,12 +126,12 @@ describe("Telegram conversation: the same chat, from the phone", () => {
   let projects: string[];
   let token: string;
   let answers: Answer[];
-  let requests: SubscriptionMateRequest[];
+  let requests: SubscriptionLeadRequest[];
   let script: ReturnType<typeof scriptedTransport>;
   /** The trusted https origin the wiring reads before every card and `/task`; null is the unconfigured phone. */
   let origin: string | null;
 
-  const runner: SubscriptionMateRunner = async request => {
+  const runner: SubscriptionLeadRunner = async request => {
     requests.push(request);
     const next = answers.shift();
     if (next === undefined) throw new Error("the harness script ran out of answers");
@@ -186,23 +186,23 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     return { ref, run, artifact };
   };
   /** A pending card of one kind on the phone's own session and thread, its tokens placed on a synthetic message. */
-  const card = (kind: Parameters<Store["draftMateProposal"]>[0]["kind"], payload: Record<string, unknown>, messageId = 77) => {
+  const card = (kind: Parameters<Store["draftLeadProposal"]>[0]["kind"], payload: Record<string, unknown>, messageId = 77) => {
     const me = who();
     const credentialKey = subscriptionCredentialKey("claude-subscription");
-    let session = store.activeMateSession("alex");
+    let session = store.activeLeadSession("alex");
     if (session === null) {
-      store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
-      session = store.activeMateSession("alex")!;
+      store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+      session = store.activeLeadSession("alex")!;
     }
-    const thread = store.openMateThread("alex", me.ceilingDigest, now).thread;
-    const opened = store.openMateTurn({ approver: "alex", session: session.id, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const opened = store.openLeadTurn({ approver: "alex", session: session.id, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, now);
+    const started = store.startLeadTurn(opened.id, now);
     if (!started.ok) throw new Error("start");
-    const id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: me.ceilingDigest }, now);
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
+    const id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: me.ceilingDigest }, now);
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
     const minted = mintCardTokens(store, binding(), id, now, String(messageId));
-    return { id, confirm: minted.tokens[0]!, dismiss: minted.tokens[1]!, messageId, preview: proposalPreview(store, store.getMateProposal(id)!, [repo]) };
+    return { id, confirm: minted.tokens[0]!, dismiss: minted.tokens[1]!, messageId, preview: proposalPreview(store, store.getLeadProposal(id)!, [repo]) };
   };
   let nextUpdate = 10;
   const tapPass = async (data: string, messageId: number) => {
@@ -244,13 +244,13 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     task("shared-cancel","Cancel only this synthetic task");
     answers.push({text:"Review cancellation.",calls:[{id:"shared-2",name:"propose_action",args:{operation:"task_cancel",task:"shared-cancel"}}]},{text:"Open the full review to cancel."});
     script.updates.push([textUpdate(5,"Cancel the synthetic task")]);await pass();const protectedCard=script.card();
-    const actions=store.handle.prepare("SELECT id FROM mate_proposal WHERE kind='action' ORDER BY id DESC").all(),id=Number(actions[0]!['id']);
+    const actions=store.handle.prepare("SELECT id FROM lead_proposal WHERE kind='action' ORDER BY id DESC").all(),id=Number(actions[0]!['id']);
     expect(urlButtons(script.sends().at(-1))).toEqual([["Review action",`https://console.example/chat/action/${id}`]]);
     expect(protectedCard.rows.flat().some(button=>/Confirm/.test(button.text))).toBe(false);expect(store.getTask("shared-cancel")?.state).not.toBe("cancelled");
     const review=mintSharedActionReview(store,who(),id,evidenceRoot,now);
-    expect(confirmMateProposal(store,who(),id,now,{via:"web",evidenceRoot,confirm:true,actionReview:{nonce:review.nonce,password:""}})).toMatchObject({ok:true});
-    expect(store.getMateProposal(id)?.outcome).toMatchObject({ok:true,via:"web",said:"Task cancelled."});
-    expect(executeMateTool({store,who:who(),now,step:1,readDecisions:new Map(),draft:()=>null},"get_action_status",{proposal:id})).toMatchObject({ok:true,body:{state:"confirmed",outcome:{ok:true,via:"web"}}});
+    expect(confirmLeadProposal(store,who(),id,now,{via:"web",evidenceRoot,confirm:true,actionReview:{nonce:review.nonce,password:""}})).toMatchObject({ok:true});
+    expect(store.getLeadProposal(id)?.outcome).toMatchObject({ok:true,via:"web",said:"Task cancelled."});
+    expect(executeLeadTool({store,who:who(),now,step:1,readDecisions:new Map(),draft:()=>null},"get_action_status",{proposal:id})).toMatchObject({ok:true,body:{state:"confirmed",outcome:{ok:true,via:"web"}}});
   });
   test("the lead's question arrives with one button per option and Something else; a tap is the owner's next message, once (ask_owner)", async () => {
     answers.push(
@@ -287,7 +287,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     await pass();
     const asked = script.sends().find(call => String(call.params["text"]) === "Ship today or Friday?")!;
     const rows = (asked.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard;
-    now = new Date(now.getTime() + MATE_ASK_TTL_MS);
+    now = new Date(now.getTime() + LEAD_ASK_TTL_MS);
     await tapPass(rows[0]![0]!.callback_data, asked.messageId!);
     expect(script.acks().at(-1)).toBe("That question expired. Send your answer as a message.");
     expect(script.edits().at(-1)).toContain("That question expired.");
@@ -317,7 +317,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     // The engine ran three times (a capabilities read, a tool step, then text); the session is a membership session over the enrolled ceiling.
     expect(requests).toHaveLength(3);
     expect(requests[0]!.history.filter(one => one.role === "operator").at(-1)).toMatchObject({ role: "operator", text: "Please tighten the payout guard so an over-limit payout is refused" });
-    const session = store.activeMateSession("alex")!;
+    const session = store.activeLeadSession("alex")!;
     expect(session).toMatchObject({ credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo]), approverGeneration: who().generation });
     expect(rows[0]!.session).toBe(session.id);
     // The reply, then the card, both to this chat; the reply answers the operator's message.
@@ -330,26 +330,26 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(sent.rows[0]!.map(one => one.text)).toEqual(["Confirm", "Dismiss"]);
     // The console's view: the same live thread under the same ceiling, its messages and pending card.
     const me = who();
-    const opened = store.openMateThread(me.name, me.ceilingDigest, now);
+    const opened = store.openLeadThread(me.name, me.ceilingDigest, now);
     expect(opened.ceilingChanged).toBe(false);
-    expect(store.listMateMessages(opened.thread.id, 10).map(one => [one.role, one.text])).toEqual([
+    expect(store.listLeadMessages(opened.thread.id, 10).map(one => [one.role, one.text])).toEqual([
       ["operator", "Please tighten the payout guard so an over-limit payout is refused"],
       ["assistant", "Proposed a task to tighten the payout guard. Confirm it to file it."],
     ]);
-    const pending = store.listMateProposals(opened.thread.id, ["pending"]);
+    const pending = store.listLeadProposals(opened.thread.id, ["pending"]);
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({ kind: "task", state: "pending" });
     // The terminal's view: `toolroll chat` lists the phone's card on the same session (no new mint).
     const lines: string[] = [];
-    const cli = await runMateCli({ store, databaseFile: file, write: line => lines.push(line), json: false, credentials: { name: "alex", token }, repos: [repo], say: undefined, end: false, ceilingUsd: undefined, seams: { lines: ["proposals", "quit"], clock: () => now } });
+    const cli = await runLeadCli({ store, databaseFile: file, write: line => lines.push(line), json: false, credentials: { name: "alex", token }, repos: [repo], say: undefined, end: false, ceilingUsd: undefined, seams: { lines: ["proposals", "quit"], clock: () => now } });
     expect(cli.code).toBe(0);
-    expect(lines.join("\n")).toContain("mate conversation live");
+    expect(lines.join("\n")).toContain("lead conversation live");
     expect(lines.join("\n")).toContain('file "Tighten the payout guard"');
-    expect(store.activeMateSession("alex")?.id).toBe(session.id);
+    expect(store.activeLeadSession("alex")?.id).toBe(session.id);
     // Confirm from the phone: the shared door files the task and records the phone as the source.
     const confirmed = await tapPass(sent.button(/^Confirm$/), sent.messageId);
     expect(confirmed).toMatchObject({ ok: true, report: { chatConfirmed: 1, ignored: 0 } });
-    const proposal = store.getMateProposal(pending[0]!.id)!;
+    const proposal = store.getLeadProposal(pending[0]!.id)!;
     expect(proposal.state).toBe("confirmed");
     expect(proposal.outcome).toMatchObject({ ok: true, kind: "task", via: "telegram" });
     const filed = (proposal.outcome as { taskId: string }).taskId;
@@ -425,12 +425,12 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(sent.map(call => String(call.params["text"])).join(" ").match(/a<b & c/g)).toHaveLength(200);
   });
 
-  test("a teammate's question arrives with its options and Answer in words; a tap answers it once, a stale tap changes nothing, and a reply answers in words (v93)", async () => {
+  test("a subagent's question arrives with its options and Answer in words; a tap answers it once, a stale tap changes nothing, and a reply answers in words (v93)", async () => {
     const flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }) }, now);
-    const mate = store.createTeammate({ repo, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+    const mate = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     const ask = (title: string) => {
       const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex" }, now);
-      const id = store.openTeammateQuestion({ teammate: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
+      const id = store.openSubagentQuestion({ subagent: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
       notifyPeople(store, store.getFlowCard(card)!, ["alex"], null, { key: `teammate-q:${id}`, attention: true, subject: `Maya · Support asks about “${title}”`, body: "Over my $50 limit." }, now);
       return id;
     };
@@ -441,13 +441,13 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(notice.rows.flat().map(one => one.text)).toEqual(["Yes", "Half", "✏️ Answer in words"]);
     // A tap on another message changes nothing; on the notice it answers, once.
     await tapPass(notice.button(/Half/), notice.messageId + 99);
-    expect(store.teammateQuestion(first)!.state).toBe("open");
+    expect(store.subagentQuestion(first)!.state).toBe("open");
     await tapPass(notice.button(/Half/), notice.messageId);
-    expect(store.teammateQuestion(first)).toMatchObject({ state: "answered", choice: "o2", answeredBy: "alex", answeredVia: "telegram" });
+    expect(store.subagentQuestion(first)).toMatchObject({ state: "answered", choice: "o2", answeredBy: "alex", answeredVia: "telegram" });
     expect(script.edits().at(-1)).toContain("✅ You answered: Half.");
     await tapPass(notice.button(/Yes/), notice.messageId);
     expect(script.acks().at(-1)).toContain("already answered");
-    expect(store.teammateQuestion(first)!.choice).toBe("o2");
+    expect(store.subagentQuestion(first)!.choice).toBe("o2");
     // In words: a reply to the prompt is the answer.
     const second = ask("order 43");
     expect(await pass({ deliver: true })).toMatchObject({ ok: true, report: { sent: 1 } });
@@ -458,22 +458,34 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(String(prompt.params["text"])).toContain("Refund all of order 43?");
     script.updates.push([textUpdate(nextUpdate++, "Refund $50 and send a coupon.", { reply_to_message: { message_id: prompt.messageId } })]);
     await pass();
-    expect(store.teammateQuestion(second)).toMatchObject({ state: "answered", choice: null, answer: "Refund $50 and send a coupon.", answeredVia: "telegram" });
+    expect(store.subagentQuestion(second)).toMatchObject({ state: "answered", choice: null, answer: "Refund $50 and send a coupon.", answeredVia: "telegram" });
     expect(script.texts().at(-1)).toContain("It picks the card up again now.");
   });
 
-  test("a message to a teammate by name lands on its desk instead of the lead, and its answer comes back in Telegram (v96)", async () => {
-    store.createTeammate({ repo, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+  test("the lead delegates (D5): a message naming a subagent reaches the lead, which asks it with a card; once confirmed it lands on the subagent's desk and its answer comes back in Telegram", async () => {
+    const maya = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+    answers.push(
+      { text: "Asking Maya.", calls: [{ id: "a1", name: "propose_subagent", args: { operation: "ask", subagent: maya, text: "Where's order 2201?" } }] },
+      { text: "I'll ask Maya once you confirm." },
+    );
     script.updates.push([textUpdate(nextUpdate++, "Maya: where's order 2201?")]);
-    await pass();
-    expect(script.texts().at(-1)).toContain("Maya has it. The answer comes here when it's done.");
+    expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+    // The transport passed nothing on by itself: the lead read it and drafted the ask, exactly as it will go.
+    expect(store.listFlows([repo]).some(one => one.name === "Maya's desk")).toBe(false);
+    const sent = script.card();
+    expect(sent.text).toContain("Ask Maya");
+    expect(sent.text).toContain("Where's order 2201?");
+    expect(sent.text).toContain("works on it within its own rules and tools");
+    expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
     const desk = store.listFlows([repo]).find(one => one.name === "Maya's desk")!;
     const [card] = store.flowCards(desk.id, false);
-    expect(card).toMatchObject({ title: "where's order 2201?", createdBy: "alex", source: { kind: "message", label: "Telegram message" } });
-    expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n)).toBe(0);
-    replyToAsker(store, desk, card!, store.teammateByHandle(repo, "maya")!, "Order 2201 shipped yesterday.", now);
-    expect(await pass({ deliver: true })).toMatchObject({ ok: true, report: { sent: 1 } });
-    expect(script.texts().at(-1)).toContain("Maya · Support: where's order 2201?");
+    expect(card).toMatchObject({ title: "Where's order 2201?", createdBy: "alex", stage: "handle", source: { kind: "message", label: "Asked through the lead" } });
+    // A second tap on the same card asks nothing twice.
+    await tapPass(sent.button(/^Confirm$/), sent.messageId);
+    expect(store.flowCards(desk.id, false)).toHaveLength(1);
+    replyToAsker(store, desk, card!, store.subagentByHandle(repo, "maya")!, "Order 2201 shipped yesterday.", now);
+    expect(await pass({ deliver: true })).toMatchObject({ ok: true });
+    expect(script.texts().at(-1)).toContain("Maya · Support: Where's order 2201?");
     expect(script.texts().at(-1)).toContain("Order 2201 shipped yesterday.");
   });
 
@@ -502,7 +514,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(sent.text).toContain("| Rename the guard and add a test for the over-limit case.");
     expect(sent.text).toContain("Creates a revision of the same task.");
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-    const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id)[0]!;
+    const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id)[0]!;
     expect(proposal).toMatchObject({ kind: "review", state: "confirmed" });
     expect(proposal.outcome).toMatchObject({ ok: true, via: "telegram" });
     const child = (proposal.outcome as { taskId: string }).taskId;
@@ -517,8 +529,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(urlButtons(lastEdit()).map(button => button[0])).toEqual(["Open task"]);
     // The task keeps the exchange in its own chat too: the phone's words,
     // the lead's reply and what was confirmed, each labelled Telegram.
-    const taskChat = store.liveMateThreadFor("alex", { kind: "task", key: "payout" })!;
-    expect(store.listMateMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([
+    const taskChat = store.liveLeadThreadFor("alex", { kind: "task", key: "payout" })!;
+    expect(store.listLeadMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([
       ["operator", "From Telegram: Rename the guard and add a test for the over-limit case."],
       ["assistant", "I proposed a revision of payout with your feedback. Confirm it to create the revision."],
       ["assistant", "From Telegram — Changes to make: Revision created. Updating the plan with your notes; you'll approve it next."],
@@ -557,7 +569,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(sent.text).toContain(`Request changes to result #${run} of Guard the payout path (payout)`);
     expect(sent.text).toContain("Its approval follows your settings.");
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-    const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id)[0]!;
+    const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id)[0]!;
     expect(proposal.outcome).toMatchObject({ ok: true, via: "telegram", said: "Revision created under your automatic approval settings." });
     const child = (proposal.outcome as { taskId: string }).taskId;
     expect(store.taskFamilyOf("payout", [repo], false)?.versions.map(one => one.id)).toEqual(["payout", child]);
@@ -624,13 +636,13 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(requests).toHaveLength(1);
     const row = store.listTelegramConversations(BOT)[0]!;
     expect(row).toMatchObject({ state: "failed", outcome: expect.stringMatching(/^failed:revoked|^failed:superseded/) });
-    expect(store.getMateTurn(row.turn!)).toMatchObject({ state: "failed" });
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_proposal").get()?.["n"]).toBe(0);
+    expect(store.getLeadTurn(row.turn!)).toMatchObject({ state: "failed" });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_proposal").get()?.["n"]).toBe(0);
     expect(store.activeHolds(store.lookupRef("a")!.id, now)).toEqual([]);
     // Unenrolled: the pairing still stands, so the truth is said; unpaired or downgraded: nothing may be sent at all.
     if (change === "unenroll") {
       expect(script.texts()).toHaveLength(1);
-      expect(script.texts()[0]).toBe(MATE_CHANNEL_COPY["projects-changed"]);
+      expect(script.texts()[0]).toBe(LEAD_CHANNEL_COPY["projects-changed"]);
     } else {
       expect(script.sends()).toEqual([]);
     }
@@ -654,11 +666,11 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(answers).toHaveLength(1);
     const row = store.listTelegramConversations(BOT)[0]!;
     expect(row).toMatchObject({ state: "failed", outcome: expect.stringMatching(/^failed:revoked|^failed:superseded/) });
-    expect(store.getMateTurn(row.turn!)).toMatchObject({ state: "failed" });
-    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_proposal").get()?.["n"]).toBe(0);
+    expect(store.getLeadTurn(row.turn!)).toMatchObject({ state: "failed" });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_proposal").get()?.["n"]).toBe(0);
     expect(store.activeHolds(store.lookupRef("a")!.id, now)).toEqual([]);
     expect(store.listTelegramConversationParts(row.id)).toEqual([]);
-    if (change === "unenroll") expect(script.texts()).toEqual([MATE_CHANNEL_COPY["projects-changed"]]);
+    if (change === "unenroll") expect(script.texts()).toEqual([LEAD_CHANNEL_COPY["projects-changed"]]);
     else expect(script.sends()).toEqual([]);
   });
 
@@ -768,7 +780,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     now = new Date(T0.getTime() + TURN_WALL_CLOCK_MS + CONVERSATION_CLAIM_MS + 60_000);
     expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
     expect(requests).toHaveLength(1);
-    expect(script.texts()).toEqual([mateFailureText("crashed")]);
+    expect(script.texts()).toEqual([leadFailureText("crashed")]);
     expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:crashed" });
   });
 
@@ -929,8 +941,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.fault = params => params["reply_markup"] === undefined ? null : "throw";
       script.updates.push([textUpdate(2, "add a payout limit")]);
       expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
-      const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["pending"])[0]!;
-      expect(confirmMateProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
+      const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
+      expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
       script.fault = null;
       later(PART_RETRY_MS[0]);
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
@@ -956,10 +968,10 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
   describe("the original turn is bound before the first dispatch", () => {
     const replaceSession = () => {
-      const original = store.activeMateSession("alex")!;
-      store.endMateSession(original.id, "alex", now);
+      const original = store.activeLeadSession("alex")!;
+      store.endLeadSession(original.id, "alex", now);
       const me = who();
-      const replacement = store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+      const replacement = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
       return { original, replacement };
     };
 
@@ -970,7 +982,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.updates.push([textUpdate(2, "what needs me?")]);
       expect(await pass()).toMatchObject({ ok: true, report: { problems: [expect.stringContaining("power cut")] } });
       dying.mockRestore();
-      expect(boundAtDispatch).toBe(store.activeMateSession("alex")!.id);
+      expect(boundAtDispatch).toBe(store.activeLeadSession("alex")!.id);
       expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "running", session: boundAtDispatch, turn: null });
       expect(script.sends()).toEqual([]);
       const { original, replacement } = replaceSession();
@@ -981,10 +993,10 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(script.texts()).toEqual(["Nothing waits on you right now."]);
       const row = store.listTelegramConversations(BOT)[0]!;
       expect(row).toMatchObject({ state: "done", outcome: "replayed", session: original.id, attempts: 2 });
-      expect(store.getMateTurn(row.turn!)).toMatchObject({ session: original.id, state: "answered" });
+      expect(store.getLeadTurn(row.turn!)).toMatchObject({ session: original.id, state: "answered" });
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()?.["n"]).toBe(1);
       // The console's replacement session was neither used nor touched.
-      expect(store.activeMateSession("alex")?.id).toBe(replacement);
+      expect(store.activeLeadSession("alex")?.id).toBe(replacement);
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn WHERE session = ?").get(replacement)?.["n"]).toBe(0);
     });
 
@@ -1000,7 +1012,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
       expect(requests).toHaveLength(1);
       // Ending the session from the console superseded the running turn; that is the word the phone gets, not a silent restart.
-      expect(script.texts()).toEqual([MATE_FAILURE_COPY.stopped]);
+      expect(script.texts()).toEqual([LEAD_FAILURE_COPY.stopped]);
       expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:superseded", session: original.id });
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()?.["n"]).toBe(1);
       expect(store.listTelegramConversationParts(store.listTelegramConversations(BOT)[0]!.id)).toEqual([]);
@@ -1016,8 +1028,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     script.updates.push([textUpdate(2, "add a payout limit")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     const sent = script.card();
-    const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["pending"])[0]!;
-    expect(confirmMateProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
+    const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
+    expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
     const tasks = () => store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
     const before = tasks();
     const raced = await tapPass(sent.button(/^Confirm$/), sent.messageId);
@@ -1047,53 +1059,53 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     script.updates.push([textUpdate(2, "add a payout limit")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     const sent = script.card();
-    const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["pending"])[0]!;
+    const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
     const tasks = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]);
-    expect(confirmMateProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: false, reason: "not-pending" });
+    expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: false, reason: "not-pending" });
     expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"])).toBe(tasks);
-    expect(store.getMateProposal(proposal.id)?.outcome).toMatchObject({ ok: true, via: "telegram" });
+    expect(store.getLeadProposal(proposal.id)?.outcome).toMatchObject({ ok: true, via: "telegram" });
   });
 
   test("a session mismatch starts a fresh lead session and the person gets an answer; while a console turn runs the message waits instead (c2)", async () => {
     // Oct 1: a console session over another ceiling refused the phone ("refused:session-mismatch") and nothing was sent.
     const me = who();
-    store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
-    const stale = store.activeMateSession("alex")!;
+    store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
+    const stale = store.activeLeadSession("alex")!;
     answers.push({ text: "Toolroll 0.9.9 is the latest." });
     script.updates.push([textUpdate(2, "what's the latest update of toolroll include")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1, chatAnswered: 1 } });
     expect(script.texts()).toEqual(["Toolroll 0.9.9 is the latest."]);
-    const fresh = store.activeMateSession("alex")!;
+    const fresh = store.activeLeadSession("alex")!;
     expect(fresh.id).not.toBe(stale.id);
     expect(fresh).toMatchObject({ ceilingDigest: me.ceilingDigest, endedAt: null });
-    expect(store.getMateSession(stale.id)?.endedAt).not.toBeNull();
+    expect(store.getLeadSession(stale.id)?.endedAt).not.toBeNull();
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "done", outcome: "answered", session: fresh.id });
     expect(requests).toHaveLength(1);
     // A mismatched session with a turn still running on the computer is not ended under it: the message waits.
-    store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
-    const busy = store.activeMateSession("alex")!;
-    const busyThread = store.openMateThread("alex", ceilingDigestOf([repo, "/elsewhere"]), now).thread;
-    const console = store.openMateTurn({ approver: "alex", session: busy.id, thread: busyThread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+    store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
+    const busy = store.activeLeadSession("alex")!;
+    const busyThread = store.openLeadThread("alex", ceilingDigestOf([repo, "/elsewhere"]), now).thread;
+    const console = store.openLeadTurn({ approver: "alex", session: busy.id, thread: busyThread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
     if (!console.ok) throw new Error(console.reason);
-    const consoleStarted = store.startMateTurn(console.id, now);
+    const consoleStarted = store.startLeadTurn(console.id, now);
     if (!consoleStarted.ok) throw new Error("start");
     script.updates.push([textUpdate(4, "and before that?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "busy" });
-    expect(store.getMateTurn(console.id)?.state).toBe("running");
-    expect(store.getMateSession(busy.id)?.endedAt).toBeNull();
-    expect(store.finalizeMateTurn(console.id, consoleStarted.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now)).toBe(true);
+    expect(store.getLeadTurn(console.id)?.state).toBe("running");
+    expect(store.getLeadSession(busy.id)?.endedAt).toBeNull();
+    expect(store.finalizeLeadTurn(console.id, consoleStarted.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now)).toBe(true);
     answers.push({ text: "0.9.8 before it." });
     now = new Date(now.getTime() + 6_000);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     expect(script.texts().at(-1)).toBe("0.9.8 before it.");
-    expect(store.getMateSession(busy.id)?.endedAt).not.toBeNull();
+    expect(store.getLeadSession(busy.id)?.endedAt).not.toBeNull();
     // Nobody waits forever: a message that stays blocked is answered in plain words once it gives up.
-    store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
-    const stuck = store.activeMateSession("alex")!;
-    const stuckTurn = store.openMateTurn({ approver: "alex", session: stuck.id, thread: store.openMateThread("alex", ceilingDigestOf([repo, "/elsewhere"]), now).thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60 * 60_000 }, now);
-    if (!stuckTurn.ok || !store.startMateTurn(stuckTurn.id, now).ok) throw new Error("start");
+    store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([repo, "/elsewhere"]), termsDigest: "t".repeat(64) }, now);
+    const stuck = store.activeLeadSession("alex")!;
+    const stuckTurn = store.openLeadTurn({ approver: "alex", session: stuck.id, thread: store.openLeadThread("alex", ceilingDigestOf([repo, "/elsewhere"]), now).thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60 * 60_000 }, now);
+    if (!stuckTurn.ok || !store.startLeadTurn(stuckTurn.id, now).ok) throw new Error("start");
     script.updates.push([textUpdate(5, "still there?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
     now = new Date(now.getTime() + 11 * 60_000);
@@ -1106,24 +1118,24 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const me = who();
     // A turn already running on the console: the phone's message waits its turn.
     answers.push({ text: "Hi." });
-    const session = store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
-    const thread = store.openMateThread("alex", me.ceilingDigest, now).thread;
-    const running = store.openMateTurn({ approver: "alex", session, thread: thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const running = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
     if (!running.ok) throw new Error(running.reason);
-    const startedRunning = store.startMateTurn(running.id, now);
+    const startedRunning = store.startLeadTurn(running.id, now);
     if (!startedRunning.ok) throw new Error("start");
     script.updates.push([textUpdate(3, "hello?")]);
     const deferred = await pass();
     expect(deferred).toMatchObject({ ok: true, report: { chatQueued: 1 } });
     expect(deferred.ok && deferred.report.chatAnswered).toBeFalsy();
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "busy" });
-    expect(store.getMateTurn(running.id)?.state).toBe("running");
+    expect(store.getLeadTurn(running.id)?.state).toBe("running");
     // The console turn ends; the deferred message runs on the next pass on the same thread.
-    expect(store.finalizeMateTurn(running.id, startedRunning.generation, { state: "failed", settledMicrousd: 0, unknownSpend: false, tokensIn: 0, tokensOut: 0, failureReason: "ended" }, now)).toBe(true);
+    expect(store.finalizeLeadTurn(running.id, startedRunning.generation, { state: "failed", settledMicrousd: 0, unknownSpend: false, tokensIn: 0, tokensOut: 0, failureReason: "ended" }, now)).toBe(true);
     now = new Date(now.getTime() + 6_000);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     expect(script.texts().at(-1)).toBe("Hi.");
-    expect(store.listMateMessages(thread.id, 10).map(one => one.role)).toEqual(["operator", "assistant"]);
+    expect(store.listLeadMessages(thread.id, 10).map(one => one.role)).toEqual(["operator", "assistant"]);
   });
 
   test("a direct-API configuration is never spent from the phone", async () => {
@@ -1132,11 +1144,11 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
     expect(script.texts()[0]).toContain("Direct API chat stays on the computer");
     expect(requests).toEqual([]);
-    expect(store.activeMateSession("alex")).toBeNull();
+    expect(store.activeLeadSession("alex")).toBeNull();
   });
 
   describe("every confirmable kind through the phone's card", () => {
-    const outcome = (id: number) => store.getMateProposal(id)!;
+    const outcome = (id: number) => store.getLeadProposal(id)!;
 
     test("next, reserve, hold, unhold and steer confirm through the shared door as telegram", async () => {
       task("a"); task("b");
@@ -1188,8 +1200,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       propose(store, { taskId: "f", goal: "Harden the flow", acceptance: [{ id: "c1", statement: "It holds", how: null, evidence: ["check"] }], now });
       let drafted: Record<string, unknown> | null = null;
       const ctx = { store, who: who(), now, step: 2, readDecisions: new Map<number, number>(), draft: (_kind: string, payload: Record<string, unknown>) => { drafted = payload; return 1; } };
-      expect(executeMateTool({ ...ctx, step: 1 }, "get_agents", { task: "f" })).toMatchObject({ ok: true });
-      expect(executeMateTool(ctx, "propose_agents", { task: "f", role: "builder", agent: { provider: "codex", model: "gpt-5-codex" } })).toMatchObject({ ok: true });
+      expect(executeLeadTool({ ...ctx, step: 1 }, "get_agents", { task: "f" })).toMatchObject({ ok: true });
+      expect(executeLeadTool(ctx, "propose_agents", { task: "f", role: "builder", agent: { provider: "codex", model: "gpt-5-codex" } })).toMatchObject({ ok: true });
       const agents = card("agents", drafted!);
       expect(agents.preview.text).toContain("Change agents for work f: builder: codex gpt-5-codex");
       expect(agents.preview.text).toContain("renewed approval before work starts");
@@ -1266,7 +1278,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(assignment()?.state).toBe("ready-to-check");
       const payload = prepareSharedAction(store, who(), "result_accept", { task: "done-1", run }, evidenceRoot, now);
       const complete = card("action", { ...payload });
-      const preview = proposalPreview(store, store.getMateProposal(complete.id)!, [repo], "telegram");
+      const preview = proposalPreview(store, store.getLeadProposal(complete.id)!, [repo], "telegram");
       expect(preview.buttons).toBe(true);
       expect(preview.text).toContain("Accept and finish: Keep the guard readable");
       expect(preview.text).toContain("Confirm asks once more before anything is recorded.");
@@ -1417,7 +1429,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
         expect(String(one.params["text"])).not.toContain("No phone link");
       }
       // A forged tap (a callback that names no token) on the linked card: acknowledged, nothing done, the card repainted with its current link.
-      const pending = store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["pending"]);
+      const pending = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"]);
       const forged = mintCardTokens(store, binding(), pending.find(one => one.kind === "cancel")!.id, now, String(cards[1]!.messageId));
       const forgedPass = await tapPass(forged.tokens[0]!, cards[1]!.messageId as number);
       expect(forgedPass).toMatchObject({ ok: true, report: { ignored: 1 } });
@@ -1495,7 +1507,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       // A confirmable card keeps its two callback buttons alone.
       expect(sent.rows.flat().map(one => one.text)).toEqual(["Confirm", "Dismiss"]);
       expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-      const filed = (store.listMateProposals(store.liveMateThreadFor("alex")!.id)[0]!.outcome as { taskId: string }).taskId;
+      const filed = (store.listLeadProposals(store.liveLeadThreadFor("alex")!.id)[0]!.outcome as { taskId: string }).taskId;
       expect(script.edits().at(-1)).toBe(`✓ filed ${filed} — review and approve its scope to start work`);
       expect(urlButtons(lastEdit())).toEqual([["Review & start", `https://console.example/chat?task=${encodeURIComponent(filed)}#task-chat-action`]]);
       const modelCalls = requests.length;
@@ -1612,7 +1624,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(card.text).toContain(`Request changes to result #${run} of Guard the payout path (payout)`);
       expect(card.text).toContain("| Fix the spacing on the form.");
       expect(await tapPass(card.button(/^Confirm$/), card.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-      const proposal = store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["confirmed"])[0]!;
+      const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["confirmed"])[0]!;
       expect(proposal).toMatchObject({ kind: "review", state: "confirmed" });
       expect(proposal.outcome).toMatchObject({ ok: true, via: "telegram" });
       const child = (proposal.outcome as { taskId: string }).taskId;
@@ -1643,9 +1655,9 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
       expect(toolResult("propose_review")).toEqual({ ok: false, message: "A newer revision is current. Read that version before requesting changes." });
       expect(store.taskFamilyOf("payout", [repo], false)!.versions).toHaveLength(2);
-      expect(store.listMateProposals(store.liveMateThreadFor("alex")!.id, ["pending"])).toEqual([]);
+      expect(store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])).toEqual([]);
       // Ordinary history, as the console and CLI read it: the operator's asks and the assistant's words, and never an image described that was not selected.
-      expect(store.listMateMessages(store.liveMateThreadFor("alex")!.id, 20).filter(one => one.role === "assistant").map(one => one.text)).toEqual([
+      expect(store.listLeadMessages(store.liveLeadThreadFor("alex")!.id, 20).filter(one => one.role === "assistant").map(one => one.text)).toEqual([
         `Two screenshots from result #${run} of payout follow.`,
         "I proposed a revision of payout with your feedback. Confirm it to create the revision.",
         "A newer revision of payout is current. Which result do you want: this version or the newer one?",
@@ -1764,10 +1776,10 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.updates.push([textUpdate(nextUpdate++, "Show me the screenshots from that result.")]);
       expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1, chatRefused: 1 } });
       expect(row()).toMatchObject({ state: "failed", outcome: "failed:provider-error" });
-      expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn_evidence").get()?.["n"])).toBe(0);
+      expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_turn_evidence").get()?.["n"])).toBe(0);
       expect(parts()).toEqual([]);
       expect(script.documents()).toHaveLength(0);
-      expect(script.texts().at(-1)).toBe(MATE_FAILURE_COPY.signIn);
+      expect(script.texts().at(-1)).toBe(LEAD_FAILURE_COPY.signIn);
       // The same ask, answered: the model is told which records cannot travel and why; only the verified image is sent.
       askForImages(run, "One screenshot follows; five saved captures could not be verified.");
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
@@ -1888,16 +1900,16 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     });
   });
 
-  test("every mate tool has a phone road, and the committed matrix agrees with the code column for column — support, how and remaining gap; every handoff is labelled an incomplete phone action", () => {
+  test("every lead tool has a phone road, and the committed matrix agrees with the code column for column — support, how and remaining gap; every handoff is labelled an incomplete phone action", () => {
     expect(parityGaps()).toEqual([]);
-    expect(Object.keys(TELEGRAM_ACTION_PARITY).sort()).toEqual(MATE_TOOL_SCHEMAS.map(tool => tool.name).sort());
+    expect(Object.keys(TELEGRAM_ACTION_PARITY).sort()).toEqual(LEAD_TOOL_SCHEMAS.map(tool => tool.name).sort());
     const doc = readFileSync(join(__dirname, "..", "docs", "TELEGRAM_ACTION_PARITY_2026-09-16.md"), "utf8");
     const rows = new Map(doc.split("\n").filter(line => /^\| `[a-z_]+` \|/.test(line)).map(line => {
       const cells = line.split(" | ").map(cell => cell.replace(/^\| |\|$/g, "").trim());
       return [cells[0]!.replace(/`/g, ""), { support: cells[1], how: cells[2], test: cells[3], gap: cells[4] }] as const;
     }));
-    expect([...rows.keys()].sort()).toEqual(MATE_TOOL_SCHEMAS.map(tool => tool.name).sort());
-    for (const tool of MATE_TOOL_SCHEMAS) {
+    expect([...rows.keys()].sort()).toEqual(LEAD_TOOL_SCHEMAS.map(tool => tool.name).sort());
+    for (const tool of LEAD_TOOL_SCHEMAS) {
       const code = TELEGRAM_ACTION_PARITY[tool.name]!;
       const row = rows.get(tool.name)!;
       expect(row, `matrix row for ${tool.name}`).toMatchObject({ support: code.support, how: code.how, gap: code.gap ?? "none" });
@@ -1916,7 +1928,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       saveBotToken(join(dir, "telegram-token"), `${BOT}:${"x".repeat(25)}`);
     };
     const operate = (argv: string[], lines: string[]) =>
-      runOperate(argv[0]!, argv.slice(1), line => lines.push(line), { databaseFile: file, now, telegramTransport: script.transport, mateSeams: { subscriptionRunner: runner, clock: () => now } });
+      runOperate(argv[0]!, argv.slice(1), line => lines.push(line), { databaseFile: file, now, telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner, clock: () => now } });
 
     test("`bridge telegram` (the cron pass) answers ordinary text through the shared engine and reports it", async () => {
       stub();
@@ -1931,7 +1943,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(script.texts()).toEqual(["Two tasks are queued; nothing waits on you."]);
       store = openStore(file);
       expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "done", outcome: "answered" });
-      expect(store.activeMateSession("alex")).toMatchObject({ ceilingDigest: ceilingDigestOf([repo]) });
+      expect(store.activeLeadSession("alex")).toMatchObject({ ceilingDigest: ceilingDigestOf([repo]) });
     });
 
     test("`chat --say` in the terminal names a link to this console as its page, and a foreign one by its host", async () => {
@@ -2009,7 +2021,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
           return at !== -1 && script.sends().length > at + 1 && observer.listTelegramConversations(BOT).filter(one => one.state === "done").length === update - 1;
         };
         const code = await runOperate("watch", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", join(dir, "pool"), "--public-url", publicUrl, "--for", "60000", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "3600000"],
-          line => lines.push(line), { databaseFile: file, now: new Date(), telegramTransport: script.transport, mateSeams: { subscriptionRunner: runner }, shouldStop: answered }).finally(() => observer.close());
+          line => lines.push(line), { databaseFile: file, now: new Date(), telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner }, shouldStop: answered }).finally(() => observer.close());
         expect(code, lines.join("\n")).toBe(EXIT.ok);
         expect(script.texts().at(-2), lines.join("\n")).toBe(text);
         return urlButtons(script.sends().at(-1));
@@ -2056,7 +2068,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const observer = openStore(file);
       const done = () => observer.listTelegramConversations(BOT).some(one => one.state === "done" || one.state === "failed");
       const code = await runOperate("watch", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", join(dir, "pool"), "--for", "60000", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "3600000"],
-        line => lines.push(line), { databaseFile: file, now: new Date(), telegramTransport: fenced, mateSeams: { subscriptionRunner: runner }, shouldStop: done }).finally(() => observer.close());
+        line => lines.push(line), { databaseFile: file, now: new Date(), telegramTransport: fenced, leadSeams: { subscriptionRunner: runner }, shouldStop: done }).finally(() => observer.close());
       expect(code, lines.join("\n")).toBe(EXIT.ok);
       expect(besidePoll, lines.join("\n")).toEqual([]);
       expect(script.texts()).toEqual(["Toolroll 0.9.9: lighter tests, shared dependencies, a clear Needs you."]);
@@ -2071,7 +2083,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.updates.push([textUpdate(3, "and the one before?")]);
       const told = () => script.texts().some(text => text.startsWith("I couldn't"));
       expect(await runOperate("watch", ["--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", join(dir, "pool"), "--for", "60000", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "3600000"],
-        () => {}, { databaseFile: file, now: new Date(), telegramTransport: fenced, mateSeams: { subscriptionRunner: runner }, shouldStop: told })).toBe(EXIT.ok);
+        () => {}, { databaseFile: file, now: new Date(), telegramTransport: fenced, leadSeams: { subscriptionRunner: runner }, shouldStop: told })).toBe(EXIT.ok);
       expect(script.texts().at(-1)).toBe("I couldn't answer that just now: Telegram didn't accept my reply. Ask again, or open the console.");
       store = openStore(file);
       expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "delivering" });
@@ -2102,7 +2114,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const port = 43000 + (process.pid % 2000);
       let ended = false;
       const running = runOperate("up", ["--repo", repo, "--repo", second, "--port", String(port), "--for", "60000"], line => lines.push(line),
-        { databaseFile: file, telegramTransport: traced, mateSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } }).finally(() => { ended = true; });
+        { databaseFile: file, telegramTransport: traced, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } }).finally(() => { ended = true; });
       try {
         const deadline = Date.now() + 30_000;
         while (!ended && !observer.listTelegramConversations(BOT).some(one => one.state === "done" || one.state === "failed") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
@@ -2135,7 +2147,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const lines: string[] = [];
       const port = 45000 + (process.pid % 2000);
       const running = runOperate("up", ["--repo", repo, "--port", String(port), "--for", "600000"], line => lines.push(line),
-        { databaseFile: file, telegramTransport: script.transport, mateSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } });
+        { databaseFile: file, telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } });
       const owner = () => {
         const catalog = new DatabaseSync(`${file}.coding.sqlite`, { readOnly: true });
         try { return catalog.prepare("SELECT token, pid, native_pid, clean FROM coding_owner").get(); } finally { catalog.close(); }
@@ -2165,7 +2177,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.updates.push([textUpdate(2, "hello")]);
       const lines: string[] = [];
       const fenced = { CODEX_SANDBOX: "seatbelt" };
-      expect(await runOperate("bridge", ["telegram"], line => lines.push(line), { databaseFile: file, now, telegramTransport: script.transport, telegramEnv: fenced, mateSeams: { subscriptionRunner: runner } })).toBe(EXIT.refused);
+      expect(await runOperate("bridge", ["telegram"], line => lines.push(line), { databaseFile: file, now, telegramTransport: script.transport, telegramEnv: fenced, leadSeams: { subscriptionRunner: runner } })).toBe(EXIT.refused);
       expect(lines.join("\n")).toContain("Telegram: not connecting from here — this process runs inside a Codex sandbox, which blocks its network. Replies and notifications go out from the Toolroll service.");
       expect(script.calls).toEqual([]);
       store = openStore(file);

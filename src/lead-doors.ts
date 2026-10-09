@@ -1,7 +1,7 @@
 import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, sharedActionNeedsReview, type SharedActionOptions } from './chat-actions.js';
 /**
  * The confirm doors (mate arc §2, ruling 7; v3 §9): a pending proposal —
- * the mate's, or a coordinator's over the gateway — becomes an act only
+ * the lead's, or a coordinator's over the gateway — becomes an act only
  * here, as the operator's own act through the plane's existing
  * primitives, in ONE transaction that re-proves everything the card was
  * rendered under. The console and the CLI both call these; the HTTP edge
@@ -15,7 +15,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
  * silent re-read.
  */
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
-import { mateTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type MateProposal, type Store } from "./store.js";
+import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
 import { isVerifiedApprover, reproveApprover } from "./principal.js";
 import { TURN_WALL_CLOCK_MS } from './converse.js';
@@ -30,7 +30,7 @@ import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
 import { applyChatTaskAction } from "./chat-task-actions.js";
 
-export type ProposalKind = MateProposal["kind"];
+export type ProposalKind = LeadProposal["kind"];
 
 export type DoorOutcome =
   | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string }
@@ -99,7 +99,7 @@ function payloadPlanning(payload: Record<string, unknown>): "auto" | "required" 
 }
 
 /**
- * Confirm one of the mate's proposals as `who`. The whole check-and-act
+ * Confirm one of the lead's proposals as `who`. The whole check-and-act
  * is one transaction: brand and standing (re-proved inside); the
  * proposal's thread is this approver's; a LIVE session minted by this
  * generation under this ceiling; its turn answered; `pending →
@@ -117,17 +117,17 @@ const CARD_WORDS: Partial<Record<ProposalKind, string>> = {
 /** A card about a task, confirmed anywhere but that task's own chat (the
  * lead chat, a project chat, a phone), is recorded in the task's chat too,
  * so each task keeps the whole story of what was asked of it. */
-function recordInTaskChat(store: Store, who: VerifiedApprover, proposal: NonNullable<ReturnType<Store["getMateProposal"]>>, outcome: Extract<DoorOutcome, { ok: true }>, via: DoorOptions["via"], now: Date): void {
+function recordInTaskChat(store: Store, who: VerifiedApprover, proposal: NonNullable<ReturnType<Store["getLeadProposal"]>>, outcome: Extract<DoorOutcome, { ok: true }>, via: DoorOptions["via"], now: Date): void {
   const target = typeof proposal.payload["task"] === "string" ? proposal.payload["task"] : proposal.kind === "task" ? outcome.taskId : null;
   if (target === null) return;
   const root = store.taskFamilyOf(target, who.repos, false)?.root.id ?? target;
-  const source = store.getMateThread(proposal.thread);
+  const source = store.getLeadThread(proposal.thread);
   if (source === null || (source.scope.kind === "task" && source.scope.key === root)) return;
   const where = via !== "web" ? VIA_WORDS[via] : source.scope.kind === "project" ? "From the project chat" : VIA_WORDS.web;
   const label = proposal.kind === "review" ? (proposal.payload["operation"] === "revise" ? "Changes to make" : "Note for later") : CARD_WORDS[proposal.kind] ?? "Action";
   const said = outcome.said.charAt(0).toUpperCase() + outcome.said.slice(1);
-  const thread = store.openMateThread(who.name, who.ceilingDigest, now, { kind: "task", key: root }).thread;
-  store.appendMateMessage({ thread: thread.id, turn: null, role: "assistant", text: `${where} — ${label}: ${said}` }, now);
+  const thread = store.openLeadThread(who.name, who.ceilingDigest, now, { kind: "task", key: root }).thread;
+  store.appendLeadMessage({ thread: thread.id, turn: null, role: "assistant", text: `${where} — ${label}: ${said}` }, now);
 }
 
 /** The plain reasons a card shows instead of its controls; the door refuses with the same words. */
@@ -150,10 +150,10 @@ export type ProposalGate = { ok: true } | { ok: false; reason: Extract<DoorRefus
  * live; the delivery sweep settles it.
  */
 export function proposalActGate(store: Store, who: { name: string; generation: number }, thread: number, now: Date, provider: TeamChatProviderResolver = () => subscriptionTeamChatProvider(store)): ProposalGate {
-  const row = store.getMateThread(thread);
+  const row = store.getLeadThread(thread);
   const shared = row === null ? undefined : store.handle.prepare("SELECT id,projects_json FROM team_conversation WHERE thread=?").get(thread);
   if (row === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread) : row.approver !== who.name)) return { ok: false, reason: "not-yours", said: PROPOSAL_CONTRIBUTOR_REASON };
-  const session = shared ? store.teamMateSession(who.name, thread) : store.activeMateSession(who.name);
+  const session = shared ? store.teamMateSession(who.name, thread) : store.activeLeadSession(who.name);
   const authorized = shared
     ? teamChatAuthorization(store, who, { id: String(shared['id']), threadId: thread, projects: [...(readProjectAccess(shared['projects_json']) ?? [])] }, provider()).enabled
     : session !== null && session.endedAt === null && session.approverGeneration === who.generation;
@@ -166,26 +166,26 @@ export function proposalActGate(store: Store, who: { name: string; generation: n
   return live === undefined ? { ok: true } : { ok: false, reason: "turn-running", said: PROPOSAL_WAIT_REASON };
 }
 
-export function confirmMateProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
+export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
   if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" };
   const signals: (() => void)[] = [];
   const defer = options.deferSignal ?? ((signal: () => void) => signals.push(signal));
   const result = store.transact(() => {
     if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" } as const;
-    const proposal = store.getMateProposal(proposalId);
+    const proposal = store.getLeadProposal(proposalId);
     if (proposal === null) return { ok: false, kind: null, reason: "not-yours", said: "no such proposal" } as const;
-    const thread = store.getMateThread(proposal.thread);
+    const thread = store.getLeadThread(proposal.thread);
     const shared = thread !== null && store.handle.prepare("SELECT id,lead FROM team_conversation WHERE thread=?").get(thread.id);
     if (thread === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread.id) : thread.approver !== who.name)) return { ok: false, kind: null, reason: "not-yours", said: "no such proposal" } as const;
     // The card's own gate: chat enabled for this thread and no live turn in it.
     const gate = proposalActGate(store, who, thread.id, now, options.chatProvider);
     if (!gate.ok) return { ok: false, kind: proposal.kind, reason: gate.reason, said: gate.said } as const;
-    const session = (shared ? store.teamMateSession(who.name, thread.id) : store.activeMateSession(who.name))!;
+    const session = (shared ? store.teamMateSession(who.name, thread.id) : store.activeLeadSession(who.name))!;
     if (proposal.ceilingDigest !== who.ceilingDigest || session.ceilingDigest !== who.ceilingDigest) {
       return { ok: false, kind: proposal.kind, reason: "ceiling-changed", said: "the admitted projects changed since this was proposed — it cannot be confirmed" } as const;
     }
-    const turn = store.getMateTurn(proposal.turn);
-    if (!mateTurnKeepsProposals(turn) || proposal.state === "drafting") {
+    const turn = store.getLeadTurn(proposal.turn);
+    if (!leadTurnKeepsProposals(turn) || proposal.state === "drafting") {
       return { ok: false, kind: proposal.kind, reason: "turn-not-answered", said: "this proposal's turn did not finish — it cannot be confirmed" } as const;
     }
     if (proposal.kind === "cancel") {
@@ -203,19 +203,19 @@ export function confirmMateProposal(store: Store, who: VerifiedApprover, proposa
     // missing confirmation leaves the card pending, not refused.
     const needsConfirm = proposal.kind === "answer" && proposal.payload["reversible"] === false && options.confirm !== true;
     if (needsConfirm) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "an irreversible choice must be confirmed explicitly" } as const;
-    if (!store.casMateProposal(proposalId, "pending", "confirming", who.name, null, now)) {
+    if (!store.casLeadProposal(proposalId, "pending", "confirming", who.name, null, now)) {
       return { ok: false, kind: proposal.kind, reason: "not-pending", said: "this proposal was already acted on" } as const;
     }
     const outcome: DoorOutcome = proposal.kind === "action"
       ? { ...executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})}), kind: proposal.kind }
       : executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer });
     if (!outcome.ok && outcome.reason === "needs-confirm") {
-      store.casMateProposal(proposalId, "confirming", "pending", null, null, now);
+      store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
       return outcome;
     }
     // The recorded outcome names the surface that confirmed — the audit a
     // card shows on every other surface afterwards.
-    store.casMateProposal(proposalId, "confirming", outcome.ok ? "confirmed" : "refused", who.name, { ...outcome, via: options.via }, now);
+    store.casLeadProposal(proposalId, "confirming", outcome.ok ? "confirmed" : "refused", who.name, { ...outcome, via: options.via }, now);
     if (outcome.ok && !shared) recordInTaskChat(store, who, proposal, outcome, options.via, now);
     if(shared){
       if(outcome.ok&&outcome.kind==='task'&&outcome.taskId) new TeamLeads(store,()=>store.handle.prepare('SELECT project FROM team_lead_project WHERE lead=?').all(shared['lead']).map(row=>String(row['project']))).recordTaskOwner(outcome.taskId,String(shared['lead']),String(shared['id']),{name:who.name,generation:who.generation},now);
@@ -227,16 +227,16 @@ export function confirmMateProposal(store: Store, who: VerifiedApprover, proposa
   return result;
 }
 
-/** The operator declines the mate's card: `pending → dismissed`. */
-export function dismissMateProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date): boolean {
+/** The operator declines the lead's card: `pending → dismissed`. */
+export function dismissLeadProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date): boolean {
   if (!isVerifiedApprover(who)) return false;
   return store.transact(() => {
     if (!reproveApprover(store, who).ok) return false;
-    const proposal = store.getMateProposal(proposalId);
-    const thread = proposal === null ? null : store.getMateThread(proposal.thread);
+    const proposal = store.getLeadProposal(proposalId);
+    const thread = proposal === null ? null : store.getLeadThread(proposal.thread);
     const shared=thread&&store.handle.prepare('SELECT id,lead FROM team_conversation WHERE thread=?').get(thread.id);
     if (proposal === null || thread === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread.id) : thread.approver !== who.name)) return false;
-    const changed=store.casMateProposal(proposalId, "pending", "dismissed", who.name, null, now);
+    const changed=store.casLeadProposal(proposalId, "pending", "dismissed", who.name, null, now);
     if(changed&&shared)store.handle.prepare('INSERT INTO team_event(lead,conversation,kind,actor,created_at) VALUES(?,?,?,?,?)').run(shared['lead'],shared['id'],'proposal-changed',who.name,now.toISOString());
     return changed;
   });
@@ -246,7 +246,7 @@ export function dismissMateProposal(store: Store, who: VerifiedApprover, proposa
  * Confirm a coordinator's proposal (v3 §9) as `who`: any approver whose
  * ceiling admits the row's repo. One transaction: standing re-proved
  * inside; the repo inside this ceiling; `pending → confirming`; the shared
- * executor; `confirming → confirmed | refused`. No mate session is
+ * executor; `confirming → confirmed | refused`. No lead session is
  * involved — nothing here spends.
  */
 export function confirmCoordinatorProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
@@ -518,7 +518,7 @@ function executeProposal(
     // (CAS — a scope rewritten meanwhile refuses), a live claim (refused
     // inside the store), and — for an agent — that the
     // pair is STILL one of the configured, role-valid choices right now.
-    // Nothing the mate wrote becomes authority: only a configured pair,
+    // Nothing the lead wrote becomes authority: only a configured pair,
     // recorded under the operator's name, ever reaches the route.
     const phase = payload["phase"];
     const clear = payload["clear"] === true;

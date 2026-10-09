@@ -213,7 +213,7 @@ export function reindexProjectMemory(store: Store, repo: string): void {
 export function reindexConversations(store: Store): void {
   const key = 'memory-search:messages';
   const cursor = store.serviceCursor(key);
-  const rows = store.handle.prepare('SELECT m.id,m.thread,m.role,m.text,t.approver FROM mate_message m JOIN mate_thread t ON t.id=m.thread WHERE m.id>? ORDER BY m.id LIMIT 500').all(cursor);
+  const rows = store.handle.prepare('SELECT m.id,m.thread,m.role,m.text,t.approver FROM lead_message m JOIN lead_thread t ON t.id=m.thread WHERE m.id>? ORDER BY m.id LIMIT 500').all(cursor);
   if (rows.length === 0) return;
   const insert = store.handle.prepare('INSERT INTO memory_search(kind,ref,repo,scope,title,body) VALUES (?,?,?,?,?,?)');
   const teamOf = store.handle.prepare('SELECT id, projects_json FROM team_conversation WHERE thread=?');

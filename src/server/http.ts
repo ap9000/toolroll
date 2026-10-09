@@ -15,7 +15,7 @@ import { type cloneGithubRepo,type listGithubRepos,type previewGithubRepo } from
 import { type PublishExec } from "../publish.js";
 import { type ResultTab } from "../result-review.js";
 import { type Store } from "../store.js";
-import { type SubscriptionMateRunner } from "../subscription-chat.js";
+import { type SubscriptionLeadRunner } from "../subscription-chat.js";
 import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -121,7 +121,7 @@ export type ServeOptions = {
   chatFetcher?: typeof fetch;
   /** Subscription-backed mate transport; injected in tests so no real
    * Codex or Claude membership turn is consumed. */
-  subscriptionChatRunner?: SubscriptionMateRunner;
+  subscriptionChatRunner?: SubscriptionLeadRunner;
   /** Tests: stands in for `codex mcp list --json` in the project (the Tools page's "Found on this computer"). */
   codexToolList?: (cwd: string) => Promise<string | null>;
   /** Tests: the home whose ~/.toolroll (or older ~/.standing-orders) tool-secrets and ~/.claude.json the Tools page uses. */
@@ -185,7 +185,7 @@ export type ServeOptions = {
 // can triple: room for one whole, before canonical text validation.
 export const BODY_CAP = 64 * 1024;
 
-/** How long a stop waits for teammates and the lead's follow pass before closing anyway. */
+/** How long a stop waits for subagents and the lead's follow pass before closing anyway. */
 export const SHUTDOWN_WAIT_MS = 5_000;
 
 // ---- path plumbing ---------------------------------------------------------

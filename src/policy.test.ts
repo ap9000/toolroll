@@ -3,7 +3,7 @@
  * and a permission ceiling, saved behind a step-up with its history in the
  * ledger, and obeyed wherever work is admitted: scope approval, the tick and
  * build() before a run starts, race lanes, chats,
- * teammates and flow steps.
+ * subagents and flow steps.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { htmlString } from "./html.js";
@@ -19,8 +19,8 @@ import { register } from "./runner.js";
 import { run as exec } from "./exec.js";
 import type { Runner } from "./builder.js";
 import { agentRefusal, checkPolicy, levelOfProfile, modelMatches, OPEN_POLICY, parseList, policyProvider, toolRefusal, underCeiling, type OrgPolicy } from "./policy.js";
-import { teammateReady } from "./teammate-work.js";
-import { makeCall, offeredTools } from "./teammate-tools.js";
+import { subagentReady } from "./subagent-work.js";
+import { makeCall, offeredTools } from "./subagent-tools.js";
 import { toolLaunchFor, validateToolSpec } from "./project-tools.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { flowFromSteps } from "./flows.js";
@@ -181,25 +181,25 @@ describe("in the store", () => {
     expect(approve(store, "t-6", "alex", T0, onCodex.digest, token)).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining("Codex can't run that low") });
   });
 
-  test("teammates: a disallowed model or provider stops their turns; a disallowed tool isn't offered and its calls are refused", async () => {
-    store.createTeammate({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: "claude-sonnet-5", manager: "alex", by: "alex" }, T0);
-    const mate = store.teammates([REPO])[0]!;
-    expect(teammateReady(store, mate, T0)).toEqual({ ok: true });
+  test("subagents: a disallowed model or provider stops their turns; a disallowed tool isn't offered and its calls are refused", async () => {
+    store.createSubagent({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: "claude-sonnet-5", manager: "alex", by: "alex" }, T0);
+    const mate = store.subagents([REPO])[0]!;
+    expect(subagentReady(store, mate, T0)).toEqual({ ok: true });
     store.setOrgPolicy(policy({ models: ["claude-opus-*"] }), "alex", T0);
-    expect(teammateReady(store, mate, T0)).toEqual({ ok: false, why: "The organisation policy doesn't allow the model claude-sonnet-5. An instance operator can change it in Settings → Policy." });
+    expect(subagentReady(store, mate, T0)).toEqual({ ok: false, why: "The organisation policy doesn't allow the model claude-sonnet-5. An instance operator can change it in Settings → Policy." });
     store.setOrgPolicy(policy({ providers: ["codex"] }), "alex", T0);
-    expect(teammateReady(store, mate, T0)).toMatchObject({ ok: false, why: expect.stringContaining("doesn't allow Claude") });
+    expect(subagentReady(store, mate, T0)).toMatchObject({ ok: false, why: expect.stringContaining("doesn't allow Claude") });
 
     store.setOrgPolicy(OPEN_POLICY, "alex", T0);
     store.addProjectTool({ repo: REPO, name: "shop", specJson: JSON.stringify(validateToolSpec({ name: "shop", command: "node", args: ["shop.js"], secrets: [], about: "The shop" })), digest: "d", source: "test", by: "alex" }, T0);
-    store.saveTeammateGrant({ teammate: mate.id, tool: "shop", actions: [{ name: "lookup_order", about: "Look up", input: null, readOnly: true }], rules: { lookup_order: { use: "free" } } }, "alex", T0);
+    store.saveSubagentGrant({ subagent: mate.id, tool: "shop", actions: [{ name: "lookup_order", about: "Look up", input: null, readOnly: true }], rules: { lookup_order: { use: "free" } } }, "alex", T0);
     expect(offeredTools(store, mate).map(one => one.name)).toHaveLength(1);
     store.setOrgPolicy(policy({ tools: ["github"] }), "alex", T0);
     expect(offeredTools(store, mate)).toEqual([]);
     const flow = store.createFlow({ repo: REPO, name: "Desk", definitionJson: "{}", by: "alex" }, T0);
     const card = store.addFlowCard({ flow, title: "Where is order 1044?", description: null, stage: "maya", by: "alex" }, T0);
-    const id = store.addTeammateCall({ teammate: mate.id, card, entry: 1, tool: "shop", action: "lookup_order", input: { order: "1044" }, rule: "free", why: "to answer", state: "approved" }, T0);
-    const made = await makeCall(store, store.teammateCall(id)!, REPO, { callTool: async () => { throw new Error("a disallowed tool is never called"); } }, T0);
+    const id = store.addSubagentCall({ subagent: mate.id, card, entry: 1, tool: "shop", action: "lookup_order", input: { order: "1044" }, rule: "free", why: "to answer", state: "approved" }, T0);
+    const made = await makeCall(store, store.subagentCall(id)!, REPO, { callTool: async () => { throw new Error("a disallowed tool is never called"); } }, T0);
     expect(made).toMatchObject({ state: "refused", result: "The organisation policy doesn't allow the tool shop. An instance operator can change it in Settings → Policy." });
   });
 

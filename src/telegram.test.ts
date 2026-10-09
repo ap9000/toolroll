@@ -591,7 +591,7 @@ describe("the telegram bridge", () => {
     expect(String(reply?.params["text"])).toContain("answers as alex");
   });
 
-  test("a wrong code, a group chat, and a second pairing by the same person all get silence; a teammate pairs beside", async () => {
+  test("a wrong code, a group chat, and a second pairing by the same person all get silence; a subagent pairs beside", async () => {
     const script = scriptedTransport();
     const code = mintPairingCode();
     store.createTelegramPairing(
@@ -627,7 +627,7 @@ describe("the telegram bridge", () => {
     expect(store.liveTelegramBindings(BOT).map(one => one.chatId)).toEqual([String(CHAT)]);
     expect(script.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
 
-    // …while a teammate's own code, from their own private chat, pairs a
+    // …while a subagent's own code, from their own private chat, pairs a
     // second binding beside the first (v72): each person answers as themselves.
     expect(addApprover(store, "sam", later(3_000), { name: "alex", token: approverToken }).ok).toBe(true);
     const sams = mintPairingCode();

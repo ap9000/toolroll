@@ -136,7 +136,7 @@ export class TeamLeads {
     }
     const selected=conversationId?this.access(actor,conversationId).conversation:conversations[0]??null;
     const access=selected?this.access(actor,selected.id):null;
-    const messages:TeamMessage[]=selected?this.db.prepare(`SELECT * FROM (SELECT m.*,q.author,q.request_id,q.status,q.revision AS message_revision,q.error FROM mate_message m LEFT JOIN team_message q ON q.message=m.id WHERE m.thread=? ORDER BY m.id DESC LIMIT 201) ORDER BY id`).all(selected.threadId).map(r=>({id:Number(r['id']),author:r['role']==='assistant'?access!.lead.name:String(r['author']??selected.createdBy),role:String(r['role']) as TeamMessage['role'],text:String(r['text']),status:(r['status']??'answered') as TeamMessage['status'],revision:Number(r['message_revision']??1),createdAt:String(r['created_at']),requestId:r['request_id']==null?null:String(r['request_id']),turnId:r['turn']==null?null:Number(r['turn']),error:r['error']==null?null:String(r['error'])})):[];
+    const messages:TeamMessage[]=selected?this.db.prepare(`SELECT * FROM (SELECT m.*,q.author,q.request_id,q.status,q.revision AS message_revision,q.error FROM lead_message m LEFT JOIN team_message q ON q.message=m.id WHERE m.thread=? ORDER BY m.id DESC LIMIT 201) ORDER BY id`).all(selected.threadId).map(r=>({id:Number(r['id']),author:r['role']==='assistant'?access!.lead.name:String(r['author']??selected.createdBy),role:String(r['role']) as TeamMessage['role'],text:String(r['text']),status:(r['status']??'answered') as TeamMessage['status'],revision:Number(r['message_revision']??1),createdAt:String(r['created_at']),requestId:r['request_id']==null?null:String(r['request_id']),turnId:r['turn']==null?null:Number(r['turn']),error:r['error']==null?null:String(r['error'])})):[];
     const participants=selected?this.db.prepare('SELECT account,role,active FROM team_participant WHERE conversation=? ORDER BY account').all(selected.id).map(r=>({account:String(r['account']),role:String(r['role']) as TeamRole,active:Number(r['active'])===1})):[];
     const canManage=account.role==='approver'&&(access?access.role==='manager':leadId?this.leadAccess(actor,leadId).role==='manager':false);
     return {leads,conversations,selected,participants,messages:messages.slice(-200),canManage,canCreateLead:account.role==='approver'&&this.enrolled().some(p=>projectAccessAllows(account.projects,p)),canSend:account.role==='approver'&&access!==null&&rank(access.role)>=1&&access.lead.status==='active',cursor:this.cursor(actor,selected?.id)??0,truncated:messages.length>200,projects:this.enrolled().filter(p=>projectAccessAllows(account.projects,p)),accounts:canManage?this.store.accountFacts().filter(a=>a.revokedAt===null&&(selected?.projects??[]).every(p=>projectAccessAllows(a.projects,p))).map(a=>a.name):[]};
@@ -236,12 +236,12 @@ export class TeamLeads {
       const seen=this.db.prepare('SELECT * FROM team_message WHERE conversation=? AND author=? AND request_id=?').get(conversationId,actor.name,requestId);
       if(seen){if(seen['payload_hash']!==digest)refuse('request-conflict','This request ID already saved a different message.');return ok('Message already saved.',{messageId:Number(seen['message']),status:String(seen['status'])});}
       const revisions=this.memberRevisions(conversationId,actor.name)!;
-      const messageId=this.store.appendMateMessage({thread:conversation.threadId,turn:null,role:'operator',text},now);
+      const messageId=this.store.appendLeadMessage({thread:conversation.threadId,turn:null,role:'operator',text},now);
       this.db.prepare("INSERT INTO team_message(message,conversation,author,author_generation,lead_member_revision,participant_revision,request_id,payload_hash,status) VALUES(?,?,?,?,?,?,?,?,'queued')").run(messageId,conversationId,actor.name,actor.generation,revisions.lead,revisions.participant,requestId,digest);
       this.event(lead.id,conversationId,'message-queued',actor.name,now);return ok('Message saved.',{messageId,status:'queued'});
     }
     if(request.operation==='read'){
-      const id=integer(a['messageId'],'Message');if(id>0&&!this.db.prepare('SELECT 1 FROM mate_message WHERE id=? AND thread=?').get(id,conversation.threadId))refuse('not-found','Message not available.');
+      const id=integer(a['messageId'],'Message');if(id>0&&!this.db.prepare('SELECT 1 FROM lead_message WHERE id=? AND thread=?').get(id,conversation.threadId))refuse('not-found','Message not available.');
       this.db.prepare('INSERT INTO team_read(conversation,account,message) VALUES(?,?,?) ON CONFLICT(conversation,account) DO UPDATE SET message=MAX(team_read.message,excluded.message)').run(conversationId,actor.name,id);return ok('Read position saved.');
     }
     if(request.operation==='follow'){
@@ -256,7 +256,7 @@ export class TeamLeads {
       if(message['author']!==actor.name&&memberRole!=='manager')refuse('forbidden',`Only ${String(message['author'])} or a conversation manager can stop this turn.`);
       if(message['status']==='running'){
         this.db.prepare('UPDATE team_message SET stop_requested=1 WHERE message=?').run(id);
-        if(message['turn_id']!==null){const turn=this.store.getMateTurn(Number(message['turn_id']));if(turn)this.store.finalizeMateTurn(turn.id,turn.generation,{state:'failed',settledMicrousd:turn.reservedMicrousd,unknownSpend:true,tokensIn:0,tokensOut:0,failureReason:'stopped'},now);}
+        if(message['turn_id']!==null){const turn=this.store.getLeadTurn(Number(message['turn_id']));if(turn)this.store.finalizeLeadTurn(turn.id,turn.generation,{state:'failed',settledMicrousd:turn.reservedMicrousd,unknownSpend:true,tokensIn:0,tokensOut:0,failureReason:'stopped'},now);}
       }
       else if(message['status']==='queued'||message['status']==='uncertain')this.db.prepare("UPDATE team_message SET status='cancelled',revision=revision+1,generation=generation+1,stop_requested=1 WHERE message=?").run(id);
       else refuse('finished','This message has already finished.');
@@ -265,16 +265,16 @@ export class TeamLeads {
     if(request.operation==='edit'||request.operation==='withdraw'){
       if(message['author']!==actor.name)refuse('forbidden','Only the author can change a queued message.');
       if(Number(message['revision'])!==integer(a['expectedRevision'])||message['status']!=='queued')refuse('conflict','This message changed or has started. Send a follow-up instead.');
-      if(request.operation==='edit'){const text=messageText(a['text']);this.db.prepare('UPDATE mate_message SET text=? WHERE id=?').run(text,id);this.db.prepare('UPDATE team_message SET revision=revision+1 WHERE message=?').run(id);}
+      if(request.operation==='edit'){const text=messageText(a['text']);this.db.prepare('UPDATE lead_message SET text=? WHERE id=?').run(text,id);this.db.prepare('UPDATE team_message SET revision=revision+1 WHERE message=?').run(id);}
       else this.db.prepare("UPDATE team_message SET status='cancelled',revision=revision+1 WHERE message=?").run(id);
       this.event(lead.id,conversationId,'message-updated',actor.name,now);return ok(request.operation==='edit'?'Message updated.':'Message withdrawn.',{messageId:id});
     }
     refuse('unsupported','This action is not available here.');
   }
   private revokeMemberSessions(leadId:string,conversationId:string|null,account:string,now:Date):void {
-    this.db.prepare(`UPDATE mate_session SET ended_at=?,ended_by='membership-changed' WHERE approver=? AND ended_at IS NULL
+    this.db.prepare(`UPDATE lead_session SET ended_at=?,ended_by='membership-changed' WHERE approver=? AND ended_at IS NULL
       AND EXISTS(SELECT 1 FROM team_mate_session ms JOIN team_conversation c ON c.thread=ms.thread
-      WHERE ms.session=mate_session.id AND c.lead=? AND (? IS NULL OR c.id=?))`).run(now.toISOString(),account,leadId,conversationId,conversationId);
+      WHERE ms.session=lead_session.id AND c.lead=? AND (? IS NULL OR c.id=?))`).run(now.toISOString(),account,leadId,conversationId,conversationId);
   }
   private memberRevisions(conversationId:string,account:string):{lead:number;participant:number}|null {
     const row=this.db.prepare(`SELECT lm.revision AS lr,p.revision AS pr FROM team_conversation c JOIN team_lead_member lm ON lm.lead=c.lead AND lm.account=? AND lm.active=1 JOIN team_participant p ON p.conversation=c.id AND p.account=lm.account AND p.active=1 WHERE c.id=?`).get(account,conversationId);
@@ -286,7 +286,7 @@ export class TeamLeads {
   claimNext(runner:string,now=new Date(),eligible?:(candidate:{actor:TeamActor;conversationId:string;threadId:number;messageId:number})=>boolean):TeamClaim|null {
     str(runner,'Runner',180);
     return this.store.transact(()=>{
-      const candidates=this.db.prepare(`SELECT q.*,m.text,c.lead,c.thread FROM team_message q JOIN mate_message m ON m.id=q.message JOIN team_conversation c ON c.id=q.conversation JOIN team_lead l ON l.id=c.lead AND l.status='active'
+      const candidates=this.db.prepare(`SELECT q.*,m.text,c.lead,c.thread FROM team_message q JOIN lead_message m ON m.id=q.message JOIN team_conversation c ON c.id=q.conversation JOIN team_lead l ON l.id=c.lead AND l.status='active'
         WHERE q.status='queued' AND NOT EXISTS(SELECT 1 FROM team_message live WHERE live.conversation=q.conversation AND live.status IN ('running','uncertain'))
         AND NOT EXISTS(SELECT 1 FROM team_message earlier WHERE earlier.conversation=q.conversation AND earlier.status='queued' AND earlier.message<q.message)
         AND (SELECT COUNT(*) FROM team_message running JOIN team_conversation other ON other.id=running.conversation WHERE running.status='running' AND other.lead=c.lead)<2
@@ -305,7 +305,7 @@ export class TeamLeads {
   private claimed(claim:TeamClaim):Row|undefined {return this.db.prepare(`SELECT q.* FROM team_message q JOIN team_conversation c ON c.id=q.conversation WHERE q.message=? AND q.conversation=? AND q.generation=? AND q.revision=? AND q.runner=? AND q.status='running' AND c.lead=? AND c.thread=? AND q.author=? AND q.author_generation=? AND q.request_id=?`).get(claim.messageId,claim.conversationId,claim.generation,claim.messageRevision,claim.runner,claim.leadId,claim.threadId,claim.actor.name,claim.actor.generation,claim.requestId);}
   current(claim:TeamClaim):boolean {const row=this.claimed(claim);return row!==undefined&&Number(row['stop_requested'])===0&&this.authorStillAllowed(row);}
   bindTurn(claim:TeamClaim,turnId:number):boolean {
-    return this.store.transact(()=>{if(!this.current(claim))return false;const turn=this.store.getMateTurn(turnId);if(!turn||turn.thread!==claim.threadId||turn.approver!==claim.actor.name)return false;const changed=this.db.prepare('UPDATE team_message SET turn_id=? WHERE message=? AND turn_id IS NULL').run(turnId,claim.messageId);return Number(changed.changes)===1;});
+    return this.store.transact(()=>{if(!this.current(claim))return false;const turn=this.store.getLeadTurn(turnId);if(!turn||turn.thread!==claim.threadId||turn.approver!==claim.actor.name)return false;const changed=this.db.prepare('UPDATE team_message SET turn_id=? WHERE message=? AND turn_id IS NULL').run(turnId,claim.messageId);return Number(changed.changes)===1;});
   }
   finish(claim:TeamClaim,result:{status:'answered'|'failed'|'uncertain'|'cancelled';text?:string;error?:string;turnId?:number},now=new Date()):boolean {
     return this.store.transact(()=>{
@@ -314,7 +314,7 @@ export class TeamLeads {
       const status=result.status==='uncertain'?'uncertain':allowed&&!stopped?result.status:'cancelled';
       if(result.turnId!==undefined&&row['turn_id']!==null&&Number(row['turn_id'])!==result.turnId)return false;
       this.db.prepare('UPDATE team_message SET status=?,error=?,turn_id=COALESCE(turn_id,?),revision=revision+1 WHERE message=?').run(status,result.error??(!allowed?'Access changed while this message was running.':stopped?'Stopped.':null),result.turnId??null,claim.messageId);
-      if(allowed&&!stopped&&result.text)this.store.appendMateMessage({thread:claim.threadId,turn:result.turnId??(row['turn_id']===null?null:Number(row['turn_id'])),role:'assistant',text:result.text},now);
+      if(allowed&&!stopped&&result.text)this.store.appendLeadMessage({thread:claim.threadId,turn:result.turnId??(row['turn_id']===null?null:Number(row['turn_id'])),role:'assistant',text:result.text},now);
       this.event(claim.leadId,claim.conversationId,'message-finished',claim.actor.name,now);return true;
     });
   }
@@ -322,7 +322,7 @@ export class TeamLeads {
   defer(claim:TeamClaim,error:string,now=new Date()):boolean {
     return this.store.transact(()=>{
       const row=this.claimed(claim);if(!row||row['turn_id']!==null||!this.current(claim))return false;
-      if(this.db.prepare('SELECT turn FROM mate_message WHERE id=?').get(claim.messageId)?.['turn']!==null)return false;
+      if(this.db.prepare('SELECT turn FROM lead_message WHERE id=?').get(claim.messageId)?.['turn']!==null)return false;
       const changed=this.db.prepare("UPDATE team_message SET status='queued',generation=generation+1,revision=revision+1,runner=NULL,claimed_at=NULL,error=? WHERE message=? AND status='running' AND turn_id IS NULL AND generation=?").run(error,claim.messageId,claim.generation);
       if(Number(changed.changes)!==1)return false;
       if(row['error']!==error)this.event(claim.leadId,claim.conversationId,'message-waiting',claim.actor.name,now);
@@ -361,7 +361,7 @@ export class TeamLeads {
     return this.store.transact(()=>{
       const rows=this.db.prepare("SELECT q.*,c.lead FROM team_message q JOIN team_conversation c ON c.id=q.conversation WHERE runner=? AND status='running'").all(runner);
       for(const row of rows){
-        const turn=row['turn_id']===null?null:this.store.getMateTurn(Number(row['turn_id']));
+        const turn=row['turn_id']===null?null:this.store.getLeadTurn(Number(row['turn_id']));
         const status=turn?.state==='answered'?'answered':turn?.state==='failed'&&!this.deliveryUncertain(turn.id)?'failed':'uncertain';
         const error=status==='uncertain'?'Delivery unconfirmed after the previous worker stopped. Inspect activity before continuing.':status==='failed'?savedFailure(turn?.failureReason):null;
         this.db.prepare('UPDATE team_message SET status=?,generation=generation+1,revision=revision+1,error=? WHERE message=?').run(status,error,Number(row['message']));

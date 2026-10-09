@@ -14,7 +14,7 @@ import { register } from "./runner.js";
 import { addApprover, approve, hashPassword, propose } from "./scope.js";
 import { createDecisionServer, TASK_COMPOSER_MODES } from "./serve.js";
 import type { BrowserTaskView, BrowserWorkspace } from "./browser-workspace.js";
-import type { MateProviderAnswer } from "./converse.js";
+import type { LeadProviderAnswer } from "./converse.js";
 
 const T0 = new Date("2026-10-01T12:00:00.000Z");
 
@@ -27,7 +27,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
   let repo: string;
   let other: string;
   let requests: { history: { role: string; text?: string }[] }[];
-  let answers: MateProviderAnswer[];
+  let answers: LeadProviderAnswer[];
   const url = (path: string) => `${base}${path}`;
 
   const login = async (name = "alex", password = token): Promise<string> => {
@@ -167,11 +167,11 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     twice.append("mode", "answer");
     expect((await fetch(url("/chat"), { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: twice, redirect: "manual" })).status).toBe(400);
     expect((await send({ message: "hi", mode: "build" })).status).toBe(400);
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(0);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(0);
     // A valid mode starts the same turn, with the mode's words in its hidden context only.
     const proposalsBefore = store.listCoordinatorProposals({ repos: [repo, other], states: ["pending", "confirmed", "refused"], limit: 50 }).length;
     expect((await send({ task: "t1", message: "Exact matches first, please.", mode: "build" })).status).toBe(202);
-    for (let i = 0; i < 200 && store.liveMateTurnFor("alex") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    for (let i = 0; i < 200 && store.liveLeadTurnFor("alex") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
     const said = JSON.stringify(requests.at(-1)!.history);
     expect(said).toContain(TASK_COMPOSER_MODES.build);
     const after = await workspace(cookie, "/t/t1");

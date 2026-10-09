@@ -353,7 +353,7 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   };
   start("serve", ["serve", "--repo", repo, "--port", String(port)]);
   start("watch", ["watch", "--runner", "worker", "--token-file", join(state, "runner-token"), "--repo", repo, "--pool", join(root, "worktrees"),
-    // The worker wakes on every change; its tick is the pace of timers (a flow's wait, a teammate's next turn). A scripted
+    // The worker wakes on every change; its tick is the pace of timers (a flow's wait, a subagent's next turn). A scripted
     // model answers at once, so a scripted run ticks every half second rather than wait out a two-second beat each time.
     "--for", String(120 * 60_000), "--tick-every", journeys === "scripted" ? "500" : "2000", "--reconcile-every", "5000", "--bridge-every", "3600000"]);
   await until("the console to answer", async () => (await fetch(`${base}/login`)).ok, { timeoutMs: 30_000, everyMs: 500 });

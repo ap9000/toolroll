@@ -23,12 +23,12 @@ export const TEXT_LIMITS = {
   flowRef: 60,
   /** A Message zone's message, or the comment an Update zone leaves. */
   flowMessage: 1_000,
-  /** Who decides a "Person decides" zone (a sign-in name), and the AI teammate who works a zone, as written. */
+  /** Who decides a "Person decides" zone (a sign-in name), and the subagent who works a zone, as written. */
   flowDecider: 64,
-  flowTeammate: 40,
+  flowSubagent: 40,
   /** A Build zone's other project: its path. */
   flowRepo: 1_000,
-  /** A script's or teammate's answer, a choice's button, a Sort zone's answer and what it means, its question, and a score's level. */
+  /** A script's or subagent's answer, a choice's button, a Sort zone's answer and what it means, its question, and a score's level. */
   flowAnswer: 40,
   flowChoice: 40,
   flowSortMeans: 200,
@@ -137,11 +137,11 @@ export const TEXT_LIMITS = {
   decisionLabel: 120,
   decisionConsequence: 500,
   decisionAssignee: 120,
-  /** A teammate's turn (src/contracts/teammate-turn.ts): the answer it picks (and each option it offers), its question, its reason and what it remembers. */
-  teammateAnswer: 60,
-  teammateQuestion: 600,
-  teammateReason: 400,
-  teammateRemember: 300,
+  /** A subagent's turn (src/contracts/subagent-turn.ts): the answer it picks (and each option it offers), its question, its reason and what it remembers. */
+  subagentAnswer: 60,
+  subagentQuestion: 600,
+  subagentReason: 400,
+  subagentRemember: 300,
   /** The lead's tools and the MCP gateway (src/contracts/lead-tools.ts, gateway-tools.ts): a task's id as a tool names
    * it, a task's title and one path it touches, and a project's path as the gateway names it (an assignment brief or
    * project context, and the rest of the gateway). */
@@ -176,17 +176,17 @@ export const TEXT_LIMITS = {
   actionUrl: 500,
   actionSecret: 64,
   actionAbout: 240,
-  /** A teammate change (propose_teammate): a soul section's title, a routine's schedule, a tool, an action, a limit's
+  /** A subagent change (propose_subagent): a soul section's title, a routine's schedule, a tool, an action, a limit's
    * field, a name, a soul file, a note, a choice and text. */
-  teammateSection: 60,
-  teammateSchedule: 80,
-  teammateTool: 40,
-  teammateAction: 64,
-  teammateName: 40,
-  teammateSoul: 12_000,
-  teammateNote: 300,
-  teammateChoice: 60,
-  teammateText: 2_000,
+  subagentSection: 60,
+  subagentSchedule: 80,
+  subagentTool: 40,
+  subagentAction: 64,
+  subagentName: 40,
+  subagentSoul: 12_000,
+  subagentNote: 300,
+  subagentChoice: 60,
+  subagentText: 2_000,
   /** A project knowledge reference id, a promise and why it is released, what the lead remembers (its text, a
    * decision's reason and source), a person's name, and a question to the owner with its options. */
   knowledgeReference: 20,

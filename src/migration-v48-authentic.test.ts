@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, V115_DROPPED_TABLES, type Database } from "./store.js";
+import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, V115_DROPPED_TABLES, V117_RENAMED_TABLES, type Database } from "./store.js";
 import { CHAT_MOVES } from "./toolroll-update.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "v47-authentic.sql");
@@ -146,20 +146,24 @@ describe("the authentic v47 database upgrades to v48 and stays put", () => {
           if (move.rows === undefined) expect(Number(db.prepare(`SELECT COUNT(*) AS n FROM ${move.into} WHERE ${move.where}`).get()!["n"]), table.name).toBe(authentic.rows[table.name]!.length);
           continue;
         }
-        expect(upgraded.rows[table.name], table.name).toBeDefined();
+        // v117 renamed the mate's tables to the lead's: each keeps every row under its new name (the sequence follows it).
+        const now = V117_RENAMED_TABLES[table.name] ?? table.name;
+        if (now !== table.name) expect(upgraded.rows[table.name], table.name).toBeUndefined();
+        expect(upgraded.rows[now], table.name).toBeDefined();
         // v115 settles the one unfinished task filed under a fallback chain (asserted below); every other row is as written.
         // The sequence forgets the removed tables and learns the moved routine's flow and schedule (and, from the
         // settlement's write under the ledger's trigger, the empty ledger's counter at 0).
         const settled = (row: Record<string, unknown>) => V115_DROPPED_TABLES.includes(String(row["name"])) || ["flow", "flow_trigger"].includes(String(row["name"])) || (row["name"] === "action_ledger" && Number(row["seq"]) === 0);
         const kept = (rows: Record<string, unknown>[]) => table.name === "task_scope" ? rows.filter(row => row["task_id"] !== "t-chain")
           : table.name === "sqlite_sequence" ? rows.filter(row => !settled(row)) : rows;
-        expect(kept(upgraded.rows[table.name]!.map(row => withoutNew(table.name, row))), table.name).toEqual(kept(authentic.rows[table.name]!));
+        const renamedSequence = (rows: Record<string, unknown>[]) => table.name === "sqlite_sequence" ? rows.map(row => ({ ...row, name: V117_RENAMED_TABLES[String(row["name"])] ?? row["name"] })) : rows;
+        expect(kept(upgraded.rows[now]!.map(row => withoutNew(table.name, row))), table.name).toEqual(kept(renamedSequence(authentic.rows[table.name]!)));
       }
       db.close();
       for (const table of ["approver", "invite"]) for (const row of upgraded.rows[table]!) expect(row["projects_json"]).toBeNull();
       for (const row of upgraded.rows["run"]!) expect(row).toMatchObject({ watch_incarnation: null });
       expect(upgraded.schema.some(one => one.type === "table" && one.name === "routine")).toBe(false);
-      expect(upgraded.schema.find(one => one.type === "table" && one.name === "mate_proposal")!.sql).toContain("'agents'");
+      expect(upgraded.schema.find(one => one.type === "table" && one.name === "lead_proposal")!.sql).toContain("'agents'");
       // The upgraded facts read back exactly: the routed approval still
       // seals its route, the pre-routing row is legacy (never backfilled),
       // the unfinished task approved under a fallback chain (removed in

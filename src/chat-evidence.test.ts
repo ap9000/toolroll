@@ -20,7 +20,7 @@ import { createResultRevision } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { SCREENSHOT_BYTE_CAP } from "./evidence.js";
 import { subscriptionCredentialKey } from "./converse.js";
-import { executeMateTool } from "./mate-tools.js";
+import { executeLeadTool } from "./lead-tools.js";
 import { RESULT_IMAGES_PER_TURN_CAP, resultImageCaption, resultImageFileName, resultTaskLabel, safeResultImageCaption, selectResultImages, verifyResultImage } from "./chat-evidence.js";
 
 const T0 = new Date("2026-09-16T09:00:00.000Z");
@@ -99,7 +99,7 @@ describe("shared result image selection", () => {
     store.saveProofVerdict(run, "short", rows.map(row => reason(row.id)), T0, rows);
     const me = who([repos.a]);
     const ctx = { store, who: me, now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: () => null };
-    expect(executeMateTool(ctx, "get_acceptance_evidence", { task: "alpha", run })).toMatchObject({ ok: true, body: {
+    expect(executeLeadTool(ctx, "get_acceptance_evidence", { task: "alpha", run })).toMatchObject({ ok: true, body: {
       status: "You check the remaining requirements", accepted: false, run, criteriaTotal: 4, nextCriterionOffset: 3, problems: [],
       criteria: [{ id: "c1", state: "You check", reviewer: { judgement: "upholds" } }, { id: "c2" }, { id: "c3" }],
       caveats: ["Physical Telegram rendering was not tested."],
@@ -109,10 +109,10 @@ describe("shared result image selection", () => {
     expect(readAcceptanceEvidence(store, who([repos.b]), evidenceRoot, "alpha", run).ok).toBe(false);
     const foreign = finished("beta", task("beta", repos.b), "l-beta");
     expect(readAcceptanceEvidence(store, who([repos.a, repos.b]), evidenceRoot, "alpha", foreign).ok).toBe(false);
-    expect(executeMateTool(ctx, "recap", {})).toMatchObject({ ok: true, body: { repos: [{ needsVerification: 1 }] } });
+    expect(executeLeadTool(ctx, "recap", {})).toMatchObject({ ok: true, body: { repos: [{ needsVerification: 1 }] } });
     store.acceptProof(run, "alex", "Inspected both viewports; physical device gap acknowledged.", T0);
     expect(readAcceptanceEvidence(store, me, evidenceRoot, "alpha", run)).toMatchObject({ ok: true, body: { status: "Accepted by a person", recordedVerdict: "short", accepted: true } });
-    expect(executeMateTool(ctx, "recap", {})).toMatchObject({ ok: true, body: { repos: [{ needsVerification: 0 }] } });
+    expect(executeLeadTool(ctx, "recap", {})).toMatchObject({ ok: true, body: { repos: [{ needsVerification: 0 }] } });
     writeFileSync(join(evidenceRoot, String(run), "proof.json"), "changed");
     expect(readAcceptanceEvidence(store, me, evidenceRoot, "alpha", run)).toMatchObject({ ok: true, body: { accepted: true, problems: expect.arrayContaining([expect.stringContaining("proof")]), caveats: [] } });
     expect(store.proofVerdictFor(run)?.verdict).toBe("short");
@@ -123,9 +123,9 @@ describe("shared result image selection", () => {
     const other = finished("beta", task("beta", repos.b), "l-beta");
     const drafts: unknown[] = [];
     const ctx = { store, who: who([repos.a, repos.b]), now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: (kind: string, payload: unknown) => { drafts.push({ kind, payload }); return 1; } };
-    expect(executeMateTool(ctx, "show_control", { control: "acceptance", task: "alpha" }).ok).toBe(false);
-    expect(executeMateTool(ctx, "show_control", { control: "acceptance", task: "alpha", run: other }).ok).toBe(false);
-    expect(executeMateTool(ctx, "show_control", { control: "acceptance", task: "alpha", run }).ok).toBe(true);
+    expect(executeLeadTool(ctx, "show_control", { control: "acceptance", task: "alpha" }).ok).toBe(false);
+    expect(executeLeadTool(ctx, "show_control", { control: "acceptance", task: "alpha", run: other }).ok).toBe(false);
+    expect(executeLeadTool(ctx, "show_control", { control: "acceptance", task: "alpha", run }).ok).toBe(true);
     expect(drafts).toEqual([{ kind: "control", payload: { control: "acceptance", task: "alpha", taskTitle: "Work alpha", run } }]);
     expect(store.proofAcceptance(run)).toBeNull();
   });
@@ -258,19 +258,19 @@ describe("shared result image selection", () => {
     artifact(run, "screenshot", "broken.png", PNG, { captureStatus: "failed" });
     const me = who([repos.a]);
     const credentialKey = subscriptionCredentialKey("claude-subscription");
-    const session = store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, T0);
-    const thread = store.openMateThread("alex", me.ceilingDigest, T0).thread;
-    const opened = store.openMateTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, T0);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, T0).thread;
+    const opened = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, T0);
+    const started = store.startLeadTurn(opened.id, T0);
     if (!started.ok) throw new Error("start");
-    const selectEvidence = (rows: Parameters<Store["recordMateTurnEvidence"]>[1]) => {
-      store.recordMateTurnEvidence(opened.id, rows, RESULT_IMAGES_PER_TURN_CAP, T0);
-      return store.getMateTurn(opened.id)?.state === "running" ? store.listMateTurnEvidence(opened.id).map(one => one.artifact) : [];
+    const selectEvidence = (rows: Parameters<Store["recordLeadTurnEvidence"]>[1]) => {
+      store.recordLeadTurnEvidence(opened.id, rows, RESULT_IMAGES_PER_TURN_CAP, T0);
+      return store.getLeadTurn(opened.id)?.state === "running" ? store.listLeadTurnEvidence(opened.id).map(one => one.artifact) : [];
     };
     const base = { store, who: me, now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: () => null };
 
-    const phone = executeMateTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run });
+    const phone = executeLeadTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run });
     expect(phone).toMatchObject({ ok: true, body: {
       task: "alpha", label: "alpha", root: "alpha", currentExecution: "alpha", isCurrent: true, run, title: "Work alpha", report: false,
       imageCount: RESULT_IMAGES_PER_TURN_CAP + 1, selected: shots.slice(0, RESULT_IMAGES_PER_TURN_CAP), selectedCount: RESULT_IMAGES_PER_TURN_CAP, sendCount: RESULT_IMAGES_PER_TURN_CAP, nextImageOffset: RESULT_IMAGES_PER_TURN_CAP,
@@ -282,25 +282,25 @@ describe("shared result image selection", () => {
     expect(body.images.map(one => [one.id, one.position, one.selected])).toEqual(shots.map((id, index) => [id, index + 1, index < RESULT_IMAGES_PER_TURN_CAP]));
     expect(body.images[0]!.caption).toBe(`alpha · result #${run} · screenshot 1 of ${RESULT_IMAGES_PER_TURN_CAP + 1}`);
     // Bounded: the cap holds, in selection order; a second read of the same result adds nothing twice.
-    expect(store.listMateTurnEvidence(opened.id).map(one => [one.ordinal, one.artifact, one.taskId, one.run, one.format])).toEqual(shots.slice(0, RESULT_IMAGES_PER_TURN_CAP).map((id, index) => [index, id, "alpha", run, "png"]));
-    expect(executeMateTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run })).toMatchObject({ ok: true });
-    expect(store.listMateTurnEvidence(opened.id)).toHaveLength(RESULT_IMAGES_PER_TURN_CAP);
+    expect(store.listLeadTurnEvidence(opened.id).map(one => [one.ordinal, one.artifact, one.taskId, one.run, one.format])).toEqual(shots.slice(0, RESULT_IMAGES_PER_TURN_CAP).map((id, index) => [index, id, "alpha", run, "png"]));
+    expect(executeLeadTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run })).toMatchObject({ ok: true });
+    expect(store.listLeadTurnEvidence(opened.id)).toHaveLength(RESULT_IMAGES_PER_TURN_CAP);
     // The next page asked for in the SAME turn is honest: the turn's cap is reached, nothing more rides this reply.
-    expect(executeMateTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run, offset: RESULT_IMAGES_PER_TURN_CAP })).toMatchObject({ ok: true, body: {
+    expect(executeLeadTool({ ...base, selectEvidence, mediaDelivery: "documents" }, "get_result_images", { task: "alpha", run, offset: RESULT_IMAGES_PER_TURN_CAP })).toMatchObject({ ok: true, body: {
       selected: [], selectedCount: 0, sendCount: 0, nextImageOffset: RESULT_IMAGES_PER_TURN_CAP, nextImageIds: [shots[RESULT_IMAGES_PER_TURN_CAP]],
       delivery: `No more image files can be sent with this reply: its limit of ${RESULT_IMAGES_PER_TURN_CAP} is reached. 1 more remain: ask in a new reply for image ids ${shots[RESULT_IMAGES_PER_TURN_CAP]}.`,
     } });
-    expect(store.listMateTurnEvidence(opened.id)).toHaveLength(RESULT_IMAGES_PER_TURN_CAP);
+    expect(store.listLeadTurnEvidence(opened.id)).toHaveLength(RESULT_IMAGES_PER_TURN_CAP);
     // The console and the CLI: the same selection and identity, and an honest word that nothing is downloaded from here.
-    const console_ = executeMateTool({ ...base, selectEvidence }, "get_result_images", { task: "alpha", run });
+    const console_ = executeLeadTool({ ...base, selectEvidence }, "get_result_images", { task: "alpha", run });
     expect(console_).toMatchObject({ ok: true, body: { run, imageCount: RESULT_IMAGES_PER_TURN_CAP + 1, sendCount: 0, delivery: "This surface does not send image files. Name the result so the operator can open it." } });
-    expect(executeMateTool(base, "get_result_images", { task: "alpha" })).toMatchObject({ ok: true, body: { run, delivery: "This surface does not send image files. Name the result so the operator can open it." } });
-    expect(executeMateTool(base, "get_result_images", { task: "nope" })).toEqual({ ok: false, message: "That task is not in your projects." });
+    expect(executeLeadTool(base, "get_result_images", { task: "alpha" })).toMatchObject({ ok: true, body: { run, delivery: "This surface does not send image files. Name the result so the operator can open it." } });
+    expect(executeLeadTool(base, "get_result_images", { task: "nope" })).toEqual({ ok: false, message: "That task is not in your projects." });
     // A malformed call is refused by the tool's schema, by path, before the handler reads anything.
-    expect(executeMateTool(base, "get_result_images", { task: "alpha", run: 0 })).toEqual({ ok: false, message: "run: at least 1" });
+    expect(executeLeadTool(base, "get_result_images", { task: "alpha", run: 0 })).toEqual({ ok: false, message: "run: at least 1" });
     // A failed turn keeps nothing: the selection is deleted with the drafts, and a turn that is not running records nothing.
-    expect(store.finalizeMateTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, failureReason: "provider-error" }, T0)).toBe(true);
-    expect(store.listMateTurnEvidence(opened.id)).toEqual([]);
+    expect(store.finalizeLeadTurn(opened.id, started.generation, { state: "failed", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, failureReason: "provider-error" }, T0)).toBe(true);
+    expect(store.listLeadTurnEvidence(opened.id)).toEqual([]);
     expect(selectEvidence([{ taskId: "alpha", taskRef: alpha, run, artifact: shots[0]!, sha256: "a".repeat(64), format: "png", bytes: 1, caption: "x" }])).toEqual([]);
   });
 
@@ -314,23 +314,23 @@ describe("shared result image selection", () => {
     const betaShot = artifact(betaRun, "screenshot", "screenshot-b.png", PNG);
     const me = who([repos.a, repos.b]);
     const credentialKey = subscriptionCredentialKey("claude-subscription");
-    const session = store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, T0);
-    const thread = store.openMateThread("alex", me.ceilingDigest, T0).thread;
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, T0);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, T0).thread;
     const base = { store, who: me, now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: () => null, mediaDelivery: "documents" as const };
     /** One independent turn: what the tool answered and what it recorded for delivery. */
     const ask = (args: Record<string, unknown> | Record<string, unknown>[]) => {
-      const opened = store.openMateTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
+      const opened = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
       if (!opened.ok) throw new Error(opened.reason);
-      const started = store.startMateTurn(opened.id, T0);
+      const started = store.startLeadTurn(opened.id, T0);
       if (!started.ok) throw new Error("start");
-      const context = { ...base, selectEvidence: (rows: Parameters<Store["recordMateTurnEvidence"]>[1]) => {
-        store.recordMateTurnEvidence(opened.id, rows, RESULT_IMAGES_PER_TURN_CAP, T0);
-        return store.getMateTurn(opened.id)?.state === "running" ? store.listMateTurnEvidence(opened.id).map(one => one.artifact) : [];
+      const context = { ...base, selectEvidence: (rows: Parameters<Store["recordLeadTurnEvidence"]>[1]) => {
+        store.recordLeadTurnEvidence(opened.id, rows, RESULT_IMAGES_PER_TURN_CAP, T0);
+        return store.getLeadTurn(opened.id)?.state === "running" ? store.listLeadTurnEvidence(opened.id).map(one => one.artifact) : [];
       } };
-      const answers = (Array.isArray(args) ? args : [args]).map(one => executeMateTool(context, "get_result_images", one));
+      const answers = (Array.isArray(args) ? args : [args]).map(one => executeLeadTool(context, "get_result_images", one));
       const answer = answers.at(-1)!;
-      const recorded = store.listMateTurnEvidence(opened.id).map(one => one.artifact);
-      store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, T0);
+      const recorded = store.listLeadTurnEvidence(opened.id).map(one => one.artifact);
+      store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, T0);
       return { answer, answers, recorded };
     };
     // Two identical asks select the same first page — deterministic — and each says exactly what remains and how to ask for it.
@@ -413,7 +413,7 @@ describe("shared result image selection", () => {
     // The exact identity is kept where it binds; only the words shown carry the label.
     expect(selected.selection).toMatchObject({ task: tokenShaped, label, run, images: [{ artifact: shot, caption: `${label} · result #${run} · screenshot 1 of 1`, fileName: `${label}-result-${run}-${shot}.png` }] });
     expect(JSON.stringify([selected.selection.images, selected.selection.label])).not.toContain(tokenShaped);
-    const tool = executeMateTool({ store, who: me, now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: () => null, mediaDelivery: "documents", selectEvidence: () => [shot] }, "get_result_images", { task: tokenShaped, run });
+    const tool = executeLeadTool({ store, who: me, now: T0, evidenceRoot, step: 1, readDecisions: new Map<number, number>(), draft: () => null, mediaDelivery: "documents", selectEvidence: () => [shot] }, "get_result_images", { task: tokenShaped, run });
     expect(tool).toMatchObject({ ok: true, body: { task: tokenShaped, label, images: [{ id: shot, caption: `${label} · result #${run} · screenshot 1 of 1` }] } });
     // A caption persisted before this rule, or edited by hand, is rebuilt from the typed identity at send time; a clean one is sent as it is.
     expect(safeResultImageCaption(`${tokenShaped} · result #${run} · screenshot 1 of 1`, tokenShaped, run)).toBe(`${label} · result #${run} · screenshot`);

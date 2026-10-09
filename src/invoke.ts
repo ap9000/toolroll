@@ -446,7 +446,7 @@ export async function invokeAgent(
   const evidence = spec.provider === "claude" ? claudeBillingFrom(billingSeen)
     // Codex signed in with ChatGPT is its plan, unless its plan is itself billed by use (seen by the console's probe).
     : codexLogin === "subscription" ? seenBilling(store.handle, "codex") ?? "subscription" : codexLogin;
-  // What this computer's Claude does with no key from us (teammates and drafts bill the same way): learnt only from a
+  // What this computer's Claude does with no key from us (subagents and drafts bill the same way): learnt only from a
   // run we gave no key that got as far as an answer.
   if (spec.provider === "claude" && managedKey === null && authMode === "subscription" && billingSeen.answered && evidence !== null) {
     store.recordProviderBilling("claude", evidence, new Date());

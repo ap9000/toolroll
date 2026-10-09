@@ -1,5 +1,5 @@
 /**
- * Subscription-backed transport for the mate.
+ * Subscription-backed transport for the lead.
  *
  * The direct API transport owns dollar reservations and native function
  * calls. A cached Codex or Claude login has neither an API key nor a
@@ -7,7 +7,7 @@
  * temporary directory and asks for the same tool-call envelope as strict
  * structured JSON. The harness receives no repository path, no project
  * instructions, no MCP servers, and no executable tool surface. Tool calls
- * are still interpreted and executed by mate.ts, where every act remains a
+ * are still interpreted and executed by lead.ts, where every act remains a
  * proposal that needs a human confirmation card.
  */
 import { Buffer } from "node:buffer";
@@ -15,34 +15,34 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  MATE_MAX_CALLS_PER_STEP,
-  MATE_STEP_TEXT_CAP_BYTES,
-  MATE_TOOL_CALL_CAP_BYTES,
-  MATE_TOOL_CALL_ID_CAP_BYTES,
+  LEAD_MAX_CALLS_PER_STEP,
+  LEAD_STEP_TEXT_CAP_BYTES,
+  LEAD_TOOL_CALL_CAP_BYTES,
+  LEAD_TOOL_CALL_ID_CAP_BYTES,
   strictJsonParse,
   tokenCount,
-  type MateHistoryMessage,
-  type MateProviderAnswer,
-  type MateToolCall,
-  type MateToolSchema,
+  type LeadHistoryMessage,
+  type LeadProviderAnswer,
+  type LeadToolCall,
+  type LeadToolSchema,
 } from "./converse.js";
 import { run, type ExecResult } from "./exec.js";
-import { claudeStreamReader } from "./mate-progress.js";
+import { claudeStreamReader } from "./lead-progress.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { SubscriptionChatProviderId } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import { claudeBillingFrom } from "./spend.js";
 
-export type SubscriptionMateRequest = {
+export type SubscriptionLeadRequest = {
   provider: SubscriptionChatProviderId;
   /** `default` lets the authenticated harness choose its current default. */
   model: string;
   system: string;
   dataDocument: string;
-  history: readonly MateHistoryMessage[];
-  tools: readonly MateToolSchema[];
+  history: readonly LeadHistoryMessage[];
+  tools: readonly LeadToolSchema[];
   /** A structured answer of another shape (the memory pass's verdict): this JSON Schema is the harness's
-   * `--json-schema` (Codex's `--output-schema`) in place of the mate envelope, and its JSON text comes back as the
+   * `--json-schema` (Codex's `--output-schema`) in place of the lead envelope, and its JSON text comes back as the
    * answer's text, unread, for the caller's own schema to parse. */
   outputSchema?: Record<string, unknown>;
   timeoutMs: number;
@@ -53,30 +53,30 @@ export type SubscriptionMateRequest = {
   onText?: (text: string) => void;
 };
 
-export type SubscriptionMateRunner = (
-  request: SubscriptionMateRequest,
-) => Promise<{ ok: true; answer: MateProviderAnswer } | { ok: false; problem: string }>;
+export type SubscriptionLeadRunner = (
+  request: SubscriptionLeadRequest,
+) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }>;
 
 type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
 
 const RESPONSE_CAP_BYTES = 65_536;
 
-function outputSchema(tools: readonly MateToolSchema[]): Record<string, unknown> {
+function outputSchema(tools: readonly LeadToolSchema[]): Record<string, unknown> {
   return {
     type: "object",
     properties: {
-      text: { type: "string", maxLength: MATE_STEP_TEXT_CAP_BYTES },
+      text: { type: "string", maxLength: LEAD_STEP_TEXT_CAP_BYTES },
       // With no tools offered there is nothing to name: an empty enum is not
       // a valid schema, so the calls array is simply required to be empty.
       calls: tools.length === 0 ? { type: "array", maxItems: 0 } : {
         type: "array",
-        maxItems: MATE_MAX_CALLS_PER_STEP,
+        maxItems: LEAD_MAX_CALLS_PER_STEP,
         items: {
           type: "object",
           properties: {
-            id: { type: "string", minLength: 1, maxLength: MATE_TOOL_CALL_ID_CAP_BYTES },
+            id: { type: "string", minLength: 1, maxLength: LEAD_TOOL_CALL_ID_CAP_BYTES },
             name: { type: "string", enum: tools.map(tool => tool.name) },
-            argumentsJson: { type: "string", maxLength: MATE_TOOL_CALL_CAP_BYTES },
+            argumentsJson: { type: "string", maxLength: LEAD_TOOL_CALL_CAP_BYTES },
           },
           required: ["id", "name", "argumentsJson"],
           additionalProperties: false,
@@ -88,8 +88,8 @@ function outputSchema(tools: readonly MateToolSchema[]): Record<string, unknown>
   };
 }
 
-/** The model-visible request. Tool results are already redacted by mateView. */
-export function composeSubscriptionMatePrompt(request: Omit<SubscriptionMateRequest, "provider" | "model" | "timeoutMs" | "signal">): string {
+/** The model-visible request. Tool results are already redacted by leadView. */
+export function composeSubscriptionLeadPrompt(request: Omit<SubscriptionLeadRequest, "provider" | "model" | "timeoutMs" | "signal">): string {
   return [
     request.system,
     "SUBSCRIPTION HARNESS PROTOCOL:",
@@ -111,10 +111,10 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 }
 
 /** Strictly turn the harness's structured output into the provider-neutral answer. */
-export function parseSubscriptionMateAnswer(
+export function parseSubscriptionLeadAnswer(
   text: string,
   usage: { tokensIn?: unknown; tokensOut?: unknown } = {},
-): { ok: true; answer: MateProviderAnswer } | { ok: false; problem: string } {
+): { ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string } {
   const parsed = strictJsonParse(Buffer.from(text, "utf8"), RESPONSE_CAP_BYTES, 8);
   if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
     return { ok: false, problem: parsed.ok ? "not-an-object" : parsed.problem };
@@ -123,26 +123,26 @@ export function parseSubscriptionMateAnswer(
   if (!exactKeys(body, ["text", "calls"]) || typeof body["text"] !== "string" || !Array.isArray(body["calls"])) {
     return { ok: false, problem: "wrong-shape" };
   }
-  if (Buffer.byteLength(body["text"], "utf8") > MATE_STEP_TEXT_CAP_BYTES || body["calls"].length > MATE_MAX_CALLS_PER_STEP) {
+  if (Buffer.byteLength(body["text"], "utf8") > LEAD_STEP_TEXT_CAP_BYTES || body["calls"].length > LEAD_MAX_CALLS_PER_STEP) {
     return { ok: false, problem: "over-cap" };
   }
-  const calls: MateToolCall[] = [];
+  const calls: LeadToolCall[] = [];
   for (const raw of body["calls"]) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { ok: false, problem: "bad-tool-call" };
     const call = raw as Record<string, unknown>;
     if (!exactKeys(call, ["id", "name", "argumentsJson"])) return { ok: false, problem: "bad-tool-call" };
-    if (typeof call["id"] !== "string" || call["id"] === "" || Buffer.byteLength(call["id"], "utf8") > MATE_TOOL_CALL_ID_CAP_BYTES) {
+    if (typeof call["id"] !== "string" || call["id"] === "" || Buffer.byteLength(call["id"], "utf8") > LEAD_TOOL_CALL_ID_CAP_BYTES) {
       return { ok: false, problem: "bad-tool-call" };
     }
     if (typeof call["name"] !== "string" || call["name"] === "" || call["name"].length > 64 || typeof call["argumentsJson"] !== "string") {
       return { ok: false, problem: "bad-tool-call" };
     }
     const argumentsBytes = Buffer.from(call["argumentsJson"], "utf8");
-    if (argumentsBytes.byteLength > MATE_TOOL_CALL_CAP_BYTES) return { ok: false, problem: "bad-tool-call" };
-    const args = strictJsonParse(argumentsBytes, MATE_TOOL_CALL_CAP_BYTES, 6);
+    if (argumentsBytes.byteLength > LEAD_TOOL_CALL_CAP_BYTES) return { ok: false, problem: "bad-tool-call" };
+    const args = strictJsonParse(argumentsBytes, LEAD_TOOL_CALL_CAP_BYTES, 6);
     if (!args.ok || typeof args.value !== "object" || args.value === null || Array.isArray(args.value)) return { ok: false, problem: "bad-tool-call" };
     const normalized = { id: call["id"], name: call["name"], args: args.value as Record<string, unknown> };
-    if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MATE_TOOL_CALL_CAP_BYTES) return { ok: false, problem: "bad-tool-call" };
+    if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > LEAD_TOOL_CALL_CAP_BYTES) return { ok: false, problem: "bad-tool-call" };
     calls.push(normalized);
   }
   const tokensIn = typeof usage.tokensIn === "number" && tokenCount(usage.tokensIn) ? usage.tokensIn : 0;
@@ -211,13 +211,13 @@ function lastResultLine(stdout: string): string {
 }
 
 /** Production runner; injectable so tests never consume a subscription turn. */
-export async function performSubscriptionMateRequest(
-  request: SubscriptionMateRequest,
+export async function performSubscriptionLeadRequest(
+  request: SubscriptionLeadRequest,
   runner: CommandRunner = run,
-): Promise<{ ok: true; answer: MateProviderAnswer } | { ok: false; problem: string }> {
+): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
   const dir = mkdtempSync(join(tmpdir(), "standing-orders-mate-"));
   try {
-    const prompt = composeSubscriptionMatePrompt(request);
+    const prompt = composeSubscriptionLeadPrompt(request);
     const streaming = request.provider !== "codex-subscription" && request.onText !== undefined;
     const schema = request.outputSchema ?? outputSchema(request.tools);
     let command: string;
@@ -285,7 +285,7 @@ export async function performSubscriptionMateRequest(
     if (request.outputSchema !== undefined) {
       return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null } };
     }
-    return parseSubscriptionMateAnswer(output.text, output);
+    return parseSubscriptionLeadAnswer(output.text, output);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

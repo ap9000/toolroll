@@ -1,5 +1,7 @@
 # Native sessions from the CLI
 
+> **Deprecated.** `toolroll session …` and the `/code` page still work this release, print a warning, and are removed in the next minor release. Queue work as a task (`toolroll task add`) instead.
+
 `session` connects to the running Standing Orders service that owns native coding
 sessions. It does not open a second catalog or start a background server. `chat`
 remains the coordinator conversation that reads work and proposes actions.

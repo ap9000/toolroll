@@ -437,7 +437,7 @@ function zoneOf(stage: FlowStage, flow: FlowRow) {
     ...(stage.kind === 'approval' ? { decider: deciderOf(stage, flow) } : {}),
     ...(stage.script === null ? {} : { script: stage.script }),
     ...(stage.merge === undefined ? {} : { merge: stage.merge }),
-    ...(stage.teammate === undefined ? {} : { teammate: stage.teammate }),
+    ...(stage.subagent === undefined ? {} : { subagent: stage.subagent }),
     ...(stage.options === undefined ? {} : { options: stage.options.map(one => ({ label: one.label, to: one.to })) }),
     ...(stage.repo === undefined ? {} : { repo: stage.repo }),
   };

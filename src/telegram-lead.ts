@@ -1,11 +1,11 @@
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelMate as resolveTelegramMate, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
-export { channelRepos as telegramConversationRepos, resolveChannelMate as resolveTelegramMate, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedMate, type ParitySupport } from "./chat-channel.js";
+import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
  *
- * Transport only. An ordinary private Telegram message becomes a mate turn
- * through `runMateTurn` — the same saved thread, proposal rows, confirm
+ * Transport only. An ordinary private Telegram message becomes a lead turn
+ * through `runLeadTurn` — the same saved thread, proposal rows, confirm
  * doors and result actions the console and `toolroll chat` use —
  * and every act is still a card the operator confirms. This module owns
  * what is specific to the wire: proving the pairing (chat AND immutable
@@ -23,11 +23,11 @@ export { channelRepos as telegramConversationRepos, resolveChannelMate as resolv
  * the console and CLI state), and the door re-proves everything again.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { MATE_MESSAGE_MAX_CHARS, mateFailureText, runMateTurn, type MateChannelProblem } from "./mate.js";
-import { confirmMateProposal, dismissMateProposal, type DoorOutcome } from "./mate-doors.js";
+import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
+import { confirmLeadProposal, dismissLeadProposal, type DoorOutcome } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
-import { MATE_ASK_OTHER, type MateAsk, type MateProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
-import type { SubscriptionMateRunner } from "./subscription-chat.js";
+import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
+import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { phoneText } from "./telegram-status.js";
 import { shapeReplyParts, telegramReply } from "./reply-shape.js";
 import { WARM_EMOJI, warmTurn } from "./chat-warmth.js";
@@ -52,7 +52,7 @@ export type TelegramConversationOptions = {
   /** Where evidence lives — the same root the console and CLI read results from. */
   evidenceRoot: string;
   /** Injected by tests; production invokes the isolated local harness. */
-  subscriptionRunner?: SubscriptionMateRunner;
+  subscriptionRunner?: SubscriptionLeadRunner;
   /**
    * The https origin a phone link may open, read again on EVERY call (a
    * card is linked immediately before it is sent or edited, never from a
@@ -138,10 +138,10 @@ function keyboardWith(callbacks: CallbackKeyboard | null, link: InlineButton[] |
 /** One inline button: an opaque callback token (a real in-chat act) or a url (navigation, never authority). */
 /** The buttons under the lead's question: options two to a row, then "Something else". Each names the turn and the
  * option's place, nothing more; a tap re-proves that the question is still open and is the tapper's own. */
-export function askKeyboard(ask: MateAsk): CallbackKeyboard {
+export function askKeyboard(ask: LeadAsk): CallbackKeyboard {
   const rows: CallbackKeyboard = [];
   for (let at = 0; at < ask.options.length; at += 2) rows.push(ask.options.slice(at, at + 2).map((label, offset) => telegramButton(label.slice(0, 60), `ask:${ask.turn}:${at + offset}`)));
-  rows.push([telegramButton(MATE_ASK_OTHER, `ask:${ask.turn}:x`)]);
+  rows.push([telegramButton(LEAD_ASK_OTHER, `ask:${ask.turn}:x`)]);
   return rows;
 }
 
@@ -200,7 +200,7 @@ export function applyProposalTap(
     ack("that button is stale — send /status to see what still waits");
     return { effects, confirmed: false, ignored: true };
   }
-  const proposal = store.getMateProposal(action.proposal);
+  const proposal = store.getLeadProposal(action.proposal);
   if (proposal === null) {
     store.consumeTelegramProposalAction(token, now);
     ack("that card no longer exists");
@@ -255,10 +255,10 @@ export function applyProposalTap(
 
   if (action.phase === "dismiss") {
     if (!store.consumeTelegramProposalAction(token, now)) { ack("that button was already used"); return { effects, confirmed: false, ignored: true }; }
-    const done = dismissMateProposal(store, who, proposal.id, now);
+    const done = dismissLeadProposal(store, who, proposal.id, now);
     store.consumeTelegramProposalActions(proposal.id, now);
     ack(done ? "dismissed" : "that proposal was already acted on");
-    edit(done ? "Dismissed." : proposalOutcomeText(store.getMateProposal(proposal.id) ?? proposal));
+    edit(done ? "Dismissed." : proposalOutcomeText(store.getLeadProposal(proposal.id) ?? proposal));
     return { effects, confirmed: false, ignored: !done };
   }
   if (action.phase === "cancel") {
@@ -316,7 +316,7 @@ export function applyProposalTap(
     ack(action.phase === "yes" ? "that confirmation expired — start again from Confirm" : "that button was already used");
     return { effects, confirmed: false, ignored: true };
   }
-  const outcome = confirmMateProposal(store, who, proposal.id, now, {
+  const outcome = confirmLeadProposal(store, who, proposal.id, now, {
     via: "telegram",
     evidenceRoot: options.evidenceRoot,
     confirm: action.phase === "yes",
@@ -465,7 +465,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   const deliver = async (outcomeWord: string): Promise<void> => {
     // The row as it is NOW: the session was bound after this claim read it.
     const bound = store.getTelegramConversation(row.id)?.session ?? null;
-    const session = bound === null ? null : store.getMateSession(bound);
+    const session = bound === null ? null : store.getLeadSession(bound);
     if (session === null) {
       await notify("This conversation was restarted before my reply went out, so it wasn't sent. Nothing was changed. Send your message again.");
       finish({ state: "failed", outcome: "unsent:no-session" });
@@ -480,7 +480,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
       if (part.state !== "pending") continue;
       const now = clock();
       if (part.kind === "card") {
-        const proposal = part.proposal === null ? null : store.getMateProposal(part.proposal);
+        const proposal = part.proposal === null ? null : store.getLeadProposal(part.proposal);
         if (proposal === null || proposal.state !== "pending") {
           // Confirmed or dismissed from the console or the terminal before the card went out: moot, not lost.
           if (!store.dropTelegramConversationPart(row.id, part.ordinal, owner, proposal === null ? "the proposal is gone" : `the proposal was already ${proposal.state}`, now)) return;
@@ -567,7 +567,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         // A card's link is minted NOW, from the persisted proposal and the
         // origin configured at this moment: a retry after the setting changed
         // or went away carries the current truth, never a stored URL.
-        const proposal = part.kind === "card" && part.proposal !== null ? store.getMateProposal(part.proposal) : null;
+        const proposal = part.kind === "card" && part.proposal !== null ? store.getLeadProposal(part.proposal) : null;
         const origin = proposal === null ? null : options.phoneOrigin?.() ?? null;
         const wanted = proposal === null ? null : proposalLink(store, proposal, repos);
         const keyboard = keyboardWith(part.keyboard, phoneLinkButton(origin, wanted));
@@ -629,16 +629,16 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   };
 
   /** The reply, one image per screenshot the ANSWERED turn selected (typed identity only — bytes are read and re-verified at send time), and one card per pending proposal, persisted with the cards' tokens in ONE transaction before any send. */
-  const plan = (session: number, turn: number, reply: string, proposals: readonly MateProposal[], repos: readonly string[]): boolean => {
+  const plan = (session: number, turn: number, reply: string, proposals: readonly LeadProposal[], repos: readonly string[]): boolean => {
     try {
       return store.transact(() => {
         const now = clock();
         const parts: Parameters<Store["planTelegramConversationParts"]>[3][number][] = shapeReplyParts(reply, PART_CAP, { asked: row.text, appOrigin: options.phoneOrigin?.() ?? null }, shaped => telegramReply(shaped).text.length).map((text, index) => ({ kind: "reply", text, replyTo: index === 0 ? row.messageId : null }));
         // The lead's question to its owner: one tap per option, then "Something else".
-        const ask = store.mateAsk(turn);
+        const ask = store.leadAsk(turn);
         if (ask !== null) parts.push({ kind: "reply", text: phoneText(ask.question, 1_000), keyboard: askKeyboard(ask) });
         // Only a turn that answered may have its selection sent: a failed or revoked turn's rows were deleted with its drafts, and the state is read again here.
-        const selected = store.getMateTurn(turn)?.state === "answered" ? store.listMateTurnEvidence(turn) : [];
+        const selected = store.getLeadTurn(turn)?.state === "answered" ? store.listLeadTurnEvidence(turn) : [];
         for (const image of selected) parts.push({ kind: "image", text: image.caption, taskId: image.taskId, run: image.run, artifact: image.artifact, sha256: image.sha256 });
         for (const proposal of proposals) {
           const preview = proposalPreview(store, proposal, repos, "telegram");
@@ -659,19 +659,19 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   const recover = async (session: number, turnId: number, repos: readonly string[]): Promise<void> => {
     // A turn that died past its deadline is swept to failed first, so a
     // restart reports the truth instead of waiting on a ghost.
-    store.sweepStaleMateTurns(clock());
-    const turn = store.getMateTurn(turnId);
+    store.sweepStaleLeadTurns(clock());
+    const turn = store.getLeadTurn(turnId);
     if (turn === null) { finish({ state: "failed", outcome: "replayed:missing" }); report.refused++; return; }
     store.bindTelegramConversationTurn(row.id, owner, session, turnId);
     if (turn.state === "queued" || turn.state === "running") { await requeue("replayed:running"); return; }
     if (turn.state !== "answered") {
-      await notify(mateFailureText(turn.failureReason));
+      await notify(leadFailureText(turn.failureReason));
       finish({ state: "failed", outcome: `replayed:${turn.failureReason ?? "failed"}` });
       report.refused++;
       return;
     }
-    const reply = store.listMateMessages(turn.thread, 200).find(one => one.turn === turn.id && one.role === "assistant")?.text ?? "(the reply text is no longer in the thread)";
-    const proposals = store.listMateProposals(turn.thread, ["pending"]).filter(one => one.turn === turn.id);
+    const reply = store.listLeadMessages(turn.thread, 200).find(one => one.turn === turn.id && one.role === "assistant")?.text ?? "(the reply text is no longer in the thread)";
+    const proposals = store.listLeadProposals(turn.thread, ["pending"]).filter(one => one.turn === turn.id);
     if (!plan(session, turnId, reply, proposals, repos) && store.listTelegramConversationParts(row.id).length === 0) return;
     await sendOrHandOff("replayed");
   };
@@ -699,12 +699,12 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   // 4. A session bound before an earlier dispatch: the receipt lives there,
   // whatever session is live today.
   if (row.session !== null) {
-    const receipt = store.mateRequestReceipt(row.session, row.request);
+    const receipt = store.leadRequestReceipt(row.session, row.request);
     if (receipt !== null) { await recover(row.session, receipt.turn, repos); return; }
   }
 
   // 5. The session and thread — shared with the console and the CLI.
-  const resolved = resolveTelegramMate(store, binding, repos, clock());
+  const resolved = resolveTelegramLead(store, binding, repos, clock());
   if (!resolved.ok && resolved.reason === "busy") { await requeue("busy"); return; }
   if (!resolved.ok) {
     if (resolved.said !== null) await notify(resolved.said);
@@ -713,10 +713,10 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     return;
   }
   const { who, session, thread, config } = resolved;
-  const revalidate = async (): Promise<{ ok: true } | { ok: false; reason: MateChannelProblem }> => {
+  const revalidate = async (): Promise<{ ok: true } | { ok: false; reason: LeadChannelProblem }> => {
     const problem = await telegramChannelProblem(store, { botId, bindingId: binding.id, approverGeneration: binding.approverGeneration, repos: who.repos }, readProjects);
     if (problem === null) return { ok: true };
-    const reason: MateChannelProblem = problem === UNREADABLE_REGISTRY ? "projects-unreadable"
+    const reason: LeadChannelProblem = problem === UNREADABLE_REGISTRY ? "projects-unreadable"
       : problem === "this chat is no longer paired" ? "unpaired"
         : problem === "the paired account is no longer an approver" ? "not-approver"
           : problem === "the connected projects changed" ? "projects-changed" : "access-changed";
@@ -736,9 +736,9 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     react: () => transport("setMessageReaction", { chat_id: chatId, message_id: Number(row.messageId), reaction: [{ type: "emoji", emoji: WARM_EMOJI }] }),
     typing: () => transport("sendChatAction", { chat_id: chatId, action: "typing" }),
   });
-  let outcome: Awaited<ReturnType<typeof runMateTurn>>;
+  let outcome: Awaited<ReturnType<typeof runLeadTurn>>;
   try {
-    outcome = await runMateTurn({
+    outcome = await runLeadTurn({
       store, who, session, thread, config, key: null, message: row.text, requestId: row.request,
       ...(row.context === null ? {} : { context: row.context }),
       ...(options.subscriptionRunner === undefined ? {} : { subscriptionRunner: options.subscriptionRunner }),
@@ -748,7 +748,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     clearInterval(heartbeat);
     warm.stop();
   }
-  const receipt = store.mateRequestReceipt(session.id, row.request);
+  const receipt = store.leadRequestReceipt(session.id, row.request);
   if (receipt !== null) store.bindTelegramConversationTurn(row.id, owner, session.id, receipt.turn);
 
   if (!outcome.ok && "refused" in outcome) {
@@ -770,7 +770,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   if (row.taskId !== null) mirrorToTaskChat(store, who, row.taskId, "Telegram", row.text, outcome.reply, clock());
 
   // 7. The reply and its cards: durable first, then sent.
-  const proposals = store.listMateProposals(thread.id, ["pending"]).filter(one => one.turn === outcome.turn);
+  const proposals = store.listLeadProposals(thread.id, ["pending"]).filter(one => one.turn === outcome.turn);
   if (!plan(session.id, outcome.turn, outcome.reply, proposals, who.repos) && store.listTelegramConversationParts(row.id).length === 0) return;
   await sendOrHandOff("answered");
 }

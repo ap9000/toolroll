@@ -618,7 +618,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   /**
    * Back from a service's sign-in: the code becomes the tool's tokens,
    * kept in its secrets file, and a page sends the person back to Tools (or
-   * to the kit the Connect came from, whose teammate may then use the tool).
+   * to the kit the Connect came from, whose subagent may then use the tool).
    */
   /** v100: back from the identity provider. Proves the person, then hands them to /login/sso/finish on this site. */
   async function ssoCallback(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {

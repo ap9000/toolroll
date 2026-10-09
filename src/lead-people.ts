@@ -1,20 +1,20 @@
-/** Who the lead works with: the people on this installation who share a project with its owner, the AI teammates in
+/** Who the lead works with: the people on this installation who share a project with its owner, the subagents in
  * those projects, and the team chats the owner is in. The bundle carries one line each (lead-context.ts); get_person
  * reads one in full, with their open work. Ids stay the same from turn to turn however the list changes: p and c plus a
- * short digest of the account or team chat, t plus the teammate's number. In a team chat the lead speaks for the room,
+ * short digest of the account or team chat, t plus the subagent's number. In a team chat the lead speaks for the room,
  * so only that room and its members are listed. Only the owner's own projects are listed, by their r1.. ids; first
  * names are shown on purpose, everything else is scrubbed by the caller. */
 import { createHash } from "node:crypto";
-import type { Store, TeammateRow } from "./store.js";
+import type { Store, SubagentRow } from "./store.js";
 import { firstNameOf } from "./lead-context.js";
-import { labelOf, nameOf, zonesOf } from "./teammate-admin.js";
-import { parseSoul } from "./teammates.js";
-import { deskOf } from "./teammate-desk.js";
+import { labelOf, nameOf, zonesOf } from "./subagent-admin.js";
+import { parseSoul } from "./subagents.js";
+import { deskOf } from "./subagent-desk.js";
 
 export type PersonEntry = { id: string; account: string; name: string; role: string; projects: string[]; profile: string | null };
-export type MateEntry = { id: string; mate: TeammateRow; name: string; role: string; project: string };
+export type SubagentEntry = { id: string; mate: SubagentRow; name: string; role: string; project: string };
 export type TeamEntry = { id: string; conversation: string; name: string; members: string[]; purpose: string; projects: string[] };
-export type PeopleIndex = { people: PersonEntry[]; teammates: MateEntry[]; teams: TeamEntry[] };
+export type PeopleIndex = { people: PersonEntry[]; subagents: SubagentEntry[]; teams: TeamEntry[] };
 
 const OPEN_TASK = new Set(["queued", "running", "failed"]);
 /** get_person's id shapes. */
@@ -44,8 +44,8 @@ export function peopleIndexOf(store: Store, owner: string, repos: readonly strin
       role: one.role === "approver" ? "approves work" : "watches work",
       // No person has a written profile yet; the field is there for when one does.
       projects: named(shared), profile: null }));
-  // AI teammates are not members of a team chat.
-  const teammates = room !== null ? [] : store.teammates(repos).map(mate => {
+  // subagents are not members of a team chat.
+  const subagents = room !== null ? [] : store.subagents(repos).map(mate => {
     const soul = parseSoul(mate.soul);
     return { id: `t${mate.id}`, mate, name: nameOf(mate), role: soul.ok ? soul.soul.role : labelOf(mate), project: label(mate.repo) ?? "" };
   });
@@ -64,14 +64,14 @@ export function peopleIndexOf(store: Store, owner: string, repos: readonly strin
       return { id: stableId("c", String(row["id"])), conversation: String(row["id"]), name: String(row["title"]), members, purpose: purpose || String(row["lead"]), projects };
     });
   } catch { /* an older store has no team chats */ }
-  return { people, teammates, teams };
+  return { people, subagents, teams };
 }
 
 /** One line each, as the bundle carries them. Free text goes through `redact`; names and project ids do not. */
 export function peopleLines(index: PeopleIndex, redact: (text: string) => string) {
   return {
     people: index.people.map(one => `${one.id} ${one.name}: ${one.role}; ${one.projects.join(", ")}${one.profile === null ? "" : `; ${line(redact(one.profile), 120)}`}`),
-    teammates: index.teammates.map(one => `${one.id} ${one.name}: ${line(redact(one.role), 60)}${one.project === "" ? "" : ` (${one.project})`}`),
+    subagents: index.subagents.map(one => `${one.id} ${one.name}: ${line(redact(one.role), 60)}${one.project === "" ? "" : ` (${one.project})`}`),
     teams: index.teams.map(one => `${one.id} ${line(redact(one.name), 60)}: ${one.members.join(", ")}; ${line(redact(one.purpose), 120)}`),
   };
 }
@@ -95,7 +95,7 @@ export function personEntry(store: Store, owner: string, repos: readonly string[
   const wanted = ask.name?.trim().toLowerCase() ?? "";
   const all = [
     ...index.people.map(one => ({ id: one.id, name: one.name, kind: "person", also: one.account })),
-    ...index.teammates.map(one => ({ id: one.id, name: one.name, kind: "AI teammate", also: one.mate.handle })),
+    ...index.subagents.map(one => ({ id: one.id, name: one.name, kind: "subagent", also: one.mate.handle })),
     ...index.teams.map(one => ({ id: one.id, name: one.name, kind: "team chat", also: "" })),
   ];
   const hits = ask.id !== undefined ? all.filter(one => one.id === ask.id)
@@ -109,16 +109,16 @@ export function personEntry(store: Store, owner: string, repos: readonly string[
     const work = openWorkOf(store, person.account, repos);
     return { found: { id, kind: "person", name: person.name, role: person.role, projects: person.projects, profile: person.profile, openTasks: work.tasks, openCards: work.cards } };
   }
-  const mate = index.teammates.find(one => one.id === id);
+  const mate = index.subagents.find(one => one.id === id);
   if (mate !== undefined) {
     const flows = new Set([...zonesOf(store, mate.mate).map(one => `${one.flow}:${one.zone}`)]);
     const desk = deskOf(store, mate.mate)?.id ?? null;
     const cards = store.activeFlowCards(mate.mate.repo).filter(card => flows.has(`${card.flow}:${card.stage}`) || card.flow === desk)
       .slice(0, 10).map(card => ({ card: card.id, flow: card.flow, title: card.title, zone: card.stage }));
-    return { found: { id, kind: "AI teammate", name: mate.name, role: mate.role, project: mate.project, working: mate.mate.state === "active", soul: mate.mate.soul,
+    return { found: { id, kind: "subagent", name: mate.name, role: mate.role, project: mate.project, working: mate.mate.state === "active", soul: mate.mate.soul,
       worksOn: zonesOf(store, mate.mate).map(one => ({ flow: one.flowName, zone: one.title, how: one.kind })),
-      openTasks: cards, questions: store.openTeammateQuestions([mate.mate.id]).map(one => ({ question: one.id, asks: one.question })),
-      more: "get_teammates with this teammate's number reads its memory, routines, tools and recent log." } };
+      openTasks: cards, questions: store.openSubagentQuestions([mate.mate.id]).map(one => ({ question: one.id, asks: one.question })),
+      more: "get_subagents with this subagent's number reads its memory, routines, tools and recent log." } };
   }
   const team = index.teams.find(one => one.id === id)!;
   const purpose = String(store.handle.prepare("SELECT l.instructions FROM team_conversation c JOIN team_lead l ON l.id = c.lead WHERE c.id = ?").get(team.conversation)?.["instructions"] ?? "");

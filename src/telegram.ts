@@ -19,8 +19,7 @@
  * are one command.
  */
 
-import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./teammate-question.js";
-import { messageTeammate } from "./teammate-desk.js";
+import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
 import { acceptanceEvidenceText } from "./chat-acceptance.js";
 import { verifyApproverStanding } from "./principal.js";
 import { resultImageFileName, resultTaskLabel, verifyResultImage } from "./chat-evidence.js";
@@ -45,7 +44,7 @@ import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink,
   type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
 import { phoneCommand, phoneStatus, phoneTaskView, PHONE_CONSOLE_FOOTER, PHONE_HELP, notificationIdentity, phoneTaskChoices, resolvePhoneTask, phoneFocusText, phoneTaskListText, phoneText, PHONE_NO_MATCH, PHONE_BACK_TO_LEAD, type PhoneTaskChoice } from "./telegram-status.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { envValue } from "./names.js";
 import {
   applyProposalTap,
@@ -58,7 +57,7 @@ import {
   tooLongText,
   whichTaskText,
   type TelegramConversationOptions,
-} from "./telegram-mate.js";
+} from "./telegram-lead.js";
 import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegramUpdate, telegramButton, type TelegramUpdate } from "./contracts/telegram-callback.js";
 
 /** Read the enrolled project list on demand. No callback means no task data,
@@ -1274,7 +1273,7 @@ async function deliverOne(
       parts = voiced.map(one => one.text);
       entities = voiced.map(one => one.entities);
     }
-    // A teammate's question (v93): its options and "Answer in words", for the person it asks.
+    // A subagent's question (v93): its options and "Answer in words", for the person it asks.
     const asked = flowKeys === null && choiceKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
     const keys = flowKeys ?? choiceKeys ?? questionKeys;
@@ -1686,7 +1685,7 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
     // assistant when a conversation is configured; otherwise silence.
     const binding = store.liveTelegramBindingFor(botId, String(from.id));
     // A reply to an Edit or Send back prompt (v86): the new draft, or the note it goes back with.
-    // A reply to a teammate's "Answer in words" prompt (v93): the answer.
+    // A reply to a subagent's "Answer in words" prompt (v93): the answer.
     const questionPrompt = binding !== null && message.reply_to_message !== undefined && String(chat.id) === binding.chatId
       ? store.telegramQuestionPrompt(binding.chatId, String(message.reply_to_message.message_id), clock()) : null;
     if (binding !== null && questionPrompt !== null) {
@@ -1722,20 +1721,7 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
       });
       return;
     }
-    // A message to a teammate by name (v96), in the person's own chat: a card on its desk, and the answer comes back here.
-    if (binding !== null && message.reply_to_message === undefined && message.chat?.type === "private" && String(chat.id) === binding.chatId && store.accountOf(binding.approver)?.role === "approver") {
-      const repos = context.projects === null ? store.knownRepos().filter(repo => store.accountCanAccess(binding.approver, repo)) : telegramConversationRepos(store, binding.approver, context.projects);
-      const handed = messageTeammate(store, { who: binding.approver, repos, via: "Telegram" }, message.text ?? "", clock());
-      if (handed !== null) {
-        effects.push(async () => {
-          let button: InlineButton[] | null = null;
-          if (handed.link !== undefined) { try { button = phoneLinkButton(context.conversation?.phoneOrigin?.() ?? null, handed.link); } catch { button = null; } }
-          await transport("sendMessage", { chat_id: binding.chatId, text: handed.said, link_preview_options: { is_disabled: true }, reply_parameters: { message_id: message.message_id },
-            ...(button === null ? {} : { reply_markup: { inline_keyboard: [button] } }) });
-        });
-        return;
-      }
-    }
+    // D5: a message naming a subagent ("@rosa …") goes to the lead like any other, which asks the subagent with a card.
     const repliedDecision = binding !== null && message.reply_to_message !== undefined
       ? store.decisionForTelegramMessage(binding.id, binding.chatId, String(message.reply_to_message.message_id))
       : null;
@@ -1828,7 +1814,7 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
     report.ignored++;
     return;
   }
-  if (text.length > MATE_MESSAGE_MAX_CHARS) {
+  if (text.length > LEAD_MESSAGE_MAX_CHARS) {
     say(tooLongText(text.length));
     report.chatRefused = (report.chatRefused ?? 0) + 1;
     return;
@@ -2187,7 +2173,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     editText(phoneFocusText(view.text), [[telegramButton("Back to the lead", "pick:lead")]]);
     return;
   }
-  // A teammate's question (v93): an option answers it; "Answer in words" asks for a reply.
+  // A subagent's question (v93): an option answers it; "Answer in words" asks for a reply.
   const questionAction = store.getTelegramQuestionAction(token);
   if (questionAction !== null) {
     if (questionAction.binding !== binding.id || questionAction.chatId !== tapChat || (questionAction.messageId !== null && questionAction.messageId !== String(message.message_id))) { report.ignored++; return; }
@@ -2255,7 +2241,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   if (askTap !== null) {
     if (tapChat !== binding.chatId || context.conversation === undefined) { report.ignored++; return; }
     const turn = askTap.turn;
-    const found = store.getMateTurn(turn)?.approver === binding.approver ? store.mateAskState(turn, clock()) : { state: "expired" as const };
+    const found = store.getLeadTurn(turn)?.approver === binding.approver ? store.leadAskState(turn, clock()) : { state: "expired" as const };
     if (found.state !== "open") {
       const line = found.state === "answered" ? "That question was already answered." : "That question expired. Send your answer as a message.";
       ack(line);

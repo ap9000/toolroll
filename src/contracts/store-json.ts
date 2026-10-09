@@ -28,7 +28,7 @@ const savedList = z.array(z.unknown());
 /** An object with a text `label`: a card's source (its reader keeps picking the fields it knows). */
 const cardSource = z.looseObject({ label: z.string() });
 
-/** A teammate's rule for one tool action, as `teammates.ts` writes it. */
+/** A subagent's rule for one tool action, as `subagents.ts` writes it. */
 export const savedToolRuleSchema = z.looseObject({
   use: z.enum(["free", "ask", "never"]),
   limit: z.looseObject({ field: z.string(), over: z.number() }).optional(),
@@ -68,14 +68,14 @@ const savedMatrixRowSchema = proofCriterionSchema.pick({ id: true, statement: tr
 
 const STORE_COLUMN_VALUES = {
   "run_check.suites_json": savedList,
-  "teammate_suggestion.rule_json": savedToolRuleSchema,
-  "teammate_suggestion.was_json": savedToolRuleSchema,
-  "teammate_suggestion.evidence_json": z.array(z.number()),
-  "teammate_call.input_json": savedObject,
-  "teammate_tool.actions_json": z.array(savedToolActionSchema),
-  "teammate_tool.rules_json": z.object({}).catchall(savedToolRuleSchema),
-  "teammate_question.options_json": z.array(savedQuestionOptionSchema),
-  "teammate_event.detail_json": savedObject,
+  "subagent_suggestion.rule_json": savedToolRuleSchema,
+  "subagent_suggestion.was_json": savedToolRuleSchema,
+  "subagent_suggestion.evidence_json": z.array(z.number()),
+  "subagent_call.input_json": savedObject,
+  "subagent_tool.actions_json": z.array(savedToolActionSchema),
+  "subagent_tool.rules_json": z.object({}).catchall(savedToolRuleSchema),
+  "subagent_question.options_json": z.array(savedQuestionOptionSchema),
+  "subagent_event.detail_json": savedObject,
   "flow_card.source_json": cardSource,
   "flow_comment.mentions_json": savedList,
   "task_scope.touches": z.lazy(() => scopeTermsSchema.unwrap().shape.touches.unwrap()),
@@ -90,7 +90,7 @@ const STORE_COLUMN_VALUES = {
   "run_tool.tools_json": savedToolsSchema,
   /** `json_extract(tools_json, '$.fence')`: the fence an attempt ran with. */
   "run_tool.tools_json.fence": savedFenceSchema,
-  "mate_ask.options_json": z.array(z.string()),
+  "lead_ask.options_json": z.array(z.string()),
   "lead_config.about_json": savedList,
   "mutation.result": z.unknown(),
   "plan_revision.changed_fields": z.array(z.string()),
@@ -101,8 +101,8 @@ const STORE_COLUMN_VALUES = {
   "coordinator_proposal.payload_json": savedObject,
   "coordinator_proposal.outcome_json": savedObject,
   // Other proposal kinds have operation-specific fields; the action variant already has a canonical contract.
-  "mate_proposal.payload_json": z.union([sharedActionSchema, savedObject]),
-  "mate_proposal.outcome_json": savedObject,
+  "lead_proposal.payload_json": z.union([sharedActionSchema, savedObject]),
+  "lead_proposal.outcome_json": savedObject,
   "proof_verdict.matrix_json": z.array(savedMatrixRowSchema),
   "proof_verdict.reasons_json": savedList,
   "criterion_review.screenshots_json": savedList,
@@ -121,14 +121,14 @@ export const STORE_PROJECTIONS = ["run_tool.tools_json.fence"] as const;
 
 /** These readers historically only parsed JSON. Shape errors must not change their values or catch boundaries. */
 export const LEGACY_JSON_COLUMNS: readonly StoreColumn[] = [
-  "teammate_suggestion.rule_json", "teammate_suggestion.was_json", "teammate_suggestion.evidence_json",
-  "teammate_call.input_json", "teammate_tool.actions_json", "teammate_tool.rules_json", "teammate_question.options_json",
-  "teammate_event.detail_json", "task_scope.touches", "task_scope.acceptance_json",
+  "subagent_suggestion.rule_json", "subagent_suggestion.was_json", "subagent_suggestion.evidence_json",
+  "subagent_call.input_json", "subagent_tool.actions_json", "subagent_tool.rules_json", "subagent_question.options_json",
+  "subagent_event.detail_json", "task_scope.touches", "task_scope.acceptance_json",
   "operating_mode.terms_json", "decision.options", "run_tool.tools_json",
-  "run_tool.tools_json.fence", "mate_ask.options_json", "mutation.result", "plan_revision.changed_fields",
+  "run_tool.tools_json.fence", "lead_ask.options_json", "mutation.result", "plan_revision.changed_fields",
   "run_checkpoint.snapshot_json", "publication_grant.capabilities",
   "coordinator_proposal.payload_json", "coordinator_proposal.outcome_json",
-  "mate_proposal.payload_json", "mate_proposal.outcome_json",
+  "lead_proposal.payload_json", "lead_proposal.outcome_json",
 ];
 
 /** One column's versioned envelope: `{ version: 1, value }`, built in memory around the saved bare value. */

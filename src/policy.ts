@@ -15,7 +15,7 @@
  * (lowered), or, when there is none, doesn't run (refused); the words say which.
  *
  * Every road that admits work asks here: scope approval, the tick before a
- * run starts (and build() as the last look), the lead and project chats, teammates and flow steps.
+ * run starts (and build() as the last look), the lead and project chats, subagents and flow steps.
  */
 import type { Database } from "./store.js";
 import type { ExecutionProfile } from "./scope.js";

@@ -22,7 +22,7 @@ import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimK
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
 import { MIN_DAYS, RETENTION_KINDS, countWords, dailyRetention, isRetentionKind, lastSweepAt, parsePeriod, periodLabel, periodWords, retentionPlan, sweepWords, type RetentionKind, type RetentionSweep } from "./retention.js";
 import { checkPolicy, parseList, policyParts, type SavedPolicy } from "./policy.js";
-import { billingOf, budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendItems, teammateNames, usd as spendUsd, type BudgetAgent, type BudgetHold } from "./spend.js";
+import { billingOf, budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendItems, subagentNames, usd as spendUsd, type BudgetAgent, type BudgetHold } from "./spend.js";
 import { spendCsv } from "./spend-ui.js";
 import { buildExport, exportSummary, exportZip, writeExportFolder } from "./export.js";
 import { startBudgetAlerts } from "./budget-alerts.js";
@@ -44,8 +44,8 @@ import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
-import { sendTeammateSummaries } from "./teammate-admin.js";
-import { runRequestedUndos, sendTeammateWeeklies } from "./teammate-week.js";
+import { sendSubagentSummaries } from "./subagent-admin.js";
+import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
@@ -200,12 +200,12 @@ import {
   type FollowReport,
   type TelegramTransport,
 } from "./telegram.js";
-import type { TelegramConversationOptions } from "./telegram-mate.js";
+import type { TelegramConversationOptions } from "./telegram-lead.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
 import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
-import { runMateCli, answerContextLines, type MateCliSeams } from "./mate-cli.js";
-import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./mate-doors.js";
+import { runLeadCli, answerContextLines, type LeadCliSeams } from "./lead-cli.js";
+import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./lead-doors.js";
 import { verifyApproverByPassword as approverByPassword } from "./principal.js";
 import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteLensOf, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
 import { projectAuthority } from "./project-access.js";
@@ -373,8 +373,8 @@ export type OperateOptions = {
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
   integrationIo?: Partial<IntegrationIo>;
-  /** Injected by tests: the mate's provider fetch, key environment, and stdin lines. */
-  mateSeams?: MateCliSeams;
+  /** Injected by tests: the lead's provider fetch, key environment, and stdin lines. */
+  leadSeams?: LeadCliSeams;
   /** Test seam for the short indexed wait loop. */
   waitSleep?: (milliseconds: number) => Promise<void>;
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
@@ -420,9 +420,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll integrations [--json]     which integrations work: Connected, Not set up or Broken, and what to do (--saved: no new checks)
   toolroll monitoring                where the audit stream and traces go, and how each destination is doing
   toolroll check-progress <run>      current or final approved check progress
-  toolroll spend [--month YYYY-MM] [--csv]   what agent work cost, by project, person, teammate and model
+  toolroll spend [--month YYYY-MM] [--csv]   what agent work cost, by project, person, subagent and model
   toolroll export --out <path> [--zip]   everything Toolroll knows, in a folder or .zip (no secrets)
-  toolroll budget list|set|remove    monthly budgets (--all | --project <p> | --person <name> | --teammate <id>) --usd <n> [--alerts-only]
+  toolroll budget list|set|remove    monthly budgets (--all | --project <p> | --person <name> | --subagent <id>) --usd <n> [--alerts-only]
   toolroll notifications [quiet|all]   how chats reach you: only when you're needed (the default), or every step
   toolroll notifications digest <HH:MM>|off   one evening message: what finished, what waits, what failed
   toolroll notifications mute|unmute --repo <p>   no pings for a project; the console and digest keep it
@@ -641,7 +641,7 @@ Agents — which provider and model each phase runs on
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
-      the mate: one conversation across your projects, the same thread the
+      your lead: one conversation across your projects, the same thread the
       console shows; the password mints a spending session once; it reads
       and proposes, you confirm cards (confirm N / dismiss N / open N;
       confirm N yes for an irreversible answer)
@@ -800,7 +800,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   // v103: the ledger chain and evidence packs.
   "checkpoint", "out", "from", "to",
   // v105: spend and budgets.
-  "month", "usd", "person", "teammate",
+  "month", "usd", "person", "subagent", "teammate",
   // Sprint 8: the organisation policy.
   "providers", "models", "tools",
   "project-root", "schedule", "ceiling", "require",
@@ -1064,7 +1064,7 @@ async function dispatchOn(
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
-      ...(options.mateSeams === undefined ? {} : { mateSeams: options.mateSeams }),
+      ...(options.leadSeams === undefined ? {} : { leadSeams: options.leadSeams }),
       ...(options.waitSleep === undefined ? {} : { waitSleep: options.waitSleep }),
       ...(options.releaseIo === undefined ? {} : { releaseIo: options.releaseIo }),
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
@@ -1210,7 +1210,7 @@ type Context = {
   telegramEnv?: Record<string, string | undefined>;
   /** Injected by tests: what `publish` runs for git and gh. */
   publishExec?: PublishExec;
-  mateSeams?: MateCliSeams;
+  leadSeams?: LeadCliSeams;
   /** Injected by tests: the external-dispatch gh surface. */
   dispatchAdapter?: DispatchAdapter;
   /** Injected by tests: how flow triggers reach GitHub (gh) and Linear (fetch), and where their secrets live. */
@@ -1278,7 +1278,7 @@ function telegramCanDeliver(context: { databaseFile: string; telegramTokenFile: 
 function telegramConversation(context: Context, options: { serverOrigin?: string } = {}): TelegramConversationOptions {
   return {
     evidenceRoot: context.evidenceRoot,
-    ...(context.mateSeams?.subscriptionRunner === undefined ? {} : { subscriptionRunner: context.mateSeams.subscriptionRunner }),
+    ...(context.leadSeams?.subscriptionRunner === undefined ? {} : { subscriptionRunner: context.leadSeams.subscriptionRunner }),
     // Re-read on every card and every `/task`: the same console-url chat
     // links use, held to an https origin, and — inside `up`, where this
     // process also serves the console — equal to that console's own
@@ -2675,14 +2675,14 @@ async function tickCommand(
   const replyPass = housekeeping?.replies ?? { read: 0, taken: 0, problem: null };
   const stepPass = housekeeping?.steps ?? { ran: 0, problems: [] };
   const flowPass: FlowAdvance = housekeeping?.flows ?? { moved: 0, filed: [], problems: [] };
-  // Each AI teammate's daily summary to its manager (v92), once, after 5 pm; its weekly report (v97), Monday mornings.
-  if (!buildsOnly) try { sendTeammateSummaries(store, repo, clock()); sendTeammateWeeklies(store, repo, clock()); } catch (error) { flowPass.problems.push(`teammate summaries: ${error instanceof Error ? error.message : "could not send"}`); }
-  // Undoing a teammate's tool call asked for in chat (v97): made here, as the person who asked.
+  // Each subagent's daily summary to its manager (v92), once, after 5 pm; its weekly report (v97), Monday mornings.
+  if (!buildsOnly) try { sendSubagentSummaries(store, repo, clock()); sendSubagentWeeklies(store, repo, clock()); } catch (error) { flowPass.problems.push(`subagent summaries: ${error instanceof Error ? error.message : "could not send"}`); }
+  // Undoing a subagent's tool call asked for in chat (v97): made here, as the person who asked.
   if (!buildsOnly && context.shouldStop?.() !== true) {
     try { await runRequestedUndos(store, {}, clock()); }
-    catch (error) { flowPass.problems.push(`teammate undo: ${error instanceof Error ? error.message : "could not run"}`); }
+    catch (error) { flowPass.problems.push(`subagent undo: ${error instanceof Error ? error.message : "could not run"}`); }
   }
-  // Tools connected by signing in: a sign-in that runs out within ten minutes is renewed here, so a build or a teammate's call starts with a fresh one.
+  // Tools connected by signing in: a sign-in that runs out within ten minutes is renewed here, so a build or a subagent's call starts with a fresh one.
   if (!buildsOnly && context.shouldStop?.() !== true) {
     try { flowPass.problems.push(...(await refreshConnections(store, [repo], clock(), context.flowStepIo?.fetch === undefined ? {} : { fetcher: context.flowStepIo.fetch })).problems); }
     catch (error) { flowPass.problems.push(`tool sign-ins: ${error instanceof Error ? error.message : "could not renew"}`); }
@@ -6869,21 +6869,21 @@ async function runWatchLoop(args: {
 
   const slackFollower = followSlack({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
-    ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
+    ...(context.leadSeams?.subscriptionRunner ? {subscriptionRunner:context.leadSeams.subscriptionRunner} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="slack",
   }).catch(()=>progress("watch: Slack stopped. Check Slack settings before reconnecting."));
 
   const teamsFollower = followTeams({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
-    ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
+    ...(context.leadSeams?.subscriptionRunner ? {subscriptionRunner:context.leadSeams.subscriptionRunner} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="teams",
   }).catch(()=>progress("watch: Teams stopped. Check Teams settings before reconnecting."));
 
   const discordFollower = followDiscord({store,dir:dirname(context.databaseFile),signal:followController.signal,
     readProjects:telegramReadProjects(context),evidenceRoot:context.evidenceRoot,
-    ...(context.mateSeams?.subscriptionRunner ? {subscriptionRunner:context.mateSeams.subscriptionRunner} : {}),
+    ...(context.leadSeams?.subscriptionRunner ? {subscriptionRunner:context.leadSeams.subscriptionRunner} : {}),
     origin:()=>phoneOrigin(process.env,dirname(context.databaseFile),{serverOrigin:text(flags,"public-url")??null}),
     notifications:()=>effectivePrimary(process.env,dirname(context.databaseFile),loadBotToken(process.env,context.telegramTokenFile)!==null).channel==="discord",
   }).catch(()=>progress("watch: Discord stopped. Check Discord settings before reconnecting."));
@@ -11086,7 +11086,7 @@ function describeApproveFailure(reason: string, id: string): string {
   if (reason === "changed") return "the scope changed since you read it — look again before approving";
   // v102: the project's approval rules.
   if (reason === "requester") return `you filed ${id}, and this project needs someone else to approve it`;
-  if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or an AI teammate`;
+  if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or a subagent`;
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";
@@ -11197,7 +11197,7 @@ async function chatCommand(flags: Map<string, string | true>, context: Context):
   if (flags.has("follow") && flags.has("no-follow")) return fail(write, json, "chat", "usage", "Choose --follow or --no-follow.", EXIT.usage);
   const credentials = await askCredentials(flags, context);
   if (credentials === null) {
-    return fail(write, json, "chat", "usage", "the mate takes your name and password — `--as <you>` and the hidden prompt; `--token <t>` only where a script must (it lands in shell history)", EXIT.usage);
+    return fail(write, json, "chat", "usage", "the lead takes your name and password — `--as <you>` and the hidden prompt; `--token <t>` only where a script must (it lands in shell history)", EXIT.usage);
   }
   const ceilingGiven = text(flags, "ceiling-usd");
   // The ceiling: the `--repo` list, or the ENROLLED registry beside the
@@ -11211,7 +11211,7 @@ async function chatCommand(flags: Map<string, string | true>, context: Context):
     if ("error" in loaded) return fail(write, json, "chat", "registry", "the enrolled-project registry could not be read — name projects with --repo", EXIT.refused);
     repos = loaded.repos;
   }
-  const result = await runMateCli({
+  const result = await runLeadCli({
     store,
     databaseFile: context.databaseFile,
     write,
@@ -11222,7 +11222,7 @@ async function chatCommand(flags: Map<string, string | true>, context: Context):
     end: flags.has("end"),
     ...(flags.has("follow") || flags.has("no-follow") ? { follow: flags.has("follow") && !flags.has("no-follow") } : {}),
     ceilingUsd: ceilingGiven === undefined ? undefined : Number(ceilingGiven),
-    ...(context.mateSeams === undefined ? {} : { seams: { ...context.mateSeams, clock: context.mateSeams.clock ?? context.clock } }),
+    ...(context.leadSeams === undefined ? {} : { seams: { ...context.leadSeams, clock: context.leadSeams.clock ?? context.clock } }),
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
     // The console's own address (and its public one): links there read as "the task", "the result", "Settings → Lead".
     appOrigin: [loadConsoleUrl(process.env, dirname(context.databaseFile)), phoneOrigin(process.env, dirname(context.databaseFile))],
@@ -11805,14 +11805,14 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
   ]);
 }
 
-/** `spend [--month YYYY-MM] [--csv]` (v105): what agent work cost in a month, by project, person, teammate and model. */
+/** `spend [--month YYYY-MM] [--csv]` (v105): what agent work cost in a month, by project, person, subagent and model. */
 function spendCommand(flags: Map<string, string | true>, context: Context): number {
   const command = "spend";
   for (const name of flags.keys()) if (!["month", "csv", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
   const month = text(flags, "month") === undefined ? monthOf(context.clock()) : monthNamed(text(flags, "month") ?? null);
   if (month === null) return fail(context.write, context.json, command, "usage", "Use spend --month YYYY-MM.", EXIT.usage);
   const items = spendItems(context.store.handle, month.from, month.to);
-  const names = teammateNames(context.store.handle);
+  const names = subagentNames(context.store.handle);
   if (flags.has("csv")) { context.write(spendCsv(items, names).replace(/^\ufeff/, "").trimEnd()); return EXIT.ok; }
   const budgets = budgetStates(context.store.budgets(), items);
   const total = items.reduce((sum, item) => sum + (item.microusd ?? 0), 0);
@@ -11821,7 +11821,7 @@ function spendCommand(flags: Map<string, string | true>, context: Context): numb
   for (const item of items) if (item.project !== null) byProject.set(item.project, (byProject.get(item.project) ?? 0) + (item.microusd ?? 0));
   // v105: subscription work is $0; what binds it is its plan's windows, as the provider last said.
   const limits = context.store.providerLimits();
-  const windows = limitsView(limits, [], { project: repo => basename(repo), teammate: id => String(id) }, context.clock())?.tiles ?? [];
+  const windows = limitsView(limits, [], { project: repo => basename(repo), subagent: id => String(id) }, context.clock())?.tiles ?? [];
   // Sized routing: each tier's tasks, time to a result and plan use, and what the tiers saved.
   const tiers = tierReport(context.store.handle, month.from, month.to, items);
   return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved } }, () => [
@@ -11911,17 +11911,18 @@ async function budgetCommand(positional: readonly string[], flags: Map<string, s
   const store = context.store;
   if (action === undefined || action === "list") {
     const budgets = store.monthSpend(context.clock()).budgets;
-    return succeed(context.write, context.json, command, { budgets }, () => budgets.length === 0 ? ["No budgets. `budget set --all|--project <path>|--person <name>|--teammate <id> --usd <n>` makes one."]
+    return succeed(context.write, context.json, command, { budgets }, () => budgets.length === 0 ? ["No budgets. `budget set --all|--project <path>|--person <name>|--subagent <id> --usd <n>` makes one."]
       : budgets.map(one => `#${one.id} ${budgetLabel(one).replace(/'s$/, "")}: ${spendUsd(one.spentMicrousd)} of ${spendUsd(one.limitMicrousd)} this month (${one.percent}%)${one.hardStop ? ", stops API work at 100%" : ", alerts only"}`));
   }
   if (action !== "set" && action !== "remove") return fail(context.write, context.json, command, "usage", "Use budget list, budget set or budget remove.", EXIT.usage);
-  const allowed = new Set(["all", "project", "person", "teammate", "usd", "alerts-only", "as", "token", "token-file", "token-env", "db", "json"]);
+  // --teammate: the flag's name before D5, still read this release.
+  const allowed = new Set(["all", "project", "person", "subagent", "teammate", "usd", "alerts-only", "as", "token", "token-file", "token-env", "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a budget option.`, EXIT.usage);
   const chosen = [flags.has("all") ? { scope: "installation" as const, key: "*" } : null,
     text(flags, "project") === undefined ? null : { scope: "project" as const, key: resolve(text(flags, "project")!) },
     text(flags, "person") === undefined ? null : { scope: "person" as const, key: text(flags, "person")! },
-    text(flags, "teammate") === undefined ? null : { scope: "teammate" as const, key: text(flags, "teammate")! }].filter(one => one !== null);
-  if (chosen.length !== 1) return fail(context.write, context.json, command, "usage", "Name one of --all, --project <path>, --person <name> or --teammate <id>.", EXIT.usage);
+    (text(flags, "subagent") ?? text(flags, "teammate")) === undefined ? null : { scope: "subagent" as const, key: (text(flags, "subagent") ?? text(flags, "teammate"))! }].filter(one => one !== null);
+  if (chosen.length !== 1) return fail(context.write, context.json, command, "usage", "Name one of --all, --project <path>, --person <name> or --subagent <id>.", EXIT.usage);
   const target = chosen[0]!;
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -11930,8 +11931,8 @@ async function budgetCommand(positional: readonly string[], flags: Map<string, s
   }
   const known = target.scope === "installation" || (target.scope === "project" ? store.knownRepos().includes(target.key)
     : target.scope === "person" ? store.accountFacts().some(one => one.name === target.key && one.revokedAt === null)
-    : store.handle.prepare("SELECT 1 FROM teammate WHERE id = ?").get(Number(target.key)) !== undefined);
-  if (!known) return fail(context.write, context.json, command, "not-found", "That isn't a project, person or teammate here.", EXIT.refused);
+    : store.handle.prepare("SELECT 1 FROM subagent WHERE id = ?").get(Number(target.key)) !== undefined);
+  if (!known) return fail(context.write, context.json, command, "not-found", "That isn't a project, person or subagent here.", EXIT.refused);
   if (action === "remove") {
     const existing = store.budgets().find(one => one.scope === target.scope && one.key === target.key);
     if (existing === undefined || !store.removeBudget(existing.id, acting.name, context.clock())) return fail(context.write, context.json, command, "not-found", "There's no such budget.", EXIT.refused);

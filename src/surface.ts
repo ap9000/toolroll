@@ -20,8 +20,6 @@ import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
  * SURFACE_NOTES.flags says "intended".
  */
 
-import { SESSION_DESCRIPTORS, type SessionDescriptor } from './session-contract.js';
-import { sessionCliFlags } from './session-cli.js';
 import { commandEntries, type CommandFlag, type CommandRow, type RemotePolicy } from './contracts/cli.js';
 
 /** A guide row and its flags are derived from their schemas in src/contracts/cli.ts. */
@@ -32,8 +30,8 @@ type GuideRow = { readonly [K in keyof CommandRow as K extends "remote" ? never 
 
 /** The guide's limits, stated machine-readably in every dump. */
 export const SURFACE_NOTES = {
-  authority: "documentation is not permission; session descriptors also drive parser and request validation; legacy entries remain advisory",
-  flags: "session flags are exact per operation; legacy flags are intended per command and may use a global parser vocabulary",
+  authority: "documentation is not permission; legacy entries remain advisory",
+  flags: "flags are intended per command and may use a global parser vocabulary",
   reasons: "curated, not exhaustive — the runtime `reason` field is the truth; ignore tokens you do not recognize",
   database: "local database commands wait up to 15 seconds for another writer; an exhausted wait returns database-busy and names the selected file",
 } as const;
@@ -78,22 +76,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "graph", synopsis: "report which work graph is already here", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag] },
   { invocation: "repos", synopsis: "list connected repositories", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag] },
   operator("proposals", "what coordinators proposed over the MCP gateway — list, confirm <id> [--yes], dismiss <id>; confirming runs the plane's own door under your password"),
-  operator("chat", "with a saved profile, --lead <id> --conversation <id> opens central chat; --say sends one message, --follow only reads updates, --authorize --terms-digest enables the displayed paid terms; --local uses the existing local coordinator, where --follow enables crew updates and --no-follow pauses them; proposals keep their approval requirements"),
-  operator('connect', 'save an authenticated central HTTPS profile with --as and --token-stdin or --token-file; --local-login explicitly uses the existing private local sign-in; secrets never belong in arguments or URLs'),
-  operatorRead('lead list', 'list central leads available to the signed-in account; --profile selects a saved connection'),
-  operator('lead create', 'create a central lead with --name, --instructions and repeatable --project paths admitted by the server'),
-  operator('lead update', 'change --name, --instructions or --status for --lead at --revision; projects remain fixed'),
-  operator('lead member', 'set --account membership on --lead with --role, --active true|false and the current --revision'),
-  operator('lead transfer', 'move ownership of --task to --lead at --revision; existing execution authority remains unchanged'),
-  operatorRead('conversation list', 'list admitted conversations, optionally within --lead; attachment never starts model work'),
-  operator('conversation create', 'create a conversation with --lead, --title, --visibility private|team and repeatable --project paths'),
-  operatorRead('conversation show', 'read --conversation messages and saved work; no model call or read-marker mutation'),
-  operator('conversation member', 'set --account membership on --conversation with --role, --active true|false and the current --revision; lead membership must already permit the role'),
-  operator('conversation edit', 'edit your queued --message in --conversation at --revision using --text; running messages cannot be edited'),
-  operator('conversation withdraw', 'withdraw your queued --message in --conversation at --revision; an active turn requires stop'),
-  operator('conversation read', 'explicitly record your read position at --message within --conversation'),
-  operator('conversation follow', 'enable or pause automatic lead summaries with --conversation and --enabled true|false, within the existing paid chat authorization; passive chat --follow only reads updates'),
-  operator('conversation stop', 'request stopping the exact --message in --conversation; retain uncertain work until its owner settles it'),
+  // D5: the central team service (connect, the central lead verbs, conversation …) and native coding sessions are
+  // deprecated: they still run this release, with a warning, but are no longer declared here.
+  operator("chat", "talk to your lead: one conversation across every project; --say sends one message; --follow enables crew updates and --no-follow pauses them; proposals keep their approval requirements"),
   { invocation: "repos add", synopsis: "add a project: a Git repository, in the console at once; the lead adds with its token", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "path", required: false, meaning: "the repository (default: the one you are in)" }],
     flags: [jsonFlag, { name: "token", takesValue: true, meaning: "the lead token (or TOOLROLL_LEAD_TOKEN)" }],
@@ -138,12 +123,6 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "yes", takesValue: false, meaning: "with --release-gate: lift that one pause once it is proved" }],
     notableReasons: ["usage", "ambiguous", "drift", "timeout", "check-failed", "ci-failed", "tree-mismatch", "conflict", "mixed-runtime", "gate-held", "after-swap"] },
   operator("demo", "a seeded throwaway sandbox"),
-  { invocation: 'session capabilities', synopsis: 'Show executable session schemas and operator authority requirements; no credentials needed', audience: 'agent', agentMayInvoke: true, mutation: 'none', flags: [jsonFlag] },
-  ...SESSION_DESCRIPTORS.map(spec => ({
-    invocation: `session ${spec.operation}`, synopsis: spec.synopsis, audience: spec.audience, agentMayInvoke: spec.agentMayInvoke,
-    mutation: spec.mutation ? 'keyed' as const : 'none' as const, inputSchema: spec.inputSchema,
-    flags: Object.entries(sessionCliFlags(spec)).map(([name, arity]) => ({ name, takesValue: arity === 'value', meaning: name === 'key' ? 'keep the same key when reconciling; inspect after unknown delivery, never blind-retry' : `see session ${spec.operation} --help` })),
-  })),
 
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
@@ -158,7 +137,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "integrations", synopsis: "every integration as Connected, Not set up or Broken, with its last success and error, what uses it and what to do; --saved skips new checks; never a secret", audience: "agent", agentMayInvoke: true, mutation: "none",
     flags: [jsonFlag, dbFlag, { name: "saved", takesValue: false, meaning: "show the last checks without checking again" }] },
   { invocation: "ready", synopsis: "what could be dispatched right now (rows carry reservedFor)", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
-  { invocation: "brief", synopsis: "with a saved central profile, --lead <id> --conversation <id> reads messages, proposals and saved work; --request-id inspects your saved receipt without resending; --local uses local DB catch-up, where --history selects the older operational report", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
+  { invocation: "brief", synopsis: "the lead's catch-up from the local database; --history selects the older operational report", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "gaps", synopsis: "requirement gaps blocking dispatch", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag, repoFlag] },
   { invocation: "grants", synopsis: "list authority grants", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
   { invocation: "audit", synopsis: "what people did on this server with their API tokens, newest first: when, who, which token, from the CLI (api) or an agent (mcp), the command or tool, the project and the outcome (ok, refused, error); an approver sees everyone in their projects, anyone else only themselves",
@@ -458,10 +437,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 const REMOTE_NO: readonly string[] = [
   // Answered by the local CLI, or a client of a central server itself.
   "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github", "contract", "skills list", "skills get", "skills install",
-  "link", "unlink", "update", "release", "demo", "chat", "connect", "lead list", "lead create", "lead update", "lead member", "lead transfer",
-  "conversation list", "conversation create", "conversation show", "conversation member", "conversation edit", "conversation withdraw",
-  "conversation read", "conversation follow", "conversation stop",
-  "session capabilities", "session list", "session show", "session changes", "session start", "session send", "session stop", "session resume", "session recover",
+  "link", "unlink", "update", "release", "demo", "chat",
   // This machine's checkout, saved profile, credentials and catch-up.
   "project show", "project use", "brief", "lead token", "lead say", "health",
   "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",

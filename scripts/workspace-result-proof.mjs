@@ -376,7 +376,7 @@ async function sameTaskJourney() {
     await page.click('.composer button[type="submit"]');
     await page.waitForFunction(() => document.querySelector('.composer')?.getAttribute('data-chat-busy') === '0' && document.querySelectorAll('[data-message-role]').length > 0);
     await page.fill('.composer textarea[name="message"]', draft);
-    const thread = fixture.store.activeMateSession(fixture.name);
+    const thread = fixture.store.activeLeadSession(fixture.name);
     let sourceRun = originalRun;
     const versions = [root], runs = [sourceRun], seals = [];
     for (let revision = 1; revision <= 2; revision++) {
@@ -457,7 +457,7 @@ async function sameTaskJourney() {
       check(`${name} revision ${revision}: Revise stays on the root with a fresh unapproved execution`, new URL(page.url()).searchParams.get('task') === root && child && !fixture.store.getScope(child).approvedAt && await page.locator(`form[action="/t/${child}/approve"]`).count() === 1);
       const replay = await post(`/r/${sourceRun}/revise`, batch);
       check(`${name} revision ${revision}: lost seal response returns the same child`, replay.status() === 303 && replay.headers().location === `/chat?task=${root}&revision=${child}` && fixture.store.revisionsFromRun(sourceRun).length === 1);
-      check(`${name} revision ${revision}: root draft and session survive creation`, await page.inputValue('.composer textarea[name="message"]') === draft && fixture.store.activeMateSession(fixture.name).id === thread.id);
+      check(`${name} revision ${revision}: root draft and session survive creation`, await page.inputValue('.composer textarea[name="message"]') === draft && fixture.store.activeLeadSession(fixture.name).id === thread.id);
       const work = await read('/work');
       check(`${name} revision ${revision}: one root Work card with current approval state`, (work.match(new RegExp(`class="work-row" data-task="${root}"`, 'g')) ?? []).length === 1 && !work.includes(`class="work-row" data-task="${child}"`) && /Needs you/.test(work.split(`data-task="${root}"`)[1]?.split('</article>')[0] ?? ''));
       await page.locator('.chat-approval > summary').focus();

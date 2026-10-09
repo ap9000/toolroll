@@ -2,7 +2,7 @@
  * The scout's terminal handoff (mate arc §10), read against the report contract (src/contracts/scout-report.ts) with
  * the 422 rule: fail closed, every problem reported at once, each naming its path (`items[0].url: must be an http or
  * https address`), stable reasons, caps and control-character rejection on every string. A report reaches the task
- * page, the ledger, the terminal, and — through mateView — the mate; and each follow-up becomes a filing's title and
+ * page, the ledger, the terminal, and — through leadView — the lead; and each follow-up becomes a filing's title and
  * goal at one tap, so it gets the park discipline exactly as the plan does.
  */
 

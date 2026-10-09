@@ -11,9 +11,9 @@ import { renderReply, shapeReplyParts } from "./reply-shape.js";
 import { TeamLeads } from "./team-leads.js";
 import type { TeamActor, TeamConversation } from "./team-contract.js";
 import { proposalPreview, tooLongText } from "./chat-channel.js";
-import { PART_CAP, mintCardTokens, phoneLinkButton, splitParts, type InlineButton } from "./telegram-mate.js";
+import { PART_CAP, mintCardTokens, phoneLinkButton, splitParts, type InlineButton } from "./telegram-lead.js";
 import type { TelegramTransport } from "./telegram.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { phoneText } from "./telegram-status.js";
 import type { TelegramMessage } from "./contracts/telegram-callback.js";
 
@@ -178,7 +178,7 @@ export function applyTeamInbound(input: TeamInbound): boolean {
   }
   const trimmed = text.trim();
   if (trimmed === "") { report.ignored++; return true; }
-  if (trimmed.length > MATE_MESSAGE_MAX_CHARS) { say(chatId, tooLongText(trimmed.length)); report.chatRefused = (report.chatRefused ?? 0) + 1; return true; }
+  if (trimmed.length > LEAD_MESSAGE_MAX_CHARS) { say(chatId, tooLongText(trimmed.length)); report.chatRefused = (report.chatRefused ?? 0) + 1; return true; }
   const actor = actorOf(binding);
   const row = conversationRow(store, teamChat.conversation);
   if (row === null) { store.unbindTelegramTeamChat(botId, chatId, "system", now); report.ignored++; return true; }
@@ -241,7 +241,7 @@ export async function deliverTeamChats(
     if (await access() === null) continue;
     const row = conversationRow(store, chat.conversation);
     if (row === null) continue;
-    const pending = store.handle.prepare(`SELECT m.id, m.role, m.text, m.turn, q.author, q.request_id, q.status FROM mate_message m
+    const pending = store.handle.prepare(`SELECT m.id, m.role, m.text, m.turn, q.author, q.request_id, q.status FROM lead_message m
       LEFT JOIN team_message q ON q.message = m.id WHERE m.thread = ? AND m.id > ? ORDER BY m.id LIMIT 20`).all(row.thread, chat.cursor);
     for (const message of pending) {
       const id = Number(message["id"]);
@@ -262,7 +262,7 @@ export async function deliverTeamChats(
       if (role === "assistant" && message["turn"] !== null) {
         const turn = Number(message["turn"]);
         const cardBinding = cardBindingFor(store, botId, chat, turn);
-        for (const proposal of store.listMateProposals(row.thread, ["pending"]).filter(one => one.turn === turn)) {
+        for (const proposal of store.listLeadProposals(row.thread, ["pending"]).filter(one => one.turn === turn)) {
           const enrolled = await access();
           if (enrolled === null) { complete = false; break; }
           const preview = proposalPreview(store, proposal, enrolled, "telegram");

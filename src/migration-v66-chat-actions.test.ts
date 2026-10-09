@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
-const V65 = `CREATE TABLE mate_proposal_old (
+const V65 = `CREATE TABLE lead_proposal_old (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread         INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   turn           INTEGER NOT NULL,
   kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','steer','scope','cancel','answer','repair','agents','review','control','task_action')),
   payload_json   TEXT NOT NULL,
@@ -39,10 +39,10 @@ describe("v66 shared action proposals", () => {
         : V65,
     );
     db.exec(
-      "INSERT INTO mate_proposal_old (id,thread,turn,kind,payload_json,ceiling_digest,state,created_at,resolved_at,resolved_by,outcome_json) SELECT id,thread,turn,kind,payload_json,ceiling_digest,state,created_at,resolved_at,resolved_by,outcome_json FROM mate_proposal",
+      "INSERT INTO lead_proposal_old (id,thread,turn,kind,payload_json,ceiling_digest,state,created_at,resolved_at,resolved_by,outcome_json) SELECT id,thread,turn,kind,payload_json,ceiling_digest,state,created_at,resolved_at,resolved_by,outcome_json FROM lead_proposal",
     );
-    db.exec("DROP TABLE mate_proposal");
-    db.exec("ALTER TABLE mate_proposal_old RENAME TO mate_proposal");
+    db.exec("DROP TABLE lead_proposal");
+    db.exec("ALTER TABLE lead_proposal_old RENAME TO lead_proposal");
     db.exec("DROP TABLE service_cursor");
     db.prepare("UPDATE schema_version SET version=?").run(version);
     db.close();
@@ -53,8 +53,8 @@ describe("v66 shared action proposals", () => {
       const path = file();
       store = openStore(path);
       store.saveApprover("operator", "fixture", NOW);
-      const thread = store.openMateThread("operator", "ceiling", NOW).thread.id;
-      const first = store.draftMateProposal(
+      const thread = store.openLeadThread("operator", "ceiling", NOW).thread.id;
+      const first = store.draftLeadProposal(
         {
           thread,
           turn: 1,
@@ -64,7 +64,7 @@ describe("v66 shared action proposals", () => {
         },
         NOW,
       );
-      store.casMateProposal(first, "drafting", "pending", null, null, NOW);
+      store.casLeadProposal(first, "drafting", "pending", null, null, NOW);
       store.mintCeremonyNonce(
         {
           hash: "hash",
@@ -77,7 +77,7 @@ describe("v66 shared action proposals", () => {
         NOW,
       );
       const proposals = store.handle
-          .prepare("SELECT * FROM mate_proposal")
+          .prepare("SELECT * FROM lead_proposal")
           .all(),
         receipts = store.handle.prepare("SELECT * FROM ceremony_nonce").all();
       store.close();
@@ -89,7 +89,7 @@ describe("v66 shared action proposals", () => {
           "version"
         ],
       ).toBe(SCHEMA_VERSION);
-      expect(store.handle.prepare("SELECT * FROM mate_proposal").all()).toEqual(
+      expect(store.handle.prepare("SELECT * FROM lead_proposal").all()).toEqual(
         proposals,
       );
       expect(
@@ -98,7 +98,7 @@ describe("v66 shared action proposals", () => {
       expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual(
         [],
       );
-      const action = store.draftMateProposal(
+      const action = store.draftLeadProposal(
         {
           thread,
           turn: 2,
@@ -111,7 +111,7 @@ describe("v66 shared action proposals", () => {
       expect(action).toBeGreaterThan(first);
       store.close();
       store = openStore(path);
-      expect(store.getMateProposal(action)?.kind).toBe("action");
+      expect(store.getLeadProposal(action)?.kind).toBe("action");
       expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual(
         [],
       );
@@ -131,7 +131,7 @@ describe("v66 shared action proposals", () => {
     expect(
       String(
         db
-          .prepare("SELECT sql FROM sqlite_master WHERE name='mate_proposal'")
+          .prepare("SELECT sql FROM sqlite_master WHERE name='lead_proposal'")
           .get()?.["sql"],
       ),
     ).not.toContain("'task_action','action'");
@@ -147,7 +147,7 @@ describe("v66 shared action proposals", () => {
     const db = new DatabaseSync(path);
     expect(
       db
-        .prepare("PRAGMA table_info(mate_proposal)")
+        .prepare("PRAGMA table_info(lead_proposal)")
         .all()
         .some((r) => r["name"] === "extra"),
     ).toBe(true);

@@ -1,5 +1,7 @@
 # Shared leads for a team
 
+> **Deprecated.** Shared central leads, team conversations and team chat still work this release, hidden from help and the console, and are removed in the next minor release. Your lead in Chat does the same work; give it [subagents](guide/subagents.md) for helpers with their own rules.
+
 One installation owns the database and runs the agents. Teammates connect through the browser or CLI using their own accounts. A lead has a stable name, project scope and working instructions; each conversation has its own audience and history.
 
 ## Start in the browser

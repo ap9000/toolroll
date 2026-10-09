@@ -46,7 +46,7 @@ test.each([88, -88])("v%s: flow_trigger admits email and chat, keeping every tri
   const before = db.prepare("SELECT * FROM flow_trigger").all();
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
   expect(store.handle.prepare("SELECT * FROM flow_trigger").all()).toEqual(before);
   expect(store.flowTriggerSaw(7, "delivery:1")).toBe(true);

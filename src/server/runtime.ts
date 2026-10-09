@@ -27,10 +27,10 @@ authenticateApprover as checkApproverPassword,
 type Scope
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
-import type { CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateTurn,PlanRevision,TaskFamily,TaskRef } from "../store.js";
+import type { CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,PlanRevision,TaskFamily,TaskRef } from "../store.js";
 import {
 type Decision,
-type MateAsk,type MateThreadScope,
+type LeadAsk,type LeadThreadScope,
 type Run,
 type Store,
 type Task,
@@ -98,19 +98,19 @@ export interface ServerRuntime {
   flowRooms: FlowRooms;
   providerHome: string;
   toolHome: string;
-  matePrincipal: (who: Who & { via: "cookie"; }) => VerifiedApprover | null;
-  chatScopeOf: (focusTask: TaskChatFocus | null, chatProject: string | null) => MateThreadScope;
+  leadPrincipal: (who: Who & { via: "cookie"; }) => VerifiedApprover | null;
+  chatScopeOf: (focusTask: TaskChatFocus | null, chatProject: string | null) => LeadThreadScope;
   liveTurns: Map<number, LiveTurn>;
   /** A lead reply started on a thread: pages with that conversation open follow it (server/live.ts). */
   liveTurnStarted: (thread: number) => void;
-  mateConversationRows: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject?: string | null) => { messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: MateTurn | null; recent: MateTurn[]; ask: MateAsk | null; asks: Map<number, MateAsk>; previous: ReplacedThread | null; };
+  leadConversationRows: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject?: string | null) => { messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>; previous: ReplacedThread | null; };
   demoLeadHere: () => DemoLead | null;
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
   team: ReturnType<typeof createTeamRuntime>;
   teamChatProvider: TeamChatProviderResolver;
   pullRequestTargetOf: (runId: number) => string | null;
   chatEnablement: () => ChatEnablement;
-  startMateConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date) => number;
+  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date) => number;
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
@@ -141,7 +141,7 @@ export interface ServerRuntime {
   deletedRepos: Set<string>;
   lookupSession: (candidate: string, touch?: boolean) => Session | null;
   authorizeMutation: (request: IncomingMessage, who: Who, body: FormView<FormFieldOf<"mutationGuard">>) => { status: number; message: string; } | null;
-  mateSaid: Map<string, { turn: number | null; message: string; }>;
+  leadSaid: Map<string, { turn: number | null; message: string; }>;
   armTaskResume: (response: ServerResponse, who: Who, taskId: string, named: string, returnTo: "chat" | "task", now: Date) => void;
   chatFetcher: { (input: RequestInfo | URL, init?: RequestInit): Promise<Response>; (input: string | URL | Request, init?: RequestInit): Promise<Response>; };
   chatCeilingDigest: (repos?: readonly string[]) => string;

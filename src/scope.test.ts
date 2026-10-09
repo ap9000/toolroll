@@ -880,10 +880,10 @@ describe("one strict projection gates filing, consent, the seal, and dispatch (a
     expect(runs()).toBe(0);
   };
 
-  test("a proposed-via marker outside mate, coordinator, scout, or null is a stated term problem — the mate quarantine cannot be bypassed by a word it does not list", () => {
+  test("a proposed-via marker outside mate, coordinator, scout, or null is a stated term problem — the lead quarantine cannot be bypassed by a word it does not list", () => {
     const { ref } = file("t-via");
     const raw = store.raw();
-    // The quarantine as written: a mate's text never takes a mode seal.
+    // The quarantine as written: a lead's text never takes a mode seal.
     raw.prepare("UPDATE task_scope SET proposed_via = 'mate' WHERE task_id = 't-via'").run();
     expect(store.getScope("t-via")!.proposedVia).toBe("mate");
     expect(store.sealScopeApproval("t-via", "mode nightly", T0, {}, { kind: "mode", modeDigest: "m".repeat(32) })).toBe(false);

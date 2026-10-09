@@ -9,16 +9,16 @@ import {
   CHAT_ACTIONS,
 } from "./chat-actions.js";
 import { isDirectChatProvider, subscriptionCredentialKey } from "./converse.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
-import type { DoorOutcome } from "./mate-doors.js";
-import { MATE_TOOL_SCHEMAS } from "./mate-tools.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
+import type { DoorOutcome } from "./lead-doors.js";
+import { LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { canonicalProject } from "./project.js";
 import type {
   ChatConfig,
-  MateProposal,
-  MateSession,
-  MateThread,
+  LeadProposal,
+  LeadSession,
+  LeadThread,
   Store,
   SubscriptionChatProviderId,
 } from "./store.js";
@@ -48,12 +48,12 @@ export function channelRepos(
   return repos;
 }
 
-export type ResolvedMate =
+export type ResolvedLead =
   | {
       ok: true;
       who: VerifiedApprover;
-      session: MateSession;
-      thread: MateThread;
+      session: LeadSession;
+      thread: LeadThread;
       config: ChatConfig & { provider: SubscriptionChatProviderId };
     }
   | {
@@ -78,12 +78,12 @@ export type ResolvedMate =
  * always gets an answer — except while a turn is still running there,
  * which is "busy": the message waits its turn instead of ending it.
  */
-export function resolveChannelMate(
+export function resolveChannelLead(
   store: Store,
   binding: { approver: string; approverGeneration: number },
   repos: readonly string[],
   now: Date,
-): ResolvedMate {
+): ResolvedLead {
   const config = store.getChatConfig();
   if (config === null) {
     return {
@@ -115,8 +115,8 @@ export function resolveChannelMate(
   if (!verified.ok) return { ok: false, reason: "unpaired", said: null };
   const who = verified.who;
   const credentialKey = subscriptionCredentialKey(config.provider);
-  let session = store.activeMateSession(who.name);
-  const liveThread = store.liveMateThreadFor(who.name);
+  let session = store.activeLeadSession(who.name);
+  const liveThread = store.liveLeadThreadFor(who.name);
   const sessionMismatch =
     session !== null &&
     (session.approverGeneration !== who.generation ||
@@ -125,13 +125,13 @@ export function resolveChannelMate(
   const threadMismatch =
     liveThread !== null && liveThread.ceilingDigest !== who.ceilingDigest;
   // Replacing either would end a turn still running on the computer.
-  if ((sessionMismatch || threadMismatch) && store.liveMateTurnFor(who.name) !== null)
+  if ((sessionMismatch || threadMismatch) && store.liveLeadTurnFor(who.name) !== null)
     return { ok: false, reason: "busy", said: null };
   if (session === null || sessionMismatch) {
     const termsDigest = createHash("sha256")
       .update(`0\n${who.ceilingDigest}`)
       .digest("hex");
-    const id = store.mintMateSession(
+    const id = store.mintLeadSession(
       {
         approver: who.name,
         approverGeneration: who.generation,
@@ -142,14 +142,14 @@ export function resolveChannelMate(
       },
       now,
     );
-    session = store.getMateSession(id);
+    session = store.getLeadSession(id);
     if (session === null)
       return { ok: false, reason: "no-session", said: couldNotAnswerText("a new chat session couldn't be started") };
   }
-  // openMateThread closes a thread kept under another ceiling.
+  // openLeadThread closes a thread kept under another ceiling.
   const thread =
     threadMismatch || liveThread === null
-      ? store.openMateThread(who.name, who.ceilingDigest, now).thread
+      ? store.openLeadThread(who.name, who.ceilingDigest, now).thread
       : liveThread;
   return {
     ok: true,
@@ -168,9 +168,9 @@ export function mirrorToTaskChat(store: Store, who: VerifiedApprover, taskId: st
   try {
     const root = store.taskFamilyOf(taskId, who.repos, false)?.root.id ?? taskId;
     if (!taskInCeiling(store, root, who.repos)) return;
-    const thread = store.openMateThread(who.name, who.ceilingDigest, now, { kind: "task", key: root }).thread;
-    store.appendMateMessage({ thread: thread.id, turn: null, role: "operator", text: `From ${surface}: ${message}` }, now);
-    store.appendMateMessage({ thread: thread.id, turn: null, role: "assistant", text: reply }, now);
+    const thread = store.openLeadThread(who.name, who.ceilingDigest, now, { kind: "task", key: root }).thread;
+    store.appendLeadMessage({ thread: thread.id, turn: null, role: "operator", text: `From ${surface}: ${message}` }, now);
+    store.appendLeadMessage({ thread: thread.id, turn: null, role: "assistant", text: reply }, now);
   } catch {
     // The task chat is a copy; the phone's own conversation already has it.
   }
@@ -182,7 +182,7 @@ export function couldNotAnswerText(reason: string): string {
 }
 
 export function tooLongText(length: number): string {
-  return `That message is ${length.toLocaleString("en-US")} characters; chat takes up to ${MATE_MESSAGE_MAX_CHARS.toLocaleString("en-US")}. Nothing was sent to the assistant. Send it in shorter parts, or say which part matters most.`;
+  return `That message is ${length.toLocaleString("en-US")} characters; chat takes up to ${LEAD_MESSAGE_MAX_CHARS.toLocaleString("en-US")}. Nothing was sent to the assistant. Send it in shorter parts, or say which part matters most.`;
 }
 
 /** A reply to a message about several tasks is never guessed: it names them and says how to choose. */
@@ -283,14 +283,14 @@ export type ChatChannelName = "telegram" | "slack" | "discord" | "teams";
 
 /** The card text once its challenge is armed: an irreversible answer or a
  * challenge action, in the same words on every channel. */
-export function armedCardText(proposal: MateProposal, previewText: string): string {
+export function armedCardText(proposal: LeadProposal, previewText: string): string {
   const body = previewText.split("\n\nConfirm or Dismiss below")[0] ?? previewText;
   if (proposal.kind === "action") return `${body}\n\nThis records that you handled this exact result. Confirm?`;
   return `⚠ This answer is IRREVERSIBLE.\n\n${body}\n\nConfirm?`;
 }
 
 /** The "yes" button's label for an armed card. */
-export function armedYesLabel(proposal: MateProposal): string {
+export function armedYesLabel(proposal: LeadProposal): string {
   if (proposal.kind === "action") {
     const action = sharedActionPayload(proposal.payload);
     return `Yes, ${(action === null ? "confirm" : CHAT_ACTIONS[action.operation].label).toLowerCase()}`;
@@ -300,7 +300,7 @@ export function armedYesLabel(proposal: MateProposal): string {
 
 export function proposalLink(
   store: Store,
-  proposal: MateProposal,
+  proposal: LeadProposal,
   repos: readonly string[],
   channel: ChatChannelName | null = null,
 ): PhoneLink | null {
@@ -345,7 +345,7 @@ export function proposalLink(
 export function confirmedLink(
   store: Store,
   outcome: DoorOutcome,
-  proposal: MateProposal,
+  proposal: LeadProposal,
   repos: readonly string[],
 ): PhoneLink | null {
   // A flow change opens its canvas, the card selected.
@@ -377,7 +377,7 @@ function lines(text: string, cap: number): string[] {
 /** The card: plain words for what confirming does, the exact terms it binds to, and whether a button belongs on it. */
 export function proposalPreview(
   store: Store,
-  proposal: MateProposal,
+  proposal: LeadProposal,
   repos: readonly string[],
   channel: ChatChannelName | null = null,
 ): { text: string; buttons: boolean } {
@@ -630,7 +630,7 @@ export function proposalPreview(
 }
 
 /** The card after it resolves, from the recorded outcome — the same words every surface shows. */
-export function proposalOutcomeText(proposal: MateProposal): string {
+export function proposalOutcomeText(proposal: LeadProposal): string {
   const outcome = proposal.outcome as { said?: unknown; via?: unknown } | null;
   const said =
     outcome !== null && typeof outcome.said === "string"
@@ -661,7 +661,7 @@ export function proposalOutcomeText(proposal: MateProposal): string {
 export type ParitySupport = "direct" | "handoff" | "missing";
 
 /**
- * One row per mate tool: how the paired phone reaches it. `direct` means
+ * One row per lead tool: how the paired phone reaches it. `direct` means
  * the same engine tool or the same confirm door runs from Telegram;
  * `handoff` means the phone shows where the existing authenticated
  * control lives and does nothing itself; `missing` means no phone path
@@ -723,14 +723,14 @@ export const CHAT_ACTION_PARITY: Record<
   get_project_tools: { support: "direct", how: "Read during a turn: a project's tools, the common tools list and servers found on the computer. Adding one is a secure-review card; secrets are set only on the console's Tools page.", gap: null },
   get_task_conversation: { support: "direct", how: "Read during a turn: what the person and the lead said in one task's own chat, including what was confirmed there.", gap: null },
   get_flows: { support: "direct", how: "Read during a turn: a person's flows, each one's steps in order and its cards — where each card is, what it waits on, whether it needs them, its owner and its discussion.", gap: null },
-  get_teammates: { support: "direct", how: "Read during a turn: the project's AI teammates, their soul files, the zones they work, what they did today and the questions they're waiting on.", gap: null },
-  propose_teammate: { support: "direct", how: "Adds a teammate from a template or a soul file, changes one section of its soul file (or the whole short file), pauses, resumes or removes it, passes it a note, or answers its question for the person asked, through the shared confirm door.", gap: "Soul files longer than one message are edited on the console's teammate page; the phone changes one section at a time." },
+  get_subagents: { support: "direct", how: "Read during a turn: the project's subagents, their soul files, the zones they work, what they did today and the questions they're waiting on.", gap: null },
+  propose_subagent: { support: "direct", how: "Asks a subagent to do something for you (the lead delegates; its answer comes back here), adds one from a template or a soul file, changes one section of its soul file (or the whole short file), pauses, resumes or removes it, passes it a note, or answers its question for the person asked, through the shared confirm door.", gap: "Soul files longer than one message are edited on the console's subagent page; the phone changes one section at a time." },
   get_flow_insights: { support: "direct", how: "Read during a turn: where each flow's cards pass, fail or are sent back, how long they wait, how its scripts did, and a run's log.", gap: null },
   propose_flow: { support: "direct", how: "Creates or changes a flow, adds, moves, approves, sends back or cancels its cards, comments on them (@name pings that person), sets their owner, follows them, saves the project's scripts, and adds, pauses or removes its triggers, through the shared confirm door; a long drawing opens the secure review. Work a card files is an ordinary task under the usual approvals.", gap: "The flow canvas itself is on the console; the phone confirms cards but draws nothing. Webhook addresses and the Linear key are set on the console's Triggers panel." },
   commit_to: { support: "direct", how: "Records what the lead promised to follow up on (a task, attempt, check or time; 7 days at most). The follow pass says one line when it is met, in the shared conversation and on the chat the promise was made on.", gap: null },
   release_commitment: { support: "direct", how: "Stops following up on one of the person's open promises, with the reason.", gap: null },
   remember: { support: "direct", how: "Proposes a correction or lasting preference as a decision, project instruction or about-you card, through the shared confirm door; an about-you card shows the line it replaces.", gap: null },
-  get_person: { support: "direct", how: "Read during a turn: one person, AI teammate or team chat in full, with their open tasks.", gap: null },
+  get_person: { support: "direct", how: "Read during a turn: one person, subagent or team chat in full, with their open tasks.", gap: null },
   get_integrations: { support: "direct", how: "Read during a turn: which chat apps, email, GitHub, project tools and monitoring are Connected, Not set up or Broken, as Settings → Integrations shows them.", gap: null },
   get_capabilities: { support: "direct", how: "Read during a turn: which agents are signed in, which workers are online, which tools and skills work, which integrations are connected and what checks the project runs, each with its next step and settings link.", gap: null },
   ask_owner: { support: "direct", how: "One question with 2-4 options and Something else, drawn as buttons under the reply; the tapped option is sent as the person's next message.", gap: null },
@@ -773,7 +773,7 @@ export const CHAT_ACTION_PARITY: Record<
   },
   propose_task: {
     support: "direct",
-    how: "Card with Confirm/Dismiss through confirmMateProposal (filed as a mate proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
+    how: "Card with Confirm/Dismiss through confirmLeadProposal (filed as a lead proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
     gap: "Under manual approval the password step happens in the console, reached from the card's button.",
   },
   propose_scope: {
@@ -840,7 +840,7 @@ export const CHAT_ACTION_PARITY: Record<
 
 /** Every tool the model can call, mapped; a new tool must name its phone road. */
 export function parityGaps(): string[] {
-  return MATE_TOOL_SCHEMAS.map((tool) => tool.name).filter(
+  return LEAD_TOOL_SCHEMAS.map((tool) => tool.name).filter(
     (name) => CHAT_ACTION_PARITY[name] === undefined,
   );
 }
@@ -859,7 +859,7 @@ export function handoffCardText(text: string, note: string | null): string {
 export function confirmedCardText(
   store: Store,
   outcome: DoorOutcome,
-  proposal: MateProposal,
+  proposal: LeadProposal,
   note: string | null,
 ): string {
   const said = phoneText(outcome.said, 600);

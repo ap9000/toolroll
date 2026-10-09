@@ -452,7 +452,7 @@ export function diagnosisIsDispatchable(diagnosis: DispatchDiagnosis | null): bo
 }
 
 /** Attach the same lifecycle answer to the bounded fleet snapshot used by
- * both direct chat and the long-running mate. */
+ * both direct chat and the long-running lead. */
 export function withDispatchDiagnoses(store: Store, snapshot: ChatSnapshot, now: Date): ChatSnapshot {
   return {
     ...snapshot,

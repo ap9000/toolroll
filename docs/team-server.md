@@ -120,6 +120,8 @@ Give people access to projects in **People** in the console.
 
 ## 7. Engineers connect
 
+> `toolroll connect` is deprecated with the central team service: it still saves the connection below and prints a warning, and changes in the next minor release.
+
 Each engineer makes their own API token in the console (**Settings → Sessions & tokens**) and saves it in a private file.
 Never paste it into a command line.
 

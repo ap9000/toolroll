@@ -2702,9 +2702,9 @@ describe("migration to v48: `agents` joins the proposal kinds", () => {
     const seeded = openStore(db);
     // Roll the file back to the v47 shape: the v43 proposal CHECK.
     const raw = seeded.raw();
-    raw.exec(`CREATE TABLE mate_proposal_v43 (
+    raw.exec(`CREATE TABLE lead_proposal_v43 (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread         INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   turn           INTEGER NOT NULL,
   kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','steer','scope','cancel','answer','repair')),
   payload_json   TEXT NOT NULL,
@@ -2715,10 +2715,10 @@ describe("migration to v48: `agents` joins the proposal kinds", () => {
   resolved_by    TEXT,
   outcome_json   TEXT
 )`);
-    raw.exec("DROP TABLE mate_proposal");
-    raw.exec("ALTER TABLE mate_proposal_v43 RENAME TO mate_proposal");
-    raw.exec("INSERT INTO mate_thread (approver, ceiling_digest, opened_at) VALUES ('alex', 'c', '2026-09-01T00:00:00.000Z')");
-    raw.exec("INSERT INTO mate_proposal (id, thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (7, 1, 1, 'steer', '{}', 'c', 'pending', '2026-09-01T00:00:00.000Z')");
+    raw.exec("DROP TABLE lead_proposal");
+    raw.exec("ALTER TABLE lead_proposal_v43 RENAME TO lead_proposal");
+    raw.exec("INSERT INTO lead_thread (approver, ceiling_digest, opened_at) VALUES ('alex', 'c', '2026-09-01T00:00:00.000Z')");
+    raw.exec("INSERT INTO lead_proposal (id, thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (7, 1, 1, 'steer', '{}', 'c', 'pending', '2026-09-01T00:00:00.000Z')");
     raw.exec("DROP TABLE service_cursor");
     raw.prepare("UPDATE schema_version SET version = 47").run();
     seeded.close();
@@ -2727,8 +2727,8 @@ describe("migration to v48: `agents` joins the proposal kinds", () => {
     expect(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(48);
     // The old row survived with its id; the new kind is admitted.
-    expect(store.raw().prepare("SELECT id, kind, state FROM mate_proposal").all()).toEqual([{ id: 7, kind: "steer", state: "pending" }]);
-    expect(() => store.raw().prepare("INSERT INTO mate_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (1, 1, 'agents', '{}', 'c', 'pending', '2026-09-01T00:00:00.000Z')").run()).not.toThrow();
+    expect(store.raw().prepare("SELECT id, kind, state FROM lead_proposal").all()).toEqual([{ id: 7, kind: "steer", state: "pending" }]);
+    expect(() => store.raw().prepare("INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (1, 1, 'agents', '{}', 'c', 'pending', '2026-09-01T00:00:00.000Z')").run()).not.toThrow();
     store.close();
     const again = openStore(db);
     expect(again.raw().prepare("SELECT version FROM schema_version").get()).toMatchObject({ version: SCHEMA_VERSION });

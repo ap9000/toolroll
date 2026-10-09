@@ -8,7 +8,7 @@ import { addLegacyChatTables, windChatsBack } from "../test/legacy-chat.js";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
-import { telegramRequestId } from "./telegram-mate.js";
+import { telegramRequestId } from "./telegram-lead.js";
 
 const NOW = new Date("2026-09-16T09:00:00Z");
 const BOT = "777000";
@@ -69,7 +69,7 @@ describe("v63 Telegram durable replies", () => {
     const fromV62 = Math.abs(version) === 62;
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(116);
+    expect(SCHEMA_VERSION).toBe(117);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     // Every conversation row carried into the shared chat tables (v114), read back exactly as it was written.
     expect(store.listTelegramConversations(BOT)).toEqual(fromV62 ? seen : []);

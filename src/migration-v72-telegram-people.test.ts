@@ -43,7 +43,7 @@ describe("v72 one Telegram binding per person", () => {
     expect(old.prepare("SELECT name FROM sqlite_master WHERE name = 'telegram_team_chat'").get()).toBeUndefined();
     old.close();
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(116);
+    expect(SCHEMA_VERSION).toBe(117);
     expect(before).toHaveLength(1);
     expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     // The pairing moved into the shared chat tables (v114), whose live rule is one live pairing per (bot, user).

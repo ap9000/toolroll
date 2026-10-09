@@ -45,7 +45,7 @@ const SIX = [
   ["faster-tests-2", "Faster tests — revision"],
   ["cleanup-r2", "Cleanup of the old status words (cleanup-r2) — revision"],
   ["accents-3", "Search ignores accents — revision"],
-  ["chat-voice-4", "Chat reads like a teammate"],
+  ["chat-voice-4", "Chat reads like a subagent"],
   ["pr-open-5", "Pull requests open reliably — revision"],
   ["gallery-6", "Flow gallery shows sharing"],
 ] as const;

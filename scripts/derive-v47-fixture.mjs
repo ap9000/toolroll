@@ -5,7 +5,7 @@
 // `git archive`, a driver written against ITS store/scope/routine modules
 // seeds a realistic v47 database — an approver, a runner, routed and
 // pre-routing approvals, a chain approval, a stamped run, a review request,
-// an approved routine, a steer note, a mate thread with a proposal — and the
+// an approved routine, a steer note, a lead thread with a proposal — and the
 // resulting file is dumped as plain SQL into src/fixtures/v47-authentic.sql.
 // The migration tests load that SQL into a fresh file, so what they upgrade
 // is what v47 actually wrote, never a hand-wound imitation. Re-run this
@@ -150,10 +150,10 @@ if (!created.ok) throw new Error("routine");
 const routineYes = approveRoutine(store, created.id, "alex", T0, store.getRoutine(created.id).digest, "tok-alex");
 if (!routineYes.ok) throw new Error("approve routine: " + routineYes.reason);
 
-// A mate thread with a pending proposal (the v48 rebuild widens this table).
-const thread = store.openMateThread("alex", "c".repeat(32), T0);
-const proposal = store.draftMateProposal({ thread: thread.thread.id, turn: 1, kind: "steer", payload: { taskId: "t-pending", note: "keep it small" }, ceilingDigest: "c".repeat(32) }, T0);
-store.raw().prepare("UPDATE mate_proposal SET state = 'pending' WHERE id = ?").run(proposal);
+// A lead thread with a pending proposal (the v48 rebuild widens this table).
+const thread = store.openLeadThread("alex", "c".repeat(32), T0);
+const proposal = store.draftLeadProposal({ thread: thread.thread.id, turn: 1, kind: "steer", payload: { taskId: "t-pending", note: "keep it small" }, ceilingDigest: "c".repeat(32) }, T0);
+store.raw().prepare("UPDATE lead_proposal SET state = 'pending' WHERE id = ?").run(proposal);
 
 store.close();
 console.log("seeded v47 fixture at " + file);

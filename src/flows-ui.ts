@@ -16,9 +16,9 @@ import { itemCaption, whyLines } from "./flow-items.js";
 import { FLOW_FILE_MAX_BYTES, type FlowFile, type FlowImportPlan } from "./flow-share.js";
 import { googleConnected } from "./google-mail.js";
 import { mailboxReady } from "./mailbox.js";
-import { labelOf, nameOf } from "./teammate-admin.js";
-import { callWords, receiptWords } from "./teammate-tools.js";
-import { undoFor } from "./teammate-week.js";
+import { labelOf, nameOf } from "./subagent-admin.js";
+import { callWords, receiptWords } from "./subagent-tools.js";
+import { undoFor } from "./subagent-week.js";
 import { flowCardTaskLine } from "./flow-card-task.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
@@ -47,7 +47,7 @@ export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects:
     ? postForm("/flows/example", html`<h2>See a flow work</h2><p class="meta">Claude drafts a reply to a sample customer question; you approve it here or in your chat app.</p>${projectField}<button>Try an example</button>`,
       { attrs: { class: "card flow-example" } })
     : null;
-  const intro = html`<p class="meta">A flow is your process drawn as zones. Cards move through them: agents do the work, people approve, and the team hears about it.</p>${canCreate && projects.length > 0 && html`<p class="flow-chat">Describe how work should move and your lead drafts the flow for you to confirm, or start from a template. <a href="/chat?draft=${encodeURIComponent("Make a flow for ")}">Describe it in chat</a></p>`}<p class="flow-chat">AI teammates can decide and handle cards for you, within rules you write. <a href="/teammates">Teammates</a> · or set one up with its flow in one click: <a href="/kits">Starter kits</a></p>`;
+  const intro = html`<p class="meta">A flow is your process drawn as zones. Cards move through them: agents do the work, people approve, and the team hears about it.</p>${canCreate && projects.length > 0 && html`<p class="flow-chat">Describe how work should move and your lead drafts the flow for you to confirm, or start from a template. <a href="/chat?draft=${encodeURIComponent("Make a flow for ")}">Describe it in chat</a></p>`}<p class="flow-chat">subagents can decide and handle cards for you, within rules you write. <a href="/settings/lead/subagents">Subagents</a> · or set one up with its flow in one click: <a href="/kits">Starter kits</a></p>`;
   return html`<section class="flows">${problem !== null && html`<p class="problem" role="alert">${problem}</p>`}${intro}${create}${rows.length > 0 ? rows : example ?? html`<p class="meta">No flows yet.</p>`}</section>`;
 }
 
@@ -88,7 +88,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
   const title = (id: string) => stages.find(one => one.id === id)?.title ?? id;
   const sortZones = new Set(stages.filter(one => one.kind === "sort").map(one => one.id));
   const decisions = sortZones.size === 0 ? new Map<number, { decisionJson: string }>() : store.flowSortDecisions(flow.id);
-  const mates = new Map(store.teammates([flow.repo]).map(one => [one.id, one] as const));
+  const mates = new Map(store.subagents([flow.repo]).map(one => [one.id, one] as const));
   const taskSecrets = new Map<string, string[]>();
   const secretsFor = (repo: string) => {
     if (!taskSecrets.has(repo)) taskSecrets.set(repo, Object.values(readFlowSecrets(setup.dir, repo)));
@@ -104,9 +104,9 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     const discussion = store.flowComments(card.id);
     const watchers = store.flowCardWatchers(card.id);
     const decider = stage?.kind === "approval" ? deciderOf(stage, flow) : null;
-    // While its teammate is deciding (v92), the card isn't anyone else's to decide yet.
-    const teammateDeciding = stage?.teammate !== undefined && card.waiting !== null && card.waiting.endsWith(" is deciding");
-    const canDecide = viewer.approver && card.state === "active" && stage?.kind === "approval" && (decider === null || decider === viewer.name) && !teammateDeciding;
+    // While its subagent is deciding (v92), the card isn't anyone else's to decide yet.
+    const subagentDeciding = stage?.subagent !== undefined && card.waiting !== null && card.waiting.endsWith(" is deciding");
+    const canDecide = viewer.approver && card.state === "active" && stage?.kind === "approval" && (decider === null || decider === viewer.name) && !subagentDeciding;
     // History reads moves and ownership together, newest first.
     const owned = discussion.filter(one => one.kind === "owner").map(one => ({ text: one.body === "" ? `${one.author} left it without an owner` : one.body === one.author ? `${one.author} took it on` : `${one.author} made ${one.body} the owner`, at: one.at }));
     const moves = store.flowEvents(card.id).map(event => ({ text: historyText(event, title, sortZones), at: event.at }));
@@ -121,19 +121,19 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       label: stage!.wait !== undefined && stage!.wait.for !== "hours" ? (stage!.wait.for === "reply" ? "No reply by" : "Moves on at") : stage!.limit!.to !== null ? `Moves to ${title(stage!.limit!.to)} at` : "Reminder at",
     };
     // Its open question: one of its own, or (v94) a tool call waiting for approval.
-    const asked = card.state === "active" ? store.openTeammateQuestionOn(card.id, card.entry) : null;
-    const pending = asked?.toolCall == null ? null : store.teammateCall(asked.toolCall);
-    // A decision its teammate handed over carries what the teammate said (v92).
-    const turn = card.state === "active" && stage?.kind === "approval" && stage.teammate !== undefined ? store.flowStepRun(card.id, card.entry) : null;
+    const asked = card.state === "active" ? store.openSubagentQuestionOn(card.id, card.entry) : null;
+    const pending = asked?.toolCall == null ? null : store.subagentCall(asked.toolCall);
+    // A decision its subagent handed over carries what the subagent said (v92).
+    const turn = card.state === "active" && stage?.kind === "approval" && stage.subagent !== undefined ? store.flowStepRun(card.id, card.entry) : null;
     let handoff: { from: string; note: string } | null = null;
-    if (turn !== null && turn.kind === "teammate" && turn.state === "passed") {
+    if (turn !== null && turn.kind === "subagent" && turn.state === "passed") {
       try {
         const said = JSON.parse(turn.decisionJson ?? "{}") as { action?: unknown; note?: unknown };
-        const mate = store.teammateByHandle(flow.repo, stage!.teammate!);
+        const mate = store.subagentByHandle(flow.repo, stage!.subagent!);
         if (said.action === "hand_off" && typeof said.note === "string" && said.note !== "" && mate !== null) handoff = { from: labelOf(mate), note: said.note };
       } catch { handoff = null; }
     }
-    const asker = asked === null || asked.state !== "open" ? null : store.getTeammate(asked.teammate);
+    const asker = asked === null || asked.state !== "open" ? null : store.getSubagent(asked.subagent);
     // "Person chooses" (flow-send.ts): what was sent, and the options, for the person it waits on; the latest send otherwise.
     const choosing = card.state === "active" && stage?.kind === "choose" ? flowChoiceAt(store, card.id, card.entry) : null;
     const latest = store.flowSends(card.id)[0] ?? null;
@@ -170,11 +170,11 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       question: asked === null || asked.state !== "open" || asker === null ? null
         : { id: asked.id, from: labelOf(asker), question: asked.question, options: asked.options, askedOf: asked.askedOf, mine: asked.askedOf === viewer.name,
           call: pending === null ? null : { why: pending.why, rule: pending.result ?? "" } },
-      calls: store.teammateCallsOn(card.id).slice(-30).map(call => {
-        const mate = mates.get(call.teammate) ?? null;
+      calls: store.subagentCallsOn(card.id).slice(-30).map(call => {
+        const mate = mates.get(call.subagent) ?? null;
         // A person's undo (v97) reads as theirs, and its outcome says what it undid.
-        return { id: call.id, who: call.undoOf !== null ? call.decidedBy ?? "A person" : mate === null ? "A teammate" : nameOf(mate), words: callWords(call.tool, call.action, call.input, 400), state: call.state, outcome: receiptWords(store, call),
-          why: call.undoOf !== null ? "" : call.why, result: call.state === "asked" ? null : call.result, at: call.createdAt, teammate: call.teammate, undo: viewer.approver ? undoFor(store, call) : null };
+        return { id: call.id, who: call.undoOf !== null ? call.decidedBy ?? "A person" : mate === null ? "A subagent" : nameOf(mate), words: callWords(call.tool, call.action, call.input, 400), state: call.state, outcome: receiptWords(store, call),
+          why: call.undoOf !== null ? "" : call.why, result: call.state === "asked" ? null : call.result, at: call.createdAt, subagent: call.subagent, undo: viewer.approver ? undoFor(store, call) : null };
       }),
     };
   });
@@ -205,7 +205,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     startTrigger: setup.startTrigger ?? null,
     me: viewer.name,
     sortReady: setup.sortReady ?? false,
-    teammates: store.teammates([flow.repo]).map(mate => ({ handle: mate.handle, label: labelOf(mate), name: nameOf(mate), working: mate.state === "active", href: `/teammates/${mate.id}` })),
+    subagents: store.subagents([flow.repo]).map(mate => ({ handle: mate.handle, label: labelOf(mate), name: nameOf(mate), working: mate.state === "active", href: `/settings/lead/subagents/${mate.id}` })),
     emailReady: sendingReady(setup.dir),
     requestSecrets: flowSecretNames(setup.dir, flow.repo),
     tools: projectToolsOf(store, flow.repo).map(tool => ({ name: tool.name, about: tool.spec.about, functions: tool.lastTest?.ok === true ? tool.lastTest.tools : [],

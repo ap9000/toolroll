@@ -18,7 +18,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createLiveRooms, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
-import type { MateThreadScope } from "../store.js";
+import type { LeadThreadScope } from "../store.js";
 import { TEAM_PASSWORD_REVERIFY_MS } from "../team-http.js";
 import type { TeamActor, TeamResponse } from "../team-contract.js";
 import type { WorkspaceRevision } from "../workspace-revision.js";
@@ -74,12 +74,12 @@ export function parseLiveRoom(name: string): LiveRoom | null {
 
 type Viewer = LiveViewer;
 type FlowRoomViewer = LiveViewer & { card: number | null; editing: boolean };
-type ChatViewer = LiveViewer & { scope: MateThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
+type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
 
 const json = (response: ServerResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
 
 export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus; workspaceRevision: WorkspaceRevision; chatProjectOf: (projects: string[]) => string | null | undefined }) {
-  const { store, identify, liveCeiling, familyOf, taskRooms, flowRooms, clock, matePrincipal, taskChatFocus, chatScopeOf, liveTurns, team, visible } = runtime;
+  const { store, identify, liveCeiling, familyOf, taskRooms, flowRooms, clock, leadPrincipal, taskChatFocus, chatScopeOf, liveTurns, team, visible } = runtime;
 
   // The reader's workspace: one room for everyone, nudged by any meaningful write or a clock-bound lapse.
   const workspaceRooms = createLiveRooms<"workspace", Viewer>(() => `${live.workspaceRevision.current()}:${live.workspaceRevision.expiresAt(clock())}`, null,
@@ -140,7 +140,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   /** A reply starts on a thread: whoever has that conversation open follows it. */
   function turnStarted(thread: number): void {
     for (const viewer of chatViewers) {
-      if (admitted(viewer) && store.liveMateThreadFor(viewer.name, viewer.scope)?.id === thread) follow(viewer, thread);
+      if (admitted(viewer) && store.liveLeadThreadFor(viewer.name, viewer.scope)?.id === thread) follow(viewer, thread);
     }
   }
 
@@ -213,7 +213,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
       } else if (room.kind === "chat") {
         const browser = who as Who & { via: "cookie" };
         if (who.role !== "approver") return json(response, 403, { error: "session" });
-        if (matePrincipal(browser) === null) return json(response, 403, { error: "standing" });
+        if (leadPrincipal(browser) === null) return json(response, 403, { error: "standing" });
         const focusTask = room.task === null ? null : taskChatFocus(room.task, now, who, { mintNonce: false });
         if (room.task !== null && focusTask === null) return json(response, 404, { error: "task" });
         const chatProject = focusTask !== null ? null : live.chatProjectOf(room.project === null ? [] : [room.project]);
@@ -222,9 +222,9 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         const valid = (expectedThread?: number) => requestContext.run({ actor: who.name, csrf: "", returnTo: "/chat" }, () => {
           const again = readBrowser(request, browser);
           if (again === null || again.role !== "approver") return false;
-          const principal = matePrincipal(again);
+          const principal = leadPrincipal(again);
           if (principal === null) return false;
-          const thread = store.liveMateThreadFor(again.name, scope);
+          const thread = store.liveLeadThreadFor(again.name, scope);
           // Even the default lead room is bound to the projects admitted when its thread opened.
           if (thread !== null && thread.ceilingDigest !== principal.ceilingDigest) return false;
           if (expectedThread !== undefined && thread?.id !== expectedThread) return false;
@@ -242,7 +242,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           chatViewers.add(viewer);
           const unregister = connection.onClose(() => { viewer.detach?.(); chatViewers.delete(viewer); });
           const unprove = connection.onKeepAlive(() => { admitted(viewer); });
-          const thread = store.liveMateThreadFor(who.name, scope);
+          const thread = store.liveLeadThreadFor(who.name, scope);
           if (thread !== null) follow(viewer, thread.id);
         });
       } else {

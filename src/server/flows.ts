@@ -33,13 +33,13 @@ rowVisible
 import { recipeAnswersFromForm,recipeDefinitionPreviewHtml,recipeEditorHtml,recipeFromForm,recipeLibraryHtml,recipeRunHtml,recipeScript,workflowPreviewHtml } from "../recipe-ui.js";
 import { createWorkflowPreview,exportRecipe,findRecipe,importRecipe,launchWorkflow,prepareRecipeRun,RecipeError,savedRecipes,saveWorkflowRecipe,starterRecipes,workflowPreview } from "../recipes.js";
 import { isAlive as runnerAlive } from "../runner.js";
-import { createTeammateFrom,labelOf,nameOf,saveSoul,sendTeammateSummaries,setTeammateState,teammateSettings } from "../teammate-admin.js";
-import { addRoutine,removeRoutine,runRoutine } from "../teammate-desk.js";
-import { editMemory,forgetMemory,tellTeammate } from "../teammate-memory.js";
-import { grantTool,revokeTool,rulesFromForm,setToolRules } from "../teammate-tools.js";
-import { sendTeammateWeeklies,undoCall } from "../teammate-week.js";
-import { answerTeammateQuestion } from "../teammate-work.js";
-import { BLANK_SOUL,teammatePageHtml,teammatesListHtml } from "../teammates-ui.js";
+import { createSubagentFrom,labelOf,nameOf,saveSoul,sendSubagentSummaries,setSubagentState,subagentSettings } from "../subagent-admin.js";
+import { addRoutine,removeRoutine,runRoutine } from "../subagent-desk.js";
+import { editMemory,forgetMemory,tellSubagent } from "../subagent-memory.js";
+import { grantTool,revokeTool,rulesFromForm,setToolRules } from "../subagent-tools.js";
+import { sendSubagentWeeklies,undoCall } from "../subagent-week.js";
+import { answerSubagentQuestion } from "../subagent-work.js";
+import { BLANK_SOUL,subagentPageHtml,subagentsListHtml } from "../subagents-ui.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
@@ -72,9 +72,9 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const flow = store.getFlow(id);
     return flow === null || flow.state !== "active" || !visible(flow.repo) ? null : flow;
   };
-  /** A teammate the caller may see: not removed, in a visible project the account can access. */
-  const visibleTeammate = (who: Who, id: number) => {
-    const mate = store.getTeammate(id);
+  /** A subagent the caller may see: not removed, in a visible project the account can access. */
+  const visibleSubagent = (who: Who, id: number) => {
+    const mate = store.getSubagent(id);
     return mate === null || mate.state === "removed" || !visible(mate.repo) || !store.accountCanAccess(who.name, mate.repo) ? null : mate;
   };
   const sendJson = (response: ServerResponse, status: number, payload: unknown) => respond(response, status, "application/json; charset=utf-8", JSON.stringify(payload));
@@ -174,28 +174,35 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return sendScreen(response, 200, screen(kit.name, html`<h1>${kit.name}</h1>${(kitPageHtml(store, kit, repo, options.configDir ?? null, canSetUp, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`, { chrome: chromeFor(repo, "flows") }));
   }
 
-  // ---- v92: AI teammates — the team, and one page per teammate ---------------
+  // ---- v92 / D5: the lead's subagents — the list, and one page per subagent ----
 
-  async function teammatesPage(ctx: HandlerContext): Promise<void> {
+  async function subagentsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
-    return sendScreen(response, 200, screen("Teammates", html`<h1>Teammates</h1>${(teammatesListHtml(store, store.teammates(projects), projects, projectName, who.via === "cookie" && who.role === "approver",
-      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`, { chrome: chromeFor(project, "flows") }));
+    return sendScreen(response, 200, screen("Subagents", html`<p><a href="/settings/lead">Lead</a></p><h1>Subagents</h1>${(subagentsListHtml(store, store.subagents(projects), projects, projectName, who.via === "cookie" && who.role === "approver",
+      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), adding: url.searchParams.get("add") === "1" }))}`, { chrome: chromeFor(project, "settings") }));
   }
 
-  async function teammatePage(ctx: HandlerContext): Promise<void> {
+  /** D5: subagents were teammates; an old link lands on the same page under Settings → Lead. */
+  async function legacySubagentLink(ctx: HandlerContext): Promise<void> {
+    const { url, response } = ctx;
+    const legacy = /^\/teammates(?:\/([1-9][0-9]{0,9})(\/soul\.md)?)?$/.exec(url.pathname);
+    return redirect(response, legacy === null || legacy[1] === undefined ? "/settings/lead#subagents" : `/settings/lead/subagents/${legacy[1]}${legacy[2] ?? ""}`);
+  }
+
+  async function subagentPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
-    const mate = visibleTeammate(who, Number(pathPart(url, 2)));
-    if (mate === null) return refuse(response, who, 404, "No such teammate in your projects.", "/teammates");
+    const mate = visibleSubagent(who, Number(pathPart(url, 4)));
+    if (mate === null) return refuse(response, who, 404, "No such subagent in your projects.", "/settings/lead/subagents");
     const approvers = store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, mate.repo));
-    return sendScreen(response, 200, screen(labelOf(mate), html`<h1>${labelOf(mate)}</h1>${(teammatePageHtml(store, mate, who.name, projectName, who.via === "cookie" && who.role === "approver", approvers,
-      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), query: url.searchParams.get("q") }))}`, { chrome: chromeFor(mate.repo, "flows") }));
+    return sendScreen(response, 200, screen(labelOf(mate), html`<p><a href="/settings/lead">Lead</a></p><h1>${labelOf(mate)}</h1>${(subagentPageHtml(store, mate, who.name, projectName, who.via === "cookie" && who.role === "approver", approvers,
+      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), query: url.searchParams.get("q") }))}`, { chrome: chromeFor(mate.repo, "settings") }));
   }
 
-  async function teammateSoulFile(ctx: HandlerContext): Promise<void> {
+  async function subagentSoulFile(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
-    const mate = visibleTeammate(who, Number(pathPart(url, 2)));
-    if (mate === null) return refuse(response, who, 404, "No such teammate in your projects.", "/teammates");
+    const mate = visibleSubagent(who, Number(pathPart(url, 4)));
+    if (mate === null) return refuse(response, who, 404, "No such subagent in your projects.", "/settings/lead/subagents");
     response.writeHead(200, { ...SAFETY, "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename="${mate.handle}.md"` });
     return void response.end(mate.soul);
   }
@@ -292,7 +299,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const { url, who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.kit);
     const now = clock();
-    const kit = kitOf(pathPart(url, 2));
+    const kit = kitOf(pathPart(url, 4));
     const projects = consoleProjects();
     const repo = body.get("repo") ?? "";
     if (kit === null || !projects.includes(repo) || !store.accountCanAccess(who.name, repo)) return redirect(response, `/kits?problem=${encodeURIComponent("Choose one of your projects.")}`);
@@ -307,65 +314,65 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     const tried = addKitSample(store, kit, repo, who.name, now);
     if (!tried.ok) return page("problem", tried.said);
-    // The teammate picks it up on the worker's next pass (a few seconds); its flow opens on the card.
+    // The subagent picks it up on the worker's next pass (a few seconds); its flow opens on the card.
     try { advanceFlows(store, repo, now, { evidenceRoot }); } catch { /* the worker's next pass moves it */ }
     return redirect(response, tried.href);
   };
 
-  // ---- v92: looking after teammates, and answering their questions -----------
+  // ---- v92: looking after subagents, and answering their questions -----------
 
-  async function answerTeammateQuestionSend(ctx: HandlerContext): Promise<void> {
+  async function answerSubagentQuestionSend(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.teammates);
+    const body = readForm(posted, CONSOLE_FORMS.subagents);
     const now = clock();
     const wantsJson = (request.headers.accept ?? "").includes("application/json");
-    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/teammates");
-    const question = store.teammateQuestion(Number(pathPart(url, 3)));
+    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/settings/lead/subagents");
+    const question = store.subagentQuestion(Number(pathPart(url, 5)));
     const card = question === null ? null : store.getFlowCard(question.card);
     const flow = card === null ? null : store.getFlow(card.flow);
     const done = question === null || flow === null || !visible(flow.repo) ? { ok: false as const, said: "No such question." }
-      : answerTeammateQuestion(store, question.id, { choice: body.get("choice"), text: body.get("text"), by: who.name, via: "web" }, now);
+      : answerSubagentQuestion(store, question.id, { choice: body.get("choice"), text: body.get("text"), by: who.name, via: "web" }, now);
     if (wantsJson) return respond(response, done.ok ? 200 : 409, "application/json; charset=utf-8", JSON.stringify(done));
-    const back = question === null ? "/teammates" : `/teammates/${question.teammate}`;
+    const back = question === null ? "/settings/lead/subagents" : `/settings/lead/subagents/${question.subagent}`;
     return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}`);
   }
 
-  async function newTeammate(ctx: HandlerContext): Promise<void> {
+  async function newSubagent(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.teammates);
+    const body = readForm(posted, CONSOLE_FORMS.subagents);
     const now = clock();
-    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/teammates");
+    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/settings/lead/subagents");
     const projects = consoleProjects();
     const repo = body.get("repo") ?? "";
-    if (!projects.includes(repo)) return redirect(response, `/teammates?problem=${encodeURIComponent("Choose one of your projects.")}`);
+    if (!projects.includes(repo)) return redirect(response, `/settings/lead/subagents?problem=${encodeURIComponent("Choose one of your projects.")}`);
     const template = body.get("template") ?? "";
-    const made = createTeammateFrom(store, { repo, template: template === "blank" ? null : template, name: body.get("name"), soul: template === "blank" ? BLANK_SOUL.replace("name: \n", `name: ${(body.get("name") ?? "").trim() || "Sam"}\n`).replace("role: \n", "role: Assistant\n") : null, by: who.name }, now);
-    return made.ok ? redirect(response, `/teammates/${made.id}?said=${encodeURIComponent(made.said)}`) : redirect(response, `/teammates?problem=${encodeURIComponent(made.said)}`);
+    const made = createSubagentFrom(store, { repo, template: template === "blank" ? null : template, name: body.get("name"), soul: template === "blank" ? BLANK_SOUL.replace("name: \n", `name: ${(body.get("name") ?? "").trim() || "Sam"}\n`).replace("role: \n", "role: Assistant\n") : null, by: who.name }, now);
+    return made.ok ? redirect(response, `/settings/lead/subagents/${made.id}?said=${encodeURIComponent(made.said)}`) : redirect(response, `/settings/lead/subagents?problem=${encodeURIComponent(made.said)}`);
   }
 
-  type TeammatePart = "soul" | "state" | "note" | "settings" | "summary" | "tools" | "memory" | "routines" | "week";
-  const teammateAct = (part: TeammatePart) => async (ctx: HandlerContext): Promise<void> => {
+  type SubagentPart = "soul" | "state" | "note" | "settings" | "summary" | "tools" | "memory" | "routines" | "week";
+  const subagentAct = (part: SubagentPart) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, request, response, posted } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.teammates);
+    const body = readForm(posted, CONSOLE_FORMS.subagents);
     const now = clock();
     const wantsJson = (request.headers.accept ?? "").includes("application/json");
-    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/teammates");
-    const mate = visibleTeammate(who, Number(pathPart(url, 2)));
-    if (mate === null) return refuse(response, who, 404, "No such teammate in your projects.", "/teammates");
-    const back = `/teammates/${mate.id}`;
+    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in to do that.", "/settings/lead/subagents");
+    const mate = visibleSubagent(who, Number(pathPart(url, 4)));
+    if (mate === null) return refuse(response, who, 404, "No such subagent in your projects.", "/settings/lead/subagents");
+    const back = `/settings/lead/subagents/${mate.id}`;
     if (part === "soul") {
       const soul = body.get("soul") ?? "";
       const saved = saveSoul(store, mate, soul, who.name, now);
       if (!saved.ok) {
         const approvers = store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, mate.repo));
-        return sendScreen(response, 400, screen(labelOf(mate), html`<h1>${labelOf(mate)}</h1>${teammatePageHtml(store, mate, who.name, projectName, true, approvers, { problem: saved.said, soulDraft: soul })}`, { chrome: chromeFor(mate.repo, "flows") }));
+        return sendScreen(response, 400, screen(labelOf(mate), html`<h1>${labelOf(mate)}</h1>${subagentPageHtml(store, mate, who.name, projectName, true, approvers, { problem: saved.said, soulDraft: soul })}`, { chrome: chromeFor(mate.repo, "flows") }));
       }
       return redirect(response, `${back}?said=${encodeURIComponent(saved.said)}`);
     }
     if (part === "week") {
       // v97: undo one of its tool calls, or send the week's report now.
       const done = body.get("op") === "undo" ? await undoCall(store, mate, Number(body.get("id")), who.name, { toolHome }, now)
-        : sendTeammateWeeklies(store, mate.repo, now, mate.id) > 0 ? { ok: true as const, said: `Sent the week's report to ${mate.manager}.` } : { ok: false as const, said: "The report couldn't be sent." };
+        : sendSubagentWeeklies(store, mate.repo, now, mate.id) > 0 ? { ok: true as const, said: `Sent the week's report to ${mate.manager}.` } : { ok: false as const, said: "The report couldn't be sent." };
       if (wantsJson) return respond(response, done.ok ? 200 : 409, "application/json; charset=utf-8", JSON.stringify(done));
       return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}#week`);
     }
@@ -388,17 +395,17 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (part === "tools") {
       // v94: which project tools it may use, and its rule for each action.
       const tool = body.get("tool") ?? "", op = body.get("op");
-      const grant = store.teammateGrant(mate.id, tool);
+      const grant = store.subagentGrant(mate.id, tool);
       const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome })
         : op === "revoke" ? revokeTool(store, mate, tool, who.name, now)
         : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : setToolRules(store, mate, tool, rulesFromForm(grant, key => body.sent.get(key)), who.name, now);
       return redirect(response, `${back}?${changed.ok ? "said" : "problem"}=${encodeURIComponent(changed.said)}#tools`);
     }
-    const done = part === "state" ? setTeammateState(store, mate, body.get("state") === "removed" ? "removed" : body.get("state") === "paused" ? "paused" : "active", who.name, now)
-      : part === "note" ? tellTeammate(store, mate, body.get("note") ?? "", who.name, now)
-      : part === "settings" ? teammateSettings(store, mate, { model: body.get("model") ?? "default", dailyTurns: Number(body.get("dailyTurns")), manager: body.get("manager") ?? mate.manager }, who.name, now)
-      : sendTeammateSummaries(store, mate.repo, now, mate.id) > 0 ? { ok: true as const, said: `Sent today's summary to ${mate.manager}.` } : { ok: false as const, said: "The summary couldn't be sent." };
-    if (part === "state" && body.get("state") === "removed" && done.ok) return redirect(response, `/teammates?said=${encodeURIComponent(done.said)}`);
+    const done = part === "state" ? setSubagentState(store, mate, body.get("state") === "removed" ? "removed" : body.get("state") === "paused" ? "paused" : "active", who.name, now)
+      : part === "note" ? tellSubagent(store, mate, body.get("note") ?? "", who.name, now)
+      : part === "settings" ? subagentSettings(store, mate, { model: body.get("model") ?? "default", dailyTurns: Number(body.get("dailyTurns")), manager: body.get("manager") ?? mate.manager }, who.name, now)
+      : sendSubagentSummaries(store, mate.repo, now, mate.id) > 0 ? { ok: true as const, said: `Sent today's summary to ${mate.manager}.` } : { ok: false as const, said: "The summary couldn't be sent." };
+    if (part === "state" && body.get("state") === "removed" && done.ok) return redirect(response, `/settings/lead/subagents?said=${encodeURIComponent(done.said)}`);
     return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}${part === "note" ? "#memory" : ""}`);
   };
 
@@ -740,9 +747,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flows.page": flowsPage,
     "kits": kitsGallery,
     "kit.page": kitPage,
-    "teammates": teammatesPage,
-    "teammate.page": teammatePage,
-    "teammate.soul-file": teammateSoulFile,
+    "subagents": subagentsPage,
+    "subagents.legacy": legacySubagentLink,
+    "subagent.page": subagentPage,
+    "subagent.soul-file": subagentSoulFile,
     "flow.insights": flowInsightsRead,
     "flow.run": flowRunRead,
     "flow.export": flowExportFile,
@@ -759,17 +767,17 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "kit.setup": kitAct("setup"),
     "kit.sample": kitAct("sample"),
     "kit.github": kitAct("github"),
-    "teammate.new": newTeammate,
-    "teammate.soul": teammateAct("soul"),
-    "teammate.state": teammateAct("state"),
-    "teammate.note": teammateAct("note"),
-    "teammate.settings": teammateAct("settings"),
-    "teammate.summary": teammateAct("summary"),
-    "teammate.tools": teammateAct("tools"),
-    "teammate.memory": teammateAct("memory"),
-    "teammate.routines": teammateAct("routines"),
-    "teammate.week": teammateAct("week"),
-    "teammate.answer": answerTeammateQuestionSend,
+    "subagent.new": newSubagent,
+    "subagent.soul": subagentAct("soul"),
+    "subagent.state": subagentAct("state"),
+    "subagent.note": subagentAct("note"),
+    "subagent.settings": subagentAct("settings"),
+    "subagent.summary": subagentAct("summary"),
+    "subagent.tools": subagentAct("tools"),
+    "subagent.memory": subagentAct("memory"),
+    "subagent.routines": subagentAct("routines"),
+    "subagent.week": subagentAct("week"),
+    "subagent.answer": answerSubagentQuestionSend,
     "flows.gallery-create": createFromGallery,
     "flows.create": createFlow,
     "flows.example": createExampleFlow,

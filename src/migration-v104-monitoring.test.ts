@@ -23,8 +23,8 @@ test.each([103, -103])("v%s: monitoring has somewhere to keep its progress, and 
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
   expect(store.monitoringStatus()).toEqual([]);
   expect(store.ledgerChain()).toMatchObject({ ok: true, head: chain.head });
   expect(store.holdMonitoring("webhook", "me", now, new Date(now.getTime() + 60_000))).toBe(true);

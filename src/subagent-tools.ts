@@ -1,20 +1,20 @@
 /**
- * The tools a teammate may use (v94), and its rule for each of their actions.
+ * The tools a subagent may use (v94), and its rule for each of their actions.
  *
- * A teammate never calls a tool itself. On its turn it may ask for one call
+ * A subagent never calls a tool itself. On its turn it may ask for one call
  * ("use_tool": which action, with what input, and why), and Toolroll
  * checks the rule its manager set for that action:
  *
- * - do it: the call is made and its answer goes back to the teammate, whose
+ * - do it: the call is made and its answer goes back to the subagent, whose
  *   turn goes on;
  * - ask first: the exact call goes to the zone's person, in their chat app
  *   and on the card. Approve makes exactly that call; Deny doesn't; words
- *   tell the teammate what to do instead;
+ *   tell the subagent what to do instead;
  * - never: the action isn't offered at all.
  *
  * "Do it" can ask first above a number in the input ("refunds up to $50"),
  * so a limit holds in code, not only in the soul file's words. Every call,
- * made or not, is a receipt on the card and on the teammate's page.
+ * made or not, is a receipt on the card and on the subagent's page.
  */
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import type { ToolCaller } from "./flow-actions.js";
@@ -22,7 +22,7 @@ import { scrubSecrets } from "./flow-secrets.js";
 import { toolRefusal } from "./policy.js";
 import { callProjectTool, listProjectToolActions, projectToolsOf, readToolSecrets, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
-import type { Store, TeammateCallRow, TeammateGrantRow, TeammateRow, ToolActionInfo, ToolRule } from "./store.js";
+import type { Store, SubagentCallRow, SubagentGrantRow, SubagentRow, ToolActionInfo, ToolRule } from "./store.js";
 
 /** Lists what a tool offers; injectable so tests never start a server. */
 export type ToolLister = (spec: ToolSpec, values: Record<string, string>) => Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }>;
@@ -49,7 +49,7 @@ const numberOf = (value: unknown): number | null => typeof value === "number" &&
   : typeof value === "string" && /^\s*-?\$?\d+(\.\d+)?\s*$/.test(value) ? Number(value.replace(/[$\s]/g, "")) : null;
 
 /** The rule that applies to one call with this input, and why, in words. */
-export function ruleFor(grant: Pick<TeammateGrantRow, "actions" | "rules">, action: string, input: Record<string, unknown>): { use: ToolRule["use"]; why: string } {
+export function ruleFor(grant: Pick<SubagentGrantRow, "actions" | "rules">, action: string, input: Record<string, unknown>): { use: ToolRule["use"]; why: string } {
   const info = grant.actions.find(one => one.name === action);
   const rule = grant.rules[action] ?? (info === undefined ? { use: "never" as const } : defaultRule(info));
   if (info === undefined || rule.use === "never") return { use: "never", why: `The rules never allow ${action}.` };
@@ -62,7 +62,7 @@ export function ruleFor(grant: Pick<TeammateGrantRow, "actions" | "rules">, acti
   return { use: "free", why: "" };
 }
 
-/** A rule in words, for the teammate's turn and its page. */
+/** A rule in words, for the subagent's turn and its page. */
 export function ruleWords(rule: ToolRule): string {
   if (rule.use === "never") return "never";
   if (rule.use === "ask") return "a person approves each call first";
@@ -103,12 +103,12 @@ export function callWords(tool: string, action: string, input: Record<string, un
 /** An action as a turn is offered it. */
 export type OfferedTool = { name: string; about: string; input: string; rule: string };
 
-/** What a teammate may use now: its grants' actions on tools the project still has, "never" left out. */
-export function offeredTools(store: Store, mate: TeammateRow): OfferedTool[] {
+/** What a subagent may use now: its grants' actions on tools the project still has, "never" left out. */
+export function offeredTools(store: Store, mate: SubagentRow): OfferedTool[] {
   const present = new Set(projectToolsOf(store, mate.repo).map(one => one.name));
   // Sprint 8: a tool the organisation policy doesn't allow isn't offered.
   const policy = store.orgPolicy();
-  return store.teammateGrants(mate.id).filter(grant => present.has(grant.tool) && toolRefusal(policy, grant.tool) === null).flatMap(grant => grant.actions.flatMap(action => {
+  return store.subagentGrants(mate.id).filter(grant => present.has(grant.tool) && toolRefusal(policy, grant.tool) === null).flatMap(grant => grant.actions.flatMap(action => {
     const rule = grant.rules[action.name] ?? defaultRule(action);
     if (rule.use === "never") return [];
     const input = action.input === null ? "any" : JSON.stringify({ properties: action.input["properties"] ?? {}, required: action.input["required"] ?? [] });
@@ -117,15 +117,15 @@ export function offeredTools(store: Store, mate: TeammateRow): OfferedTool[] {
 }
 
 /** Before a turn: re-list tools whose listing is old (or never happened), so the turn sees what they offer today. A tool that can't be reached keeps its last listing. */
-export async function refreshGrants(store: Store, mate: TeammateRow, now: Date, io: ToolIo): Promise<void> {
+export async function refreshGrants(store: Store, mate: SubagentRow, now: Date, io: ToolIo): Promise<void> {
   const tools = projectToolsOf(store, mate.repo);
-  for (const grant of store.teammateGrants(mate.id)) {
+  for (const grant of store.subagentGrants(mate.id)) {
     if (grant.listedAt !== null && now.getTime() - Date.parse(grant.listedAt) < LISTING_MS) continue;
     const tool = tools.find(one => one.name === grant.tool);
     if (tool === undefined) continue;
     const listed = await listed_(tool, mate.repo, io);
     if (!listed.ok) continue;
-    store.saveTeammateGrant({ teammate: mate.id, tool: grant.tool, ...withActions(grant.rules, listed.actions), listedAt: now.toISOString() }, grant.updatedBy, now);
+    store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(grant.rules, listed.actions), listedAt: now.toISOString() }, grant.updatedBy, now);
   }
 }
 
@@ -135,35 +135,35 @@ const listed_ = (tool: ProjectTool, repo: string, io: ToolIo) =>
 /** Names only, from the tool's last test: what a grant starts with when it can't be listed right now. */
 const namesOnly = (tool: ProjectTool): ToolActionInfo[] => (tool.lastTest?.tools ?? []).map(name => ({ name, about: "", input: null, readOnly: false }));
 
-/** Let a teammate use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first. */
-export async function grantTool(store: Store, mate: TeammateRow, tool: string, by: string, now: Date, io: ToolIo = {}): Promise<Done> {
+/** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first. */
+export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {}): Promise<Done> {
   const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
   if (found === undefined) return { ok: false, said: `This project has no tool called ${tool}. Add it on the Tools page first.` };
-  if (store.teammateGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
+  if (store.subagentGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
   const listed = await listed_(found, mate.repo, io);
   return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now);
 }
 
 /** A grant from what the tool offers (or, not reachable now, the names its last test found). */
-export function grantListed(store: Store, mate: TeammateRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date): Done {
+export function grantListed(store: Store, mate: SubagentRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date): Done {
   const offered = actions ?? namesOnly(tool);
   if (offered.length === 0) return { ok: false, said: `${tool.name} didn't say what it can do. Test it on the Tools page, then try again.` };
-  store.saveTeammateGrant({ teammate: mate.id, tool: tool.name, ...withActions({}, offered), listedAt: actions === null ? null : now.toISOString() }, by, now);
+  store.saveSubagentGrant({ subagent: mate.id, tool: tool.name, ...withActions({}, offered), listedAt: actions === null ? null : now.toISOString() }, by, now);
   const free = offered.filter(one => defaultRule(one).use === "free").length;
   return { ok: true, said: `It can use ${tool.name} now: ${free} of its ${offered.length} action${offered.length === 1 ? "" : "s"} freely (the ones that only read), and the rest after a person approves each call. Change that under Tools.` };
 }
 
-export function revokeTool(store: Store, mate: TeammateRow, tool: string, by: string, now: Date = new Date()): Done {
-  for (const call of store.teammateCallsOf(mate.id, 200).filter(one => one.tool === tool && one.state === "asked")) {
-    store.moveTeammateCall(call.id, ["asked"], { state: "refused", result: `It can't use ${tool} any more.` }, new Date());
-    const question = store.teammateQuestionForCall(call.id);
-    if (question !== null) store.dropTeammateQuestion(question.id, new Date());
+export function revokeTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date = new Date()): Done {
+  for (const call of store.subagentCallsOf(mate.id, 200).filter(one => one.tool === tool && one.state === "asked")) {
+    store.moveSubagentCall(call.id, ["asked"], { state: "refused", result: `It can't use ${tool} any more.` }, new Date());
+    const question = store.subagentQuestionForCall(call.id);
+    if (question !== null) store.dropSubagentQuestion(question.id, new Date());
   }
-  return store.dropTeammateGrant(mate.id, tool, by, now) ? { ok: true, said: `It can't use ${tool} any more.` } : { ok: true, said: `It wasn't using ${tool}.` };
+  return store.dropSubagentGrant(mate.id, tool, by, now) ? { ok: true, said: `It can't use ${tool} any more.` } : { ok: true, said: `It wasn't using ${tool}.` };
 }
 
 /** Check one rule: an action the tool offers, a known use, and a limit on one of its number fields. */
-export function checkRule(grant: Pick<TeammateGrantRow, "tool" | "actions">, action: string, rule: { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }): { ok: true; rule: ToolRule } | { ok: false; said: string } {
+export function checkRule(grant: Pick<SubagentGrantRow, "tool" | "actions">, action: string, rule: { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }): { ok: true; rule: ToolRule } | { ok: false; said: string } {
   const info = grant.actions.find(one => one.name === action);
   if (info === undefined) return { ok: false, said: `${grant.tool} has no action called ${action}. Its actions: ${grant.actions.map(one => one.name).join(", ")}.` };
   if (rule.use !== "free" && rule.use !== "ask" && rule.use !== "never") return { ok: false, said: "Choose do it, ask first or never." };
@@ -181,8 +181,8 @@ export function checkRule(grant: Pick<TeammateGrantRow, "tool" | "actions">, act
 }
 
 /** Set the rules for some of a granted tool's actions; the others keep theirs. */
-export function setToolRules(store: Store, mate: TeammateRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date): Done {
-  const grant = store.teammateGrant(mate.id, tool);
+export function setToolRules(store: Store, mate: SubagentRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date): Done {
+  const grant = store.subagentGrant(mate.id, tool);
   if (grant === null) return { ok: false, said: `It doesn't use ${tool}. Let it use ${tool} first.` };
   const rules = { ...grant.rules };
   for (const [action, change] of Object.entries(changes)) {
@@ -190,7 +190,7 @@ export function setToolRules(store: Store, mate: TeammateRow, tool: string, chan
     if (!checked.ok) return { ok: false, said: checked.said };
     rules[action] = checked.rule;
   }
-  store.saveTeammateGrant({ teammate: mate.id, tool, actions: grant.actions, rules }, by, now);
+  store.saveSubagentGrant({ subagent: mate.id, tool, actions: grant.actions, rules }, by, now);
   return { ok: true, said: "Saved. Its next turn uses these rules." };
 }
 
@@ -199,27 +199,27 @@ const blank = (text: string) => redactSecretLines(text, scanForSecrets(text));
 /**
  * Make one call now: a free one, or one a person approved (exactly as they
  * saw it). What the tool said is kept on the receipt, secrets scrubbed; a
- * tool that says it failed is an answer the teammate reads, not trouble.
+ * tool that says it failed is an answer the subagent reads, not trouble.
  */
-export async function makeCall(store: Store, call: TeammateCallRow, repo: string, io: ToolIo, now: Date, options: { byPerson?: boolean } = {}): Promise<TeammateCallRow> {
+export async function makeCall(store: Store, call: SubagentCallRow, repo: string, io: ToolIo, now: Date, options: { byPerson?: boolean } = {}): Promise<SubagentCallRow> {
   // Its rules are read again at the moment of the call: a tool taken away, or an action set to never, since it was approved stops it.
-  // (A person's own undo (v97) needs the tool still granted, not the teammate's rule for that action.)
-  const grant = store.teammateGrant(call.teammate, call.tool);
+  // (A person's own undo (v97) needs the tool still granted, not the subagent's rule for that action.)
+  const grant = store.subagentGrant(call.subagent, call.tool);
   if (grant === null || (options.byPerson !== true && ruleFor(grant, call.action, call.input).use === "never")) {
-    store.moveTeammateCall(call.id, ["approved", "running"], { state: "refused", result: "Its rules changed before the call was made." }, now);
-    return store.teammateCall(call.id)!;
+    store.moveSubagentCall(call.id, ["approved", "running"], { state: "refused", result: "Its rules changed before the call was made." }, now);
+    return store.subagentCall(call.id)!;
   }
   // Sprint 8: nor does a call to a tool the organisation policy doesn't allow (a person's undo included).
   const disallowed = toolRefusal(store.orgPolicy(), call.tool);
   if (disallowed !== null) {
-    store.moveTeammateCall(call.id, ["approved", "running"], { state: "refused", result: disallowed }, now);
-    return store.teammateCall(call.id)!;
+    store.moveSubagentCall(call.id, ["approved", "running"], { state: "refused", result: disallowed }, now);
+    return store.subagentCall(call.id)!;
   }
-  if (call.state !== "running" && !store.moveTeammateCall(call.id, ["approved"], { state: "running" }, now)) return store.teammateCall(call.id)!;
+  if (call.state !== "running" && !store.moveSubagentCall(call.id, ["approved"], { state: "running" }, now)) return store.subagentCall(call.id)!;
   const tool = projectToolsOf(store, repo).find(one => one.name === call.tool);
   if (tool === undefined) {
-    store.moveTeammateCall(call.id, ["running"], { state: "failed", result: `There's no tool called ${call.tool} in this project any more.` }, now);
-    return store.teammateCall(call.id)!;
+    store.moveSubagentCall(call.id, ["running"], { state: "failed", result: `There's no tool called ${call.tool} in this project any more.` }, now);
+    return store.subagentCall(call.id)!;
   }
   const values = readToolSecrets(repo, tool.name, io.toolHome);
   let answer;
@@ -230,12 +230,12 @@ export async function makeCall(store: Store, call: TeammateCallRow, repo: string
   }
   const text = answer.ok ? blank(scrubSecrets(answer.text, values)).trim() : answer.problem;
   const kept = text.length <= RESULT_CHARS ? text : `${text.slice(0, RESULT_CHARS - 1)}…`;
-  store.moveTeammateCall(call.id, ["running"], { state: answer.ok && !answer.isError ? "done" : "failed", result: kept || (answer.ok ? "(no answer)" : "It couldn't be reached.") }, now);
-  return store.teammateCall(call.id)!;
+  store.moveSubagentCall(call.id, ["running"], { state: answer.ok && !answer.isError ? "done" : "failed", result: kept || (answer.ok ? "(no answer)" : "It couldn't be reached.") }, now);
+  return store.subagentCall(call.id)!;
 }
 
 /** A receipt in words: what happened to the call. */
-export function callOutcome(call: TeammateCallRow): string {
+export function callOutcome(call: SubagentCallRow): string {
   switch (call.state) {
     case "asked": return "waiting for approval";
     case "approved": return `${call.decidedBy} approved it; making it`;
@@ -248,19 +248,19 @@ export function callOutcome(call: TeammateCallRow): string {
 }
 
 /** A receipt as a person reads it on the card: what happened, and who decided. */
-export function receiptWords(store: Store, call: TeammateCallRow): string {
+export function receiptWords(store: Store, call: SubagentCallRow): string {
   switch (call.state) {
-    case "asked": { const question = store.teammateQuestionForCall(call.id); return `Waiting for ${question?.askedOf ?? "a person"} to approve`; }
+    case "asked": { const question = store.subagentQuestionForCall(call.id); return `Waiting for ${question?.askedOf ?? "a person"} to approve`; }
     case "approved": case "running": return call.decidedBy === null ? "Making it now" : `${call.decidedBy} approved · making it now`;
-    case "done": return call.undoneBy !== null ? `Done · undone by ${call.undoneBy}` : call.undoOf !== null ? `Undid ${store.teammateCall(call.undoOf)?.action ?? "a call"} · done` : call.decidedBy === null ? "Done" : `${call.decidedBy} approved · done`;
+    case "done": return call.undoneBy !== null ? `Done · undone by ${call.undoneBy}` : call.undoOf !== null ? `Undid ${store.subagentCall(call.undoOf)?.action ?? "a call"} · done` : call.decidedBy === null ? "Done" : `${call.decidedBy} approved · done`;
     case "failed": return call.decidedBy === null ? "Failed" : `${call.decidedBy} approved · failed`;
-    case "denied": { const said = store.teammateQuestionForCall(call.id)?.answer; return `${call.decidedBy ?? "A person"} said no${said ? `: ${said}` : ""}`; }
+    case "denied": { const said = store.subagentQuestionForCall(call.id)?.answer; return `${call.decidedBy ?? "A person"} said no${said ? `: ${said}` : ""}`; }
     default: return `Not made: ${call.result ?? "outside its rules"}`;
   }
 }
 
 /** The Tools section's form, read into rule changes: every action the grant knows. */
-export function rulesFromForm(grant: Pick<TeammateGrantRow, "actions">, field: (key: string) => string | null): Record<string, { use: unknown; limit?: { field: unknown; over: unknown }; undo?: unknown }> {
+export function rulesFromForm(grant: Pick<SubagentGrantRow, "actions">, field: (key: string) => string | null): Record<string, { use: unknown; limit?: { field: unknown; over: unknown }; undo?: unknown }> {
   return Object.fromEntries(grant.actions.flatMap(action => {
     const use = field(`use.${action.name}`);
     if (use === null) return [];

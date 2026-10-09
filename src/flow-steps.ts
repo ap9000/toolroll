@@ -42,9 +42,9 @@ import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
 import { replyInChannel } from "./chat-inbox.js";
 import { recordSent, threadOf } from "./flow-replies.js";
-import { ASKED, teammateReady, teammateTurn, type TeammateOutcome } from "./teammate-work.js";
-import type { TurnRunner } from "./teammates.js";
-import type { ToolLister } from "./teammate-tools.js";
+import { ASKED, subagentReady, subagentTurn, type SubagentOutcome } from "./subagent-work.js";
+import type { TurnRunner } from "./subagents.js";
+import type { ToolLister } from "./subagent-tools.js";
 import { budgetHoldWords, claudeMachineBilling, monthOf } from "./spend.js";
 import { toolRefusal } from "./policy.js";
 import { pullRequestStep } from "./flow-pull-request.js";
@@ -71,9 +71,9 @@ export type StepIo = {
   callTool?: ToolCaller;
   /** Where the project tools' secrets live (default: this computer's home). */
   toolHome?: string;
-  /** Takes a teammate's turn (default: Claude through this computer's sign-in, answering in its fixed shape). */
-  teammate?: TurnRunner;
-  /** Lists what a project tool offers a teammate (default: starts its MCP server and asks). */
+  /** Takes a subagent's turn (default: Claude through this computer's sign-in, answering in its fixed shape). */
+  subagent?: TurnRunner;
+  /** Lists what a project tool offers a subagent (default: starts its MCP server and asks). */
   listTools?: ToolLister;
 };
 export type StepPass = { ran: number; problems: string[] };
@@ -86,8 +86,8 @@ type Outcome = { state: "passed" | "failed" | "retry"; said: string; log?: strin
   mail?: { id: string; to: string[] } };
 
 const RETRY_MS = [5 * 60_000, 15 * 60_000];
-/** A teammate's turn tries again sooner: a card waiting on a person's colleague shouldn't wait long for a hiccup. */
-const TEAMMATE_RETRY_MS = [60_000, 5 * 60_000];
+/** A subagent's turn tries again sooner: a card waiting on a person's colleague shouldn't wait long for a hiccup. */
+const SUBAGENT_RETRY_MS = [60_000, 5 * 60_000];
 const OUTPUT_CHARS = 3000;
 /** How much of a step's output its run keeps as the log. */
 const LOG_CHARS = 64_000;
@@ -106,9 +106,9 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
     if (known === undefined) { const flow = store.getFlow(card.flow)!; known = { flow, definition: flowDefinitionOf(flow) }; flows.set(card.flow, known); }
     const stage = known.definition?.stages.find(one => one.id === card.stage);
     if (stage === undefined) continue;
-    // v92: a teammate's turn — a zone it handles, or a decision it staffs (a person decides when it's paused or gone).
-    if (stage.kind === "teammate" || (stage.kind === "approval" && stage.teammate !== undefined)) {
-      await teammateStep(store, known.flow, known.definition!, stage, card, now, io, pass);
+    // v92: a subagent's turn — a zone it handles, or a decision it staffs (a person decides when it's paused or gone).
+    if (stage.kind === "subagent" || (stage.kind === "approval" && stage.subagent !== undefined)) {
+      await subagentStep(store, known.flow, known.definition!, stage, card, now, io, pass);
       continue;
     }
     // A pull request: opened for the card's result, then CI decides where it goes (flow-pull-request.ts).
@@ -138,7 +138,7 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
     // (or everything) that holds key work holds them.
     const agents = stage.kind === "sort" ? [{ provider: "openrouter", billing: "api-key" as const }]
       : stage.kind === "draft" ? [{ provider: "claude", billing: claudeMachineBilling(store.handle) }] : null;
-    const held = agents === null ? null : budgetGate({ project: repo, person: null, teammate: null, agents });
+    const held = agents === null ? null : budgetGate({ project: repo, person: null, subagent: null, agents });
     if (held !== null && held.over !== null) {
       const waiting = `${budgetHoldWords(held, monthOf(now).name)}. Raise it on Spend to go on.`;
       if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
@@ -205,27 +205,27 @@ function claimStep(store: Store, card: FlowCardRow, step: { stage: string; kind:
   });
 }
 
-/** One teammate turn, when one is due for this card: claimed like any step, retried on failure, and waiting while its question is open. */
-async function teammateStep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, io: StepIo, pass: StepPass): Promise<boolean> {
-  // v102: on a protected project an AI teammate never decides an approval; the engine asks the person.
+/** One subagent turn, when one is due for this card: claimed like any step, retried on failure, and waiting while its question is open. */
+async function subagentStep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, io: StepIo, pass: StepPass): Promise<boolean> {
+  // v102: on a protected project a subagent never decides an approval; the engine asks the person.
   if (stage.kind === "approval" && store.approvalRules(flow.repo).protectProject) return true;
-  const mate = stage.teammate === undefined ? null : store.teammateByHandle(flow.repo, stage.teammate);
-  const ready = teammateReady(store, mate, now);
+  const mate = stage.subagent === undefined ? null : store.subagentByHandle(flow.repo, stage.subagent);
+  const ready = subagentReady(store, mate, now);
   if (!ready.ok) {
     // A decision goes to its person (the engine asks them). A zone only it handles waits, saying why.
     if (stage.kind === "approval") return true;
-    const waiting = ready.why === "gone" ? `There's no teammate called ${stage.teammate ?? "(none)"} in this project.` : `${mate!.handle} is ${ready.why === "paused" ? "paused" : `waiting: ${ready.why}`}.`;
+    const waiting = ready.why === "gone" ? `There's no subagent called ${stage.subagent ?? "(none)"} in this project.` : `${mate!.handle} is ${ready.why === "paused" ? "paused" : `waiting: ${ready.why}`}.`;
     if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
     return true;
   }
   // Waiting on a person: its own question, or (v94) a tool call they approve first.
-  if (store.openTeammateQuestionOn(card.id, card.entry) !== null) return true;
-  if (!claimStep(store, card, { stage: stage.id, kind: "teammate", script: null, scriptVersion: null }, now)) return true;
+  if (store.openSubagentQuestionOn(card.id, card.entry) !== null) return true;
+  if (!claimStep(store, card, { stage: stage.id, kind: "subagent", script: null, scriptVersion: null }, now)) return true;
   pass.ran++;
   const started = Date.now();
-  let outcome: TeammateOutcome;
+  let outcome: SubagentOutcome;
   try {
-    outcome = await teammateTurn(store, flow, definition, stage, card, mate!, now, { ...(io.teammate === undefined ? {} : { turn: io.teammate }), ...(io.evidenceRoot === undefined ? {} : { evidenceRoot: io.evidenceRoot }),
+    outcome = await subagentTurn(store, flow, definition, stage, card, mate!, now, { ...(io.subagent === undefined ? {} : { turn: io.subagent }), ...(io.evidenceRoot === undefined ? {} : { evidenceRoot: io.evidenceRoot }),
       ...(io.callTool === undefined ? {} : { callTool: io.callTool }), ...(io.listTools === undefined ? {} : { listTools: io.listTools }), ...(io.toolHome === undefined ? {} : { toolHome: io.toolHome }) });
   } catch (error) {
     outcome = { state: "retry", said: error instanceof Error ? error.message : "It couldn't take its turn." };
@@ -234,14 +234,14 @@ async function teammateStep(store: Store, flow: FlowRow, definition: FlowDefinit
   const kept = { log: outcome.log === undefined ? null : keptLog(outcome.log), durationMs: Date.now() - started, ...(outcome.decisionJson === undefined ? {} : { decisionJson: outcome.decisionJson }) };
   if (outcome.state === "retry") {
     const attempts = run?.attempts ?? 1;
-    if (attempts <= TEAMMATE_RETRY_MS.length) {
-      store.finishFlowStep(card.id, card.entry, { state: "waiting", result: outcome.said, nextAt: new Date(now.getTime() + TEAMMATE_RETRY_MS[attempts - 1]!).toISOString(), ...kept }, now);
+    if (attempts <= SUBAGENT_RETRY_MS.length) {
+      store.finishFlowStep(card.id, card.entry, { state: "waiting", result: outcome.said, nextAt: new Date(now.getTime() + SUBAGENT_RETRY_MS[attempts - 1]!).toISOString(), ...kept }, now);
       if (stage.kind !== "approval") store.updateFlowCard(card.id, { waiting: `${outcome.said} Trying again in ${attempts === 1 ? "a minute" : "5 minutes"}.` }, now);
       pass.problems.push(`flow card ${card.id}: ${outcome.said}`);
       return true;
     }
     outcome = { state: "failed", said: `${outcome.said} It didn't work after three tries.` };
-    store.addTeammateEvent({ teammate: mate!.id, card: card.id, entry: card.entry, kind: "failed", said: `Couldn't take its turn on “${card.title}”: ${outcome.said}` }, now);
+    store.addSubagentEvent({ subagent: mate!.id, card: card.id, entry: card.entry, kind: "failed", said: `Couldn't take its turn on “${card.title}”: ${outcome.said}` }, now);
     if (stage.kind !== "approval") store.updateFlowCard(card.id, { waiting: outcome.said }, now);
   }
   store.finishFlowStep(card.id, card.entry, outcome.state === "waiting" ? { state: "waiting", result: outcome.said, nextAt: outcome.nextAt ?? ASKED, ...kept }

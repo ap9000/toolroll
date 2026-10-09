@@ -2,7 +2,7 @@
  * Cost guardrails (v105): subscription work at $0 (its plan's windows are
  * what bind it, shown on Tasks); API work priced (reported, or tokens at the
  * catalogue price, or the provider's highest listed price, or honestly
- * unpriced), spend attributed to projects, people and teammates, monthly
+ * unpriced), spend attributed to projects, people and subagents, monthly
  * budgets that alert at 50/80/100 % and stop API work at 100 %, and a Spend
  * page with CSV.
  */
@@ -15,7 +15,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { billingOf, claudeBillingFrom, priceFor, spendItems, monthOf } from "./spend.js";
 import { budgetAlertPass } from "./budget-alerts.js";
-import { teammateReady } from "./teammate-work.js";
+import { subagentReady } from "./subagent-work.js";
 import { runOperate } from "./operate.js";
 import { setAuthMode } from "./keys.js";
 import { claudeLimitsOf, codexLimitsOf, noteLimits, pushLimitSink } from "./provider-limits.js";
@@ -47,7 +47,7 @@ afterEach(() => { dropSink(); store.close(); process.env["HOME"] = home; rmSync(
 const legacy = { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const };
 let serial = 0;
 /** A task filed by `filer`, and one finished run of it. */
-function work(filer: { name: string | null; kind: "person" | "coordinator" | "teammate" | "automation" }, usage: { provider?: string; model?: string | null; costUsd?: number; tokensIn?: number; tokensOut?: number }, at = NOW): { id: string; run: number } {
+function work(filer: { name: string | null; kind: "person" | "coordinator" | "subagent" | "automation" }, usage: { provider?: string; model?: string | null; costUsd?: number; tokensIn?: number; tokensOut?: number }, at = NOW): { id: string; run: number } {
   const id = `t-${++serial}`;
   store.createTask({ id, title: id, filedBy: filer }, at);
   const ref = store.refFor("built-in", id).id;
@@ -130,24 +130,24 @@ test("billing follows what the CLI did: a key source, a cloud model or Codex's k
   expect(billingOf("codex")).toBe("subscription");
   // Gemini on a key with no catalogue prices can't be priced: a covering budget holds it rather than count it free.
   store.setBudget({ scope: "person", key: "alex", limitMicrousd: 100_000_000, hardStop: true }, "alex", NOW);
-  const subject = { project: REPO, person: "alex", teammate: null };
+  const subject = { project: REPO, person: "alex", subagent: null };
   expect(store.budgetGate(NOW)({ ...subject, agents: [{ provider: "gemini", billing: "api-key" }] })).toMatchObject({ why: "unpriced", unpricedProvider: "gemini" });
   expect(store.budgetGate(NOW)({ ...subject, agents: [{ provider: "claude", billing: "api-key" }] }).over).toBeNull();
   expect(store.budgetGate(NOW)({ ...subject, agents: [{ provider: "gemini", billing: "subscription" }] }).over).toBeNull();
-  expect(store.budgetGate(NOW)({ project: "/elsewhere", person: "sam", teammate: null, agents: [{ provider: "gemini", billing: "api-key" }] }).over).toBeNull();
+  expect(store.budgetGate(NOW)({ project: "/elsewhere", person: "sam", subagent: null, agents: [{ provider: "gemini", billing: "api-key" }] }).over).toBeNull();
 });
 
-test("spend counts toward the project, the person who filed it (or the person behind a coordinator), and a teammate that filed it", () => {
-  store.createTeammate({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
-  const mate = Number(store.handle.prepare("SELECT id FROM teammate WHERE handle = 'maya'").get()!["id"]);
+test("spend counts toward the project, the person who filed it (or the person behind a coordinator), and a subagent that filed it", () => {
+  store.createSubagent({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
+  const mate = Number(store.handle.prepare("SELECT id FROM subagent WHERE handle = 'maya'").get()!["id"]);
   work({ name: "alex", kind: "person" }, { costUsd: 1 });
   work({ name: "sam", kind: "coordinator" }, { costUsd: 2 });
-  // A teammate files as its name ("Maya (AI)"), not its handle.
-  const filed = work({ name: "Maya (AI)", kind: "teammate" }, { costUsd: 4 });
-  expect(store.budgetSubject(store.lookupRef(filed.id)!.id)).toEqual({ project: REPO, person: null, teammate: mate });
+  // A subagent files as its name ("Maya (AI)"), not its handle.
+  const filed = work({ name: "Maya (AI)", kind: "subagent" }, { costUsd: 4 });
+  expect(store.budgetSubject(store.lookupRef(filed.id)!.id)).toEqual({ project: REPO, person: null, subagent: mate });
   work({ name: null, kind: "automation" }, { costUsd: 8 });
   // Its own turns run on this computer's Claude sign-in: $0 whatever the CLI estimates.
-  store.addTeammateTurn({ teammate: mate, card: null, model: "sonnet", ok: true, ms: 10, costUsd: 0.5 }, NOW);
+  store.addSubagentTurn({ subagent: mate, card: null, model: "sonnet", ok: true, ms: 10, costUsd: 0.5 }, NOW);
   store.handle.prepare(`INSERT INTO chat_turn (approver, credential_key, provider, model, state, created_at, deadline_at, reserved_microusd, settled_microusd) VALUES ('alex', 'k', 'openrouter-api', 'x', 'answered', ?, ?, 300000, 250000)`)
     .run(NOW.toISOString(), NOW.toISOString());
   const month = monthOf(NOW);
@@ -156,7 +156,7 @@ test("spend counts toward the project, the person who filed it (or the person be
   expect(sum(item => item.project === REPO)).toBe(15_000_000);
   expect(sum(item => item.person === "alex")).toBe(1_250_000);
   expect(sum(item => item.person === "sam")).toBe(2_000_000);
-  expect(sum(item => item.teammate === mate)).toBe(4_000_000);
+  expect(sum(item => item.subagent === mate)).toBe(4_000_000);
   expect(sum(() => true)).toBe(15_250_000);
   // Last month's work isn't this month's.
   work({ name: "alex", kind: "person" }, { costUsd: 99 }, new Date("2026-08-31T23:59:59.000Z"));
@@ -167,10 +167,10 @@ test("an automatic repair counts as its source's filer; a task's chat as the tas
   const source = work({ name: "alex", kind: "person" }, { costUsd: 1 });
   const repair = work({ name: null, kind: "automation" }, { costUsd: 2 });
   store.handle.prepare("UPDATE task_ref SET revision_of = ? WHERE external_id = ?").run(source.id, repair.id);
-  expect(store.budgetSubject(store.lookupRef(repair.id)!.id)).toEqual({ project: REPO, person: "alex", teammate: null });
-  const session = Number(store.handle.prepare(`INSERT INTO mate_session (approver, approver_generation, credential_key, ceiling_microusd, ceiling_digest, terms_digest, minted_at) VALUES ('sam', 1, 'k', 1000000, 'c', 't', ?)`)
+  expect(store.budgetSubject(store.lookupRef(repair.id)!.id)).toEqual({ project: REPO, person: "alex", subagent: null });
+  const session = Number(store.handle.prepare(`INSERT INTO lead_session (approver, approver_generation, credential_key, ceiling_microusd, ceiling_digest, terms_digest, minted_at) VALUES ('sam', 1, 'k', 1000000, 'c', 't', ?)`)
     .run(NOW.toISOString()).lastInsertRowid);
-  const thread = Number(store.handle.prepare(`INSERT INTO mate_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('sam', 'c', ?, 'task', ?)`).run(NOW.toISOString(), source.id).lastInsertRowid);
+  const thread = Number(store.handle.prepare(`INSERT INTO lead_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('sam', 'c', ?, 'task', ?)`).run(NOW.toISOString(), source.id).lastInsertRowid);
   store.handle.prepare(`INSERT INTO mate_turn (approver, session, thread, credential_key, state, created_at, deadline_at, reserved_microusd, settled_microusd) VALUES ('sam', ?, ?, 'k', 'answered', ?, ?, 1, 700000)`)
     .run(session, thread, NOW.toISOString(), NOW.toISOString());
   const flow = store.createFlow({ repo: "/repo/desk", name: "Inbox", definitionJson: "{}", by: "alex" }, NOW);
@@ -184,27 +184,27 @@ test("an automatic repair counts as its source's filer; a task's chat as the tas
   expect(items.find(item => item.kind === "sort")).toMatchObject({ project: "/repo/desk", microusd: 4_200, source: "reported" });
 });
 
-test("a hard-stop budget used up holds new work (tasks, teammates, chats); an alerts-only one never does; the ledger keeps every change", () => {
+test("a hard-stop budget used up holds new work (tasks, subagents, chats); an alerts-only one never does; the ledger keeps every change", () => {
   const alexTask = work({ name: "alex", kind: "person" }, { costUsd: 6 });
   store.setBudget({ scope: "project", key: REPO, limitMicrousd: 10_000_000, hardStop: true }, "alex", NOW);
   const subject = store.budgetSubject(store.lookupRef(alexTask.id)!.id);
-  expect(subject).toEqual({ project: REPO, person: "alex", teammate: null });
+  expect(subject).toEqual({ project: REPO, person: "alex", subagent: null });
   expect(store.budgetGate(NOW)(subject)).toMatchObject({ over: null, remainingMicrousd: 4_000_000 });
   work({ name: "sam", kind: "person" }, { costUsd: 5 });
   expect(store.budgetGate(NOW)(subject).over).toMatchObject({ scope: "project", percent: 110 });
-  // A teammate's own turns cost nothing extra (its sign-in), so a budget never stops them.
-  store.createTeammate({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
-  const mate = store.teammates([REPO])[0]!;
-  expect(teammateReady(store, mate, NOW)).toEqual({ ok: true });
+  // A subagent's own turns cost nothing extra (its sign-in), so a budget never stops them.
+  store.createSubagent({ repo: REPO, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
+  const mate = store.subagents([REPO])[0]!;
+  expect(subagentReady(store, mate, NOW)).toEqual({ ok: true });
   // Unless this computer's Claude bills a key (a Console login, a key helper, a gateway): then its turns and drafts
   // cost what they cost, count, and wait like any key work.
   store.recordProviderBilling("claude", "api-key", NOW);
-  expect(teammateReady(store, mate, NOW)).toEqual({ ok: false, why: "a monthly budget its work counts toward is used up" });
-  store.addTeammateTurn({ teammate: mate.id, card: null, model: "sonnet", ok: true, ms: 10, costUsd: 0.25 }, NOW);
+  expect(subagentReady(store, mate, NOW)).toEqual({ ok: false, why: "a monthly budget its work counts toward is used up" });
+  store.addSubagentTurn({ subagent: mate.id, card: null, model: "sonnet", ok: true, ms: 10, costUsd: 0.25 }, NOW);
   store.recordDraftSpend({ repo: REPO, model: null, costUsd: 0.5 }, NOW);
   const month = monthOf(NOW);
-  const extra = spendItems(store.handle, month.from, month.to).filter(item => item.kind === "teammate" || item.kind === "draft");
-  expect(extra.map(item => [item.kind, item.microusd, item.project])).toEqual([["teammate", 250_000, REPO], ["draft", 500_000, REPO]]);
+  const extra = spendItems(store.handle, month.from, month.to).filter(item => item.kind === "subagent" || item.kind === "draft");
+  expect(extra.map(item => [item.kind, item.microusd, item.project])).toEqual([["subagent", 250_000, REPO], ["draft", 500_000, REPO]]);
   store.recordProviderBilling("claude", "subscription", NOW);
   // Alerts only: work carries on.
   store.setBudget({ scope: "project", key: REPO, limitMicrousd: 10_000_000, hardStop: false }, "alex", NOW);
@@ -299,7 +299,7 @@ test("the command line shows the month and sets budgets for an instance operator
     expect((await run("budget", ["set", "--person", "alex", "--usd", "50", "--json"])).code).toBe(3);
     expect((await run("budget", ["set", "--person", "alex", "--usd", "50", "--as", "alex", "--token", alex.token])).out).toContain("alex: $50 a month, API work stops at 100%.");
     expect((await run("budget", ["list"])).out).toContain("alex: $2.00 of $50 this month (4%)");
-    expect((await run("spend", ["--csv"])).out.split(/\r?\n/)[0]).toBe("time_utc,kind,project,person,teammate,task,run,provider,model,tokens_in,tokens_out,cost_usd,priced_by,billing");
+    expect((await run("spend", ["--csv"])).out.split(/\r?\n/)[0]).toBe("time_utc,kind,project,person,subagent,task,run,provider,model,tokens_in,tokens_out,cost_usd,priced_by,billing");
   } finally {
     store = openStore(file);
   }
@@ -333,16 +333,16 @@ test("a plan's windows: Claude says them each turn, Codex when asked; the latest
   store.setBudget({ scope: "project", key: REPO, limitMicrousd: 10_000_000, hardStop: true }, "alex", NOW);
   work({ name: "alex", kind: "person" }, { costUsd: 9 });
   const at = new Date("2026-09-28T23:40:00.000Z");
-  const view = limitsView(store.providerLimits(), store.monthSpend(NOW).budgets, { project: repo => repo.split("/").pop()!, teammate: String }, at)!;
+  const view = limitsView(store.providerLimits(), store.monthSpend(NOW).budgets, { project: repo => repo.split("/").pop()!, subagent: String }, at)!;
   expect(view.tiles.map(tile => [tile.name, tile.window, tile.value, tile.unit, tile.tone, tile.detail])).toEqual([
     ["Claude", "5-hour", "50", "%", "neutral", "Resets in 3 h 10 min · read 40m ago"],
     ["Codex Pro", "Weekly", "85", "%", "warning", expect.stringMatching(/^Resets \w{3} \d+ (AM|PM) · read 40m ago$/)],
     ["shop", "Budget", "$9.00", "of $10", "warning", "Stops API work at 100%"],
   ]);
   // A window that has turned over since the reading starts again.
-  const later = limitsView(store.providerLimits(), [], { project: String, teammate: String }, new Date("2026-09-29T03:00:00.000Z"))!;
+  const later = limitsView(store.providerLimits(), [], { project: String, subagent: String }, new Date("2026-09-29T03:00:00.000Z"))!;
   expect(later.tiles[0]).toMatchObject({ value: "0", detail: "New window" });
-  expect(limitsView([], [], { project: String, teammate: String }, NOW)).toBeNull();
+  expect(limitsView([], [], { project: String, subagent: String }, NOW)).toBeNull();
 
   // Odd lines: a window named like an object's own property still reads; a bare "rejected" names one window and
   // leaves the others; Codex's reached reason marks its fullest window; an internal plan name isn't shown.
@@ -352,7 +352,7 @@ test("a plan's windows: Claude says them each turn, Codex when asked; the latest
   expect(store.providerLimits().filter(one => one.provider === "claude").map(one => `${one.window}:${one.usedPercent}`)).toEqual(["five_hour:100", "seven_day:30"]);
   const codex = codexLimitsOf({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 }, secondary: { usedPercent: 40, windowDurationMins: 10080 }, rateLimitReachedType: "rate_limit_reached", planType: "self_serve_business_usage_based" } })!;
   expect(codex.windows.map(one => one.reached)).toEqual([true, false]);
-  expect(limitsView(codex.windows.map(one => ({ ...one, provider: "codex", plan: codex.plan, observedAt: NOW.toISOString() })), [], { project: String, teammate: String }, NOW)!.tiles[0]!.name).toBe("Codex");
+  expect(limitsView(codex.windows.map(one => ({ ...one, provider: "codex", plan: codex.plan, observedAt: NOW.toISOString() })), [], { project: String, subagent: String }, NOW)!.tiles[0]!.name).toBe("Codex");
   // A command that ends inside a longer one leaves the longer one's sink in place.
   const seen: string[] = [];
   const outer = pushLimitSink(reading => seen.push(`outer:${reading.provider}`));

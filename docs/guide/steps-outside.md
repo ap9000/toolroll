@@ -82,7 +82,7 @@ The sign-in is kept in the tool's secrets file on this computer, never in the
 database, and Toolroll renews it before it runs out. If a service
 stops accepting it (you removed the app on the service's side, say), the log
 says so and the tool's test fails; click the service again to sign in again.
-Connecting from a starter kit's checklist also lets the kit's teammate use
+Connecting from a starter kit's checklist also lets the kit's subagent use
 the tool: reading freely, the rest after you approve each call.
 
 ## Update where it came from

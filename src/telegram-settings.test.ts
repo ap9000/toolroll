@@ -52,7 +52,7 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     const code = /\/pair ([0-9a-f]{32})/.exec(shown)![1]!;
     // The code pairs alex's own chat; sam's simultaneous code pairs sam's.
     expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: "777000", chatId: "4242", userId: "4242", updateId: 1 }, new Date())).toMatchObject({ ok: true });
-    // A project-scoped teammate can manage their own phone without gaining
+    // A project-scoped subagent can manage their own phone without gaining
     // installation bot settings or affecting another person's pairing.
     expect(store.setAccountProjects("sam", [], "alex", new Date()).ok).toBe(true);
     const samCookie = await signIn("sam", samPassword);
@@ -93,7 +93,7 @@ test("a reply unsent for two minutes shows on the person's own Telegram page and
   const binding = store.liveTelegramBinding("777000")!;
   const id = store.enqueueTelegramConversation({ binding, updateId: 2, messageId: "1002", replyTo: null, request: "r".repeat(32), text: "what's new?", context: null, taskId: null, sourceRun: null }, written);
   expect(store.claimTelegramConversation("777000", "owner", 120_000, written)?.id).toBe(id);
-  const session = store.mintMateSession({ approver: "alex", approverGeneration: binding.approverGeneration, credentialKey: "k", ceilingMicrousd: 0, ceilingDigest: "d", termsDigest: "t" }, written);
+  const session = store.mintLeadSession({ approver: "alex", approverGeneration: binding.approverGeneration, credentialKey: "k", ceilingMicrousd: 0, ceilingDigest: "d", termsDigest: "t" }, written);
   expect(store.planTelegramConversationParts(id, "owner", { session, turn: 0 }, [{ kind: "reply", text: "0.9.9 is out.", replyTo: "1002" }], written)).toBe(true);
   expect(store.settleTelegramConversationPart(id, 0, "owner", { ok: false, error: "fetch failed; delivery may be uncertain", uncertain: true, retryAt: new Date(Date.now() + 3_600_000).toISOString() }, written)).toBe(true);
   expect(store.finishTelegramConversation(id, "owner", { state: "queued", outcome: "delivering", nextAttemptAt: new Date(Date.now() + 3_600_000).toISOString() }, written)).toBe(true);

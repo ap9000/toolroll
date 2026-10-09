@@ -61,9 +61,9 @@ describe("what a change runs", () => {
   });
 
   test("model-facing code adds the real-model journeys; a test of it doesn't; --real and a full check do", () => {
-    for (const file of ["src/mate.ts", "src/mate-tools.ts", "src/subscription-chat.ts", "src/planner.ts", "src/builder.ts", "src/provider.ts", "src/invoke.ts", "src/teammates.ts", "src/flow-sort.ts", "src/task-sizing.ts"])
+    for (const file of ["src/lead.ts", "src/lead-tools.ts", "src/subscription-chat.ts", "src/planner.ts", "src/builder.ts", "src/provider.ts", "src/invoke.ts", "src/subagents.ts", "src/flow-sort.ts", "src/task-sizing.ts"])
       expect(planFor([file]), file).toEqual({ checks: true, real: true, why: `every unit test and every scripted browser journey; the real-model journeys and what they need (${file} changed: model-facing)` });
-    expect(planFor(["src/mate.test.ts"]).real).toBe(false);
+    expect(planFor(["src/lead.test.ts"]).real).toBe(false);
     expect(planFor(["src/browser/app.tsx"], { real: true }).why).toBe("every unit test and every scripted browser journey; the real-model journeys and what they need (--real)");
     expect(planFor(["docs/guide/flows.md"], { real: true })).toEqual({ checks: false, real: true, why: "no unit tests or scripted journeys (nothing a test reads changed); the real-model journeys and what they need (--real)" });
     expect(planFor([], { full: true })).toEqual({ checks: true, real: true, why: "a full check: every unit test, every scripted and real-model browser journey" });
@@ -116,7 +116,7 @@ describe("node scripts/release-check.mjs", () => {
     const base = repoWith(at, {
       "scripts/e2e-parallel.mjs": runner, "scripts/flows-e2e.mjs": "", "scripts/app-e2e.mjs": "",
       "package.json": JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build, test: "node -e 0" } }, null, 2) + "\n",
-      "src/browser/app.tsx": "export {};\n", "src/mate.ts": "export {};\n",
+      "src/browser/app.tsx": "export {};\n", "src/lead.ts": "export {};\n",
     }, files);
     let out: string;
     try { out = execFileSync(process.execPath, [script, "--base", base, ...extra], { cwd: at, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } }); } catch (error) { out = (error as { stdout: string }).stdout; }
@@ -143,7 +143,7 @@ describe("node scripts/release-check.mjs", () => {
   });
 
   test("a model-facing change and --real add the real-model groups under one provider gate; docs alone run no journey", () => {
-    const model = checkOf({ "src/mate.ts": "export const changed = 1;\n" });
+    const model = checkOf({ "src/lead.ts": "export const changed = 1;\n" });
     expect(model.runs).toEqual([REAL[0], SCRIPTED[0], REAL[1], SCRIPTED[1]]);
     expect(model.out).toMatch(/\nprovider gate: nothing started\n$/);
     expect(checkOf({ "docs/x.md": "# x\n" }, ["--real"]).runs).toEqual(REAL);

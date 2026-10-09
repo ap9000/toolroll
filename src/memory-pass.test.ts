@@ -11,7 +11,7 @@ import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { changeKnowledge, knowledgeView } from "./project-knowledge.js";
 import { claudeProjectDir, defaultAnalyzer, listProposals, memorySurface, parseVerdict, runMemoryPass, synthesizeProposals } from "./memory-pass.js";
-import { performSubscriptionMateRequest } from "./subscription-chat.js";
+import { performSubscriptionLeadRequest } from "./subscription-chat.js";
 import { MEMORY_VERDICT_MODEL_SCHEMA, readSavedVerdict } from "./contracts/memory-pass.js";
 import { savedRows } from "../test/context-fixture.js";
 import { getDecision, recordDecision } from "./project-memory.js";
@@ -74,7 +74,7 @@ describe("the memory pass's verdict", () => {
 
   test("ordinary chat keeps its own envelope when no output schema is given", async () => {
     let given: Record<string, unknown> = {};
-    const result = await performSubscriptionMateRequest({ provider: "claude-subscription", model: "default", system: "s", dataDocument: "d", history: [], tools: [], timeoutMs: 1_000 }, async (_file, args) => {
+    const result = await performSubscriptionLeadRequest({ provider: "claude-subscription", model: "default", system: "s", dataDocument: "d", history: [], tools: [], timeoutMs: 1_000 }, async (_file, args) => {
       given = JSON.parse(args[args.indexOf("--json-schema") + 1]!) as Record<string, unknown>;
       return { code: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: { text: "Hello", calls: [] } }), stderr: "", timedOut: false, notFound: false };
     });

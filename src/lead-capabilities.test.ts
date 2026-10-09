@@ -10,8 +10,8 @@ import { execFileSync } from "node:child_process";
 import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
-import { executeMateTool, MATE_TOOLS, type MateToolContext } from "./mate-tools.js";
-import { MATE_CONTRACT } from "./mate-contract.js";
+import { executeLeadTool, LEAD_TOOLS, type LeadToolContext } from "./lead-tools.js";
+import { LEAD_CONTRACT } from "./lead-contract.js";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { register } from "./runner.js";
 import { addToolTo } from "./project-tools.js";
@@ -37,9 +37,9 @@ describe("the lead checks a capability before it claims it", () => {
   let who: VerifiedApprover;
   let drafted: number;
   let dir: string, REPO: string, OTHER: string;
-  const ctx = (step: number, extra: Partial<MateToolContext> = {}, now = T0): MateToolContext => ({ store, who, now, step, readDecisions: new Map(), draft: () => ++drafted, integrations: () => INTEGRATIONS, authMode: () => "subscription", ...extra });
+  const ctx = (step: number, extra: Partial<LeadToolContext> = {}, now = T0): LeadToolContext => ({ store, who, now, step, readDecisions: new Map(), draft: () => ++drafted, integrations: () => INTEGRATIONS, authMode: () => "subscription", ...extra });
   const read = (now = T0, repo = "r1"): Read => {
-    const result = executeMateTool(ctx(1, {}, now), "get_capabilities", { repo });
+    const result = executeLeadTool(ctx(1, {}, now), "get_capabilities", { repo });
     if (!result.ok) throw new Error(result.message);
     return result.body as Read;
   };
@@ -125,9 +125,9 @@ describe("the lead checks a capability before it claims it", () => {
     expect(read().projects[0]!.checks).toMatchObject({ level: "Off", state: "Off", ok: false, link: "projects" });
 
     // Without a project it reads every project; the other project's workers and tasks are its own.
-    const all = executeMateTool(ctx(1), "get_capabilities", {});
+    const all = executeLeadTool(ctx(1), "get_capabilities", {});
     expect(all.ok && (all.body as Read).projects.map(one => one.repo)).toEqual(["r1", "r2"]);
-    expect(executeMateTool(ctx(1), "get_capabilities", { repo: "r9" })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx(1), "get_capabilities", { repo: "r9" })).toMatchObject({ ok: false });
   });
 
   test("c1: the review phase's agent is listed; a skill that needs something is not ok; signed out only on a real sign-in failure, and an API key gets the key step", () => {
@@ -151,8 +151,8 @@ describe("the lead checks a capability before it claims it", () => {
     // A worker that can't run the agent for a reason that is not a sign-in (words that merely contain "auth" or "key"):
     // not available, with the worker's own words, never "Signed out" and never a sign-in command.
     register(store, { name: "laptop", host: "mac", capacity: 2, repos: [REPO], now: T0 });
-    const claudeOf = (extra: Partial<MateToolContext> = {}) => {
-      const result = executeMateTool(ctx(1, extra), "get_capabilities", { repo: "r1" });
+    const claudeOf = (extra: Partial<LeadToolContext> = {}) => {
+      const result = executeLeadTool(ctx(1, extra), "get_capabilities", { repo: "r1" });
       if (!result.ok) throw new Error(result.message);
       return (result.body as Read).projects[0]!.agents.find(one => one.provider === "claude")!;
     };
@@ -183,35 +183,35 @@ describe("the lead checks a capability before it claims it", () => {
 
   test("c2: a proposal or promise needing a provider, worker or integration is refused unless get_capabilities ran earlier that turn", () => {
     const checked = new Map<string, number>();
-    const turn = (step: number, extra: Partial<MateToolContext> = {}) => ctx(step, { checkedCapabilities: checked, ...extra });
+    const turn = (step: number, extra: Partial<LeadToolContext> = {}) => ctx(step, { checkedCapabilities: checked, ...extra });
     // Nothing read: the task, a flow that starts work and a promise to watch crew work are refused before anything is drafted.
-    expect(executeMateTool(turn(1), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
-    expect(executeMateTool(turn(1), "propose_flow", { operation: "create", repo: "r1", name: "Triage", template: "triage" })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
-    expect(executeMateTool(turn(1), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1), "propose_flow", { operation: "create", repo: "r1", name: "Triage", template: "triage" })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     // A timed promise on a chat app needs that chat app to work; one in the console conversation needs nothing.
-    expect(executeMateTool(turn(1, { channel: "telegram" }), "commit_to", { what: "Ping you at noon", when: "time", at: later(60).toISOString() })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
-    expect(executeMateTool(turn(1, { channel: "chat" }), "commit_to", { what: "Ping you at noon", when: "time", at: later(60).toISOString() })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1, { channel: "telegram" }), "commit_to", { what: "Ping you at noon", when: "time", at: later(60).toISOString() })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1, { channel: "chat" }), "commit_to", { what: "Ping you at noon", when: "time", at: later(60).toISOString() })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     // A flow change that starts no work (a comment) is not held up.
-    expect(executeMateTool(turn(1), "propose_flow", { operation: "comment", flow: 1, card: 1, note: "Looks right." })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1), "propose_flow", { operation: "comment", flow: 1, card: 1, note: "Looks right." })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     expect(drafted).toBe(0);
 
     // Reading the other project covers only that project.
-    expect(executeMateTool(turn(1), "get_capabilities", { repo: "r2" })).toMatchObject({ ok: true });
-    expect(executeMateTool(turn(2), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(1), "get_capabilities", { repo: "r2" })).toMatchObject({ ok: true });
+    expect(executeLeadTool(turn(2), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     // Read in the same step as the proposal: still refused; a later step: drafted.
-    expect(executeMateTool(turn(2), "get_capabilities", { repo: "r1" })).toMatchObject({ ok: true });
-    expect(executeMateTool(turn(2), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
-    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS })).toMatchObject({ ok: true });
+    expect(executeLeadTool(turn(2), "get_capabilities", { repo: "r1" })).toMatchObject({ ok: true });
+    expect(executeLeadTool(turn(2), "propose_task", { repo: "r1", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(executeLeadTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS })).toMatchObject({ ok: true });
     // The goal's limit is stated in the tool and taken whole; over it, the lead is told the length and asked to shorten.
-    expect(MATE_TOOLS.find(one => one.name === "propose_task")!.inputSchema).toMatchObject({ properties: { goal: { maxLength: 8_000, description: expect.stringContaining("At most 8,000 characters") } } });
-    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_000) })).toMatchObject({ ok: true });
-    expect(executeMateTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_001) })).toEqual({ ok: false, message: "goal: over 8,000 characters (it is 8,001): shorten it and call again" });
-    expect(executeMateTool(turn(3), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    expect(LEAD_TOOLS.find(one => one.name === "propose_task")!.inputSchema).toMatchObject({ properties: { goal: { maxLength: 8_000, description: expect.stringContaining("At most 8,000 characters") } } });
+    expect(executeLeadTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_000) })).toMatchObject({ ok: true });
+    expect(executeLeadTool(turn(3), "propose_task", { repo: "r1", ...TASK_ARGS, goal: "g".repeat(8_001) })).toEqual({ ok: false, message: "goal: over 8,000 characters (it is 8,001): shorten it and call again" });
+    expect(executeLeadTool(turn(3), "commit_to", { what: "Tell you when it is ready", when: "task", task: "t1" })).not.toEqual({ ok: false, message: CAPABILITIES_UNREAD });
 
     // One read over every project covers each of them.
     const everywhere = new Map<string, number>();
-    executeMateTool(ctx(1, { checkedCapabilities: everywhere }), "get_capabilities", {});
-    expect(executeMateTool(ctx(2, { checkedCapabilities: everywhere }), "propose_task", { repo: "r2", ...TASK_ARGS })).toMatchObject({ ok: true });
+    executeLeadTool(ctx(1, { checkedCapabilities: everywhere }), "get_capabilities", {});
+    expect(executeLeadTool(ctx(2, { checkedCapabilities: everywhere }), "propose_task", { repo: "r2", ...TASK_ARGS })).toMatchObject({ ok: true });
   });
 
   test("c2: a read without a project covers only the projects it actually read; a proposal on one it left out is refused", () => {
@@ -222,14 +222,14 @@ describe("the lead checks a capability before it claims it", () => {
     if (!verified.ok) throw new Error(verified.reason);
     who = verified.who;
     const checked = new Map<string, number>();
-    const all = executeMateTool(ctx(1, { checkedCapabilities: checked }), "get_capabilities", {});
+    const all = executeLeadTool(ctx(1, { checkedCapabilities: checked }), "get_capabilities", {});
     expect(all.ok && (all.body as Read & { notice?: string })).toMatchObject({ notice: expect.stringContaining("first 8") });
     expect([...checked.keys()]).toEqual(repos.slice(0, 8));
     // A project it read: drafted. One it left out: refused until that project is read.
-    expect(executeMateTool(ctx(2, { checkedCapabilities: checked }), "propose_task", { repo: "r8", ...TASK_ARGS })).toMatchObject({ ok: true });
-    expect(executeMateTool(ctx(2, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
-    executeMateTool(ctx(2, { checkedCapabilities: checked }), "get_capabilities", { repo: "r9" });
-    expect(executeMateTool(ctx(3, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toMatchObject({ ok: true });
+    expect(executeLeadTool(ctx(2, { checkedCapabilities: checked }), "propose_task", { repo: "r8", ...TASK_ARGS })).toMatchObject({ ok: true });
+    expect(executeLeadTool(ctx(2, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
+    executeLeadTool(ctx(2, { checkedCapabilities: checked }), "get_capabilities", { repo: "r9" });
+    expect(executeLeadTool(ctx(3, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toMatchObject({ ok: true });
   });
 
   test("c3: the contract says to check capabilities before promising, and to investigate a limitation before reporting it", () => {
@@ -240,8 +240,8 @@ describe("the lead checks a capability before it claims it", () => {
       "never pretend it works",
       "Investigate before reporting a limitation: when a tool refuses or something looks unsupported, read get_capabilities and the relevant skill (get_skills",
       "before telling the owner it can't be done",
-    ]) expect(MATE_CONTRACT).toContain(rule);
+    ]) expect(LEAD_CONTRACT).toContain(rule);
     // The integrations-only rule is replaced, not kept beside it.
-    expect(MATE_CONTRACT).not.toContain("Before promising work that depends on an integration");
+    expect(LEAD_CONTRACT).not.toContain("Before promising work that depends on an integration");
   });
 });
