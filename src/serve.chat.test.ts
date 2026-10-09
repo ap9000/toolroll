@@ -539,6 +539,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
    * exact history — with its task context — the provider would see. */
   let subscriptionRequests: { history: { role: string; text?: string }[] }[];
   let clockNow: Date;
+  let admittedRepos: string[];
 
   const url = (path: string) => `${base}${path}`;
   const T0 = new Date("2026-09-02T12:00:00.000Z");
@@ -581,6 +582,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
     evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-mate-ev-"));
     repoDir = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-mate-repo-")));
+    admittedRepos = [repoDir];
     clockNow = T0;
     script = [];
     subscriptionAnswers = [];
@@ -598,6 +600,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
       evidenceRoot,
       clock: () => clockNow,
       repo: repoDir,
+      admittedRepos: () => admittedRepos,
       chatEnv: { ANTHROPIC_API_KEY: "sk-test-key" },
       chatFetcher: (async () => {
         const next = script.shift();
@@ -949,6 +952,25 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
         await settle();
       } finally { current.close(); }
     });
+
+  test('the default chat room drops a delayed reply when its saved project ceiling is no longer admitted', async () => {
+    const cookie = await login(), csrf = await mint(cookie);
+    const current = await chatRoom(cookie);
+    let finish!: (value: Response) => void;
+    script.push(() => new Promise<Response>(resolve => { finish = resolve; }) as unknown as Response);
+    try {
+      expect((await sendJson(cookie, { csrf, message: 'Read the current project.', request: 'a'.repeat(32), 'request-session': '1' })).status).toBe(202);
+      await current.until(() => current.turns.some(turn => turn.steps.length > 0));
+      const before = current.turns.length;
+      admittedRepos = [];
+      finish(answer([{ type: 'text', text: 'Private content after project admission ended.' }]));
+      await current.until(() => current.gone.length > 0 || current.turns.at(-1)?.done === true);
+      expect(current.gone).toEqual(['chat']);
+      expect(current.turns).toHaveLength(before);
+      expect(JSON.stringify(current.turns)).not.toContain('Private content after project admission ended.');
+      await settle();
+    } finally { current.close(); }
+  });
 
   test('chat streaming preserves each tool outcome, including failure in an answered turn, alongside legacy labels', async () => {
     const cookie = await login(); const csrf = await mint(cookie);

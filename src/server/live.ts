@@ -74,7 +74,7 @@ export function parseLiveRoom(name: string): LiveRoom | null {
 
 type Viewer = LiveViewer;
 type FlowRoomViewer = LiveViewer & { card: number | null; editing: boolean };
-type ChatViewer = LiveViewer & { scope: MateThreadScope; detach: (() => void) | null; leave: () => void };
+type ChatViewer = LiveViewer & { scope: MateThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
 
 const json = (response: ServerResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
 
@@ -106,21 +106,21 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   };
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
 
-  function admitted(viewer: ChatViewer): boolean {
+  function admitted(viewer: ChatViewer, thread?: number): boolean {
     let valid = false;
-    try { valid = viewer.valid(); } catch { /* Failed proof stops this room. */ }
+    try { valid = viewer.valid(thread); } catch { /* Failed proof stops this room. */ }
     if (!valid) { viewer.connection.send(viewer.room, "gone"); viewer.leave(); }
     return valid;
   }
 
   /** A running reply for one viewer's thread: snapshots while it runs, then the last one. */
   function follow(viewer: ChatViewer, thread: number): void {
-    if (!admitted(viewer)) return;
+    if (!admitted(viewer, thread)) return;
     const turn = liveTurns.get(thread);
     if (turn === undefined || turn.done || viewer.detach !== null) return;
     let queued: NodeJS.Timeout | null = null;
     const snapshot = () => {
-      if (admitted(viewer)) viewer.connection.send(viewer.room, "turn", { steps: turn.steps, done: turn.done, ok: turn.ok });
+      if (admitted(viewer, thread)) viewer.connection.send(viewer.room, "turn", { steps: turn.steps, done: turn.done, ok: turn.ok });
     };
     const flush = (): void => {
       queued = null;
@@ -219,9 +219,15 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         const chatProject = focusTask !== null ? null : live.chatProjectOf(room.project === null ? [] : [room.project]);
         if (chatProject === undefined) return json(response, 404, { error: "project" });
         const scope = chatScopeOf(focusTask, chatProject);
-        const valid = () => requestContext.run({ actor: who.name, csrf: "", returnTo: "/chat" }, () => {
+        const valid = (expectedThread?: number) => requestContext.run({ actor: who.name, csrf: "", returnTo: "/chat" }, () => {
           const again = readBrowser(request, browser);
-          if (again === null || again.role !== "approver" || matePrincipal(again) === null) return false;
+          if (again === null || again.role !== "approver") return false;
+          const principal = matePrincipal(again);
+          if (principal === null) return false;
+          const thread = store.liveMateThreadFor(again.name, scope);
+          // Even the default lead room is bound to the projects admitted when its thread opened.
+          if (thread !== null && thread.ceilingDigest !== principal.ceilingDigest) return false;
+          if (expectedThread !== undefined && thread?.id !== expectedThread) return false;
           if (scope.kind === "task") {
             const focus = taskChatFocus(room.task, clock(), again, { mintNonce: false });
             return focus !== null && focus.id === scope.key;
