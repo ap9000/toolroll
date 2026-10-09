@@ -181,7 +181,7 @@ export function applyInstall(repo: string, writeContext: boolean): InstallResult
  * project setup flow.
  */
 export const CLAUDE_CODE_MANAGED_MARK = "<!-- standing-orders:claude-code-skill:v1 -->";
-export const CLAUDE_CODE_GUIDES = ["console", "operating", "runner"] as const;
+export const CLAUDE_CODE_GUIDES = ["console", "operating", "runner", "release"] as const;
 /** The thin user-level skill `toolroll onboard` writes (agent-onboard.ts). */
 export const OPERATOR_SKILL_MARK = "<!-- toolroll:operator-skill:v1";
 
@@ -247,6 +247,7 @@ Use the installed \`toolroll\` command. Its live help is authoritative.
 - [Console guide](console.md) — where a person can review and act.
 - [Operating guide](operating.md) — the command contract and safe workflow.
 - [Runner guide](runner.md) — claims, leases, heartbeats, and fencing.
+- [Release guide](release.md) — releasing Toolroll itself with \`toolroll release <branch>\`.
 `;
 }
 

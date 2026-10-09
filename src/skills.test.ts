@@ -72,12 +72,13 @@ describe("Claude Code skill install", () => {
           { name: "console.md", action: "create" },
           { name: "operating.md", action: "create" },
           { name: "runner.md", action: "create" },
+          { name: "release.md", action: "create" },
         ],
       },
     });
   });
 
-  test("--yes writes SKILL.md and the three guides embedded in the binary", async () => {
+  test("--yes writes SKILL.md and the four guides embedded in the binary", async () => {
     const directory = fresh();
     const lines: string[] = [];
 
@@ -86,7 +87,7 @@ describe("Claude Code skill install", () => {
     expect(code).toBe(0);
     const skill = readFileSync(join(directory, "SKILL.md"), "utf8");
     expect(skill).toContain("name: toolroll");
-    for (const name of ["console", "operating", "runner"] as const) {
+    for (const name of ["console", "operating", "runner", "release"] as const) {
       expect(skill).toContain(`(${name}.md)`);
       expect(readFileSync(join(directory, `${name}.md`), "utf8")).toBe(claudeCodeGuideContent(name));
       expect(readFileSync(join(directory, `${name}.md`), "utf8")).toContain(guideNamed(name)?.content);

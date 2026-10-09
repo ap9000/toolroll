@@ -98,15 +98,18 @@ export function skillFingerprint(content: string): string {
 export const RELEASED_SKILLS: readonly string[] = [
   "6ff9b4458f332636b6c5968c416bee4770564ef0190d62ec8640e84051fb7f60", // skills install --claude-code
   "3fb6741eec6d394a0a41604cae321da05d85c74f440424b740151c131f125742", // the operator skill
+  "448fc51dc200b4d46c53bf191fd7ecee7c4f7487413bf4dbfb1f984a3b401993", // skills install --claude-code, with the release guide
 ];
 const KNOWN_SKILLS = new Set([...RELEASED_SKILLS, ...[operatorSkillContent("0.0.0"), claudeCodeSkillContent()].map(skillFingerprint)]);
 
-/** SHA-256 of every guide copy (console.md, operating.md, runner.md) an earlier `skills install --claude-code` wrote
+/** SHA-256 of every guide copy (console.md, operating.md, runner.md, release.md) an earlier `skills install --claude-code` wrote
  * beside SKILL.md, and of this build's. Only an exact one of these is removed: an edited copy is the person's. */
 const RELEASED_GUIDES: readonly string[] = [
   "a5aa20f93d803fd49bbac2908e46353a4f90c95c2bb57993ee724770c28adb0b", "65fc1774c4d6dd99e71a7cfb245a61148ac74889765477ddd5066703cd28f55c", "01604f373b92de737ae7f75804c7f7f09dd690ed96a3e676be75f71358819f23",
   "1e1ee5c46c84b65c931e86c005802478415ec026b6240367e7f12a8d66d608eb", "e5270e70eb09f202980a236a0ae36ac2e1c3df91840c24d40a6a8bd4c0d47fe8", "969dd5e97b63f27dc559889a551f4392bcf289f2b47ce802338868f06e05f1c9",
   "bea301cb7b7d7711afb165b72c355ff829e6341abb75c59431c4a0a7c129b6cd",
+  "4b087ed3fdb60b8b7c56a2312a990eab1a854078592e355d852f4a4c5b13c752", "ac61340c17d780994052cd8ed9a0541f1fa64b80f95fc7e915e6899baa163caa", "a11a8576cc17a9e40ecfbf01503979298a4b003a4badffbd1dbd455b0eafde64",
+  "37518ca87fdbb54ff649289ec1893232137fd30c9db6e29cd1fc4bc9ba5e2f1a",
 ];
 const guideHash = (content: string) => createHash("sha256").update(content).digest("hex");
 const KNOWN_GUIDES = new Set([...RELEASED_GUIDES, ...CLAUDE_CODE_GUIDES.map(name => guideHash(claudeCodeGuideContent(name)))]);

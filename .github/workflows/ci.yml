@@ -1,5 +1,16 @@
 name: CI
 
+# Every pull request and every push to main: the full suite on Ubuntu with
+# Node 22 (the engines floor) and 24, plus the Linux and Windows containment
+# jobs. macOS runs nightly (macos.yml) and before tag publication (publish.yml): the
+# release check already ran the suite on macOS for the exact gated commit.
+#
+# No job here is conditional. A job skipped by `if:` reports as passing to a
+# required check, so a job that should not run on an event lives in another
+# workflow rather than behind a condition. `toolroll release` waits for these
+# job names by exact name (src/release.ts REQUIRED_PR_CHECKS), and
+# src/ci-workflow.test.ts holds this file to that list.
+
 on:
   push:
     branches: [main]
@@ -7,12 +18,11 @@ on:
 
 jobs:
   test:
-    name: node ${{ matrix.node }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: node ${{ matrix.node }} · ubuntu-latest
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         node: ["22", "24"]
     steps:
       - uses: actions/checkout@v5

@@ -163,10 +163,10 @@ describe("operating the queue from the command line", () => {
       const stale = payload().lease.leaseId;
       await claim(["claim", "t-1", "--runner", "second"], later(61_000));
 
-      const code = await run(["release", stale, "--json"], later(62_000));
+      const code = await run(["worker", "release", stale, "--json"], later(62_000));
 
       expect(code).toBe(EXIT.refused);
-      expect(payload()).toMatchObject({ ok: false, reason: "fenced" });
+      expect(payload()).toMatchObject({ ok: false, command: "worker release", reason: "fenced" });
       expect(payload().message).toContain("stop rather than retry");
     });
 
@@ -324,7 +324,7 @@ describe("operating the queue from the command line", () => {
       await claim(["claim", "t-1", "--runner", "r", "--json"]);
       const lease = payload().lease.leaseId;
 
-      await run(["release", lease], later(1_000));
+      await run(["worker", "release", lease], later(1_000));
 
       await run(["task", "show", "t-1", "--json"], later(2_000));
       expect(payload().task.state).toBe("queued");
@@ -365,7 +365,7 @@ describe("operating the queue from the command line", () => {
         taskRef: ref, leaseId: oldLease, runner: "old", branch: "b", worktree: "/pool/old", ...presented(store, ref), now: T0,
       });
       store.close();
-      await run(["release", oldLease], later(1_000));
+      await run(["worker", "release", oldLease], later(1_000));
       await claim(["claim", "t-1", "--runner", "next", "--json"], later(2_000));
       const nextLease = payload().lease.leaseId as string;
       const successor = openStore(db);

@@ -49,6 +49,7 @@ import {
 import { openStore, openStoreReadOnly, databasePath, type Store } from "./store.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { runUpdateCommand, type UpdateCliDeps } from "./toolroll-update-cli.js";
+import { runReleaseCommand, type ReleaseCliDeps } from "./release-cli.js";
 import type { BackendGrant } from "./grant.js";
 import { runOperate, OPERATE_HELP, type OperateOptions } from "./operate.js";
 import { renderReport, renderPulls, renderGraph, type PullGroup, type RemoteMap } from "./render.js";
@@ -104,6 +105,8 @@ Usage
   toolroll unlink           take it off again
   toolroll update           update to the latest release: verified, drained, undoable
                                    (preview first; --yes, --now, --at HH:MM, --rollback)
+  toolroll release <branch> release Toolroll itself: gate, your approval, deploy, merge, tag, publish
+                                   (resumable: rerun to continue; --help)
   toolroll contract         the machine contract: envelope version + capabilities
                                    (--commands dumps the declared command guide)
   toolroll skills install --claude-code [--dir <path>]
@@ -139,7 +142,7 @@ and any queue command + --help prints it too
   toolroll task approve <id>
                                the yes — nothing builds without one
   toolroll claim <id> --runner <name>
-  toolroll heartbeat <lease> / release <lease> / reap
+  toolroll heartbeat <lease> / worker release <lease> / reap
   toolroll tick --runner <name> --token <t> --repo <path>
                                one unattended pass over the ready set
   toolroll flows list | show <id> | create | edit | trigger | script | card | archive
@@ -240,7 +243,7 @@ export function parseArgs(argv: readonly string[]): ParseResult {
  * which answers as `scan`. */
 export const TOP_LEVEL_COMMANDS: readonly string[] = [
   "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
-  "link", "unlink", "update", "contract", "skills list", "skills get", "skills install", "demo",
+  "link", "unlink", "update", "release", "contract", "skills list", "skills get", "skills install", "demo",
   ...SESSION_CLI_ACTIONS.map(action => `session ${action}`),
   ...TEAM_CLI_ACTIONS,
 ];
@@ -275,7 +278,7 @@ export const OPERATE_COMMANDS = new Set([
   "models",
   "claim",
   "heartbeat",
-  "release",
+  "worker",
   "reap",
   "enroll",
   "grants",
@@ -324,6 +327,7 @@ export type MainOptions = {
    * gh itself is proved by onboard.test.ts. */
   onboard?: { preview?: typeof previewGithubRepo; clone?: typeof cloneGithubRepo };
   update?: UpdateCliDeps;
+  release?: ReleaseCliDeps;
 };
 
 /**
@@ -485,6 +489,9 @@ async function dispatch(
     return runLinkCommand(first, rest, write, mainOptions.binSource);
   }
   if (first === "update") return runUpdateCommand(rest, write, mainOptions.update);
+  if (first === "release") {
+    return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
+  }
   if (first === "contract") return runContractCommand(rest, write);
   if (first === "session") return runSessionCommand(rest, write, mainOptions.session);
   if (first === "demo") return runDemoCommand(rest, write);

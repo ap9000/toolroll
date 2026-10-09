@@ -75,7 +75,7 @@ ${AUTHORITY_LINE}
   terminal, answer from the \`console\` guide (\`skills get console\`):
   exact screens, exact verbs, and which acts are theirs alone.
 - Take work as a registered runner: \`claim <id> --runner <name> --token
-  <t>\` → \`heartbeat <lease>\` while working → \`release <lease>\`. A
+  <t>\` → \`heartbeat <lease>\` while working → \`worker release <lease>\`. A
   replayed claim (same \`--key\`) answers with \`replayed: true\` — do not
   repeat first-time side effects on it.
 - Respect refusals — each is an ANSWER, never an error to retry blindly:
@@ -200,7 +200,7 @@ registers it; the token is shown once). Work moves through leases:
   not repeat first-time side effects.
 - \`heartbeat <lease>\` while working — it extends the lease. A lease
   that runs out is reaped and the task returns to the queue.
-- \`release <lease>\` when done. If the answer is \`fenced\`, STOP: a newer
+- \`worker release <lease>\` when done. If the answer is \`fenced\`, STOP: a newer
   lease superseded yours and the work is no longer yours — do not write,
   commit, or report anything further for it.
 - \`reap\` releases every expired lease (safe to run any time).
@@ -432,7 +432,113 @@ and crew agent reads from it before working:
 `,
 };
 
-export const GUIDES: readonly Guide[] = [operating, runner, steering, externalWork, console_, knowledge];
+const release: Guide = {
+  name: "release",
+  title: "Releasing Toolroll itself",
+  oneLiner: "toolroll release <branch>: one command from a gated commit to npm and Homebrew; the owner's approval is the only human step",
+  content: `# Releasing Toolroll itself
+
+${AUTHORITY_LINE}
+
+\`toolroll release <branch> --repo <gate checkout>\` runs the whole release
+of a pushed branch. The owner approving the release scope is the only
+step that needs a person; the rest runs on its own, each waiting step
+with a time limit.
+
+## Before you start
+
+- The branch is pushed, with an open pull request into main.
+- package.json has the new version, and the lead wrote its CHANGELOG.md
+  entry (\`## <version>\`). No tag or npm package has that version yet.
+- \`gh\` is signed in, the console, worker and both CLI names
+  (\`toolroll\`, \`standing-orders\`) run one build, and the gate checkout
+  is a clone whose origin is the GitHub repository. Credentials are never
+  asked for in chat or written to the release journal.
+
+## What it does, in order
+
+1. **gate**: files task \`release-<version>-<sha7>\` pinned to the
+   branch's exact commit with \`--checks full\`, regardless of the project's default.
+2. **approval**: waits for the owner to approve that exact scope
+   (\`toolroll task approve <id> --digest <d>\`, or the console). A
+   mode, an AI teammate or the lead approving it stops the release: the
+   yes must come from an active account with the approver role. Its standing
+   is checked again before completion and deployment.
+3. **check**: requires a sealed, passing **Full** check on that commit.
+   Quick passes and Off checks are refused. Failures stay visible; nothing reruns them.
+4. **complete**: marks that exact result Complete.
+5. **quiet**: waits until nothing is building.
+6. **deploy**: the candidate's own deployment
+   (\`scripts/deploy-browser.mjs\` from the builder's checkout): drain,
+   backup, rehearsal, swap, health. The staging path is saved before it
+   starts, and the runtime its final JSON names is kept. It goes on only
+   when the console and worker run that runtime and it records the gated
+   commit; matching versions alone do not count.
+7. **link**: points \`toolroll\` and \`standing-orders\` at
+   \`<runtime>/bin.js\`, each link replaced whole. Where they pointed is
+   saved first; if either name doesn't answer as the new build, both go
+   back. It goes on only when the console, worker and both names run the
+   gated commit. A rerun relinks without deploying again.
+8. **ci**: waits for every pull-request check on the gated commit:
+   Ubuntu on Node 22 and 24, Linux and Windows containment. Pending,
+   missing, skipped, cancelled or failed never merges.
+9. **merge**: squash-merges with the head pinned to the gated commit,
+   once main has nothing the branch lacks, then deletes the remote branch
+   only if its head still matches. A resumed merge also finishes this cleanup.
+10. **tree**: main's merge commit must have exactly the gated tree, or
+   nothing is tagged.
+11. **tag**: pushes \`v<version>\` on that merge commit. In publish.yml,
+    macOS Node 22 and 24 must both pass before npm and GitHub publication.
+    macos.yml keeps the nightly matrix.
+12. **publish**: waits for npm, the GitHub release and the tag's macOS
+    and publish checks.
+13. **homebrew**: updates the tap's formula, waits for checks to register
+    and every registered check to pass, then merges. No checks means waiting,
+    within the Homebrew time limit; a failed or skipped check stops the release.
+
+## When it stops
+
+A time limit, a failure or Ctrl-C ends with the step and the reason,
+and the command to continue: the same \`toolroll release <branch> --repo
+<checkout>\`. Its journal (\`releases/<branch>.json\` in the state folder,
+private) records what each step was about to do before it does it, so a
+rerun finds the task, completion, merge, tag and tap change already made
+instead of making them twice.
+
+- \`drift\`: the branch or pull request moved after gating. Release the
+  new commit with \`--new\` (refused once merging began).
+- \`check-level\`: the result has no Full check. File the gate with Full
+  checks and obtain a passing result; Quick and Off cannot authorize a release.
+- \`check-failed\`: fix the branch and release the new commit with \`--new\`.
+- \`ci-failed\`: fix the failed GitHub check, then rerun. Nothing was merged.
+- \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
+  resuming. A failed tag check cannot finish publication or update Homebrew.
+- \`base-moved\`: main gained a commit the branch doesn't have, so the
+  merge wouldn't be the checked tree. Nothing was merged: update the
+  branch and release it with \`--new\`.
+- \`tree-mismatch\`: main changed what was checked. Nothing was tagged;
+  the deployed build stays.
+- \`timeout\`: rerun to keep waiting; \`--limit <step>=<minutes>\`
+  changes one step's limit.
+- An interrupted deployment resumes with \`deploy-browser.mjs --stage <saved
+  path> --phase recover\` before any new attempt, including \`--new\`.
+  Failed recovery stops there; the original deployment journal remains available.
+- \`link\`: a CLI name didn't answer as the new build, so both were put
+  back. The service already runs the new build; fix the name and rerun.
+- \`gate-held\`: the deployment stopped before its swap but left new work
+  paused, and its journal can't say so by itself (typically killed while
+  preparing). \`toolroll release --release-gate <id>\` shows the proof that
+  the swap never began: the pause is that deployment's, its journal is
+  before the swap, the database schema, service definition and running
+  service are still the previous build's, and no deployment is running.
+  Add \`--yes\` to lift that one pause, then rerun the release. Missing or
+  contradicting evidence refuses and leaves the pause in place.
+
+A runner's lease is returned with \`toolroll worker release <lease>\`.
+`,
+};
+
+export const GUIDES: readonly Guide[] = [operating, runner, steering, externalWork, console_, knowledge, release];
 
 export function guideNamed(name: string): Guide | null {
   return GUIDES.find(one => one.name === name) ?? null;
