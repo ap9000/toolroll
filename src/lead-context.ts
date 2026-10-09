@@ -7,6 +7,7 @@
  * chats it works with (one line each), the channel, what needs them now,
  * projects by name with their active decisions, then the rest. Over 8 KB, the
  * least important goes first: the rest, then people, then decisions. */
+import { html, type Html } from './html.js';
 import { PLATFORM_LIMITS, TEXT_LIMITS } from './text-limits.js';
 import type { Store } from './store.js';
 import { LEAD_CONTEXT_COUNTS, leadContextSchema, type LeadChannel, type LeadContextBundle } from './contracts/lead-context.js';
@@ -190,10 +191,9 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
   return document;
 }
 
-const escape = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 const STATE_WORDS: Record<string, string> = { 'needs-decision': 'Needs you', 'ready-to-check': 'Ready', working: 'Working', checking: 'Checking', complete: 'Complete', cancelled: 'Cancelled' };
 /** The same saved brief is useful before chat spending is authorized. */
-export function leadBriefHtml(brief: AssignmentCatchUp): string {
+export function leadBriefHtml(brief: AssignmentCatchUp): Html {
   const groups = [
     { title: 'Needs you', states: ['needs-decision', 'ready-to-check'] },
     { title: 'Working', states: ['working', 'checking'] },
@@ -208,18 +208,18 @@ export function leadBriefHtml(brief: AssignmentCatchUp): string {
     // it says what the person or the crew is doing next.
     const quiet = group.title === 'Finished';
     // A state chip that repeats its group's heading says nothing new.
-    const stateChip = (state: string, detail?: string) => {
+    const stateChip = (state: string, detail?: string): Html | '' => {
       // Replaced, never "Cancelled".
       const words = state === 'cancelled' && /^Replaced by \S+/.test(detail ?? '') ? detail!.replace(/\.$/, '') : STATE_WORDS[state] ?? state;
-      return words === group.title ? '' : `<span class="lead-brief-state lead-brief-state--${state}">${escape(words)}</span>`;
+      return words === group.title ? '' : html`<span class="lead-brief-state lead-brief-state--${state}">${words}</span>`;
     };
-    return [`<section><h3>${group.title}</h3><ul>${entries.map(one => `<li><a href="/chat?task=${encodeURIComponent(one.rootId)}">${escape(one.title)}</a>` +
-      stateChip(one.state, one.detail) +
-      (quiet ? '' : `<span class="lead-brief-detail">${escape(publicChatText(one.detail || one.outcome || '', 160))}</span>`) +
+    return [html`<section><h3>${group.title}</h3><ul>${entries.map(one => html`<li><a href="/chat?task=${encodeURIComponent(one.rootId)}">${one.title}</a>${
+      stateChip(one.state, one.detail)}${
+      quiet ? '' : html`<span class="lead-brief-detail">${publicChatText(one.detail || one.outcome || '', 160)}</span>`}${
       // Needs you: the one action that resolves it, under its sentence.
-      (one.state === 'needs-decision' && one.nextAction !== null && one.nextHref ? `<a class="lead-brief-act button-link" href="${escape(one.nextHref)}" data-catch-up-action>${escape(one.nextAction.label)}</a>` : '') + `</li>`).join('')}</ul></section>`];
+      one.state === 'needs-decision' && one.nextAction !== null && one.nextHref ? html`<a class="lead-brief-act button-link" href="${one.nextHref}" data-catch-up-action>${one.nextAction.label}</a>` : ''}</li>`)}</ul></section>`];
   });
-  return `<section class="lead-brief" aria-label="Project catch-up"><h2>Catch up</h2>${sections.length ? sections.join('') : '<p class="meta">Nothing needs you right now.</p>'}${brief.assignments.length > 3 || brief.omissions.candidateScanLimited || brief.omissions.assignments > 0 ? '<a href="/work">See all tasks</a>' : ''}</section>`;
+  return html`<section class="lead-brief" aria-label="Project catch-up"><h2>Catch up</h2>${sections.length ? sections : html`<p class="meta">Nothing needs you right now.</p>`}${brief.assignments.length > 3 || brief.omissions.candidateScanLimited || brief.omissions.assignments > 0 ? html`<a href="/work">See all tasks</a>` : ''}</section>`;
 }
 
 export const LEAD_CONTEXT_CSS = '.lead-promise-list{list-style:none;margin:0;padding:0}.lead-promise-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.5rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-promise-list li:last-child{border-bottom:0}.lead-promise-list p{margin:0;overflow-wrap:anywhere}.lead-promise-list form{grid-column:2;grid-row:1/span 2;margin:0}.lead-promise-list button{min-height:44px;width:auto;white-space:nowrap}.lead-promise-list .nowrap{white-space:nowrap}.lead-brief{margin:1rem 0;min-width:0}.lead-brief h2{font-size:1.1rem;margin:0 0 .8rem}.repository-context input[name=q]{display:block;box-sizing:border-box;min-height:44px;width:100%;margin:.4rem 0 .75rem;padding:.6rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:inherit;font:inherit}.repository-context form{margin:.5rem 0 1rem}.repository-context summary{min-height:44px;padding:.75rem 0;overflow-wrap:anywhere}.lead-brief h3{font-size:.85rem;margin:1rem 0 .4rem;color:var(--muted-foreground)}.lead-brief ul{list-style:none;margin:0;padding:0}.lead-brief li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.35rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-brief li a{display:flex;min-height:44px;align-items:center;font-weight:500;overflow-wrap:anywhere;text-decoration:none}.lead-brief li a:hover{text-decoration:underline}.lead-brief-state{font-size:.75rem;font-weight:600;padding:.15rem .5rem;border-radius:.375rem;background:var(--so-neutral-soft);color:var(--so-neutral-ink);white-space:nowrap}.lead-brief-state--needs-decision,.lead-brief-state--ready-to-check{background:var(--so-attention-soft);color:var(--so-attention)}.lead-brief-state--working,.lead-brief-state--checking{background:var(--so-info-soft);color:var(--so-info)}.lead-brief-state--complete{background:var(--so-success-soft);color:var(--so-success)}.lead-brief li a.lead-brief-act{grid-column:1/-1;justify-self:start;display:inline-flex;min-height:40px;margin:.15rem 0 .4rem;font-weight:600}@media(max-width:760px){.lead-brief li a.lead-brief-act{justify-self:stretch;justify-content:center;min-height:44px}}.lead-brief-detail{grid-column:1/-1;font-size:.85rem;color:var(--muted-foreground);overflow-wrap:anywhere;padding-bottom:.35rem}@media(max-width:760px){.lead-brief{margin:.5rem 0}.lead-brief h2{margin:0 0 .25rem}.lead-brief h3{margin:.5rem 0 0}.lead-brief li{padding:0 0 .375rem}.lead-brief-detail{margin-top:-.375rem;padding-bottom:0;line-height:1.35;pointer-events:none}}';

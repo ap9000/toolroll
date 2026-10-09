@@ -1,90 +1,92 @@
 import { randomUUID } from 'node:crypto';
 import type { CodingItem, CodingRequest, CodingSession, CodingSnapshot } from './coding-types.js';
+import { html, joinHtml, postForm, type Html } from './html.js';
 
-const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-const hidden = (values: Record<string, unknown>): string => Object.entries(values).map(([name, value]) => `<input type="hidden" name="${escape(name)}" value="${escape(value)}">`).join('');
-function linkedText(text: string): string {
+function linkedText(text: string): Html {
   const pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\x60([^\x60\n]+)\x60|\*\*([^*\n]+)\*\*|(https?:\/\/[^\s<>]+)/g;
   let end = 0;
-  let output = '';
+  const output: Html[] = [];
   for (const match of text.matchAll(pattern)) {
-    output += escape(text.slice(end, match.index));
-    if (match[3] !== undefined) output += `<code>${escape(match[3])}</code>`;
-    else if (match[4] !== undefined) output += `<strong>${escape(match[4])}</strong>`;
+    output.push(html`${text.slice(end, match.index)}`);
+    if (match[3] !== undefined) output.push(html`<code>${match[3]}</code>`);
+    else if (match[4] !== undefined) output.push(html`<strong>${match[4]}</strong>`);
     else {
       const raw = match[2] ?? match[5]!;
       const url = raw.replace(/[.,;!?]+$/, '');
-      output += `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(match[1] ?? url)}</a>${escape(raw.slice(url.length))}`;
+      output.push(html`<a href="${url}" target="_blank" rel="noopener noreferrer">${match[1] ?? url}</a>${raw.slice(url.length)}`);
     }
     end = match.index + match[0].length;
   }
-  return output + escape(text.slice(end));
+  return html`${output}${text.slice(end)}`;
 }
 function friendlyCodingError(message: string): string {
   return /already has an active writer/i.test(message)
     ? 'This conversation is open in another Codex app. Close it there, then resume here.'
     : message;
 }
-function noticeHtml(message: string): string {
+function noticeHtml(message: string): Html {
   const friendly = friendlyCodingError(message);
-  return escape(friendly) + (friendly === message ? '' : `<details><summary>Technical details</summary><pre>${escape(message)}</pre></details>`);
+  return html`${friendly}${friendly === message ? '' : html`<details><summary>Technical details</summary><pre>${message}</pre></details>`}`;
 }
 const sessionUrl = (id: string): string => `/code/${encodeURIComponent(id)}`;
 const active = (status: string): boolean => ['starting', 'working', 'needs-input', 'stopping'].includes(status);
 const stateLabel = (session: CodingSession, requests: CodingRequest[] = []): string => ({ starting: 'Starting Codex', ready: 'Ready', working: 'Working', 'needs-input': requests.some(r => r.kind !== 'questions') ? 'Permission needed' : 'Needs your answer', stopping: 'Stopping', interrupted: 'Stopped', failed: 'Stopped with an error', uncertain: 'Delivery not confirmed', closed: 'Session closed' }[session.status]);
 
-function itemHtml(item: CodingItem): string {
-  if (item.type === 'reasoning') return '';
+function itemHtml(item: CodingItem): Html {
+  if (item.type === 'reasoning') return html``;
   const role = ['user', 'userMessage'].includes(item.type) ? 'You' : ['agent', 'assistant', 'agentMessage'].includes(item.type) ? 'Codex' : null;
-  if (role) return `<article class="coding-message${role === 'You' ? ' coding-user' : ''}" data-coding-item="${escape(item.id)}"><strong>${role}</strong><div class="coding-text">${linkedText(item.text)}</div></article>`;
+  if (role) return html`<article class="coding-message${role === 'You' ? ' coding-user' : ''}" data-coding-item="${item.id}"><strong>${role}</strong><div class="coding-text">${linkedText(item.text)}</div></article>`;
   const title = ({ commandExecution: 'Command', fileChange: 'File changes', mcpToolCall: 'Tool', reasoning: 'Reasoning', plan: 'Plan', error: 'Error' } as Record<string, string>)[item.type] ?? 'Activity';
-  return `<details class="coding-tool" data-coding-item="${escape(item.id)}"><summary>${title}${item.status ? ` <span class="coding-meta">${escape(item.status)}</span>` : ''}</summary><pre>${escape(item.text)}</pre></details>`;
+  return html`<details class="coding-tool" data-coding-item="${item.id}"><summary>${title}${item.status ? html` <span class="coding-meta">${item.status}</span>` : ''}</summary><pre>${item.text}</pre></details>`;
 }
 
-function requestHtml(request: CodingRequest, session: string, csrf: string): string {
+function requestHtml(request: CodingRequest, session: string): Html {
   const questions = request.kind === 'questions';
-  const body = questions ? request.questions.map((q, index) => `<label>${escape(q.question)}<input type="text" name="question:${escape(q.id)}"${q.options.length ? ` list="coding-options-${escape(request.id)}-${index}"` : ''} required autocomplete="off">${q.options.length ? `<datalist id="coding-options-${escape(request.id)}-${index}">${q.options.map(o => `<option value="${escape(o.label)}">${escape(o.description)}</option>`).join('')}</datalist>` : ''}</label>`).join('') : `<pre class="coding-permission-detail">${escape(request.detail)}</pre><label>Password to approve this request<input type="password" name="password" autocomplete="current-password" required></label>`;
-  return `<section class="coding-request" data-coding-request="${escape(request.id)}"><h3>${escape(request.title || (questions ? 'Your answer' : 'Allow extra access?'))}</h3><form method="post" action="${sessionUrl(session)}/answer" data-coding-form="answer">${hidden({ csrf, requestId: request.id })}${body}<div class="coding-actions"><button type="submit" name="decision" value="accept">${questions ? 'Send answer' : 'Approve access'}</button><button type="submit" name="decision" value="decline" formnovalidate class="coding-secondary">${questions ? 'Cancel question' : 'Decline'}</button></div></form></section>`;
+  const body = questions ? request.questions.map((q, index) => html`<label>${q.question}<input type="text" name="question:${q.id}"${q.options.length ? html` list="coding-options-${request.id}-${index}"` : ''} required autocomplete="off">${q.options.length ? html`<datalist id="coding-options-${request.id}-${index}">${q.options.map(o => html`<option value="${o.label}">${o.description}</option>`)}</datalist>` : ''}</label>`) : html`<pre class="coding-permission-detail">${request.detail}</pre><label>Password to approve this request<input type="password" name="password" autocomplete="current-password" required></label>`;
+  return html`<section class="coding-request" data-coding-request="${request.id}"><h3>${request.title || (questions ? 'Your answer' : 'Allow extra access?')}</h3>${postForm(`${sessionUrl(session)}/answer`, html`${body}<div class="coding-actions"><button type="submit" name="decision" value="accept">${questions ? 'Send answer' : 'Approve access'}</button><button type="submit" name="decision" value="decline" formnovalidate class="coding-secondary">${questions ? 'Cancel question' : 'Decline'}</button></div>`, { attrs: { 'data-coding-form': 'answer' }, hidden: { requestId: request.id } })}</section>`;
 }
 
-function controlsHtml(session: CodingSession, csrf: string): string {
-  if (active(session.status) && session.turnId) return `<form method="post" action="${sessionUrl(session.id)}/stop" data-coding-form="stop">${hidden({ csrf })}<button class="coding-secondary"${session.status === 'stopping' ? ' disabled' : ''}>Stop</button></form>`;
-  if (session.status === 'uncertain') return `<form method="post" action="${sessionUrl(session.id)}/${session.deliveryReviewRequired ? 'continue' : 'recover'}" data-coding-form="recover">${hidden({ csrf })}<button>${session.deliveryReviewRequired ? (session.nativeThreadId ? 'Continue with saved work' : 'Keep work and close session') : 'Check saved session'}</button></form>`;
-  if (!session.nativeThreadId && ['closed', 'failed', 'interrupted'].includes(session.status)) return '';
-  if (['failed', 'interrupted'].includes(session.status)) return `<form method="post" action="${sessionUrl(session.id)}/resume" data-coding-form="resume">${hidden({ csrf })}<button>Resume session</button></form>`;
-  return '';
+function controlsHtml(session: CodingSession): Html {
+  if (active(session.status) && session.turnId) return postForm(`${sessionUrl(session.id)}/stop`, html`<button class="coding-secondary"${session.status === 'stopping' ? html` disabled` : ''}>Stop</button>`, { attrs: { 'data-coding-form': 'stop' } });
+  if (session.status === 'uncertain') return postForm(`${sessionUrl(session.id)}/${session.deliveryReviewRequired ? 'continue' : 'recover'}`, html`<button>${session.deliveryReviewRequired ? (session.nativeThreadId ? 'Continue with saved work' : 'Keep work and close session') : 'Check saved session'}</button>`, { attrs: { 'data-coding-form': 'recover' } });
+  if (!session.nativeThreadId && ['closed', 'failed', 'interrupted'].includes(session.status)) return html``;
+  if (['failed', 'interrupted'].includes(session.status)) return postForm(`${sessionUrl(session.id)}/resume`, html`<button>Resume session</button>`, { attrs: { 'data-coding-form': 'resume' } });
+  return html``;
 }
 
 export function codingWorkspaceHtml(input: {
   projects: { path: string; name: string }[];
   sessions: CodingSession[];
   selected: CodingSnapshot | null;
+  /** The page script posts with it (data-coding-csrf); the forms get theirs from postForm. */
   csrf: string;
   project: string | null;
   error?: string;
   draft?: string;
   available: boolean;
   owner?: string;
-}): string {
+}): Html {
   const { selected, csrf } = input;
   const selectedRepo = selected?.session.repo ?? input.project;
   const projectName = (repo: string) => input.projects.find(p => p.path === repo)?.name ?? repo.split('/').filter(Boolean).at(-1) ?? repo;
   const newUrl = `/code${selectedRepo ? `?project=${encodeURIComponent(selectedRepo)}` : ''}`;
-  const sessions = input.sessions.map(session => `<li><a href="${sessionUrl(session.id)}"${selected?.session.id === session.id ? ' aria-current="page"' : ''}><span>${escape(session.title)}</span><small>${escape(projectName(session.repo))} · <span data-coding-status-for="${escape(session.id)}">${escape(stateLabel(session))}</span></small></a></li>`).join('');
-  const sidebar = `<aside class="coding-sidebar"><div class="coding-sidebar-top"><h2>Sessions</h2>${selected ? `<a class="coding-link-button" href="${escape(newUrl)}">New session</a>` : ''}</div><nav class="coding-session-list" aria-label="Coding sessions"><ul>${sessions || '<li class="coding-meta">No sessions yet.</li>'}</ul></nav><details class="coding-mobile-sessions"><summary>Sessions${input.sessions.length ? ` (${input.sessions.length})` : ''}</summary><nav aria-label="Coding sessions"><ul>${sessions || '<li class="coding-meta">No sessions yet.</li>'}</ul></nav></details></aside>`;
-  const warning = !input.available ? '<p class="coding-notice">Codex is unavailable on this installation. Install and sign in to Codex on the host to start coding.</p>' : '';
+  const sessions = joinHtml(input.sessions.map(session => html`<li><a href="${sessionUrl(session.id)}"${selected?.session.id === session.id ? html` aria-current="page"` : ''}><span>${session.title}</span><small>${projectName(session.repo)} · <span data-coding-status-for="${session.id}">${stateLabel(session)}</span></small></a></li>`));
+  const sessionItems = input.sessions.length ? sessions : html`<li class="coding-meta">No sessions yet.</li>`;
+  const sidebar = html`<aside class="coding-sidebar"><div class="coding-sidebar-top"><h2>Sessions</h2>${selected ? html`<a class="coding-link-button" href="${newUrl}">New session</a>` : ''}</div><nav class="coding-session-list" aria-label="Coding sessions"><ul>${sessionItems}</ul></nav><details class="coding-mobile-sessions"><summary>Sessions${input.sessions.length ? ` (${input.sessions.length})` : ''}</summary><nav aria-label="Coding sessions"><ul>${sessionItems}</ul></nav></details></aside>`;
+  const warning = !input.available ? html`<p class="coding-notice">Codex is unavailable on this installation. Install and sign in to Codex on the host to start coding.</p>` : '';
   const error = input.error ?? selected?.session.error ?? '';
-  let main: string;
+  let main: Html;
   if (!selected) {
-    const options = input.projects.map(p => `<option value="${escape(p.path)}"${selectedRepo === p.path ? ' selected' : ''}>${escape(p.name)}</option>`).join('');
-    main = `<header class="coding-header"><h1>Build with Codex</h1></header>${warning}${input.projects.length ? `<form method="post" action="/code/start" data-coding-form="start" class="coding-start">${hidden({ csrf, requestId: randomUUID() })}<label>Project<select name="repo" required>${options}</select></label><label>What would you like to change?<textarea name="prompt" rows="5" required maxlength="24000" placeholder="Describe the result you want…">${escape(input.draft ?? '')}</textarea></label><details class="coding-options"><summary>Session options</summary><label>Title <span class="coding-meta">Optional</span><input name="title" maxlength="160" autocomplete="off"></label><label>Model <span class="coding-meta">Optional; uses the installed default</span><input name="model" maxlength="120" placeholder="Installed default" autocomplete="off"></label></details><p class="coding-terms">Codex uses this installation’s login and edits a separate copy of this project. It can run commands and read files outside the project. Connected tools (MCP servers) keep their own access to this computer and connected services. Additional command and file access requires your approval.</p><label>Password to start<input type="password" name="password" autocomplete="current-password" required></label><button type="submit"${input.available ? '' : ' disabled'}>Start coding</button></form>` : '<div class="coding-empty"><p>Add a project to start coding.</p><a class="coding-link-button" href="/projects">Open projects</a></div>'}`;
+    const options = input.projects.map(p => html`<option value="${p.path}"${selectedRepo === p.path ? html` selected` : ''}>${p.name}</option>`);
+    main = html`<header class="coding-header"><h1>Build with Codex</h1></header>${warning}${input.projects.length ? postForm('/code/start', html`<label>Project<select name="repo" required>${options}</select></label><label>What would you like to change?<textarea name="prompt" rows="5" required maxlength="24000" placeholder="Describe the result you want…">${input.draft ?? ''}</textarea></label><details class="coding-options"><summary>Session options</summary><label>Title <span class="coding-meta">Optional</span><input name="title" maxlength="160" autocomplete="off"></label><label>Model <span class="coding-meta">Optional; uses the installed default</span><input name="model" maxlength="120" placeholder="Installed default" autocomplete="off"></label></details><p class="coding-terms">Codex uses this installation’s login and edits a separate copy of this project. It can run commands and read files outside the project. Connected tools (MCP servers) keep their own access to this computer and connected services. Additional command and file access requires your approval.</p><label>Password to start<input type="password" name="password" autocomplete="current-password" required></label><button type="submit"${input.available ? '' : html` disabled`}>Start coding</button>`, { attrs: { 'data-coding-form': 'start', class: 'coding-start' }, hidden: { requestId: randomUUID() } }) : html`<div class="coding-empty"><p>Add a project to start coding.</p><a class="coding-link-button" href="/projects">Open projects</a></div>`}`;
   } else {
     const s = selected.session;
     const blocked = !s.nativeThreadId || !['ready', 'working', 'failed', 'interrupted'].includes(s.status);
-    const messages = selected.items.filter(item => item.type !== 'reasoning').map(itemHtml).join('');
-    main = `<header class="coding-header"><div><h1>${escape(s.title)}</h1><p class="coding-meta">${escape(projectName(s.repo))} · Codex${s.model ? ` · ${escape(s.model)}` : ''}</p></div><details class="coding-session-detail"><summary aria-label="Session details">Details</summary><dl><dt>Branch</dt><dd>${escape(s.branch)}</dd><dt>Worktree</dt><dd>${escape(s.worktree)}</dd><dt>Native session</dt><dd>${escape(s.nativeThreadId ?? 'Not established')}</dd>${s.initialRequest ? `<dt>Initial request</dt><dd class="coding-text">${escape(s.initialRequest.prompt)}</dd>` : ''}</dl></details></header><div class="coding-state-row"><p id="coding-state" role="status">${escape(stateLabel(s, selected.requests))}</p><div id="coding-controls">${controlsHtml(s, csrf)}</div></div><div id="coding-requests">${selected.requests.map(r => requestHtml(r, s.id, csrf)).join('')}</div><div id="coding-conversation" class="coding-conversation" tabindex="0" aria-label="Conversation"${s.status === 'closed' && !messages ? ' hidden' : ''}>${messages || '<p class="coding-meta coding-no-messages">No messages yet.</p>'}</div><button type="button" id="coding-latest" class="coding-secondary" hidden>Latest update ↓</button><form method="post" action="${sessionUrl(s.id)}/send" data-coding-form="send" class="coding-composer"${s.status === 'closed' ? ' hidden' : ''}>${hidden({ csrf, requestId: randomUUID() })}<label for="coding-prompt">Message Codex</label><textarea id="coding-prompt" name="prompt" rows="2" maxlength="24000" required placeholder="Describe a change or ask about the result…">${escape(input.draft ?? '')}</textarea><div class="coding-actions"><button type="submit"${blocked ? ' disabled' : ''}>${s.status === 'working' ? 'Send update' : 'Send message'}</button></div></form><details id="coding-changes" class="coding-changes"><summary>Changes</summary><div id="coding-change-content"><p class="coding-meta">Open to load the current changes.</p></div><button type="button" id="coding-refresh-changes" class="coding-secondary">Refresh changes</button><noscript><a href="${sessionUrl(s.id)}/changes">View changes</a></noscript><p id="coding-shipping"${['closed', 'uncertain'].includes(s.status) ? ' hidden' : ''}><a class="coding-link-button" href="${sessionUrl(s.id)}/ship">Review for shipping</a></p></details>`;
+    const messages = selected.items.filter(item => item.type !== 'reasoning').map(itemHtml);
+    const composer = postForm(`${sessionUrl(s.id)}/send`, html`<label for="coding-prompt">Message Codex</label><textarea id="coding-prompt" name="prompt" rows="2" maxlength="24000" required placeholder="Describe a change or ask about the result…">${input.draft ?? ''}</textarea><div class="coding-actions"><button type="submit"${blocked ? html` disabled` : ''}>${s.status === 'working' ? 'Send update' : 'Send message'}</button></div>`, { attrs: { 'data-coding-form': 'send', class: 'coding-composer', hidden: s.status === 'closed' }, hidden: { requestId: randomUUID() } });
+    main = html`<header class="coding-header"><div><h1>${s.title}</h1><p class="coding-meta">${projectName(s.repo)} · Codex${s.model ? html` · ${s.model}` : ''}</p></div><details class="coding-session-detail"><summary aria-label="Session details">Details</summary><dl><dt>Branch</dt><dd>${s.branch}</dd><dt>Worktree</dt><dd>${s.worktree}</dd><dt>Native session</dt><dd>${s.nativeThreadId ?? 'Not established'}</dd>${s.initialRequest ? html`<dt>Initial request</dt><dd class="coding-text">${s.initialRequest.prompt}</dd>` : ''}</dl></details></header><div class="coding-state-row"><p id="coding-state" role="status">${stateLabel(s, selected.requests)}</p><div id="coding-controls">${controlsHtml(s)}</div></div><div id="coding-requests">${selected.requests.map(r => requestHtml(r, s.id))}</div><div id="coding-conversation" class="coding-conversation" tabindex="0" aria-label="Conversation"${s.status === 'closed' && messages.length === 0 ? html` hidden` : ''}>${messages.length ? messages : html`<p class="coding-meta coding-no-messages">No messages yet.</p>`}</div><button type="button" id="coding-latest" class="coding-secondary" hidden>Latest update ↓</button>${composer}<details id="coding-changes" class="coding-changes"><summary>Changes</summary><div id="coding-change-content"><p class="coding-meta">Open to load the current changes.</p></div><button type="button" id="coding-refresh-changes" class="coding-secondary">Refresh changes</button><noscript><a href="${sessionUrl(s.id)}/changes">View changes</a></noscript><p id="coding-shipping"${['closed', 'uncertain'].includes(s.status) ? html` hidden` : ''}><a class="coding-link-button" href="${sessionUrl(s.id)}/ship">Review for shipping</a></p></details>`;
   }
-  return `<section class="coding-workspace" data-coding-session="${escape(selected?.session.id ?? '')}" data-coding-owner="${escape(selected?.session.owner ?? input.owner ?? '')}" data-coding-project="${escape(selectedRepo ?? input.projects[0]?.path ?? '')}" data-coding-status="${escape(selected?.session.status ?? '')}" data-coding-native-thread="${Boolean(selected?.session.nativeThreadId)}" data-coding-revision="${selected?.revision ?? -1}" data-coding-csrf="${escape(csrf)}">${sidebar}<div class="coding-main"><div id="coding-error" class="coding-notice" role="alert"${error ? '' : ' hidden'}>${noticeHtml(error)}</div><p id="coding-connection" class="coding-meta" role="status" hidden></p>${main}</div></section>`;
+  return html`<section class="coding-workspace" data-coding-session="${selected?.session.id ?? ''}" data-coding-owner="${selected?.session.owner ?? input.owner ?? ''}" data-coding-project="${selectedRepo ?? input.projects[0]?.path ?? ''}" data-coding-status="${selected?.session.status ?? ''}" data-coding-native-thread="${String(Boolean(selected?.session.nativeThreadId))}" data-coding-revision="${selected?.revision ?? -1}" data-coding-csrf="${csrf}">${sidebar}<div class="coding-main"><div id="coding-error" class="coding-notice" role="alert"${error ? '' : html` hidden`}>${noticeHtml(error)}</div><p id="coding-connection" class="coding-meta" role="status" hidden></p>${main}</div></section>`;
 }
 
 export const CODING_CSS = `

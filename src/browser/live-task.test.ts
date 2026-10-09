@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /** The live task page in the browser (live-task.tsx): a stream nudge reads the workspace again, a nudge for what the
- * page already shows does not, who else is here shows in the header, a stream that gives up leaves the workspace's own
- * beat, and the same last-activity line sits under the step, on Home Now and on Crew rows. */
+ * page already shows does not, who else is here shows in the header, nothing reads on a timer, and the same
+ * last-activity line sits under the step, on Home Now and on Crew rows. */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -67,78 +67,98 @@ describe("the task stream", () => {
   }
 
   test("a change the page hasn't seen reads it again; one it has, or who's here, does not", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(workspace(taskView({ live: { href: "/t/t-1/live", at: "b" } }))), { headers: { etag: '"2"' } }));
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(workspace(taskView({ live: { room: "task:t-1", at: "b" } }))), { headers: { etag: '"2"' } }));
     vi.stubGlobal("fetch", fetcher);
-    const page = await mount(workspace(taskView({ live: { href: "/t/t-1/live", at: "a" } })));
-    expect(Events.latest.url).toBe("/t/t-1/live");
-    await act(async () => Events.latest.emit("change", { at: "a" }));
-    await act(async () => Events.latest.emit("here", { people: ["robin"] }));
+    const page = await mount(workspace(taskView({ live: { room: "task:t-1", at: "a" } })));
+    // One stream for the page, joined to the task's room.
+    expect(Events.latest.url).toBe("/live?room=task%3At-1");
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "a" }));
+    await act(async () => Events.latest.emit("here", { room: "task:t-1", people: ["robin"] }));
     expect(fetcher).not.toHaveBeenCalled();
     expect(page.people()).toEqual(["robin"]);
-    await act(async () => Events.latest.emit("change", { at: "b" }));
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "b" }));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]![0])).toContain("/t/t-1");
-    // Without a beat of its own, the page still reconciles on a slow 30 s timer, not once a second.
-    await act(async () => vi.advanceTimersByTimeAsync(29_000));
+    // Another room's event is not this task's.
+    await act(async () => Events.latest.emit("change", { room: "flow:3", at: "z" }));
+    // Nothing reads on a timer: the room speaks when the task changes.
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
     expect(fetcher).toHaveBeenCalledTimes(1);
-    await act(async () => vi.advanceTimersByTimeAsync(31_000));
-    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
-  test("a nudge during a read queues one more read; a failed read retries on its own; reload reads", async () => {
-    let fail = true;
-    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
-      if (fail) throw new TypeError("offline");
-      return new Response(JSON.stringify(workspace(taskView({ live: { href: "/t/t-1/live", at: "c" } }))), { headers: { etag: '"3"' } });
-    });
+  test("a nudge during a read queues one more read, and reload reads again", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(workspace(taskView({ live: { room: "task:t-1", at: "c" } }))), { headers: { etag: '"3"' } }));
     vi.stubGlobal("fetch", fetcher);
-    await mount(workspace(taskView({ live: { href: "/t/t-1/live", at: "a" } })));
-    await act(async () => Events.latest.emit("change", { at: "b", revision: "v1:2" }));
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    // The read failed: the page doesn't stay stale until the next write.
-    fail = false;
-    await act(async () => vi.advanceTimersByTimeAsync(5_000));
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    // Two nudges while one read is in flight: exactly one follow-up.
+    await mount(workspace(taskView({ live: { room: "task:t-1", at: "a" } })));
+    // Three nudges while one read is in flight: exactly one follow-up.
     let release!: () => void;
     fetcher.mockImplementationOnce(() => new Promise<Response>(resolve => { release = () => resolve(new Response(null, { status: 304, headers: { etag: '"3"' } })); }));
-    await act(async () => Events.latest.emit("change", { at: "d" }));
-    await act(async () => Events.latest.emit("change", { at: "e" }));
-    await act(async () => Events.latest.emit("change", { at: "f" }));
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "d" }));
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "e" }));
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "f" }));
+    expect(fetcher).toHaveBeenCalledTimes(1);
     await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     // The server's stream fell behind and caught up: the page reads again.
     await act(async () => Events.latest.dispatchEvent(new MessageEvent("reload", { data: "{}" })));
-    expect(fetcher).toHaveBeenCalledTimes(5);
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
-  test("a stream that gives up clears who's here and leaves the workspace's own beat reading the page", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null, { status: 304, headers: { etag: '"1"' } }));
+  test("a transient refresh failure retries once without another fingerprint change", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error("Temporarily unavailable"))
+      .mockResolvedValueOnce(new Response(JSON.stringify(workspace(taskView({ live: { room: "task:t-1", at: "b" } })))));
     vi.stubGlobal("fetch", fetcher);
-    const page = await mount(workspace(taskView({ live: { href: "/t/t-1/live", at: "a" } }), 10));
-    await act(async () => Events.latest.emit("here", { people: ["robin", "sam"] }));
-    expect(page.people()).toEqual(["robin", "sam"]);
-    await act(async () => { Events.latest.readyState = Events.CLOSED; Events.latest.dispatchEvent(new Event("error")); });
-    expect(page.people()).toEqual([]);
-    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    await mount(workspace(taskView({ live: { room: "task:t-1", at: "a" } })));
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "b" }));
     expect(fetcher).toHaveBeenCalledTimes(1);
-    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
-  test("gone ends the stream; a page without a live address opens none", async () => {
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>());
-    const page = await mount(workspace(taskView({ live: { href: "/t/t-1/live", at: "a" } })));
+  test.each(["retry fails", "success", "authentication", "offline", "hidden", "unmount"])("refresh retry is bounded and cleared after %s", async reason => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error("Temporarily unavailable"));
+    vi.stubGlobal("fetch", fetcher);
+    await mount(workspace(taskView({ live: { room: "task:t-1", at: "a" } })));
+    await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "b" }));
+    if (reason === "success" || reason === "authentication") {
+      fetcher.mockResolvedValueOnce(reason === "success"
+        ? new Response(JSON.stringify(workspace(taskView({ live: { room: "task:t-1", at: "c" } }))))
+        : new Response(null, { status: 401 }));
+      await act(async () => Events.latest.emit("change", { room: "task:t-1", at: "c" }));
+    } else if (reason === "offline") {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      await act(async () => window.dispatchEvent(new Event("offline")));
+    } else if (reason === "hidden") {
+      vi.mocked(Object.getOwnPropertyDescriptor(document, "hidden")!.get!).mockReturnValue(true);
+      await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    } else if (reason === "unmount") {
+      await act(async () => root!.unmount()); root = null;
+    }
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(fetcher).toHaveBeenCalledTimes(["retry fails", "success", "authentication"].includes(reason) ? 2 : 1);
+  });
+
+  test("a stream that gives up clears who's here; the room going leaves the rest of the page's stream open", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockImplementation(async () => new Response(null, { status: 304, headers: { etag: '"1"' } })));
+    const page = await mount(workspace(taskView({ live: { room: "task:t-1", at: "a" } })));
     const stream = Events.latest;
-    await act(async () => stream.emit("here", { people: ["robin"] }));
-    await act(async () => stream.dispatchEvent(new Event("gone")));
-    expect(stream.close).toHaveBeenCalled();
+    await act(async () => stream.emit("here", { room: "task:t-1", people: ["robin", "sam"] }));
+    expect(page.people()).toEqual(["robin", "sam"]);
+    await act(async () => stream.emit("gone", { room: "task:t-1" }));
     expect(page.people()).toEqual([]);
-    await act(async () => root!.unmount());
-    host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    expect(stream.close).not.toHaveBeenCalled();
+    await act(async () => stream.emit("here", { room: "task:t-1", people: ["robin"] }));
+    await act(async () => { stream.readyState = Events.CLOSED; stream.dispatchEvent(new Event("error")); });
+    expect(page.people()).toEqual([]);
+  });
+
+  test("a page without a live room opens no stream", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>());
+    const before = Events.latest;
     await mount(workspace(taskView()));
-    expect(Events.latest).toBe(stream);
+    expect(Events.latest).toBe(before);
   });
 });
 
@@ -160,11 +180,11 @@ describe("the last-activity line", () => {
 
   test("says who else is here in the task header, once", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>());
-    await act(async () => root!.render(createElement(TaskView, { view: taskView({ live: { href: "/t/t-1/live", at: "a" } }), details: false })));
+    await act(async () => root!.render(createElement(TaskView, { view: taskView({ live: { room: "task:t-1", at: "a" } }), details: false })));
     expect(host.querySelector("[data-also-viewing]")).toBeNull();
-    await act(async () => Events.latest.emit("here", { people: ["Robin"] }));
+    await act(async () => Events.latest.emit("here", { room: "task:t-1", people: ["Robin"] }));
     expect(host.querySelector("[data-also-viewing]")?.textContent).toBe("Robin is also here");
-    await act(async () => Events.latest.emit("here", { people: ["Robin", "Sam", "Ana"] }));
+    await act(async () => Events.latest.emit("here", { room: "task:t-1", people: ["Robin", "Sam", "Ana"] }));
     expect(host.querySelector("[data-also-viewing]")?.textContent).toBe("Robin and 2 others are also here");
   });
 

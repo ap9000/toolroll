@@ -7,8 +7,7 @@
 import { brandMarkHtml } from "./brand-mark.js";
 import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
 import { choiceTargets, type FlowDefinition, type FlowStage } from "./flows.js";
-
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+import { html, joinHtml, postForm, type Html } from "./html.js";
 
 export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{margin:28px 0 10px;font-size:.9375rem}.gallery h2:first-of-type{margin-top:8px}` +
   `.gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}` +
@@ -56,34 +55,32 @@ export function mainPath(definition: FlowDefinition): FlowStage[] {
 const stepName = (stage: FlowStage) => stage.kind === "choose" ? "You choose" : stage.kind === "approval" ? "You approve" : stage.kind === "send" ? "Sent to you" : stage.title;
 
 /** A flow's steps in order, joined by arrows; a person's decisions carry the accent. */
-export function stepStrip(definition: FlowDefinition): string {
-  return `<ol class="gallery-steps" aria-label="Steps">${mainPath(definition).map((one, i) => {
-    const name = e(stepName(one));
-    return `<li>${i === 0 ? "" : `<span aria-hidden="true">→</span>`}${one.kind === "choose" || one.kind === "approval" ? `<b data-person>${name}</b>` : name}</li>`;
-  }).join("")}</ol>`;
+export function stepStrip(definition: FlowDefinition): Html {
+  return html`<ol class="gallery-steps" aria-label="Steps">${mainPath(definition).map((one, i) => {
+    const name = stepName(one);
+    return html`<li>${i === 0 ? "" : html`<span aria-hidden="true">→</span>`}${one.kind === "choose" || one.kind === "approval" ? html`<b data-person>${name}</b>` : name}</li>`;
+  })}</ol>`;
 }
 
-const needsList = (template: GalleryTemplate) => template.needs.length === 0 ? (template.tools ?? []).length > 0 ? "" : `<ul class="gallery-needs"><li>Nothing to connect</li></ul>`
-  : `<ul class="gallery-needs" aria-label="Needs">${template.needs.map(one => `<li>${e(one)}</li>`).join("")}</ul>`;
+const needsList = (template: GalleryTemplate): Html | "" => template.needs.length === 0 ? (template.tools ?? []).length > 0 ? "" : html`<ul class="gallery-needs"><li>Nothing to connect</li></ul>`
+  : html`<ul class="gallery-needs" aria-label="Needs">${template.needs.map(one => html`<li>${one}</li>`)}</ul>`;
 
 /** A tool's state in words, as Settings → Integrations badges it; nothing without a project. */
 const STATE: Record<NonNullable<GalleryTool["state"]>, [string, string]> = { connected: ["connected", "Connected"], open: ["not-set-up", "Not connected"], taken: ["not-set-up", "Added another way"] };
-const toolState = (tool: GalleryTool) => tool.state === null ? "" : `<span class="integration-state integration-state--${STATE[tool.state][0]}"><i aria-hidden="true"></i>${STATE[tool.state][1]}</span>`;
+const toolState = (tool: GalleryTool): Html | "" => tool.state === null ? "" : html`<span class="integration-state integration-state--${STATE[tool.state][0]}"><i aria-hidden="true"></i>${STATE[tool.state][1]}</span>`;
 const toolMark = (tool: GalleryTool) => brandMarkHtml(tool.id.replace(/-desktop$/, ""), tool.label, tool.state === "connected");
-const toolsList = (tools: readonly GalleryTool[]) => tools.length === 0 ? ""
-  : `<ul class="gallery-tools" aria-label="Tools">${tools.map(one => `<li data-tool="${e(one.id)}" data-state="${one.state ?? "unknown"}">${toolMark(one)}<strong>${e(one.label)}</strong>${toolState(one)}</li>`).join("")}</ul>`;
+const toolsList = (tools: readonly GalleryTool[]): Html | "" => tools.length === 0 ? ""
+  : html`<ul class="gallery-tools" aria-label="Tools">${tools.map(one => html`<li data-tool="${one.id}" data-state="${one.state ?? "unknown"}">${toolMark(one)}<strong>${one.label}</strong>${toolState(one)}</li>`)}</ul>`;
 
 /** The gallery: every template, grouped, each with one "Use this". `repo` carries a chosen project to the template's page. */
-export function galleryHtml(input: { repo: string | null; canUse: boolean; connections?: readonly { id: string; state: "connected" | "open" | "taken" }[] | null }): string {
+export function galleryHtml(input: { repo: string | null; canUse: boolean; connections?: readonly { id: string; state: "connected" | "open" | "taken" }[] | null }): Html {
   const href = (id: string) => `/flows/new/${id}${input.repo === null ? "" : `?repo=${encodeURIComponent(input.repo)}`}`;
   const card = (template: GalleryTemplate) => {
     const definition = galleryDiagram(template);
-    return `<article class="gallery-card" data-template="${e(template.id)}"><h3>${e(template.name)}</h3><p class="gallery-promise">${e(template.promise)}</p>` +
-      stepStrip(definition) + toolsList(galleryToolsOf(template, definition, input.repo === null ? null : input.connections ?? null)) + needsList(template) +
-      (input.canUse ? `<a class="button-link" href="${e(href(template.id))}" aria-label="Use ${e(template.name)}">Use this</a>` : "") + `</article>`;
+    return html`<article class="gallery-card" data-template="${template.id}"><h3>${template.name}</h3><p class="gallery-promise">${template.promise}</p>${stepStrip(definition)}${toolsList(galleryToolsOf(template, definition, input.repo === null ? null : input.connections ?? null))}${needsList(template)}${input.canUse && html`<a class="button-link" href="${href(template.id)}" aria-label="Use ${template.name}">Use this</a>`}</article>`;
   };
-  const groups = GALLERY_GROUPS.map(group => `<h2 id="gallery-${group.id}">${e(group.label)}</h2><div class="gallery-grid" data-group="${group.id}">${GALLERY.filter(one => one.group === group.id).map(card).join("")}</div>`).join("");
-  return `<section class="gallery">${groups}${input.canUse ? `<p class="gallery-blank meta"><a href="${e(href(BLANK.id))}">Start from a blank flow</a></p>` : `<p class="meta">An approver creates flows.</p>`}</section>`;
+  const groups = GALLERY_GROUPS.map(group => html`<h2 id="gallery-${group.id}">${group.label}</h2><div class="gallery-grid" data-group="${group.id}">${GALLERY.filter(one => one.group === group.id).map(card)}</div>`);
+  return html`<section class="gallery">${groups}${input.canUse ? html`<p class="gallery-blank meta"><a href="${href(BLANK.id)}">Start from a blank flow</a></p>` : html`<p class="meta">An approver creates flows.</p>`}</section>`;
 }
 
 /** A template's page: its questions, then what it will do and never do, then Create. */
@@ -92,48 +89,38 @@ export function galleryUseHtml(input: {
   preview: GalleryPreview | null; problem: string | null; csrf: string; diagram: FlowDefinition | null;
   /** The template's tools in this project; `said` is how the last Connect went. */
   tools?: readonly GalleryTool[]; said?: string | null;
-}): string {
+}): Html {
   const { template } = input;
   const tools = input.tools ?? input.preview?.tools ?? [];
   // A tool added another way is there: only one the project lacks is missing.
   const missing = tools.filter(one => one.state !== "connected" && one.state !== "taken");
   // Each tool with its state; one the project lacks offers its own Connect (the Tools page's, with the same password), and comes back here.
   const connect = (tool: GalleryTool) => {
-    const head = `<p class="gallery-tool-head">${toolMark(tool)} <strong>${e(tool.label)}</strong> ${toolState(tool)}</p>`;
+    const head = html`<p class="gallery-tool-head">${toolMark(tool)} <strong>${tool.label}</strong> ${toolState(tool)}</p>`;
     // Added another way, it is there: nothing to connect.
-    if (tool.state === "connected" || tool.state === "taken" || input.csrf === "") return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="${tool.state}">${head}</div>`;
+    if (tool.state === "connected" || tool.state === "taken" || input.csrf === "") return html`<div class="gallery-connect" data-tool="${tool.id}" data-state="${String(tool.state)}">${head}</div>`;
     const how = tool.id === "figma-desktop" ? "Open the Figma desktop app and turn on its Dev Mode MCP server in Preferences." : `You sign in on ${tool.label}, then come back here.`;
-    return `<div class="gallery-connect" data-tool="${e(tool.id)}" data-state="open">${head}<form method="post" action="/settings/tools/connect">` +
-      `<input type="hidden" name="csrf" value="${e(input.csrf)}"><input type="hidden" name="repo" value="${e(input.repo)}"><input type="hidden" name="shown" value="${e(input.repo)}"><input type="hidden" name="template" value="${e(template.id)}">` +
-      `<p class="meta">${e(how)}</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>` +
-      `<button name="service" value="${e(tool.id)}">Connect ${e(tool.label)}</button></form></div>`;
+    return html`<div class="gallery-connect" data-tool="${tool.id}" data-state="open">${head}${postForm("/settings/tools/connect",
+      html`<p class="meta">${how}</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button name="service" value="${tool.id}">Connect ${tool.label}</button>`,
+      { hidden: { repo: input.repo, shown: input.repo, template: template.id } })}</div>`;
   };
-  const toolsBlock = tools.length === 0 ? "" : `<section class="gallery-tools-use" aria-label="Tools">${tools.map(connect).join("")}</section>`;
+  const toolsBlock = tools.length === 0 ? "" : html`<section class="gallery-tools-use" aria-label="Tools">${tools.map(connect)}</section>`;
   // Made without a tool, the preview names the zone that needs it.
-  const zones = (tool: GalleryTool) => tool.zones.map(zone => `“${e(zone)}”`).join(" and ");
-  const needing = missing.filter(one => one.zones.length > 0).map(one => `<p class="meta" data-needs-tool="${e(one.id)}">${zones(one)} need${one.zones.length === 1 ? "s" : ""} ${e(one.label)}, which isn't connected.</p>`).join("") +
-    tools.filter(one => one.state === "taken" && one.zones.length > 0).map(one => `<p class="meta" data-tool-taken="${e(one.id)}">${zones(one)} use${one.zones.length === 1 ? "s" : ""} ${e(one.label)}, added another way.</p>`).join("");
+  const zones = (tool: GalleryTool) => joinHtml(tool.zones.map(zone => html`“${zone}”`), " and ");
+  const needing = html`${missing.filter(one => one.zones.length > 0).map(one => html`<p class="meta" data-needs-tool="${one.id}">${zones(one)} need${one.zones.length === 1 ? "s" : ""} ${one.label}, which isn't connected.</p>`)}${tools.filter(one => one.state === "taken" && one.zones.length > 0).map(one => html`<p class="meta" data-tool-taken="${one.id}">${zones(one)} use${one.zones.length === 1 ? "s" : ""} ${one.label}, added another way.</p>`)}`;
   const field = (ask: GalleryTemplate["asks"][number]) => {
     const value = input.answers[ask.key] ?? ask.default;
-    const hint = ask.hint === undefined ? "" : ` <small>${e(ask.hint)}</small>`;
-    if (ask.key === "outdated") return `<label>${e(ask.label)}<select name="outdated">${Object.entries(OUTDATED_COMMANDS).map(([id, one]) => `<option value="${id}"${id === value ? " selected" : ""}>${e(one.label)}</option>`).join("")}</select></label>`;
-    return `<label>${e(ask.label)}${hint}<input name="${ask.key}" value="${e(value)}" required maxlength="${ask.key === "command" ? 500 : ask.key === "team" ? 12 : 100}"${ask.key === "command" ? ' spellcheck="false" autocapitalize="off"' : ask.key === "team" ? ' spellcheck="false" autocapitalize="characters"' : ""}></label>`;
+    const hint = ask.hint === undefined ? "" : html` <small>${ask.hint}</small>`;
+    if (ask.key === "outdated") return html`<label>${ask.label}<select name="outdated">${Object.entries(OUTDATED_COMMANDS).map(([id, one]) => html`<option value="${id}"${id === value && html` selected`}>${one.label}</option>`)}</select></label>`;
+    return html`<label>${ask.label}${hint}<input name="${ask.key}" value="${value}" required maxlength="${ask.key === "command" ? 500 : ask.key === "team" ? 12 : 100}"${ask.key === "command" ? html` spellcheck="false" autocapitalize="off"` : ask.key === "team" ? html` spellcheck="false" autocapitalize="characters"` : ""}></label>`;
   };
   const project = input.projects.length > 1
-    ? `<label>Project<select name="repo">${input.projects.map(one => `<option value="${e(one.path)}"${one.path === input.repo ? " selected" : ""}>${e(one.name)}</option>`).join("")}</select></label>`
-    : `<input type="hidden" name="repo" value="${e(input.repo)}">`;
-  const preview = input.preview === null ? "" : `<section class="gallery-preview" aria-labelledby="gallery-will">` +
-    `<h2 id="gallery-will">What it will do</h2><ul>${input.preview.built.does.map(one => `<li>${e(one)}</li>`).join("")}</ul>` +
-    `<p class="gallery-never">${e(input.preview.built.never)}</p>${needing}` +
-    (input.preview.startsFrom.length === 0 ? `<p class="meta">Cards start when you add them.</p>` : input.preview.startsFrom.map(one => `<p class="meta">Starts from: ${e(one)}</p>`).join("")) +
-    `<details><summary>Every step</summary><ol>${input.preview.steps.map(one => `<li>${e(one.replace(/^\d+\.\s/, ""))}</li>`).join("")}</ol></details></section>`;
-  return `<section class="gallery-use" data-gallery-template="${e(template.id)}">` +
-    (input.problem === null ? "" : `<p class="problem" role="alert">${e(input.problem)}</p>`) + (input.said ? `<p role="status">${e(input.said)}</p>` : "") +
-    `<p>${e(template.promise)}</p>${input.diagram === null ? "" : stepStrip(input.diagram)}${needsList(template)}${toolsBlock}` +
-    `<form method="post" action="/flows/new/${e(template.id)}" data-gallery-use><input type="hidden" name="csrf" value="${e(input.csrf)}">` +
-    `<input type="hidden" name="previewed" value="${e(input.preview?.digest ?? "")}">${project}${template.asks.map(field).join("")}` +
-    `<label>Name<input name="name" value="${e(input.name)}" maxlength="80"></label>` +
-    (sendsAlready(template) ? "" : `<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" ? " checked" : ""} data-send-result><span>${e(SEND_RESULT.title)}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>`) + preview +
-    `<p class="gallery-actions">${input.preview === null ? "" : `<button type="submit" name="intent" value="create"${missing.length > 0 ? ' class="secondary" data-without-tools' : ""}>Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>` +
-    `</form><p class="meta"><a href="/flows/new">All templates</a></p></section>`;
+    ? html`<label>Project<select name="repo">${input.projects.map(one => html`<option value="${one.path}"${one.path === input.repo && html` selected`}>${one.name}</option>`)}</select></label>`
+    : html`<input type="hidden" name="repo" value="${input.repo}">`;
+  const preview = input.preview === null ? "" : html`<section class="gallery-preview" aria-labelledby="gallery-will"><h2 id="gallery-will">What it will do</h2><ul>${input.preview.built.does.map(one => html`<li>${one}</li>`)}</ul><p class="gallery-never">${input.preview.built.never}</p>${needing}${input.preview.startsFrom.length === 0 ? html`<p class="meta">Cards start when you add them.</p>` : input.preview.startsFrom.map(one => html`<p class="meta">Starts from: ${one}</p>`)}<details><summary>Every step</summary><ol>${input.preview.steps.map(one => html`<li>${one.replace(/^\d+\.\s/, "")}</li>`)}</ol></details></section>`;
+  const sendResult = !sendsAlready(template) && html`<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" && html` checked`} data-send-result><span>${SEND_RESULT.title}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>`;
+  const actions = html`<p class="gallery-actions">${input.preview !== null && html`<button type="submit" name="intent" value="create"${missing.length > 0 && html` class="secondary" data-without-tools`}>Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>`;
+  const form = postForm(`/flows/new/${template.id}`, html`${project}${template.asks.map(field)}<label>Name<input name="name" value="${input.name}" maxlength="80"></label>${sendResult}${preview}${actions}`,
+    { attrs: { "data-gallery-use": true }, hidden: { previewed: input.preview?.digest ?? "" } });
+  return html`<section class="gallery-use" data-gallery-template="${template.id}">${input.problem !== null && html`<p class="problem" role="alert">${input.problem}</p>`}${input.said ? html`<p role="status">${input.said}</p>` : ""}<p>${template.promise}</p>${input.diagram !== null && stepStrip(input.diagram)}${needsList(template)}${toolsBlock}${form}<p class="meta"><a href="/flows/new">All templates</a></p></section>`;
 }

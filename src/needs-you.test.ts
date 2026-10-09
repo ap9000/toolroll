@@ -24,6 +24,7 @@ import { assignmentPresentationOf } from "./assignment-presentation.js";
 import { askOfCode, workIndexPage } from "./work-index.js";
 import { assignmentCatchUp } from "./assignment-brief.js";
 import { leadBriefHtml } from "./lead-context.js";
+import { htmlString } from "./html.js";
 import type { WorkAction } from "./work-summary.js";
 import type { WorkIndexItem } from "./work-index.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
@@ -297,7 +298,7 @@ describe("Confirm it stopped, end to end", () => {
     expect(result.selected!.panel!.status?.sentence).toBe(sentence);
     expect(result.selected!.panel!.need?.confirm).toBeFalsy();
     // Catch-up lists human actions; this wait must never become a request.
-    expect(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root))).not.toContain(`/t/${id}#confirm-stopped`);
+    expect(htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root)))).not.toContain(`/t/${id}#confirm-stopped`);
     expect(store.settleUnspawnedWitnesses(NOW, run)).toBe(1);
     expect(assignment(id).state).toBe("ready-to-check");
   });
@@ -385,7 +386,7 @@ describe("Confirm it stopped, end to end", () => {
     expect(item.action).toEqual({ label: "Confirm it stopped", href: "/t/spawn-gap#confirm-stopped" });
     expect(home.catchUp.find(one => one.id === "still-alive")?.tab).not.toBe("needs-you");
     // The saved catch-up shown before the lead is on: the same button under the same sentence.
-    const brief = leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 8 }, root));
+    const brief = htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 8 }, root)));
     expect(brief).toContain(`href="/t/spawn-gap#confirm-stopped" data-catch-up-action>Confirm it stopped</a>`);
     expect(hasInternalWords(brief)).toBe(false);
   });

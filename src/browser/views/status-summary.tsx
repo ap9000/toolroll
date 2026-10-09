@@ -3,6 +3,7 @@
  * icon, colour only on the icon. A problem that doesn't undo the outcome is an
  * amber icon and one action on its own row; red belongs to Failed alone. The
  * exact technical reasons sit behind More. */
+import { PostForm } from "../ui/index.js";
 import { AlertTriangle, Check, ChevronRight, Circle, CircleDot, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { STATUS_MORE, type DetailMark, type HeadlineTone, type StatusDetail, type TaskStatus } from "../../task-status.js";
@@ -45,12 +46,11 @@ function DetailRow({ detail, runChecks, csrf }: { detail: StatusDetail; runCheck
     <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5">
       <span className="min-w-0 [overflow-wrap:anywhere]">{text}</span>
       {detail.action !== null && (inPlace
-        ? <form method="post" action={runChecks.action} data-run-checks className="inline">
-            <input type="hidden" name="csrf" value={csrf} />
+        ? <PostForm action={runChecks.action} data-run-checks className="inline">
             <input type="hidden" name="level" value={runChecks.level} />
             <input type="hidden" name="return" value={runChecks.returnTo} />
             <button type="submit" data-detail-action className={cn("cursor-pointer whitespace-nowrap font-medium underline-offset-4 hover:underline", TAP)}>{detail.action.label}</button>
-          </form>
+          </PostForm>
         : detail.action.href === null
         ? <span className="font-medium">{detail.action.label}</span>
         : <a href={detail.action.href} data-detail-action className={cn("whitespace-nowrap font-medium underline-offset-4 hover:underline", TAP,
@@ -102,8 +102,7 @@ export function HeadlineBadge({ label, tone, className, ...rest }: { label: stri
  * result pages (an approver's act, the same record as `toolroll run settle`).
  * `checked`: Toolroll can't check the build, so the approver says they did. */
 export function ConfirmStoppedForm({ form, csrf, label = "Confirm it stopped" }: { form: { action: string; run: number; returnTo?: string; checked?: boolean }; csrf: string; label?: string }) {
-  return <form method="post" action={form.action} id="confirm-stopped" data-confirm-stopped={form.run} className="flex flex-wrap items-center gap-2 phone:w-full">
-    <input type="hidden" name="csrf" value={csrf} />
+  return <PostForm action={form.action} id="confirm-stopped" data-confirm-stopped={form.run} className="flex flex-wrap items-center gap-2 phone:w-full">
     <input type="hidden" name="run" value={String(form.run)} />
     {form.returnTo !== undefined && <input type="hidden" name="return" value={form.returnTo} />}
     {form.checked === true && <label className="flex min-h-11 items-center gap-2 text-sm phone:w-full">
@@ -111,14 +110,13 @@ export function ConfirmStoppedForm({ form, csrf, label = "Confirm it stopped" }:
     </label>}
     <Input type="password" name="token" autoComplete="current-password" required aria-label="Your password" placeholder="Your password" className="h-9 w-44 phone:h-11 phone:w-full" />
     <Button type="submit" variant="attention" className="phone:w-full">{label}</Button>
-  </form>;
+  </PostForm>;
 }
 
 /** Build again, for a result built to an earlier plan: one filled button, the
  * task page's requeue (it runs again on the same filing, under the current plan). */
 export function RebuildForm({ action, csrf, label = "Build again", className }: { action: string; csrf: string; label?: string; className?: string }) {
-  return <form method="post" action={action} data-rebuild className="phone:w-full">
-    <input type="hidden" name="csrf" value={csrf} />
+  return <PostForm action={action} data-rebuild className="phone:w-full">
     <Button type="submit" variant="attention" className={cn("phone:w-full", className)} data-primary-action>{label}</Button>
-  </form>;
+  </PostForm>;
 }

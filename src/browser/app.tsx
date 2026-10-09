@@ -5,11 +5,10 @@ import type { BrowserCrewItem, BrowserMessage, BrowserWorkspace } from "../brows
 import {
   Alert, Artifact, ArtifactContent, Badge, Button, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
-  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea,
-} from "./ui/index.js";
+  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, PostForm } from "./ui/index.js";
 import {
   carryDraft, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft, rejectDraft,
-  restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, workspacePollDelay, WorkspaceAuthError,
+  restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
 } from "./workspace-client.js";
 import type { ChatDraft, DraftScope, DraftStorage } from "./workspace-client.js";
 import { TeamChat } from "./team-chat.js";
@@ -26,6 +25,7 @@ import { HeadlineBadge } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
+import { useLiveRoom } from "./live.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import "./workspace.css";
 
@@ -90,9 +90,12 @@ export function useWorkspace(initial: BrowserWorkspace) {
   state.current = { workspace, draft, stale, sending, notice };
   const polling = useRef(false);
   const refreshQueued = useRef(false);
-  const refreshTimer = useRef<number | undefined>(undefined);
   const refreshTag = useRef<string | null>(null);
-  const pollDelay = useRef(5_000);
+  const refreshRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearRefreshRetry = useCallback(() => {
+    if (refreshRetry.current !== null) clearTimeout(refreshRetry.current);
+    refreshRetry.current = null;
+  }, []);
   const mounted = useRef(true);
   const sendLatch = useRef(false);
 
@@ -103,26 +106,24 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (owner) setStorageAvailable(saveDraft(browserStorage(), owner, next));
   }, [initial]);
 
-  // A task page that follows its own stream (/t/<id>/live) reads itself when nudged.
+  // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
   const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
-  const check = useCallback(async (force = true): Promise<void> => {
-    if (!mounted.current || state.current.stale || !(initial.conversation || initial.refreshSeconds || liveTask) || !canRefreshWorkspace()) return;
-    // A send or explicit refresh during a read must run immediately afterward,
+  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds);
+  const check = useCallback(async (force = true, retry = false): Promise<void> => {
+    clearRefreshRetry();
+    if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
+    // A send, a nudge or an explicit refresh during a read runs immediately afterward,
     // rather than lose its receipt check or start an overlapping request.
-    if (polling.current) { if (force) refreshQueued.current = true; return; }
+    if (polling.current) { refreshQueued.current = true; return; }
     refreshQueued.current = false;
-    clearTimeout(refreshTimer.current);
-    if (force) pollDelay.current = 5_000;
     polling.current = true;
     const asked = state.current.draft.pending?.request ?? null;
-    let unchanged = false, failed = false;
     try {
       const read = await readWorkspace(state.current.workspace, asked, fetch, { etag: refreshTag.current, force });
       if (!mounted.current) return;
       // A receipt query is a different representation from the ordinary view.
       refreshTag.current = asked ? null : read.etag;
       if (read.kind === "unchanged") {
-        unchanged = true;
         if (!state.current.draft.pending && state.current.notice) setNotice("");
         return;
       }
@@ -140,61 +141,56 @@ export function useWorkspace(initial: BrowserWorkspace) {
       setNotice(received.pending ? "Delivery is not confirmed. Check again before sending another message." : "");
     } catch (error) {
       if (!mounted.current) return;
-      failed = true;
       if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
       setNotice(error instanceof Error ? error.message : "Updates are unavailable. Your work is still saved.");
+      // One failure-only retry: a server fingerprint may stay unchanged after this missed read.
+      // A second failure waits for a new event or an explicit refresh; healthy pages never poll.
+      if (!retry && !state.current.stale && canRefreshWorkspace()) {
+        refreshRetry.current = setTimeout(() => { refreshRetry.current = null; void check(true, true); }, 2_000);
+      }
     } finally {
       polling.current = false;
-      // A page that only follows its task's stream has no beat of its own: the next nudge reads it again.
-      if (mounted.current && !state.current.stale && canRefreshWorkspace() && (initial.conversation || (state.current.workspace.refreshSeconds ?? initial.refreshSeconds))) {
-        if (refreshQueued.current) {
-          refreshQueued.current = false;
-          void check(true);
-        } else {
-          const busy = state.current.draft.pending !== null || state.current.workspace.conversation?.pendingTurnId != null || sendLatch.current;
-          // A live page (no conversation) reads itself on the beat its latest read asked for.
-          pollDelay.current = initial.conversation ? workspacePollDelay(pollDelay.current, unchanged, busy) : (state.current.workspace.refreshSeconds ?? initial.refreshSeconds!) * 1000;
-          refreshTimer.current = window.setTimeout(() => { void check(false); }, pollDelay.current);
-        }
-      } else if (mounted.current && liveTask && !state.current.stale && canRefreshWorkspace()) {
-        // A page that only follows its task's stream: a nudge during this read reads again now; a failed read
-        // retries soon; otherwise the page reconciles on its own slow beat, not only when the server speaks.
-        if (refreshQueued.current) { refreshQueued.current = false; void check(true); }
-        else refreshTimer.current = window.setTimeout(() => { void check(false); }, failed ? 5_000 : 30_000);
+      if (refreshQueued.current && mounted.current && !state.current.stale && canRefreshWorkspace()) {
+        refreshQueued.current = false;
+        void check(true);
       }
     }
-  }, [initial, liveTask, updateDraft]);
+  }, [initial, followsWorkspace, liveTask, updateDraft, clearRefreshRetry]);
 
-  // The task's stream says it changed: read now (live-task.tsx).
+  // The workspace's room says something changed: read again (an unchanged read is a 304). A stream the browser
+  // gave up on reads once, so a lost sign-in or connection says so.
+  useLiveRoom(followsWorkspace && !stale ? "workspace" : null, event => {
+    if (event === "change" || event === "reload") void check(false);
+    else if (event === "lost") void check(true);
+  });
+
+  // The task's room says it changed: read now (live-task.tsx).
   useEffect(() => {
     if (!liveTask) return;
     const nudge = () => { void check(true); };
     window.addEventListener(WORKSPACE_NUDGE, nudge);
-    // With no beat of its own, the page still reconciles every 30 s (an unchanged read is a 304).
-    const own = !initial.conversation && !initial.refreshSeconds;
-    if (own) refreshTimer.current = window.setTimeout(() => { void check(false); }, 30_000);
-    return () => { window.removeEventListener(WORKSPACE_NUDGE, nudge); if (own) clearTimeout(refreshTimer.current); };
-  }, [check, liveTask, initial]);
+    return () => { window.removeEventListener(WORKSPACE_NUDGE, nudge); };
+  }, [check, liveTask]);
 
   useEffect(() => {
     mounted.current = true;
-    if (!initial.conversation && !initial.refreshSeconds) return;
-    if (initial.conversation) void check();
-    else refreshTimer.current = window.setTimeout(() => { void check(false); }, initial.refreshSeconds! * 1000);
-    const visible = () => { if (!document.hidden) void check(true); else clearTimeout(refreshTimer.current); };
+    if (!followsWorkspace && !liveTask) return () => { mounted.current = false; };
+    const visible = () => { if (!document.hidden) void check(true); else clearRefreshRetry(); };
     const online = () => { setOffline(false); void check(); };
-    const offlineNow = () => { setOffline(true); clearTimeout(refreshTimer.current); };
+    const offlineNow = () => { clearRefreshRetry(); setOffline(true); };
     document.addEventListener("visibilitychange", visible);
     window.addEventListener("online", online);
     window.addEventListener("offline", offlineNow);
     return () => {
       mounted.current = false;
-      clearTimeout(refreshTimer.current);
+      clearRefreshRetry();
       document.removeEventListener("visibilitychange", visible);
       window.removeEventListener("online", online);
       window.removeEventListener("offline", offlineNow);
     };
-  }, [check, initial.conversation, initial.refreshSeconds]);
+  }, [check, followsWorkspace, liveTask, clearRefreshRetry]);
+
+  useEffect(() => { if (stale) clearRefreshRetry(); }, [stale, clearRefreshRetry]);
 
   const send = async (event: FormEvent, mode: string | null = null) => {
     event.preventDefault();
@@ -357,7 +353,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       </a>)}
     </nav>}
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
-      <div className="so-account"><span title={workspace.user}>{workspace.user}</span><form method="post" action="/logout"><input type="hidden" name="csrf" value={workspace.csrf} /><Button variant="ghost" size="sm" type="submit">Sign out</Button></form></div>
+      <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><Button variant="ghost" size="sm" type="submit">Sign out</Button></PostForm></div>
     </div>
   </div>;
 }
@@ -510,7 +506,7 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
         {stale ? <Button variant="secondary" size="sm" onClick={controller.reconnect}>Reconnect</Button> : !sending && !offline && <Button variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</Button>}
       </div>}
-      <form onSubmit={controller.send} action="/chat" method="post" data-workspace-composer aria-busy={sending}>
+      <PostForm onSubmit={controller.send} action="/chat" data-workspace-composer aria-busy={sending}>
         <Label htmlFor="lead-message" className="so-sr-only">Message your lead</Label>
         {commandMatches.length > 0 && <ul id={commandList} role="listbox" aria-label="Commands" className="so-slash-menu">
           {commandMatches.map((one, index) => <li key={one.command} role="option" aria-selected={index === Math.min(commandIndex, commandMatches.length - 1)}
@@ -532,7 +528,7 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
         <div className="so-composer-actions"><span id="composer-hint">{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : "/ for commands · Shift + Enter for a new line"}</span>
           <Button type="submit" disabled={disabled} aria-label="Send message"><Icon name="send" /><span>Send</span></Button>
         </div>
-      </form>
+      </PostForm>
       {!dock && workspace.controlsHtml && <Disclosure summary="Conversation settings" className="so-conversation-settings"><GuardedHtml html={workspace.controlsHtml} immutable /></Disclosure>}
     </div>
   </div>;
@@ -586,7 +582,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
         {stale ? <ViewButton variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
       </div>}
-      <form onSubmit={event => { void controller.send(event, mode); }} action="/chat" method="post" data-workspace-composer data-task-composer aria-busy={sending}
+      <PostForm onSubmit={event => { void controller.send(event, mode); }} action="/chat" data-workspace-composer data-task-composer aria-busy={sending}
         className="rounded-xl border border-input bg-card px-3 pb-2 pt-2.5 shadow-[0_1px_2px_rgb(0_0_0/.04)] transition-[border-color,box-shadow] duration-100 focus-within:border-attention focus-within:shadow-[0_0_0_3px_var(--so-signal-soft)] phone:px-2.5">
         <label htmlFor="task-message" className="sr-only">Message the agent</label>
         <textarea ref={box} id="task-message" name="message" rows={2} maxLength={chat.maxChars} placeholder="Message the agent: ask, or ask for a change" value={draft.text}
@@ -604,7 +600,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
           <span id="task-composer-hint" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : hint}</span>
           <ViewButton type="submit" size="sm" disabled={disabled} aria-label="Send message" className={cn("ml-auto")}><Icon name="send" /><span>Send</span></ViewButton>
         </div>
-      </form>
+      </PostForm>
     </div>,
   };
 }
@@ -683,7 +679,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
-  return <><Toaster /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Toaster /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
@@ -701,32 +697,31 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         {workspace.signIn?.map(item => <Alert key={item.provider} className="so-sign-in" data-sign-in={item.provider}>
           <p className="so-sign-in-title">{item.title}</p>
           <p className="so-sign-in-detail">Run <code>{item.command}</code> on this computer, then resume.{item.detail === "" ? "" : ` ${item.detail}`}</p>
-          <form method="post" action={item.resumeHref}><input type="hidden" name="csrf" value={workspace.csrf} /><Button size="sm" type="submit">{item.resumeLabel}</Button></form>
+          <PostForm action={item.resumeHref}><Button size="sm" type="submit">{item.resumeLabel}</Button></PostForm>
         </Alert>)}
         {workspace.notices.map((notice, index) => <Alert key={index}>{notice}</Alert>)}
         {update !== null && <Alert className="so-update" data-update={update.version}>
           <p><span>{updateNoticeWords(update)}</span> · <a href={update.href}>What's new</a></p>
-          <form method="post" action={update.dismissHref} onSubmit={event => {
+          <PostForm action={update.dismissHref} onSubmit={event => {
             // Dismissed at once; the cookie that keeps it dismissed is saved in the background.
             event.preventDefault();
             setDismissedUpdate(update.version);
             void fetch(update.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, version: update.version, quiet: "1" }) }).catch(() => {});
           }}>
-            <input type="hidden" name="csrf" value={workspace.csrf} /><input type="hidden" name="version" value={update.version} />
+            <input type="hidden" name="version" value={update.version} />
             <Button variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></Button>
-          </form>
+          </PostForm>
         </Alert>}
         {phone !== null && <Alert className="so-update so-phone-notice" data-phone-notice>
           <p><span>Use it from your phone too</span> · <a href="/settings#settings-chat-apps">Set up</a></p>
-          <form method="post" action={phone.dismissHref} onSubmit={event => {
+          <PostForm action={phone.dismissHref} onSubmit={event => {
             // The same installation-wide put-away as before; the setup stays in Settings → Chat apps.
             event.preventDefault();
             setPhoneDismissed(true);
             void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
           }}>
-            <input type="hidden" name="csrf" value={workspace.csrf} />
             <Button variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></Button>
-          </form>
+          </PostForm>
         </Alert>}
       </div>}
       <main id="workspace-main" className="so-main-content" tabIndex={-1}>
@@ -762,7 +757,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         {workspace.result && <Artifact data-workspace-result={workspace.result.runId}><ArtifactContent><GuardedHtml key={workspace.result.runId} html={workspace.result.html} immutable /></ArtifactContent></Artifact>}
       </div> : home !== null ? <WorkPanel workspace={workspace} home={home} /> : <Crew workspace={workspace} />}
     </aside>}
-  </div></>;
+  </div></FormToken.Provider>;
 }
 
 // The cross-fade between pages is a nicety: when the browser skips it (the next

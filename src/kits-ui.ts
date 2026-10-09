@@ -6,11 +6,10 @@
 import type { Store } from "./store.js";
 import { kitChecklist, kitInstalled, KITS, type Kit } from "./kits.js";
 import { TEAMMATE_TEMPLATES } from "./teammates.js";
+import { html, postForm, type Html } from "./html.js";
 
-const e = (text: string) => text.replace(/[&<>"']/g, one => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[one]!);
-const hidden = (csrf: string) => `<input type="hidden" name="csrf" value="${e(csrf)}">`;
-const CHECK = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
-const RING = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>`;
+const CHECK = html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
+const RING = html`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>`;
 
 export const KITS_CSS = `.kits{max-width:960px;min-width:0}.kits-lede{color:var(--so-muted);margin:.25rem 0 1.5rem;max-width:40rem}.kit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}` +
   `.kit{display:flex;flex-direction:column;gap:10px;padding:20px;border:1px solid var(--so-line);border-radius:12px;background:var(--so-paper)}.kit h2{font-size:1.1rem;margin:0}.kit p{margin:0}.kit .kit-promise{line-height:1.5}` +
@@ -25,33 +24,33 @@ export const KITS_CSS = `.kits{max-width:960px;min-width:0}.kits-lede{color:var(
 const teammateWords = (kit: Kit) => { const template = TEAMMATE_TEMPLATES.find(one => one.id === kit.teammate.template); return template === undefined ? kit.teammate.handle : template.label.toLowerCase(); };
 
 /** The gallery: every kit, set up in a project with one button (or opened, when it's already there). */
-export function kitsGalleryHtml(store: Store, projects: readonly string[], projectName: (repo: string) => string, csrf: string, canSetUp: boolean, notice: { problem?: string | null }): string {
+export function kitsGalleryHtml(store: Store, projects: readonly string[], projectName: (repo: string) => string, canSetUp: boolean, notice: { problem?: string | null }): Html {
   const cards = KITS.map(kit => {
     const here = projects.filter(repo => kitInstalled(store, kit, repo) !== null);
     const open = projects.length === 1 && here.length === 1;
     const name = kit.teammate.handle.charAt(0).toUpperCase() + kit.teammate.handle.slice(1);
     const gets = `${name} (${teammateWords(kit)}) · the ${kit.flowName} flow${kit.tools.length === 0 ? "" : ` · works with ${kit.tools.map(one => one.label).join(" and ")}`}`;
-    const action = open ? `<a class="kit-open" href="/kits/${kit.id}?repo=${encodeURIComponent(projects[0]!)}">Open ${e(kit.name)} →</a>`
+    const action = open ? html`<a class="kit-open" href="/kits/${kit.id}?repo=${encodeURIComponent(projects[0]!)}">Open ${kit.name} →</a>`
       : !canSetUp || projects.length === 0 ? ""
-      : `<form method="post" action="/kits/${kit.id}/setup">${hidden(csrf)}${projects.length === 1 ? `<input type="hidden" name="repo" value="${e(projects[0]!)}">`
-        : `<label>Project<select name="repo">${projects.map(repo => `<option value="${e(repo)}">${e(projectName(repo))}${here.includes(repo) ? " (set up)" : ""}</option>`).join("")}</select></label>`}<button>Set it up</button></form>`;
-    return `<article class="kit" data-kit="${kit.id}"><h2>${e(kit.name)}</h2><p class="kit-promise">${e(kit.promise)}</p><p class="kit-gets">${e(gets)}</p>${action}</article>`;
-  }).join("");
-  return `<section class="kits">${notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : ""}<p class="kits-lede">A working setup in one click: an AI teammate, the flow it works, and what to connect next. Nothing goes out without you approving it.</p><div class="kit-grid">${cards}</div></section>`;
+      : postForm(`/kits/${kit.id}/setup`, html`${projects.length === 1 ? ""
+        : html`<label>Project<select name="repo">${projects.map(repo => html`<option value="${repo}">${projectName(repo)}${here.includes(repo) ? " (set up)" : ""}</option>`)}</select></label>`}<button>Set it up</button>`,
+        { hidden: { repo: projects.length === 1 ? projects[0]! : null } });
+    return html`<article class="kit" data-kit="${kit.id}"><h2>${kit.name}</h2><p class="kit-promise">${kit.promise}</p><p class="kit-gets">${gets}</p>${action}</article>`;
+  });
+  return html`<section class="kits">${notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : ""}<p class="kits-lede">A working setup in one click: an AI teammate, the flow it works, and what to connect next. Nothing goes out without you approving it.</p><div class="kit-grid">${cards}</div></section>`;
 }
 
 /** A kit's own page: what's set up, and the next step on each line. */
-export function kitPageHtml(store: Store, kit: Kit, repo: string, dir: string | null, csrf: string, canSetUp: boolean, notice: { said?: string | null; problem?: string | null }): string {
+export function kitPageHtml(store: Store, kit: Kit, repo: string, dir: string | null, canSetUp: boolean, notice: { said?: string | null; problem?: string | null }): Html {
   const steps = kitChecklist(store, kit, repo, dir);
   const set = kitInstalled(store, kit, repo);
   const rows = steps.map(step => {
-    const go = step.done ? (step.href === null ? "" : `<a class="kit-step-go" href="${e(step.href)}">Open</a>`)
+    const go = step.done ? (step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">Open</a>`)
       : step.action === "sample" || step.action === "github"
-        ? (canSetUp ? `<form method="post" action="/kits/${kit.id}/${step.action}">${hidden(csrf)}<input type="hidden" name="repo" value="${e(repo)}"><button${step.action === "sample" ? "" : ' class="secondary"'}>${step.action === "sample" ? "Try it" : "Bring them in"}</button></form>` : "")
-        : step.href === null ? "" : `<a class="kit-step-go" href="${e(step.href)}">${step.action === "connect" ? "Connect" : "Set up"}</a>`;
-    return `<li data-step="${e(step.id)}" data-done="${step.done}">${step.done ? CHECK : RING}<span class="kit-step-said">${e(step.said)}</span>${go}</li>`;
-  }).join("");
-  const setUp = set === null && canSetUp ? `<form method="post" action="/kits/${kit.id}/setup">${hidden(csrf)}<input type="hidden" name="repo" value="${e(repo)}"><button>Set up ${e(kit.name)}</button></form>` : "";
-  return `<section class="kits">${notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : ""}${notice.said ? `<p class="said" role="status">${e(notice.said)}</p>` : ""}` +
-    `<p class="kits-lede">${e(kit.promise)}</p>${setUp}${rows === "" ? "" : `<ol class="kit-steps">${rows}</ol>`}<p class="meta"><a href="/kits">All starter kits</a></p></section>`;
+        ? (canSetUp ? postForm(`/kits/${kit.id}/${step.action}`, html`<button${step.action === "sample" ? "" : html` class="secondary"`}>${step.action === "sample" ? "Try it" : "Bring them in"}</button>`, { hidden: { repo } }) : "")
+        : step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">${step.action === "connect" ? "Connect" : "Set up"}</a>`;
+    return html`<li data-step="${step.id}" data-done="${String(step.done)}">${step.done ? CHECK : RING}<span class="kit-step-said">${step.said}</span>${go}</li>`;
+  });
+  const setUp = set === null && canSetUp ? postForm(`/kits/${kit.id}/setup`, html`<button>Set up ${kit.name}</button>`, { hidden: { repo } }) : "";
+  return html`<section class="kits">${notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : ""}${notice.said ? html`<p class="said" role="status">${notice.said}</p>` : ""}<p class="kits-lede">${kit.promise}</p>${setUp}${rows.length === 0 ? "" : html`<ol class="kit-steps">${rows}</ol>`}<p class="meta"><a href="/kits">All starter kits</a></p></section>`;
 }

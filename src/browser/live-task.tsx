@@ -1,7 +1,8 @@
 /** The live task page (live tasks): the stream that says when the task changed and who else has it open, and the one
- * line that says what a running agent did last. The stream is a hint: a change asks the workspace to read itself
- * again the usual way (its own beat stays the fallback), and the line is worded here, against this page's clock. */
+ * line that says what a running agent did last. The room is a hint: a change asks the workspace to read itself
+ * again the usual way, and the line is worded here, against this page's clock. */
 import { useEffect, useRef, useState } from "react";
+import { useLiveRoom } from "./live.js";
 import { activityLine, type RunActivity } from "../activity-line.js";
 import { cn } from "./components/ui/index.js";
 
@@ -34,38 +35,21 @@ export function AlsoViewing({ people }: { people: readonly string[] }) {
   return <span className="min-w-0 truncate" data-also-viewing={people.length} role="status" title={people.join(", ")}>{words}</span>;
 }
 
-/** Follow the task's stream while the page is visible: a change nudges the workspace to read again (unless the page
- * already shows that state), and the list of who else is here comes back. A stream that can't stay open leaves the
- * workspace's own beat to keep the page current. */
-export function useLiveTask(live: { href: string; at?: string | null } | null | undefined): string[] {
+/** Follow the task's room: a change nudges the workspace to read again (unless the page already shows that state),
+ * and the list of who else is here comes back. */
+export function useLiveTask(live: { room: string; at?: string | null } | null | undefined): string[] {
   const [people, setPeople] = useState<string[]>([]);
   const seen = useRef(live?.at ?? null);
   seen.current = live?.at ?? null;
-  const href = live?.href ?? null;
-  useEffect(() => {
-    if (href === null || typeof EventSource === "undefined") return;
-    let source: EventSource | null = null;
+  const room = live?.room ?? null;
+  useEffect(() => { if (room === null) setPeople([]); }, [room]);
+  useLiveRoom(room, (event, data) => {
     const nudge = () => window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
-    const open = () => {
-      const stream = new EventSource(href);
-      source = stream;
-      stream.addEventListener("change", event => {
-        try { const at = (JSON.parse((event as MessageEvent<string>).data) as { at: string | null }).at; if (at === null || at !== seen.current) nudge(); } catch { nudge(); }
-      });
-      // The server's stream fell behind and caught up: read again whatever it last said.
-      stream.addEventListener("reload", nudge);
-      stream.addEventListener("here", event => {
-        try { const list = (JSON.parse((event as MessageEvent<string>).data) as { people: unknown }).people; if (Array.isArray(list)) setPeople(list.filter((one): one is string => typeof one === "string")); } catch { /* keep the last list */ }
-      });
-      stream.addEventListener("gone", () => { stream.close(); if (source === stream) source = null; setPeople([]); });
-      stream.addEventListener("error", () => { if (stream.readyState === EventSource.CLOSED) { if (source === stream) source = null; setPeople([]); } });
-    };
-    const close = () => { source?.close(); source = null; setPeople([]); };
-    // A hidden tab isn't "here", and doesn't hold one of the browser's few connections.
-    const visible = () => { if (document.hidden) close(); else if (source === null) open(); };
-    if (!document.hidden) open();
-    document.addEventListener("visibilitychange", visible);
-    return () => { document.removeEventListener("visibilitychange", visible); close(); };
-  }, [href]);
+    if (event === "change") { const at = data["at"]; if (typeof at !== "string" || at !== seen.current) nudge(); }
+    // The server's stream fell behind and caught up: read again whatever it last said.
+    else if (event === "reload") nudge();
+    else if (event === "here") { const list = data["people"]; if (Array.isArray(list)) setPeople(list.filter((one): one is string => typeof one === "string")); }
+    else if (event === "gone" || event === "lost") setPeople([]);
+  });
   return people;
 }

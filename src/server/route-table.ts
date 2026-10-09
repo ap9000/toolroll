@@ -9,8 +9,12 @@
  * account's read/write sets, the viewer's POST set, the selected-project
  * exceptions) are projections of this table.
  *
- * Handlers still re-prove what can change after admission: passwords, nonces,
- * webhook signatures, object membership, stale sessions and revoked tokens.
+ * A row's `role` says who among its admitted callers may use it (an approver,
+ * or an instance operator), with the words a caller without it hears. Every
+ * row has exactly one handler (handler-registry.ts); handlers do not re-match
+ * paths or restate these checks. They still re-prove what can change after
+ * admission: passwords, nonces, webhook signatures, object membership, stale
+ * sessions and revoked tokens.
  */
 
 /** Who presents the request. `service` is a verified external sender (a signed webhook, an OAuth return carrying its one-time state). */
@@ -43,10 +47,14 @@ export type ProjectResolver =
  * - `conversation`: a shared room's own audience admission, else instance access.
  */
 export type LimitedAccess = "deny" | "collection" | "unscoped" | "resource" | "self" | "proposal" | "conversation";
-export type Domain = "tasks" | "flows" | "chat" | "settings" | "people" | "remote" | "pages";
+export type Domain = "tasks" | "flows" | "chat" | "settings" | "people" | "remote" | "pages" | "live";
 /** `edge`: answered before the console's sign-in (its own protocol proves the caller). `console`: after identify(). */
 export type Stage = "edge" | "console";
 export type RouteMethod = "GET" | "POST" | "GET,HEAD";
+/** Who among the admitted callers may use the route: anyone, an approver, or an instance operator (an approver with instance-wide access). */
+export type RouteRole = "any" | "approver" | "operator";
+/** What a caller without the role hears: the console's refusal page (plain text for a token), or a protocol answer. */
+export type RouteRefusal = { readonly message: string; readonly back?: string } | { readonly status: number; readonly type: string; readonly body: string };
 
 export interface RouteDeclaration {
   readonly id: string;
@@ -72,6 +80,13 @@ export interface RouteDeclaration {
   /** The exact answer to a caller the row does not admit, when the route has its own protocol (else a plain 403). */
   readonly scopeRefusal?: string;
   readonly callerRefusal?: { readonly status: number; readonly type: string; readonly body: string };
+  /** Checked after caller, scope and project admission, before the handler. */
+  readonly role: RouteRole;
+  /** The role counts only through a browser sign-in: an API token hears the same refusal. */
+  readonly roleBrowser: boolean;
+  readonly roleRefusal?: RouteRefusal;
+  /** The largest form body a POST here reads (else the console's default). */
+  readonly bodyCap?: number;
 }
 
 type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage">>;
@@ -100,6 +115,10 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     sample: options.sample ?? sampleOf(pattern),
     ...(options.scopeRefusal === undefined ? {} : { scopeRefusal: options.scopeRefusal }),
     ...(options.callerRefusal === undefined ? {} : { callerRefusal: options.callerRefusal }),
+    role: options.role ?? "any",
+    roleBrowser: options.roleBrowser ?? false,
+    ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
+    ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
   });
 }
 const edge = (domain: Domain, id: string, method: RouteMethod, path: string, options: Options = {}) => row("edge", domain, id, method, path.startsWith("^") ? path : exact(path), options);
@@ -111,6 +130,16 @@ const FLOW = "[1-9][0-9]{0,9}";
 const TASK = "[^/]+";
 /** Free of a project: no opener redirect for a session with nothing open. */
 const free = { needsProject: false } as const;
+/** Role rows. `approver`/`operator` hold through a browser sign-in; `anyApprover`/`anyOperator` through any admitted caller. */
+type RoleOptions = { role: RouteRole; roleBrowser: boolean; roleRefusal: RouteRefusal };
+const approver = (message: string, back?: string): RoleOptions => ({ role: "approver", roleBrowser: true, roleRefusal: back === undefined ? { message } : { message, back } });
+const operator = (message: string, back?: string): RoleOptions => ({ role: "operator", roleBrowser: true, roleRefusal: back === undefined ? { message } : { message, back } });
+const anyApprover = (message: string, back?: string) => ({ ...approver(message, back), roleBrowser: false });
+const anyOperator = (message: string, back?: string) => ({ ...operator(message, back), roleBrowser: false });
+const SESSION_JSON = { status: 403, type: "application/json", body: JSON.stringify({ error: "session" }) } as const;
+// URL encoding can triple UTF-8 bytes. Task forms admit their bounded fields (a goal and exclusions of 32,000 bytes
+// each, paths and rubric) before canonical text validation; an imported flow is a file.
+const LARGE_FORM = 1024 * 1024;
 
 // ---- edge: answered before the console's sign-in ---------------------------------------------------------------
 // Ordered exactly as the server checks them: health and webhooks before the Host check, the rest after it.
@@ -134,7 +163,6 @@ for (const operation of ["list", "show", "changes", "start", "send", "stop", "re
 }
 edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
-edge("remote", "edge.team-events", "GET", "/api/team/events", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
@@ -154,10 +182,17 @@ edge("people", "edge.join", "GET", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample:
 edge("people", "edge.join-send", "POST", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 
 // ---- console reads ---------------------------------------------------------------------------------------------
-// Coding: the handler answers any other caller in its own format (JSON for the workspace's fetches).
-get("tasks", "code.page", "^\\/code(\\/.*)?$", { project: "coding", limited: "self", ...free, sample: "/code" });
+// Coding: the workspace, a session and its reads. The handler answers any other caller in its own format (JSON for the workspace's fetches).
+const CODING = { project: "coding", limited: "self", ...free } as const;
+const SESSION = "[a-f0-9]{32}";
+get("tasks", "code.page", "/code", CODING);
+get("tasks", "code.session", `^\\/code\\/${SESSION}$`, { ...CODING, sample: `/code/${"a".repeat(32)}` });
+for (const one of ["state", "changes", "ship"]) get("tasks", `code.${one}`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING, sample: `/code/${"a".repeat(32)}/${one}` });
+// Any other coding address answers "not found" after the same access check.
+get("tasks", "code.other", "^\\/code\\/.*$", { ...CODING, sample: "/code/unknown" });
 get("pages", "projects.browse", "/projects/browse", free);
-get("pages", "projects.github", "/projects/github", free);
+get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
+  ...anyApprover("your login can watch — adding projects is an approver's act") });
 get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
@@ -167,7 +202,7 @@ get("pages", "morning", "/morning");
 get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
-get("settings", "spend", "/spend", free);
+get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity");
 get("tasks", "done", "/done", { limited: "collection" });
@@ -179,7 +214,6 @@ get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek");
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
-get("tasks", "task.live", `^\\/t\\/${TASK}\\/live$`, { project: "task", limited: "resource", ...free, sample: "/t/one/live" });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
@@ -194,11 +228,11 @@ get("flows", "flows.page", "/flows", { limited: "resource", ...free });
 get("flows", "kits", "/kits");
 get("flows", "kit.page", "^\\/kits\\/[a-z-]{1,40}$", { sample: "/kits/support" });
 get("flows", "teammates", "/teammates", free);
-get("flows", "teammate.page", `^\\/teammates\\/[1-9][0-9]{0,9}(\\/soul\\.md)?$`, { ...free, sample: "/teammates/1/soul.md" });
-get("flows", "flow.read", `^\\/flows\\/${FLOW}\\/(insights|runs\\/${FLOW}\\/${FLOW})$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/runs/2/3" });
+get("flows", "teammate.page", `^\\/teammates\\/[1-9][0-9]{0,9}$`, { ...free, sample: "/teammates/1" });
+get("flows", "teammate.soul-file", `^\\/teammates\\/[1-9][0-9]{0,9}\\/soul\\.md$`, { ...free, sample: "/teammates/1/soul.md" });
+get("flows", "flow.insights", `^\\/flows\\/${FLOW}\\/insights$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/insights" });
+get("flows", "flow.run", `^\\/flows\\/${FLOW}\\/runs\\/${FLOW}\\/${FLOW}$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/runs/2/3" });
 get("flows", "flow.export", `^\\/flows\\/${FLOW}\\/export$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/export" });
-get("flows", "flow.live", `^\\/flows\\/${FLOW}\\/live$`, { callers: ["cookie"], project: "flow", limited: "resource", ...free, sample: "/flows/1/live",
-  callerRefusal: { status: 403, type: "application/json", body: JSON.stringify({ error: "session" }) } });
 get("flows", "flow.page", `^\\/flows\\/${FLOW}$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1" });
 get("flows", "recipes", "/recipes", { limited: "collection", ...free });
 for (const one of ["run", "start", "new", "edit", "from-task", "preview", "export"]) get("flows", `recipes.${one}`, `/recipes/${one}`, { limited: "collection" });
@@ -206,26 +240,42 @@ for (const one of ["run", "start", "new", "edit", "from-task", "preview", "expor
 get("flows", "recipes.other", "^\\/recipes\\/.*$", { sample: "/recipes/unknown" });
 // v115: routines became scheduled flows; old links to them land on the flows page.
 get("tasks", "routines", "/routines", { limited: "collection" });
-get("chat", "chat.stream", "/chat/stream", free);
-get("chat", "chat.mate-status", "/chat/mate/status", free);
+// One live stream per page: every room it shows (server/live.ts). Each room admits its own callers; a token reads only the team room.
+edge("live", "live", "GET", "/live", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
+get("chat", "chat.mate-status", "/chat/mate/status", { ...free, role: "approver", roleBrowser: true, roleRefusal: SESSION_JSON });
 get("chat", "chat.demo-live", "/chat/demo/live", free);
 get("chat", "chat.page", "/chat", { project: "conversation", limited: "conversation", ...free });
 get("chat", "chat.ack", `^\\/chat\\/ack\\/${ID}$`, { sample: "/chat/ack/1" });
 get("tasks", "routine.page", `^\\/routines\\/${ID}$`, { limited: "resource", sample: "/routines/1" });
-get("settings", "control", "/control");
-get("settings", "control.connection", "/control/connection");
-get("chat", "chat.action", `^\\/chat\\/action\\/${ID}$`, { project: "proposal", limited: "proposal", ...free, sample: "/chat/action/1" });
+get("settings", "control", "/control", anyApprover("Project setup requires an approver."));
+get("settings", "control.connection", "/control/connection", anyApprover("Project setup requires an approver."));
+get("chat", "chat.action", `^\\/chat\\/action\\/${ID}$`, { project: "proposal", limited: "proposal", ...free, sample: "/chat/action/1", ...approver("Sign in to review this action.", "/projects") });
+const SETTINGS_PAGE_ROLES: Record<string, RoleOptions> = {
+  integrations: approver("An installation approver sees integrations.", "/settings"),
+  monitoring: operator("An instance operator sets up monitoring.", "/settings"),
+  updates: operator("An instance operator updates Toolroll.", "/settings"),
+  retention: operator("An instance operator sets retention.", "/settings"),
+  storage: operator("An instance operator looks after storage.", "/settings"),
+  backups: operator("An instance operator looks after backups.", "/settings"),
+  data: operator("An instance operator exports data.", "/settings"),
+  "sign-in": operator("An instance operator sets up sign-in.", "/settings"),
+  lead: approver("An approver sets up the lead.", "/settings"),
+  teams: approver("An installation approver can connect Teams.", "/settings"),
+  discord: approver("An installation approver can connect Discord.", "/settings"),
+  slack: approver("An installation approver can connect Slack.", "/settings"),
+  "slack/manifest": approver("An installation approver can connect Slack.", "/settings"),
+};
 for (const one of ["models", "tools", "project", "approval", "policy", "sessions", "integrations", "monitoring", "updates", "retention", "storage", "pull-requests", "checks", "backups", "data", "sign-in", "lead", "teams", "discord", "slack", "slack/manifest"]) {
-  get(one === "sessions" ? "people" : "settings", `settings.${one}`, `/settings/${one}`, free);
+  get(one === "sessions" ? "people" : "settings", `settings.${one}`, `/settings/${one}`, { ...free, ...SETTINGS_PAGE_ROLES[one] });
 }
 get("settings", "settings.skills", "/settings/skills", { limited: "unscoped", ...free });
 get("settings", "settings.flows", "/settings/flows", { limited: "collection", ...free });
 get("settings", "settings.knowledge", "/settings/knowledge", { limited: "unscoped", ...free });
 get("settings", "settings.learning", "/settings/learning", { limited: "unscoped", ...free });
-get("settings", "settings.telegram", "/settings/telegram", { limited: "self", ...free });
+get("settings", "settings.telegram", "/settings/telegram", { limited: "self", ...free, ...approver("An approver can pair their own phone.", "/settings") });
 get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
-get("pages", "health", "/health", free);
-get("pages", "metrics", "/metrics", free);
+get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
+get("pages", "metrics", "/metrics", { ...free, ...anyOperator("An instance operator reads metrics.", "/") });
 get("chat", "push.key", "/push/key");
 get("tasks", "decision.page", `^\\/d\\/${ID}$`, { project: "decision", limited: "resource", ...free, sample: "/d/1" });
 get("chat", "lead.status", "/lead/status", free);
@@ -234,71 +284,104 @@ get("tasks", "decision.evidence", `^\\/d\\/${ID}\\/evidence\\/${ID}$`, { project
 
 // ---- console actions -------------------------------------------------------------------------------------------
 // The scripted demo: the handler answers a non-browser caller "no page here".
-post("chat", "chat.demo", "^\\/chat\\/demo\\/(ask|[0-9]{1,9}\\/(approve|change|revise|complete))$", { sample: "/chat/demo/ask" });
+post("chat", "chat.demo.ask", "/chat/demo/ask");
+for (const one of ["approve", "change", "revise", "complete"]) post("chat", `chat.demo.${one}`, `^\\/chat\\/demo\\/[0-9]{1,9}\\/${one}$`, { sample: `/chat/demo/1/${one}` });
 post("settings", "provider.resume", "^\\/providers\\/[a-z]+\\/resume$", { sample: "/providers/codex/resume" });
 post("settings", "settings.updates-dismiss", "/settings/updates/dismiss");
 post("settings", "settings.updates-checks", "/settings/updates/checks");
-post("tasks", "code.act", "^\\/code(\\/.*)?$", { scope: "step-up", project: "coding", limited: "self", sample: "/code/start" });
-post("settings", "settings.skills-revise", "/settings/skills/revise", { project: "form", limited: "unscoped" });
-post("settings", "settings.skills-import", "/settings/skills/import", { project: "form", limited: "unscoped" });
-post("settings", "settings.skills-change", "/settings/skills/change", { project: "form", limited: "unscoped" });
-post("flows", "kit.act", "^\\/kits\\/[a-z-]{1,40}\\/(setup|sample|github)$", { project: "form", sample: "/kits/support/setup" });
-post("flows", "teammate.new", "/teammates/new", { project: "form" });
-post("flows", "teammate.act", "^\\/teammates\\/[1-9][0-9]{0,9}\\/(soul|state|note|settings|summary|tools|memory|routines|week)$", { sample: "/teammates/1/soul" });
+const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
+post("tasks", "code.start", "/code/start", CODING_ACT);
+for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
+// Any other coding action answers "not found" after the same access check.
+post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/code/unknown" });
+post("settings", "settings.skills-revise", "/settings/skills/revise", { project: "form", limited: "unscoped", ...approver("Sign in to revise a test.", "/settings/skills") });
+post("settings", "settings.skills-import", "/settings/skills/import", { project: "form", limited: "unscoped", bodyCap: 2 * 1024 * 1024, ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
+post("settings", "settings.skills-change", "/settings/skills/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
+for (const one of ["setup", "sample", "github"]) post("flows", `kit.${one}`, `^\\/kits\\/[a-z-]{1,40}\\/${one}$`, { project: "form", sample: `/kits/support/${one}`, ...approver("Sign in as an approver to set kits up.", "/kits") });
+const TEAMMATES = anyApprover("Sign in as an approver to look after teammates.", "/teammates");
+post("flows", "teammate.new", "/teammates/new", { project: "form", ...TEAMMATES });
+for (const one of ["soul", "state", "note", "settings", "summary", "tools", "memory", "routines", "week"]) post("flows", `teammate.${one}`, `^\\/teammates\\/[1-9][0-9]{0,9}\\/${one}$`, { sample: `/teammates/1/${one}`, ...TEAMMATES });
 post("flows", "teammate.answer", "^\\/teammates\\/questions\\/[1-9][0-9]{0,9}\\/answer$", { sample: "/teammates/questions/1/answer" });
 post("flows", "flows.gallery-create", "^\\/flows\\/new\\/[a-z-]{1,40}$", { project: "form", limited: "resource", sample: "/flows/new/triage" });
-post("flows", "flows.create", "/flows/new", { project: "form", limited: "resource" });
-post("flows", "flows.example", "/flows/example", { project: "form" });
-post("flows", "flows.import", "/flows/import", { project: "form", limited: "resource" });
-post("flows", "flow.act", `^\\/flows\\/${FLOW}\\/(save|cards|archive|scripts)$`, { project: "flow", limited: "resource", sample: "/flows/1/save" });
-post("flows", "flow.instance-act", `^\\/flows\\/${FLOW}\\/(linear-key|hooks-address|secrets)$`, { scope: "step-up", project: "flow", sample: "/flows/1/secrets" });
-post("flows", "flow.triggers", `^\\/flows\\/${FLOW}\\/triggers$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers" });
-post("flows", "flow.card", `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/(move|decide|cancel|comment|assign|watch)$`, { project: "flow", limited: "resource", sample: "/flows/1/cards/2/move" });
-post("flows", "flow.card-choose", `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/choose$`, { project: "flow", sample: "/flows/1/cards/2/choose" });
-post("flows", "flow.trigger.pause", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/pause$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/pause" });
-post("flows", "flow.trigger.resume", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/resume$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/resume" });
-post("flows", "flow.trigger.remove", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/remove$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/remove" });
-post("flows", "flow.trigger.check", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/check$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/check" });
-post("flows", "flow.trigger.press", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/press$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/press" });
-post("flows", "flow.trigger.renew", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/renew$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/renew" });
-post("flows", "flow.trigger.secret", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/secret$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/secret" });
-post("flows", "flow.trigger.share", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/share$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/share" });
-post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/unshare$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/unshare" });
-post("settings", "spend.budget", "/spend/budget", { scope: "step-up" });
+// Flow editing answers JSON: a caller without approver standing hears it in the editor's own format.
+const CREATE_FLOWS = approver("Sign in as an approver to create flows.", "/flows");
+const EDIT_FLOWS: RoleOptions = { role: "approver", roleBrowser: true, roleRefusal: { status: 403, type: "application/json; charset=utf-8", body: JSON.stringify({ ok: false, said: "Sign in as an approver to change flows." }) } };
+post("flows", "flows.create", "/flows/new", { project: "form", limited: "resource", ...CREATE_FLOWS });
+post("flows", "flows.example", "/flows/example", { project: "form", ...CREATE_FLOWS });
+post("flows", "flows.import", "/flows/import", { project: "form", limited: "resource", bodyCap: LARGE_FORM, ...CREATE_FLOWS });
+for (const one of ["save", "cards", "archive", "scripts"]) post("flows", `flow.${one}`, `^\\/flows\\/${FLOW}\\/${one}$`, { project: "flow", limited: "resource", sample: `/flows/1/${one}`, ...EDIT_FLOWS });
+for (const one of ["linear-key", "hooks-address", "secrets"]) post("flows", `flow.${one}`, `^\\/flows\\/${FLOW}\\/${one}$`, { scope: "step-up", project: "flow", sample: `/flows/1/${one}`, ...EDIT_FLOWS });
+post("flows", "flow.triggers", `^\\/flows\\/${FLOW}\\/triggers$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers", ...EDIT_FLOWS });
+for (const one of ["move", "decide", "cancel", "comment", "assign", "watch"]) post("flows", `flow.card.${one}`, `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/${one}$`, { project: "flow", limited: "resource", sample: `/flows/1/cards/2/${one}`, ...EDIT_FLOWS });
+post("flows", "flow.card.choose", `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/choose$`, { project: "flow", sample: "/flows/1/cards/2/choose", ...EDIT_FLOWS });
+post("flows", "flow.trigger.pause", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/pause$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/pause" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.resume", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/resume$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/resume" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.remove", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/remove$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/remove" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.check", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/check$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/check" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.press", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/press$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/press" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.renew", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/renew$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/renew" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.secret", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/secret$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/secret" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.share", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/share$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/share" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/unshare$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/unshare" , ...EDIT_FLOWS });
+post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operator("An instance operator sets budgets.", "/spend") });
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
-post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up" });
-post("pages", "ledger.checkpoint", "/ledger/checkpoint");
+post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
+post("pages", "ledger.checkpoint", "/ledger/checkpoint", operator("An instance operator makes ledger checkpoints.", "/ledger"));
+const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
+  policy: operator("An instance operator sets the policy.", "/settings/policy"),
+  approval: operator("An instance operator sets approval rules.", "/settings/approval"),
+  "request-limits": operator("An instance operator sets request limits.", "/settings/sessions"),
+  "sign-in": operator("An instance operator sets up sign-in.", "/settings"),
+  updates: operator("An instance operator updates Toolroll.", "/settings"),
+  "updates/seen": operator("An instance operator updates Toolroll.", "/settings"),
+  "updates/cancel": operator("An instance operator updates Toolroll.", "/settings"),
+  retention: operator("An instance operator sets retention.", "/settings"),
+  storage: operator("An instance operator looks after storage.", "/settings"),
+  "storage/clean": operator("An instance operator looks after storage.", "/settings"),
+  "storage/discard": operator("An instance operator looks after storage.", "/settings"),
+  "backups/now": operator("An instance operator looks after backups.", "/settings"),
+  backups: operator("An instance operator looks after backups.", "/settings"),
+  data: operator("An instance operator exports data.", "/settings"),
+  "integrations/test": approver("An installation approver tests integrations.", "/settings"),
+  monitoring: operator("An instance operator sets up monitoring.", "/settings"),
+  "tools/connect": approver("Sign in as an approver to connect tools.", "/settings/tools"),
+  "tools/change": approver("Sign in as an approver to manage tools.", "/settings/tools"),
+};
 for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups/now", "backups", "data", "integrations/test", "monitoring", "tools/connect", "tools/change", "appearance"]) {
-  post(one === "sessions" ? "people" : "settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`, { ...(["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups", "data", "monitoring", "tools/connect", "tools/change"].includes(one) ? { scope: "step-up" as const } : {}) });
+  post(one === "sessions" ? "people" : "settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`, { ...(["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups", "data", "monitoring", "tools/connect", "tools/change"].includes(one) ? { scope: "step-up" as const } : {}), ...SETTINGS_ACT_ROLES[one] });
 }
-post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection" });
+post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection", ...approver("An approver switches starter flows on.", "/settings/flows") });
+const MODELS = approver("Sign in as an approver to change models.", "/settings/models");
+for (const one of ["check", "watch", "update", "agent"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
 // Any other models action answers the models area's own refusal.
-post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/check" });
-post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped" });
-post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form" });
-post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form" });
-post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped" });
+post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
+post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
+post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form", ...approver("Sign in as an approver to decide memory proposals.", "/settings/knowledge") });
+post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form", ...approver("Sign in as an approver to change project decisions.", "/settings/knowledge") });
+post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to change project knowledge.", "/settings/knowledge") });
 post("settings", "settings.learning-change", "/settings/learning/change", { project: "form", limited: "unscoped" });
 for (const one of ["setup-preview", "setup-approve", "instructions-preview", "instructions-approve"]) post("settings", `control.${one}`, `/control/${one}`, { ...(one.endsWith("approve") ? { scope: "step-up" as const } : {}) });
-for (const service of ["slack", "teams", "discord"]) post("settings", `settings.${service}-send`, `^\\/settings\\/${service}\\/(connect|pair|unpair|disconnect|alerts)$`, { sample: `/settings/${service}/pair`, scope: "step-up" });
-post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limited: "self", scope: "step-up" });
-for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}) });
-post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up" });
-post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up" });
+for (const [service, name] of [["slack", "Slack"], ["teams", "Teams"], ["discord", "Discord"]] as const) {
+  for (const one of ["connect", "pair", "unpair", "disconnect", "alerts"]) post("settings", `settings.${service}-${one}`, `/settings/${service}/${one}`, { scope: "step-up", ...approver(`An installation approver can connect ${name}.`, "/settings") });
+}
+post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limited: "self", scope: "step-up", ...approver("An approver can retry their own replies.", "/settings") });
+for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}), ...approver("An approver turns on approving from their own chat.", "/settings") });
+post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
+post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key", "provider-key-clear", "telegram-token", "email", "email-test", "email-read-test", "google", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
 }
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });
-post("pages", "projects.remove", "/projects/remove", { project: "form" });
+post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
 post("pages", "projects.open", "/projects/open", { project: "form-path" });
-post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection" });
+post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });
 post("tasks", "queue.move", "/queue/move");
 post("tasks", "queue.note", "/queue/note");
 post("pages", "fleet.register", "/fleet/runner/register", { scope: "step-up" });
 post("settings", "mode.confirm", "/mode/confirm", { scope: "step-up" });
 post("settings", "mode.sign", "/mode/sign", { scope: "step-up" });
 post("settings", "mode.revoke", "/mode/revoke");
-post("people", "people.projects", "/people/projects", { scope: "step-up" });
+post("people", "people.projects", "/people/projects", { scope: "step-up", ...operator("An instance operator manages project access.", "/people") });
 post("people", "people.invite", "/people/invite", { scope: "step-up" });
 post("people", "people.invite-revoke", "/people/invite-revoke", { scope: "step-up" });
 post("people", "people.revoke", "/people/revoke", { scope: "step-up" });
@@ -309,7 +392,7 @@ post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", lim
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });
 post("tasks", "task.act.cancel", `^\\/t\\/${TASK}\\/cancel$`, { project: "task", limited: "resource", sample: "/t/one/cancel" });
-post("tasks", "task.act.scope", `^\\/t\\/${TASK}\\/scope$`, { project: "task", limited: "resource", sample: "/t/one/scope" });
+post("tasks", "task.act.scope", `^\\/t\\/${TASK}\\/scope$`, { project: "task", limited: "resource", sample: "/t/one/scope", bodyCap: LARGE_FORM });
 post("tasks", "task.act.approve", `^\\/t\\/${TASK}\\/approve$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/approve" });
 post("tasks", "task.act.plan", `^\\/t\\/${TASK}\\/plan$`, { project: "task", limited: "resource", sample: "/t/one/plan" });
 post("tasks", "task.act.plan-edit", `^\\/t\\/${TASK}\\/plan-edit$`, { project: "task", limited: "resource", sample: "/t/one/plan-edit" });
@@ -321,30 +404,31 @@ post("tasks", "task.act.accept-revision", `^\\/t\\/${TASK}\\/accept-revision$`, 
 post("tasks", "task.act.reject-revision", `^\\/t\\/${TASK}\\/reject-revision$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/reject-revision" });
 post("tasks", "task.act.route", `^\\/t\\/${TASK}\\/route$`, { project: "task", limited: "resource", sample: "/t/one/route" });
 post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { project: "task", limited: "resource", sample: "/t/one/retry-review" });
-post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete" });
-post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge" });
-post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped" });
+post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
+post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
+post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
 post("tasks", "task.act.resume-arm", `^\\/t\\/${TASK}\\/resume-arm$`, { project: "task", limited: "resource", sample: "/t/one/resume-arm" });
 post("tasks", "task.act.resume", `^\\/t\\/${TASK}\\/resume$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/resume" });
-post("tasks", "task.instance-act", `^\\/t\\/${TASK}\\/(block|unblock|repair-dependency|follow-up)$`, { project: "task", sample: "/t/one/block" });
+for (const one of ["block", "unblock", "repair-dependency", "follow-up"]) post("tasks", `task.act.${one}`, `^\\/t\\/${TASK}\\/${one}$`, { project: "task", sample: `/t/one/${one}` });
 // Onboarding names a GitHub repository, not a local project. Its root-index/nonce ceremony proves the future destination.
 post("pages", "projects.onboard-preview", "/projects/onboard-preview", { project: "none" });
 post("pages", "projects.onboard-confirm", "/projects/onboard-confirm", { scope: "step-up", project: "none" });
 post("chat", "push.subscribe", "/push/subscribe", { scope: "step-up" });
 post("chat", "push.remove", "/push/remove");
-post("chat", "onboarding.phone-dismiss", "/onboarding/phone/dismiss");
-for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`);
+post("chat", "onboarding.phone-dismiss", "/onboarding/phone/dismiss", approver("An approver puts this away.", "/chat"));
+const LEAD_WORDS: Record<string, string> = { identity: "An approver names their lead.", about: "An approver edits what their lead knows about them.", "promise/cancel": "An approver manages the lead's promises.", on: "An approver turns the lead on." };
+for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));
 post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
-post("chat", "chat.proposal", `^\\/chat\\/proposal\\/${ID}\\/(confirm|dismiss)$`, { project: "proposal", limited: "proposal", sample: "/chat/proposal/1/confirm" });
-post("chat", "coordinator.proposal", `^\\/proposals\\/${ID}\\/(confirm|dismiss)$`, { sample: "/proposals/1/confirm" });
+for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}` });
+for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
 post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation" });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
-post("tasks", "run.act", `^\\/r\\/${ID}\\/(note|comment|revise|draft-repair|checks|add-tests)$`, { project: "run", limited: "resource", sample: "/r/1/note" });
+for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}` });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });
 post("tasks", "incident.resolve", `^\\/i\\/${ID}\\/resolve$`, { project: "incident", sample: "/i/1/resolve" });
 
@@ -382,6 +466,8 @@ export function assertRouteTable(routes: readonly RouteDeclaration[] = ROUTES): 
     if (route.scope === "step-up" && (route.callers.length !== 1 || route.callers[0] !== "cookie")) throw new Error(`route table: ${route.id} step-up must be cookie-only`);
     if (route.stage === "console" && (route.proof !== "console" || route.host !== "after")) throw new Error(`route table: ${route.id} cannot bypass console admission`);
     if (route.callers.length === 0) throw new Error(`route table: ${route.id} admits no caller`);
+    if ((route.role === "any") !== (route.roleRefusal === undefined)) throw new Error(`route table: ${route.id} role and its refusal go together`);
+    if (route.role !== "any" && route.stage !== "console") throw new Error(`route table: ${route.id} edge routes prove roles in their protocol`);
     const test = new RegExp(route.pattern);
     if (!test.test(route.sample)) throw new Error(`route table: ${route.id} does not match its sample ${route.sample}`);
     const method = route.method === "GET,HEAD" ? "GET" : route.method;

@@ -3,6 +3,8 @@
  * real branch; off by default, per project. A real git repository and the real approved-command runner; an
  * injected clock for the window. No model, no network. */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,13 +157,13 @@ describe("c3: off by default, set per project", () => {
 
   test("Settings → Projects → Checks: one state, and the terms restated before turning it on with the password", async () => {
     const view = { repo: REPO, name: "storefront", csrf: "c", canChange: true, level: "full" as const, full: store.liveVerifyCommand(REPO), quick: null, suggestion: null, said: null, problem: null };
-    const off = checkSettingsHtml({ ...view, batch: { on: false } });
+    const off = htmlString(withFormToken("c", () => checkSettingsHtml({ ...view, batch: { on: false } })));
     expect(off).toContain('data-batch-checks="off"');
     expect(off).toContain("<h2>Batch checks</h2><p><strong>Off</strong>");
     expect(off).toContain("Nothing is merged into a real branch. Each result still lands on its own.");
     expect(off).toContain('name="act" value="batch"');
     // Someone who can't change it sees the state and no form.
-    expect(checkSettingsHtml({ ...view, canChange: false, batch: { on: true } })).not.toContain('value="batch"');
+    expect(htmlString(checkSettingsHtml({ ...view, canChange: false, batch: { on: true } }))).not.toContain('value="batch"');
 
     const server: Server = createDecisionServer({ store, evidenceRoot: root, repo: REPO, clock: () => T0 });
     await new Promise<void>(done => server.listen(0, "127.0.0.1", done));

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { openStore, type Store } from "./store.js";
+import { html, htmlString } from "./html.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer, ssoStepUps } from "./serve.js";
 
@@ -205,12 +206,12 @@ test("the hand-off to finish is the starting browser's alone", async () => {
 });
 
 test("only step-up password fields become the provider's check; a secret field stays", () => {
-  const html = '<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>' +
-    '<input type="password" name="token" autocomplete="current-password" class="inline">' +
-    '<label>Token from @BotFather<input type="password" name="token" autocomplete="off"></label>';
-  const fresh = ssoStepUps(html, { label: "Okta", fresh: true }, "/x");
+  const page = html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>\
+<input type="password" name="token" autocomplete="current-password" class="inline">\
+<label>Token from @BotFather<input type="password" name="token" autocomplete="off"></label>`;
+  const fresh = htmlString(ssoStepUps(page, { label: "Okta", fresh: true }, "/x"));
   expect(fresh).toBe('<input type="hidden" name="password" value=""><span class="sso-step-up" data-sso-step-up="confirmed">Confirmed with Okta</span>' +
     '<input type="hidden" name="token" value=""><span class="sso-step-up" data-sso-step-up="confirmed">Confirmed with Okta</span>' +
     '<label>Token from @BotFather<input type="password" name="token" autocomplete="off"></label>');
-  expect(ssoStepUps(html, { label: "Okta", fresh: false }, "/t/a?b=1")).toContain('href="/login/sso?reauth=1&amp;return=%2Ft%2Fa%3Fb%3D1">Confirm with Okta</a>');
+  expect(htmlString(ssoStepUps(page, { label: "Okta", fresh: false }, "/t/a?b=1"))).toContain('href="/login/sso?reauth=1&amp;return=%2Ft%2Fa%3Fb%3D1">Confirm with Okta</a>');
 });

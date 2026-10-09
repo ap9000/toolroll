@@ -83,7 +83,7 @@ async function signIn(name: string): Promise<string> {
 
 const pkce = () => { const verifier = randomBytes(32).toString("base64url"); return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") }; };
 /** The address a page that moves on by itself goes to. */
-const movesTo = (html: string) => (/http-equiv="refresh" content="0;url=([^"]+)"/.exec(html)?.[1] ?? "").replace(/&#38;/g, "&");
+const movesTo = (html: string) => (/http-equiv="refresh" content="0;url=([^"]+)"/.exec(html)?.[1] ?? "").replace(/&amp;/g, "&");
 const hidden = (html: string, name: string) => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? "";
 
 /** Start a sign-in as the client would, and reach the consent page signed in as `name`. */

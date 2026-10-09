@@ -201,8 +201,8 @@ export type BrowserTaskView = {
   progress?: { line: string; stuck: { step: number; why: string | null; line: string; action: BrowserLink | null } | null } | null;
   /** What the agent did last on the live run, and when; the page words it against its own clock (activity-line.ts). */
   activity?: RunActivity | null;
-  /** The task's live stream (/t/<id>/live): change nudges and who else has it open. Absent: the page reads on its beat. */
-  live?: { href: string; at: string | null } | null;
+  /** The task's live room (GET /live?room=task:<root>): change nudges and who else has it open. */
+  live?: { room: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
   /** The Building card's link to the live build's own record ("Build #N record", /r/<id>). */
@@ -554,10 +554,6 @@ export type BrowserSignIn = { provider: string; title: string; command: string; 
 
 /** Safe inside a script[type=application/json] element. JSON escaping alone
  * does not stop the HTML parser from closing that element at </script>. */
-export function serializeBrowserWorkspace(workspace: BrowserWorkspace): string {
-  return JSON.stringify(workspace).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-}
-
 export const BROWSER_CREW_LIMIT = 40;
 export type BrowserCrewOptions = { evidenceRoot?: string; limit?: number; project?: string | null };
 

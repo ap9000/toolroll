@@ -919,7 +919,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const csrf = csrfOf(projects);
     const beta = repoB.split("/").pop() as string;
     expect(projects).toContain(
-      `<form method="post" action="/projects/open" class="inline"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="path" value="${repoB}"><input type="hidden" name="return" value="/"><button type="submit" class="project-name">${beta}</button></form>`,
+      `<form method="post" action="/projects/open" class="inline"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="return" value="/"><input type="hidden" name="path" value="${repoB}"><button type="submit" class="project-name">${beta}</button></form>`,
     );
   });
 
@@ -964,7 +964,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const portfolio = await (await fetch(url("/workbench"), { headers: { cookie } })).text();
     const card = /<div class="workspace-card hot">.*?<div class="workspace-bar" aria-hidden="true">.*?<\/div><\/div>/s.exec(portfolio)?.[0] ?? "";
     expect(card).toContain('<span class="workspace-name">alpha</span><span class="badge badge-open">Needs you</span>');
-    expect(card).toContain(`<input type="hidden" name="path" value="${repoA}"><input type="hidden" name="return" value="/board"><button type="submit">Board →</button>`);
+    expect(card).toContain(`<input type="hidden" name="return" value="/board"><input type="hidden" name="path" value="${repoA}"><button type="submit">Board →</button>`);
     expect(card).toContain('<span class="pulse-stat hot"><b>1</b> need you</span>');
     expect(card).toContain('<span class="seg attention" style="flex-grow:1"></span>');
     expect(card).not.toContain('class="seg building"');

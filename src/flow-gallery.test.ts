@@ -3,6 +3,8 @@
  * with sample answers (its zones, triggers and scripts, exactly as previewed), and every template validates and
  * never merges without a person — against a real store and a real console.
  */
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -142,16 +144,16 @@ describe("flow gallery", () => {
     expect(addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
     expect(previewGallery(store, GALLERY.find(one => one.id === "metrics-digest")!, repo, {}, "alex", T0).tools).toEqual([{ id: "posthog", label: "PostHog", state: "connected", zones: ["Read the numbers"] }]);
     // The card: each tool's mark and state for the chosen project; without one, the mark alone.
-    const html = galleryHtml({ repo, canUse: true, connections: connectionsOf(store, repo) });
+    const html = htmlString(galleryHtml({ repo, canUse: true, connections: connectionsOf(store, repo) }));
     expect(html).toContain('<li data-tool="posthog" data-state="connected"><span class="brand-mark" data-connected="true" aria-hidden="true">');
     expect(html).toContain('<li data-tool="figma-desktop" data-state="open"><span class="brand-mark" data-connected="false" aria-hidden="true"><svg');
-    const unchosen = galleryHtml({ repo: null, canUse: true, connections: connectionsOf(store, repo) });
+    const unchosen = htmlString(galleryHtml({ repo: null, canUse: true, connections: connectionsOf(store, repo) }));
     expect(unchosen).toContain('<li data-tool="posthog" data-state="unknown">');
     expect(unchosen).not.toContain("integration-state");
   });
 
   test("c1: a template's steps read in order, a person's from their side, its main path only and no Done", () => {
-    const strip = (id: string) => stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!))
+    const strip = (id: string) => htmlString(stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!)))
       .replace(/<span aria-hidden="true">→<\/span>/g, " → ").replace(/<b data-person>([^<]+)<\/b>/g, "[$1]").replace(/<[^>]+>/g, "");
     expect(strip("fix-drop-off")).toBe("Find the drop-off → [You choose] → Build the fix → Pull request → Sent to you");
     // A sort shows its main way, not Ignore; a check that just ends when it passes shows the work it starts.
@@ -256,7 +258,7 @@ describe("flow gallery", () => {
       const fixCi = GALLERY.find(one => one.id === "fix-ci")!;
       let problem = "";
       try { previewGallery(store, fixCi, plain, {}, "alex", T0); } catch (error) { problem = (error as Error).message; }
-      const offGitHub = galleryUseHtml({ template: fixCi, projects: [{ path: plain, name: "notes" }], repo: plain, answers: {}, name: fixCi.name, preview: null, problem, csrf: "x", diagram: galleryDiagram(fixCi) });
+      const offGitHub = htmlString(withFormToken("x", () => galleryUseHtml({ template: fixCi, projects: [{ path: plain, name: "notes" }], repo: plain, answers: {}, name: fixCi.name, preview: null, problem, csrf: "x", diagram: galleryDiagram(fixCi) })));
       expect(offGitHub).toContain("This project isn&#39;t on GitHub, so this can&#39;t watch it.");
       expect(offGitHub).not.toContain('value="create"');
     } finally {

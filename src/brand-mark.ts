@@ -7,6 +7,7 @@
  * brandIconHtml, or BrandIcon in React (browser/brand-mark.tsx).
  */
 import { BRAND_ICONS, type BrandIcon, type BrandIconId } from "./brand-icons.js";
+import { html, type Html } from "./html.js";
 
 /** Service ids, catalog tool names and integration keys that differ from their icon's id. */
 const ALIASES: Record<string, BrandIconId> = {
@@ -28,22 +29,20 @@ export function brandLetter(label: string): string {
   return (label.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
 }
 
-const e = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-
 /** The logo alone, decorative: an svg its surroundings size and colour. */
-export function brandIconHtml(id: BrandIconId): string {
+export function brandIconHtml(id: BrandIconId): Html {
   const icon: BrandIcon = BRAND_ICONS[id];
-  return `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path fill="currentColor"${icon.evenodd ? ` fill-rule="evenodd"` : ""} d="${icon.path}"/></svg>`;
+  return html`<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path fill="currentColor"${icon.evenodd && html` fill-rule="evenodd"`} d="${icon.path}"/></svg>`;
 }
 
 /**
  * The mark, decorative (the name always sits beside it). `name` null is a
  * letter whatever the label: a custom tool never borrows a logo by its name.
  */
-export function brandMarkHtml(name: string | null, label: string, connected: boolean): string {
+export function brandMarkHtml(name: string | null, label: string, connected: boolean): Html {
   const icon = name === null ? null : brandIconFor(name);
-  const inside = icon === null ? e(brandLetter(label)) : brandIconHtml(icon);
-  return `<span class="brand-mark" data-connected="${connected}"${icon === null ? " data-letter" : ""} aria-hidden="true">${inside}</span>`;
+  const inside = icon === null ? brandLetter(label) : brandIconHtml(icon);
+  return html`<span class="brand-mark" data-connected="${String(connected)}"${icon === null && html` data-letter`} aria-hidden="true">${inside}</span>`;
 }
 
 /** Where the integration tiles (Settings → Tools) switch to their phone layout, and the mark with them. */

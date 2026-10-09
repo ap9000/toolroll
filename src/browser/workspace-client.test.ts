@@ -24,6 +24,16 @@ const fixture = (): BrowserWorkspace => ({
 });
 const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 let root: Root | null = null;
+/** The page's one live stream, as the test drives it. */
+class Events extends EventTarget {
+  static latest: Events | null = null;
+  static CLOSED = 2;
+  readyState = 1;
+  close = vi.fn(() => { this.readyState = 2; });
+  constructor(readonly url: string) { super(); Events.latest = this; }
+  emit(name: string, data: unknown) { this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) })); }
+}
+const workspaceChanged = (at: string) => act(async () => Events.latest!.emit("change", { room: "workspace", at }));
 
 test("Crew reasons disclose plain text separately from navigation, without repeating the lead", async () => {
   const workspace = fixture();
@@ -79,6 +89,8 @@ beforeEach(() => {
   sessionStorage.clear();
   document.body.innerHTML = "";
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("EventSource", Events);
+  Events.latest = null;
 });
 afterEach(async () => {
   if (root) await act(async () => root?.unmount());
@@ -197,52 +209,54 @@ async function workspaceProbe(initial = fixture()) {
 const tagged = (workspace = fixture()) => new Response(JSON.stringify(workspace), { headers: { etag: '"revision-1"' } });
 const unchanged = () => new Response(null, { status: 304, headers: { etag: '"revision-1"' } });
 
-test("idle polling backs off to a bounded interval without replacing or rendering unchanged workspace", async () => {
+test("the workspace room's changes read again; an unchanged read neither replaces nor renders the view; nothing reads on a timer", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(tagged()).mockImplementation(async () => unchanged());
   vi.stubGlobal("fetch", fetcher);
   const probe = await workspaceProbe();
+  expect(Events.latest!.url).toBe("/live?room=workspace");
+  await workspaceChanged("1");
+  expect(fetcher).toHaveBeenCalledTimes(1);
   const view = probe.current().workspace, renders = probe.renders();
-  for (const delay of [5_000, 10_000, 20_000, 30_000, 30_000]) {
-    const count = fetcher.mock.calls.length;
-    await act(async () => vi.advanceTimersByTimeAsync(delay - 1));
-    expect(fetcher).toHaveBeenCalledTimes(count);
-    await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(fetcher).toHaveBeenCalledTimes(count + 1);
-  }
+  await workspaceChanged("2");
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(new Headers(fetcher.mock.calls[1]![1]?.headers).get("if-none-match")).toBe('"revision-1"');
   expect(probe.current().workspace).toBe(view);
   expect(probe.renders()).toBe(renders);
+  await act(async () => vi.advanceTimersByTimeAsync(10 * 60_000));
+  expect(fetcher).toHaveBeenCalledTimes(2);
   const updated = fixture(); updated.crewTruncated = true;
   fetcher.mockResolvedValueOnce(tagged(updated));
-  await act(async () => probe.current().check(true));
+  await workspaceChanged("3");
   expect(probe.current().workspace.crewTruncated).toBe(true);
-  expect(new Headers(fetcher.mock.calls.at(-1)![1]?.headers).has("if-none-match")).toBe(false);
-  const count = fetcher.mock.calls.length;
-  await act(async () => vi.advanceTimersByTimeAsync(5_000));
-  expect(fetcher).toHaveBeenCalledTimes(count + 1);
   await act(async () => root!.unmount()); root = null;
-  await act(async () => vi.advanceTimersByTimeAsync(60_000));
-  expect(fetcher).toHaveBeenCalledTimes(count + 1);
+  // The page left: its stream closes.
+  await act(async () => vi.advanceTimersByTimeAsync(0));
+  expect(Events.latest!.close).toHaveBeenCalled();
 });
 
-test("a page without a docked chat reads on the beat its latest read asks for, and never while hidden", async () => {
+test("a page without a docked chat reads when its workspace room speaks, never on a timer, and not while hidden", async () => {
   vi.useFakeTimers();
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   const page = (seconds: number): BrowserWorkspace => ({ ...fixture(), path: "/work", refreshUrl: "/work", conversation: null, pageHtml: "<h1>Tasks</h1>", refreshSeconds: seconds });
   const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => tagged(page(10))).mockImplementation(async () => unchanged());
   vi.stubGlobal("fetch", fetcher);
   await workspaceProbe(page(30));
-  await act(async () => vi.advanceTimersByTimeAsync(29_999));
+  await act(async () => vi.advanceTimersByTimeAsync(120_000));
   expect(fetcher).toHaveBeenCalledTimes(0);
-  await act(async () => vi.advanceTimersByTimeAsync(1));
+  await workspaceChanged("1");
   expect(fetcher).toHaveBeenCalledTimes(1);
-  // Something started building: the next read comes 10 s later.
-  await act(async () => vi.advanceTimersByTimeAsync(10_000));
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  // A hidden tab closes the stream; nothing reads until it is shown again.
+  const stream = Events.latest!;
   hidden.mockReturnValue(true);
   await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(stream.close).toHaveBeenCalled();
   await act(async () => vi.advanceTimersByTimeAsync(120_000));
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  hidden.mockReturnValue(false);
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(Events.latest).not.toBe(stream);
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
@@ -276,7 +290,7 @@ test("visibility refresh queues once behind an active read, pauses hidden/offlin
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
-test("pending receipt and lead work stay at five seconds and only the exact receipt settles the draft", async () => {
+test("a pending receipt reads on each workspace change and only the exact receipt settles the draft", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   const sent = submitDraft(editDraft(emptyDraft(a), "Keep my message"));
@@ -285,8 +299,8 @@ test("pending receipt and lead work stay at five seconds and only the exact rece
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => tagged(working));
   vi.stubGlobal("fetch", fetcher);
   const probe = await workspaceProbe();
-  for (let i = 0; i < 3; i++) await act(async () => vi.advanceTimersByTimeAsync(5_000));
-  expect(fetcher).toHaveBeenCalledTimes(4);
+  for (let i = 0; i < 3; i++) await workspaceChanged(String(i));
+  expect(fetcher).toHaveBeenCalledTimes(3);
   expect(probe.current().draft.pending?.request).toBe(a);
   for (const [url, init] of fetcher.mock.calls) {
     expect(String(url)).toContain(`request=${a}`);
@@ -294,12 +308,8 @@ test("pending receipt and lead work stay at five seconds and only the exact rece
   }
   const received = { ...working, receipt: { request: a, received: true } };
   fetcher.mockResolvedValueOnce(tagged(received));
-  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  await workspaceChanged("4");
   expect(probe.current().draft.pending).toBeNull();
-  fetcher.mockImplementation(async () => unchanged());
-  const count = fetcher.mock.calls.length;
-  await act(async () => vi.advanceTimersByTimeAsync(15_000));
-  expect(fetcher).toHaveBeenCalledTimes(count + 3);
 });
 
 test("a send during a conditional read queues its receipt read without another POST or overlapping GET", async () => {
@@ -317,8 +327,9 @@ test("a send during a conditional read queues its receipt read without another P
   });
   vi.stubGlobal("fetch", fetcher);
   const probe = await workspaceProbe();
+  await workspaceChanged("1");
   await act(async () => probe.current().edit("Review this result"));
-  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  await workspaceChanged("2");
   await act(async () => probe.current().send({ preventDefault() {} } as Parameters<ReturnType<typeof useWorkspace>["send"]>[0]));
   expect(reads).toBe(2);
   expect(probe.current().draft.pending?.request).toBe(a);
@@ -339,11 +350,24 @@ test("a changed session stops refreshes and retains the old view and unsent draf
   const fetcher = vi.fn<typeof fetch>().mockResolvedValue(tagged(changed));
   vi.stubGlobal("fetch", fetcher);
   const original = fixture(), probe = await workspaceProbe(original);
+  await workspaceChanged("1");
   expect(probe.current().workspace).toBe(original);
   expect(probe.current().stale).toBe(true);
   expect(probe.current().draft.text).toBe("Preserve this draft");
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); await probe.current().check(true); });
   expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+test("a stream the browser gave up on reads once, so a lost sign-in says so", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 401 }));
+  vi.stubGlobal("fetch", fetcher);
+  const probe = await workspaceProbe();
+  await act(async () => { Events.latest!.readyState = Events.CLOSED; Events.latest!.dispatchEvent(new Event("error")); });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(probe.current().stale).toBe(true);
+  expect(probe.current().notice).toContain("Sign in again");
 });
 
 async function renderHtml(html: string, immutable = false) {

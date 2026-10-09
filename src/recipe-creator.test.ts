@@ -8,6 +8,9 @@ import { openStore, openStoreNoMigrate, SCHEMA_VERSION, type Store } from "./sto
 import { addApprover, hashPassword } from "./scope.js";
 import { createWorkflowPreview, exportRecipe, findRecipe, importRecipe, launchWorkflow, parseRecipe, prepareRecipeRun, recipeDigest, resolveRecipe, savedRecipes, saveWorkflowRecipe, starterRecipes, type RecipeDocument } from "./recipes.js";
 import { writeStoreSeed } from "../test/store-seed.js";
+import { htmlString } from "./html.js";
+import { recipeEditorHtml } from "./recipe-ui.js";
+import { withFormToken } from "./server/request-context.js";
 
 const now = new Date("2026-09-12T23:00:00Z");
 const definition = (): RecipeDocument & { version: 2 } => ({
@@ -18,6 +21,11 @@ const definition = (): RecipeDocument & { version: 2 } => ({
   touches: ["src/", "tests/"], planning: "skip",
   acceptance: [{ id: "c1", statement: "Tests cover {{scenario}} for {{module}} and pass.", how: "npm test", evidence: ["check", "changed-path"] }],
   inputs: [{ key: "module", label: "Which module?", defaultValue: null }, { key: "scenario", label: "Which scenario?", defaultValue: "invalid inputs" }],
+});
+
+test("the recipe editor explains that repeating work files the same scope each time", () => {
+  const editor = withFormToken("recipe-editor-test", () => recipeEditorHtml(starterRecipes()[0]!, "/projects/sample", 1));
+  expect(htmlString(editor)).toContain("Report work investigates directly. Repeating work files the same scope each time; plan-first workflows run once.");
 });
 
 test("question recipes round-trip strictly; inputs never become grants, paths, or commands", () => {

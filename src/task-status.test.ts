@@ -6,6 +6,7 @@ import {
   DEMO_CHECKS, HEADLINES, assignmentStatusFacts, demoChecksOf, headlineOf, requirementsOf, unverifiedWhenRefuted, pullRequestFactOf, stageOfCode, stageOfDispatch, statusDetailLines, statusDetailsHtml, taskStatusOf,
   type ChecksFact, type PullRequestFact, type TaskStage, type TaskStatusFacts,
 } from "./task-status.js";
+import { htmlString } from "./html.js";
 import type { AssignmentSnapshot } from "./assignment.js";
 
 const HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
@@ -37,7 +38,7 @@ describe("the brief's states", () => {
     expect(status.details.some(one => one.mark === "failed")).toBe(false);
     expect(status.primaryAction).toEqual({ label: "Open result", href: "/chat?task=fix&result=4" });
     expect(statusDetailLines(status)).toContain("⚠ Pull request · Couldn't open — Open it on GitHub");
-    expect(statusDetailsHtml(status)).not.toMatch(/status-detail--failed|danger|destructive/);
+    expect(htmlString(statusDetailsHtml(status))).not.toMatch(/status-detail--failed|danger|destructive/);
   });
 
   test("without a compare page, the pull request row still offers one action", () => {
@@ -141,7 +142,7 @@ describe("severity", () => {
       expect(status.tone === "danger", JSON.stringify(facts)).toBe(status.headline === "Failed");
       if (status.headline !== "Failed") {
         expect(status.details.every(one => one.mark !== "failed"), JSON.stringify(facts)).toBe(true);
-        expect(statusDetailsHtml(status)).not.toContain("status-detail--failed");
+        expect(htmlString(statusDetailsHtml(status))).not.toContain("status-detail--failed");
       }
       // A detail problem that doesn't undo the outcome never changes the headline.
       expect(status.headline).toBe(headlineOf(facts));

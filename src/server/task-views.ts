@@ -1,4 +1,5 @@
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
+import { html,joinHtml,type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
@@ -41,7 +42,13 @@ import {
 approvalOf,
 type Scope
 } from "../scope.js";
-import { approvalFormDigest,nonceHashOf,chatResultHref,completionReceiptView,consentDoorOf,decisionsFor,diffFileAnchor,escape,evidenceLinksFor,followUpsFor,oneLineOf,orderChangedFiles,parseReviewDiff,proofBundleView,publicationFactsOf,receiptStatusOf,refuse,resumeCeremonyPage,resumeDigestOf,reviewHref,screen,taskBody,taskChatHref,taskHref,taskPage,withinSignedTouches,type Chrome,type CompletionReceiptView,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type ProjectPeek,type ResultDetail,type RevisionDocView,type RevisionView,type RouteView,type Screen,type ServeOptions,type TaskChatFocus,type TaskPullRequest,type Who,type WorkRow } from "./shared.js";
+import { oneLineOf,refuse,screen,type Chrome,type Screen } from "./chrome.js";
+import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
+import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
+import { type ProjectPeek,type WorkRow } from "./render-pages.js";
+import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
+import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
+import { type Who } from "./session.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
 import {
@@ -72,7 +79,7 @@ export interface TaskViewsRuntime {
   restricted: () => boolean;
   options: ServeOptions;
   sendScreen: (response: ServerResponse, status: number, s: Screen) => void;
-  chromeFor: (project: string | null, active: Chrome["active"], listPane?: string, scope?: Chrome["scope"]) => Chrome;
+  chromeFor: (project: string | null, active: Chrome["active"], listPane?: Html, scope?: Chrome["scope"]) => Chrome;
   unscopedMode: boolean;
   dockedConversation: (who: Who, focusTask: TaskChatFocus | null, chatProject: string | null, now: Date, back: string, resultRunId?: number | null) => import("../browser-workspace.js").BrowserConversation | null;
   liveRefreshSeconds: () => number;
@@ -110,20 +117,20 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     return runtime.store.taskActivityCandidates(family.root.repo === null ? [] : [family.root.repo], family.root.repo === null, now, ids)
       .filter(task => workRowOf(task, now).status.views.includes("running")).map(task => task.id);
   }
-  function familyHistory(family: TaskFamily): string {
-    const warning = family.problem === null ? "" : `<p class="problem" data-history-problem>${escape(family.problem)}</p>`;
+  function familyHistory(family: TaskFamily): Html {
+    const warning = family.problem === null ? "" : html`<p class="problem" data-history-problem>${family.problem}</p>`;
     const otherActive = new Set([...family.otherActive.map(one => one.id), ...earlierLiveVersions(family, runtime.clock())]).size;
-    const active = otherActive === 0 ? "" : `<p class="problem" data-other-active>${otherActive} earlier version${otherActive === 1 ? " is" : "s are"} still waiting or running. Review History.</p>`;
-    if (family.versions.length < 2) return warning;
+    const active = otherActive === 0 ? "" : html`<p class="problem" data-other-active>${otherActive} earlier version${otherActive === 1 ? " is" : "s are"} still waiting or running. Review History.</p>`;
+    if (family.versions.length < 2) return html`${warning}`;
     const versions = family.versions.map((version, index) => {
       const label = index === 0 ? "Original" : `Revision ${index}`;
       const status = workRowOf(version, runtime.clock()).status;
       const runs = runtime.store.runsFor(version.refId).filter(runIsTaskResult);
       const href = `${taskHref(family.root.id)}?version=${encodeURIComponent(version.id)}`;
-      return `<li data-history-version="${escape(version.id)}"><a href="${href}">${label}</a>${version.id === family.current.id ? " · Current" : ""} · ${escape(status.label)}` +
-        runs.map(run => `<a href="${escape(run.outcome === "built" || run.outcome === "no-change" ? chatResultHref(family.root.id, run.id) : `/r/${run.id}`)}">Build #${run.id}${run.outcome === "built" ? "" : ` · ${escape(run.outcome === "no-change" ? "No changes" : run.outcome === "failed" ? "Failed" : run.outcome ?? "Unfinished")}`}</a>`).join("") + `</li>`;
+      return html`<li data-history-version="${version.id}"><a href="${href}">${label}</a>${version.id === family.current.id ? " · Current" : ""} · ${status.label}${
+        runs.map(run => html`<a href="${run.outcome === "built" || run.outcome === "no-change" ? chatResultHref(family.root.id, run.id) : `/r/${run.id}`}">Build #${run.id}${run.outcome === "built" ? "" : ` · ${run.outcome === "no-change" ? "No changes" : run.outcome === "failed" ? "Failed" : run.outcome ?? "Unfinished"}`}</a>`)}</li>`;
     });
-    return warning + active + `<details class="task-history" data-root-task="${escape(family.root.id)}"><summary>History</summary><ol>${versions.join("")}</ol></details>`;
+    return html`${warning}${active}<details class="task-history" data-root-task="${family.root.id}"><summary>History</summary><ol>${versions}</ol></details>`;
   }
 
   /** Keep detailed receipt diagnostics; shared assignment reads own readiness. */
@@ -196,20 +203,18 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
   }
 
   /** The compact task list for the master pane, the current row marked. */
-  function taskListPane(project: string | null, currentId: string | null): string {
+  function taskListPane(project: string | null, currentId: string | null): Html {
     const rows = familyTasksInView(project, undefined, 100);
     if (currentId !== null && !rows.some(one => one.id === currentId)) {
       const family = runtime.familyOf(currentId);
       if (family !== null && (project === null || family.root.repo === null || family.root.repo === project)) rows.push({ ...family.current, id: family.root.id, title: family.root.title });
     }
-    const items = rows
+    const items = joinHtml(rows
       .map(
         task =>
-          `<a class="item${task.id === currentId ? " current" : ""}" href="${taskHref(task.id)}">` +
-          `<span class="t">${escape(task.title)}</span></a>`,
-      )
-      .join("\n");
-    return `<h2>Tasks</h2>\n${items === "" ? `<p class="meta">None yet</p>` : items}`;
+          html`<a class="item${task.id === currentId ? " current" : ""}" href="${taskHref(task.id)}"><span class="t">${task.title}</span></a>`,
+      ), "\n");
+    return html`<h2>Tasks</h2>\n${rows.length === 0 ? html`<p class="meta">None yet</p>` : items}`;
   }
 
   /**
@@ -716,12 +721,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
   ): void {
     const admittedFamily = runtime.familyOf(taskId);
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
-      `<h1>${escape(admittedFamily.root.title)}</h1><p>${escape(admittedFamily.current.state)}</p><p class="problem" data-history-problem>${escape(admittedFamily.problem)}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
+      html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
     const data = taskViewData(taskId, who, problem);
     if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
-      history: family === null || data.assignment != null ? "" : familyHistory(family),
+      ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
       versionLabel: family !== null && family.current.id !== taskId ? `Viewing ${family.versions.findIndex(one => one.id === taskId) === 0 ? "Original" : `Revision ${family.versions.findIndex(one => one.id === taskId)}`} · ${family.current.state === "running" ? "A newer revision is running" : "A newer revision is current"}` : null };
     if (scopeDraft !== undefined) presentedData.scopeDraft = scopeDraft;
     if (cancelDraft !== undefined) presentedData.cancelDraft = cancelDraft;
@@ -753,7 +758,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // only an approver is offered a road to message the agent.
     const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
       // A signed-in page hears the moment the task changes, and who else has it open.
-      ...(who.via === "cookie" ? { live: { href: `${taskHref(family?.root.id ?? taskId)}/live`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
+      ...(who.via === "cookie" ? { live: { room: `task:${encodeURIComponent(family?.root.id ?? taskId)}`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
     if (docked !== null) page.workspace = { ...page.workspace, ...(taskView === undefined ? {} : { view: taskView }), conversation: docked, pageHtml: page.body };
     else if (taskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: taskView };
     page.refreshSeconds = runtime.liveRefreshSeconds();
@@ -778,7 +783,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const run = runtime.store.getRun(runId);
     if (stop === null || run === null || stop.taskRef !== ref.id) return taskScreen(response, who, taskId, `run #${runId} is not a stopped attempt of this task`, 409);
     if (run.role === "reviewer") return taskScreen(response, who, taskId, `run #${runId} is a historical review run — nothing reruns it; open the saved result instead`, 409);
-    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `run #${runId} was already resumed by ${escape(stop.resumedBy ?? "?")}`, 409);
+    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `run #${runId} was already resumed by ${stop.resumedBy ?? "?"}`, 409);
     const control = taskControlOf(runtime.store, ref.id, now);
     if (control.kind !== "paused" || control.run !== runId) {
       return taskScreen(response, who, taskId, control.kind === "stopping" ? `run #${runId} is still stopping — its processes are not yet established gone` : `run #${runId} is no longer the attempt a resume can name — reload and decide against the current state`, 409);
@@ -977,22 +982,22 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       cited.size > 0,
     );
     const publication = runtime.store.publicationForRun(run.id);
-    let learning = "", skillTest = false;
+    let learning = html``, skillTest = false;
     const learningRepo = runtime.store.refForId(run.taskRef)?.repo;
     if (learningRepo && runtime.visible(learningRepo)) {
       try { learning = learningHtml(learningView(runtime.store, runtime.evidenceRoot, learningRepo, who.name), who.via === "cookie" ? who.session.csrf : "", who.role === "approver", run.id); }
       catch { /* Learning failures remain available in Settings; the result is independent. */ }
-      try { const test=skillTestResult(runtime.store,run.id,who.name);if(test){skillTest=true;learning=skillTestFeedbackHtml(test,who.via==='cookie'?who.session.csrf:'',who.role==='approver')+learning;} }
-      catch { learning='<p role="alert">The saved skill test could not be verified.</p>'+learning; }
-      try { learning = skillsSnapshotHtml(readSkillsSnapshot(runtime.store,run.id)) + knowledgeContextHtml(readKnowledgeSnapshot(runtime.store,run.id)) + learning; }
-      catch { learning = '<p class="problem" role="alert">The context saved for this run could not be verified.</p>' + learning; }
+      try { const test=skillTestResult(runtime.store,run.id,who.name);if(test){skillTest=true;learning=html`${skillTestFeedbackHtml(test,who.via==='cookie'?who.session.csrf:'',who.role==='approver')}${learning}`;} }
+      catch { learning=html`<p role="alert">The saved skill test could not be verified.</p>${learning}`; }
+      try { learning = html`${skillsSnapshotHtml(readSkillsSnapshot(runtime.store,run.id))}${knowledgeContextHtml(readKnowledgeSnapshot(runtime.store,run.id))}${learning}`; }
+      catch { learning = html`<p class="problem" role="alert">The context saved for this run could not be verified.</p>${learning}`; }
     }
     return {
       learning,
       skillTest,
       taskId,
       rootId: runtime.familyOf(taskId)?.root.id ?? taskId,
-      history: (() => { const family = runtime.familyOf(taskId); return family === null ? "" : familyHistory(family); })(),
+      ...(() => { const family = runtime.familyOf(taskId); return family === null ? {} : { history: familyHistory(family) }; })(),
       run,
       receipt,
       assignment: (() => {

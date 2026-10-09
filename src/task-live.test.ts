@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { createTaskRooms, taskFingerprint, type TaskViewer } from "./task-live.js";
-import { createLiveBus } from "./live-bus.js";
+import { createLiveBus, LiveConnection } from "./live-bus.js";
 import { presented, T0 } from "../test/serve-kit.js";
 
 let store: Store;
@@ -19,6 +19,8 @@ beforeEach(() => {
 afterEach(() => { store.close(); vi.useRealTimers(); });
 
 /** A page's open stream, as the room sees it: what it was sent, and whether it was ended. */
+/** Every event names its room; these tests join one room each. */
+const withoutRoom = ({ room: _room, ...rest }: Record<string, unknown>): Record<string, unknown> => rest;
 class Page extends EventEmitter {
   sent: string[] = [];
   writableEnded = false;
@@ -26,10 +28,10 @@ class Page extends EventEmitter {
   write(chunk: string) { this.sent.push(chunk); return true; }
   end() { this.writableEnded = true; this.emit("close"); }
   events(name: string): unknown[] {
-    return this.sent.filter(one => one.startsWith(`event: ${name}\n`)).map(one => JSON.parse(one.split("\ndata: ")[1]!.trim()));
+    return this.sent.filter(one => one.startsWith(`event: ${name}\n`)).map(one => withoutRoom(JSON.parse(one.split("\ndata: ")[1]!.trim())));
   }
 }
-const viewer = (name: string, page: Page, valid = () => true): TaskViewer => ({ name, response: page as unknown as ServerResponse, valid });
+const viewer = (name: string, page: Page, valid = () => true): TaskViewer => ({ name, room: "", connection: new LiveConnection(page as unknown as ServerResponse), valid });
 
 describe("the task's fingerprint", () => {
   test("moves with progress, with what the agent did, with a revision, and when the worker stops answering", () => {

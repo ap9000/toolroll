@@ -4,6 +4,7 @@
  * in a Details panel beside it (a Details sheet on a phone). Forms,
  * ceremonies and ledgers stay the server's own HTML (same ids, same page
  * scripts); this page only frames them. */
+import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import type { AssignmentCard } from "../../assignment-ui.js";
@@ -44,8 +45,7 @@ function Html({ html, className }: { html: string; className?: string }) {
 /** Retry itself, on the failed card: the task page's requeue (branch and workspace kept), its note for the next
  * attempt starting with the one suggestion of what to change, ready to edit. */
 export function RetryForm({ action, csrf, note, variant = "default" }: { action: string; csrf: string; note?: string | undefined; variant?: "default" | "attention" }) {
-  return <form method="post" action={action} data-retry className="flex w-full flex-col gap-1.5">
-    <input type="hidden" name="csrf" value={csrf} />
+  return <PostForm action={action} data-retry className="flex w-full flex-col gap-1.5">
     <label htmlFor="retry-note" className="text-[13px] font-medium">What to change next time</label>
     {/* The whole suggestion shows, and grows with what the person adds (a single-line field cut it off on a phone). */}
     <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
@@ -53,7 +53,7 @@ export function RetryForm({ action, csrf, note, variant = "default" }: { action:
         className="min-h-9 min-w-0 flex-1 basis-72 resize-none [field-sizing:content] max-h-40 phone:min-h-11 phone:basis-auto" />
       <Button type="submit" variant={variant} className="phone:w-full" data-primary-action title="Keeps the branch and workspace">Retry</Button>
     </div>
-  </form>;
+  </PostForm>;
 }
 
 /** What a failed attempt missed: the evidence line behind it, and where to see the build (or that exact log line). */
@@ -67,12 +67,11 @@ function FailureEvidence({ failure }: { failure: NonNullable<BrowserTaskView["fa
 
 /** Stop, on the Building card: the same exact-run stop form the control card posts. */
 function StopForm({ stop, csrf }: { stop: NonNullable<BrowserTaskView["stop"]>; csrf: string }) {
-  return <form method="post" action={stop.action} className="task-stop-form phone:w-full" data-task-control="stop" data-control-run={stop.run}>
-    <input type="hidden" name="csrf" value={csrf} />
+  return <PostForm action={stop.action} className="task-stop-form phone:w-full" data-task-control="stop" data-control-run={stop.run}>
     <input type="hidden" name="run" value={stop.run} />
     <input type="hidden" name="return" value="task" />
     <Button type="submit" variant="destructive" className="phone:w-full" data-stop-build>Stop</Button>
-  </form>;
+  </PostForm>;
 }
 
 /** One headline, one sentence and one action; the details sit quietly

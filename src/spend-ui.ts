@@ -4,9 +4,9 @@
  * only) stop new work at 100 %. An instance operator's page; budgets change
  * with a step-up.
  */
+import { html, postForm, type Html } from "./html.js";
 import { budgetLabel, usd, type BudgetState, type SpendItem } from "./spend.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const projectName = (repo: string) => repo.split("/").filter(Boolean).pop() ?? repo;
 
 export const SPEND_CSS = `.spend{max-width:960px;min-width:0}.spend-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.spend-head h1{margin:0}` +
@@ -42,13 +42,13 @@ function breakdown(items: readonly SpendItem[], keyOf: (item: SpendItem) => stri
   return [...rows.values()].sort((a, b) => b.microusd - a.microusd || b.count - a.count).slice(0, top);
 }
 
-function table(title: string, rows: ReturnType<typeof breakdown>, name: (key: string) => string): string {
+function table(title: string, rows: ReturnType<typeof breakdown>, name: (key: string) => string): Html | "" {
   if (rows.length === 0) return "";
-  return `<section><h2>${e(title)}</h2><table><tbody>${rows.map(row => `<tr><td>${e(name(row.key))}</td><td class="n">${row.count}</td><td class="n">${usd(row.microusd)}${row.unpriced > 0 ? ` <span class="meta">+${row.unpriced} unpriced</span>` : ""}</td></tr>`).join("")}</tbody></table></section>`;
+  return html`<section><h2>${title}</h2><table><tbody>${rows.map(row => html`<tr><td>${name(row.key)}</td><td class="n">${row.count}</td><td class="n">${usd(row.microusd)}${row.unpriced > 0 ? html` <span class="meta">+${row.unpriced} unpriced</span>` : ""}</td></tr>`)}</tbody></table></section>`;
 }
 
-export function spendHtml(view: SpendView, notice: { said?: string | null; problem?: string | null }): string {
-  const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+export function spendHtml(view: SpendView, notice: { said?: string | null; problem?: string | null }): Html {
+  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const total = view.items.reduce((sum, item) => sum + (item.microusd ?? 0), 0);
   const unpriced = view.items.filter(item => item.microusd === null && (item.tokensIn !== null || item.kind !== "run")).length;
   const counts = { run: view.items.filter(item => item.kind === "run").length, teammate: view.items.filter(item => item.kind === "teammate").length, chat: view.items.filter(item => item.kind === "chat").length, sort: view.items.filter(item => item.kind === "sort").length };
@@ -58,38 +58,21 @@ export function spendHtml(view: SpendView, notice: { said?: string | null; probl
     const width = Math.min(100, Math.max(0, budget.percent));
     const over = budget.spentMicrousd >= budget.limitMicrousd;
     const label = budgetLabel(budget, budget.scope === "teammate" ? nameOfTeammate(budget.key) : undefined).replace(/'s$/, "");
-    return `<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${e(label)}</span>` +
-      `<span class="figures">${usd(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span>` +
-      `<span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span>` +
-      `<span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher budget." : budget.hardStop ? "Stops API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} unpriced` : ""}</span>` +
-      `<details><summary>Change</summary><form method="post" action="/spend/budget" class="budget-form"><input type="hidden" name="csrf" value="${e(view.csrf)}"><input type="hidden" name="target" value="${e(`${budget.scope}:${budget.key}`)}">` +
-      `<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label>` +
-      `<label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? " checked" : ""}> Stop new work at 100%</label>` +
-      `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>` +
-      `<button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button></form></details></div>`;
-  }).join("");
+    return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${usd(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher budget." : budget.hardStop ? "Stops API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} unpriced` : ""}</span><details><summary>Change</summary>${
+      postForm("/spend/budget", html`<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label><label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? html` checked` : ""}> Stop new work at 100%</label><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button>`,
+        { attrs: { class: "budget-form" }, hidden: { target: `${budget.scope}:${budget.key}` } })}</details></div>`;
+  });
   const groups = ["Everything", "Projects", "People", "Teammates"] as const;
   const options = groups.map(group => {
     const members = view.targets.filter(one => one.group === group);
-    return members.length === 0 ? "" : `<optgroup label="${group}">${members.map(one => `<option value="${e(one.value)}">${e(one.label)}</option>`).join("")}</optgroup>`;
-  }).join("");
-  const add = `<details${view.budgets.length === 0 ? " open" : ""}><summary>Add a budget</summary><form method="post" action="/spend/budget" class="budget-form"><input type="hidden" name="csrf" value="${e(view.csrf)}">` +
-    `<label>For<select name="target" required>${options}</select></label>` +
-    `<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" required></label>` +
-    `<label class="choice"><input type="checkbox" name="stop" value="1" checked> Stop new work at 100%</label>` +
-    `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>` +
-    `<button type="submit" name="action" value="save">Add budget</button></form></details>`;
-  const csv = `/spend?month=${e(view.month)}&amp;format=csv`;
-  return `<article class="spend">` +
-    `<div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${e(view.previous)}">← ${e(view.previous)}</a><strong>${e(view.month)}</strong>${view.next === null ? "" : `<a href="/spend?month=${e(view.next)}">${e(view.next)} →</a>`}<a href="${csv}" download>CSV</a></p></div>${note}` +
-    `<p class="spend-total" data-spend-total="${total}">${usd(total)}</p><p class="meta">${parts.join(" · ")}${unpriced > 0 ? ` · ${unpriced} unpriced (no reported cost or catalogue price)` : ""} · UTC month</p>` +
-    `<section><h2>Budgets</h2>${budgets === "" ? `<p class="meta">No budgets yet.</p>` : budgets}${add}</section>` +
-    `<div class="spend-grid">` +
-    table("By project", breakdown(view.items, item => item.project), projectName) +
-    table("By person", breakdown(view.items, item => item.person), key => key) +
-    table("By teammate", breakdown(view.items, item => item.teammate === null ? null : String(item.teammate)), nameOfTeammate) +
-    table("By model", breakdown(view.items, item => `${item.provider}${item.model === null ? "" : ` · ${item.model}`}`), key => key) +
-    `</div><p class="meta">Subscription work is $0; its limits are on Tasks. API work is what the provider reported, or its tokens at the prices in Settings → Models.</p></article>`;
+    return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
+  });
+  const add = html`<details${view.budgets.length === 0 ? html` open` : ""}><summary>Add a budget</summary>${postForm("/spend/budget", html`<label>For<select name="target" required>${options}</select></label><label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" required></label><label class="choice"><input type="checkbox" name="stop" value="1" checked> Stop new work at 100%</label><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><button type="submit" name="action" value="save">Add budget</button>`, { attrs: { class: "budget-form" } })}</details>`;
+  return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${view.previous}">← ${view.previous}</a><strong>${view.month}</strong>${view.next === null ? "" : html`<a href="/spend?month=${view.next}">${view.next} →</a>`}<a href="/spend?month=${view.month}&amp;format=csv" download>CSV</a></p></div>${note}<p class="spend-total" data-spend-total="${total}">${usd(total)}</p><p class="meta">${parts.join(" · ")}${unpriced > 0 ? ` · ${unpriced} unpriced (no reported cost or catalogue price)` : ""} · UTC month</p><section><h2>Budgets</h2>${budgets.length === 0 ? html`<p class="meta">No budgets yet.</p>` : budgets}${add}</section><div class="spend-grid">${
+    table("By project", breakdown(view.items, item => item.project), projectName)}${
+    table("By person", breakdown(view.items, item => item.person), key => key)}${
+    table("By teammate", breakdown(view.items, item => item.teammate === null ? null : String(item.teammate)), nameOfTeammate)}${
+    table("By model", breakdown(view.items, item => `${item.provider}${item.model === null ? "" : ` · ${item.model}`}`), key => key)}</div><p class="meta">Subscription work is $0; its limits are on Tasks. API work is what the provider reported, or its tokens at the prices in Settings → Models.</p></article>`;
 }
 
 /** One row per piece of spend, for a spreadsheet. */

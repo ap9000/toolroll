@@ -3,10 +3,10 @@
  * the next daily sweep would remove. An instance operator's page; changes
  * take a step-up.
  */
+import { html, postForm, type Html } from "./html.js";
 import { bytesWords } from "./storage.js";
 import { RETENTION_KINDS, countWords, periodChoices, periodLabel, type RetentionCount, type RetentionKind, type RetentionPeriods } from "./retention.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export const RETENTION_CSS = `.retention{max-width:720px;min-width:0}.retention-next{margin:0 0 16px}` +
   `.retention form{display:grid;gap:0}.retention .kind{display:grid;grid-template-columns:minmax(0,1fr) 11rem;gap:4px 16px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}` +
@@ -28,18 +28,15 @@ function nextWords(view: RetentionView): string {
   return `The next daily sweep removes ${listWords(due.map(countWords))} (about ${bytesWords(bytes)}).`;
 }
 
-export function retentionHtml(view: RetentionView, notice: { said?: string | null; problem?: string | null }): string {
-  const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+export function retentionHtml(view: RetentionView, notice: { said?: string | null; problem?: string | null }): Html {
+  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const rows = RETENTION_KINDS.map(({ kind, label, detail }) => {
     const current = view.periods[kind];
     const chosen = view.chosen.includes(kind);
-    const options = periodChoices(kind, current).map(days => `<option value="${days === null ? "forever" : days}"${days === current ? " selected" : ""}>${e(periodLabel(kind, days, chosen || days !== current))}</option>`).join("");
-    return `<div class="kind" data-kind="${kind}"><label class="name" for="keep-${kind}">${e(label)}</label><p class="meta">${e(detail)}</p><select id="keep-${kind}" name="${kind}">${options}</select></div>`;
-  }).join("");
-  const last = view.lastSweep === null ? "" : ` Last sweep ${e(view.lastSweep.slice(0, 10))}.`;
-  return `<article class="retention">${note}<p class="retention-next" data-retention-next>${e(nextWords(view))}${last}</p>` +
-    `<form method="post" action="/settings/retention"><input type="hidden" name="csrf" value="${e(view.csrf)}">${rows}` +
-    `<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>` +
-    `<button type="submit">Save</button></form>` +
-    `<p class="meta">Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready for review, anything on hold).</p></article>`;
+    const options = periodChoices(kind, current).map(days => html`<option value="${days === null ? "forever" : days}"${days === current ? html` selected` : ""}>${periodLabel(kind, days, chosen || days !== current)}</option>`);
+    return html`<div class="kind" data-kind="${kind}"><label class="name" for="keep-${kind}">${label}</label><p class="meta">${detail}</p><select id="keep-${kind}" name="${kind}">${options}</select></div>`;
+  });
+  const last = view.lastSweep === null ? "" : ` Last sweep ${view.lastSweep.slice(0, 10)}.`;
+  return html`<article class="retention">${note}<p class="retention-next" data-retention-next>${nextWords(view)}${last}</p>${
+    postForm("/settings/retention", html`${rows}<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`)}<p class="meta">Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready for review, anything on hold).</p></article>`;
 }

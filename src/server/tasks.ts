@@ -1,5 +1,6 @@
-import type { Registration } from './handler-registry.js';
+import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
+import { html,htmlString,joinHtml,postForm,textHtml,type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
 import { lstatSync,realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
@@ -75,1460 +76,1504 @@ parseWorkView
 } from "../workspace-ui.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { ACCEPT_ANYWAY_NEEDS_REASON,approvalFormDigest,nonceHashOf,approveRefusalWords,boardBody,chatReturnWithSaid,checkProgressHtml,consentDoorOf,decisionPage,donePage,editorFileHref,escape,inboxFingerprints,inboxPage,matchTaskPath,newTaskPage,nextPage,oneLineOf,parseInboxTab,PermissionsWouldChange,proofBundleView,QUEUE_FRONT,QUEUE_VIEW,queueBody,queueScript,rankReviewQueue,redirect,refuse,regionScript,requestContext,requirementsFromEditor,respond,RESULT_REFUSALS,resumeDigestOf,REVIEW_QUEUE_CAP,reviewCockpitPage,reviewHref,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,safeChatReturn,safeReturn,SAFETY,screen,TASK_STATES,taskChatHref,taskHref,taskOf,tasksPage,transcriptScript,whenTime,withRefusal,workPage,type CompletedWorkRow,type InboxTab,type PeekAdmission,type RankedReviewRow,type ReviewCockpitView,type Who } from "./shared.js";
+import { requestContext } from "./request-context.js";
+import { oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
+import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
+import { boardBody,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
+import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
+import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
   const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, matePrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
-  async function get(ctx: HandlerContext): Promise<void> {
-    const { url, who, request, response, now, project, chosenProject, posted, route } = ctx;
-
-
-    if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
-      if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation })) return refuse(response, who, 403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.', '/work');
-      const actor = { name: who.name, generation: who.session.generation };
-      const match = /^\/code\/([a-f0-9]{32})(?:\/(state|changes|ship))?$/.exec(url.pathname);
-      try {
-        const selected = match && runtime.coding ? runtime.coding.get(match[1]!, actor) : null;
-        if (selected && !codingProjectAllowed(selected.repo)) return refuse(response, who, 403, 'That project is outside your access.', '/projects');
-        if (match?.[2] === 'ship' && selected) {
-          const preview = codingHandoffPreview(store, { sessionId: selected.id, actor: who.name });
-          return sendScreen(response, 200, screen('Review for shipping', codingShippingHtml(preview, who.session.csrf), { chrome: chromeFor(selected.repo, 'code') }));
-        }
-        if (match?.[2]) {
-          if (!selected || !runtime.coding) throw Error('The coding session is unavailable.');
-          if (match[2] === 'state' && url.searchParams.get('revision') === String(runtime.coding.revision(selected.id, actor))) return respond(response, 200, 'application/json', JSON.stringify({ unchanged: true }));
-          const result = match[2] === 'changes' ? await runtime.coding.changes(selected.id, actor) : runtime.coding.snapshot(selected.id, actor);
-          if (!codingActorAllowed(actor) || !codingProjectAllowed(selected.repo)) return respond(response, 403, 'application/json', JSON.stringify({ ok: false, error: 'Your access changed. Sign in again.' }));
-          return respond(response, 200, 'application/json', JSON.stringify(result));
-        }
-        if (url.pathname !== '/code' && !match) return refuse(response, who, 404, 'Coding session not found.', '/code');
-        const requestedProject = url.searchParams.get('project');
-        if (requestedProject !== null && (!visible(requestedProject) || ![...managedRepos(), ...store.listProjects().map(p => p.path)].includes(requestedProject))) return refuse(response, who, 403, 'That project is outside your access.', '/projects');
-        const codeProject = selected?.repo ?? requestedProject ?? project;
-        const chrome = chromeFor(codeProject, 'code');
-        const content = codingWorkspaceHtml({ owner: who.name, projects: chrome.projects ?? [], sessions: runtime.coding?.list(actor).filter(s => codingProjectAllowed(s.repo)) ?? [], selected: selected && runtime.coding ? runtime.coding.snapshot(selected.id, actor) : null, csrf: who.session.csrf, project: codeProject, available: runtime.coding !== null, ...(runtime.codingProblem ? { error: runtime.codingProblem } : {}) });
-        return sendScreen(response, 200, screen('Code', content, { chrome, functional: { script: codingWorkspaceScript(), fetches: true } }));
-      } catch (error) {
-        if (!codingActorAllowed(actor)) return match?.[2] && match[2] !== 'ship'
-          ? respond(response, 403, 'application/json', JSON.stringify({ ok: false, error: 'Your access changed. Sign in again.' }))
-          : refuse(response, who, 403, 'Your access changed. Sign in again.', '/work');
-        const message = error instanceof Error ? error.message : 'The coding workspace is unavailable.';
-        if (match?.[2] === 'ship') return sendScreen(response, 409, screen('Review for shipping', `<h1>Prepare this result</h1><p>${escape(message)}</p><a href="/code/${match[1]}">Back to coding</a>`, { chrome: chromeFor(project, 'code') }));
-        if (match?.[2]) return respond(response, 409, 'application/json', JSON.stringify({ ok: false, error: message }));
-        return sendScreen(response, 404, screen('Coding session unavailable', `<h1>Session unavailable</h1><p>${escape(message)}</p><a href="/code">Open coding workspace</a>`, { chrome: chromeFor(project, 'code') }));
-      }
-    }
-
-    if (url.pathname === "/inbox") {
-      // With no project open in scoped mode this is the ROLL-UP inbox:
-      // admission binds inside the bounded queries, every row's repo is
-      // re-proved here, and rows render as links only (Codex roll-up
-      // review, findings 6–8). Gaps stay per-project — they are derived
-      // against one repo's capabilities and roll up dishonestly.
-      const rollup = project === null && !unscopedMode;
-      const admission = rollup ? admissionList() : null;
-      const cancelled = store
-        .listCancelledBlockersScoped(project, 10, admission)
-        .filter(one => visible(one.repo) && visible(one.blockerRepo));
-      const inboxData = {
-          csrf: who.via === "cookie" ? who.session.csrf : "",
-          revision: who.via === "cookie" ? who.session.projectRevision : 0,
-          rollup,
-          interactive: project !== null,
-          decisions: store.listDecisionsScoped(project).filter(one => visible(one.repo)).slice(0, 10),
-          // Each waiting scope wears its consent door (v48 authority repair): a scope whose
-          // approval is closed — unreadable route, a route that cannot run,
-          // a pre-routing row whose approval lapsed — reads as needing
-          // attention, never as something to approve.
-          approvals: store.scopesAwaitingApproval(project, 10, admission).filter(one => visible(one.repo)).map(one => {
-            const ref = store.lookupRef(one.taskId);
-            const scope = store.getScope(one.taskId);
-            const door = consentDoorOf(scope, routeViewOf(one.taskId, ref, scope, now, who));
-            return { ...one, closed: door.open ? null : door.title };
-          }),
-          requeueables: store.listRequeueablesScoped(project, now, 10, admission).filter(one => visible(one.repo)),
-          needsVerification: store
-            .listCompletedWorkScoped(project, 10, admission)
-            .filter(one => visible(one.repo) && (one.proofVerdict === "short" || one.proofVerdict === "refuted") && !one.proofAccepted &&
-              assignmentOf(store, one.taskId, now, workAccess(), evidenceRoot) === null)
-            .map(one => ({
-              taskId: one.taskId,
-              title: one.title,
-              verdict: one.proofVerdict as "short" | "refuted",
-              repo: one.repo,
-              matrix: one.proofMatrix,
-              repairChain: one.runId === null ? null : store.repairChainFor(one.runId),
-            })),
-          cancelledBlockers: cancelled,
-          gaps: project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10),
-          wizard: firstRunStepsNow(now),
-          worker: (() => {
-            // The one fact the inbox must never hide (install review): with
-            // no worker answering, nothing here will ever build, and every
-            // approval below is a promise nobody is there to keep.
-            const runners = store.listRunners().filter(one => one.retiredAt === null && (!restricted() || one.repos.some(visible)));
-            const answering = runners.filter(one => runnerAlive(one, now));
-            const lastHeard = runners.map(one => one.heartbeatAt).sort().at(-1) ?? null;
-            return { answering: answering.length, registered: runners.length, lastHeard };
-          })(),
-          now,
-          // Console v2: results ready to review and work running now, from the same admitted work index.
-          ...(() => {
-            const row = (one: WorkIndexItem) => ({ taskId: one.rootId, title: one.title, detail: one.status.detail, repo: one.repo });
-            const needsYou = workIndexPage(store, now, workAccess(), { view: "needs-you", limit: 40, project });
-            const runningNow = workIndexPage(store, now, workAccess(), { view: "running", limit: 40, project });
-            return { ready: needsYou.items.filter(one => one.assignmentState === "ready-to-check").map(row), running: runningNow.items.map(row) };
-          })(),
-      };
-      // Which tabs hold something new since this browser last looked (the dots on a phone).
-      const tab = parseInboxTab(url.searchParams.get("tab")) ?? "all";
-      const prints = inboxFingerprints(inboxData);
-      const seenWords = /(?:^|;\s*)so-inbox-seen=([0-9a-f]{8}(?:\.[0-9a-f]{8}){3})(?:;|$)/.exec(request.headers.cookie ?? "")?.[1]?.split(".") ?? null;
-      const order = ["needs-you", "ready", "running", "all"] as const;
-      const seen = Object.fromEntries(order.map((one, index) => [one, seenWords?.[index] ?? ""])) as Record<InboxTab, string>;
-      const unread = order.filter(one => seenWords !== null && seen[one] !== prints[one]);
-      for (const one of order) if (tab === "all" || one === tab) seen[one] = prints[one];
-      response.setHeader("Set-Cookie", `so-inbox-seen=${order.map(one => seen[one] || prints[one]).join(".")}; SameSite=Lax; Path=/; Max-Age=31536000`);
-      return sendScreen(response, 200, inboxPage(chromeFor(project, "inbox"), { ...inboxData, tab, unread }));
-    }
-
-    if (url.pathname === "/work") {
-      // The Work destination (workspace package 1): every task in view as
-      // one row wearing the shared status projection, with All, Needs you,
-      // Running, and Completed as shortcuts over the same rows — never a
-      // persisted state. With no project open in scoped mode this rolls
-      // up like the inbox: admission binds the query and every row's repo
-      // is re-proved here.
-      const view = parseWorkView(url.searchParams.get("view"));
-      const rollup = project === null && !unscopedMode;
-      let work: WorkIndexPage;
-      try {
-        work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project });
-        const facts = requestContext.getStore();
-        if (facts !== undefined) {
-          // These counts cover the exact admitted project lens, including
-          // unplaced tasks where permitted. Crew excludes unplaced rows.
-          if (project === null) facts.workCounts = work.projects;
-          const admitted = workAccess().repos;
-          const crewLens = project !== null || admitted !== null && JSON.stringify([...admitted].sort()) === JSON.stringify(managedRepos().sort()) && !work.projects.some(one => one.repo === null);
-          if (view === 'all' && !url.searchParams.has('cursor') && crewLens) facts.workCrew = { project, page: work };
-        }
-      } catch (error) {
-        if (error instanceof WorkIndexCursorError) return refuse(response, who, 400, 'This task page has expired. Open the first page.', '/work');
-        throw error;
-      }
-      // A failed row says what its latest attempt missed, as its task page does (a stop reason already reads so), from
-      // the database alone: a row reads no check log. A live build's row says which step it is on, or the step it is
-      // stuck on, from that live attempt's own progress only, never a stopped attempt's; the step's words come from its
-      // current plan (one saved file, for live rows only), and without it the row names the step by number.
-      work = { ...work, items: work.items.map((item): WorkIndexItem & { progress?: string } => {
-        if (item.liveRunId !== null) {
-          const ref = store.lookupRef(item.activeTaskId);
-          const recorded = ref === null ? null : store.latestCheckpointForRun(item.liveRunId);
-          if (ref === null || recorded === null || recorded.taskRef !== ref.id) return item;
-          const plan = store.currentPlanRevision(ref.id);
-          const parsed = plan === null ? null : (() => { const doc = revisionDocOf(plan); return doc === null ? null : parseExecutionPlanDocument(doc.document); })();
-          const words = new Map(parsed?.ok === true ? milestonesOf(parsed.document).map(one => [one.id, one.description] as const) : []);
-          const steps = buildProgressOf(recorded.snapshot.milestones.map(one => ({ description: words.get(one.id) ?? null, state: one.state, note: one.note ?? null })));
-          return steps === null ? item : { ...item, progress: steps.line };
-        }
-        if (item.state !== "failed") return item;
-        const family = familyOf(item.activeTaskId);
-        if (family === null || family.problem !== null) return item;
-        const failure = failureOf(family.versions.flatMap(version => store.runsFor(version.refId)), null, false);
-        return failure.kind === "reason" ? item : { ...item, status: { ...item.status, detail: failure.line } };
-      }) };
-      const page = workPage(chromeFor(project, "work", undefined, rollup ? "all" : undefined), {
-        view,
-        ...(url.searchParams.has('project') && project !== null ? { projectFilter: project } : {}),
-        work,
-        previous: url.searchParams.has('cursor'),
-        multiProject: new Set(work.items.map(task => task.repo ?? "")).size > 1,
-        now,
-        // v105: subscription windows and monthly budgets, for whoever runs the installation.
-        limits: store.isInstanceOperator(who.name)
-          ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, teammate: id => teammateNamesOf(store.handle).get(id) ?? `Teammate ${id}` }, now)
-          : null,
-      });
-      // One project's Tasks dock that project's own conversation (v77).
-      const projectThread = url.searchParams.has('project') && project !== null && managedRepos().includes(project) ? project : null;
-      const docked = projectThread === null ? null : dockedConversation(who, null, projectThread, now, `/work?project=${encodeURIComponent(projectThread)}`);
-      if (docked !== null) page.workspace = { ...page.workspace, conversation: docked, pageHtml: page.body };
-      // Without a docked chat the list reads itself: 10 s while any of its tasks is building, else 30 s.
-      page.refreshSeconds = work.totals.running > 0 ? 10 : 30;
-      return sendScreen(response, 200, page);
-    }
-
-    if (url.pathname === "/next") {
-      // Triage: everything waiting on a person, one at a time, hardest-
-      // blocked first — oldest question, then plans and scopes to approve,
-      // then stalled work to retry, then requirement gaps. `skip` is a
-      // bounded, session-free cursor of keys the operator set aside; every
-      // act 303s back here, which is what makes it a flow and not a list.
-      const skipped = new Set(
-        (url.searchParams.get("skip") ?? "").split(",").filter(one => /^[darg]:[A-Za-z0-9._:-]{1,80}$/.test(one)).slice(0, 20),
-      );
-      const decisions = store.listDecisionsScoped(project).filter(one => one.state !== "answered");
-      const approvals = store.scopesAwaitingApproval(project, 20);
-      const requeueables = store.listRequeueablesScoped(project, now, 20);
-      const gaps = project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0);
-      type Item =
-        | { key: string; kind: "decision"; decision: (typeof decisions)[number] }
-        | { key: string; kind: "approval"; approval: (typeof approvals)[number] }
-        | { key: string; kind: "requeue"; stalled: (typeof requeueables)[number] }
-        | { key: string; kind: "gap"; gap: (typeof gaps)[number] };
-      const queue: Item[] = [
-        ...decisions.map(decision => ({ key: `d:${decision.id}`, kind: "decision" as const, decision })),
-        ...approvals.map(approval => ({ key: `a:${approval.taskId}`, kind: "approval" as const, approval })),
-        ...requeueables.map(stalled => ({ key: `r:${stalled.taskId}`, kind: "requeue" as const, stalled })),
-        ...gaps.map(gap => ({ key: `g:${gap.key.replace(/[^A-Za-z0-9._:-]/g, "_")}`, kind: "gap" as const, gap })),
-      ];
-      const remaining = queue.filter(one => !skipped.has(one.key));
-      const item = remaining[0] ?? null;
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      if (item !== null && item.kind === "approval") {
-        // The card restates the digest-bound terms, so the nonce may be
-        // minted here — same rule as the task screen, same binding.
-        const ref = store.lookupRef(item.approval.taskId);
-        const scope = store.getScope(item.approval.taskId);
-        const planView = ref !== null && ref.plan === "drafted" ? planViewOf(ref.id) : null;
-        const approvalDigest = approvalFormDigest(item.approval.digest, planView?.sha256 ?? null);
-        // The same agents block the task page and chat sign under (v48),
-        // and the same consent door: closed, it mints no nonce.
-        const route = routeViewOf(item.approval.taskId, ref, scope, now, who);
-        const nonce = who.via === "cookie" && consentDoorOf(scope, route).open ? mintApprovalNonce(who.name, item.approval.taskId, approvalDigest) : "";
-        return sendScreen(response, 200, nextPage(chromeFor(project, "inbox"), {
-          item, scope,
-          planDocument: planView?.document ?? null,
-          planContract: ref === null || planView === null ? null : planContractViewOf(ref.id, scope),
-          approvalDigest,
-          deliverable: ref?.deliverable ?? "branch",
-          route,
-          csrf, nonce, remaining: remaining.length, skipped: [...skipped], now,
-        }));
-      }
-      return sendScreen(response, 200, nextPage(chromeFor(project, "inbox"), {
-        item, scope: null, planDocument: null, planContract: null, csrf, nonce: "",
-        approvalDigest: null, route: null,
-        remaining: remaining.length, skipped: [...skipped], now,
-      }));
-    }
-
-    if (url.pathname === "/board") {
-      // scope=all is the rolled-up view: every project this server was
-      // allowed to serve, on one board. The ceiling still rules row by row
-      // (rowVisible, the same predicate as every list) — a repo outside
-      // the server's configuration never renders a card, whatever the
-      // database holds. Unplaced work (repo NULL) appears: it dispatches
-      // anywhere, so every board honestly owns it.
-      const all = url.searchParams.get("scope") === "all";
-      // Roll-up admission happens BEFORE the query limit (Codex round 2,
-      // finding 11) — and root ceilings enumerate too, through the STORED
-      // repos that pass the ceiling (attended review, finding 3); the
-      // per-row visible() re-check below stays either way.
-      const admission = all ? admissionList() : null;
-      const snapshot = store.boardScoped(all ? null : project, now, 200, admission);
-      const admitted = all
-        ? snapshot.tasks.filter(facts => facts.repo === null || visible(facts.repo))
-        : snapshot.tasks;
-      const done = all
-        ? snapshot.done.filter(row => row.repo === null || visible(row.repo))
-        : snapshot.done;
-      // A blocker may live in a repo this server must not speak about —
-      // redact its state before the pure classifier composes a sentence
-      // from it (Codex round 2, finding 12). The dependency's NAME stays:
-      // the edge belongs to the visible task; the other project's live
-      // status does not.
-      const cards = admitted.map(facts =>
-        classify(
-          facts.blockerRepo !== null && !visible(facts.blockerRepo)
-            ? { ...facts, blockerState: null }
-            : facts,
-          now,
-        ),
-      );
-      // "Since you last looked": what concluded between this session's
-      // previous full board read and now. Fragment polls never move the
-      // anchor — an open tab is not a person looking.
-      let delta: { agoMinutes: number; built: number; failed: number; questions: number } | null = null;
-      if (who.via === "cookie" && url.searchParams.get("fragment") !== "1") {
-        const prev = who.session.sawBoardAt;
-        if (prev !== null && now.getTime() - prev > 5 * 60_000) {
-          const sinceIso = new Date(prev).toISOString();
-          const runs = store.runsSinceScoped(sinceIso, all ? null : project).filter(one => all ? one.taskId !== "" : true);
-          delta = {
-            agoMinutes: Math.round((now.getTime() - prev) / 60_000),
-            built: runs.filter(one => one.outcome === "built" || one.outcome === "no-change").length,
-            failed: runs.filter(one => one.outcome === "failed").length,
-            questions: store.listDecisionsScoped(all ? null : project).filter(one => one.createdAt >= sinceIso && one.state !== "answered").length,
-          };
-          if (delta.built === 0 && delta.failed === 0 && delta.questions === 0) delta = null;
-        }
-        who.session.sawBoardAt = now.getTime();
-      }
-      const buildingCount = cards.filter(card => card.lane === "building").length;
-      // A completed task whose proof is short or refuted and not yet
-      // accepted (Priority 2) reads "needs verification", not done — the
-      // board's once-and-only-once rule holds because this split is the
-      // ONE place a done row becomes either lane; the done-lane render
-      // below never sees the rows filtered out here.
-      const unverifiedDone = done.filter(
-        row => (row.proofVerdict === "short" || row.proofVerdict === "refuted") && !row.proofAccepted,
-      );
-      const verifiedDone = done.filter(row => !unverifiedDone.includes(row));
-      const unverifiedCards = unverifiedDone.map(row => {
-        // v40: the SAME chip gains one more word when a repair chain
-        // exists for this row's own run — never a second card.
-        const chain = row.runId === null ? null : store.repairChainFor(row.runId);
-        const repairChain =
-          chain === null
-            ? null
-            : {
-                attempt: chain.attempt,
-                outcome: chain.outcome,
-                approved: chain.draftTask !== null && (store.getScope(chain.draftTask)?.approvedAt ?? null) !== null,
-              };
-        return attentionCardForUnverifiedDone({
-          taskId: row.taskId,
-          title: row.title,
-          repo: row.repo,
-          completedAt: row.completedAt,
-          proofVerdict: row.proofVerdict as "short" | "refuted",
-          proofMatrix: row.proofMatrix,
-          repairChain,
-        });
-      });
-      const laneCards = [...cards, ...unverifiedCards];
-      const body = boardBody(
-        { cards: laneCards, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
-        pr => store.ciFailureObserved(pr),
-      );
-      if (url.searchParams.get("fragment") === "1") {
-        // The live region alone — the in-page swapper's diet. Same auth,
-        // same ceiling, no shell, no scripts (finding 2).
-        return respond(response, 200, "text/html; charset=utf-8", body);
-      }
-      if (url.searchParams.get("view") === "order") {
-        // The board's ORDER view (operator request): the same screen, flipped
-        // to dispatch order with the queue's drag handles. Reordering and
-        // reserving are scheduling, not authority, so this is the one view
-        // where a drag does anything; the state view stays a view.
-        const csrf = who.via === "cookie" ? who.session.csrf : "";
-        const revision = who.via === "cookie" ? who.session.projectRevision : 0;
-        const region = queueRegionFor(project, csrf, revision, now);
-        return sendScreen(
-          response,
-          200,
-          screen("board", [
-            `<h1>Board</h1>`,
-            `<p class="meta board-view"><a href="/board">state</a> \u00b7 <strong>order</strong> <span class="meta">\u2014 drag to reorder, or onto a worker to reserve; the state view is where cards move on their own</span></p>`,
-            `<div id="queue-region">${region}</div>`,
-            `<p class="meta" id="queue-region-stamp"></p>`,
-          ].join("\n"), { chrome: chromeFor(project, "board"), functional: { script: queueScript(), fetches: true } }),
-        );
-      }
-      const regionBody = `<div id="board-region">${body}</div><p class="meta" id="board-region-stamp"></p>`;
-      return sendScreen(
-        response,
-        200,
-        screen("board", regionBody, {
-          chrome: chromeFor(project, "board", undefined, all ? "board-all" : undefined),
-          functional: { script: regionScript("board-region", "1", buildingCount > 0 ? 10 : 30), fetches: true },
-        }),
-      );
-    }
-
-    if (url.pathname === "/review") {
-      // The review cockpit (Priority 5): every visible COMPLETED task,
-      // ranked by review priority, with one selected result projected
-      // from the records the task, run, and done pages already read —
-      // scope, plan, run, artifacts, verdict, publication. The
-      // ranking is a labeled presentation aid: it never rewrites the
-      // stored verdict, and the sealed patch downloads exactly as stored.
-      // Admission binds BEFORE the SQL limit (the done page's own rule),
-      // and every row is re-proved against the ceiling before ranking.
-      const resultRow = (row: CompletedWorkRow) => {
-        const assignment = assignmentOf(store, row.taskId, now, workAccess(), evidenceRoot);
-        return { ...row, proofReasons: row.runId === null ? [] : store.proofVerdictFor(row.runId)?.reasons ?? [], ciFailing: ciFailingFor(row.runId, row.prNumber),
-          assignment: assignment?.activeTaskId === row.taskId && (assignment.receipt?.runId ?? null) === row.runId ? assignment : null };
-      };
-      const rows = familiesInView(project, { states: ["done"], limit: REVIEW_QUEUE_CAP }).flatMap(family => {
-          const row = completedRowFor(family.current.id, project);
-          return row === null ? [] : [{ ...resultRow(row), title: family.root.title }];
-        });
-      const ranked = rankReviewQueue(rows);
-      const wanted = url.searchParams.get("result");
-      const wantedId =
-        wanted === null || wanted.length === 0 || wanted.length > 64 || hasForbiddenControls(wanted) ? null : wanted;
-      const inQueue = wantedId === null ? null : ranked.find(one => one.taskId === wantedId) ?? null;
-      // A stable deep link outlives the queue window (v2 review, comment
-      // 1): a completion older than the newest REVIEW_QUEUE_CAP resolves
-      // directly — re-proved as done, in this project, and inside the
-      // ceiling — so an old receipt never reads as unfinished or foreign.
-      // The ranked queue itself stays bounded and says so.
-      const beyond = wantedId === null || inQueue !== null ? null : completedRowFor(wantedId, project);
-      const beyondRow = beyond === null ? null : resultRow(beyond);
-      const completedChoice = inQueue ?? (beyondRow === null ? null : { ...beyondRow, priority: reviewPriorityOf(beyondRow) });
-      const expectedRun = url.searchParams.get("run");
-      const namedRun = expectedRun !== null && /^[1-9]\d*$/.test(expectedRun) ? Number(expectedRun) : null;
-      // A build that failed (or stopped) has its own result page too: the run named, or a failed task's latest attempt.
-      const attempt = wantedId === null || (completedChoice !== null && (namedRun === null || completedChoice.runId === namedRun)) ? null : attemptRowFor(wantedId, namedRun, project);
-      const attemptRow = attempt === null ? null : resultRow(attempt);
-      const chosen = attemptRow !== null ? { ...attemptRow, priority: reviewPriorityOf(attemptRow) } : completedChoice;
-      const selectedRow = wantedId === null ? ranked[0] ?? null : chosen;
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      // An exact link to a result this person can't see (or that never existed) reads the same either way.
-      if (expectedRun !== null && wantedId !== null && chosen === null) return refuse(response, who, 404, "No such result in your projects.", "/work");
-      if (expectedRun !== null && (!/^[1-9]\d*$/.test(expectedRun) || selectedRow?.runId !== Number(expectedRun))) {
-        return sendScreen(response, 409, screen("Result changed", '<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>', { chrome: chromeFor(project, "runs") }));
-      }
-      const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
-      // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
-      // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
-      // a reason.
-      const delivered = selected?.run?.outcome === "built" || selected?.run?.outcome === "no-change";
-      const failedTask = selected === null ? null : store.getTask(selected.taskId);
-      if (selected !== null && attemptRow !== null && selected.run !== null && (!delivered || failedTask?.state === "failed")) {
-        const attemptRun = store.getRun(selected.run.id);
-        const runs = attemptRun === null ? [] : store.runsFor(attemptRun.taskRef);
-        const latest = latestFinishedAttempt(runs);
-        // Retry from here only when the task failed, nothing holds it, and this is its latest attempt or a result it delivered.
-        const retry = failedTask?.state === "failed" && (latest?.id === selected.run.id || delivered) && csrf !== "" && who.role === "approver" && store.currentLiveLease(attemptRun!.taskRef, now) === null
-          ? { action: `${taskHref(selected.taskId)}/requeue` } : null;
-        // Accept anyway: the same acceptance this task's latest result takes, never for an older one or one already accepted.
-        const family = delivered ? familyOf(selected.taskId) : null;
-        const acceptAnyway = delivered && csrf !== "" && who.role === "approver" && family?.current.id === selected.taskId && family.problem === null &&
-          runs.find(runIsTaskResult)?.id === selected.run.id && store.proofAcceptance(selected.run.id) === null
-          ? { action: `${taskHref(selected.taskId)}/accept-proof`, run: selected.run.id } : null;
-        if (attemptRun !== null) {
-          // A delivered result didn't fail itself: the task's failure is its latest attempt's.
-          const failure = delivered ? failureOf(runs, null) : explainAttempt(attemptRun, null);
-          selected.failure = { ...failure, retry: retry === null ? null : { ...retry, note: retryNoteOf(failure.suggestion) }, ...(acceptAnyway === null ? {} : { acceptAnyway }) };
-        }
-      }
-      const reviewPage = reviewCockpitPage(chromeFor(wantedId === null ? project : chosenProject, "runs"), {
-          queue: ranked,
-          queueCap: REVIEW_QUEUE_CAP,
-          selected,
-          beyondQueue: beyond !== null && attemptRow === null,
-          // A deep link to a result this console cannot show — not done,
-          // not admitted, or never existed — says so in one sentence and
-          // shows the top of the queue; the three cases read identically.
-          missing: wantedId !== null && chosen === null ? wantedId : null,
-          csrf,
-          canRetryReview: who.via === "cookie" && who.role === "approver",
-          noted: url.searchParams.get("noted") !== null,
-          refusal: Object.hasOwn(RESULT_REFUSALS, url.searchParams.get("refused") ?? "") ? RESULT_REFUSALS[url.searchParams.get("refused")!]! : null,
-          tab: parseResultTab(url.searchParams.get("tab")),
-          user: who.name,
-          now,
-        });
-      // The result's task conversation, docked beside it (v77); messages
-      // sent here carry the result being viewed.
-      const reviewFocus = selected === null ? null : taskChatFocus(selected.taskId, now, who, { mintNonce: false });
-      const reviewDocked = reviewFocus === null || selected === null ? null
-        : dockedConversation(who, reviewFocus, null, now, reviewHref(selected.taskId), selected.run !== null && reviewFocus.family.versions.some(one => one.refId === store.getRun(selected.run!.id)?.taskRef) ? selected.run.id : null);
-      if (reviewDocked !== null) reviewPage.workspace = { ...reviewPage.workspace, conversation: reviewDocked, pageHtml: reviewPage.body };
-      return sendScreen(response, 200, reviewPage);
-    }
-
-    if (url.pathname === "/done") {
-      return sendScreen(
-        response,
-        200,
-        donePage(chromeFor(project, "runs"), store.listCompletedWorkScoped(project, 50), pr => store.ciFailureObserved(pr)),
-      );
-    }
-
-    if (url.pathname === "/tasks") {
-      const wanted = url.searchParams.get("state");
-      if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) {
-        return refuse(response, who, 400, "no such state", "/tasks");
-      }
-      // ?template=<name> pre-fills the add form from the shipped library —
-      // a pre-filled form and nothing more; the submission path is the
-      // same guarded handler either way.
-      const fromTemplate = url.searchParams.get("template");
-      const picked = fromTemplate === null ? null : templateByName(fromTemplate);
-      const prefill =
-        picked !== null && picked.kind === "task"
-          ? {
-              title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "),
-              acceptance: acceptanceToLines(picked.acceptance).join("\n"),
-            }
-          : null;
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      return sendScreen(
-        response,
-        200,
-        tasksPage(
-          chromeFor(project, "tasks"),
-          familyTasksInView(project, wanted === null ? undefined : (wanted as TaskState)).slice(0, 200),
-          wanted as TaskState | null,
-          csrf,
-          null,
-          project,
-          prefill,
-          store.permissionDefault().mode,
-          store.qualityDefault().mode,
-          store.replacements(),
-        ),
-      );
-    }
-
-    if (url.pathname === "/queue") {
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      const revision = who.via === "cookie" ? who.session.projectRevision : 0;
-      // Column headers read one thing beyond the queue snapshot: live claims
-      // in THIS project, per worker (the capacity is global), so the header
-      // names both and never a ratio.
-      if (url.searchParams.get("fragment") === "1") {
-        return respond(response, 200, "text/html; charset=utf-8", queueRegionFor(project, csrf, revision, clock()));
-      }
-      // The queue is the board's order view (reduction pass §1): the URL
-      // keeps answering, as a redirect, so nothing anyone bookmarked 404s.
-      return redirect(response, QUEUE_VIEW);
-    }
-
-    if (url.pathname === "/tasks/new") {
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      const revision = who.via === "cookie" ? who.session.projectRevision : 0;
-      const chainable = store
-        .listTasksScoped(project, undefined, 100, null)
-        .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
-        .map(one => ({ id: one.id, title: one.title }));
-      const chrome = chromeFor(project, "tasks");
-      return sendScreen(response, 200, newTaskPage(chrome, project, csrf, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
-    }
-
-    const taskLive = matchTaskPath(url.pathname, "/live$");
-    if (taskLive !== null) {
-      // The live task page: a nudge the moment the task changes, and who else
-      // has it open. Hints only — the page reads the task the usual way.
-      if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
-      const family = familyOf(taskLive.taskId);
-      if (family === null || family.problem !== null) return respond(response, 404, "application/json", JSON.stringify({ error: "task" }));
-      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
-      const name = who.name, repo = family.root.repo;
-      taskRooms.join(family.root.id, {
-        name, response,
-        // Rechecked while open, from the cookie and the account (never a request's context): a sign-out or a narrowed account stops it.
-        valid: () => { const again = identify(request, false); return again !== null && again.name === name && rowVisible(liveCeiling(), repo) && store.accountCanAccess(name, repo); },
-      });
-      request.once("close", () => { if (!response.writableEnded) response.end(); });
-      return;
-    }
-    const task = matchTaskPath(url.pathname, "");
-    if (task !== null) {
-      const family = familyOf(task.taskId);
-      if (family === null) return refuse(response, who, 404, "no such task", "/tasks");
-      const version = url.searchParams.get("version");
-      if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
-      // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
-      if (task.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${url.searchParams.get("edit") === "plan" ? "&edit=plan" : ""}`);
-      return taskScreen(response, who, version ?? family.current.id, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan");
-    }
-
-    // v103: a task's evidence pack, as a printable page or JSON (the whole family, sealed ledger entries included).
-    const evidence = matchTaskPath(url.pathname, "/evidence$");
-    if (evidence !== null) {
-      const access = workAccess();
-      const family = store.taskFamilyOf(evidence.taskId, access.repos, access.includeUnplaced);
-      if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/tasks");
-      if (evidence.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}/evidence${url.search}`);
-      const pack = evidencePack(store, family.root.id, access, who.name, now, evidenceRoot);
-      if (pack === null) return refuse(response, who, 404, "no such task", "/tasks");
-      if (url.searchParams.get("format") === "json") {
-        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="evidence-${family.root.id.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
-          "cache-control": "no-store", "x-content-type-options": "nosniff" });
-        return void response.end(JSON.stringify(checkResponse("evidencePack", pack), null, 2));
-      }
-      return sendScreen(response, 200, screen(`Evidence pack · ${family.root.id}`, evidencePackHtml(pack), { chrome: chromeFor(family.root.repo, "tasks") }));
-    }
-
-    if (url.pathname === "/runs") {
-      const raw = url.searchParams.get("before");
-      let before: number | null = null;
-      if (raw !== null) {
-        if (!/^[1-9][0-9]{0,14}$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
-          return refuse(response, who, 400, "that cursor is not a page", "/runs");
-        }
-        before = Number(raw);
-      }
-      const rows = store.listRunsBefore(before, RUNS_PAGE, project);
-      const verdicts = store.proofVerdictsFor(rows.map(one => one.id));
-      const accepted = new Set(rows.filter(one => store.proofAcceptance(one.id) !== null).map(one => one.id));
-      return sendScreen(response, 200, runsPage(chromeFor(project, "runs"), rows, liveRunIds(rows), rows.length === RUNS_PAGE ? rows[rows.length - 1]?.id ?? null : null, verdicts, accepted));
-    }
-
-    const run = /^\/r\/([0-9]{1,15})$/.exec(url.pathname);
-    if (run !== null) {
-      const found = store.getRun(Number(run[1]));
-      if (found === null || !runVisible(found)) {
-        return refuse(response, who, 404, "no such run", "/runs");
-      }
-      const taskId = store.externalIdFor(found.taskRef) ?? "?";
-      const running = runIsLive(found);
-      if (url.searchParams.get("fragment") === "check") {
-        response.setHeader("cache-control", "no-store");
-        return respond(response, 200, "text/html; charset=utf-8", checkProgressHtml(store.checkProgress(found.id)));
-      }
-      if (url.searchParams.get("fragment") === "facts") {
-        // The facts region alone — same auth and ceiling as the page; a
-        // finished or no-longer-live run says so rather than growing forms
-        // (finding 5; round-4 finding 15).
-        return respond(response, 200, "text/html; charset=utf-8", runFactsFragment(found, taskId, running, store.runRoute(found.id)));
-      }
-      if (url.searchParams.get("fragment") === "peek") {
-        // The live peek: cookie sessions only (v2 §3), never stored, never
-        // cached by anything downstream.
-        if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "the live peek is a browser session's view");
-        const peeked = await peekFragment(
-          found.id,
-          who.session.csrf,
-          options.editorLinks !== undefined && found.runner === options.localRunner && who.session.editorLinks === true,
-        );
-        response.setHeader("cache-control", "no-store");
-        if (peeked.retryAfter !== undefined) response.setHeader("retry-after", String(peeked.retryAfter));
-        return respond(response, peeked.status, "text/html; charset=utf-8", peeked.body);
-      }
-      if (url.searchParams.get("fragment") === "transcript") {
-        // The live transcript window (arc 1): raw sanitized TEXT as JSON —
-        // the sink is textContent, never innerHTML. Guards, enumerated:
-        // cookie session; run visible (proved above); this machine's
-        // runner asserted; byte offsets validated; the file read through
-        // its own descriptor with the exact numeric-id name. Display
-        // state, not evidence — and never cached.
-        response.setHeader("cache-control", "no-store");
-        if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
-        if (options.localRunner === undefined) {
-          return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
-        }
-        const fromRaw = url.searchParams.get("from") ?? "0";
-        const from = /^[0-9]{1,15}$/.test(fromRaw) ? Number(fromRaw) : Number.NaN;
-        if (!Number.isSafeInteger(from) || from < 0) {
-          return respond(response, 400, "application/json", JSON.stringify({ error: "offset" }));
-        }
-        const live = runIsLive(found);
-        // The final drain: a finished run's tail — including a torn last
-        // line — may be read until the sweep removes the file.
-        const window = readLiveWindow(evidenceRoot, found.id, from, !live);
-        if (!window.ok) {
-          if (window.reason === "replaced") {
-            return respond(response, 409, "application/json", JSON.stringify({ error: "replaced" }));
-          }
-          // Missing or unreadable: nothing to show. Final only when the
-          // run can never write again.
-          return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: !live }));
-        }
-        // Re-proof after the read (peek discipline): the run row still says
-        // what admission said, or nothing is shown.
-        const again = store.getRun(found.id);
-        if (again === null || !runVisible(again)) {
-          return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: true }));
-        }
-        return respond(
-          response,
-          200,
-          "application/json",
-          JSON.stringify({ text: window.text, nextOffset: window.nextOffset, final: !live && window.eof }),
-        );
-      }
-      // One result page (2026-10-02): a builder's finished result opens on
-      // its task's result page, titled with the task. The raw run record
-      // waits there under Details, and here with ?record=1.
-      if (url.searchParams.get("record") === null && !running && found.role === "builder" && (found.outcome === "built" || found.outcome === "no-change") &&
-          completedRowFor(taskId, null)?.runId === found.id) {
-        const tab = parseResultTab(url.searchParams.get("tab"));
-        return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
-      }
-      // A build that failed or stopped opens on its own result page too: its changes, its checks and what went wrong.
-      if (url.searchParams.get("record") === null && !running && (found.role === "builder" || found.role === "scout") && attemptRowFor(taskId, found.id, null) !== null) {
-        const tab = parseResultTab(url.searchParams.get("tab"));
-        return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
-      }
-      // Pollers exist only for a LIVE run — an orphaned null-outcome run
-      // would otherwise be refetched forever (finding 15). The nonce is
-      // sendScreen's business now.
-      const artifacts = store.artifactsFor(found.id);
-      return sendScreen(
-        response,
-        200,
-        runPage(
-          chromeFor(project, "runs", runListPane(project, found.id)),
-          found,
-          taskId,
-          artifacts,
-          terminalDiffView(artifacts, evidenceRoot),
-          store.notesForRun(found.id),
-          who.via === "cookie" ? who.session.csrf : "",
-          store.liveDiffComments(found.id).filter(isRevisionFeedback),
-          (() => {
-            const publication = store.publicationForRun(found.id);
-            return publication !== null && publication.prNumber !== null && store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber)
-              ? { pr: publication.prNumber }
-              : null;
-          })(),
-          !running
-            ? undefined
-            : regionScript("run-facts", "facts", 10) +
-              (options.localRunner === undefined ? "" : regionScript("run-peek", "peek", 15)) +
-              (options.localRunner === undefined ? "" : transcriptScript()),
-          options.localRunner !== undefined,
-          running,
-          // Editor links (arc 6): three statements align or nothing renders —
-          // the deployment capability, THIS machine's runner owning the run,
-          // and the session's own device-side yes.
-          options.editorLinks !== undefined &&
-          options.localRunner !== undefined &&
-          found.runner === options.localRunner &&
-          who.via === "cookie" &&
-          who.session.editorLinks === true &&
-          // A reviewer run (v29) never had a checkout — no files to open.
-          found.worktree !== null
-            ? { worktree: found.worktree }
-            : null,
-          options.editorLinks !== undefined &&
-          options.localRunner !== undefined &&
-          found.runner === options.localRunner &&
-          who.via === "cookie"
-            ? { on: who.session.editorLinks === true }
-            : null,
-          url.searchParams.get("noted") !== null,
-          structuredHandoffView(artifacts, evidenceRoot),
-          proofBundleView(store, found, artifacts, evidenceRoot),
-          store.runRoute(found.id),
-          store.publicationForRun(found.id),
-          reviewFactsFor(found.id),
-          // The shared result presentation (package 3) for a finished result.
-          !running && (found.outcome === "built" || found.outcome === "no-change")
-            ? { detail: resultDetailOf(found, who, now), tab: parseResultTab(url.searchParams.get("tab")), user: who.name, requestToken: randomBytes(16).toString("hex") }
-            : null,
-          store.getScope(taskId)?.digest ?? null,
-        ),
-      );
-    }
-
-    const runArtifact = /^\/r\/([0-9]{1,15})\/evidence\/([0-9]{1,15})$/.exec(url.pathname);
-    if (runArtifact !== null) {
-      return runEvidence(response, Number(runArtifact[1]), Number(runArtifact[2]));
-    }
-
-    // v115: routines became scheduled flows; an old link to the list or to one routine lands on the flows page.
-    if (url.pathname === "/routines" || /^\/routines\/[0-9]{1,15}$/.test(url.pathname)) return redirect(response, "/flows");
-
-    const one = /^\/d\/([0-9]{1,15})$/.exec(url.pathname);
-    if (one !== null) {
-      const decision = store.getDecision(Number(one[1]));
-      if (decision === null) return refuse(response, who, 404, "no such decision");
-      const run = store.getRun(decision.run);
-      if (run !== null && !visible(taskRepoOf(run.taskRef))) {
-        return refuse(response, who, 404, "no such decision");
-      }
-      const taskId = taskOf(store, decision);
-      const decisionReturn = url.searchParams.get("return");
-      const back = decisionReturn === null ? null : safeChatReturn(decisionReturn);
-      return sendScreen(response, 200, decisionPage(chromeFor(project, "none"), decision, taskId, store.evidenceFor(decision.id), who, now, back));
-    }
-
-    const artifact = /^\/d\/([0-9]{1,15})\/evidence\/([0-9]{1,15})$/.exec(url.pathname);
-    if (artifact !== null) {
-      return decisionEvidence(response, Number(artifact[1]), Number(artifact[2]));
-    }
-    return refuse(response, who!, 404, "There's no page at this address.", "/chat");
+  /** A row admitted the address but its path parameter does not parse: the console's unknown page. */
+  function noPage(who: Who, response: ServerResponse): void {
+    return refuse(response, who, 404, "There's no page at this address.", "/chat");
   }
 
-  async function post(ctx: HandlerContext): Promise<void> {
-    const { url, who, request, response, now, project, chosenProject, posted, route } = ctx;
-
-    if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
-      const body = readForm(posted, CONSOLE_FORMS.code);
-      const wantsJson = request.headers.accept?.includes('application/json') === true;
-      const fail = (status: number, message: string, delivery: 'rejected' | 'pending' | 'unknown' = 'rejected', sessionId?: string): void => wantsJson
-        ? respond(response, status, 'application/json', JSON.stringify({ ok: false, error: message, delivery, ...(sessionId ? { sessionId } : {}) }))
-        : refuse(response, who, status, message, '/code');
-      if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation }) || store.isDemo()) return fail(403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.');
-      if (!runtime.coding) return fail(409, runtime.codingProblem || 'Open Toolroll on the machine with your installed coding agent.');
-      if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return fail(400, 'Submit one value for each field.');
-      const actor = { name: who.name, generation: who.session.generation };
-      const permitted = (repo: string): boolean => visible(repo) && codingProjectAllowed(repo);
-      // Sprint 8: a coding session is Codex taking turns: the organisation policy decides whether it may (provider,
-      // model, and a ceiling Codex can't run under), when it starts and on every action that makes it take another turn.
-      const turnAction = /^\/code\/[a-f0-9]{32}\/(send|resume|recover|continue|answer)$/.test(url.pathname);
-      if (url.pathname === '/code/start' || turnAction) {
-        const stopped = store.sessionPolicyRefusal('codex', url.pathname === '/code/start' ? body.get('model')?.trim() || null : null, 'coding sessions');
-        if (stopped !== null) return fail(403, stopped);
+  /** The coding workspace and a session's own addresses: the row names the part, the path carries the session id. */
+  type CodePart = "workspace" | "session" | "state" | "changes" | "ship" | "unknown";
+  const showCode = (part: CodePart) => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, response, project } = ctx;
+    if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation })) return refuse(response, who, 403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.', '/work');
+    const actor = { name: who.name, generation: who.session.generation };
+    const sessionId = part === "workspace" || part === "unknown" ? null : /^\/code\/([a-f0-9]{32})/.exec(url.pathname)![1]!;
+    const read = part === "state" || part === "changes" ? part : null;
+    try {
+      const selected = sessionId !== null && runtime.coding ? runtime.coding.get(sessionId, actor) : null;
+      if (selected && !codingProjectAllowed(selected.repo)) return refuse(response, who, 403, 'That project is outside your access.', '/projects');
+      if (part === 'ship' && selected) {
+        const preview = codingHandoffPreview(store, { sessionId: selected.id, actor: who.name });
+        return sendScreen(response, 200, screen('Review for shipping', codingShippingHtml(preview), { chrome: chromeFor(selected.repo, 'code') }));
       }
-      try {
-        let id: string;
-        if (url.pathname === '/code/start') {
-          const repo = body.get('repo') ?? '';
-          if (!permitted(repo)) return fail(403, 'Choose a project available to your account.');
-          if (!authenticateApprover(who, body.get('password') ?? '').ok) return fail(403, 'Enter your Toolroll password to authorize this coding session.');
-          const session = await runtime.coding.start(actor, { repo, title: body.get('title') ?? '', model: body.get('model')?.trim() || null, prompt: body.get('prompt') ?? '', requestId: body.get('requestId') ?? '' });
-          id = session.id;
-        } else {
-          const match = /^\/code\/([a-f0-9]{32})\/(send|stop|resume|recover|continue|ship|answer)$/.exec(url.pathname);
-          if (!match) return fail(404, 'Coding action not found.');
-          id = match[1]!;
-          const session = runtime.coding.get(id, actor);
-          if (!permitted(session.repo)) return fail(403, 'That project is outside your access.');
-          if (match[2] === 'ship') {
-            const made = createCodingHandoff(store, { sessionId: id, actor: who.name, repo: session.repo, base: body.get('base') ?? '', candidate: body.get('candidate') ?? '', title: body.get('title') ?? '', goal: body.get('goal') ?? '', acceptance: (body.get('acceptance') ?? '').split('\n').map(line => line.trim()).filter(Boolean).map((statement, index) => ({ id: `c${index + 1}`, statement, evidence: ['check', 'changed-path', ...(body.get('visual') === 'yes' ? ['screenshot'] : [])] })) });
-            return wantsJson ? respond(response, 200, 'application/json', JSON.stringify({ ok: true, taskId: made.taskId })) : redirect(response, `/t/${encodeURIComponent(made.taskId)}`);
-          }
-          if (match[2] === 'send') await runtime.coding.send(id, actor, body.get('prompt') ?? '', body.get('requestId') ?? '');
-          else if (match[2] === 'stop') await runtime.coding.stop(id, actor);
-          else if (match[2] === 'resume') await runtime.coding.resume(id, actor);
-          else if (match[2] === 'recover') await runtime.coding.recover(id, actor);
-          else if (match[2] === 'continue') await runtime.coding.continueSaved(id, actor);
-          else {
-            const token = body.get('requestId') ?? '';
-            const pending = runtime.coding.snapshot(id, actor).requests.find(r => r.id === token);
-            if (!pending) return fail(409, 'This request is no longer waiting for an answer.');
-            const decision = body.get('decision');
-            if (decision !== 'accept' && decision !== 'decline' && decision !== 'cancel') return fail(400, 'Choose an explicit decision for this request.');
-            if (pending.kind !== 'questions' && decision === 'accept' && !authenticateApprover(who, body.get('password') ?? '').ok) return fail(403, 'Enter your password to approve this additional access.');
-            const answers: unknown = body.has('answers') ? JSON.parse(body.get('answers')!) : Object.fromEntries(pending.questions.map(q => [q.id, { answers: [body.get(`question:${q.id}`) ?? ''] }]));
-            runtime.coding.answer(id, actor, token, decision, answers);
-          }
-        }
-        // Authorization is checked again after asynchronous startup/transport work.
-        if (!codingActorAllowed(actor)) return fail(403, 'Your access changed. Sign in again.', 'unknown', id);
-        return wantsJson ? respond(response, 200, 'application/json', JSON.stringify({ ok: true, id })) : redirect(response, `/code/${id}`);
-      } catch (error) {
-        if (!codingActorAllowed(actor)) return fail(403, 'Your access changed. Sign in again.', error instanceof CodingActionError ? error.delivery : 'rejected', error instanceof CodingActionError ? error.sessionId : undefined);
-        const message = error instanceof Error ? error.message : 'The coding action could not finish. Your draft is preserved.';
-        const ship = /^\/code\/([a-f0-9]{32})\/ship$/.exec(url.pathname);
-        if (ship && !wantsJson) {
-          try { const preview = codingHandoffPreview(store, { sessionId: ship[1]!, actor: who.name }); return sendScreen(response, 409, screen('Review for shipping', codingShippingHtml(preview, who.session.csrf, body.sent, message), { chrome: chromeFor(preview.repo, 'code') })); } catch {}
-        }
-        return fail(409, message, error instanceof CodingActionError ? error.delivery : 'rejected', error instanceof CodingActionError ? error.sessionId : undefined);
+      if (part === 'ship' || read !== null) {
+        if (!selected || !runtime.coding) throw Error('The coding session is unavailable.');
+        if (read === 'state' && url.searchParams.get('revision') === String(runtime.coding.revision(selected.id, actor))) return respond(response, 200, 'application/json', JSON.stringify({ unchanged: true }));
+        const result = read === 'changes' ? await runtime.coding.changes(selected.id, actor) : runtime.coding.snapshot(selected.id, actor);
+        if (!codingActorAllowed(actor) || !codingProjectAllowed(selected.repo)) return respond(response, 403, 'application/json', JSON.stringify({ ok: false, error: 'Your access changed. Sign in again.' }));
+        return respond(response, 200, 'application/json', JSON.stringify(result));
       }
+      if (part === "unknown") return refuse(response, who, 404, 'Coding session not found.', '/code');
+      const requestedProject = url.searchParams.get('project');
+      if (requestedProject !== null && (!visible(requestedProject) || ![...managedRepos(), ...store.listProjects().map(p => p.path)].includes(requestedProject))) return refuse(response, who, 403, 'That project is outside your access.', '/projects');
+      const codeProject = selected?.repo ?? requestedProject ?? project;
+      const chrome = chromeFor(codeProject, 'code');
+      const content = codingWorkspaceHtml({ owner: who.name, projects: chrome.projects ?? [], sessions: runtime.coding?.list(actor).filter(s => codingProjectAllowed(s.repo)) ?? [], selected: selected && runtime.coding ? runtime.coding.snapshot(selected.id, actor) : null, csrf: who.session.csrf, project: codeProject, available: runtime.coding !== null, ...(runtime.codingProblem ? { error: runtime.codingProblem } : {}) });
+      return sendScreen(response, 200, screen('Code', content, { chrome, functional: { script: codingWorkspaceScript(), fetches: true } }));
+    } catch (error) {
+      if (!codingActorAllowed(actor)) return read !== null
+        ? respond(response, 403, 'application/json', JSON.stringify({ ok: false, error: 'Your access changed. Sign in again.' }))
+        : refuse(response, who, 403, 'Your access changed. Sign in again.', '/work');
+      const message = error instanceof Error ? error.message : 'The coding workspace is unavailable.';
+      if (part === 'ship') return sendScreen(response, 409, screen('Review for shipping', html`<h1>Prepare this result</h1><p>${message}</p><a href="/code/${sessionId}">Back to coding</a>`, { chrome: chromeFor(project, 'code') }));
+      if (read !== null) return respond(response, 409, 'application/json', JSON.stringify({ ok: false, error: message }));
+      return sendScreen(response, 404, screen('Coding session unavailable', html`<h1>Session unavailable</h1><p>${message}</p><a href="/code">Open coding workspace</a>`, { chrome: chromeFor(project, 'code') }));
     }
+  };
 
-    if (url.pathname === "/tasks/add") {
-      const body = readForm(posted, CONSOLE_FORMS.tasksAdd);
-      const project = projectOf(who, request);
-      if (project === undefined) {
-        return refuse(response, who, 403, "that project is outside what this server was configured to show");
+  async function showInbox(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response, now, project } = ctx;
+    // With no project open in scoped mode this is the ROLL-UP inbox:
+    // admission binds inside the bounded queries, every row's repo is
+    // re-proved here, and rows render as links only (Codex roll-up
+    // review, findings 6–8). Gaps stay per-project — they are derived
+    // against one repo's capabilities and roll up dishonestly.
+    const rollup = project === null && !unscopedMode;
+    const admission = rollup ? admissionList() : null;
+    const cancelled = store
+      .listCancelledBlockersScoped(project, 10, admission)
+      .filter(one => visible(one.repo) && visible(one.blockerRepo));
+    const inboxData = {
+        csrf: who.via === "cookie" ? who.session.csrf : "",
+        revision: who.via === "cookie" ? who.session.projectRevision : 0,
+        rollup,
+        interactive: project !== null,
+        decisions: store.listDecisionsScoped(project).filter(one => visible(one.repo)).slice(0, 10),
+        // Each waiting scope wears its consent door (v48 authority repair): a scope whose
+        // approval is closed — unreadable route, a route that cannot run,
+        // a pre-routing row whose approval lapsed — reads as needing
+        // attention, never as something to approve.
+        approvals: store.scopesAwaitingApproval(project, 10, admission).filter(one => visible(one.repo)).map(one => {
+          const ref = store.lookupRef(one.taskId);
+          const scope = store.getScope(one.taskId);
+          const door = consentDoorOf(scope, routeViewOf(one.taskId, ref, scope, now, who));
+          return { ...one, closed: door.open ? null : door.title };
+        }),
+        requeueables: store.listRequeueablesScoped(project, now, 10, admission).filter(one => visible(one.repo)),
+        needsVerification: store
+          .listCompletedWorkScoped(project, 10, admission)
+          .filter(one => visible(one.repo) && (one.proofVerdict === "short" || one.proofVerdict === "refuted") && !one.proofAccepted &&
+            assignmentOf(store, one.taskId, now, workAccess(), evidenceRoot) === null)
+          .map(one => ({
+            taskId: one.taskId,
+            title: one.title,
+            verdict: one.proofVerdict as "short" | "refuted",
+            repo: one.repo,
+            matrix: one.proofMatrix,
+            repairChain: one.runId === null ? null : store.repairChainFor(one.runId),
+          })),
+        cancelledBlockers: cancelled,
+        gaps: project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10),
+        wizard: firstRunStepsNow(now),
+        worker: (() => {
+          // The one fact the inbox must never hide (install review): with
+          // no worker answering, nothing here will ever build, and every
+          // approval below is a promise nobody is there to keep.
+          const runners = store.listRunners().filter(one => one.retiredAt === null && (!restricted() || one.repos.some(visible)));
+          const answering = runners.filter(one => runnerAlive(one, now));
+          const lastHeard = runners.map(one => one.heartbeatAt).sort().at(-1) ?? null;
+          return { answering: answering.length, registered: runners.length, lastHeard };
+        })(),
+        now,
+        // Console v2: results ready to review and work running now, from the same admitted work index.
+        ...(() => {
+          const row = (one: WorkIndexItem) => ({ taskId: one.rootId, title: one.title, detail: one.status.detail, repo: one.repo });
+          const needsYou = workIndexPage(store, now, workAccess(), { view: "needs-you", limit: 40, project });
+          const runningNow = workIndexPage(store, now, workAccess(), { view: "running", limit: 40, project });
+          return { ready: needsYou.items.filter(one => one.assignmentState === "ready-to-check").map(row), running: runningNow.items.map(row) };
+        })(),
+    };
+    // Which tabs hold something new since this browser last looked (the dots on a phone).
+    const tab = parseInboxTab(url.searchParams.get("tab")) ?? "all";
+    const prints = inboxFingerprints(inboxData);
+    const seenWords = /(?:^|;\s*)so-inbox-seen=([0-9a-f]{8}(?:\.[0-9a-f]{8}){3})(?:;|$)/.exec(request.headers.cookie ?? "")?.[1]?.split(".") ?? null;
+    const order = ["needs-you", "ready", "running", "all"] as const;
+    const seen = Object.fromEntries(order.map((one, index) => [one, seenWords?.[index] ?? ""])) as Record<InboxTab, string>;
+    const unread = order.filter(one => seenWords !== null && seen[one] !== prints[one]);
+    for (const one of order) if (tab === "all" || one === tab) seen[one] = prints[one];
+    response.setHeader("Set-Cookie", `so-inbox-seen=${order.map(one => seen[one] || prints[one]).join(".")}; SameSite=Lax; Path=/; Max-Age=31536000`);
+    return sendScreen(response, 200, inboxPage(chromeFor(project, "inbox"), { ...inboxData, tab, unread }));
+  }
+
+  async function showWork(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    // The Work destination (workspace package 1): every task in view as
+    // one row wearing the shared status projection, with All, Needs you,
+    // Running, and Completed as shortcuts over the same rows — never a
+    // persisted state. With no project open in scoped mode this rolls
+    // up like the inbox: admission binds the query and every row's repo
+    // is re-proved here.
+    const view = parseWorkView(url.searchParams.get("view"));
+    const rollup = project === null && !unscopedMode;
+    let work: WorkIndexPage;
+    try {
+      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project });
+      const facts = requestContext.getStore();
+      if (facts !== undefined) {
+        // These counts cover the exact admitted project lens, including
+        // unplaced tasks where permitted. Crew excludes unplaced rows.
+        if (project === null) facts.workCounts = work.projects;
+        const admitted = workAccess().repos;
+        const crewLens = project !== null || admitted !== null && JSON.stringify([...admitted].sort()) === JSON.stringify(managedRepos().sort()) && !work.projects.some(one => one.repo === null);
+        if (view === 'all' && !url.searchParams.has('cursor') && crewLens) facts.workCrew = { project, page: work };
       }
-      // Stale-tab guard: a form rendered under one open project must not
-      // create into a different one switched-to since (finding 6).
-      if (who.via === "cookie") {
-        const seen = body.get("projectRevision");
-        if (seen !== null && seen !== String(who.session.projectRevision)) {
-          return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks");
-        }
+    } catch (error) {
+      if (error instanceof WorkIndexCursorError) return refuse(response, who, 400, 'This task page has expired. Open the first page.', '/work');
+      throw error;
+    }
+    // A failed row says what its latest attempt missed, as its task page does (a stop reason already reads so), from
+    // the database alone: a row reads no check log. A live build's row says which step it is on, or the step it is
+    // stuck on, from that live attempt's own progress only, never a stopped attempt's; the step's words come from its
+    // current plan (one saved file, for live rows only), and without it the row names the step by number.
+    work = { ...work, items: work.items.map((item): WorkIndexItem & { progress?: string } => {
+      if (item.liveRunId !== null) {
+        const ref = store.lookupRef(item.activeTaskId);
+        const recorded = ref === null ? null : store.latestCheckpointForRun(item.liveRunId);
+        if (ref === null || recorded === null || recorded.taskRef !== ref.id) return item;
+        const plan = store.currentPlanRevision(ref.id);
+        const parsed = plan === null ? null : (() => { const doc = revisionDocOf(plan); return doc === null ? null : parseExecutionPlanDocument(doc.document); })();
+        const words = new Map(parsed?.ok === true ? milestonesOf(parsed.document).map(one => [one.id, one.description] as const) : []);
+        const steps = buildProgressOf(recorded.snapshot.milestones.map(one => ({ description: words.get(one.id) ?? null, state: one.state, note: one.note ?? null })));
+        return steps === null ? item : { ...item, progress: steps.line };
       }
-      const id = (body.get("id") ?? "").trim();
-      const title = body.get("title") ?? "";
-      // The EFFECTIVE placement (repo onboarding, findings 15/35): the
-      // trimmed, nonempty posted repo, else the open project — an empty
-      // input falls through correctly. In root mode the effective path is
-      // proved by authorizedProject EXACTLY as typed-then-canonicalized,
-      // and [canonical] is the admitted list — a fresh clone under a root
-      // must be able to receive its first task without waiting to appear
-      // in any table.
-      const repoGiven = (body.get("repo") ?? "").trim();
-      const effective = repoGiven !== "" ? repoGiven : (project ?? "");
-      if (restricted() && !visible(effective === "" ? null : effective)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-      // A scoped console refuses an EMPTY placement server-side (verification
-      // finding 1): the form's `required` is a courtesy, not the guard — a
-      // direct POST with no project open must not mint an unplaced task
-      // under a ceiling. Unscoped mode keeps its historic unplaced filings.
-      if (!unscopedMode && effective === "") {
-        const csrf = who.via === "cookie" ? who.session.csrf : "";
-        return sendScreen(
-          response,
-          400,
-          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, csrf, "name a repository — no project is open, so the task must say where it belongs", project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-        );
+      if (item.state !== "failed") return item;
+      const family = familyOf(item.activeTaskId);
+      if (family === null || family.problem !== null) return item;
+      const failure = failureOf(family.versions.flatMap(version => store.runsFor(version.refId)), null, false);
+      return failure.kind === "reason" ? item : { ...item, status: { ...item.status, detail: failure.line } };
+    }) };
+    const page = workPage(chromeFor(project, "work", undefined, rollup ? "all" : undefined), {
+      view,
+      ...(url.searchParams.has('project') && project !== null ? { projectFilter: project } : {}),
+      work,
+      previous: url.searchParams.has('cursor'),
+      multiProject: new Set(work.items.map(task => task.repo ?? "")).size > 1,
+      now,
+      // v105: subscription windows and monthly budgets, for whoever runs the installation.
+      limits: store.isInstanceOperator(who.name)
+        ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, teammate: id => teammateNamesOf(store.handle).get(id) ?? `Teammate ${id}` }, now)
+        : null,
+    });
+    // One project's Tasks dock that project's own conversation (v77).
+    const projectThread = url.searchParams.has('project') && project !== null && managedRepos().includes(project) ? project : null;
+    const docked = projectThread === null ? null : dockedConversation(who, null, projectThread, now, `/work?project=${encodeURIComponent(projectThread)}`);
+    if (docked !== null) page.workspace = { ...page.workspace, conversation: docked, pageHtml: page.body };
+    // Without a docked chat the list reads itself: 10 s while any of its tasks is building, else 30 s.
+    page.refreshSeconds = work.totals.running > 0 ? 10 : 30;
+    return sendScreen(response, 200, page);
+  }
+
+  async function showNext(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    // Triage: everything waiting on a person, one at a time, hardest-
+    // blocked first — oldest question, then plans and scopes to approve,
+    // then stalled work to retry, then requirement gaps. `skip` is a
+    // bounded, session-free cursor of keys the operator set aside; every
+    // act 303s back here, which is what makes it a flow and not a list.
+    const skipped = new Set(
+      (url.searchParams.get("skip") ?? "").split(",").filter(one => /^[darg]:[A-Za-z0-9._:-]{1,80}$/.test(one)).slice(0, 20),
+    );
+    const decisions = store.listDecisionsScoped(project).filter(one => one.state !== "answered");
+    const approvals = store.scopesAwaitingApproval(project, 20);
+    const requeueables = store.listRequeueablesScoped(project, now, 20);
+    const gaps = project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0);
+    type Item =
+      | { key: string; kind: "decision"; decision: (typeof decisions)[number] }
+      | { key: string; kind: "approval"; approval: (typeof approvals)[number] }
+      | { key: string; kind: "requeue"; stalled: (typeof requeueables)[number] }
+      | { key: string; kind: "gap"; gap: (typeof gaps)[number] };
+    const queue: Item[] = [
+      ...decisions.map(decision => ({ key: `d:${decision.id}`, kind: "decision" as const, decision })),
+      ...approvals.map(approval => ({ key: `a:${approval.taskId}`, kind: "approval" as const, approval })),
+      ...requeueables.map(stalled => ({ key: `r:${stalled.taskId}`, kind: "requeue" as const, stalled })),
+      ...gaps.map(gap => ({ key: `g:${gap.key.replace(/[^A-Za-z0-9._:-]/g, "_")}`, kind: "gap" as const, gap })),
+    ];
+    const remaining = queue.filter(one => !skipped.has(one.key));
+    const item = remaining[0] ?? null;
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    if (item !== null && item.kind === "approval") {
+      // The card restates the digest-bound terms, so the nonce may be
+      // minted here — same rule as the task screen, same binding.
+      const ref = store.lookupRef(item.approval.taskId);
+      const scope = store.getScope(item.approval.taskId);
+      const planView = ref !== null && ref.plan === "drafted" ? planViewOf(ref.id) : null;
+      const approvalDigest = approvalFormDigest(item.approval.digest, planView?.sha256 ?? null);
+      // The same agents block the task page and chat sign under (v48),
+      // and the same consent door: closed, it mints no nonce.
+      const route = routeViewOf(item.approval.taskId, ref, scope, now, who);
+      const nonce = who.via === "cookie" && consentDoorOf(scope, route).open ? mintApprovalNonce(who.name, item.approval.taskId, approvalDigest) : "";
+      return sendScreen(response, 200, nextPage(chromeFor(project, "inbox"), {
+        item, scope,
+        planDocument: planView?.document ?? null,
+        planContract: ref === null || planView === null ? null : planContractViewOf(ref.id, scope),
+        approvalDigest,
+        deliverable: ref?.deliverable ?? "branch",
+        route,
+        csrf, nonce, remaining: remaining.length, skipped: [...skipped], now,
+      }));
+    }
+    return sendScreen(response, 200, nextPage(chromeFor(project, "inbox"), {
+      item, scope: null, planDocument: null, planContract: null, csrf, nonce: "",
+      approvalDigest: null, route: null,
+      remaining: remaining.length, skipped: [...skipped], now,
+    }));
+  }
+
+  async function showBoard(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    // scope=all is the rolled-up view: every project this server was
+    // allowed to serve, on one board. The ceiling still rules row by row
+    // (rowVisible, the same predicate as every list) — a repo outside
+    // the server's configuration never renders a card, whatever the
+    // database holds. Unplaced work (repo NULL) appears: it dispatches
+    // anywhere, so every board honestly owns it.
+    const all = url.searchParams.get("scope") === "all";
+    // Roll-up admission happens BEFORE the query limit (Codex round 2,
+    // finding 11) — and root ceilings enumerate too, through the STORED
+    // repos that pass the ceiling (attended review, finding 3); the
+    // per-row visible() re-check below stays either way.
+    const admission = all ? admissionList() : null;
+    const snapshot = store.boardScoped(all ? null : project, now, 200, admission);
+    const admitted = all
+      ? snapshot.tasks.filter(facts => facts.repo === null || visible(facts.repo))
+      : snapshot.tasks;
+    const done = all
+      ? snapshot.done.filter(row => row.repo === null || visible(row.repo))
+      : snapshot.done;
+    // A blocker may live in a repo this server must not speak about —
+    // redact its state before the pure classifier composes a sentence
+    // from it (Codex round 2, finding 12). The dependency's NAME stays:
+    // the edge belongs to the visible task; the other project's live
+    // status does not.
+    const cards = admitted.map(facts =>
+      classify(
+        facts.blockerRepo !== null && !visible(facts.blockerRepo)
+          ? { ...facts, blockerState: null }
+          : facts,
+        now,
+      ),
+    );
+    // "Since you last looked": what concluded between this session's
+    // previous full board read and now. Fragment polls never move the
+    // anchor — an open tab is not a person looking.
+    let delta: { agoMinutes: number; built: number; failed: number; questions: number } | null = null;
+    if (who.via === "cookie" && url.searchParams.get("fragment") !== "1") {
+      const prev = who.session.sawBoardAt;
+      if (prev !== null && now.getTime() - prev > 5 * 60_000) {
+        const sinceIso = new Date(prev).toISOString();
+        const runs = store.runsSinceScoped(sinceIso, all ? null : project).filter(one => all ? one.taskId !== "" : true);
+        delta = {
+          agoMinutes: Math.round((now.getTime() - prev) / 60_000),
+          built: runs.filter(one => one.outcome === "built" || one.outcome === "no-change").length,
+          failed: runs.filter(one => one.outcome === "failed").length,
+          questions: store.listDecisionsScoped(all ? null : project).filter(one => one.createdAt >= sinceIso && one.state !== "answered").length,
+        };
+        if (delta.built === 0 && delta.failed === 0 && delta.questions === 0) delta = null;
       }
-      let repo = effective;
-      let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
-      const rootMode = !unscopedMode && ceiling.roots.length > 0;
-      if (rootMode && effective !== "") {
-        const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
-        if (canonical === null || canonical === undefined) {
-          const csrf = who.via === "cookie" ? who.session.csrf : "";
-          return sendScreen(
-            response,
-            403,
-            tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, csrf, `${effective} is outside what this server was configured to show`, project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-          );
-        }
-        repo = canonical;
-        admitted = [canonical];
-      }
-      const goal = body.get("goal") ?? "";
-      const notThis = body.get("not") ?? "";
-      const touchesGiven = (body.get("touches") ?? "")
-        .split(/[\n,]/)
-        .map(one => one.trim())
-        .filter(one => one !== "");
-      const scout = body.get("scout") === "1";
-      const permissionMode = body.get("permission-mode");
-      if (permissionMode !== null && permissionMode !== "auto" && permissionMode !== "bypassPermissions") {
-        return refuse(response, who, 400, "permissions must be Auto or Full access", "/tasks/new");
-      }
-      const qualityMode = body.get("quality-mode");
-      if (qualityMode !== null && !isQualityMode(qualityMode)) {
-        return refuse(response, who, 400, "quality must be Default or Strict / release", "/tasks/new");
-      }
-      // One filing door for every surface (Codex adoption review, finding 7).
-      const after = (body.get("after") ?? "").trim();
-      let chainProblem: string | null = null;
-      const made = store.transact(() => {
-        const filed = fileTaskProposal(
-          store,
-          {
-            ...(id === "" ? {} : { id }),
-            title,
-            ...(repo === "" ? {} : { repo }),
-            ...(goal === "" ? {} : { goal, acceptance: acceptanceLinesToInput((body.get("acceptance") ?? "").split("\n")) }),
-            outOfScope: notThis === "" ? null : notThis,
-            touches: touchesGiven,
-            ...(permissionMode === null ? {} : { permissionMode }),
-            ...(qualityMode === null ? {} : { qualityMode }),
-            ...(scout ? { deliverable: "report" as const } : {}),
-            planning:
-              scout
-                ? "skip"
-                : body.get("planning-policy") === "choice"
-                  ? body.get("plan-first") === "1" ? "required" : "skip"
-                  : "auto",
-            filedVia: "console", filedBy: { name: who.name, kind: "person" as const },
-            ...(admitted === null ? {} : { admittedRepos: admitted }),
-          },
-          now,
-        );
-        if (filed.ok && after !== "") {
-          const afterRef = store.lookupRef(after);
-          const chained = store.getTask(after) !== null && afterRef !== null && visible(afterRef.repo)
-            ? store.addEdge(filed.id, after) : { ok: false as const, reason: "that task does not exist here" };
-          if (!chained.ok) chainProblem = chained.reason;
-        }
-        // Missing dependencies leave a reviewable, inert task. They must
-        // never be silently dropped before automatic approval starts work.
-        if (filed.ok && chainProblem === null && who.via === "cookie") applyModeToNewFiling(store, filed.id, who.name, now);
-        return filed;
+      who.session.sawBoardAt = now.getTime();
+    }
+    // A completed task whose proof is short or refuted and not yet
+    // accepted (Priority 2) reads "needs verification", not done — the
+    // board's once-and-only-once rule holds because this split is the
+    // ONE place a done row becomes either lane; the done-lane render
+    // below never sees the rows filtered out here.
+    const unverifiedDone = done.filter(
+      row => (row.proofVerdict === "short" || row.proofVerdict === "refuted") && !row.proofAccepted,
+    );
+    const verifiedDone = done.filter(row => !unverifiedDone.includes(row));
+    const unverifiedCards = unverifiedDone.map(row => {
+      // v40: the SAME chip gains one more word when a repair chain
+      // exists for this row's own run — never a second card.
+      const chain = row.runId === null ? null : store.repairChainFor(row.runId);
+      const repairChain =
+        chain === null
+          ? null
+          : {
+              attempt: chain.attempt,
+              outcome: chain.outcome,
+              approved: chain.draftTask !== null && (store.getScope(chain.draftTask)?.approvedAt ?? null) !== null,
+            };
+      return attentionCardForUnverifiedDone({
+        taskId: row.taskId,
+        title: row.title,
+        repo: row.repo,
+        completedAt: row.completedAt,
+        proofVerdict: row.proofVerdict as "short" | "refuted",
+        proofMatrix: row.proofMatrix,
+        repairChain,
       });
-      if (!made.ok) {
-        const csrf = who.via === "cookie" ? who.session.csrf : "";
+    });
+    const laneCards = [...cards, ...unverifiedCards];
+    const body = boardBody(
+      { cards: laneCards, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
+      pr => store.ciFailureObserved(pr),
+    );
+    if (url.searchParams.get("fragment") === "1") {
+      // The live region alone — the in-page swapper's diet. Same auth,
+      // same ceiling, no shell, no scripts (finding 2).
+      return respond(response, 200, "text/html; charset=utf-8", body);
+    }
+    if (url.searchParams.get("view") === "order") {
+      // The board's ORDER view (operator request): the same screen, flipped
+      // to dispatch order with the queue's drag handles. Reordering and
+      // reserving are scheduling, not authority, so this is the one view
+      // where a drag does anything; the state view stays a view.
+      const csrf = who.via === "cookie" ? who.session.csrf : "";
+      const revision = who.via === "cookie" ? who.session.projectRevision : 0;
+      const region = queueRegionFor(project, csrf, revision, now);
+      return sendScreen(
+        response,
+        200,
+        screen("board", joinHtml([
+          html`<h1>Board</h1>`,
+          html`<p class="meta board-view"><a href="/board">state</a> \u00b7 <strong>order</strong> <span class="meta">\u2014 drag to reorder, or onto a worker to reserve; the state view is where cards move on their own</span></p>`,
+          html`<div id="queue-region">${region}</div>`,
+          html`<p class="meta" id="queue-region-stamp"></p>`,
+        ], "\n"), { chrome: chromeFor(project, "board"), functional: { script: queueScript(), fetches: true } }),
+      );
+    }
+    const regionBody = html`<div id="board-region">${body}</div><p class="meta" id="board-region-stamp"></p>`;
+    return sendScreen(
+      response,
+      200,
+      screen("board", regionBody, {
+        chrome: chromeFor(project, "board", undefined, all ? "board-all" : undefined),
+        functional: { script: regionScript("board-region", "1"), fetches: true },
+      }),
+    );
+  }
+
+  async function showReview(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project, chosenProject } = ctx;
+    // The review cockpit (Priority 5): every visible COMPLETED task,
+    // ranked by review priority, with one selected result projected
+    // from the records the task, run, and done pages already read —
+    // scope, plan, run, artifacts, verdict, publication. The
+    // ranking is a labeled presentation aid: it never rewrites the
+    // stored verdict, and the sealed patch downloads exactly as stored.
+    // Admission binds BEFORE the SQL limit (the done page's own rule),
+    // and every row is re-proved against the ceiling before ranking.
+    const resultRow = (row: CompletedWorkRow) => {
+      const assignment = assignmentOf(store, row.taskId, now, workAccess(), evidenceRoot);
+      return { ...row, proofReasons: row.runId === null ? [] : store.proofVerdictFor(row.runId)?.reasons ?? [], ciFailing: ciFailingFor(row.runId, row.prNumber),
+        assignment: assignment?.activeTaskId === row.taskId && (assignment.receipt?.runId ?? null) === row.runId ? assignment : null };
+    };
+    const rows = familiesInView(project, { states: ["done"], limit: REVIEW_QUEUE_CAP }).flatMap(family => {
+        const row = completedRowFor(family.current.id, project);
+        return row === null ? [] : [{ ...resultRow(row), title: family.root.title }];
+      });
+    const ranked = rankReviewQueue(rows);
+    const wanted = url.searchParams.get("result");
+    const wantedId =
+      wanted === null || wanted.length === 0 || wanted.length > 64 || hasForbiddenControls(wanted) ? null : wanted;
+    const inQueue = wantedId === null ? null : ranked.find(one => one.taskId === wantedId) ?? null;
+    // A stable deep link outlives the queue window (v2 review, comment
+    // 1): a completion older than the newest REVIEW_QUEUE_CAP resolves
+    // directly — re-proved as done, in this project, and inside the
+    // ceiling — so an old receipt never reads as unfinished or foreign.
+    // The ranked queue itself stays bounded and says so.
+    const beyond = wantedId === null || inQueue !== null ? null : completedRowFor(wantedId, project);
+    const beyondRow = beyond === null ? null : resultRow(beyond);
+    const completedChoice = inQueue ?? (beyondRow === null ? null : { ...beyondRow, priority: reviewPriorityOf(beyondRow) });
+    const expectedRun = url.searchParams.get("run");
+    const namedRun = expectedRun !== null && /^[1-9]\d*$/.test(expectedRun) ? Number(expectedRun) : null;
+    // A build that failed (or stopped) has its own result page too: the run named, or a failed task's latest attempt.
+    const attempt = wantedId === null || (completedChoice !== null && (namedRun === null || completedChoice.runId === namedRun)) ? null : attemptRowFor(wantedId, namedRun, project);
+    const attemptRow = attempt === null ? null : resultRow(attempt);
+    const chosen = attemptRow !== null ? { ...attemptRow, priority: reviewPriorityOf(attemptRow) } : completedChoice;
+    const selectedRow = wantedId === null ? ranked[0] ?? null : chosen;
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    // An exact link to a result this person can't see (or that never existed) reads the same either way.
+    if (expectedRun !== null && wantedId !== null && chosen === null) return refuse(response, who, 404, "No such result in your projects.", "/work");
+    if (expectedRun !== null && (!/^[1-9]\d*$/.test(expectedRun) || selectedRow?.runId !== Number(expectedRun))) {
+      return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
+    }
+    const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
+    // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
+    // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
+    // a reason.
+    const delivered = selected?.run?.outcome === "built" || selected?.run?.outcome === "no-change";
+    const failedTask = selected === null ? null : store.getTask(selected.taskId);
+    if (selected !== null && attemptRow !== null && selected.run !== null && (!delivered || failedTask?.state === "failed")) {
+      const attemptRun = store.getRun(selected.run.id);
+      const runs = attemptRun === null ? [] : store.runsFor(attemptRun.taskRef);
+      const latest = latestFinishedAttempt(runs);
+      // Retry from here only when the task failed, nothing holds it, and this is its latest attempt or a result it delivered.
+      const retry = failedTask?.state === "failed" && (latest?.id === selected.run.id || delivered) && csrf !== "" && who.role === "approver" && store.currentLiveLease(attemptRun!.taskRef, now) === null
+        ? { action: `${taskHref(selected.taskId)}/requeue` } : null;
+      // Accept anyway: the same acceptance this task's latest result takes, never for an older one or one already accepted.
+      const family = delivered ? familyOf(selected.taskId) : null;
+      const acceptAnyway = delivered && csrf !== "" && who.role === "approver" && family?.current.id === selected.taskId && family.problem === null &&
+        runs.find(runIsTaskResult)?.id === selected.run.id && store.proofAcceptance(selected.run.id) === null
+        ? { action: `${taskHref(selected.taskId)}/accept-proof`, run: selected.run.id } : null;
+      if (attemptRun !== null) {
+        // A delivered result didn't fail itself: the task's failure is its latest attempt's.
+        const failure = delivered ? failureOf(runs, null) : explainAttempt(attemptRun, null);
+        selected.failure = { ...failure, retry: retry === null ? null : { ...retry, note: retryNoteOf(failure.suggestion) }, ...(acceptAnyway === null ? {} : { acceptAnyway }) };
+      }
+    }
+    const reviewPage = reviewCockpitPage(chromeFor(wantedId === null ? project : chosenProject, "runs"), {
+        queue: ranked,
+        queueCap: REVIEW_QUEUE_CAP,
+        selected,
+        beyondQueue: beyond !== null && attemptRow === null,
+        // A deep link to a result this console cannot show — not done,
+        // not admitted, or never existed — says so in one sentence and
+        // shows the top of the queue; the three cases read identically.
+        missing: wantedId !== null && chosen === null ? wantedId : null,
+        csrf,
+        canRetryReview: who.via === "cookie" && who.role === "approver",
+        noted: url.searchParams.get("noted") !== null,
+        refusal: Object.hasOwn(RESULT_REFUSALS, url.searchParams.get("refused") ?? "") ? RESULT_REFUSALS[url.searchParams.get("refused")!]! : null,
+        tab: parseResultTab(url.searchParams.get("tab")),
+        user: who.name,
+        now,
+      });
+    // The result's task conversation, docked beside it (v77); messages
+    // sent here carry the result being viewed.
+    const reviewFocus = selected === null ? null : taskChatFocus(selected.taskId, now, who, { mintNonce: false });
+    const reviewDocked = reviewFocus === null || selected === null ? null
+      : dockedConversation(who, reviewFocus, null, now, reviewHref(selected.taskId), selected.run !== null && reviewFocus.family.versions.some(one => one.refId === store.getRun(selected.run!.id)?.taskRef) ? selected.run.id : null);
+    if (reviewDocked !== null) reviewPage.workspace = { ...reviewPage.workspace, conversation: reviewDocked, pageHtml: reviewPage.body };
+    return sendScreen(response, 200, reviewPage);
+  }
+
+  async function showDone(ctx: HandlerContext): Promise<void> {
+    const { response, project } = ctx;
+    return sendScreen(
+      response,
+      200,
+      donePage(chromeFor(project, "runs"), store.listCompletedWorkScoped(project, 50), pr => store.ciFailureObserved(pr)),
+    );
+  }
+
+  async function showTasks(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, project } = ctx;
+    const wanted = url.searchParams.get("state");
+    if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) {
+      return refuse(response, who, 400, "no such state", "/tasks");
+    }
+    // ?template=<name> pre-fills the add form from the shipped library —
+    // a pre-filled form and nothing more; the submission path is the
+    // same guarded handler either way.
+    const fromTemplate = url.searchParams.get("template");
+    const picked = fromTemplate === null ? null : templateByName(fromTemplate);
+    const prefill =
+      picked !== null && picked.kind === "task"
+        ? {
+            title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "),
+            acceptance: acceptanceToLines(picked.acceptance).join("\n"),
+          }
+        : null;
+    return sendScreen(
+      response,
+      200,
+      tasksPage(
+        chromeFor(project, "tasks"),
+        familyTasksInView(project, wanted === null ? undefined : (wanted as TaskState)).slice(0, 200),
+        wanted as TaskState | null,
+        null,
+        project,
+        prefill,
+        store.permissionDefault().mode,
+        store.qualityDefault().mode,
+        store.replacements(),
+      ),
+    );
+  }
+
+  async function showQueue(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, project } = ctx;
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    const revision = who.via === "cookie" ? who.session.projectRevision : 0;
+    // Column headers read one thing beyond the queue snapshot: live claims
+    // in THIS project, per worker (the capacity is global), so the header
+    // names both and never a ratio.
+    if (url.searchParams.get("fragment") === "1") {
+      return respond(response, 200, "text/html; charset=utf-8", queueRegionFor(project, csrf, revision, clock()));
+    }
+    // The queue is the board's order view (reduction pass §1): the URL
+    // keeps answering, as a redirect, so nothing anyone bookmarked 404s.
+    return redirect(response, QUEUE_VIEW);
+  }
+
+  async function showNewTask(ctx: HandlerContext): Promise<void> {
+    const { who, response, project } = ctx;
+    const revision = who.via === "cookie" ? who.session.projectRevision : 0;
+    const chainable = store
+      .listTasksScoped(project, undefined, 100, null)
+      .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
+      .map(one => ({ id: one.id, title: one.title }));
+    const chrome = chromeFor(project, "tasks");
+    return sendScreen(response, 200, newTaskPage(chrome, project, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
+  }
+
+  async function showTask(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const task = matchTaskPath(url.pathname, "");
+    if (task === null) return noPage(who, response);
+    const family = familyOf(task.taskId);
+    if (family === null) return refuse(response, who, 404, "no such task", "/tasks");
+    const version = url.searchParams.get("version");
+    if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
+    // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
+    if (task.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${url.searchParams.get("edit") === "plan" ? "&edit=plan" : ""}`);
+    return taskScreen(response, who, version ?? family.current.id, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan");
+  }
+
+  // v103: a task's evidence pack, as a printable page or JSON (the whole family, sealed ledger entries included).
+  async function showTaskEvidence(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
+    const evidence = matchTaskPath(url.pathname, "/evidence$");
+    if (evidence === null) return noPage(who, response);
+    const access = workAccess();
+    const family = store.taskFamilyOf(evidence.taskId, access.repos, access.includeUnplaced);
+    if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (evidence.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}/evidence${url.search}`);
+    const pack = evidencePack(store, family.root.id, access, who.name, now, evidenceRoot);
+    if (pack === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (url.searchParams.get("format") === "json") {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="evidence-${family.root.id.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
+        "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return void response.end(JSON.stringify(checkResponse("evidencePack", pack), null, 2));
+    }
+    return sendScreen(response, 200, screen(`Evidence pack · ${family.root.id}`, evidencePackHtml(pack), { chrome: chromeFor(family.root.repo, "tasks") }));
+  }
+
+  async function showRuns(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, project } = ctx;
+    const raw = url.searchParams.get("before");
+    let before: number | null = null;
+    if (raw !== null) {
+      if (!/^[1-9][0-9]{0,14}$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+        return refuse(response, who, 400, "that cursor is not a page", "/runs");
+      }
+      before = Number(raw);
+    }
+    const rows = store.listRunsBefore(before, RUNS_PAGE, project);
+    const verdicts = store.proofVerdictsFor(rows.map(one => one.id));
+    const accepted = new Set(rows.filter(one => store.proofAcceptance(one.id) !== null).map(one => one.id));
+    return sendScreen(response, 200, runsPage(chromeFor(project, "runs"), rows, liveRunIds(rows), rows.length === RUNS_PAGE ? rows[rows.length - 1]?.id ?? null : null, verdicts, accepted));
+  }
+
+  async function showRun(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    const run = /^\/r\/([0-9]{1,15})$/.exec(url.pathname);
+    if (run === null) return noPage(who, response);
+    const found = store.getRun(Number(run[1]));
+    if (found === null || !runVisible(found)) {
+      return refuse(response, who, 404, "no such run", "/runs");
+    }
+    const taskId = store.externalIdFor(found.taskRef) ?? "?";
+    const running = runIsLive(found);
+    if (url.searchParams.get("fragment") === "check") {
+      response.setHeader("cache-control", "no-store");
+      return respond(response, 200, "text/html; charset=utf-8", checkProgressHtml(store.checkProgress(found.id)));
+    }
+    if (url.searchParams.get("fragment") === "facts") {
+      // The facts region alone — same auth and ceiling as the page; a
+      // finished or no-longer-live run says so rather than growing forms
+      // (finding 5; round-4 finding 15).
+      return respond(response, 200, "text/html; charset=utf-8", runFactsFragment(found, taskId, running, store.runRoute(found.id)));
+    }
+    if (url.searchParams.get("fragment") === "peek") {
+      // The live peek: cookie sessions only (v2 §3), never stored, never
+      // cached by anything downstream.
+      if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "the live peek is a browser session's view");
+      const peeked = await peekFragment(
+        found.id,
+        who.session.csrf,
+        options.editorLinks !== undefined && found.runner === options.localRunner && who.session.editorLinks === true,
+      );
+      response.setHeader("cache-control", "no-store");
+      if (peeked.retryAfter !== undefined) response.setHeader("retry-after", String(peeked.retryAfter));
+      return respond(response, peeked.status, "text/html; charset=utf-8", peeked.body);
+    }
+    if (url.searchParams.get("fragment") === "transcript") {
+      // The live transcript window (arc 1): raw sanitized TEXT as JSON —
+      // the sink is textContent, never innerHTML. Guards, enumerated:
+      // cookie session; run visible (proved above); this machine's
+      // runner asserted; byte offsets validated; the file read through
+      // its own descriptor with the exact numeric-id name. Display
+      // state, not evidence — and never cached.
+      response.setHeader("cache-control", "no-store");
+      if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+      if (options.localRunner === undefined) {
+        return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
+      }
+      const fromRaw = url.searchParams.get("from") ?? "0";
+      const from = /^[0-9]{1,15}$/.test(fromRaw) ? Number(fromRaw) : Number.NaN;
+      if (!Number.isSafeInteger(from) || from < 0) {
+        return respond(response, 400, "application/json", JSON.stringify({ error: "offset" }));
+      }
+      const live = runIsLive(found);
+      // The final drain: a finished run's tail — including a torn last
+      // line — may be read until the sweep removes the file.
+      const window = readLiveWindow(evidenceRoot, found.id, from, !live);
+      if (!window.ok) {
+        if (window.reason === "replaced") {
+          return respond(response, 409, "application/json", JSON.stringify({ error: "replaced" }));
+        }
+        // Missing or unreadable: nothing to show. Final only when the
+        // run can never write again.
+        return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: !live }));
+      }
+      // Re-proof after the read (peek discipline): the run row still says
+      // what admission said, or nothing is shown.
+      const again = store.getRun(found.id);
+      if (again === null || !runVisible(again)) {
+        return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: true }));
+      }
+      return respond(
+        response,
+        200,
+        "application/json",
+        JSON.stringify({ text: window.text, nextOffset: window.nextOffset, final: !live && window.eof }),
+      );
+    }
+    // One result page (2026-10-02): a builder's finished result opens on
+    // its task's result page, titled with the task. The raw run record
+    // waits there under Details, and here with ?record=1.
+    if (url.searchParams.get("record") === null && !running && found.role === "builder" && (found.outcome === "built" || found.outcome === "no-change") &&
+        completedRowFor(taskId, null)?.runId === found.id) {
+      const tab = parseResultTab(url.searchParams.get("tab"));
+      return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
+    }
+    // A build that failed or stopped opens on its own result page too: its changes, its checks and what went wrong.
+    if (url.searchParams.get("record") === null && !running && (found.role === "builder" || found.role === "scout") && attemptRowFor(taskId, found.id, null) !== null) {
+      const tab = parseResultTab(url.searchParams.get("tab"));
+      return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
+    }
+    // Pollers exist only for a LIVE run — an orphaned null-outcome run
+    // would otherwise be refetched forever (finding 15). The nonce is
+    // sendScreen's business now.
+    const artifacts = store.artifactsFor(found.id);
+    return sendScreen(
+      response,
+      200,
+      runPage(
+        chromeFor(project, "runs", runListPane(project, found.id)),
+        found,
+        taskId,
+        artifacts,
+        terminalDiffView(artifacts, evidenceRoot),
+        store.notesForRun(found.id),
+        who.via === "cookie" ? who.session.csrf : "",
+        store.liveDiffComments(found.id).filter(isRevisionFeedback),
+        (() => {
+          const publication = store.publicationForRun(found.id);
+          return publication !== null && publication.prNumber !== null && store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber)
+            ? { pr: publication.prNumber }
+            : null;
+        })(),
+        !running
+          ? undefined
+          : regionScript("run-facts", "facts") +
+            (options.localRunner === undefined ? "" : regionScript("run-peek", "peek")) +
+            (options.localRunner === undefined ? "" : transcriptScript()),
+        options.localRunner !== undefined,
+        running,
+        // Editor links (arc 6): three statements align or nothing renders —
+        // the deployment capability, THIS machine's runner owning the run,
+        // and the session's own device-side yes.
+        options.editorLinks !== undefined &&
+        options.localRunner !== undefined &&
+        found.runner === options.localRunner &&
+        who.via === "cookie" &&
+        who.session.editorLinks === true &&
+        // A reviewer run (v29) never had a checkout — no files to open.
+        found.worktree !== null
+          ? { worktree: found.worktree }
+          : null,
+        options.editorLinks !== undefined &&
+        options.localRunner !== undefined &&
+        found.runner === options.localRunner &&
+        who.via === "cookie"
+          ? { on: who.session.editorLinks === true }
+          : null,
+        url.searchParams.get("noted") !== null,
+        structuredHandoffView(artifacts, evidenceRoot),
+        proofBundleView(store, found, artifacts, evidenceRoot),
+        store.runRoute(found.id),
+        store.publicationForRun(found.id),
+        reviewFactsFor(found.id),
+        // The shared result presentation (package 3) for a finished result.
+        !running && (found.outcome === "built" || found.outcome === "no-change")
+          ? { detail: resultDetailOf(found, who, now), tab: parseResultTab(url.searchParams.get("tab")), user: who.name, requestToken: randomBytes(16).toString("hex") }
+          : null,
+        store.getScope(taskId)?.digest ?? null,
+      ),
+    );
+  }
+
+  async function showRunEvidence(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const runArtifact = /^\/r\/([0-9]{1,15})\/evidence\/([0-9]{1,15})$/.exec(url.pathname);
+    if (runArtifact === null) return noPage(who, response);
+    return runEvidence(response, Number(runArtifact[1]), Number(runArtifact[2]));
+  }
+
+  // v115: routines became scheduled flows; an old link to the list or to one routine lands on the flows page.
+  async function showRoutines(ctx: HandlerContext): Promise<void> {
+    return redirect(ctx.response, "/flows");
+  }
+
+  async function showRoutine(ctx: HandlerContext): Promise<void> {
+    return redirect(ctx.response, "/flows");
+  }
+
+  async function showDecision(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    const one = /^\/d\/([0-9]{1,15})$/.exec(url.pathname);
+    if (one === null) return noPage(who, response);
+    const decision = store.getDecision(Number(one[1]));
+    if (decision === null) return refuse(response, who, 404, "no such decision");
+    const run = store.getRun(decision.run);
+    if (run !== null && !visible(taskRepoOf(run.taskRef))) {
+      return refuse(response, who, 404, "no such decision");
+    }
+    const taskId = taskOf(store, decision);
+    const decisionReturn = url.searchParams.get("return");
+    const back = decisionReturn === null ? null : safeChatReturn(decisionReturn);
+    return sendScreen(response, 200, decisionPage(chromeFor(project, "none"), decision, taskId, store.evidenceFor(decision.id), who, now, back));
+  }
+
+  async function showDecisionEvidence(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const artifact = /^\/d\/([0-9]{1,15})\/evidence\/([0-9]{1,15})$/.exec(url.pathname);
+    if (artifact === null) return noPage(who, response);
+    return decisionEvidence(response, Number(artifact[1]), Number(artifact[2]));
+  }
+
+  /** Starting a coding session and each session's actions: the row names the action, the path carries the session id. */
+  type CodeAction = "start" | "send" | "stop" | "resume" | "recover" | "continue" | "ship" | "answer" | "unknown";
+  const codeAct = (verb: CodeAction) => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, request, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.code);
+    const wantsJson = request.headers.accept?.includes('application/json') === true;
+    const fail = (status: number, message: string, delivery: 'rejected' | 'pending' | 'unknown' = 'rejected', sessionId?: string): void => wantsJson
+      ? respond(response, status, 'application/json', JSON.stringify({ ok: false, error: message, delivery, ...(sessionId ? { sessionId } : {}) }))
+      : refuse(response, who, status, message, '/code');
+    if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation }) || store.isDemo()) return fail(403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.');
+    if (!runtime.coding) return fail(409, runtime.codingProblem || 'Open Toolroll on the machine with your installed coding agent.');
+    if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return fail(400, 'Submit one value for each field.');
+    const actor = { name: who.name, generation: who.session.generation };
+    const permitted = (repo: string): boolean => visible(repo) && codingProjectAllowed(repo);
+    const starting = verb === 'start';
+    const sessionId = starting || verb === 'unknown' ? null : /^\/code\/([a-f0-9]{32})/.exec(url.pathname)![1]!;
+    // Sprint 8: a coding session is Codex taking turns: the organisation policy decides whether it may (provider,
+    // model, and a ceiling Codex can't run under), when it starts and on every action that makes it take another turn.
+    const turnAction = ['send', 'resume', 'recover', 'continue', 'answer'].includes(verb);
+    if (starting || turnAction) {
+      const stopped = store.sessionPolicyRefusal('codex', starting ? body.get('model')?.trim() || null : null, 'coding sessions');
+      if (stopped !== null) return fail(403, stopped);
+    }
+    try {
+      let id: string;
+      if (starting) {
+        const repo = body.get('repo') ?? '';
+        if (!permitted(repo)) return fail(403, 'Choose a project available to your account.');
+        if (!authenticateApprover(who, body.get('password') ?? '').ok) return fail(403, 'Enter your Toolroll password to authorize this coding session.');
+        const session = await runtime.coding.start(actor, { repo, title: body.get('title') ?? '', model: body.get('model')?.trim() || null, prompt: body.get('prompt') ?? '', requestId: body.get('requestId') ?? '' });
+        id = session.id;
+      } else {
+        if (sessionId === null) return fail(404, 'Coding action not found.');
+        id = sessionId;
+        const session = runtime.coding.get(id, actor);
+        if (!permitted(session.repo)) return fail(403, 'That project is outside your access.');
+        if (verb === 'ship') {
+          const made = createCodingHandoff(store, { sessionId: id, actor: who.name, repo: session.repo, base: body.get('base') ?? '', candidate: body.get('candidate') ?? '', title: body.get('title') ?? '', goal: body.get('goal') ?? '', acceptance: (body.get('acceptance') ?? '').split('\n').map(line => line.trim()).filter(Boolean).map((statement, index) => ({ id: `c${index + 1}`, statement, evidence: ['check', 'changed-path', ...(body.get('visual') === 'yes' ? ['screenshot'] : [])] })) });
+          return wantsJson ? respond(response, 200, 'application/json', JSON.stringify({ ok: true, taskId: made.taskId })) : redirect(response, `/t/${encodeURIComponent(made.taskId)}`);
+        }
+        if (verb === 'send') await runtime.coding.send(id, actor, body.get('prompt') ?? '', body.get('requestId') ?? '');
+        else if (verb === 'stop') await runtime.coding.stop(id, actor);
+        else if (verb === 'resume') await runtime.coding.resume(id, actor);
+        else if (verb === 'recover') await runtime.coding.recover(id, actor);
+        else if (verb === 'continue') await runtime.coding.continueSaved(id, actor);
+        else {
+          const token = body.get('requestId') ?? '';
+          const pending = runtime.coding.snapshot(id, actor).requests.find(r => r.id === token);
+          if (!pending) return fail(409, 'This request is no longer waiting for an answer.');
+          const decision = body.get('decision');
+          if (decision !== 'accept' && decision !== 'decline' && decision !== 'cancel') return fail(400, 'Choose an explicit decision for this request.');
+          if (pending.kind !== 'questions' && decision === 'accept' && !authenticateApprover(who, body.get('password') ?? '').ok) return fail(403, 'Enter your password to approve this additional access.');
+          const answers: unknown = body.has('answers') ? JSON.parse(body.get('answers')!) : Object.fromEntries(pending.questions.map(q => [q.id, { answers: [body.get(`question:${q.id}`) ?? ''] }]));
+          runtime.coding.answer(id, actor, token, decision, answers);
+        }
+      }
+      // Authorization is checked again after asynchronous startup/transport work.
+      if (!codingActorAllowed(actor)) return fail(403, 'Your access changed. Sign in again.', 'unknown', id);
+      return wantsJson ? respond(response, 200, 'application/json', JSON.stringify({ ok: true, id })) : redirect(response, `/code/${id}`);
+    } catch (error) {
+      if (!codingActorAllowed(actor)) return fail(403, 'Your access changed. Sign in again.', error instanceof CodingActionError ? error.delivery : 'rejected', error instanceof CodingActionError ? error.sessionId : undefined);
+      const message = error instanceof Error ? error.message : 'The coding action could not finish. Your draft is preserved.';
+      if (verb === 'ship' && !wantsJson) {
+        try { const preview = codingHandoffPreview(store, { sessionId: sessionId!, actor: who.name }); return sendScreen(response, 409, screen('Review for shipping', codingShippingHtml(preview, body.sent, message), { chrome: chromeFor(preview.repo, 'code') })); } catch {}
+      }
+      return fail(409, message, error instanceof CodingActionError ? error.delivery : 'rejected', error instanceof CodingActionError ? error.sessionId : undefined);
+    }
+  };
+
+  async function addTask(ctx: HandlerContext): Promise<void> {
+    const { who, request, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.tasksAdd);
+    const project = projectOf(who, request);
+    if (project === undefined) {
+      return refuse(response, who, 403, "that project is outside what this server was configured to show");
+    }
+    // Stale-tab guard: a form rendered under one open project must not
+    // create into a different one switched-to since (finding 6).
+    if (who.via === "cookie") {
+      const seen = body.get("projectRevision");
+      if (seen !== null && seen !== String(who.session.projectRevision)) {
+        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks");
+      }
+    }
+    const id = (body.get("id") ?? "").trim();
+    const title = body.get("title") ?? "";
+    // The EFFECTIVE placement (repo onboarding, findings 15/35): the
+    // trimmed, nonempty posted repo, else the open project — an empty
+    // input falls through correctly. In root mode the effective path is
+    // proved by authorizedProject EXACTLY as typed-then-canonicalized,
+    // and [canonical] is the admitted list — a fresh clone under a root
+    // must be able to receive its first task without waiting to appear
+    // in any table.
+    const repoGiven = (body.get("repo") ?? "").trim();
+    const effective = repoGiven !== "" ? repoGiven : (project ?? "");
+    if (restricted() && !visible(effective === "" ? null : effective)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    // A scoped console refuses an EMPTY placement server-side (verification
+    // finding 1): the form's `required` is a courtesy, not the guard — a
+    // direct POST with no project open must not mint an unplaced task
+    // under a ceiling. Unscoped mode keeps its historic unplaced filings.
+    if (!unscopedMode && effective === "") {
+      return sendScreen(
+        response,
+        400,
+        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, "name a repository — no project is open, so the task must say where it belongs", project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
+      );
+    }
+    let repo = effective;
+    let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
+    const rootMode = !unscopedMode && ceiling.roots.length > 0;
+    if (rootMode && effective !== "") {
+      const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
+      if (canonical === null || canonical === undefined) {
         return sendScreen(
           response,
-          made.reason === "backlog-full" ? 429 : 400,
-          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, csrf, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
+          403,
+          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, `${effective} is outside what this server was configured to show`, project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
         );
       }
-      const actionContext = requestContext.getStore();
-      if (actionContext !== undefined) actionContext.createdTask = made.id;
-      // A proved root-mode placement joins the project table (finding 15):
-      // the new task's home is openable and admissible from now on.
-      if (rootMode && repo !== "") store.upsertProject(repo, projectName(repo), now);
-      if (chainProblem !== null) return taskScreen(response, who, made.id, `the task was created, but could not be made to wait for ${after} — ${chainProblem}`, 200);
-      return redirect(response, taskHref(made.id));
+      repo = canonical;
+      admitted = [canonical];
     }
-
-    if (url.pathname === "/queue/move" || url.pathname === "/queue/note") {
-      const body = readForm(posted, CONSOLE_FORMS.queue);
-      const project = projectOf(who, request);
-      if (project === undefined) {
-        return refuse(response, who, 403, "that project is outside what this server was configured to show");
-      }
-      // The note is a global runner label, not project-scoped work: the
-      // fleet screen (project-less) posts it too, so the null-project gate
-      // applies only to moves, which the task-level check below re-proves.
-      if (url.pathname === "/queue/note") {
-        const worker = (body.get("runner") ?? "").trim();
-        const note = (body.get("note") ?? "").trim();
-        if (note.length > 200 || hasForbiddenControls(note)) {
-          return refuse(response, who, 400, "that note will not render, so it will not store", QUEUE_VIEW);
-        }
-        const set = store.setRunnerQueueNote(worker, note === "" ? null : note);
-        if (!set.ok) return refuse(response, who, 404, "no such worker", QUEUE_VIEW);
-        return redirect(response, body.get("from") === "fleet" ? "/fleet" : QUEUE_VIEW);
-      }
-      if (who.via === "cookie") {
-        const seen = body.get("projectRevision");
-        if (seen !== null && seen !== String(who.session.projectRevision)) {
-          return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", QUEUE_VIEW);
-        }
-      }
-      // A drag posts in place (fetch) when it can; the page re-renders its
-      // own fragment on success. A plain form still works with no script.
-      const inPlace = body.get("respond") === "fragment";
-      const fromFleet = who.via === "cookie" && body.get("projectRevision") === null;
-      const respondMove = (status: number, message: string): void => {
-        if (!inPlace) return status === 409 ? refuse(response, who, 409, message, QUEUE_VIEW) : redirect(response, QUEUE_VIEW);
-        respond(response, status, "text/plain; charset=utf-8", message);
-      };
-      const moveReason = (reason: string): string =>
-        reason === "stale"
-          ? "the queue moved underneath you — it just reloaded"
-          : reason === "claimed"
-            ? "that task is being taken right now — it keeps its claim"
-            : reason === "worker-retired"
-              ? "that worker is retired — drag its work elsewhere, or register the name again"
-              : reason === "no-such-worker"
-                ? "no such worker"
-                : "that task is not in this queue any more";
-      const taskId = (body.get("task") ?? "").trim();
-      const columnGiven = (body.get("column") ?? "").trim();
-      const toRunner = columnGiven === "" || columnGiven === "anyone" ? null : columnGiven;
-      const beforeGiven = (body.get("before") ?? "").trim();
-      const revisionGiven = Number(body.get("queueRevision") ?? "");
-      // The queue's own screen enforces the open project; the fleet screen
-      // is cross-project, so the ceiling is the only wall it needs.
-      const belongs = (id: string): boolean => {
-        const ref = store.lookupRef(id);
-        return ref !== null && visible(ref.repo) && (fromFleet || project === null || ref.repo === null || ref.repo === project);
-      };
-      if (!belongs(taskId) || (beforeGiven !== "" && beforeGiven !== QUEUE_FRONT && !belongs(beforeGiven))) {
-        return respondMove(404, "that task is not in this queue");
-      }
-      // The no-script "move to the front" button cannot name the front: the
-      // front of a task's partition is decided by the store's exact repo AND
-      // assignment, and the page's snapshot is bounded — so the sentinel is
-      // resolved HERE, against a fresh snapshot, into a real task id (slice
-      // 1b, fix 1). It is honored only within the task's own column; a
-      // cross-column front is not provable from a bounded snapshot.
-      let beforeTaskId: string | null = beforeGiven === "" ? null : beforeGiven;
-      if (beforeGiven === QUEUE_FRONT) {
-        const ref = store.lookupRef(taskId);
-        if (ref === null) return respondMove(404, "that task is not in this queue");
-        if (ref.assignedRunner !== toRunner) {
-          return respondMove(409, "move to the front works inside a task's own column — drag it across to reserve it elsewhere");
-        }
-        const now = clock();
-        const snapshot = store.queueScoped(ref.repo, now);
-        const self = snapshot.find(one => one.id === taskId);
-        // A claim can land after the form rendered WITHOUT
-        // bumping queueRevision, so the snapshot — not the form — decides
-        // whether the card is still free. A taken or vanished card is the
-        // typed refusal, never a silent no-op that would skip moveTask()'s
-        // own claimed recheck.
-        if (self === undefined) return respondMove(409, moveReason("unknown-task"));
-        if (self.taken) return respondMove(409, moveReason("claimed"));
-        const partition = snapshot.filter(
-          one => one.repo === ref.repo && one.assignedRunner === ref.assignedRunner && !one.taken,
-        );
-        const front = partition[0];
-        if (front === undefined) return respondMove(409, moveReason("unknown-task"));
-        if (front.id === taskId) {
-          // Already the front: a no-op, but only against the revision the
-          // form was rendered with — this branch never reaches moveTask()'s
-          // CAS, so the check is made here.
-          if (!Number.isSafeInteger(revisionGiven) || revisionGiven !== store.queueRevision()) {
-            return respondMove(409, moveReason("stale"));
-          }
-          return respondMove(200, "already at the front");
-        }
-        beforeTaskId = front.id;
-      }
-      const moved = store.moveTask(
+    const goal = body.get("goal") ?? "";
+    const notThis = body.get("not") ?? "";
+    const touchesGiven = (body.get("touches") ?? "")
+      .split(/[\n,]/)
+      .map(one => one.trim())
+      .filter(one => one !== "");
+    const scout = body.get("scout") === "1";
+    const permissionMode = body.get("permission-mode");
+    if (permissionMode !== null && permissionMode !== "auto" && permissionMode !== "bypassPermissions") {
+      return refuse(response, who, 400, "permissions must be Auto or Full access", "/tasks/new");
+    }
+    const qualityMode = body.get("quality-mode");
+    if (qualityMode !== null && !isQualityMode(qualityMode)) {
+      return refuse(response, who, 400, "quality must be Default or Strict / release", "/tasks/new");
+    }
+    // One filing door for every surface (Codex adoption review, finding 7).
+    const after = (body.get("after") ?? "").trim();
+    let chainProblem: string | null = null;
+    const made = store.transact(() => {
+      const filed = fileTaskProposal(
+        store,
         {
-          taskId,
-          toRunner,
-          beforeTaskId,
-          ...(Number.isSafeInteger(revisionGiven) ? { queueRevision: revisionGiven } : {}),
+          ...(id === "" ? {} : { id }),
+          title,
+          ...(repo === "" ? {} : { repo }),
+          ...(goal === "" ? {} : { goal, acceptance: acceptanceLinesToInput((body.get("acceptance") ?? "").split("\n")) }),
+          outOfScope: notThis === "" ? null : notThis,
+          touches: touchesGiven,
+          ...(permissionMode === null ? {} : { permissionMode }),
+          ...(qualityMode === null ? {} : { qualityMode }),
+          ...(scout ? { deliverable: "report" as const } : {}),
+          planning:
+            scout
+              ? "skip"
+              : body.get("planning-policy") === "choice"
+                ? body.get("plan-first") === "1" ? "required" : "skip"
+                : "auto",
+          filedVia: "console", filedBy: { name: who.name, kind: "person" as const },
+          ...(admitted === null ? {} : { admittedRepos: admitted }),
         },
-        clock(),
+        now,
       );
-      if (!moved.ok) {
-        return respondMove(409, moveReason(moved.reason));
+      if (filed.ok && after !== "") {
+        const afterRef = store.lookupRef(after);
+        const chained = store.getTask(after) !== null && afterRef !== null && visible(afterRef.repo)
+          ? store.addEdge(filed.id, after) : { ok: false as const, reason: "that task does not exist here" };
+        if (!chained.ok) chainProblem = chained.reason;
       }
-      return respondMove(200, "moved");
+      // Missing dependencies leave a reviewable, inert task. They must
+      // never be silently dropped before automatic approval starts work.
+      if (filed.ok && chainProblem === null && who.via === "cookie") applyModeToNewFiling(store, filed.id, who.name, now);
+      return filed;
+    });
+    if (!made.ok) {
+      return sendScreen(
+        response,
+        made.reason === "backlog-full" ? 429 : 400,
+        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
+      );
     }
+    const actionContext = requestContext.getStore();
+    if (actionContext !== undefined) actionContext.createdTask = made.id;
+    // A proved root-mode placement joins the project table (finding 15):
+    // the new task's home is openable and admissible from now on.
+    if (rootMode && repo !== "") store.upsertProject(repo, projectName(repo), now);
+    if (chainProblem !== null) return taskScreen(response, who, made.id, `the task was created, but could not be made to wait for ${after} — ${chainProblem}`, 200);
+    return redirect(response, taskHref(made.id));
+  }
 
+  async function queueNote(ctx: HandlerContext): Promise<void> {
+    const { who, request, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.queue);
+    const project = projectOf(who, request);
+    if (project === undefined) {
+      return refuse(response, who, 403, "that project is outside what this server was configured to show");
+    }
+    // The note is a global runner label, not project-scoped work: the
+    // fleet screen (project-less) posts it too, so the null-project gate
+    // applies only to moves, which their task-level check re-proves.
+    const worker = (body.get("runner") ?? "").trim();
+    const note = (body.get("note") ?? "").trim();
+    if (note.length > 200 || hasForbiddenControls(note)) {
+      return refuse(response, who, 400, "that note will not render, so it will not store", QUEUE_VIEW);
+    }
+    const set = store.setRunnerQueueNote(worker, note === "" ? null : note);
+    if (!set.ok) return refuse(response, who, 404, "no such worker", QUEUE_VIEW);
+    return redirect(response, body.get("from") === "fleet" ? "/fleet" : QUEUE_VIEW);
+  }
+
+  async function queueMove(ctx: HandlerContext): Promise<void> {
+    const { who, request, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.queue);
+    const project = projectOf(who, request);
+    if (project === undefined) {
+      return refuse(response, who, 403, "that project is outside what this server was configured to show");
+    }
+    if (who.via === "cookie") {
+      const seen = body.get("projectRevision");
+      if (seen !== null && seen !== String(who.session.projectRevision)) {
+        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", QUEUE_VIEW);
+      }
+    }
+    // A drag posts in place (fetch) when it can; the page re-renders its
+    // own fragment on success. A plain form still works with no script.
+    const inPlace = body.get("respond") === "fragment";
+    const fromFleet = who.via === "cookie" && body.get("projectRevision") === null;
+    const respondMove = (status: number, message: string): void => {
+      if (!inPlace) return status === 409 ? refuse(response, who, 409, message, QUEUE_VIEW) : redirect(response, QUEUE_VIEW);
+      respond(response, status, "text/plain; charset=utf-8", message);
+    };
+    const moveReason = (reason: string): string =>
+      reason === "stale"
+        ? "the queue moved underneath you — it just reloaded"
+        : reason === "claimed"
+          ? "that task is being taken right now — it keeps its claim"
+          : reason === "worker-retired"
+            ? "that worker is retired — drag its work elsewhere, or register the name again"
+            : reason === "no-such-worker"
+              ? "no such worker"
+              : "that task is not in this queue any more";
+    const taskId = (body.get("task") ?? "").trim();
+    const columnGiven = (body.get("column") ?? "").trim();
+    const toRunner = columnGiven === "" || columnGiven === "anyone" ? null : columnGiven;
+    const beforeGiven = (body.get("before") ?? "").trim();
+    const revisionGiven = Number(body.get("queueRevision") ?? "");
+    // The queue's own screen enforces the open project; the fleet screen
+    // is cross-project, so the ceiling is the only wall it needs.
+    const belongs = (id: string): boolean => {
+      const ref = store.lookupRef(id);
+      return ref !== null && visible(ref.repo) && (fromFleet || project === null || ref.repo === null || ref.repo === project);
+    };
+    if (!belongs(taskId) || (beforeGiven !== "" && beforeGiven !== QUEUE_FRONT && !belongs(beforeGiven))) {
+      return respondMove(404, "that task is not in this queue");
+    }
+    // The no-script "move to the front" button cannot name the front: the
+    // front of a task's partition is decided by the store's exact repo AND
+    // assignment, and the page's snapshot is bounded — so the sentinel is
+    // resolved HERE, against a fresh snapshot, into a real task id (slice
+    // 1b, fix 1). It is honored only within the task's own column; a
+    // cross-column front is not provable from a bounded snapshot.
+    let beforeTaskId: string | null = beforeGiven === "" ? null : beforeGiven;
+    if (beforeGiven === QUEUE_FRONT) {
+      const ref = store.lookupRef(taskId);
+      if (ref === null) return respondMove(404, "that task is not in this queue");
+      if (ref.assignedRunner !== toRunner) {
+        return respondMove(409, "move to the front works inside a task's own column — drag it across to reserve it elsewhere");
+      }
+      const now = clock();
+      const snapshot = store.queueScoped(ref.repo, now);
+      const self = snapshot.find(one => one.id === taskId);
+      // A claim can land after the form rendered WITHOUT
+      // bumping queueRevision, so the snapshot — not the form — decides
+      // whether the card is still free. A taken or vanished card is the
+      // typed refusal, never a silent no-op that would skip moveTask()'s
+      // own claimed recheck.
+      if (self === undefined) return respondMove(409, moveReason("unknown-task"));
+      if (self.taken) return respondMove(409, moveReason("claimed"));
+      const partition = snapshot.filter(
+        one => one.repo === ref.repo && one.assignedRunner === ref.assignedRunner && !one.taken,
+      );
+      const front = partition[0];
+      if (front === undefined) return respondMove(409, moveReason("unknown-task"));
+      if (front.id === taskId) {
+        // Already the front: a no-op, but only against the revision the
+        // form was rendered with — this branch never reaches moveTask()'s
+        // CAS, so the check is made here.
+        if (!Number.isSafeInteger(revisionGiven) || revisionGiven !== store.queueRevision()) {
+          return respondMove(409, moveReason("stale"));
+        }
+        return respondMove(200, "already at the front");
+      }
+      beforeTaskId = front.id;
+    }
+    const moved = store.moveTask(
+      {
+        taskId,
+        toRunner,
+        beforeTaskId,
+        ...(Number.isSafeInteger(revisionGiven) ? { queueRevision: revisionGiven } : {}),
+      },
+      clock(),
+    );
+    if (!moved.ok) {
+      return respondMove(409, moveReason(moved.reason));
+    }
+    return respondMove(200, "moved");
+  }
+
+  async function answerDecision(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
     const answer = /^\/d\/([0-9]{1,15})\/answer$/.exec(url.pathname);
-    if (answer !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.decisionAnswer);
-      const id = Number(answer[1]);
-      const requestedReturn = body.get("return");
-      const decisionBack = requestedReturn === "next"
-        ? "/next"
-        : requestedReturn === null
-          ? `/d/${id}`
-          : safeChatReturn(requestedReturn);
-      const decision = store.getDecision(id);
-      if (decision === null) return refuse(response, who, 404, "no such decision");
-      const answeringRun = store.getRun(decision.run);
-      if (answeringRun !== null && !visible(taskRepoOf(answeringRun.taskRef))) {
-        return refuse(response, who, 404, "no such decision");
-      }
-      const choice = body.get("choice") ?? "";
-      const chosen = decision.options.find(option => option.id === choice);
-      // Irreversible options never ride one accidental tap: the form arms
-      // them behind an explicit confirmation field, and the server checks —
-      // the client rendering is convenience, this is the rule.
-      if (chosen !== undefined && !chosen.reversible && body.get("confirm") !== "yes") {
-        return refuse(response, who, 400, "an irreversible choice must be confirmed", requestedReturn === null ? `/d/${id}` : `/d/${id}?return=${encodeURIComponent(decisionBack)}`);
-      }
-      const note = body.get("note");
-      const answered = store.answerDecision(
-        {
-          id,
-          choice,
-          by: who.name,
-          via: "web",
-          ...(note === null || note === "" ? {} : { note }),
-        },
-        now,
-      );
-      if (!answered.ok) {
-        const status = answered.reason === "bad-option" || answered.reason === "bad-note" ? 400 : 409;
-        const why = answered.reason === "already-answered" ? "already answered — somebody got there first" : answered.reason;
-        return refuse(response, who, status, why, requestedReturn === null ? `/d/${id}` : decisionBack);
-      }
-      return redirect(response, decisionBack);
+    if (answer === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.decisionAnswer);
+    const id = Number(answer[1]);
+    const requestedReturn = body.get("return");
+    const decisionBack = requestedReturn === "next"
+      ? "/next"
+      : requestedReturn === null
+        ? `/d/${id}`
+        : safeChatReturn(requestedReturn);
+    const decision = store.getDecision(id);
+    if (decision === null) return refuse(response, who, 404, "no such decision");
+    const answeringRun = store.getRun(decision.run);
+    if (answeringRun !== null && !visible(taskRepoOf(answeringRun.taskRef))) {
+      return refuse(response, who, 404, "no such decision");
     }
+    const choice = body.get("choice") ?? "";
+    const chosen = decision.options.find(option => option.id === choice);
+    // Irreversible options never ride one accidental tap: the form arms
+    // them behind an explicit confirmation field, and the server checks —
+    // the client rendering is convenience, this is the rule.
+    if (chosen !== undefined && !chosen.reversible && body.get("confirm") !== "yes") {
+      return refuse(response, who, 400, "an irreversible choice must be confirmed", requestedReturn === null ? `/d/${id}` : `/d/${id}?return=${encodeURIComponent(decisionBack)}`);
+    }
+    const note = body.get("note");
+    const answered = store.answerDecision(
+      {
+        id,
+        choice,
+        by: who.name,
+        via: "web",
+        ...(note === null || note === "" ? {} : { note }),
+      },
+      now,
+    );
+    if (!answered.ok) {
+      const status = answered.reason === "bad-option" || answered.reason === "bad-note" ? 400 : 409;
+      const why = answered.reason === "already-answered" ? "already answered — somebody got there first" : answered.reason;
+      return refuse(response, who, status, why, requestedReturn === null ? `/d/${id}` : decisionBack);
+    }
+    return redirect(response, decisionBack);
+  }
 
-    const act = matchTaskPath(url.pathname, "/(hold|unhold|requeue|cancel|scope|approve|plan|plan-edit|block|unblock|repair-dependency|next|reopen|steer|follow-up|accept-proof|accept-revision|reject-revision|route|retry-review|complete|merge|confirm-stopped|stop|resume-arm|resume)$");
-    if (act !== null && act.verb === "confirm-stopped") {
-      const body = readForm(posted, CONSOLE_FORMS.confirmStopped);
-      // Confirming a finished build stopped is an approver's act behind the password, typed again — the same
-      // record as `toolroll run settle`, refused while anything of the run may still be running.
-      const back = taskHref(act.taskId);
-      if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only an approver can confirm a build stopped.", back);
-      const ref = store.lookupRef(act.taskId);
-      if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
-      const named = (body.get("run") ?? "").trim();
-      const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
-      const runTask = run === null ? null : store.externalIdFor(run.taskRef);
-      if (run === null || runTask === null || familyOf(runTask)?.root.id !== (familyOf(act.taskId)?.root.id ?? act.taskId)) {
-        return taskScreen(response, who, act.taskId, "That build isn't part of this task.", 409);
-      }
-      if (!authenticateApprover(who, body.get("token") ?? "", ref.repo).ok || !store.accountCanAccess(who.name, ref.repo)) {
-        return taskScreen(response, who, act.taskId, "That password didn't match. Nothing changed.", 403);
-      }
-      // When Toolroll can't check at all, the approver also says they checked: never a one-click confirmation.
-      if (store.stopQuiescenceFact(run.id)?.kind === "unknown" && body.get("checked") !== "yes") {
-        return taskScreen(response, who, act.taskId, `Make sure nothing from build #${run.id} is running, then tick the box to confirm.`, 409);
-      }
-      const settled = store.settleRunWitnessesByApprover({ runId: run.id, by: who.name, why: "Confirmed in the console that nothing from this build is running." }, now);
-      if (!settled.ok) {
-        return taskScreen(response, who, act.taskId, settled.reason === "alive" || settled.reason === "still-running"
-          ? `Something from build #${run.id} may still be running, so it can't be confirmed stopped yet.` : `Build #${run.id} can't be confirmed stopped.`, 409);
-      }
-      bustBadge();
-      const to = resultReturnTarget(body.get("return"), run.id);
-      return redirect(response, body.get("return") ? to : back);
+  async function taskConfirmStopped(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const act = matchTaskPath(url.pathname, "/confirm-stopped$");
+    if (act === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.confirmStopped);
+    // Confirming a finished build stopped is an approver's act behind the password, typed again — the same
+    // record as `toolroll run settle`, refused while anything of the run may still be running.
+    const back = taskHref(act.taskId);
+    const ref = store.lookupRef(act.taskId);
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    const named = (body.get("run") ?? "").trim();
+    const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
+    const runTask = run === null ? null : store.externalIdFor(run.taskRef);
+    if (run === null || runTask === null || familyOf(runTask)?.root.id !== (familyOf(act.taskId)?.root.id ?? act.taskId)) {
+      return taskScreen(response, who, act.taskId, "That build isn't part of this task.", 409);
     }
-    if (act !== null && act.verb === "merge") {
-      const body = readForm(posted, CONSOLE_FORMS.merge);
-      // Merging is a person's act behind their password, typed again: a browser session, an approver, the exact
-      // result's pull request. The flow re-reads GitHub before merging and records who merged in the ledger.
-      if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only an approver can merge.");
-      if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo merges nothing.", 403);
-      const ref = store.lookupRef(act.taskId);
-      if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
-      const named = (body.get("run") ?? "").trim();
-      const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
-      const runTask = run === null ? null : store.externalIdFor(run.taskRef);
-      if (run === null || runTask === null || familyOf(runTask)?.root.id !== (familyOf(act.taskId)?.root.id ?? act.taskId)) {
-        return taskScreen(response, who, act.taskId, "That pull request isn't part of this task.", 409);
-      }
-      const merged = await mergeAsPerson(store, { runId: run.id, name: who.name, password: body.get("token") ?? "", ...(body.get("anyway") === "1" ? { anyway: true } : {}), ...(options.publishExec === undefined ? {} : { exec: options.publishExec }), clock });
-      if (!merged.ok) return taskScreen(response, who, act.taskId, merged.message, merged.reason === "password" ? 403 : 409);
-      return redirect(response, `${taskHref(act.taskId)}#merge`);
+    if (!authenticateApprover(who, body.get("token") ?? "", ref.repo).ok || !store.accountCanAccess(who.name, ref.repo)) {
+      return taskScreen(response, who, act.taskId, "That password didn't match. Nothing changed.", 403);
     }
-    if (act !== null) {
-      return taskMutation(response, who, act.taskId, act.verb, posted, now);
+    // When Toolroll can't check at all, the approver also says they checked: never a one-click confirmation.
+    if (store.stopQuiescenceFact(run.id)?.kind === "unknown" && body.get("checked") !== "yes") {
+      return taskScreen(response, who, act.taskId, `Make sure nothing from build #${run.id} is running, then tick the box to confirm.`, 409);
     }
+    const settled = store.settleRunWitnessesByApprover({ runId: run.id, by: who.name, why: "Confirmed in the console that nothing from this build is running." }, now);
+    if (!settled.ok) {
+      return taskScreen(response, who, act.taskId, settled.reason === "alive" || settled.reason === "still-running"
+        ? `Something from build #${run.id} may still be running, so it can't be confirmed stopped yet.` : `Build #${run.id} can't be confirmed stopped.`, 409);
+    }
+    bustBadge();
+    const to = resultReturnTarget(body.get("return"), run.id);
+    return redirect(response, body.get("return") ? to : back);
+  }
 
-    const runNote = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
-    if (runNote !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.runNote);
-      // An operator's verdict beside the machine's record (M6): immutable,
-      // bounded by the same validator as decision notes, ceiling-checked
-      // like every run resource. Ordinary authenticated mutation — no
-      // nonce, because nothing here approves anything.
-      const id = Number(runNote[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) {
-        return refuse(response, who, 404, "no such run");
-      }
-      const note = validateNote(body.get("note") ?? "");
-      if (!note.ok) return refuse(response, who, 400, note.problem);
-      store.addRunNote(id, who.name, note.note, now);
-      return redirect(response, `/r/${id}`);
+  async function taskMerge(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, posted } = ctx;
+    const act = matchTaskPath(url.pathname, "/merge$");
+    if (act === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.merge);
+    // Merging is a person's act behind their password, typed again: a browser session, an approver, the exact
+    // result's pull request. The flow re-reads GitHub before merging and records who merged in the ledger.
+    if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo merges nothing.", 403);
+    const ref = store.lookupRef(act.taskId);
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    const named = (body.get("run") ?? "").trim();
+    const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
+    const runTask = run === null ? null : store.externalIdFor(run.taskRef);
+    if (run === null || runTask === null || familyOf(runTask)?.root.id !== (familyOf(act.taskId)?.root.id ?? act.taskId)) {
+      return taskScreen(response, who, act.taskId, "That pull request isn't part of this task.", 409);
     }
+    const merged = await mergeAsPerson(store, { runId: run.id, name: who.name, password: body.get("token") ?? "", ...(body.get("anyway") === "1" ? { anyway: true } : {}), ...(options.publishExec === undefined ? {} : { exec: options.publishExec }), clock });
+    if (!merged.ok) return taskScreen(response, who, act.taskId, merged.message, merged.reason === "password" ? 403 : 409);
+    return redirect(response, `${taskHref(act.taskId)}#merge`);
+  }
 
+  type TaskVerb = "hold" | "unhold" | "requeue" | "cancel" | "scope" | "approve" | "plan" | "plan-edit" | "next" | "reopen" | "steer" | "accept-proof" | "accept-revision" |
+    "reject-revision" | "route" | "retry-review" | "complete" | "stop" | "resume-arm" | "resume" | "block" | "unblock" | "repair-dependency" | "follow-up";
+  /** A task act bound to its verb: taskMutation owns each verb's checks. */
+  const taskAct = (verb: TaskVerb) => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, response, now, posted } = ctx;
+    const act = matchTaskPath(url.pathname, `/${verb}$`);
+    if (act === null) return noPage(who, response);
+    return taskMutation(response, who, act.taskId, verb, posted, now);
+  };
+
+  async function runNote(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const noted = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
+    if (noted === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.runNote);
+    // An operator's verdict beside the machine's record (M6): immutable,
+    // bounded by the same validator as decision notes, ceiling-checked
+    // like every run resource. Ordinary authenticated mutation — no
+    // nonce, because nothing here approves anything.
+    const id = Number(noted[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) {
+      return refuse(response, who, 404, "no such run");
+    }
+    const note = validateNote(body.get("note") ?? "");
+    if (!note.ok) return refuse(response, who, 400, note.problem);
+    store.addRunNote(id, who.name, note.note, now);
+    return redirect(response, `/r/${id}`);
+  }
+
+  async function runComment(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
     const diffComment = /^\/r\/([0-9]{1,15})\/comment$/.exec(url.pathname);
-    if (diffComment !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.diffComment);
-      // A review comment on the IMMUTABLE terminal diff (M6.8): bound to
-      // the exact artifact and its hash. Ordinary authenticated mutation —
-      // the nonce belongs to the approval screen that later restates the
-      // batch, never to the comment box.
-      const id = Number(diffComment[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) {
-        return refuse(response, who, 404, "no such run");
-      }
-      // Where the reader came from (package 3): the cockpit's deep link,
-      // the chat's result view, or the run page — validated to those exact
-      // shapes. A refusal sends them back THERE, where the browser has kept
-      // their draft, so a failed submission is recoverable in place.
-      const returnTo = resultReturnTarget(body.get("return"), id);
-      const selectedTab = parseResultTab(body.get("tab"));
-      const back = selectedTab === "summary" ? returnTo : `${returnTo}${returnTo.includes("?") ? "&" : "?"}tab=${selectedTab}`;
-      if (body.get("intent") === "revise") {
-        const result = requestResultChanges(store, evidenceRoot, {
-          run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
-          repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
-          note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"),
-        }, now);
-        if (!result.ok) {
-          const request = body.get("request") ?? "";
-          const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${back}${back.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : back;
-          return refuse(response, who, result.status, result.message, retryBack);
-        }
-        return redirect(response, revisionDestination(result.id, returnTo));
-      }
-      const terminal = store.artifactsFor(id).find(one => one.kind === "terminal-diff");
-      if (terminal === undefined) {
-        return refuse(response, who, 400, "this run has no terminal diff to comment on", back);
-      }
-      // The bytes must VERIFY before words attach to them (audit IV-10):
-      // "a comment on the exact reviewed bytes" is a lie if the bytes are
-      // gone or no longer hash to their record.
-      const proven = readVerifiedArtifact(evidenceRoot, terminal);
-      if (!proven.ok) {
-        return refuse(response, who, 409, `the terminal diff no longer verifies (${proven.problem}) — nothing to comment on`, back);
-      }
-      const note = validateNote(body.get("note") ?? "");
-      if (!note.ok) return refuse(response, who, 400, note.problem, back);
-      const rawPath = (body.get("path") ?? "").trim();
-      if (rawPath.length > 300 || hasForbiddenControls(rawPath)) {
-        return refuse(response, who, 400, "Enter a file path of up to 300 characters, without control characters.", back);
-      }
-      const rawLine = (body.get("line") ?? "").trim();
-      const line = rawLine === "" ? null : Number(rawLine);
-      if (line !== null && (!Number.isInteger(line) || line < 1 || line > 1_000_000)) {
-        return refuse(response, who, 400, "Enter a whole line number from 1 to 1,000,000, or leave it blank.", back);
-      }
-      // The form's own request token (package 3) is the dedupe key: a
-      // replayed or double submission finds its note already recorded and
-      // lands on the same receipt instead of a second note. The token is
-      // bound to the account, so nobody else's replay can consume it.
-      const request = body.get("request");
-      const sourceKey = commentSourceKey(who.name, request);
-      const path = rawPath === "" ? null : rawPath;
-      const inserted = store.addDiffComment(
-        { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, ...(sourceKey === undefined ? {} : { sourceKey }) },
-        now,
-      );
-      if (inserted === null && sourceKey !== undefined) {
-        // The token was used before (repair 2026-09-14, finding 1). A
-        // request identity is IMMUTABLE: it names exactly one note on
-        // exactly one result. The unchanged retry — same run, same file,
-        // line and words — lands on its original receipt; any other reuse
-        // is refused, and the refusal's way back carries `conflict=<token>`
-        // so the browser mints a fresh identity for the words it still
-        // holds. Nothing typed is lost either way.
-        const earlier = store.diffCommentBySourceKey(sourceKey);
-        const conflictBack = `${back}${back.includes("?") ? "&" : "?"}conflict=${request as string}#request-changes`;
-        if (earlier === null || earlier.run !== id) {
-          return refuse(response, who, 409, `this note's request identity was already used on another result (build #${earlier === null ? "?" : earlier.run}) — go back; your words are kept, and the form will carry a new identity`, conflictBack);
-        }
-        if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note) {
-          return refuse(response, who, 409, `this request identity already recorded a different note on this result (${earlier.path === null ? "no file" : `${earlier.path}${earlier.line === null ? "" : `:${earlier.line}`}`}: "${oneLineOf(earlier.note, 80)}") — go back; your edited words are kept as a new note, and the form will carry a new identity`, conflictBack);
-        }
-      }
-      // Land back AT the request-changes form with the note field ready —
-      // writing five notes in a row must cost five keystrokes of
-      // navigation, not five scrolls (arc 6, finding 5/6). The receipt
-      // names the request token, so the browser clears exactly the draft
-      // that landed and no other.
-      const receipt = sourceKey === undefined ? "1" : (request as string);
-      return redirect(response, `${back}${back.includes("?") ? "&" : "?"}noted=${receipt}#request-changes`);
+    if (diffComment === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.diffComment);
+    // A review comment on the IMMUTABLE terminal diff (M6.8): bound to
+    // the exact artifact and its hash. Ordinary authenticated mutation —
+    // the nonce belongs to the approval screen that later restates the
+    // batch, never to the comment box.
+    const id = Number(diffComment[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) {
+      return refuse(response, who, 404, "no such run");
     }
-
-    if (url.pathname === "/session/editor-links") {
-      const body = readForm(posted, CONSOLE_FORMS.editorLinks);
-      // The session half of the editor-link activation (arc 6, finding 1):
-      // only the person at the browser can say "this device holds the
-      // worktrees". Per-session, dies with the session, grants nothing —
-      // it only lets already-authorized pages RENDER vscode links.
-      if (who.via !== "cookie") return refuse(response, who, 403, "editor links are a browser session's choice");
-      if (options.editorLinks === undefined) return refuse(response, who, 404, "editor links are not enabled on this server");
-      who.session.editorLinks = body.get("on") === "1";
-      const back = body.get("return") ?? "/";
-      return redirect(response, /^\/[a-z0-9/_-]*$/i.test(back) ? back : "/");
-    }
-
-    const revise = /^\/r\/([0-9]{1,15})\/revise$/.exec(url.pathname);
-    if (revise !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.revise);
-      // Seal the live comment batch into ONE unapproved revision task with
-      // an immutable brief (M6.8). Deterministic — no model reads anything
-      // here — and every revision takes its own approval: comments can
-      // semantically widen work, and no path check can prove they did not.
-      const id = Number(revise[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) {
-        return refuse(response, who, 404, "no such run");
-      }
-      const back = resultReturnTarget(body.get("return"), id);
-      const result = createResultRevision(store, evidenceRoot, {
+    // Where the reader came from (package 3): the cockpit's deep link,
+    // the chat's result view, or the run page — validated to those exact
+    // shapes. A refusal sends them back THERE, where the browser has kept
+    // their draft, so a failed submission is recoverable in place.
+    const returnTo = resultReturnTarget(body.get("return"), id);
+    const selectedTab = parseResultTab(body.get("tab"));
+    const back = selectedTab === "summary" ? returnTo : `${returnTo}${returnTo.includes("?") ? "&" : "?"}tab=${selectedTab}`;
+    if (body.get("intent") === "revise") {
+      const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
+        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"),
       }, now);
-      if (!result.ok) return refuse(response, who, result.status, result.message, back);
-      return redirect(response, revisionDestination(result.id, back));
-    }
-
-    // Follow-ups on a result: Run checks on its exact commit (a worker runs the
-    // approved command once and seals the log), or file a task to add tests.
-    const followUp = /^\/r\/([0-9]{1,15})\/(checks|add-tests)$/.exec(url.pathname);
-    if (followUp !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.followUp);
-      const id = Number(followUp[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
-      // The task page that offered Run checks in place is a return target too: this run's own task, or its family's root.
-      const runTask = store.externalIdFor(found.taskRef);
-      const back = resultReturnTarget(body.get("return"), id, runTask === null ? [] : [runTask, familyOf(runTask)?.root.id ?? runTask]);
-      if (who.via !== "cookie") return refuse(response, who, 403, "Sign in with a browser session to do this.", back);
-      if (followUp[2] === "checks") {
-        if (who.role !== "approver") return refuse(response, who, 403, "An approver runs checks.", back);
-        if (store.isDemo()) return refuse(response, who, 403, "The demo runs no checks.", back);
-        const level = body.get("level") === "full" ? "full" as const : "quick" as const;
-        const asked = requestFollowUpChecks(store, { runId: id, level, actor: who.name }, now);
-        if (!asked.ok) return refuse(response, who, 409, asked.message, back);
-        // Back where it was asked: the task page's status row says the checks are running; a result page shows them under #follow-ups.
-        return redirect(response, back.startsWith("/t/") ? back : `${back.split("#")[0]}#follow-ups`);
+      if (!result.ok) {
+        const request = body.get("request") ?? "";
+        const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${back}${back.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : back;
+        return refuse(response, who, result.status, result.message, retryBack);
       }
-      const filed = fileAddTestsTask(store, evidenceRoot, { runId: id, actor: who.name, filedVia: "console", ...(admissionList() === null ? {} : { admittedRepos: admissionList()! }) }, now);
-      if (!filed.ok) return refuse(response, who, 409, filed.message, back);
-      return redirect(response, taskHref(filed.id));
+      return redirect(response, revisionDestination(result.id, returnTo));
     }
+    const terminal = store.artifactsFor(id).find(one => one.kind === "terminal-diff");
+    if (terminal === undefined) {
+      return refuse(response, who, 400, "this run has no terminal diff to comment on", back);
+    }
+    // The bytes must VERIFY before words attach to them (audit IV-10):
+    // "a comment on the exact reviewed bytes" is a lie if the bytes are
+    // gone or no longer hash to their record.
+    const proven = readVerifiedArtifact(evidenceRoot, terminal);
+    if (!proven.ok) {
+      return refuse(response, who, 409, `the terminal diff no longer verifies (${proven.problem}) — nothing to comment on`, back);
+    }
+    const note = validateNote(body.get("note") ?? "");
+    if (!note.ok) return refuse(response, who, 400, note.problem, back);
+    const rawPath = (body.get("path") ?? "").trim();
+    if (rawPath.length > 300 || hasForbiddenControls(rawPath)) {
+      return refuse(response, who, 400, "Enter a file path of up to 300 characters, without control characters.", back);
+    }
+    const rawLine = (body.get("line") ?? "").trim();
+    const line = rawLine === "" ? null : Number(rawLine);
+    if (line !== null && (!Number.isInteger(line) || line < 1 || line > 1_000_000)) {
+      return refuse(response, who, 400, "Enter a whole line number from 1 to 1,000,000, or leave it blank.", back);
+    }
+    // The form's own request token (package 3) is the dedupe key: a
+    // replayed or double submission finds its note already recorded and
+    // lands on the same receipt instead of a second note. The token is
+    // bound to the account, so nobody else's replay can consume it.
+    const request = body.get("request");
+    const sourceKey = commentSourceKey(who.name, request);
+    const path = rawPath === "" ? null : rawPath;
+    const inserted = store.addDiffComment(
+      { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, ...(sourceKey === undefined ? {} : { sourceKey }) },
+      now,
+    );
+    if (inserted === null && sourceKey !== undefined) {
+      // The token was used before (repair 2026-09-14, finding 1). A
+      // request identity is IMMUTABLE: it names exactly one note on
+      // exactly one result. The unchanged retry — same run, same file,
+      // line and words — lands on its original receipt; any other reuse
+      // is refused, and the refusal's way back carries `conflict=<token>`
+      // so the browser mints a fresh identity for the words it still
+      // holds. Nothing typed is lost either way.
+      const earlier = store.diffCommentBySourceKey(sourceKey);
+      const conflictBack = `${back}${back.includes("?") ? "&" : "?"}conflict=${request as string}#request-changes`;
+      if (earlier === null || earlier.run !== id) {
+        return refuse(response, who, 409, `this note's request identity was already used on another result (build #${earlier === null ? "?" : earlier.run}) — go back; your words are kept, and the form will carry a new identity`, conflictBack);
+      }
+      if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note) {
+        return refuse(response, who, 409, `this request identity already recorded a different note on this result (${earlier.path === null ? "no file" : `${earlier.path}${earlier.line === null ? "" : `:${earlier.line}`}`}: "${oneLineOf(earlier.note, 80)}") — go back; your edited words are kept as a new note, and the form will carry a new identity`, conflictBack);
+      }
+    }
+    // Land back AT the request-changes form with the note field ready —
+    // writing five notes in a row must cost five keystrokes of
+    // navigation, not five scrolls (arc 6, finding 5/6). The receipt
+    // names the request token, so the browser clears exactly the draft
+    // that landed and no other.
+    const receipt = sourceKey === undefined ? "1" : (request as string);
+    return redirect(response, `${back}${back.includes("?") ? "&" : "?"}noted=${receipt}#request-changes`);
+  }
 
+  async function sessionEditorLinks(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.editorLinks);
+    // The session half of the editor-link activation (arc 6, finding 1):
+    // only the person at the browser can say "this device holds the
+    // worktrees". Per-session, dies with the session, grants nothing —
+    // it only lets already-authorized pages RENDER vscode links.
+    if (who.via !== "cookie") return refuse(response, who, 403, "editor links are a browser session's choice");
+    if (options.editorLinks === undefined) return refuse(response, who, 404, "editor links are not enabled on this server");
+    who.session.editorLinks = body.get("on") === "1";
+    const back = body.get("return") ?? "/";
+    return redirect(response, /^\/[a-z0-9/_-]*$/i.test(back) ? back : "/");
+  }
+
+  async function runRevise(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const revise = /^\/r\/([0-9]{1,15})\/revise$/.exec(url.pathname);
+    if (revise === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.revise);
+    // Seal the live comment batch into ONE unapproved revision task with
+    // an immutable brief (M6.8). Deterministic — no model reads anything
+    // here — and every revision takes its own approval: comments can
+    // semantically widen work, and no path check can prove they did not.
+    const id = Number(revise[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) {
+      return refuse(response, who, 404, "no such run");
+    }
+    const back = resultReturnTarget(body.get("return"), id);
+    const result = createResultRevision(store, evidenceRoot, {
+      run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
+      repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
+    }, now);
+    if (!result.ok) return refuse(response, who, result.status, result.message, back);
+    return redirect(response, revisionDestination(result.id, back));
+  }
+
+  // Follow-ups on a result: Run checks on its exact commit (a worker runs the
+  // approved command once and seals the log), or file a task to add tests.
+  const runFollowUp = (op: "checks" | "add-tests") => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, response, now, posted } = ctx;
+    const followUp = /^\/r\/([0-9]{1,15})\//.exec(url.pathname);
+    if (followUp === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.followUp);
+    const id = Number(followUp[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
+    // The task page that offered Run checks in place is a return target too: this run's own task, or its family's root.
+    const runTask = store.externalIdFor(found.taskRef);
+    const back = resultReturnTarget(body.get("return"), id, runTask === null ? [] : [runTask, familyOf(runTask)?.root.id ?? runTask]);
+    if (who.via !== "cookie") return refuse(response, who, 403, "Sign in with a browser session to do this.", back);
+    if (op === "checks") {
+      if (who.role !== "approver") return refuse(response, who, 403, "An approver runs checks.", back);
+      if (store.isDemo()) return refuse(response, who, 403, "The demo runs no checks.", back);
+      const level = body.get("level") === "full" ? "full" as const : "quick" as const;
+      const asked = requestFollowUpChecks(store, { runId: id, level, actor: who.name }, now);
+      if (!asked.ok) return refuse(response, who, 409, asked.message, back);
+      // Back where it was asked: the task page's status row says the checks are running; a result page shows them under #follow-ups.
+      return redirect(response, back.startsWith("/t/") ? back : `${back.split("#")[0]}#follow-ups`);
+    }
+    const filed = fileAddTestsTask(store, evidenceRoot, { runId: id, actor: who.name, filedVia: "console", ...(admissionList() === null ? {} : { admittedRepos: admissionList()! }) }, now);
+    if (!filed.ok) return refuse(response, who, 409, filed.message, back);
+    return redirect(response, taskHref(filed.id));
+  };
+
+  async function runDraftRepair(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
     const draftRepair = /^\/r\/([0-9]{1,15})\/draft-repair$/.exec(url.pathname);
-    if (draftRepair !== null) {
-      // CI repair, suggestion-first (M8.18): a red episode never spawns an
-      // agent by itself — it EARNS a button, and the button creates one
-      // unapproved task through the same revision machinery as review
-      // comments. Deterministic id = one draft per task/PR, ever.
-      const id = Number(draftRepair[1]);
-      const found = store.getRun(id);
-      if (found === null || !visible(taskRepoOf(found.taskRef))) {
-        return refuse(response, who, 404, "no such run");
-      }
-      const publication = store.publicationForRun(id);
-      if (publication === null || publication.prNumber === null) {
-        return refuse(response, who, 400, "this run published no pull request", `/r/${id}`);
-      }
-      if (!store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber)) {
-        return refuse(response, who, 400, "no failing CI is observed on this PR right now", `/r/${id}`);
-      }
-      const sourceTaskId = store.externalIdFor(found.taskRef) ?? "?";
-      const sourceScope = store.getScope(sourceTaskId);
-      // The observed episode, not the click: the brief binds the head the
-      // failure was SEEN on and when (audit C-2) — a PR that advanced since
-      // is a different failure, and the click time is not an observation.
-      const episode = store.latestOpenCiEpisode(publication.githubRepo, publication.prNumber as number);
-      // Suffixes survive truncation (audit C-7): the prefix gives way, the
-      // identity-bearing tail never does.
-      const suffix = `-ci-${publication.prNumber}`;
-      const draftId = `${sourceTaskId.slice(0, 64 - suffix.length)}${suffix}`;
-      const brief = {
-        schema: 1 as const,
-        kind: "ci-repair" as const,
-        sourceTask: sourceTaskId,
-        sourceRun: id,
-        sourceScopeDigest: sourceScope?.digest ?? null,
-        head: found.headRevision,
-        pr: publication.prNumber,
-        prUrl: publication.prUrl,
-        publishedHeadSha: publication.headSha,
-        observedFailingHead: episode?.headSha ?? null,
-        observedAt: episode?.createdAt ?? null,
-      };
-      const briefBytes = Buffer.from(JSON.stringify(brief, null, 2), "utf8");
-      const briefName = `ci-repair-brief-${randomBytes(6).toString("hex")}.json`;
-      const key = writeEvidenceFile(evidenceRoot, id, briefName, briefBytes);
-      // The SAME revision boundary the annotation road and the criterion
-      // repair use (contract handoff task 2): the inherited terms come from
-      // the source rows inside the seal; the scope read above only names
-      // the digest this draft was composed against.
-      const sealed = store.sealRevision(
-        {
-          source: { task: sourceTaskId, run: id, scopeDigest: sourceScope?.digest ?? null },
-          brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored ci-repair brief (exit 0)" },
-          child: {
-            id: draftId,
-            title: `repair ${sourceTaskId}: CI failing on PR #${publication.prNumber}`,
-            repair:
-              `repair the failing CI on PR #${publication.prNumber} (failing head ${(episode?.headSha ?? publication.headSha).slice(0, 12)}). ` +
-              `Read the failing checks on GitHub before approving; this draft carries no log content.`,
-          },
-          commentIds: null,
-          requestedBy: who.name,
+    if (draftRepair === null) return noPage(who, response);
+    // CI repair, suggestion-first (M8.18): a red episode never spawns an
+    // agent by itself — it EARNS a button, and the button creates one
+    // unapproved task through the same revision machinery as review
+    // comments. Deterministic id = one draft per task/PR, ever.
+    const id = Number(draftRepair[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) {
+      return refuse(response, who, 404, "no such run");
+    }
+    const publication = store.publicationForRun(id);
+    if (publication === null || publication.prNumber === null) {
+      return refuse(response, who, 400, "this run published no pull request", `/r/${id}`);
+    }
+    if (!store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber)) {
+      return refuse(response, who, 400, "no failing CI is observed on this PR right now", `/r/${id}`);
+    }
+    const sourceTaskId = store.externalIdFor(found.taskRef) ?? "?";
+    const sourceScope = store.getScope(sourceTaskId);
+    // The observed episode, not the click: the brief binds the head the
+    // failure was SEEN on and when (audit C-2) — a PR that advanced since
+    // is a different failure, and the click time is not an observation.
+    const episode = store.latestOpenCiEpisode(publication.githubRepo, publication.prNumber as number);
+    // Suffixes survive truncation (audit C-7): the prefix gives way, the
+    // identity-bearing tail never does.
+    const suffix = `-ci-${publication.prNumber}`;
+    const draftId = `${sourceTaskId.slice(0, 64 - suffix.length)}${suffix}`;
+    const brief = {
+      schema: 1 as const,
+      kind: "ci-repair" as const,
+      sourceTask: sourceTaskId,
+      sourceRun: id,
+      sourceScopeDigest: sourceScope?.digest ?? null,
+      head: found.headRevision,
+      pr: publication.prNumber,
+      prUrl: publication.prUrl,
+      publishedHeadSha: publication.headSha,
+      observedFailingHead: episode?.headSha ?? null,
+      observedAt: episode?.createdAt ?? null,
+    };
+    const briefBytes = Buffer.from(JSON.stringify(brief, null, 2), "utf8");
+    const briefName = `ci-repair-brief-${randomBytes(6).toString("hex")}.json`;
+    const key = writeEvidenceFile(evidenceRoot, id, briefName, briefBytes);
+    // The SAME revision boundary the annotation road and the criterion
+    // repair use (contract handoff task 2): the inherited terms come from
+    // the source rows inside the seal; the scope read above only names
+    // the digest this draft was composed against.
+    const sealed = store.sealRevision(
+      {
+        source: { task: sourceTaskId, run: id, scopeDigest: sourceScope?.digest ?? null },
+        brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored ci-repair brief (exit 0)" },
+        child: {
+          id: draftId,
+          title: `repair ${sourceTaskId}: CI failing on PR #${publication.prNumber}`,
+          repair:
+            `repair the failing CI on PR #${publication.prNumber} (failing head ${(episode?.headSha ?? publication.headSha).slice(0, 12)}). ` +
+            `Read the failing checks on GitHub before approving; this draft carries no log content.`,
         },
-        now,
+        commentIds: null,
+        requestedBy: who.name,
+      },
+      now,
+    );
+    if (!sealed.ok) {
+      return refuse(
+        response,
+        who,
+        sealed.reason === "duplicate" ? 409 : sealed.reason === "stale-source" || sealed.reason === "comments-taken" ? 409 : 400,
+        sealed.reason === "duplicate" ? `already drafted as ${draftId}` : `could not draft: ${sealed.detail}`,
+        `/r/${id}`,
       );
-      if (!sealed.ok) {
-        return refuse(
-          response,
-          who,
-          sealed.reason === "duplicate" ? 409 : sealed.reason === "stale-source" || sealed.reason === "comments-taken" ? 409 : 400,
-          sealed.reason === "duplicate" ? `already drafted as ${draftId}` : `could not draft: ${sealed.detail}`,
-          `/r/${id}`,
-        );
-      }
-      // The merge blocker rides the SAME breath as the draft (merge grant,
-      // findings 3/12/13): while this repair exists, the source PR merges
-      // NOTHING — sticky until the operator's unblock act or the PR closes.
-      store.createMergeBlocker(publication.id, sealed.id, now);
-      return redirect(response, taskHref(sealed.id));
     }
+    // The merge blocker rides the SAME breath as the draft (merge grant,
+    // findings 3/12/13): while this repair exists, the source PR merges
+    // NOTHING — sticky until the operator's unblock act or the PR closes.
+    store.createMergeBlocker(publication.id, sealed.id, now);
+    return redirect(response, taskHref(sealed.id));
+  }
 
+  async function resolveIncident(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
     const resolve = /^\/i\/([0-9]{1,15})\/resolve$/.exec(url.pathname);
-    if (resolve !== null) {
-      const body = readForm(posted, CONSOLE_FORMS.resolveIncident);
-      const id = Number(resolve[1]);
-      // The ceiling applies to incident mutation exactly as to every other
-      // resource (v3 review, finding 3): resolve incident → run → task, and
-      // an incident outside this server's scope does not exist here. The
-      // task id is captured BEFORE resolving — afterwards the incident is
-      // no longer open and could not be found again.
-      const openRow = store.openIncidents().find(one => one.id === id);
-      const incidentRun = openRow === undefined ? null : store.getRun(openRow.run);
-      if (openRow !== undefined && incidentRun !== null && !visible(taskRepoOf(incidentRun.taskRef))) {
-        return refuse(response, who, 404, "no such incident");
-      }
-      const resolved = store.resolveIncident(id, who.name, now);
-      if (!resolved) return refuse(response, who, 409, "already resolved, or never open");
-      const back = body.get("return") === "inbox" ? "/inbox" : openRow === undefined ? "/" : taskHref(openRow.taskId);
-      return redirect(response, back);
+    if (resolve === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.resolveIncident);
+    const id = Number(resolve[1]);
+    // The ceiling applies to incident mutation exactly as to every other
+    // resource (v3 review, finding 3): resolve incident → run → task, and
+    // an incident outside this server's scope does not exist here. The
+    // task id is captured BEFORE resolving — afterwards the incident is
+    // no longer open and could not be found again.
+    const openRow = store.openIncidents().find(one => one.id === id);
+    const incidentRun = openRow === undefined ? null : store.getRun(openRow.run);
+    if (openRow !== undefined && incidentRun !== null && !visible(taskRepoOf(incidentRun.taskRef))) {
+      return refuse(response, who, 404, "no such incident");
     }
-    return refuse(response, who!, 404, "There's no page at this address.", "/chat");
+    const resolved = store.resolveIncident(id, who.name, now);
+    if (!resolved) return refuse(response, who, 409, "already resolved, or never open");
+    const back = body.get("return") === "inbox" ? "/inbox" : openRow === undefined ? "/" : taskHref(openRow.taskId);
+    return redirect(response, back);
   }
 
 
   /** The compact recent-runs list for the master pane. */
-  function runListPane(project: string | null, currentId: number | null): string {
+  function runListPane(project: string | null, currentId: number | null): Html {
     const rows = store.listRunsBefore(null, 50, project);
     const live = liveRunIds(rows);
-    const items = rows
+    const items = joinHtml(rows
       .map(
         run =>
-          `<a class="item${run.id === currentId ? " current" : ""}" href="/r/${run.id}">` +
-          `<span class="t">#${run.id} \u00b7 ${escape(run.taskId)}</span>` +
-          `<span class="m">${runOutcomeBadge(run, live.has(run.id))}` +
-          `<span class="mono">${whenTime(run.startedAt)}</span></span></a>`,
-      )
-      .join("\n");
-    return `<h2>Builds</h2>\n${items === "" ? `<p class="meta">None yet</p>` : items}`;
+          html`<a class="item${run.id === currentId ? " current" : ""}" href="/r/${run.id}"><span class="t">#${run.id} \u00b7 ${run.taskId}</span><span class="m">${runOutcomeBadge(run, live.has(run.id))}<span class="mono">${whenTime(run.startedAt)}</span></span></a>`,
+      ), "\n");
+    return html`<h2>Builds</h2>\n${rows.length === 0 ? html`<p class="meta">None yet</p>` : items}`;
   }
 
-  async function peekFragment(runId: number, sessionKey: string, editorMode = false): Promise<{ status: number; body: string; retryAfter?: number }> {
+  async function peekFragment(runId: number, sessionKey: string, editorMode = false): Promise<{ status: number; body: Html; retryAfter?: number }> {
+    // The cache and the in-flight coalescer hold the fragment's bytes (runtime's types); they are markup this made.
+    const said = (message: string, final?: boolean): Html => peekSay(message, final);
     const guarded = peekGuards(runId);
-    if (!guarded.ok) return { status: 200, body: peekSay(guarded.message, guarded.final === true) };
+    if (!guarded.ok) return { status: 200, body: said(guarded.message, guarded.final === true) };
     const { run, worktree, epoch, entries } = guarded.admit;
     // The cache and the in-flight coalescer both vary by LINK MODE (arc 6,
     // finding 3): a linked fragment rendered for one session must never be
@@ -1540,18 +1585,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     if (cached !== undefined) {
       peekCache.delete(key);
-      runtime.peekCacheBytes -= Buffer.byteLength(cached.fragment);
+      runtime.peekCacheBytes -= cached.bytes;
     }
     // Coalesce per run; bound per session and globally (finding 10).
     const flightKey = `${runId}:${editorMode ? "links" : "plain"}`;
     const inFlight = peekInFlight.get(flightKey);
-    if (inFlight !== undefined) return { status: 200, body: await inFlight };
-    if (peekInFlight.size >= PEEK_GLOBAL_INFLIGHT) return { status: 429, body: peekSay("the live view is busy — it retries by itself"), retryAfter: 10 };
+    if (inFlight !== undefined) return { status: 200, body: (await inFlight) };
+    if (peekInFlight.size >= PEEK_GLOBAL_INFLIGHT) return { status: 429, body: said("the live view is busy — it retries by itself"), retryAfter: 10 };
     if ((peekBySession.get(sessionKey) ?? 0) >= PEEK_SESSION_INFLIGHT) {
-      return { status: 429, body: peekSay("too many live views from this session"), retryAfter: 10 };
+      return { status: 429, body: said("too many live views from this session"), retryAfter: 10 };
     }
     peekBySession.set(sessionKey, (peekBySession.get(sessionKey) ?? 0) + 1);
-    const work = (async (): Promise<string> => {
+    const work = (async (): Promise<Html> => {
       const seen = await observeWorktree(worktree, entries.entries, PEEK_LIMITS);
       // The fence, proved AGAIN after the walk (findings 16/28): the same
       // run still open, the same claim, the SAME epoch — or the whole
@@ -1562,63 +1607,63 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       if (!seen.ok) return peekSay(seen.reason);
       const stamp = clock().toISOString().slice(11, 19);
-      const parts: string[] = [
-        `<p class="meta">Best-effort look at ${escape(stamp)} UTC — files can change mid-read</p>`,
+      const parts: Html[] = [
+        html`<p class="meta">Best-effort look at ${stamp} UTC — files can change mid-read</p>`,
       ];
       const changed = seen.rows.filter(one => one.kind === "changed");
       const deleted = seen.rows.filter(one => one.kind === "deleted");
       const unchecked = seen.rows.filter(one => one.kind === "unchecked");
       const fresh = aggregateNewNames(seen.newPaths);
       if (changed.length === 0 && deleted.length === 0 && fresh.total === 0) {
-        parts.push(`<p class="row">nothing has changed against the starting point yet</p>`);
+        parts.push(html`<p class="row">nothing has changed against the starting point yet</p>`);
       }
       // A name is linked ONLY when sanitize provably changed nothing (arc 6,
       // finding 3): a masked or normalized label must never carry an href
       // that discloses what the mask hid. Collapsed labels never link.
-      const linkedName = (path: string): string => {
-        const shown = peekName(path);
-        if (!editorMode || shown !== escape(path)) return shown;
+      const shownName = (path: string): Html => peekName(path);
+      const linkedName = (path: string): Html => {
+        const shown = shownName(path);
+        if (!editorMode || htmlString(shown) !== htmlString(textHtml(path))) return shown;
         const href = editorFileHref(worktree, path);
-        return href === null ? shown : `<a href="${escape(href)}">${shown}</a>`;
+        return href === null ? shown : html`<a href="${href}">${shown}</a>`;
       };
-      const line = (row: { path: string; detail: string }, mark: string): string =>
-        `<p class="row mono">${mark} ${linkedName(row.path)} <span class="meta">${escape(row.detail)}</span></p>`;
+      const line = (row: { path: string; detail: string }, mark: string): Html =>
+        html`<p class="row mono">${mark} ${linkedName(row.path)} <span class="meta">${row.detail}</span></p>`;
       for (const row of changed) parts.push(line(row, "~"));
       for (const row of deleted) parts.push(line(row, "−"));
       if (fresh.total > 0) {
-        parts.push(`<p class="meta">New files · ${fresh.total}</p>`);
+        parts.push(html`<p class="meta">New files · ${fresh.total}</p>`);
         for (const row of fresh.rows) {
           parts.push(
             row.collapsed
-              ? `<p class="row mono">+ ${peekName(row.label)} <span class="meta">collapsed names — ${row.count} files</span></p>`
-              : `<p class="row mono">+ ${peekName(row.label)}</p>`,
+              ? html`<p class="row mono">+ ${shownName(row.label)} <span class="meta">collapsed names — ${row.count} files</span></p>`
+              : html`<p class="row mono">+ ${shownName(row.label)}</p>`,
           );
         }
         if (fresh.renderedFiles < fresh.total) {
-          parts.push(`<p class="meta">…and ${fresh.total - fresh.renderedFiles} more (${fresh.total} new files total)</p>`);
+          parts.push(html`<p class="meta">…and ${fresh.total - fresh.renderedFiles} more (${fresh.total} new files total)</p>`);
         }
       }
       if (unchecked.length > 0) {
-        parts.push(`<p class="meta">Not verified this look — absence above does not mean unchanged:</p>`);
+        parts.push(html`<p class="meta">Not verified this look — absence above does not mean unchanged:</p>`);
         for (const row of unchecked) parts.push(line(row, "?"));
       }
-      if (seen.partial !== null) parts.push(`<p class="meta">${escape(seen.partial)}</p>`);
-      let fragment = parts.join("\n");
-      if (Buffer.byteLength(fragment) > PEEK_FRAGMENT_BYTES) {
+      if (seen.partial !== null) parts.push(html`<p class="meta">${seen.partial}</p>`);
+      let fragment = joinHtml(parts, "\n");
+      if (Buffer.byteLength(htmlString(fragment)) > PEEK_FRAGMENT_BYTES) {
         // The byte cap is enforced AFTER escaping (finding 32): an oversize
         // rendering is replaced whole by its exact counts.
-        fragment =
-          `<p class="meta">Best-effort look at ${escape(stamp)} UTC</p>` +
-          `<p class="row">${changed.length} changed · ${deleted.length} deleted · ${fresh.total} new · ${unchecked.length} unverified — too much to render live; the final diff will hold the detail</p>`;
+        fragment = html`<p class="meta">Best-effort look at ${stamp} UTC</p><p class="row">${changed.length} changed · ${deleted.length} deleted · ${fresh.total} new · ${unchecked.length} unverified — too much to render live; the final diff will hold the detail</p>`;
       }
-      peekCache.set(key, { fragment, at: Date.now() });
-      runtime.peekCacheBytes += Buffer.byteLength(fragment);
+      const bytes = Buffer.byteLength(htmlString(fragment));
+      peekCache.set(key, { fragment, bytes, at: Date.now() });
+      runtime.peekCacheBytes += bytes;
       peekEvict();
       return fragment;
     })();
     peekInFlight.set(flightKey, work);
     try {
-      return { status: 200, body: await work };
+      return { status: 200, body: (await work) };
     } finally {
       peekInFlight.delete(flightKey);
       const left = (peekBySession.get(sessionKey) ?? 1) - 1;
@@ -2259,8 +2304,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       case "complete": {
         const body = readForm(posted, CONSOLE_FORMS.taskComplete);
-        if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only an approver can mark a result complete.");
-        const principal = matePrincipal(who);
+        // The row admits only an approver's browser session; the principal re-proves that session's standing.
+        const principal = who.via === "cookie" ? matePrincipal(who) : null;
         if (principal === null) return refuse(response, who, 403, "Your access changed. Sign in again.");
         const digest = body.get("receipt") ?? "";
         const namedRun = body.get("run") ?? "";
@@ -2314,11 +2359,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const asked = requestTaskStop(store, { taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web" }, now);
         if (!asked.ok) {
           const words: Record<string, string> = {
-            "no-run": `there is no run #${escape(named)}`,
-            "wrong-task": `run #${escape(named)} is not one of this task's attempts`,
-            finished: `run #${escape(named)} already ended before the stop — nothing rewrites a finished attempt; reload to see the current state`,
-            "not-live": `run #${escape(named)} is not the attempt holding this task now — reload and decide against the current attempt`,
-            publication: `run #${escape(named)} already admitted its publication — an external request in flight is not recalled by a stop`,
+            "no-run": `there is no run #${named}`,
+            "wrong-task": `run #${named} is not one of this task's attempts`,
+            finished: `run #${named} already ended before the stop — nothing rewrites a finished attempt; reload to see the current state`,
+            "not-live": `run #${named} is not the attempt holding this task now — reload and decide against the current attempt`,
+            publication: `run #${named} already admitted its publication — an external request in flight is not recalled by a stop`,
           };
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, 409);
         }
@@ -2382,7 +2427,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
    * all — the /queue page's body, and the board's "order" view (the one
    * place dragging exists, because reordering and reserving are scheduling,
    * never authority). */
-  function queueRegionFor(project: string | null, csrf: string, revision: number, now: Date): string {
+  function queueRegionFor(project: string | null, csrf: string, revision: number, now: Date): Html {
     const tasks = store.queueScoped(project, now).map(one => ({
       ...one,
       dispatch: diagnoseTaskDispatch(store, one.id, now),
@@ -2402,7 +2447,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         capacity: one.capacity,
         building: building.get(one.name) ?? 0,
       }));
-    return queueBody(tasks, workers, csrf, revision, store.queueRevision());
+    return queueBody(tasks, workers, revision, store.queueRevision());
   }
 
 
@@ -2680,58 +2725,78 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     for (const run of rows) if (runIsLive(run)) live.add(run.id);
     return live;
   }
-  const registrations: Registration[] = [
-    { id: "code.page", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "inbox", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "work", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "next", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "board", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "review", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "done", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "tasks", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "queue", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "tasks.new", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "task.live", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "task.page", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "task.evidence", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "runs", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "run.page", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "run.evidence", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "routines", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "routine.page", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "decision.page", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "decision.evidence", domain: "tasks", stage: "console", method: "GET", handle: get },
-    { id: "code.act", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "tasks.add", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "queue.move", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "queue.note", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "decision.answer", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.hold", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.unhold", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.requeue", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.cancel", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.scope", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.approve", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.plan", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.plan-edit", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.next", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.reopen", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.steer", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.accept-proof", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.accept-revision", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.reject-revision", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.route", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.retry-review", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.complete", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.merge", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.confirm-stopped", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.stop", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.resume-arm", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.act.resume", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "task.instance-act", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "run.act", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "session.editor-links", domain: "tasks", stage: "console", method: "POST", handle: post },
-    { id: "incident.resolve", domain: "tasks", stage: "console", method: "POST", handle: post },
-  ];
-  return { registrations, get, post, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact,  peekGuards, liveRunIds };
+  const registrations = handlersOf("tasks", {
+    "code.page": showCode("workspace"),
+    "code.session": showCode("session"),
+    "code.state": showCode("state"),
+    "code.changes": showCode("changes"),
+    "code.ship": showCode("ship"),
+    "code.other": showCode("unknown"),
+    "inbox": showInbox,
+    "work": showWork,
+    "next": showNext,
+    "board": showBoard,
+    "review": showReview,
+    "done": showDone,
+    "tasks": showTasks,
+    "queue": showQueue,
+    "tasks.new": showNewTask,
+    "task.page": showTask,
+    "task.evidence": showTaskEvidence,
+    "runs": showRuns,
+    "run.page": showRun,
+    "run.evidence": showRunEvidence,
+    "routines": showRoutines,
+    "routine.page": showRoutine,
+    "decision.page": showDecision,
+    "decision.evidence": showDecisionEvidence,
+    "code.start": codeAct("start"),
+    "code.send-send": codeAct("send"),
+    "code.stop-send": codeAct("stop"),
+    "code.resume-send": codeAct("resume"),
+    "code.recover-send": codeAct("recover"),
+    "code.continue-send": codeAct("continue"),
+    "code.ship-send": codeAct("ship"),
+    "code.answer-send": codeAct("answer"),
+    "code.act-other": codeAct("unknown"),
+    "tasks.add": addTask,
+    "queue.move": queueMove,
+    "queue.note": queueNote,
+    "decision.answer": answerDecision,
+    "task.act.hold": taskAct("hold"),
+    "task.act.unhold": taskAct("unhold"),
+    "task.act.requeue": taskAct("requeue"),
+    "task.act.cancel": taskAct("cancel"),
+    "task.act.scope": taskAct("scope"),
+    "task.act.approve": taskAct("approve"),
+    "task.act.plan": taskAct("plan"),
+    "task.act.plan-edit": taskAct("plan-edit"),
+    "task.act.next": taskAct("next"),
+    "task.act.reopen": taskAct("reopen"),
+    "task.act.steer": taskAct("steer"),
+    "task.act.accept-proof": taskAct("accept-proof"),
+    "task.act.accept-revision": taskAct("accept-revision"),
+    "task.act.reject-revision": taskAct("reject-revision"),
+    "task.act.route": taskAct("route"),
+    "task.act.retry-review": taskAct("retry-review"),
+    "task.act.complete": taskAct("complete"),
+    "task.act.merge": taskMerge,
+    "task.act.confirm-stopped": taskConfirmStopped,
+    "task.act.stop": taskAct("stop"),
+    "task.act.resume-arm": taskAct("resume-arm"),
+    "task.act.resume": taskAct("resume"),
+    "task.act.block": taskAct("block"),
+    "task.act.unblock": taskAct("unblock"),
+    "task.act.repair-dependency": taskAct("repair-dependency"),
+    "task.act.follow-up": taskAct("follow-up"),
+    "run.act.note": runNote,
+    "run.act.comment": runComment,
+    "run.act.revise": runRevise,
+    "run.act.draft-repair": runDraftRepair,
+    "run.act.checks": runFollowUp("checks"),
+    "run.act.add-tests": runFollowUp("add-tests"),
+    "session.editor-links": sessionEditorLinks,
+    "incident.resolve": resolveIncident,
+  });
+  return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }

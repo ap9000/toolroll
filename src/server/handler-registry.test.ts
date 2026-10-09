@@ -19,12 +19,13 @@ describe('assertHandlerRegistry', () => {
   test('a complete registry passes; a missing, duplicate or incompatible entry fails startup', () => {
     const all = synthetic();
     expect(() => assertHandlerRegistry(all)).not.toThrow();
+    const [first, second] = all.filter(one => one.stage === 'console');
+    expect(() => assertHandlerRegistry(all.map(one => one === second ? { ...second!, handle: first!.handle } as Registration : one))).toThrow(/Handler shared by/);
     expect(() => assertHandlerRegistry(all.slice(1))).toThrow(/Route has no handler/);
     expect(() => assertHandlerRegistry([...all, all[0]!])).toThrow(/Duplicate handler/);
     expect(() => assertHandlerRegistry([...all, { ...all[0]!, id: 'not-declared' }])).toThrow(/no compatible route/);
     const swap = (index: number, change: Partial<RouteDeclaration>) => all.map((one, at) => at === index ? { ...one, ...change } as Registration : one);
-    const get = all.findIndex(one => one.method === 'GET'), console_ = all.findIndex(one => one.stage === 'console');
-    expect(() => assertHandlerRegistry(swap(get, { method: 'POST' }))).toThrow(/no compatible route/);
+    const console_ = all.findIndex(one => one.stage === 'console');
     expect(() => assertHandlerRegistry(swap(console_, { domain: all[console_]!.domain === 'tasks' ? 'flows' : 'tasks' }))).toThrow(/no compatible route/);
     expect(() => assertHandlerRegistry(swap(console_, { stage: 'edge' }))).toThrow(/no compatible route/);
   });
@@ -80,6 +81,7 @@ describe('the server', () => {
 
   test('starts with every factory registration, and every row reaches its own handler', async () => {
     // Construction ran assertHandlerRegistry on the factories' own list.
+    expect(new Set(registered.map(one => one.handle)).size).toBe(registered.length);
     expect(registered.map(one => one.id).sort()).toEqual(ROUTES.map(row => row.id).sort());
     const { cookie, csrf } = await signIn();
     live = false;
@@ -88,7 +90,7 @@ describe('the server', () => {
       reached = [];
       const method = row.method === 'POST' ? 'POST' : 'GET';
       // Console rows as the signed-in browser; edge rows as the anonymous caller their own proof starts from.
-      const answer = row.stage === 'console'
+      const answer = (row.stage === 'console' || row.domain === 'live')
         ? await send(row.sample, method, { cookie, origin: `http://127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin' }, new URLSearchParams({ csrf }).toString())
         : await send(row.sample, method);
       if (reached.join() !== row.id || answer.status !== 204) missed.push(`${row.id} ${method} ${row.sample}: ${answer.status} ${reached.join()}`);

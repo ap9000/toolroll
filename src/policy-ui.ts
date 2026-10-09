@@ -4,11 +4,11 @@
  * action ledger. Anyone signed in reads it; an instance operator changes it
  * with their password.
  */
+import { html, postForm, type Html } from "./html.js";
 import type { LedgerEntry } from "./action-ledger.js";
 import { whenUtc } from "./when-html.js";
 import { LEVEL_HINTS, LEVEL_NAMES, PERMISSION_LEVELS, POLICY_PROVIDERS, PROVIDER_NAMES, policyParts, type SavedPolicy } from "./policy.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export const POLICY_CSS = `.policy{max-width:720px;min-width:0}.policy dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;margin:12px 0 0;font-size:.875rem}` +
   `.policy dt{color:var(--muted-foreground)}.policy dd{margin:0;overflow-wrap:anywhere}.policy fieldset{border:0;padding:0;margin:20px 0 0;min-width:0}` +
@@ -28,33 +28,21 @@ export type PolicyView = {
 };
 
 /** A ledger entry as one line of history: when, who, what, before → after. */
-function historyItem(entry: LedgerEntry): string {
+function historyItem(entry: LedgerEntry): Html {
   const what = entry.action.replace(/^organisation policy: /, "");
   const [before, after] = (entry.detail ?? "").split(" → ");
-  return `<li><span class="what">${e(what.charAt(0).toUpperCase() + what.slice(1))}: ${e(before ?? "")} → <strong>${e(after ?? "")}</strong></span>` +
-    `<span class="meta">${e(entry.actor)} · ${whenUtc(entry.at)}</span></li>`;
+  return html`<li><span class="what">${what.charAt(0).toUpperCase() + what.slice(1)}: ${before ?? ""} → <strong>${after ?? ""}</strong></span><span class="meta">${entry.actor} · ${whenUtc(entry.at)}</span></li>`;
 }
 
-export function policyHtml(view: PolicyView, csrf: string, notice: { said?: string | null; problem?: string | null }): string {
-  const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+export function policyHtml(view: PolicyView, notice: { said?: string | null; problem?: string | null }): Html {
+  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const parts = policyParts(view.policy);
-  const changed = view.policy.updatedBy === null ? "" : `<p class="meta">Changed by ${e(view.policy.updatedBy)} on ${e((view.policy.updatedAt ?? "").slice(0, 10))}.</p>`;
-  const current = `<dl><dt>Providers</dt><dd>${e(parts.providers === "any" ? "Any" : parts.providers)}</dd><dt>Models</dt><dd>${e(parts.models === "any" ? "Any" : parts.models)}</dd>` +
-    `<dt>Tools</dt><dd>${e(parts.tools === "any" ? "Any" : parts.tools)}</dd><dt>Ceiling</dt><dd>${e(parts.ceiling)}</dd></dl>${changed}`;
-  const history = view.history.length === 0 ? "" : `<details><summary>History (${view.history.length})</summary><ol>${view.history.map(historyItem).join("")}</ol></details>`;
-  if (!view.canChange) return `<section class="policy">${note}${current}<p class="meta">An instance operator sets the policy.</p>${history}</section>`;
-  const providers = POLICY_PROVIDERS.map(one => `<label><input type="checkbox" name="provider" value="${one}"${view.policy.providers === null || view.policy.providers.includes(one) ? " checked" : ""}> ${PROVIDER_NAMES[one]}</label>`).join("");
-  const levels = [...PERMISSION_LEVELS].reverse().map(level => `<label class="choice"><input type="radio" name="ceiling" value="${level}"${view.policy.ceiling === level ? " checked" : ""}>` +
-    `<span><strong>${LEVEL_NAMES[level]}</strong><small>${e(LEVEL_HINTS[level])}</small></span></label>`).join("");
+  const changed = view.policy.updatedBy === null ? "" : html`<p class="meta">Changed by ${view.policy.updatedBy} on ${(view.policy.updatedAt ?? "").slice(0, 10)}.</p>`;
+  const current = html`<dl><dt>Providers</dt><dd>${parts.providers === "any" ? "Any" : parts.providers}</dd><dt>Models</dt><dd>${parts.models === "any" ? "Any" : parts.models}</dd><dt>Tools</dt><dd>${parts.tools === "any" ? "Any" : parts.tools}</dd><dt>Ceiling</dt><dd>${parts.ceiling}</dd></dl>${changed}`;
+  const history = view.history.length === 0 ? "" : html`<details><summary>History (${view.history.length})</summary><ol>${view.history.map(historyItem)}</ol></details>`;
+  if (!view.canChange) return html`<section class="policy">${note}${current}<p class="meta">An instance operator sets the policy.</p>${history}</section>`;
+  const providers = POLICY_PROVIDERS.map(one => html`<label><input type="checkbox" name="provider" value="${one}"${view.policy.providers === null || view.policy.providers.includes(one) ? html` checked` : ""}> ${PROVIDER_NAMES[one]}</label>`);
+  const levels = [...PERMISSION_LEVELS].reverse().map(level => html`<label class="choice"><input type="radio" name="ceiling" value="${level}"${view.policy.ceiling === level ? html` checked` : ""}><span><strong>${LEVEL_NAMES[level]}</strong><small>${LEVEL_HINTS[level]}</small></span></label>`);
   const toolHint = view.toolNames.length === 0 ? "" : ` Tools here: ${view.toolNames.slice(0, 12).join(", ")}${view.toolNames.length > 12 ? "…" : ""}.`;
-  return `<section class="policy">${note}${changed}` +
-    `<form method="post" action="/settings/policy"><input type="hidden" name="csrf" value="${e(csrf)}">` +
-    `<fieldset><legend>Providers</legend><div class="providers">${providers}</div></fieldset>` +
-    `<fieldset><legend><label for="policy-models">Models</label></legend><textarea id="policy-models" name="models" spellcheck="false" placeholder="Any model" aria-describedby="policy-models-hint">${e((view.policy.models ?? []).join("\n"))}</textarea>` +
-    `<span class="hint" id="policy-models-hint">One per line; end with * to allow a family. Blank allows any.</span></fieldset>` +
-    `<fieldset><legend><label for="policy-tools">Project tools</label></legend><textarea id="policy-tools" name="tools" spellcheck="false" placeholder="Any tool" aria-describedby="policy-tools-hint">${e((view.policy.tools ?? []).join("\n"))}</textarea>` +
-    `<span class="hint" id="policy-tools-hint">One per line. Blank allows any.${e(toolHint)}</span></fieldset>` +
-    `<fieldset><legend>Permission ceiling</legend>${levels}</fieldset>` +
-    `<div class="step-up"><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label></div>` +
-    `<button type="submit">Save policy</button></form>${history}</section>`;
+  return html`<section class="policy">${note}${changed}${postForm("/settings/policy", html`<fieldset><legend>Providers</legend><div class="providers">${providers}</div></fieldset><fieldset><legend><label for="policy-models">Models</label></legend><textarea id="policy-models" name="models" spellcheck="false" placeholder="Any model" aria-describedby="policy-models-hint">${(view.policy.models ?? []).join("\n")}</textarea><span class="hint" id="policy-models-hint">One per line; end with * to allow a family. Blank allows any.</span></fieldset><fieldset><legend><label for="policy-tools">Project tools</label></legend><textarea id="policy-tools" name="tools" spellcheck="false" placeholder="Any tool" aria-describedby="policy-tools-hint">${(view.policy.tools ?? []).join("\n")}</textarea><span class="hint" id="policy-tools-hint">One per line. Blank allows any.${toolHint}</span></fieldset><fieldset><legend>Permission ceiling</legend>${levels}</fieldset><div class="step-up"><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label></div><button type="submit">Save policy</button>`)}${history}</section>`;
 }

@@ -6,6 +6,7 @@
  * back or fails. Every change is the server's: it answers with the flow as
  * it now stands, and every open page hears the moment it changes (v88),
  * with the faces of whoever else has it open. */
+import { roomName, useLiveRoom } from "../live.js";
 import { NEEDS } from "../../needs-you.js";
 import { Background, BackgroundVariant, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -64,8 +65,7 @@ async function send(path: string, fields: Record<string, string>, csrf: string):
 
 type Here = { name: string; cards: number[]; editing: boolean };
 
-/** The flow as it stands, for everyone: the server says the moment it changes, and who else has it open.
- * Without a stream (no EventSource, or it can't reconnect) the page reads every few seconds instead. */
+/** The flow as it stands, for everyone: its room says the moment it changes, and who else has it open. */
 function useLiveFlow(view: BrowserFlowView, setView: (view: BrowserFlowView) => void, me: { card: number | null; editing: boolean }): Here[] {
   const [others, setOthers] = useState<Here[]>([]);
   const seen = useRef(view.live);
@@ -96,33 +96,13 @@ function useLiveFlow(view: BrowserFlowView, setView: (view: BrowserFlowView) => 
   // Done changing the flow: catch up on anything held back meanwhile.
   useEffect(() => { if (!me.editing && again.current) void read(); }, [me.editing, read]);
   useEffect(() => () => window.clearTimeout(retry.current), []);
-  useEffect(() => {
-    let source: EventSource | null = null;
-    let fallback: number | undefined;
-    // The page reconciles on its own slow beat too, not only when the server speaks.
-    const reconcile = window.setInterval(() => { if (document.visibilityState === "visible" && source !== null) void read(); }, 30_000);
-    const query = new URLSearchParams({ ...(me.card === null ? {} : { card: String(me.card) }), ...(me.editing ? { editing: "1" } : {}) }).toString();
-    const poll = () => { window.clearInterval(fallback); fallback = window.setInterval(() => { if (document.visibilityState === "visible") void read(); }, 5000); };
-    const open = () => {
-      if (typeof EventSource === "undefined") { poll(); return; }
-      const stream = new EventSource(`${href}/live${query === "" ? "" : `?${query}`}`);
-      source = stream;
-      stream.addEventListener("change", event => { try { const at = (JSON.parse((event as MessageEvent<string>).data) as { at: string | null }).at; if (at === null || at !== seen.current) void read(); } catch { void read(); } });
-      // The server's stream fell behind and caught up: read again.
-      stream.addEventListener("reload", () => { void read(); });
-      stream.addEventListener("here", event => { try { setOthers((JSON.parse((event as MessageEvent<string>).data) as { people: Here[] }).people); } catch { /* keep the last list */ } });
-      stream.addEventListener("gone", () => { stream.close(); if (source === stream) source = null; setOthers([]); });
-      stream.addEventListener("open", () => window.clearInterval(fallback));
-      // The browser retries a dropped stream on its own; if it gives up, read on a timer.
-      stream.addEventListener("error", () => { if (stream.readyState === EventSource.CLOSED) { if (source === stream) source = null; setOthers([]); poll(); } });
-    };
-    const close = () => { source?.close(); source = null; window.clearInterval(fallback); setOthers([]); };
-    // A hidden tab isn't "here", and doesn't hold one of the browser's few connections.
-    const visible = () => { if (document.hidden) close(); else if (source === null) { open(); void read(); } };
-    if (!document.hidden) open();
-    document.addEventListener("visibilitychange", visible);
-    return () => { document.removeEventListener("visibilitychange", visible); window.clearInterval(reconcile); close(); };
-  }, [href, me.card, me.editing, read]);
+  useLiveRoom(roomName("flow", view.flow.id, { card: me.card, editing: me.editing }), (event, data) => {
+    if (event === "change") { const at = data["at"]; if (typeof at !== "string" || at !== seen.current) void read(); }
+    // The server's stream fell behind and caught up: read again.
+    else if (event === "reload") void read();
+    else if (event === "here") { const people = data["people"]; if (Array.isArray(people)) setOthers(people as Here[]); }
+    else if (event === "gone" || event === "lost") setOthers([]);
+  });
   return others;
 }
 

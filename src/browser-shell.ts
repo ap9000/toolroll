@@ -2,7 +2,8 @@
  * are readable here; authenticated data stays in the existing page handlers. */
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { serializeBrowserWorkspace, type BrowserWorkspace } from './browser-workspace.js';
+import { type BrowserWorkspace } from './browser-workspace.js';
+import { html, jsonScript, replaceMarkup, scriptElement, type Html } from './html.js';
 
 const assets = new Map<string, { body: Buffer; type: string }>();
 function readAsset(name: 'workspace.js' | 'workspace.css' | 'THIRD_PARTY_NOTICES.txt'): Buffer | null {
@@ -43,16 +44,15 @@ export function serveBrowserAsset(request: IncomingMessage, response: ServerResp
 /** Retain the complete native document as the no-JavaScript/unloaded-bundle
  * fallback. React replaces its root only once the local module has loaded.
  * The data script is escaped for HTML parsing, not merely valid JSON. */
-export function browserWorkspaceDocument(html: string, workspace: BrowserWorkspace, nonce: string, functionalScript: string): string {
+export function browserWorkspaceDocument(document: Html, workspace: BrowserWorkspace, nonce: string, functionalScript: string): Html {
   const initialize = `window.addEventListener('standing-orders:workspace-rendered',function initializeWorkspace(){window.removeEventListener('standing-orders:workspace-rendered',initializeWorkspace);${functionalScript}});`;
   // A cross-page fade the browser gives up on rejects its promises; settle them from the head, before the
   // first frame (the app's own listener arrives too late when a page is revealed before the bundle runs).
   const settleFades = `(function(){function s(e){var f=e.viewTransition;if(f)[f.finished,f.ready,f.updateCallbackDone].forEach(function(p){if(p)p.catch(function(){})})}addEventListener('pageswap',s);addEventListener('pagereveal',s)})();`;
-  return html
+  // Each insertion is markup built here; the page's own markup (and its data) is never re-read as a pattern.
+  let out = replaceMarkup(document, /<\/head>/, () =>
     // A page showing a password keeps to its one script (the sensitivity contract), so it goes without.
-    // Replacer functions, never strings: a `$\`` or `$'` in the page's data (an issue title, a TODO) would
-    // otherwise paste part of the page into the data block and close it early.
-    .replace('</head>', () => `<link rel="stylesheet" href="/assets/workspace.css">${workspace.sensitive ? "" : `<script nonce="${nonce}">${settleFades}</script>`}</head>`)
-    .replace('<body>', () => '<body><div id="standing-orders-workspace">')
-    .replace('</body>', () => `</div><script type="application/json" id="standing-orders-workspace-data" nonce="${nonce}">${serializeBrowserWorkspace(workspace)}</script><script nonce="${nonce}">${initialize}</script><script type="module" src="/assets/workspace.js" nonce="${nonce}"></script></body>`);
+    html`<link rel="stylesheet" href="/assets/workspace.css">${workspace.sensitive ? "" : scriptElement(settleFades, { nonce })}</head>`);
+  out = replaceMarkup(out, /<body>/, () => html`<body><div id="standing-orders-workspace">`);
+  return replaceMarkup(out, /<\/body>/, () => html`</div>${jsonScript(workspace, { id: "standing-orders-workspace-data", nonce })}${scriptElement(initialize, { nonce })}<script type="module" src="/assets/workspace.js" nonce="${nonce}"></script></body>`);
 }

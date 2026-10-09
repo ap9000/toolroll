@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { roomName, useLiveRoom } from './live.js';
 import type { FormEvent, ReactNode } from 'react';
 import type { TeamMessage, TeamOperation, TeamProposal, TeamResponse, TeamSnapshot } from '../team-contract.js';
 import { Alert, Badge, Button, Disclosure, Input, Label, Textarea } from './ui/index.js';
@@ -74,22 +75,12 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
     if (!value.ok || !value.snapshot) throw new Error(value.message || 'Updates are unavailable.');
     accept(value.snapshot); setDisconnected(false);
   }, [conversation?.id, accept]);
-  useEffect(() => {
-    if (revoked) return;
-    let source: EventSource | null = null;
-    const connect = () => {
-      source?.close(); source = null;
-      if (document.hidden || !navigator.onLine) return;
-      source = new EventSource('/api/team/events' + (conversation ? '?conversation=' + encodeURIComponent(conversation.id) : ''));
-      source.addEventListener('change', () => { void refresh().catch(() => setDisconnected(true)); });
-      source.addEventListener('revoked', () => { source?.close(); setRevoked(true); setProblem('Your access changed. Reopen Chat or sign in again.'); });
-      source.addEventListener('unavailable', () => { source?.close(); setDisconnected(true); });
-      source.onerror = () => setDisconnected(true);
-    };
-    connect();
-    document.addEventListener('visibilitychange', connect); window.addEventListener('online', connect);
-    return () => { source?.close(); document.removeEventListener('visibilitychange', connect); window.removeEventListener('online', connect); };
-  }, [conversation?.id, refresh, revoked]);
+  // The conversation's room says when it changed; the read itself goes through /api/team.
+  useLiveRoom(revoked ? null : roomName('team', null, { conversation: conversation?.id }), event => {
+    if (event === 'change' || event === 'reload') void refresh().catch(() => setDisconnected(true));
+    else if (event === 'gone') { setRevoked(true); setProblem('Your access changed. Reopen Chat or sign in again.'); }
+    else if (event === 'lost') setDisconnected(true);
+  });
   useEffect(() => { end.current?.scrollIntoView({ block: 'nearest' }); }, [snapshot.messages.length]);
   const lastMessage = snapshot.messages.at(-1)?.id;
   useEffect(() => {
