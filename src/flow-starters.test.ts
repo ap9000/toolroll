@@ -3,6 +3,8 @@
  * trigger and zones, together, once), the overnight queue holds cards until its hours, and a task's "Do this every
  * time…" and the lead's chat card offer the matching one — against a real store and a real console.
  */
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -191,9 +193,9 @@ describe("starter flows", () => {
   });
 
   test("the page reads in plain words when nothing can be switched on here", () => {
-    const html = startersHtml({ repo: plain, projects: [{ path: plain, name: "notes" }], starters: startersFor(store, plain), csrf: "x", canSwitch: true, suggested: null, said: null, problem: null });
+    const html = htmlString(withFormToken("x", () => startersHtml({ repo: plain, projects: [{ path: plain, name: "notes" }], starters: startersFor(store, plain), csrf: "x", canSwitch: true, suggested: null, said: null, problem: null })));
     expect(html.match(/Switch on<\/button>/g)).toHaveLength(2);
     expect(html).toContain("This project isn&#39;t on GitHub, so this can&#39;t watch it.");
-    expect(startersHtml({ repo: plain, projects: [], starters: startersFor(store, plain), csrf: "", canSwitch: false, suggested: null, said: null, problem: null })).toContain("An approver switches these on.");
+    expect(htmlString(startersHtml({ repo: plain, projects: [], starters: startersFor(store, plain), csrf: "", canSwitch: false, suggested: null, said: null, problem: null }))).toContain("An approver switches these on.");
   });
 });

@@ -1,5 +1,6 @@
 import { SCHEMA_VERSION } from './store.js';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { html, htmlString } from './html.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, renameSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,7 +65,7 @@ describe('project knowledge',()=>{
     expect(knowledgeContext(store,run)).toBe(supplied);expect(store.getScope(scope.taskId)?.digest).toBe(scope.digest);
     expect(readKnowledgeSnapshot(store,run)!.instructions).toContain('Keep UI');expect(knowledgeContext(store,start())).toContain('New instructions');
     expect(()=>store.handle.exec('DELETE FROM knowledge_snapshot')).toThrow(/immutable/);
-    expect(knowledgeContextHtml(snapshot)).toContain('Context used');expect(knowledgeContextHtml(snapshot)).toContain('Not included');
+    expect(htmlString(knowledgeContextHtml(snapshot)||html``)).toContain('Context used');expect(htmlString(knowledgeContextHtml(snapshot)||html``)).toContain('Not included');
   });
   test('review inherits the builder context even when project instructions change',()=>{
     change('instructions',{instructions:'Original instructions'});const source=start();knowledgeContext(store,source);storeEvidence(store,join(root,'evidence'),source,'terminal-diff','diff.patch',Buffer.from('diff --git a/mobile.md b/mobile.md\n--- a/mobile.md\n+++ b/mobile.md\n@@ -1 +1 @@\n+Mobile\n'),'fixture',now,{captureStatus:'ok'});store.recordOutcomeFacts(source,{headRevision:head});store.finishRun(source,{outcome:'built',committed:true,now});

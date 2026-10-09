@@ -6,17 +6,19 @@ import { TeamChat } from './team-chat.js';
 import type { TeamSnapshot } from '../team-contract.js';
 import type { BrowserActionCard } from '../browser-workspace.js';
 import { toast } from './components/ui/index.js';
+import { FormToken } from './ui/index.js';
 const fixture = (): TeamSnapshot => ({ leads: [{ id: 'lead', name: 'Team lead', instructions: '', projects: ['/project'], revision: 1, status: 'active', createdBy: 'alex' }], conversations: [], selected: { id: 'room', leadId: 'lead', title: 'Settings page', visibility: 'team', projects: ['/project'], revision: 1, threadId: 1, createdBy: 'alex', follow: false }, participants: [{ account: 'alex', role: 'manager', active: true }], messages: [], canManage: true, canSend: true, canCreateLead: true, cursor: 1, truncated: false, projects: ['/project'], accounts: ['alex', 'sam'], chatAuthorization: { enabled: true, provider: 'codex-app', model: 'configured-model', dailyTurns: 20, weeklyCeilingUsd: null, conversationCeilingUsd: null, termsDigest: 'terms' } });
-class Events extends EventTarget { static latest: Events; onerror: (() => void) | null = null; close = vi.fn(); constructor(_url: string) { super(); Events.latest = this; } }
+class Events extends EventTarget { static latest: Events; static CLOSED = 2; readyState = 1; close = vi.fn(() => { this.readyState = 2; }); constructor(readonly url: string) { super(); Events.latest = this; } }
+const revoke = () => act(async () => Events.latest.dispatchEvent(new MessageEvent('gone', { data: JSON.stringify({ room: 'team?conversation=room' }) })));
 const json = (snapshot: TeamSnapshot) => new Response(JSON.stringify({ version: 1, ok: true, code: 'ok', message: 'Saved', snapshot }), { headers: { 'content-type': 'application/json' } });
 let root: Root | null = null;
 beforeEach(() => { document.body.innerHTML = ''; sessionStorage.clear(); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); vi.stubGlobal('EventSource', Events); HTMLElement.prototype.scrollIntoView = vi.fn(); });
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = null; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-async function mount(snapshot = fixture()) { const element = document.createElement('div'); document.body.append(element); root = createRoot(element); await act(async () => root!.render(createElement(TeamChat, { initial: snapshot, user: 'alex', csrf: 'csrf' }))); }
+async function mount(snapshot = fixture()) { const element = document.createElement('div'); document.body.append(element); root = createRoot(element); await act(async () => root!.render(createElement(FormToken.Provider, { value: 'csrf' }, createElement(TeamChat, { initial: snapshot, user: 'alex', csrf: 'csrf' })))); }
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === text)!;
 test('idle room opens a stream and never sends a model request', async () => {
   const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
-  await mount(); expect(fetcher).not.toHaveBeenCalled(); expect(document.body.textContent).toContain('Team'); expect(document.body.textContent).toContain('What would you like to work on?');
+  await mount(); expect(Events.latest.url).toBe('/live?room=team%3Fconversation%3Droom'); expect(fetcher).not.toHaveBeenCalled(); expect(document.body.textContent).toContain('Team'); expect(document.body.textContent).toContain('What would you like to work on?');
   await act(async () => root!.unmount()); root = null; expect(Events.latest.close).toHaveBeenCalled();
 });
 test('lost message response preserves exact request identity and does not resend on reconnect', async () => {
@@ -37,7 +39,7 @@ test('author attribution, queued edit controls and revoked access stay explicit'
   const snapshot = fixture(); snapshot.messages = [{ id: 1, author: 'sam', role: 'operator', text: 'Also support a long project name.', status: 'queued', revision: 3, createdAt: '', requestId: 'sam-one', turnId: null, error: null }];
   vi.stubGlobal('fetch', vi.fn(async () => json(snapshot)));
   await mount(snapshot); expect(document.body.textContent).toContain('sam'); expect(document.body.textContent).toContain('Queued'); expect(button('Withdraw')).toBeUndefined();
-  await act(async () => Events.latest.dispatchEvent(new Event('revoked')));
+  await revoke();
   expect(document.body.textContent).toContain('Your access changed'); expect(button('Send')).toBeUndefined(); expect(Events.latest.close).toHaveBeenCalled();
 });
 test('provider spend terms appear before enabling replies and Send stays disabled', async () => {
@@ -144,7 +146,7 @@ test('server blocking reasons and secure review links survive inline rendering; 
   expect(document.querySelector('[data-action-card="10"]')!.textContent).toContain('Enable chat in this conversation');
   expect(document.querySelector('[data-action-card="10"] button')).toBeNull();
   expect(document.querySelector('[data-action-card="11"] a')!.getAttribute('href')).toBe('/chat/proposal/11/review');
-  await act(async () => Events.latest.dispatchEvent(new Event('revoked')));
+  await revoke();
   expect(document.querySelector('[data-action-card="11"] a, [data-card-dismiss]')).toBeNull();
 });
 test('decision acknowledgements and native forms keep the lead card confirmation fields', async () => {

@@ -2,6 +2,7 @@
  * server's own body), one act, and the result — without leaving the
  * conversation. Every act posts to the card's own door with this session's
  * token; the refreshed conversation carries the card's new state. */
+import { PostForm } from "./ui/index.js";
 import { Check, X } from "lucide-react";
 import { useId, useState } from "react";
 import type { BrowserActionCard } from "../browser-workspace.js";
@@ -57,12 +58,11 @@ function ActionCard({ card, csrf, onChanged }: { card: BrowserActionCard; csrf: 
       </label>}
       {(primary !== null || card.dismissable) && <div className="flex flex-wrap items-center gap-2">
         {primary?.kind === "link" && <Button asChild size="sm"><a href={primary.href}>{primary.label}</a></Button>}
-        {primary?.kind === "confirm" && primary.native && <form method="post" action={`/chat/proposal/${card.id}/confirm`}>
-          <input type="hidden" name="csrf" value={csrf} />
+        {primary?.kind === "confirm" && primary.native && <PostForm action={`/chat/proposal/${card.id}/confirm`}>
           <input type="hidden" name="return" value={window.location.pathname + window.location.search} />
           {primary.irreversible && armed && <input type="hidden" name="confirm" value="yes" />}
           <Button type="submit" size="sm" disabled={confirmBlocked}>{primary.label}</Button>
-        </form>}
+        </PostForm>}
         {primary?.kind === "confirm" && !primary.native && <Button size="sm" disabled={busy !== null || confirmBlocked} onClick={() => { void run("confirm"); }} data-card-confirm>
           {busy === "confirm" ? "Working…" : primary.label}
         </Button>}

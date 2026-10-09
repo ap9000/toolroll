@@ -11,6 +11,7 @@
  * output) is an amber note on its own row with one action; the exact
  * technical reason stays one tap away in `why`. */
 import { DEFAULT_LEAD_NAME } from "./lead-identity.js";
+import { html, type Html } from "./html.js";
 import type { AssignmentSnapshot } from "./assignment.js";
 import { CODE_NEED, NEEDS, needSentence, waitSentence, type NeedAction, type NeedContext, type NeedKey, type WaitKey } from "./needs-you.js";
 export type { NeedKey, WaitKey } from "./needs-you.js";
@@ -448,35 +449,33 @@ export function headlineEmoji(headline: Headline): string {
   return ({ Queued: "🕓", Planning: "📝", "Needs you": "👋", Waiting: "⏸", Building: "⏳", "Ready for review": "✅", Complete: "✅", Failed: "❌", Stopped: "⏹" } as const)[headline];
 }
 
-const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-const ICON_PATHS: Record<DetailMark, string> = {
-  ok: `<path d="M20 6 9 17l-5-5"/>`,
-  running: `<circle cx="12" cy="12" r="4"/>`,
-  none: `<circle cx="12" cy="12" r="3"/>`,
-  note: `<path d="M12 8v5"/><path d="M12 16.5h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>`,
-  failed: `<path d="M18 6 6 18M6 6l12 12"/>`,
+const ICON_PATHS: Record<DetailMark, Html> = {
+  ok: html`<path d="M20 6 9 17l-5-5"/>`,
+  running: html`<circle cx="12" cy="12" r="4"/>`,
+  none: html`<circle cx="12" cy="12" r="3"/>`,
+  note: html`<path d="M12 8v5"/><path d="M12 16.5h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>`,
+  failed: html`<path d="M18 6 6 18M6 6l12 12"/>`,
 };
-export const statusIconSvg = (mark: DetailMark): string =>
-  `<svg class="status-icon status-icon--${mark}" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[mark]}</svg>`;
+export const statusIconSvg = (mark: DetailMark): Html =>
+  html`<svg class="status-icon status-icon--${mark}" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[mark]}</svg>`;
 
 /** The detail rows as server HTML: quiet rows, colour only on the icon. */
-export function statusDetailsHtml(status: TaskStatus): string {
-  if (status.details.length === 0) return "";
-  return `<ul class="status-details" aria-label="Status">` + status.details.map(one => {
-    const text = one.href === null ? escapeHtml(one.text) : `<a href="${escapeHtml(one.href)}">${escapeHtml(one.text)}</a>`;
-    const action = one.action === null ? "" : one.action.href === null ? `<span class="status-detail-act">${escapeHtml(one.action.label)}</span>` : `<a class="status-detail-act" href="${escapeHtml(one.action.href)}">${escapeHtml(one.action.label)}</a>`;
-    return `<li class="status-detail status-detail--${one.mark}" data-status-detail="${one.key}" data-mark="${one.mark}">${statusIconSvg(one.mark)}<span class="status-detail-label">${escapeHtml(one.label)}</span><span class="status-detail-text"><span>${text}</span>${action}</span></li>`;
-  }).join("") + `</ul>`;
+export function statusDetailsHtml(status: TaskStatus): Html {
+  if (status.details.length === 0) return html``;
+  return html`<ul class="status-details" aria-label="Status">${status.details.map(one => {
+    const text = one.href === null ? one.text : html`<a href="${one.href}">${one.text}</a>`;
+    const action = one.action === null ? "" : one.action.href === null ? html`<span class="status-detail-act">${one.action.label}</span>` : html`<a class="status-detail-act" href="${one.action.href}">${one.action.label}</a>`;
+    return html`<li class="status-detail status-detail--${one.mark}" data-status-detail="${one.key}" data-mark="${one.mark}">${statusIconSvg(one.mark)}<span class="status-detail-label">${one.label}</span><span class="status-detail-text"><span>${text}</span>${action}</span></li>`;
+  })}</ul>`;
 }
 
 /** The status card's fold of exact reasons: "More", never a third thing called Details. */
 export const STATUS_MORE = "More";
 /** The technical reasons, one tap away. */
-export function statusWhyHtml(status: TaskStatus, extra: readonly string[] = [], diagnostics: readonly { token: string; label: string; detail: string }[] = []): string {
+export function statusWhyHtml(status: TaskStatus, extra: readonly string[] = [], diagnostics: readonly { token: string; label: string; detail: string }[] = []): Html {
   const lines = [...new Set([...status.details.flatMap(one => one.why === null ? [] : [`${one.label}: ${one.why}`]), ...status.why, ...extra])];
-  if (lines.length === 0 && diagnostics.length === 0) return "";
-  return `<details class="status-why"><summary>${STATUS_MORE}</summary>${lines.map(one => `<p class="meta">${escapeHtml(one)}</p>`).join("")}` +
-    diagnostics.map(one => `<p class="meta" data-work-diagnostic="${escapeHtml(one.token)}">${escapeHtml(one.label)} · ${escapeHtml(one.detail)}</p>`).join("") + `</details>`;
+  if (lines.length === 0 && diagnostics.length === 0) return html``;
+  return html`<details class="status-why"><summary>${STATUS_MORE}</summary>${lines.map(one => html`<p class="meta">${one}</p>`)}${diagnostics.map(one => html`<p class="meta" data-work-diagnostic="${one.token}">${one.label} · ${one.detail}</p>`)}</details>`;
 }
 
 /** Shared CSS for the server-rendered status: neutral rows, coloured icons. */

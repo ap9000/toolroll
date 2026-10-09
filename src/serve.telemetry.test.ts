@@ -28,17 +28,17 @@ test('real HTTP requests, live streams and budget refusals reach metrics and the
     expect((await fetch(`${url}/api/cli`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' })).status).toBe(429);
     // Budgets cover every remote route (0.9.49): lift the tiny limit so the stream, metrics and health calls below are admitted.
     setLimitOverride(store, '*', { readPerMinute: null, actPerMinute: null, perDay: null }, 'synthetic-operator', now);
-    const stream = await fetch(`${url}/api/team/events?conversation-private-marker=hidden`, { headers, signal: streamAbort.signal });
+    const stream = await fetch(`${url}/live?room=${encodeURIComponent('team?conversation=')}`, { headers, signal: streamAbort.signal });
     expect(stream.status).toBe(200);
     const reader = stream.body!.getReader(); await reader.read();
     drain = (async () => { try { while (!(await reader.read()).done) {} } catch { /* own abort */ } finally { reader.releaseLock(); } })();
     expect(store.telemetry.snapshot().streams.open).toBe(1);
-    expect(store.telemetry.routes.get('team-stream')!.total.count).toBe(1);
+    expect(store.telemetry.routes.get('live')!.total.count).toBe(1);
     const text = await (await fetch(`${url}/metrics`, { headers })).text();
     expect(text).toContain('toolroll_http_request_duration_seconds_count{route="cli"} 2');
     expect(text).toContain('toolroll_request_budget_refusals_total{route="api",reason="read-per-minute"} 1');
-    expect(text).toContain('toolroll_sse_connections{route="team-stream"} 1');
-    expect(text).not.toContain('conversation-private-marker'); expect(text).not.toContain(token);
+    expect(text).toContain('toolroll_sse_connections{route="live"} 1');
+    expect(text).not.toContain('conversation='); expect(text).not.toContain('room='); expect(text).not.toContain(token);
     const profileFile = join(dir, 'profile.json');
     writeFileSync(profileFile, JSON.stringify({ version: 1, active: 'test', profiles: { test: { origin: url, account: 'synthetic-operator', token } } }), { mode: 0o600 });
     const lines: string[] = [];

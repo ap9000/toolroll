@@ -1,5 +1,7 @@
 /** Toolroll update: provenance, restore and rollback recovery, watch daemons and the cancel lock. Fixtures: test/toolroll-update-kit.ts. */
 import { test, expect } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
 import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -416,7 +418,7 @@ test("f8: Settings → Updates offers --rollback from the last completed update,
     const status = runtimeUpdateStatus(f.stateDir);
     expect(status.journal!.phase).toBe("refused");
     expect(status.lastUpdate).toEqual({ from: "0.6.0", to: "0.7.0" });
-    const html = updatesHtml({ current: "0.7.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: status.journal, running: false, whatsNew: null, rollbackTo: status.lastUpdate!.from, csrf: "x" }, {});
+    const html = htmlString(withFormToken("x", () => updatesHtml({ current: "0.7.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: status.journal, running: false, whatsNew: null, rollbackTo: status.lastUpdate!.from, csrf: "x" }, {})));
     expect(html).toContain("To go back to 0.6.0: <code>toolroll update --rollback</code>");
     // Rolled back: nothing is offered.
     await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: update.journal!.to, actor: "ada", when: "when-idle" }, f.system);
@@ -587,7 +589,7 @@ test("u1: a record nothing can prove: within 2 minutes it stops waiting, new wor
     for (const words of [outcome.message, j.detail, ...seen, ...j.steps.map(s => s.phase)]) expect(words).not.toMatch(/witness|unproven/i);
     // Status and the console say the same thing while it is still in the way.
     expect(updateWaitingOf(f.stateDir, stillInTheWay(f))).toMatchObject({ stopped: true, run, action: `toolroll run settle ${run} --why "it is not running"` });
-    const html = updatesHtml({ current: "0.6.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: j, running: false, whatsNew: null, rollbackTo: null, csrf: "x" }, {});
+    const html = htmlString(withFormToken("x", () => updatesHtml({ current: "0.6.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: j, running: false, whatsNew: null, rollbackTo: null, csrf: "x" }, {})));
     expect(html).toContain(`Update to 0.7.0 stopped: run #${run} is in the way`);
     expect(html).toContain(`<code>toolroll run settle ${run} --why &quot;it is not running&quot;</code>`);
     expect(html).not.toMatch(/witness|unproven/i);

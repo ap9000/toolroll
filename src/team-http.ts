@@ -4,8 +4,8 @@ import { TEAM_OPERATIONS, TEAM_MUTATIONS, teamScopeAllows, type TeamActor, type 
 import { limitWords, type Admission } from './request-budget.js';
 
 export const TEAM_REQUEST_BYTES = 64 * 1024;
-/** How long a password bearer's proof stands on a long /api/team/events stream before its password is checked again.
- * The account, its revocation and its credential generation are still rechecked on every tick. */
+/** How long a password bearer's proof stands on a long live team stream (GET /live?room=team) before its password is
+ * checked again. The account, its revocation and its credential generation are still rechecked on every signal. */
 export const TEAM_PASSWORD_REVERIFY_MS = 5 * 60_000;
 /** Account role belongs to HTTP authentication; API tokens carry their own scope. */
 export type TeamHttpActor = TeamActor & { role?: 'approver' | 'viewer' };
@@ -15,14 +15,10 @@ export type TeamHttpOptions = {
   revalidate: (request: IncomingMessage, actor: TeamActor) => boolean;
   authorizeMutation: (request: IncomingMessage, actor: TeamActor) => boolean;
   execute: TeamExecute;
-  /** Current, authorized event cursor. null means the audience is no longer available. */
-  cursor?: (actor: TeamActor, conversationId?: string) => number | null;
-  /** Source admission before credential verification. Streams are charged once when opened. */
+  /** Source admission before credential verification. */
   admit?: (request: IncomingMessage) => Admission;
   /** Proved account/token admission, before reading the body or executing any operation. */
   admitAuthenticated?: (request: IncomingMessage, actor: TeamActor) => Admission;
-  streamIntervalMs?: number;
-  streams?: Set<ServerResponse>;
 };
 const failure = (code: string, message: string): TeamResponse => ({ version: 1, ok: false, code, message });
 function send(response: ServerResponse, status: number, value: TeamResponse, headers: Record<string, string> = {}): void {
@@ -49,11 +45,11 @@ function valid(value: unknown): value is TeamRequest {
     !['actor', 'generation', 'authenticatedActor'].some(key => key in (row.args as object));
 }
 
-/** Authenticated browser and remote CLI share one operation boundary. Streams
- * are refresh hints only: no model calls, admissions, or completion writes. */
+/** Authenticated browser and remote CLI share one operation boundary. Live
+ * updates come from GET /live?room=team (server/live.ts). */
 export async function handleTeamHttp(request: IncomingMessage, response: ServerResponse, options: TeamHttpOptions): Promise<boolean> {
   const url = new URL(request.url ?? '/', 'http://standing-orders.local');
-  if (url.pathname !== '/api/team' && url.pathname !== '/api/team/events') return false;
+  if (url.pathname !== '/api/team') return false;
   const reject = (status: number, code: string, message: string) => { send(response, status, failure(code, message)); request.resume(); return true; };
   if ([...url.searchParams.keys()].some(key => /token|password|credential|authorization/i.test(key))) return reject(400, 'credentials-in-url', 'Credentials never travel in URLs.');
   const count = request.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'authorization').length;
@@ -74,45 +70,6 @@ export async function handleTeamHttp(request: IncomingMessage, response: ServerR
   const policyPrincipal = () => ({ caller: request.headers.authorization ? 'bearer' as const : 'cookie' as const, capability: actor.principal?.scope ?? (actor.role === 'approver' ? 'act' as const : 'read' as const), token: actor.principal !== undefined });
   if (!adapterPolicy(policyPrincipal()).ok) return reject(403, 'read-only', 'Your token reads only. Use an act token for this.');
   const conversationId = url.searchParams.get('conversation') ?? undefined;
-  if (url.pathname === '/api/team/events') {
-    if (request.method !== 'GET') return reject(405, 'method-not-allowed', 'Use GET for conversation updates.');
-    let initial: TeamResponse;
-    try { initial = await options.execute(actor, { operation: conversationId ? 'show' : 'list', args: conversationId ? { conversationId } : {} }); }
-    catch { return reject(503, 'unavailable', 'Conversation updates are unavailable.'); }
-    if (!initial.ok || !initial.snapshot) { send(response, 403, initial); return true; }
-    response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-accel-buffering': 'no' });
-    options.streams?.add(response);
-    let cursor = initial.snapshot.cursor;
-    response.write(`id: ${cursor}\nevent: change\ndata: {"cursor":${cursor}}\n\n`);
-    let active = false;
-    const close = () => { clearInterval(timer); options.streams?.delete(response); response.end(); };
-    const revoked = () => { response.write('event: revoked\ndata: {}\n\n'); close(); };
-    const tick = async () => {
-      if (active || response.destroyed || response.writableEnded) return;
-      active = true;
-      try {
-        if (!options.revalidate(request, actor!)) return revoked();
-        let next: number | null;
-        if (options.cursor) next = options.cursor(actor!, conversationId);
-        else {
-          const reply = await options.execute(actor!, { operation: conversationId ? 'show' : 'list', args: conversationId ? { conversationId } : {} });
-          next = reply.ok ? reply.snapshot?.cursor ?? null : null;
-        }
-        if (next === null) return revoked();
-        if (next !== cursor) {
-          cursor = next;
-          // A slow client receives a fresh scoped snapshot on reconnect, never an unbounded replay buffer.
-          if (!response.write(`id: ${cursor}\nevent: change\ndata: {"cursor":${cursor}}\n\n`)) close();
-        }
-      } catch { response.write('event: unavailable\ndata: {}\n\n'); close(); }
-      finally { active = false; }
-    };
-    const timer = setInterval(() => { void tick(); }, options.streamIntervalMs ?? 1_000);
-    timer.unref();
-    request.once('close', close);
-    response.once('close', close);
-    return true;
-  }
   let input: TeamRequest;
   if (request.method === 'GET') input = { operation: conversationId ? 'show' : 'list', args: conversationId ? { conversationId } : {} };
   else if (request.method === 'POST') {

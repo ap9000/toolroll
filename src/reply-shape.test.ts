@@ -4,6 +4,7 @@ import {
   shapeReply, shapeReplyParts, telegramReply, voiceReply, type ReplyChannel,
 } from "./reply-shape.js";
 import { warmTurn } from "./chat-warmth.js";
+import { htmlString } from "./html.js";
 
 const ORIGIN = "https://so.example.com";
 const CHANNELS: ReplyChannel[] = ["console", "terminal", "telegram", "slack", "discord", "teams"];
@@ -12,7 +13,7 @@ const CHANNELS: ReplyChannel[] = ["console", "terminal", "telegram", "slack", "d
 function seen(text: string, channel: ReplyChannel, asked?: string): { text: string; bold: string[]; links: Array<{ label: string; url: string }> } {
   const shaped = shapeReply(text, { appOrigin: ORIGIN, ...(asked === undefined ? {} : { asked }) });
   if (channel === "console") {
-    const html = shaped.split("\n").map(replyHtmlInline).join("\n");
+    const html = shaped.split("\n").map(line => htmlString(replyHtmlInline(line))).join("\n");
     return {
       text: html.replace(/<[^>]+>/g, ""),
       bold: [...html.matchAll(/<strong>(.*?)<\/strong>/g)].map(one => one[1]!),
@@ -178,7 +179,7 @@ describe("one reply shaper, every channel", () => {
   test("each channel escapes its own syntax around what the shaper keeps", () => {
     expect(renderReply(shapeReply("a <b> & c"), "slack")).toBe("a &lt;b&gt; &amp; c");
     expect(renderReply(shapeReply("use @here and _x_"), "discord")).toBe("use @​here and \\_x\\_");
-    expect(replyHtmlInline(shapeReply(`<script>x</script> ${ORIGIN}/t/a"b`, { appOrigin: ORIGIN }))).not.toMatch(/<script>|"b"/);
+    expect(htmlString(replyHtmlInline(shapeReply(`<script>x</script> ${ORIGIN}/t/a"b`, { appOrigin: ORIGIN })))).not.toMatch(/<script>|"b"/);
     expect(linkLabel("not a url")).toBe("not a url");
   });
 });

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ExecResult } from "./exec.js";
+import { htmlString } from "./html.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer, redactedPath, SIGN_IN_LINK_MS, wrongHostPage, type DecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
@@ -129,7 +130,7 @@ test("a wrong host explains itself: the address opened, where it answers, and th
   expect(odd.status).toBe(421);
   expect(odd.body).not.toContain("<b>x</b>");
   expect(odd.body).not.toContain("--allow-host");
-  expect(wrongHostPage({ opened: "a.b:1", served: "127.0.0.1:4180", command: "toolroll up --allow-host a.b:1" })).toContain("<pre><code>toolroll up --allow-host a.b:1</code></pre>");
+  expect(htmlString(wrongHostPage({ opened: "a.b:1", served: "127.0.0.1:4180", command: "toolroll up --allow-host a.b:1" }))).toContain("<pre><code>toolroll up --allow-host a.b:1</code></pre>");
 });
 
 test("localhost, 127.0.0.1 and this computer's own tailnet name on the served port are allowed without asking", async () => {

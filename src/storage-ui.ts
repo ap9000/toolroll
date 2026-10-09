@@ -6,11 +6,11 @@
  */
 import { homedir } from "node:os";
 import { basename } from "node:path";
+import { html, postForm, type Html } from "./html.js";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
 import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 export const STORAGE_CSS = `.storage{max-width:720px;min-width:0;overflow-wrap:anywhere}.storage h2{font-size:1.0625rem;margin:24px 0 4px}` +
@@ -49,53 +49,41 @@ function whenWords(at: string): string {
 }
 
 /** One line: when the last sweep ran and what it did; its paths and problems behind Details. */
-function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): string {
+function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): Html {
   const last = sweep.last;
-  if (last === null) return `<p class="meta" data-last-sweep="">${sweep.off ? "Automatic sweep is off." : "Toolroll sweeps leftovers once a day. It hasn't run yet."}</p>`;
-  const who = last.source === "manual" ? `Cleaned up by ${e(last.actor)}` : "Swept";
+  if (last === null) return html`<p class="meta" data-last-sweep="">${sweep.off ? "Automatic sweep is off." : html`Toolroll sweeps leftovers once a day. It hasn't run yet.`}</p>`;
+  const who = last.source === "manual" ? `Cleaned up by ${last.actor}` : "Swept";
   const details = sweepDetails(last.parts);
   const problem = last.parts.some(one => one.failed > 0 || one.problem !== undefined);
-  return `<div class="sweep" data-last-sweep="${e(last.at)}"><p${problem ? ' class="problem"' : ""}>${who} <time datetime="${e(last.at)}">${e(whenWords(last.at))}</time>. ${e(sweepWords(last.parts))}</p>` +
-    (details.length === 0 ? "" : `<details class="sweep-details"><summary>Details</summary><ul>${details.map(line => `<li>${e(homeAsTilde(line))}</li>`).join("")}</ul></details>`) + `</div>`;
+  return html`<div class="sweep" data-last-sweep="${last.at}"><p${problem ? html` class="problem"` : ""}>${who} <time datetime="${last.at}">${whenWords(last.at)}</time>. ${sweepWords(last.parts)}</p>${
+    details.length === 0 ? "" : html`<details class="sweep-details"><summary>Details</summary><ul>${details.map(line => html`<li>${homeAsTilde(line)}</li>`)}</ul></details>`}</div>`;
 }
 
-function item(one: CheckoutItem, csrf: string): string {
+function item(one: CheckoutItem): Html {
   const discard = one.why === "has changes"
-    ? `<details class="discard"><summary>Discard</summary><form method="post" action="/settings/storage/discard"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="path" value="${e(one.path)}">` +
-      `<p class="meta">Throws away this checkout and its uncommitted changes. Its branch stays.</p>` +
-      `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit" class="danger">Discard changes</button></form></details>`
+    ? html`<details class="discard"><summary>Discard</summary>${postForm("/settings/storage/discard", html`<p class="meta">Throws away this checkout and its uncommitted changes. Its branch stays.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit" class="danger">Discard changes</button>`, { hidden: { path: one.path } })}</details>`
     : "";
   // The task it was for, then where it is (the home folder as ~), then why it stays.
   const home = homedir();
   const where = home !== "" && one.path.startsWith(`${home}/`) ? `~${one.path.slice(home.length)}` : one.path;
-  return `<li data-checkout="${e(one.path)}"><span class="name">${e(one.taskId ?? basename(one.path))}</span><span class="size">${e(bytesWords(one.bytes))}</span>` +
-    `<span class="path">${e(where)}</span>` +
-    (one.why === null ? "" : `<span class="why">${e(whyWords(one)[0]!.toUpperCase() + whyWords(one).slice(1))}</span>`) + discard + `</li>`;
+  return html`<li data-checkout="${one.path}"><span class="name">${one.taskId ?? basename(one.path)}</span><span class="size">${bytesWords(one.bytes)}</span><span class="path">${where}</span>${
+    one.why === null ? "" : html`<span class="why">${whyWords(one)[0]!.toUpperCase() + whyWords(one).slice(1)}</span>`}${discard}</li>`;
 }
 
-export function storageHtml(view: StorageView, notice: { said?: string | null; problem?: string | null }): string {
-  const { plan, csrf } = view;
-  const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
-  const hidden = `<input type="hidden" name="csrf" value="${e(csrf)}">`;
+export function storageHtml(view: StorageView, notice: { said?: string | null; problem?: string | null }): Html {
+  const { plan } = view;
+  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const facts = [plural(plan.count, "checkout"), `${plan.waitingReview} waiting for review`, `${plan.withChanges} kept for their changes`].join(" · ");
   const frees = plan.go.length === 0 ? "Nothing to clean up now." : `Cleaning up now frees about ${bytesWords(plan.freeBytes)}.`;
   const remove = plan.go.length === 0 ? "" :
-    `<form method="post" action="/settings/storage/clean" class="remove">${hidden}<input type="hidden" name="preview" value="${e(previewDigest(plan))}">` +
-    `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>` +
-    `<button type="submit">Remove ${plural(plan.go.length, "checkout")}</button></form>`;
-  const preview = `<details class="clean-up" data-clean-up${notice.problem?.startsWith("Enter your Toolroll password to clean") ? " open" : ""}><summary>Clean up</summary><div class="preview">` +
-    (plan.go.length === 0 ? `<p>Nothing to remove now.</p>` :
-      `<h3>Removes ${plural(plan.go.length, "checkout")}, about ${e(bytesWords(plan.freeBytes))}</h3><p class="meta">Their branches stay, so nothing committed is lost.</p>` +
-      `<ul class="checkouts" data-goes>${plan.go.map(one => item(one, csrf)).join("")}</ul>`) +
-    (plan.stay.length === 0 ? "" : `<h3>Stays (${plan.stay.length})</h3><ul class="checkouts" data-stays>${plan.stay.map(one => item(one, csrf)).join("")}</ul>`) +
-    remove + `</div></details>`;
-  const options = CLEANUP_CHOICES.map(one => `<option value="${one.value}"${one.value === plan.cleanup ? " selected" : ""}>${e(one.label)}</option>`).join("");
-  return `<section class="storage">${note}` +
-    `<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${e(bytesWords(plan.totalBytes))}</h2><p class="meta">${e(facts)}</p>` +
-    `<p data-clean-bytes="${plan.freeBytes}">${e(frees)}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${preview}</div>` +
-    `<h2>Automatic cleanup</h2>` +
-    `<form method="post" action="/settings/storage" class="setting">${hidden}` +
-    `<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label>` +
-    `<p class="meta">Its branch always stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept.</p>` +
-    `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button></form></section>`;
+    postForm("/settings/storage/clean", html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Remove ${plural(plan.go.length, "checkout")}</button>`,
+      { attrs: { class: "remove" }, hidden: { preview: previewDigest(plan) } });
+  const preview = html`<details class="clean-up" data-clean-up${notice.problem?.startsWith("Enter your Toolroll password to clean") ? html` open` : ""}><summary>Clean up</summary><div class="preview">${
+    plan.go.length === 0 ? html`<p>Nothing to remove now.</p>` :
+      html`<h3>Removes ${plural(plan.go.length, "checkout")}, about ${bytesWords(plan.freeBytes)}</h3><p class="meta">Their branches stay, so nothing committed is lost.</p><ul class="checkouts" data-goes>${plan.go.map(one => item(one))}</ul>`}${
+    plan.stay.length === 0 ? "" : html`<h3>Stays (${plan.stay.length})</h3><ul class="checkouts" data-stays>${plan.stay.map(one => item(one))}</ul>`}${
+    remove}</div></details>`;
+  const options = CLEANUP_CHOICES.map(one => html`<option value="${one.value}"${one.value === plan.cleanup ? html` selected` : ""}>${one.label}</option>`);
+  return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p><p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${preview}</div><h2>Automatic cleanup</h2>${
+    postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch always stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
 }

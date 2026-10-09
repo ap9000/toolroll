@@ -113,10 +113,10 @@ export const CONSOLE_FORMS = {
   ledgerTarget: formContract("POST (the action ledger's project)", ["repo"]),
   projectCeiling: formContract("POST (project ceiling)", ["repo"]),
 
-  demo: formContract("POST /chat/demo/<act>", ["message", "note"]),
+  demo: formContract("POST /chat/demo/ask, /chat/demo/<id>/approve|change|revise|complete", ["message", "note"]),
   updatesDismiss: formContract("POST /settings/updates/dismiss", ["version", "quiet", "return"]),
   updatesChecks: formContract("POST /settings/updates/checks", ["check"]),
-  code: formContract("POST /code, /code/start, /code/<session>/<act>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
+  code: formContract("POST /code, /code/start, /code/<session>/<act>, /code/<anything else>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo"]),
@@ -151,11 +151,11 @@ export const CONSOLE_FORMS = {
   knowledgeChange: formContract("POST /settings/knowledge/change", ["repo", "action", "identity", "revision", "instructions", "title", "content", "path", "id", "restore"]),
   learningChange: formContract("POST /settings/learning/change", ["repo", "action", "identity", "revision", "lesson", "version", "sha"]),
   projectSetup: formContract("POST /control/setup-preview, /control/setup-approve, /control/instructions-preview, /control/instructions-approve", ["repo", "nonce", "fingerprint", "token", "provider", "model", "command", "seconds"]),
-  slack: formContract("POST /settings/slack/<connect|pair|unpair|disconnect|alerts>", ["password", "app-token", "bot-token"]),
+  slack: formContract("POST /settings/slack/connect|pair|unpair|disconnect|alerts", ["password", "app-token", "bot-token"]),
   chatApproval: formContract("POST /settings/chat-approval/confirm, /settings/chat-approval/save, /settings/chat-approval/off", ["scope", "full-access", "cap-usd", "nonce", "digest", "token"]),
   telegramPair: formContract("POST /settings/telegram/pair, /settings/telegram/unpair", ["password"]),
-  teams: formContract("POST /settings/teams/<connect|pair|unpair|disconnect|alerts>", ["password", "app-id", "tenant", "secret"]),
-  discord: formContract("POST /settings/discord/<connect|pair|unpair|disconnect|alerts>", ["password", "bot-token"]),
+  teams: formContract("POST /settings/teams/connect|pair|unpair|disconnect|alerts", ["password", "app-id", "tenant", "secret"]),
+  discord: formContract("POST /settings/discord/connect|pair|unpair|disconnect|alerts", ["password", "bot-token"]),
   messaging: formContract("POST /settings/messaging", ["primary"]),
   permissionDefault: formContract("POST /settings/permission-default", ["permission-mode"]),
   qualityDefault: formContract("POST /settings/quality-default", ["quality-mode"]),
@@ -232,6 +232,7 @@ export type ConsoleFormName = keyof typeof CONSOLE_FORMS;
 
 /** The console POSTs whose handlers read no field (sign-out not even the shared guard): their contract is the empty form. */
 export const BODILESS_POSTS = [
+  "POST /settings/models/<unknown action>",
   "POST /settings/lead/on",
   "POST /r/<run>/draft-repair",
   "POST /ledger/checkpoint",

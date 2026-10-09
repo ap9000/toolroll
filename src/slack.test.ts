@@ -3,6 +3,8 @@ import { notifyPeople } from "./flow-people.js";
 import { TEAMMATE_TEMPLATES } from "./teammates.js";
 import { addressedTo as messageTeammateWords, replyToAsker } from "./teammate-desk.js";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -784,7 +786,7 @@ describe("Slack shared chat", () => {
       expect(statSync(join(dir, "slack-connection.json")).mode & 0o777).toBe(
         0o600,
       );
-    const html = slackSettingsHtml(store, dir, "csrf");
+    const html = htmlString(withFormToken("csrf", () => slackSettingsHtml(store, dir)));
     expect(html).toContain("&lt;workspace&gt;");
     expect(html).not.toContain(credentials.botToken);
     expect(html).not.toContain(credentials.appToken);

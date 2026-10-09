@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
-import { createLiveBus, followWorkspace, LiveStream, STREAM_LIMIT_BYTES, type LiveBus, type WorkspaceFollower } from "./live-bus.js";
+import { createLiveBus, createLiveRooms, followWorkspace, LiveStream, STREAM_LIMIT_BYTES, type LiveBus, type LiveViewer, type WorkspaceFollower, LiveConnection } from "./live-bus.js";
 import { heartbeat } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { createTaskRooms, taskFingerprint } from "./task-live.js";
@@ -31,6 +31,8 @@ beforeEach(() => {
 afterEach(() => { follower.close(); store.close(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 /** A page's open stream, as the room sees it. `writableLength` is what it holds unsent. */
+/** Every event names its room; these tests join one room each. */
+const withoutRoom = ({ room: _room, ...rest }: Record<string, unknown>): Record<string, unknown> => rest;
 class Page extends EventEmitter {
   sent: string[] = [];
   writableEnded = false;
@@ -39,7 +41,7 @@ class Page extends EventEmitter {
   write(chunk: string) { this.sent.push(chunk); return true; }
   end(chunk?: string) { if (chunk !== undefined) this.sent.push(chunk); this.writableEnded = true; this.emit("close"); }
   events(name: string): unknown[] {
-    return this.sent.filter(one => one.startsWith(`event: ${name}\n`)).map(one => JSON.parse(one.split("\ndata: ")[1]!.trim()));
+    return this.sent.filter(one => one.startsWith(`event: ${name}\n`)).map(one => withoutRoom(JSON.parse(one.split("\ndata: ")[1]!.trim())));
   }
 }
 const response = (page: Page) => page as unknown as ServerResponse;
@@ -102,8 +104,8 @@ describe("rooms on the bus", () => {
     const flows = createFlowRooms(flow => flowFingerprint(store, flow), { bus });
     const taskPage = new Page(), flowPage = new Page();
     try {
-      tasks.join(fixture.id, { name: "alex", response: response(taskPage), valid: () => true });
-      flows.join(fixture.flow, { name: "alex", card: null, editing: false, response: response(flowPage), valid: () => true });
+      tasks.join(fixture.id, { name: "alex", room: "", connection: new LiveConnection(response(taskPage)), valid: () => true });
+      flows.join(fixture.flow, { name: "alex", card: null, editing: false, room: "", connection: new LiveConnection(response(flowPage)), valid: () => true });
       // Each kind of write the pages show: activity, progress, a question, a card moving, a comment.
       // What the agent did last shows on the task page only; progress shows on both.
       const writes: [string, () => void, boolean, boolean][] = [
@@ -130,8 +132,8 @@ describe("rooms on the bus", () => {
     const flows = createFlowRooms(flow => { fingerprints += 1; return flowFingerprint(store, flow); }, { bus });
     const pages = [new Page(), new Page()];
     try {
-      tasks.join(fixture.id, { name: "alex", response: response(pages[0]!), valid: () => { fingerprints += 1; return true; } });
-      flows.join(fixture.flow, { name: "alex", card: null, editing: false, response: response(pages[1]!), valid: () => { fingerprints += 1; return true; } });
+      tasks.join(fixture.id, { name: "alex", room: "", connection: new LiveConnection(response(pages[0]!)), valid: () => { fingerprints += 1; return true; } });
+      flows.join(fixture.flow, { name: "alex", card: null, editing: false, room: "", connection: new LiveConnection(response(pages[1]!)), valid: () => { fingerprints += 1; return true; } });
       vi.advanceTimersByTime(1_000);
       const prepare = vi.spyOn(store.handle, "prepare");
       const exec = vi.spyOn(store.handle, "exec");
@@ -148,14 +150,14 @@ describe("rooms on the bus", () => {
     let print = "a";
     const rooms = createTaskRooms(() => print, { bus: createLiveBus() });
     const page = new Page();
-    rooms.join("t-1", { name: "alex", response: response(page), valid: () => true });
+    rooms.join("t-1", { name: "alex", room: "", connection: new LiveConnection(response(page)), valid: () => true });
     print = "b"; // written, but the signal was dropped
     vi.advanceTimersByTime(29_000);
     expect(page.events("change")).toHaveLength(1);
     vi.advanceTimersByTime(1_000);
     expect(page.events("change").at(-1)).toEqual({ at: "b", revision: null });
-    // Between checks the page hears keep-alives, not changes.
-    expect(page.sent.filter(one => one === ": keep-alive\n\n")).toHaveLength(1);
+    // Between checks the page's connection sends keep-alives (every 15 s), not changes.
+    expect(page.sent.filter(one => one === ": keep-alive\n\n")).toHaveLength(2);
     rooms.close();
   });
 
@@ -163,14 +165,14 @@ describe("rooms on the bus", () => {
     vi.useRealTimers();
     let print = "a";
     const limit = STREAM_LIMIT_BYTES;
-    const rooms = createTaskRooms(() => print, { bus, limitBytes: limit });
+    const rooms = createTaskRooms(() => print, { bus });
     const responses = new Map<string, ServerResponse>();
     const server = createServer((request, reply) => {
       reply.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
       reply.flushHeaders();
       const name = request.url!.slice(1);
       responses.set(name, reply);
-      rooms.join("t-1", { name, response: reply, valid: () => true });
+      rooms.join("t-1", { name, room: "", connection: new LiveConnection(reply, { limitBytes: limit }), valid: () => true });
     });
     // Keep the slow reader paused, with almost no user-space receive buffer.
     const slow = new Socket({ readableHighWaterMark: 1 });
@@ -264,15 +266,173 @@ describe("the bounded write path", () => {
   });
 
   test("overflow during the first frame releases the new room and its subscription", () => {
-    const rooms = createTaskRooms(() => "a", { bus, limitBytes: 1 });
+    const rooms = createTaskRooms(() => "a", { bus });
     const page = new Page();
     page.writableLength = 2;
-    rooms.join("t-1", { name: "alex", response: response(page), valid: () => true });
+    rooms.join("t-1", { name: "alex", room: "", connection: new LiveConnection(response(page), { limitBytes: 1 }), valid: () => true });
     expect(page.events("reload")).toEqual([{}]);
     expect(rooms.size()).toBe(0);
     expect(bus.listeners()).toBe(1);
     vi.advanceTimersByTime(30_000);
     expect(page.sent).toHaveLength(1);
+  });
+});
+
+describe("one connection per page", () => {
+  const raw = (page: Page) => page.sent.filter(one => one.startsWith("event: ")).map(one => [one.split("\n")[0]!.slice(7), JSON.parse(one.split("\ndata: ")[1]!.trim())]);
+
+  test.each((["presence", "change"] as const).flatMap(frame =>
+    (["expiry", "revocation", "proof failure"] as const).map(reason => ({ frame, reason }))))(
+    "delayed $frame rechecks $reason at delivery and preserves other rooms and peers", ({ frame, reason }) => {
+      const delay = frame === "presence" ? 150 : 1_000, expiresAt = Date.now() + delay;
+      let revoked = false, print = "a";
+      const valid = () => {
+        if (reason === "proof failure" && revoked) throw new Error("Cannot read the session");
+        return reason === "expiry" ? Date.now() < expiresAt : !revoked;
+      };
+      const rooms = createLiveRooms<string, LiveViewer>(() => print,
+        frame === "presence" ? (viewers, me) => viewers.filter(one => one.name !== me).map(one => one.name) : null,
+        { bus, minIntervalMs: frame === "change" ? delay : 0 });
+      const shared = new Page(), alone = new Page(), peer = new Page();
+      const connection = new LiveConnection(response(shared));
+      const ended = vi.spyOn(alone, "end");
+      try {
+        rooms.join("private", { name: "alex", room: "task:private", connection, valid });
+        rooms.join("private", { name: "robin", room: "task:private", connection: new LiveConnection(response(alone)), valid });
+        rooms.join("private", { name: "sam", room: "task:private", connection: new LiveConnection(response(peer)), valid: () => true });
+        rooms.join("other", { name: "alex", room: "task:other", connection, valid: () => true });
+        if (frame === "change") {
+          print = "b"; bus.publish({ revision: "v1:2" });
+          expect(peer.events("change")).toEqual([{ at: "a", revision: null }, { at: "b", revision: "v1:2" }]);
+          print = "c"; bus.publish({ revision: "v1:3" });
+          print = "d"; bus.publish({ revision: "v1:4" });
+          expect(peer.events("change")).toHaveLength(2);
+        }
+        for (const page of [shared, alone, peer]) page.sent = [];
+        vi.advanceTimersByTime(delay - 1);
+        expect(shared.sent).toEqual([]);
+        expect(alone.sent).toEqual([]);
+        expect(peer.sent).toEqual([]);
+        revoked = true; // No bus signal: the queued callback must re-prove access itself.
+        vi.advanceTimersByTime(1);
+
+        const event = frame === "presence" ? "here" : "change";
+        const data = frame === "presence" ? { people: [] } : { at: "d", revision: "v1:4" };
+        expect(raw(alone)).toEqual([["gone", { room: "task:private" }]]);
+        expect(raw(shared)).toEqual([["gone", { room: "task:private" }], [event, { room: "task:other", ...data }]]);
+        expect(raw(peer)).toEqual([[event, { room: "task:private", ...data }]]);
+        expect(ended).toHaveBeenCalledTimes(1);
+        expect(connection.open).toBe(true);
+        expect(connection.rooms).toBe(1);
+        expect(rooms.size()).toBe(2);
+
+        // The surviving room and peer continue through the next interval; the dropped viewer stays gone.
+        print = "e"; bus.publish({ revision: "v1:5" });
+        vi.advanceTimersByTime(delay);
+        expect(raw(shared).filter(([kind]) => kind === "change").at(-1)).toEqual(["change", { room: "task:other", at: "e", revision: "v1:5" }]);
+        expect(peer.events("change").at(-1)).toEqual({ at: "e", revision: "v1:5" });
+        expect(raw(alone)).toEqual([["gone", { room: "task:private" }]]);
+        rooms.close();
+        const counts = [shared.sent.length, alone.sent.length, peer.sent.length];
+        vi.advanceTimersByTime(30_000);
+        expect([shared.sent.length, alone.sent.length, peer.sent.length]).toEqual(counts);
+        expect(ended).toHaveBeenCalledTimes(1);
+        expect(connection.open).toBe(false);
+        expect(rooms.size()).toBe(0);
+        expect(bus.listeners()).toBe(1);
+      } finally { rooms.close(); }
+    });
+
+  test.each([false, "throws"] as const)("initial frames fail closed when the proof is %s", proof => {
+    const rooms = createTaskRooms(() => "private", { bus });
+    const page = new Page();
+    const connection = new LiveConnection(response(page));
+    try {
+      rooms.join("private", { name: "alex", room: "task:private", connection, valid: () => {
+        if (proof === "throws") throw new Error("Cannot read the session");
+        return proof;
+      } });
+      expect(raw(page)).toEqual([["gone", { room: "task:private" }]]);
+      expect(connection.open).toBe(false);
+      expect(rooms.size()).toBe(0);
+      expect(bus.listeners()).toBe(1);
+      vi.advanceTimersByTime(30_000);
+      expect(page.sent).toHaveLength(1);
+    } finally { rooms.close(); }
+  });
+
+  test.each([false, "throws"] as const)("a keep-alive is a delivery: a session that lapses with nothing written (proof %s) hears its room go, never the keep-alive", proof => {
+    const expiresAt = Date.now() + 10_000;
+    const valid = () => {
+      if (Date.now() < expiresAt) return true;
+      if (proof === "throws") throw new Error("Cannot read the session");
+      return false;
+    };
+    const tasks = createTaskRooms(() => "a", { bus });
+    const flows = createFlowRooms(() => "x", { bus });
+    const lapsed = new Page(), shared = new Page(), peer = new Page();
+    const alone = new LiveConnection(response(lapsed)), both = new LiveConnection(response(shared));
+    try {
+      tasks.join("private", { name: "alex", room: "task:private", connection: alone, valid });
+      tasks.join("private", { name: "alex", room: "task:private", connection: both, valid });
+      flows.join(7, { name: "alex", room: "flow:7", connection: both, valid: () => true, card: null, editing: false });
+      tasks.join("private", { name: "sam", room: "task:private", connection: new LiveConnection(response(peer)), valid: () => true });
+      vi.advanceTimersByTime(150); // who is here settles while everyone still proves
+      for (const page of [lapsed, shared, peer]) page.sent = [];
+      // No write and no safety net yet: the first keep-alive after the lapse is the next delivery.
+      vi.advanceTimersByTime(15_000 - 150);
+      expect(lapsed.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:private" })}\n\n`]);
+      expect(lapsed.writableEnded).toBe(true);
+      expect(alone.open).toBe(false);
+      // The same session's other room on another page still proves, so that page keeps its stream.
+      expect(shared.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:private" })}\n\n`, ": keep-alive\n\n"]);
+      expect(both.rooms).toBe(1);
+      expect(peer.sent).toEqual([": keep-alive\n\n"]);
+      vi.advanceTimersByTime(30_000);
+      expect(lapsed.sent).toHaveLength(1);
+      expect(shared.sent.filter(one => one.includes("task:private"))).toHaveLength(1);
+      expect(tasks.size()).toBe(1);
+    } finally { tasks.close(); flows.close(); }
+  });
+
+  test("each room's events name it; a room that goes leaves the others open, and the last one ends the stream", () => {
+    let task = "a", flow = "x";
+    const tasks = createTaskRooms(() => task, { bus });
+    const flows = createFlowRooms(() => flow, { bus });
+    const page = new Page();
+    const connection = new LiveConnection(response(page));
+    let allowed = true;
+    tasks.join("t-1", { name: "alex", room: "task:t-1", connection, valid: () => allowed });
+    flows.join(7, { name: "alex", room: "flow:7", connection, valid: () => true, card: null, editing: false });
+    expect(raw(page).filter(([event]) => event === "change").map(([, data]) => data.room)).toEqual(["task:t-1", "flow:7"]);
+    task = "b";
+    bus.publish({ revision: "v1:2" });
+    expect(raw(page).filter(([event]) => event === "change").at(-1)).toEqual(["change", { room: "task:t-1", at: "b", revision: "v1:2" }]);
+    allowed = false;
+    flow = "y";
+    bus.publish({ revision: "v1:3" });
+    expect(raw(page).filter(([event]) => event === "gone")).toEqual([["gone", { room: "task:t-1" }]]);
+    expect(raw(page).filter(([event]) => event === "change").at(-1)).toEqual(["change", { room: "flow:7", at: "y", revision: "v1:3" }]);
+    expect(page.writableEnded).toBe(false);
+    flows.close();
+    expect(page.writableEnded).toBe(true);
+    tasks.close();
+  });
+
+  test("a busy room says change at most once per interval: the first at once, the latest after", () => {
+    let print = "a";
+    const rooms = createTaskRooms(() => print, { bus, minIntervalMs: 1_000 });
+    const page = new Page();
+    rooms.join("workspace", { name: "alex", room: "workspace", connection: new LiveConnection(response(page)), valid: () => true });
+    const changes = () => raw(page).filter(([event]) => event === "change").map(([, data]) => data.at);
+    print = "b"; bus.publish({ revision: "v1:2" });
+    expect(changes()).toEqual(["a", "b"]);
+    print = "c"; bus.publish({ revision: "v1:3" });
+    print = "d"; bus.publish({ revision: "v1:4" });
+    expect(changes()).toEqual(["a", "b"]);
+    vi.advanceTimersByTime(1_000);
+    expect(changes()).toEqual(["a", "b", "d"]);
+    rooms.close();
   });
 });
 

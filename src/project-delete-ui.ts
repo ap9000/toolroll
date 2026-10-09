@@ -4,9 +4,9 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import { html, postForm, type Html } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:720px;min-width:0}.project-settings .path,.project-delete .path{font-family:var(--font-mono);font-size:.8125rem;overflow-wrap:anywhere;word-break:break-all}` +
   `.project-settings details.danger-zone{margin-top:24px;border:1px solid var(--border);border-radius:10px;padding:0 14px}.project-settings details.danger-zone summary{min-height:44px;display:flex;align-items:center;cursor:pointer;font-weight:500;color:var(--danger)}` +
@@ -25,40 +25,34 @@ export type ProjectSettingsView = {
 };
 
 /** Builds at once: one number, one Save. The worker's cap is said only when it lowers the number. */
-function buildsHtml(view: ProjectSettingsView, csrf: string): string {
+function buildsHtml(view: ProjectSettingsView): Html | "" {
   const b = view.builds;
   if (b === undefined) return "";
   const capped = b.capacity !== null && b.capacity < b.setting ? ` Its worker runs ${b.capacity} at once, so ${b.capacity} for now.` : "";
   const now = `${b.building} building now.${capped}`;
-  if (!b.canChange) return `<section class="builds-at-once"><h2>Builds at once</h2><p>Up to ${b.setting}. ${e(now)}</p></section>`;
-  return `<section class="builds-at-once"><h2>Builds at once</h2><form method="post" action="/settings/project/concurrency">` +
-    `<input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}">` +
-    `<div class="builds-row"><input type="number" name="concurrency" min="1" max="64" step="1" inputmode="numeric" value="${b.setting}" aria-label="Builds at once" aria-describedby="builds-now"><button type="submit">Save</button></div>` +
-    `<p class="meta" id="builds-now">${e(now)}</p></form></section>`;
+  if (!b.canChange) return html`<section class="builds-at-once"><h2>Builds at once</h2><p>Up to ${b.setting}. ${now}</p></section>`;
+  return html`<section class="builds-at-once"><h2>Builds at once</h2>${postForm("/settings/project/concurrency", html`<div class="builds-row"><input type="number" name="concurrency" min="1" max="64" step="1" inputmode="numeric" value="${b.setting}" aria-label="Builds at once" aria-describedby="builds-now"><button type="submit">Save</button></div><p class="meta" id="builds-now">${now}</p>`, { hidden: { repo: view.repo } })}</section>`;
 }
 
 const note = (notice: { said?: string | null; problem?: string | null }) =>
-  notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+  notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
 
 /** The project's page: its path, what Toolroll holds for it, and (for an instance operator) Delete project. */
-export function projectSettingsHtml(view: ProjectSettingsView, csrf: string, notice: { said?: string | null; problem?: string | null }): string {
-  const held = `<p>Toolroll holds ${e(holdingsWords(view.holdings))} for <strong>${e(view.name)}</strong>.</p>`;
-  const head = `<section class="project-settings">${note(notice)}<p class="path">${e(view.repo)}</p>${held}${buildsHtml(view, csrf)}`;
-  if (!view.canDelete) return `${head}<p class="meta">An instance operator can delete a project.</p></section>`;
+export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: string | null; problem?: string | null }): Html {
+  const held = html`<p>Toolroll holds ${holdingsWords(view.holdings)} for <strong>${view.name}</strong>.</p>`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${buildsHtml(view)}`;
+  if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
-    ? `<p class="problem">Its work is running: ${e(view.running.join(", "))}. Stop it before deleting the project.</p>`
-    : `<p>Removes everything Toolroll holds for ${e(view.name)}. The repository and its own branches stay. There's no undo.</p>` +
-      `<form method="post" action="/settings/project/delete"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}">` +
-      `<label><span>Type <strong>${e(view.name)}</strong> to continue</span><input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>` +
-      `<button type="submit">Continue</button></form>`;
+    ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`
+    : html`<p>Removes everything Toolroll holds for ${view.name}. The repository and its own branches stay. There's no undo.</p>${
+      postForm("/settings/project/delete", html`<label><span>Type <strong>${view.name}</strong> to continue</span><input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" required></label><button type="submit">Continue</button>`, { hidden: { repo: view.repo } })}`;
   // Removing is the reversible step: off the lists and the builder, everything kept.
-  const remove = `<form class="remove-project" method="post" action="/projects/remove"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}">` +
-    `<button type="submit">Remove from Toolroll</button><p class="meta">Its tasks and results stay saved. Add it again to bring it back.</p></form>`;
-  return `${head}${remove}<details class="danger-zone"${notice.problem ? " open" : ""}><summary>Delete project</summary>${body}</details></section>`;
+  const remove = postForm("/projects/remove", html`<button type="submit">Remove from Toolroll</button><p class="meta">Its tasks and results stay saved. Add it again to bring it back.</p>`, { attrs: { class: "remove-project" }, hidden: { repo: view.repo } });
+  return html`<section class="project-settings">${head}${remove}<details class="danger-zone"${notice.problem ? html` open` : ""}><summary>Delete project</summary>${body}</details></section>`;
 }
 
 /** The second step: exactly what goes, and the password. */
-export function projectDeleteConfirmHtml(view: ProjectSettingsView, csrf: string, problem: string | null): string {
+export function projectDeleteConfirmHtml(view: ProjectSettingsView, problem: string | null): Html {
   const h = view.holdings;
   const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const items = [
@@ -69,10 +63,6 @@ export function projectDeleteConfirmHtml(view: ProjectSettingsView, csrf: string
     ...(h.teammates > 0 ? [count(h.teammates, "teammate")] : []),
     "Its budgets, settings and knowledge",
   ];
-  return `<section class="project-delete">${problem === null ? "" : `<p class="problem" role="alert">${e(problem)}</p>`}` +
-    `<p>This removes:</p><ul class="removes">${items.map(one => `<li>${e(one)}</li>`).join("")}</ul>` +
-    `<p>The repository at <span class="path">${e(view.repo)}</span> and its own branches stay. The ledger keeps its history. There's no undo.</p>` +
-    `<form method="post" action="/settings/project/delete"><input type="hidden" name="csrf" value="${e(csrf)}"><input type="hidden" name="repo" value="${e(view.repo)}"><input type="hidden" name="name" value="${e(view.name)}"><input type="hidden" name="step" value="delete">` +
-    `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>` +
-    `<div class="actions"><button type="submit" class="danger">Delete project</button><a href="/settings/project?repo=${e(encodeURIComponent(view.repo))}">Cancel</a></div></form></section>`;
+  return html`<section class="project-delete">${problem === null ? "" : html`<p class="problem" role="alert">${problem}</p>`}<p>This removes:</p><ul class="removes">${items.map(one => html`<li>${one}</li>`)}</ul><p>The repository at <span class="path">${view.repo}</span> and its own branches stay. The ledger keeps its history. There's no undo.</p>${
+    postForm("/settings/project/delete", html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><div class="actions"><button type="submit" class="danger">Delete project</button><a href="/settings/project?repo=${encodeURIComponent(view.repo)}">Cancel</a></div>`, { hidden: { repo: view.repo, name: view.name, step: "delete" } })}</section>`;
 }

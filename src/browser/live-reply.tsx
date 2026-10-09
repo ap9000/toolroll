@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrowserWorkspace } from "../browser-workspace.js";
 import type { MateLiveTool } from "../mate-progress.js";
+import { roomName, useLiveRoom } from "./live.js";
 import { Message, MessageContent } from "./ui/conversation.js";
 
 type LiveTool = MateLiveTool | { id: string; label: string; state: "unknown" };
@@ -30,34 +31,25 @@ export function readLiveReply(value: unknown): LiveReply | null {
   return { steps, done: value.done === true };
 }
 
-/** The stream previews the running reply; ordinary refresh reads its saved
+/** The chat room previews the running reply; ordinary refresh reads its saved
  * message. A lost stream never confirms an unfinished call. */
 export function useLiveReply(chat: BrowserWorkspace["conversation"], watching: boolean, done: () => void): LiveReply | null {
   const [live, setLive] = useState<LiveReply | null>(null);
   const finished = useRef(done);
   finished.current = done;
-  useEffect(() => {
-    setLive(null);
-    if (chat === null || !watching || typeof EventSource === "undefined") return;
-    const params = new URLSearchParams();
-    if (chat.taskId) params.set("task", chat.taskId);
-    else if (chat.project) params.set("project", chat.project);
-    const query = params.toString();
-    const source = new EventSource(`/chat/stream${query === "" ? "" : `?${query}`}`);
-    source.addEventListener("turn", event => {
-      let data: unknown;
-      try { data = JSON.parse((event as MessageEvent<string>).data); } catch { return; }
-      const reply = readLiveReply(data);
-      if (reply === null) return;
-      setLive(reply);
-      if (reply.done) { source.close(); finished.current(); }
-    });
-    source.onerror = () => {
-      source.close();
-      setLive(previous => previous === null ? null : { ...previous, disconnected: true });
-    };
-    return () => source.close();
-  }, [chat?.sessionId, chat?.taskId, chat?.project, watching]);
+  const following = useRef(watching);
+  following.current = watching;
+  useEffect(() => { setLive(null); }, [chat?.sessionId, chat?.taskId, chat?.project, watching]);
+  // The conversation's room stays joined while it shows; only a reply being watched is previewed.
+  useLiveRoom(chat === null ? null : roomName("chat", null, chat.taskId ? { task: chat.taskId } : { project: chat.project ?? null }), (event, data) => {
+    if (!following.current) return;
+    if (event === "lost") { setLive(previous => previous === null ? null : { ...previous, disconnected: true }); return; }
+    if (event !== "turn") return;
+    const reply = readLiveReply(data);
+    if (reply === null) return;
+    setLive(reply);
+    if (reply.done) finished.current();
+  });
   return watching ? live : null;
 }
 

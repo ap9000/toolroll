@@ -14,6 +14,7 @@ import { mateTimeoutNotice, openStore, type Store } from "./store.js";
 import { release } from "./claim.js";
 import { addApprover, approvalOf, approve, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
+import { PersistentSessions } from "./server/session.js";
 import { TURN_WALL_CLOCK_MS, type MateProviderAnswer } from "./converse.js";
 import { Window } from "happy-dom";
 import { presented, T0, stylesOf, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
@@ -841,31 +842,113 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(choosing.view).toMatchObject({ kind: 'projects', choosing: true, returnTo: '/tasks/new' });
   });
 
-  test('chat streaming: a running turn streams its steps until done; with nothing running the stream closes at once', async () => {
+  /** The page's live stream for its conversation (GET /live, the chat room): turn snapshots as they arrive. */
+  const chatRoom = async (cookie: string, room = 'chat', others: string[] = []) => {
+    const controller = new AbortController();
+    const response = await fetch(url(`/live?${[room, ...others].map(one => `room=${encodeURIComponent(one)}`).join("&")}`), { headers: { cookie }, signal: controller.signal });
+    const reader = response.status === 200 ? response.body!.getReader() : null;
+    const decoder = new TextDecoder();
+    const turns: { steps: { text?: string; tools: string[]; toolCalls: Record<string, unknown>[] }[]; done: boolean; ok: boolean }[] = [];
+    const gone: string[] = [], changes: string[] = [];
+    let buffer = '';
+    const until = async (done: () => boolean) => {
+      while (!done() && reader !== null) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        for (let cut = buffer.indexOf('\n\n'); cut >= 0; cut = buffer.indexOf('\n\n')) {
+          const block = buffer.slice(0, cut); buffer = buffer.slice(cut + 2);
+          if (block.startsWith('event: turn\n')) turns.push(JSON.parse(block.split('\ndata: ')[1]!));
+          if (block.startsWith('event: gone\n')) gone.push(JSON.parse(block.split('\ndata: ')[1]!).room);
+          if (block.startsWith('event: change\n')) changes.push(JSON.parse(block.split('\ndata: ')[1]!).room);
+        }
+      }
+      return turns;
+    };
+    return { response, turns, gone, changes, until, close: () => controller.abort() };
+  };
+
+  test('chat streaming: the conversation\'s room previews a running reply\'s steps until done, and stays open for the next', async () => {
     const cookie = await login(); const csrf = await mint(cookie);
-    const idle = await fetch(url('/chat/stream'), { headers: { cookie } });
-    expect(idle.headers.get('content-type')).toBe('text/event-stream');
-    expect(idle.headers.get('cache-control')).toBe('no-store');
-    expect(await idle.text()).toBe('event: turn\ndata: {"steps":[],"done":true,"ok":false}\n\n');
+    const page = await chatRoom(cookie, 'chat?task=a');
+    expect(page.response.headers.get('content-type')).toBe('text/event-stream');
+    expect(page.response.headers.get('cache-control')).toBe('no-store');
     // A turn waiting on the provider: its step shows, then done once it answers.
     let finish!: (value: Response) => void;
     script.push(() => new Promise<Response>(resolve => { finish = resolve; }) as unknown as Response);
     expect((await sendJson(cookie, { csrf, task: 'a', message: 'Where is this?', request: 'c'.repeat(32), 'request-session': '1' })).status).toBe(202);
-    const live = await fetch(url('/chat/stream?task=a'), { headers: { cookie } });
-    const reader = live.body!.getReader();
-    const decoder = new TextDecoder();
-    let body = '';
-    while (!body.includes('"steps":[{')) body += decoder.decode((await reader.read()).value);
-    expect(body).toContain('"done":false');
+    await page.until(() => page.turns.some(turn => turn.steps.length > 0));
+    expect(page.turns.at(-1)!.done).toBe(false);
     finish(answer([{ type: 'text', text: 'Here.' }]));
-    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) body += decoder.decode(chunk.value);
-    expect(body.trimEnd().split('\n\n').at(-1)).toContain('"done":true,"ok":true');
+    await page.until(() => page.turns.at(-1)?.done === true);
+    expect(page.turns.at(-1)).toMatchObject({ done: true, ok: true });
     await settle();
-    // Another thread has nothing running; an unknown task or a signed-out caller is refused.
-    expect(await (await fetch(url('/chat/stream'), { headers: { cookie } })).text()).toContain('"done":true');
-    expect((await fetch(url('/chat/stream?task=nope'), { headers: { cookie } })).status).toBe(404);
-    expect((await fetch(url('/chat/stream'), { redirect: 'manual' })).status).not.toBe(200);
+    page.close();
+    // An unknown task or a signed-out caller opens no stream.
+    const unknown = await chatRoom(cookie, 'chat?task=nope');
+    expect(unknown.response.status).toBe(404);
+    expect(await unknown.response.json()).toEqual({ error: 'task' });
+    expect((await fetch(url('/live?room=chat'), { redirect: 'manual' })).status).not.toBe(200);
   });
+
+  test('a revoked browser stream gets no reply started later by another session', async () => {
+    const oldCookie = await login(); await mint(oldCookie);
+    const old = await chatRoom(oldCookie, 'chat?task=a');
+    const validCookie = await login(), csrf = csrfFrom(await page(validCookie));
+    store.dropWebSession(PersistentSessions.hash(oldCookie.split('=')[1]!));
+    const current = await chatRoom(validCookie, 'chat?task=a');
+    try {
+      script.push(() => answer([{ type: 'text', text: 'Private reply for the current session.' }]));
+      expect((await sendJson(validCookie, { csrf, task: 'a', message: 'Read this task.', request: 'e'.repeat(32), 'request-session': '1' })).status).toBe(202);
+      await current.until(() => current.turns.at(-1)?.done === true);
+      await old.until(() => old.gone.length > 0);
+      expect(current.turns.at(-1)).toMatchObject({ done: true, ok: true });
+      expect(old.gone).toEqual(['chat?task=a']);
+      expect(old.turns).toEqual([]);
+      await settle();
+    } finally { old.close(); current.close(); }
+  });
+
+  test('losing a chat project detaches only that room from the page stream', async () => {
+    const cookie = await login(); await mint(cookie);
+    const room = `chat?project=${encodeURIComponent(repoDir)}`;
+    const current = await chatRoom(cookie, room, ['workspace']);
+    try {
+      await current.until(() => current.changes.includes('workspace'));
+      store.handle.prepare("UPDATE approver SET projects_json = '[]' WHERE name = 'alex'").run();
+      await current.until(() => current.gone.includes(room));
+      const before = current.changes.length;
+      store.createTask({ id: 'workspace-still-live', title: 'Another saved task' }, T0);
+      await current.until(() => current.changes.length > before);
+      expect(current.gone).toEqual([room]);
+      expect(current.changes.at(-1)).toBe('workspace');
+    } finally { current.close(); }
+  });
+
+  test.each(['session', 'generation', 'role', 'task access', 'project access'])(
+    'a running chat re-proves %s before delivering another snapshot', async loss => {
+      const cookie = await login(), csrf = await mint(cookie);
+      const room = loss === 'project access' ? `chat?project=${encodeURIComponent(repoDir)}` : 'chat?task=a';
+      const current = await chatRoom(cookie, room);
+      let finish!: (value: Response) => void;
+      script.push(() => new Promise<Response>(resolve => { finish = resolve; }) as unknown as Response);
+      const fields = loss === 'project access' ? { project: repoDir } : { task: 'a' };
+      try {
+        expect((await sendJson(cookie, { csrf, ...fields, message: 'Read this work.', request: 'f'.repeat(32), 'request-session': '1' })).status).toBe(202);
+        await current.until(() => current.turns.some(turn => turn.steps.length > 0));
+        const before = current.turns.length;
+        if (loss === 'session') store.dropWebSession(PersistentSessions.hash(cookie.split('=')[1]!));
+        if (loss === 'generation') store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+        if (loss === 'role') store.handle.prepare("UPDATE approver SET role = 'viewer' WHERE name = 'alex'").run();
+        if (loss === 'task access' || loss === 'project access') store.handle.prepare("UPDATE approver SET projects_json = '[]' WHERE name = 'alex'").run();
+        finish(answer([{ type: 'text', text: 'Private content after access ended.' }]));
+        await current.until(() => current.gone.length > 0);
+        expect(current.gone).toEqual([room]);
+        expect(current.turns).toHaveLength(before);
+        expect(JSON.stringify(current.turns)).not.toContain('Private content after access ended.');
+        await settle();
+      } finally { current.close(); }
+    });
 
   test('chat streaming preserves each tool outcome, including failure in an answered turn, alongside legacy labels', async () => {
     const cookie = await login(); const csrf = await mint(cookie);
@@ -881,26 +964,23 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     );
     expect((await sendJson(cookie, { csrf, message: 'Read the flows.', request: 'd'.repeat(32), 'request-session': '1' })).status).toBe(202);
     await waiting;
-    const response = await fetch(url('/chat/stream'), { headers: { cookie } });
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let body = '';
+    // A page that opens while the reply runs hears where it stands at once.
+    const page = await chatRoom(cookie);
     try {
-      while (!body.includes('\n\n')) body += decoder.decode((await reader.read()).value);
-      const snapshot = JSON.parse(body.split('data: ')[1]!.split('\n\n')[0]!);
-      expect(snapshot.done).toBe(false);
-      expect(snapshot.steps[0].tools).toEqual(['Reading the flows', 'Reading the flows']);
-      expect(snapshot.steps[0].toolCalls).toEqual([
+      const [snapshot] = await page.until(() => page.turns.length > 0);
+      expect(snapshot!.done).toBe(false);
+      expect(snapshot!.steps[0]!.tools).toEqual(['Reading the flows', 'Reading the flows']);
+      expect(snapshot!.steps[0]!.toolCalls).toEqual([
         { id: expect.any(String), label: 'Reading the flows', state: 'failed', reason: 'No such flow in your projects.' },
         { id: expect.any(String), label: 'Reading the flows', state: 'succeeded' },
       ]);
-      expect(snapshot.steps[0].toolCalls[0].id).not.toBe(snapshot.steps[0].toolCalls[1].id);
+      expect(snapshot!.steps[0]!.toolCalls[0]!.id).not.toBe(snapshot!.steps[0]!.toolCalls[1]!.id);
     } finally {
       finish(answer([{ type: 'text', text: 'That flow is unavailable. I checked the list.' }]));
-      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) body += decoder.decode(chunk.value);
+      await page.until(() => page.turns.at(-1)?.done === true);
+      page.close();
     }
-    const last = JSON.parse(body.trimEnd().split('\n\n').at(-1)!.split('data: ')[1]!);
-    expect(last).toMatchObject({ done: true, ok: true, steps: [{ toolCalls: [{ state: 'failed', reason: 'No such flow in your projects.' }, { state: 'succeeded' }] }, { tools: [] }] });
+    expect(page.turns.at(-1)).toMatchObject({ done: true, ok: true, steps: [{ toolCalls: [{ state: 'failed', reason: 'No such flow in your projects.' }, { state: 'succeeded' }] }, { tools: [] }] });
     await settle();
   });
 

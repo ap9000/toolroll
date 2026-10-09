@@ -4,6 +4,7 @@
  * running build's progress live; without it the page still works by reload.
  */
 import { START_COMMAND } from "./first-run.js";
+import { html, postForm, type Html } from "./html.js";
 import { headlineOf } from "./task-status.js";
 import type { DemoExchange } from "./demo.js";
 
@@ -21,125 +22,83 @@ export type DemoResultView = {
 
 const SUGGESTIONS = ["Fix the flaky refund test", "Rewrite the empty Payouts page", "Put the new invoice view behind a flag"];
 
-const esc = (text: string): string =>
-  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
-const hidden = (csrf: string): string => `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
-
-function hint(csrf: string): string {
-  return `<section class="demo-hint" aria-label="Get started">` +
-    `<p class="demo-hint-title">Ask for something, like “fix the flaky refund test”</p>` +
-    `<form method="post" action="/chat/demo/ask" class="demo-suggestions">${hidden(csrf)}` +
-    SUGGESTIONS.map(one => `<button type="submit" name="message" value="${esc(one)}">${esc(one)}</button>`).join("") +
-    `</form></section>`;
+function hint(): Html {
+  return html`<section class="demo-hint" aria-label="Get started"><p class="demo-hint-title">Ask for something, like “fix the flaky refund test”</p>${
+    postForm("/chat/demo/ask", SUGGESTIONS.map(one => html`<button type="submit" name="message" value="${one}">${one}</button>`), { attrs: { class: "demo-suggestions" } })}</section>`;
 }
 
-function planCard(exchange: DemoExchange, csrf: string): string {
+function planCard(exchange: DemoExchange): Html {
   const plan = exchange.plan;
   const goal = exchange.note === null ? plan.goal : `${plan.goal} Also: ${exchange.note}`;
   const actions = exchange.state === "proposed"
-    ? `<div class="demo-actions">` +
-      `<form method="post" action="/chat/demo/${exchange.id}/approve" class="approve-form">${hidden(csrf)}<button type="submit">Approve</button></form>` +
-      `<details class="demo-more"><summary>Change it</summary>` +
-      `<form method="post" action="/chat/demo/${exchange.id}/change">${hidden(csrf)}` +
-      `<label for="demo-change-${exchange.id}">What should change?</label>` +
-      `<textarea id="demo-change-${exchange.id}" name="note" rows="2" maxlength="500" required></textarea>` +
-      `<button type="submit">Update plan</button></form></details></div>`
+    ? html`<div class="demo-actions">${postForm(`/chat/demo/${exchange.id}/approve`, html`<button type="submit">Approve</button>`, { attrs: { class: "approve-form" } })}<details class="demo-more"><summary>Change it</summary>${
+      postForm(`/chat/demo/${exchange.id}/change`, html`<label for="demo-change-${exchange.id}">What should change?</label><textarea id="demo-change-${exchange.id}" name="note" rows="2" maxlength="500" required></textarea><button type="submit">Update plan</button>`)}</details></div>`
     : exchange.state === "replaced"
-      ? `<p class="meta">Replaced by the updated plan below.</p>`
-      : `<p class="meta">Approved.</p>`;
-  return `<section class="card demo-plan" aria-label="Plan">` +
-    `<p class="demo-kicker">Plan · ${esc(plan.project)}</p>` +
-    `<h2>${esc(plan.title)}</h2>` +
-    `<p>${esc(goal)}</p>` +
-    `<h3>Boundaries</h3><ul>${plan.boundaries.map(one => `<li>${esc(one)}</li>`).join("")}</ul>` +
-    `<h3>Checks</h3><ul>${plan.checks.map(one => `<li>${esc(one)}</li>`).join("")}</ul>` +
-    actions + `</section>`;
+      ? html`<p class="meta">Replaced by the updated plan below.</p>`
+      : html`<p class="meta">Approved.</p>`;
+  return html`<section class="card demo-plan" aria-label="Plan"><p class="demo-kicker">Plan · ${plan.project}</p><h2>${plan.title}</h2><p>${goal}</p><h3>Boundaries</h3><ul>${plan.boundaries.map(one => html`<li>${one}</li>`)}</ul><h3>Checks</h3><ul>${plan.checks.map(one => html`<li>${one}</li>`)}</ul>${actions}</section>`;
 }
 
-function buildCard(exchange: DemoExchange): string {
+function buildCard(exchange: DemoExchange): Html {
   const stages = [["planning", "Planning"], ["building", "Building"], ["checking", "Running checks"]] as const;
   const at = stages.findIndex(([key]) => key === exchange.stage);
-  return `<section class="card demo-build" id="demo-${exchange.id}-work" aria-label="Build" aria-busy="true">` +
-    `<p class="demo-kicker">${esc(exchange.plan.project)}</p>` +
-    `<h2>${esc(stages[Math.max(0, at)]![1])}…</h2>` +
-    `<ol class="demo-steps">${stages.map(([, label], index) =>
-      `<li class="${index < at ? "done" : index === at ? "now" : ""}"${index === at ? ` aria-current="step"` : ""}>${esc(label)}</li>`).join("")}</ol>` +
-    (exchange.progress === null ? "" : `<p class="meta demo-progress">${esc(exchange.progress)}</p>`) +
-    `</section>`;
+  return html`<section class="card demo-build" id="demo-${exchange.id}-work" aria-label="Build" aria-busy="true"><p class="demo-kicker">${exchange.plan.project}</p><h2>${stages[Math.max(0, at)]![1]}…</h2><ol class="demo-steps">${stages.map(([, label], index) =>
+      html`<li class="${index < at ? "done" : index === at ? "now" : ""}"${index === at ? html` aria-current="step"` : ""}>${label}</li>`)}</ol>${
+    exchange.progress === null ? "" : html`<p class="meta demo-progress">${exchange.progress}</p>`}</section>`;
 }
 
-function diffHtml(diff: string): string {
+function diffHtml(diff: string): Html[] {
   return diff.replace(/\n$/, "").split("\n").map(line => {
     const kind = line.startsWith("diff --git") || line.startsWith("new file") ? "file"
       : line.startsWith("+++") || line.startsWith("---") ? "meta"
       : line.startsWith("@@") ? "hunk"
       : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
-    return `<span class="demo-diff-${kind}">${esc(line) || " "}</span>`;
-  }).join("");
+    return html`<span class="demo-diff-${kind}">${line || " "}</span>`;
+  });
 }
 
-function resultCard(exchange: DemoExchange, csrf: string, result: DemoResultView | null): string {
-  if (result === null) return `<section class="card demo-result"><p class="meta">This result's saved evidence is unavailable.</p></section>`;
+function resultCard(exchange: DemoExchange, result: DemoResultView | null): Html {
+  if (result === null) return html`<section class="card demo-result"><p class="meta">This result's saved evidence is unavailable.</p></section>`;
   const passed = result.checks.status === "passed";
   // The shared headline (task-status.ts): the same words as every real task.
   const headline = headlineOf({ stage: exchange.state === "complete" ? "complete" : exchange.state === "sent-back" ? "building" : "finished",
     checks: { status: passed ? "passed" : "failed", exitCode: null, head: null } });
-  const status = `<span class="badge${headline === "Complete" ? " demo-complete" : headline === "Ready for review" ? " demo-ready" : ""}" data-headline="${headline}">${headline}</span>`;
-  const summary = `${result.files} file${result.files === 1 ? "" : "s"} changed · +${result.additions} −${result.deletions} · ` +
-    `<span class="${passed ? "demo-pass" : "demo-fail"}">${esc(result.checks.detail)}</span>`;
+  const status = html`<span class="badge${headline === "Complete" ? " demo-complete" : headline === "Ready for review" ? " demo-ready" : ""}" data-headline="${headline}">${headline}</span>`;
+  const summary = html`${result.files} file${result.files === 1 ? "" : "s"} changed · +${result.additions} −${result.deletions} · <span class="${passed ? "demo-pass" : "demo-fail"}">${result.checks.detail}</span>`;
   const actions = exchange.state === "ready"
-    ? `<div class="demo-actions">` +
-      `<form method="post" action="/chat/demo/${exchange.id}/complete">${hidden(csrf)}<button type="submit" class="demo-primary">Complete</button></form>` +
-      `<details class="demo-more"><summary>Request changes</summary>` +
-      `<form method="post" action="/chat/demo/${exchange.id}/revise">${hidden(csrf)}` +
-      `<label for="demo-revise-${exchange.id}">What should change?</label>` +
-      `<textarea id="demo-revise-${exchange.id}" name="note" rows="2" maxlength="500" required></textarea>` +
-      `<button type="submit">Send back</button></form></details></div>`
-    : `<p class="meta"><a href="${esc(result.taskHref)}">Open in Tasks</a></p>`;
-  return `<section class="card demo-result" id="demo-${exchange.id}-work" aria-label="Result">` +
-    `<p class="demo-state">${status}<span class="meta">${esc(exchange.plan.project)}</span></p>` +
-    `<h2>${esc(exchange.plan.title)}</h2>` +
-    `<p>${esc(exchange.plan.conclusion)}</p>` +
-    `<p class="meta">${summary}</p>` +
-    actions +
-    (result.diff === null ? "" : `<details class="demo-evidence"${exchange.state === "ready" ? " open" : ""}><summary>Changes</summary><pre class="demo-diff">${diffHtml(result.diff)}</pre></details>`) +
-    (result.checkLog === null ? "" : `<details class="demo-evidence"><summary>Check log</summary><pre class="demo-log">${esc(result.checkLog)}</pre></details>`) +
-    (result.screenshot === null ? "" : `<details class="demo-evidence"><summary>Screenshot</summary><figure><img src="${esc(result.screenshot.href)}" alt="${esc(result.screenshot.caption)}" width="960" height="600"><figcaption class="meta">${esc(result.screenshot.caption)}</figcaption></figure></details>`) +
-    `</section>`;
+    ? html`<div class="demo-actions">${postForm(`/chat/demo/${exchange.id}/complete`, html`<button type="submit" class="demo-primary">Complete</button>`)}<details class="demo-more"><summary>Request changes</summary>${
+      postForm(`/chat/demo/${exchange.id}/revise`, html`<label for="demo-revise-${exchange.id}">What should change?</label><textarea id="demo-revise-${exchange.id}" name="note" rows="2" maxlength="500" required></textarea><button type="submit">Send back</button>`)}</details></div>`
+    : html`<p class="meta"><a href="${result.taskHref}">Open in Tasks</a></p>`;
+  return html`<section class="card demo-result" id="demo-${exchange.id}-work" aria-label="Result"><p class="demo-state">${status}<span class="meta">${exchange.plan.project}</span></p><h2>${exchange.plan.title}</h2><p>${exchange.plan.conclusion}</p><p class="meta">${summary}</p>${actions}${
+    result.diff === null ? "" : html`<details class="demo-evidence"${exchange.state === "ready" ? html` open` : ""}><summary>Changes</summary><pre class="demo-diff">${diffHtml(result.diff)}</pre></details>`}${
+    result.checkLog === null ? "" : html`<details class="demo-evidence"><summary>Check log</summary><pre class="demo-log">${result.checkLog}</pre></details>`}${
+    result.screenshot === null ? "" : html`<details class="demo-evidence"><summary>Screenshot</summary><figure><img src="${result.screenshot.href}" alt="${result.screenshot.caption}" width="960" height="600"><figcaption class="meta">${result.screenshot.caption}</figcaption></figure></details>`}</section>`;
 }
 
 /** The conversation itself; the live script swaps this region in place. */
-export function demoThreadHtml(exchanges: readonly DemoExchange[], csrf: string, resultOf: (exchange: DemoExchange) => DemoResultView | null): string {
-  if (exchanges.length === 0) return hint(csrf);
-  return exchanges.map(exchange => {
-    const parts = [
-      `<div class="demo-said demo-you"><p>${esc(exchange.asked)}</p></div>`,
-      `<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>${esc(exchange.reply)}</p></div>`,
-      planCard(exchange, csrf),
+export function demoThreadHtml(exchanges: readonly DemoExchange[], resultOf: (exchange: DemoExchange) => DemoResultView | null): Html {
+  if (exchanges.length === 0) return hint();
+  return html`${exchanges.map(exchange => {
+    const parts: Html[] = [
+      html`<div class="demo-said demo-you"><p>${exchange.asked}</p></div>`,
+      html`<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>${exchange.reply}</p></div>`,
+      planCard(exchange),
     ];
     if (exchange.state === "working") parts.push(buildCard(exchange));
-    if (exchange.state === "ready" || exchange.state === "complete" || exchange.state === "sent-back") parts.push(resultCard(exchange, csrf, resultOf(exchange)));
+    if (exchange.state === "ready" || exchange.state === "complete" || exchange.state === "sent-back") parts.push(resultCard(exchange, resultOf(exchange)));
     if (exchange.state === "complete") {
-      parts.push(`<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>Done. That's the whole loop: ask, approve, Ready, Complete. Ask for something else whenever you like.</p></div>`,
-        `<section class="card demo-handoff" data-demo-handoff aria-label="Your own project"><h2>Now try it on your own project</h2>` +
-        `<p>In your repository's folder, run:</p><pre class="demo-command"><code>${esc(START_COMMAND)}</code></pre>` +
-        `<p class="meta">It opens in your browser, already signed in.</p></section>`);
+      parts.push(html`<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>Done. That's the whole loop: ask, approve, Ready, Complete. Ask for something else whenever you like.</p></div>`,
+        html`<section class="card demo-handoff" data-demo-handoff aria-label="Your own project"><h2>Now try it on your own project</h2><p>In your repository's folder, run:</p><pre class="demo-command"><code>${START_COMMAND}</code></pre><p class="meta">It opens in your browser, already signed in.</p></section>`);
     }
-    return `<article class="demo-turn" id="demo-${exchange.id}">${parts.join("")}</article>`;
-  }).join("");
+    return html`<article class="demo-turn" id="demo-${exchange.id}">${parts}</article>`;
+  })}`;
 }
 
-export function demoChatHtml(input: { exchanges: readonly DemoExchange[]; csrf: string; version: number; problem: string | null; resultOf: (exchange: DemoExchange) => DemoResultView | null }): string {
+export function demoChatHtml(input: { exchanges: readonly DemoExchange[]; version: number; problem: string | null; resultOf: (exchange: DemoExchange) => DemoResultView | null }): Html {
   const working = input.exchanges.some(one => one.state === "working");
-  return `<div class="demo-chat">` +
-    (input.problem === null ? "" : `<p class="problem" role="alert">${esc(input.problem)}</p>`) +
-    `<div id="demo-thread" class="demo-thread" aria-live="polite" data-version="${input.version}" data-working="${working ? "1" : "0"}">` +
-    demoThreadHtml(input.exchanges, input.csrf, input.resultOf) + `</div>` +
-    `<form method="post" action="/chat/demo/ask" class="demo-composer">${hidden(input.csrf)}` +
-    `<label for="demo-message" class="so-sr-only">Message the lead</label>` +
-    `<textarea id="demo-message" name="message" rows="2" maxlength="500" placeholder="Ask the lead for a change" required></textarea>` +
-    `<button type="submit" class="demo-primary">Send</button></form></div>`;
+  return html`<div class="demo-chat">${input.problem === null ? "" : html`<p class="problem" role="alert">${input.problem}</p>`}<div id="demo-thread" class="demo-thread" aria-live="polite" data-version="${input.version}" data-working="${working ? "1" : "0"}">${
+    demoThreadHtml(input.exchanges, input.resultOf)}</div>${
+    postForm("/chat/demo/ask", html`<label for="demo-message" class="so-sr-only">Message the lead</label><textarea id="demo-message" name="message" rows="2" maxlength="500" placeholder="Ask the lead for a change" required></textarea><button type="submit" class="demo-primary">Send</button>`, { attrs: { class: "demo-composer" } })}</div>`;
 }
 
 /**

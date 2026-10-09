@@ -1,21 +1,14 @@
 import { loadPrimary } from "./webhooks.js";
 import type { Store } from "./store.js";
+import { html, postForm, type Html } from "./html.js";
 import { loadSlackCredentials } from "./slack-api.js";
 import { SlackState } from "./slack-state.js";
-const escape = (text: string) =>
-  text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 
 export function slackSettingsHtml(
   store: Store,
   dir: string,
-  csrf: string,
   options: { code?: string; problem?: string; now?: Date; who?: string } = {},
-): string {
+): Html {
   const credentials = loadSlackCredentials(dir),
     state = new SlackState(store),
     bindings = credentials ? state.bindings(credentials.installation).filter(one => state.live(one)) : [],
@@ -34,34 +27,28 @@ export function slackSettingsHtml(
       typeof runtime.lease_until === "string" &&
       runtime.lease_until > now.toISOString() &&
       runtime.connected;
-  const hidden = `<input type="hidden" name="csrf" value="${escape(csrf)}">`;
   const password =
-    '<label>Your Toolroll password<input style="min-height:44px" type="password" name="password" autocomplete="current-password" required></label>';
-  const post = (action: string, content: string) =>
-    `<form method="post" action="/settings/slack/${action}" class="card">${hidden}${content}</form>`;
-  let content = "";
+    html`<label>Your Toolroll password<input style="min-height:44px" type="password" name="password" autocomplete="current-password" required></label>`;
+  const post = (action: string, content: Html) => postForm(`/settings/slack/${action}`, content, { attrs: { class: "card" } });
+  const parts: Html[] = [];
   if (!credentials) {
-    content =
-      "<p>Manage projects and review results in a private Slack conversation.</p>" +
-      '<details open><summary>Create your Slack app</summary><ol><li>Download the <a href="/settings/slack/manifest">app manifest</a>, then <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">create an app</a> in your workspace using that manifest.</li><li>Under Basic Information, create an app-level token with <code>connections:write</code>.</li><li>Under OAuth &amp; Permissions, install the app and copy its bot token.</li></ol></details>' +
-      post(
-        "connect",
-        '<label>App token<input style="min-height:44px" type="password" name="app-token" autocomplete="off" placeholder="xapp-…" required></label><label>Bot token<input style="min-height:44px" type="password" name="bot-token" autocomplete="off" placeholder="xoxb-…" required></label>' +
-          password +
-          '<p class="meta">Tokens stay on this installation. Next, pair your own Slack account.</p><button type="submit">Connect Slack</button>',
-      );
+    parts.push(
+      html`<p>Manage projects and review results in a private Slack conversation.</p>`,
+      html`<details open><summary>Create your Slack app</summary><ol><li>Download the <a href="/settings/slack/manifest">app manifest</a>, then <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">create an app</a> in your workspace using that manifest.</li><li>Under Basic Information, create an app-level token with <code>connections:write</code>.</li><li>Under OAuth &amp; Permissions, install the app and copy its bot token.</li></ol></details>`,
+      post("connect", html`<label>App token<input style="min-height:44px" type="password" name="app-token" autocomplete="off" placeholder="xapp-…" required></label><label>Bot token<input style="min-height:44px" type="password" name="bot-token" autocomplete="off" placeholder="xoxb-…" required></label>${password}<p class="meta">Tokens stay on this installation. Next, pair your own Slack account.</p><button type="submit">Connect Slack</button>`),
+    );
   } else {
-    content = `<p><strong>${escape(credentials.workspace)}</strong> · ${live ? "Connected" : "Waiting for connection"}</p>`;
+    parts.push(html`<p><strong>${credentials.workspace}</strong> · ${live ? "Connected" : "Waiting for connection"}</p>`);
     if (runtime?.problem)
-      content += `<p role="status">${escape(String(runtime.problem))}</p>`;
+      parts.push(html`<p role="status">${String(runtime.problem)}</p>`);
     if (!live && !runtime?.problem)
-      content +=
-        "<p>Keep the Toolroll worker running to receive Slack messages.</p>";
+      parts.push(html`<p>Keep the Toolroll worker running to receive Slack messages.</p>`);
     if (options.code) {
-      content +=
-        "<h2>Pair your account</h2><p>Send this in a direct message to your Toolroll Slack app. It expires in 10 minutes.</p>" +
-        `<label>Pairing message<input type="text" readonly value="pair ${escape(options.code)}" autocomplete="off" style="width:100%;max-width:100%;font-size:14px;min-height:44px"></label>` +
-        '<a class="button-link" style="min-height:44px;white-space:nowrap" href="/settings/slack">Check connection</a>';
+      parts.push(
+        html`<h2>Pair your account</h2><p>Send this in a direct message to your Toolroll Slack app. It expires in 10 minutes.</p>`,
+        html`<label>Pairing message<input type="text" readonly value="pair ${options.code}" autocomplete="off" style="width:100%;max-width:100%;font-size:14px;min-height:44px"></label>`,
+        html`<a class="button-link" style="min-height:44px;white-space:nowrap" href="/settings/slack">Check connection</a>`,
+      );
     } else if (binding && state.live(binding)) {
       const pending = Number(
         state.db
@@ -77,37 +64,27 @@ export function slackSettingsHtml(
           )
           .get(binding.id)?.n ?? 0,
       );
-      content +=
-        `<p>Your Slack account is paired.${others ? ` ${others} teammate${others === 1 ? " is" : "s are"} paired too.` : ""}${pending ? ` ${pending} replies waiting to send.` : ""}${failed ? ` ${failed} replies could not be delivered. Open the saved chat to recover them.` : ""}</p>` +
-        "<p>Try “What needs my attention?” or “Show the evidence for the latest result.”</p>" +
-        '<p><a href="/chat">Open saved chat</a></p>' +
-        (loadPrimary(process.env, dir) === "slack"
-          ? "<p>Task updates are sent here.</p>"
-          : post(
-              "alerts",
-              '<button type="submit">Send task updates here</button>',
-            ));
-    } else {
-      content += post(
-        "pair",
-        "<h2>Pair your account</h2><p>Your paired Slack account can read your connected projects and confirm proposed changes. Password approvals still open in Toolroll." +
-          (others ? ` ${others} teammate${others === 1 ? " is" : "s are"} already paired.` : "") + "</p>" +
-          password +
-          '<button type="submit">Create pairing code</button>',
+      parts.push(
+        html`<p>Your Slack account is paired.${others ? ` ${others} teammate${others === 1 ? " is" : "s are"} paired too.` : ""}${pending ? ` ${pending} replies waiting to send.` : ""}${failed ? ` ${failed} replies could not be delivered. Open the saved chat to recover them.` : ""}</p>`,
+        html`<p>Try “What needs my attention?” or “Show the evidence for the latest result.”</p>`,
+        html`<p><a href="/chat">Open saved chat</a></p>`,
+        loadPrimary(process.env, dir) === "slack"
+          ? html`<p>Task updates are sent here.</p>`
+          : post("alerts", html`<button type="submit">Send task updates here</button>`),
       );
+    } else {
+      parts.push(post(
+        "pair",
+        html`<h2>Pair your account</h2><p>Your paired Slack account can read your connected projects and confirm proposed changes. Password approvals still open in Toolroll.${
+          others ? ` ${others} teammate${others === 1 ? " is" : "s are"} already paired.` : ""}</p>${password}<button type="submit">Create pairing code</button>`,
+      ));
     }
     if (binding && state.live(binding) && !options.code)
-      content += post(
+      parts.push(post(
         "unpair",
-        password + '<p class="meta">Unpairing ends every open button in your chat. Teammates are unaffected.</p><button type="submit">Unpair my account</button>',
-      );
-    content +=
-      "<details><summary>Connection settings</summary>" +
-      post(
-        "disconnect",
-        password + '<button type="submit">Disconnect Slack</button>',
-      ) +
-      "</details>";
+        html`${password}<p class="meta">Unpairing ends every open button in your chat. Teammates are unaffected.</p><button type="submit">Unpair my account</button>`,
+      ));
+    parts.push(html`<details><summary>Connection settings</summary>${post("disconnect", html`${password}<button type="submit">Disconnect Slack</button>`)}</details>`);
   }
-  return `<section style="max-width:42rem;overflow-wrap:anywhere"><p><a href="/settings">Settings</a></p><h1>Slack</h1>${options.problem ? `<p class="problem" role="alert">${escape(options.problem)}</p>` : ""}${content}<details><summary>Access and setup</summary><p>Private messages and threads use your Toolroll permissions. Shared channels are not supported. Secure review links use this installation’s configured HTTPS console address.</p><p>Socket Mode connects out to Slack. It does not need a public webhook or a Tailscale account.</p></details></section>`;
+  return html`<section style="max-width:42rem;overflow-wrap:anywhere"><p><a href="/settings">Settings</a></p><h1>Slack</h1>${options.problem ? html`<p class="problem" role="alert">${options.problem}</p>` : ""}${parts}<details><summary>Access and setup</summary><p>Private messages and threads use your Toolroll permissions. Shared channels are not supported. Secure review links use this installation’s configured HTTPS console address.</p><p>Socket Mode connects out to Slack. It does not need a public webhook or a Tailscale account.</p></details></section>`;
 }

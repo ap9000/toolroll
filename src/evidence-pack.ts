@@ -17,6 +17,7 @@ import { projectName } from "./project.js";
 import { changedFilesOf } from "./result-completion.js";
 import type { SealedLedgerEntry, Store } from "./store.js";
 import type { LedgerChainReport } from "./ledger-chain.js";
+import { html, htmlString, joinHtml, styleElement, type Html } from "./html.js";
 
 export const EVIDENCE_PACK_FORMAT = "standing-orders/evidence-pack/v1";
 /** How to recheck one entry's seal, for whoever reads the JSON. */
@@ -222,16 +223,14 @@ export function* ledgerExportChunks(store: Store, range: { from: string; to: str
   }
   yield `],"truncated":${JSON.stringify({ entries: moreEntries, packs: morePacks })}}`;
 }
-
 // ---- The printable page -----------------------------------------------------
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const when = (at: string | null) => at === null ? "—" : `${e(at.slice(0, 16).replace("T", " "))} UTC`;
-const short = (hash: string | null) => hash === null ? "—" : `<code title="${e(hash)}">${e(hash.slice(0, 12))}</code>`;
+const when = (at: string | null): Html => at === null ? html`—` : html`${at.slice(0, 16).replace("T", " ")} UTC`;
+const short = (hash: string | null): Html => hash === null ? html`—` : html`<code title="${hash}">${hash.slice(0, 12)}</code>`;
 const usd = (value: number | null) => value === null ? "—" : `$${value.toFixed(value < 1 ? 4 : 2)}`;
 /** Only a web address links; anything else (a stored value that isn't one) is shown as text. */
-const link = (url: string) => /^https:\/\/[^\s"'<>]+$/.test(url) ? `<a href="${e(url)}">${e(url)}</a>` : e(url);
-const filer = (who: Filer | null) => who === null || who.name === null ? "automation" : who.kind === "person" ? e(who.name) : `${e(who.name)} (${e(who.kind)})`;
+const link = (url: string): Html => /^https:\/\/[^\s"'<>]+$/.test(url) ? html`<a href="${url}">${url}</a>` : html`${url}`;
+const filer = (who: Filer | null): Html => who === null || who.name === null ? html`automation` : who.kind === "person" ? html`${who.name}` : html`${who.name} (${who.kind})`;
 
 export const EVIDENCE_PACK_CSS = `.evidence-pack{max-width:960px;min-width:0}.evidence-pack h1{margin:0}.evidence-pack h2{font-size:.9375rem;margin:24px 0 8px}.evidence-pack h3{font-size:.875rem;margin:16px 0 6px}` +
   `.evidence-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}.evidence-pack dl{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr);gap:4px 16px;margin:0}` +
@@ -244,71 +243,72 @@ export const EVIDENCE_PACK_CSS = `.evidence-pack{max-width:960px;min-width:0}.ev
   `.evidence-pack{max-width:none}.evidence-pack section{break-inside:avoid-page}.evidence-pack a{color:#000;text-decoration:none}}`;
 
 /** The pack as a page: the same facts, in the order an auditor reads them. No script. */
-export function evidencePackHtml(pack: EvidencePack): string {
+export function evidencePackHtml(pack: EvidencePack): Html {
   const task = pack.task;
   const chain = pack.ledger.chain.ok
-    ? `<p class="evidence-chain ok" data-evidence-chain="ok"><strong>Ledger chain verified</strong> · ${pack.ledger.chain.entries} entries · head ${short(pack.ledger.chain.head)}${pack.ledger.chain.checkedAt === null ? "" : ` · checked in full ${when(pack.ledger.chain.checkedAt)}`}${pack.ledger.checkpoint === null ? "" : ` · last checkpoint at entry #${pack.ledger.checkpoint.through}`}</p>`
-    : `<p class="evidence-chain problem" role="alert" data-evidence-chain="broken"><strong>Ledger chain broken</strong> · ${e(pack.ledger.chain.problem)}</p>`;
+    ? html`<p class="evidence-chain ok" data-evidence-chain="ok"><strong>Ledger chain verified</strong> · ${pack.ledger.chain.entries} entries · head ${short(pack.ledger.chain.head)}${pack.ledger.chain.checkedAt === null ? "" : html` · checked in full ${when(pack.ledger.chain.checkedAt)}`}${pack.ledger.checkpoint === null ? "" : html` · last checkpoint at entry #${pack.ledger.checkpoint.through}`}</p>`
+    : html`<p class="evidence-chain problem" role="alert" data-evidence-chain="broken"><strong>Ledger chain broken</strong> · ${pack.ledger.chain.problem}</p>`;
   const versions = pack.versions.map((version, index) => {
     const scope = version.scope;
     const approved = scope?.approved ?? null;
     const approvals = scope === null ? [] : scope.approvals.filter(one => one.digest === (approved?.digest ?? scope.digest));
-    const rows = [
-      ["Filed", `${when(version.filedAt)} by ${filer(version.filedBy)}`],
-      ...(scope === null ? [["Scope", "None written"]] : [
-        ["Goal", e(scope.goal)],
-        ...(scope.touches.length ? [["Touches", scope.touches.map(e).join(", ")]] : []),
-        ...(scope.acceptance.length ? [["Acceptance", `<ol class="criteria">${scope.acceptance.map(one => `<li>${e(one.statement)}</li>`).join("")}</ol>`]] : []),
-        ...(scope.writtenBy.length ? [["Scope written by", [...new Set(scope.writtenBy.map(one => one.author))].map(e).join(", ")]] : []),
-        ["Approved", approved === null ? "Not approved" : `${e(approved.by)}${approved.basis === "mode" ? " (operating mode)" : ""} · ${when(approved.at)}${approved.current ? "" : " · the scope changed after this"}`],
-        ...(approvals.length > 1 ? [["Approvals", approvals.map(one => `${e(one.approver)} · ${when(one.at)}`).join("<br>")]] : []),
-        ["Scope digest", short(scope.digest)],
+    const rows: Array<[string, Html]> = [
+      ["Filed", html`${when(version.filedAt)} by ${filer(version.filedBy)}`],
+      ...(scope === null ? [["Scope", html`None written`] as [string, Html]] : [
+        ["Goal", html`${scope.goal}`] as [string, Html],
+        ...(scope.touches.length ? [["Touches", joinHtml(scope.touches, ", ")] as [string, Html]] : []),
+        ...(scope.acceptance.length ? [["Acceptance", html`<ol class="criteria">${scope.acceptance.map(one => html`<li>${one.statement}</li>`)}</ol>`] as [string, Html]] : []),
+        ...(scope.writtenBy.length ? [["Scope written by", joinHtml([...new Set(scope.writtenBy.map(one => one.author))], ", ")] as [string, Html]] : []),
+        ["Approved", approved === null ? html`Not approved` : html`${approved.by}${approved.basis === "mode" ? " (operating mode)" : ""} · ${when(approved.at)}${approved.current ? "" : " · the scope changed after this"}`] as [string, Html],
+        ...(approvals.length > 1 ? [["Approvals", joinHtml(approvals.map(one => html`${one.approver} · ${when(one.at)}`), html`<br>`)] as [string, Html]] : []),
+        ["Scope digest", short(scope.digest)] as [string, Html],
       ]),
     ];
-    const runs = version.runs.length === 0 ? `<p class="meta">No agent ran.</p>` :
-      `<div class="evidence-table"><table><thead><tr><th>Run</th><th>Role</th><th>Agent</th><th>Outcome</th><th>Cost</th><th>Finished</th><th>Commit</th></tr></thead><tbody>` +
-      version.runs.map(run => `<tr><td><a href="/r/${run.id}">#${run.id}</a></td><td>${e(run.role)}</td><td>${e(run.agent)}${run.model ? ` · ${e(run.model)}` : ""}</td><td>${e(run.outcome ?? "running")}</td><td>${usd(run.costUsd)}</td><td>${when(run.finishedAt)}</td><td>${short(run.head)}</td></tr>`).join("") +
-      `</tbody></table></div>`;
+    const runs = version.runs.length === 0 ? html`<p class="meta">No agent ran.</p>` :
+      html`<div class="evidence-table"><table><thead><tr><th>Run</th><th>Role</th><th>Agent</th><th>Outcome</th><th>Cost</th><th>Finished</th><th>Commit</th></tr></thead><tbody>${
+      version.runs.map(run => html`<tr><td><a href="/r/${run.id}">#${run.id}</a></td><td>${run.role}</td><td>${run.agent}${run.model ? html` · ${run.model}` : ""}</td><td>${run.outcome ?? "running"}</td><td>${usd(run.costUsd)}</td><td>${when(run.finishedAt)}</td><td>${short(run.head)}</td></tr>`)
+      }</tbody></table></div>`;
     const changes = version.runs.filter(run => run.role === "builder" || run.role === "repair").map(run =>
-      `<p class="meta">Run #${run.id}${run.diff === null ? "" : ` · diff ${short(run.diff.sha256)}${run.diff.complete ? "" : " (partial)"}`}</p>` +
-      (run.changedFiles === null ? `<p class="meta">Its changed files couldn't be read.</p>` : run.changedFiles.length === 0 ? `<p class="meta">No files changed.</p>` : `<ul class="files">${run.changedFiles.map(file => `<li>${e(file)}</li>`).join("")}</ul>`)).join("");
-    return `<section data-evidence-version="${e(version.id)}"><h2>${pack.versions.length > 1 ? `${index === 0 ? "Request" : `Revision ${index}`} · ` : "Request and approval · "}${e(version.id)}</h2><dl>${rows.map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join("")}</dl>` +
-      `<h3>Agents</h3>${runs}${changes === "" ? "" : `<h3>Changes</h3>${changes}`}</section>`;
-  }).join("");
+      html`<p class="meta">Run #${run.id}${run.diff === null ? "" : html` · diff ${short(run.diff.sha256)}${run.diff.complete ? "" : " (partial)"}`}</p>${
+      run.changedFiles === null ? html`<p class="meta">Its changed files couldn't be read.</p>` : run.changedFiles.length === 0 ? html`<p class="meta">No files changed.</p>` : html`<ul class="files">${run.changedFiles.map(file => html`<li>${file}</li>`)}</ul>`}`);
+    return html`<section data-evidence-version="${version.id}"><h2>${pack.versions.length > 1 ? `${index === 0 ? "Request" : `Revision ${index}`} · ` : "Request and approval · "}${version.id}</h2><dl>${rows.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}</dl><h3>Agents</h3>${runs}${changes.length === 0 ? "" : html`<h3>Changes</h3>${changes}`}</section>`;
+  });
   const result = pack.result;
-  const outcome = result === null ? `<section><h2>Result</h2><p class="meta">No finished result yet.</p></section>` :
-    `<section data-evidence-result><h2>Result</h2><dl>` +
-    `<dt>Checks</dt><dd>${e(result.checks.detail)}${result.checks.command ? ` <code>${e(result.checks.command)}</code>` : ""}</dd>` +
-    `<dt>Marked complete</dt><dd>${result.completedBy === null ? "Not yet" : `${e(result.completedBy)} · ${when(result.completedAt)}`}</dd>` +
-    `<dt>Published</dt><dd>${result.publication === null ? "Not published" : `${e(result.publication.state)}${result.publication.prUrl ? ` · ${link(result.publication.prUrl)}` : ""}${result.publication.remoteState ? ` · ${e(result.publication.remoteState.toLowerCase())}` : ""}`}</dd>` +
-    `<dt>Commit</dt><dd>${short(result.base)} → ${short(result.head)}</dd>` +
-    (result.caveats.length ? `<dt>Caveats</dt><dd>${result.caveats.map(e).join("<br>")}</dd>` : "") +
-    `</dl></section>`;
+  const outcome = result === null ? html`<section><h2>Result</h2><p class="meta">No finished result yet.</p></section>` :
+    joinHtml([html`<section data-evidence-result><h2>Result</h2><dl>`,
+    html`<dt>Checks</dt><dd>${result.checks.detail}${result.checks.command ? html` <code>${result.checks.command}</code>` : ""}</dd>`,
+    html`<dt>Marked complete</dt><dd>${result.completedBy === null ? "Not yet" : html`${result.completedBy} · ${when(result.completedAt)}`}</dd>`,
+    html`<dt>Published</dt><dd>${result.publication === null ? "Not published" : html`${result.publication.state}${result.publication.prUrl ? html` · ${link(result.publication.prUrl)}` : ""}${result.publication.remoteState ? html` · ${result.publication.remoteState.toLowerCase()}` : ""}`}</dd>`,
+    html`<dt>Commit</dt><dd>${short(result.base)} → ${short(result.head)}</dd>`,
+    result.caveats.length ? html`<dt>Caveats</dt><dd>${joinHtml(result.caveats, html`<br>`)}</dd>` : "",
+    html`</dl></section>`]);
   const decisions = pack.ledger.entries.filter(one => one.source !== "request");
   const requests = pack.ledger.entries.length - decisions.length;
   const askedWords = `${requests} ${requests === 1 ? "request" : "requests"} made through the console (accepted or refused)`;
-  const ledger = `<section><h2>Ledger</h2>${decisions.length === 0 ? `<p class="meta">No entries.</p>` :
-    `<div class="evidence-table"><table><thead><tr><th>#</th><th>Time</th><th>Who</th><th>What</th><th>Outcome</th><th>Seal</th></tr></thead><tbody>` +
-    decisions.map(one => `<tr data-ledger-id="${one.id}"><td>${one.id}</td><td>${when(one.at)}</td><td>${e(one.actor)}</td><td>${e(one.action)}${one.detail ? `<br><span class="meta">${e(one.detail)}</span>` : ""}</td><td>${e(one.outcome)}</td><td>${short(one.seal?.hash ?? null)}</td></tr>`).join("") +
-    `</tbody></table></div>`}${requests > 0 ? `<p class="meta">Plus ${askedWords}, listed in the JSON.</p>` : ""}${pack.ledger.truncated ? `<p class="meta">This pack holds ${decisions.length} of the task's entries and the newest ${requests} requests; the ledger export has the rest.</p>` : ""}</section>`;
+  const ledger = html`<section><h2>Ledger</h2>${decisions.length === 0 ? html`<p class="meta">No entries.</p>` :
+    html`<div class="evidence-table"><table><thead><tr><th>#</th><th>Time</th><th>Who</th><th>What</th><th>Outcome</th><th>Seal</th></tr></thead><tbody>${
+    decisions.map(one => html`<tr data-ledger-id="${one.id}"><td>${one.id}</td><td>${when(one.at)}</td><td>${one.actor}</td><td>${one.action}${one.detail ? html`<br><span class="meta">${one.detail}</span>` : ""}</td><td>${one.outcome}</td><td>${short(one.seal?.hash ?? null)}</td></tr>`)
+    }</tbody></table></div>`}${requests > 0 ? html`<p class="meta">Plus ${askedWords}, listed in the JSON.</p>` : ""}${pack.ledger.truncated ? html`<p class="meta">This pack holds ${decisions.length} of the task's entries and the newest ${requests} requests; the ledger export has the rest.</p>` : ""}</section>`;
   const cost = pack.totals.runs === 0 ? "None ran" : `${pack.totals.runs} ${pack.totals.runs === 1 ? "run" : "runs"} · ${usd(pack.totals.costUsd)}`;
   // The rules as they stand, and each change to them (the approval above was under whichever applied then).
-  const rules = pack.rules === null ? "None" : `${e(pack.rules.now)}${pack.rules.changes.length === 0 ? "" :
-    `<ul class="criteria">${pack.rules.changes.slice(-5).map(one => `<li class="meta">${when(one.at)} · ${e(one.by)}: ${e(one.change)}</li>`).join("")}</ul>`}`;
-  return `<article class="evidence-pack" data-evidence-pack="${e(task.id)}">` +
-    `<div class="evidence-head"><h1>Evidence pack</h1><p class="evidence-actions"><a href="/t/${encodeURIComponent(task.id)}/evidence?format=json" download>Download JSON</a> · <a href="/t/${encodeURIComponent(task.id)}">Back to task</a></p></div>` +
-    `<p><strong>${e(task.title)}</strong></p>` +
-    `<dl><dt>Task</dt><dd>${e(task.id)}${task.project === null ? "" : ` · ${e(task.project)}`} · ${e(task.state)}</dd>` +
-    `<dt>Approval rules</dt><dd>${rules}</dd><dt>Agents</dt><dd>${cost}</dd>` +
-    `<dt>Prepared</dt><dd>${when(pack.generatedAt)} for ${e(pack.generatedBy)}</dd></dl>${chain}` +
-    versions + outcome + ledger +
-    `<p class="evidence-foot">Pack digest <code>${e(pack.digest)}</code>. Each ledger entry's seal can be rechecked from the JSON: ${e(pack.ledger.recipe)}.</p></article>`;
+  const rules = pack.rules === null ? html`None` : html`${pack.rules.now}${pack.rules.changes.length === 0 ? "" :
+    html`<ul class="criteria">${pack.rules.changes.slice(-5).map(one => html`<li class="meta">${when(one.at)} · ${one.by}: ${one.change}</li>`)}</ul>`}`;
+  return joinHtml([html`<article class="evidence-pack" data-evidence-pack="${task.id}">`,
+    html`<div class="evidence-head"><h1>Evidence pack</h1><p class="evidence-actions"><a href="/t/${encodeURIComponent(task.id)}/evidence?format=json" download>Download JSON</a> · <a href="/t/${encodeURIComponent(task.id)}">Back to task</a></p></div>`,
+    html`<p><strong>${task.title}</strong></p>`,
+    html`<dl><dt>Task</dt><dd>${task.id}${task.project === null ? "" : ` · ${task.project}`} · ${task.state}</dd>`,
+    html`<dt>Approval rules</dt><dd>${rules}</dd><dt>Agents</dt><dd>${cost}</dd>`,
+    html`<dt>Prepared</dt><dd>${when(pack.generatedAt)} for ${pack.generatedBy}</dd></dl>${chain}`,
+    versions, outcome, ledger,
+    html`<p class="evidence-foot">Pack digest <code>${pack.digest}</code>. Each ledger entry's seal can be rechecked from the JSON: ${pack.ledger.recipe}.</p></article>`]);
 }
 
 /** The page as a file on its own (the CLI's --html): the same facts with just enough style to print. */
 export function standaloneEvidenceHtml(pack: EvidencePack): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Evidence pack · ${e(pack.task.id)}</title>` +
-    `<style>:root{--muted-foreground:#5c5c5c;--border:#dedede;--success:#1a7f37;--font-mono:ui-monospace,SFMono-Regular,Menlo,monospace}` +
+  const css = `:root{--muted-foreground:#5c5c5c;--border:#dedede;--success:#1a7f37;--font-mono:ui-monospace,SFMono-Regular,Menlo,monospace}` +
     `body{font:14px/1.5 system-ui,-apple-system,sans-serif;margin:32px auto;padding:0 16px;max-width:960px;color:#171717;background:#fff}.meta{color:var(--muted-foreground);font-size:.8125rem}.evidence-actions{display:none}` +
-    EVIDENCE_PACK_CSS + `</style></head><body>${evidencePackHtml(pack)}</body></html>\n`;
+    EVIDENCE_PACK_CSS;
+  // The file is the sink: its bytes.
+  return htmlString(html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Evidence pack · ${pack.task.id}</title>${styleElement(css)}</head><body>${evidencePackHtml(pack)}</body></html>
+`);
 }

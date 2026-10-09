@@ -5,6 +5,8 @@
  * shown in every state; the page renders from saved checks without waiting.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -228,7 +230,7 @@ test("a render never waits on an integration check: the page answers while every
       { key: "telegram", group: "chat", name: "Telegram", state: "broken", account: null, detail: null, checked: true, checkedAt: T0.toISOString(), lastSuccessAt: null, lastError: "Telegram doesn't accept the saved bot token.", lastErrorAt: T0.toISOString(), usedBy: ["Alerts"], action: { kind: "fix", label: "Fix", words: "Telegram doesn't accept the saved bot token.", href: "/settings#telegram-token", command: null } },
       { key: "github", group: "code", name: "GitHub", state: "connected", account: "octocat", detail: "Can push to acme/shop", checked: true, checkedAt: T0.toISOString(), lastSuccessAt: T0.toISOString(), lastError: null, lastErrorAt: null, usedBy: ["Pull requests"], action: { kind: "test", label: "Send test" } },
     ];
-    const html = integrationsHtml(list, "c".repeat(64), {});
+    const html = htmlString(withFormToken("c".repeat(64), () => integrationsHtml(list, "c".repeat(64), {})));
     expect(html).toContain("1 needs fixing.");
     expect(html).toMatch(/href="\/settings#telegram-token">Fix</);
     expect(html).toMatch(/name="key" value="github"><button type="submit">Send test</);

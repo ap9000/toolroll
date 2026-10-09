@@ -147,23 +147,40 @@ describe("/api/team carries the token's whole principal", () => {
     expect(JSON.stringify(replay.body)).not.toContain("leadId");
   });
 
-  test("the event stream re-proves the token: revoking it ends the stream", async () => {
-    const read = token("read");
+  test.each(["revoked", "expired", "projects", "generation", "account projects", "team access"])("the team's live room re-proves project-limited token %s on each signal", async change => {
+    const { conversationId } = await leadOn(A);
+    const read = token("read", [A]);
     const id = read.split("_")[1]!;
     const controller = new AbortController();
-    const response = await fetch(`${base}/api/team/events`, { headers: { authorization: `Bearer ${read}` }, signal: controller.signal });
+    const headers = { authorization: `Bearer ${read}` };
+    expect((await fetch(`${base}/api/team?conversation=${conversationId}`, { headers })).status).toBe(200);
+    const response = await fetch(`${base}/live?room=${encodeURIComponent(`team?conversation=${conversationId}`)}`, { headers, signal: controller.signal, redirect: "manual" });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
-    store.revokeApiToken(id, "alex", new Date(), "test");
     let text = "";
+    const decoder = new TextDecoder();
+    // The limited token reads its team room: the first event is the room's cursor.
+    while (!text.includes("event: change")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(text).toContain("event: change");
+    text = "";
+    if (change === "revoked") store.revokeApiToken(id, "alex", new Date(), "test");
+    if (change === "expired") store.handle.prepare("UPDATE api_token SET expires_at = ? WHERE id = ?").run(new Date(0).toISOString(), id);
+    if (change === "projects") store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
+    if (change === "generation") store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+    if (change === "account projects") store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([B]));
+    if (change === "team access") store.handle.prepare("DELETE FROM team_participant WHERE conversation = ? AND account = 'alex'").run(conversationId);
     for (;;) {
       const chunk = await reader.read();
       if (chunk.done) break;
-      text += new TextDecoder().decode(chunk.value);
-      if (text.includes("revoked")) break;
+      text += decoder.decode(chunk.value, { stream: true });
     }
     controller.abort();
-    expect(text).toContain("event: revoked");
+    // The only frame after the change is the generic departure, then the stream ends: no cursor, no keep-alive.
+    expect(text).toBe(`event: gone\ndata: ${JSON.stringify({ room: `team?conversation=${conversationId}` })}\n\n`);
   });
 });
 
@@ -290,7 +307,8 @@ describe("bearer step-up and in-flight revocation", () => {
       });
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
-    expect(browserOnly).toHaveLength(60);
+    // The route-role split expands families. Keep the sensitive operations in this HTTP matrix independently.
+    expect(browserOnly.map(row => row.id)).toEqual(expect.arrayContaining(["people.invite", "settings.policy-send", "flow.trigger.secret", "code.ship-send"]));
     const checked = vi.mocked(approvers.authenticateApprover);
     checked.mockClear();
     // Prove this recorder sees an actual browser password ceremony before asserting silence for bearer requests.

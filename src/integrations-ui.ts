@@ -4,11 +4,11 @@
  * failed, what uses it, and one action. The list comes from saved checks; a
  * render never waits on one (see integrations.ts).
  */
+import { html, joinHtml, postForm, type Html } from "./html.js";
 import { STATE_WORDS, type Integration, type IntegrationGroup } from "./integrations.js";
 import { whenUtc } from "./when-html.js";
 import { brandMarkHtml } from "./brand-mark.js";
 
-const e = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const when = (at: string) => whenUtc(at);
 
 export const INTEGRATIONS_CSS = `.integrations{max-width:760px;min-width:0}.integrations h2{margin:24px 0 6px;font-size:.9375rem}` +
@@ -32,15 +32,14 @@ const GROUPS: [IntegrationGroup, string][] = [
   ["chat", "Chat"], ["code", "Code and issues"], ["mail", "Email"], ["tools", "MCP tools"], ["monitoring", "Monitoring"], ["agents", "Agents"],
 ];
 
-function action(one: Integration, csrf: string): string {
+function action(one: Integration, csrf: string): Html | "" {
   const a = one.action;
   if (a.kind === "test") {
-    return csrf === "" ? "" : `<form method="post" action="/settings/integrations/test" class="integration-action"><input type="hidden" name="csrf" value="${e(csrf)}">` +
-      `<input type="hidden" name="key" value="${e(one.key)}"><button type="submit">Send test</button></form>`;
+    return csrf === "" ? "" : postForm("/settings/integrations/test", html`<button type="submit">Send test</button>`, { attrs: { class: "integration-action" }, hidden: { key: one.key } });
   }
   // A command is run where Toolroll runs; a page is linked. Fix and Set up both say which.
   // Fix is the one filled action on the page; Set up stays quiet so a list of unused services doesn't shout.
-  if (a.href !== null) return `<p class="integration-action"><a class="button-link${a.kind === "setup" ? " integration-quiet" : ""}" href="${e(a.href)}">${a.label}</a></p>`;
+  if (a.href !== null) return html`<p class="integration-action"><a class="button-link${a.kind === "setup" ? " integration-quiet" : ""}" href="${a.href}">${a.label}</a></p>`;
   return "";
 }
 
@@ -50,33 +49,31 @@ function markFor(one: Integration): string | null {
   return one.key === "email" && /@(gmail|googlemail)\.com$/i.test(one.account ?? "") ? "gmail" : one.key;
 }
 
-function row(one: Integration, csrf: string): string {
+function row(one: Integration, csrf: string): Html {
   const badge = !one.checked && one.state === "connected"
-    ? `<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
-    : `<span class="integration-state integration-state--${one.state}"><i aria-hidden="true"></i>${STATE_WORDS[one.state]}</span>`;
-  const facts = [one.account, one.detail].filter(Boolean).map(e).join(" · ");
+    ? html`<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
+    : html`<span class="integration-state integration-state--${one.state}"><i aria-hidden="true"></i>${STATE_WORDS[one.state]}</span>`;
+  const facts = [one.account, one.detail].filter(Boolean).join(" · ");
   const command = one.action.kind !== "test" ? one.action.command : null;
-  const fix = one.action.kind === "fix" ? `<p class="integration-fix" role="status">${e(one.action.words)}</p>` : "";
-  const run = command === null || (one.action.kind === "fix" && one.action.words.includes(command)) ? "" : `<p class="meta">Run <code>${e(command)}</code> on the computer running Toolroll.</p>`;
-  const seen = [one.lastSuccessAt === null ? null : `Last success ${when(one.lastSuccessAt)}`, one.usedBy.length === 0 ? null : `Used by ${e(one.usedBy.join(", "))}`].filter(Boolean);
-  const history = one.state === "not-set-up" || seen.length === 0 ? "" : `<p class="meta">${seen.join(" · ")}</p>`;
+  const fix = one.action.kind === "fix" ? html`<p class="integration-fix" role="status">${one.action.words}</p>` : "";
+  const run = command === null || (one.action.kind === "fix" && one.action.words.includes(command)) ? "" : html`<p class="meta">Run <code>${command}</code> on the computer running Toolroll.</p>`;
+  const seen = [one.lastSuccessAt === null ? null : html`Last success ${when(one.lastSuccessAt)}`, one.usedBy.length === 0 ? null : html`Used by ${one.usedBy.join(", ")}`].filter(Boolean);
+  const history = one.state === "not-set-up" || seen.length === 0 ? "" : html`<p class="meta">${joinHtml(seen, " · ")}</p>`;
   const lastError = one.lastError === null || one.state === "not-set-up" ? "" : one.state === "broken" && one.action.kind === "fix" && one.action.words === one.lastError
-    ? `<p class="meta">Failed ${when(one.lastErrorAt ?? "")}</p>`
-    : `<details><summary>Last error ${one.lastErrorAt === null ? "" : when(one.lastErrorAt)}</summary><p class="meta">${e(one.lastError)}</p></details>`;
-  return `<div class="integration" data-integration="${e(one.key)}" data-state="${one.state}">` +
-    `<p class="integration-head">${brandMarkHtml(markFor(one), one.name, one.state === "connected")}<strong>${e(one.name)}</strong> ${badge}</p>` +
-    action(one, csrf) +
-    `<div class="integration-body">${facts === "" ? "" : `<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
+    ? html`<p class="meta">Failed ${when(one.lastErrorAt ?? "")}</p>`
+    : html`<details><summary>Last error ${one.lastErrorAt === null ? "" : when(one.lastErrorAt)}</summary><p class="meta">${one.lastError}</p></details>`;
+  return html`<div class="integration" data-integration="${one.key}" data-state="${one.state}"><p class="integration-head">${brandMarkHtml(markFor(one), one.name, one.state === "connected")}<strong>${one.name}</strong> ${badge}</p>${
+    action(one, csrf)}<div class="integration-body">${facts === "" ? "" : html`<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
 }
 
-export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean }): string {
-  const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : notice.said ? `<p role="status">${e(notice.said)}</p>` : "";
+export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean }): Html {
+  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const broken = list.filter(one => one.state === "broken").length;
-  const summary = broken > 0 ? `<p><strong>${broken} need${broken === 1 ? "s" : ""} fixing.</strong></p>`
-    : notice.checking || list.some(one => !one.checked) ? `<p class="meta" role="status">Checking in the background. Refresh in a few seconds.</p>` : "";
+  const summary = broken > 0 ? html`<p><strong>${broken} need${broken === 1 ? "s" : ""} fixing.</strong></p>`
+    : notice.checking || list.some(one => !one.checked) ? html`<p class="meta" role="status">Checking in the background. Refresh in a few seconds.</p>` : "";
   const sections = GROUPS.map(([group, title]) => {
     const rows = list.filter(one => one.group === group);
-    return rows.length === 0 ? "" : `<h2>${title}</h2>${rows.map(one => row(one, csrf)).join("")}`;
-  }).join("");
-  return `<section class="integrations">${note}${summary}${sections}</section>`;
+    return rows.length === 0 ? "" : html`<h2>${title}</h2>${rows.map(one => row(one, csrf))}`;
+  });
+  return html`<section class="integrations">${note}${summary}${sections}</section>`;
 }

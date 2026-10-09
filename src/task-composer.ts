@@ -1,5 +1,6 @@
 /** UI choices translate into the same digest-bound schedules as the CLI. */
 import { parseSchedule, scheduleText, validTimezone, type Schedule } from "./flow-schedule.js";
+import { html, joinHtml, type Html } from "./html.js";
 
 export function composerSchedule(fields: URLSearchParams): { ok: true; schedule: string | null } | { ok: false; message: string } {
   const repeat = fields.get("repeat") ?? "once";
@@ -28,18 +29,17 @@ export function scheduleFields(schedule: Schedule): Record<string, string> {
   return { repeat: schedule.kind, time: schedule.hhmm, timezone: schedule.timezone ?? "UTC", ...(schedule.kind === "weekly" ? { weekday: String(schedule.day) } : {}) };
 }
 
-const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 /** A normal form works without JavaScript; enhancement only folds unused fields. */
-export function scheduleEditorHtml(raw: string | null, submitted?: URLSearchParams): string {
+export function scheduleEditorHtml(raw: string | null, submitted?: URLSearchParams): Html {
   const parsed = raw === null ? null : parseSchedule(raw);
   const fields = submitted?.has("repeat") ? Object.fromEntries(submitted) : parsed === null ? {} : scheduleFields(parsed);
   const repeat = fields.repeat ?? "daily";
-  const value = (name: string, fallback: string) => escape(fields[name] ?? fallback);
-  return `<fieldset data-schedule-editor${raw === null && submitted === undefined ? ' data-detect-timezone="true"' : ""}><legend>When to run</legend>` +
-    `<label>Repeat<select name="repeat">${[["daily", "Daily"], ["weekly", "Weekly"], ["custom", "Custom interval"]].map(([id, label]) => `<option value="${id}"${repeat === id ? " selected" : ""}>${label}</option>`).join("")}</select></label>` +
-    `<div data-schedule-kind="weekly"><label>Day<select name="weekday">${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((day, index) => `<option value="${index}"${String(index) === (fields.weekday ?? "1") ? " selected" : ""}>${day}</option>`).join("")}</select></label></div>` +
-    `<div data-schedule-kind="calendar"><label>Time<input type="time" name="time" value="${value("time", "09:00")}"></label><label>Timezone<input type="text" name="timezone" value="${value("timezone", "UTC")}" autocomplete="off" placeholder="America/Los_Angeles"></label><p class="meta">Daily and weekly times follow this timezone. A skipped clock time skips that occurrence; a repeated time runs once.</p></div>` +
-    `<div data-schedule-kind="custom"><label>Every<input type="number" name="interval" min="1" value="${value("interval", "60")}"></label><label>Unit<select name="interval-unit">${["minutes", "hours", "days"].map(unit => `<option${unit === (fields["interval-unit"] ?? "minutes") ? " selected" : ""}>${unit}</option>`).join("")}</select></label><p class="meta">Intervals range from 5 minutes to 7 days.</p></div></fieldset>`;
+  const value = (name: string, fallback: string) => fields[name] ?? fallback;
+  return joinHtml([html`<fieldset data-schedule-editor${raw === null && submitted === undefined ? html` data-detect-timezone="true"` : ""}><legend>When to run</legend>`,
+    html`<label>Repeat<select name="repeat">${[["daily", "Daily"], ["weekly", "Weekly"], ["custom", "Custom interval"]].map(([id, label]) => html`<option value="${id}"${repeat === id ? html` selected` : ""}>${label}</option>`)}</select></label>`,
+    html`<div data-schedule-kind="weekly"><label>Day<select name="weekday">${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((day, index) => html`<option value="${index}"${String(index) === (fields.weekday ?? "1") ? html` selected` : ""}>${day}</option>`)}</select></label></div>`,
+    html`<div data-schedule-kind="calendar"><label>Time<input type="time" name="time" value="${value("time", "09:00")}"></label><label>Timezone<input type="text" name="timezone" value="${value("timezone", "UTC")}" autocomplete="off" placeholder="America/Los_Angeles"></label><p class="meta">Daily and weekly times follow this timezone. A skipped clock time skips that occurrence; a repeated time runs once.</p></div>`,
+    html`<div data-schedule-kind="custom"><label>Every<input type="number" name="interval" min="1" value="${value("interval", "60")}"></label><label>Unit<select name="interval-unit">${["minutes", "hours", "days"].map(unit => html`<option${unit === (fields["interval-unit"] ?? "minutes") ? html` selected` : ""}>${unit}</option>`)}</select></label><p class="meta">Intervals range from 5 minutes to 7 days.</p></div></fieldset>`]);
 }
 
 export function scheduleEditorScript(): string {

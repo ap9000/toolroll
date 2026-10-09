@@ -109,7 +109,7 @@ test('edge unknown paths and wrong methods never invoke a protocol adapter', asy
       expect((await send(path, method, act)).status, `${method} ${path}`).toBe(404);
     }
   }
-  for (const [path, method] of [['/api/cli', 'GET'], ['/api/sessions/start', 'GET'], ['/api/team', 'DELETE'], ['/api/team/events', 'POST'], ['/hooks/flow/one', 'GET'], ['/hooks/telegram', 'GET']]) {
+  for (const [path, method] of [['/api/cli', 'GET'], ['/api/sessions/start', 'GET'], ['/api/team', 'DELETE'], ['/hooks/flow/one', 'GET'], ['/hooks/telegram', 'GET']]) {
     expect((await send(path!, method!, act)).status, `${method} ${path}`).toBe(405);
   }
   for (const spy of spies) expect(spy).not.toHaveBeenCalled();

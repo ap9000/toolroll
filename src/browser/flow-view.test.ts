@@ -22,7 +22,7 @@ let streams: FakeStream[] = [];
 class FakeStream extends EventTarget {
   static CLOSED = 2;
   readyState = 1;
-  constructor(_url: string) { super(); streams.push(this); }
+  constructor(readonly url: string) { super(); streams.push(this); }
   close() { this.readyState = 2; }
 }
 beforeEach(() => {
@@ -58,12 +58,14 @@ test.each([false, true])("live task states replace the card line and keep its ta
   expect(panel.querySelector('a[href="/t/checkout"]')?.textContent).toBe("Open its task");
 });
 
-test("a nudge during a read is kept, a failed read retries on its own, and reload reads again", async () => {
+test("a nudge during a read is kept, a failed read retries on its own, reload reads again, and nothing reads on a timer", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   try {
     vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
     const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
     await act(async () => root!.render(createElement(FlowView, { view: view("Building · step 1 of 6", "first"), csrf: "fixture" })));
+    // The page's one stream, joined to this flow's room.
+    expect(streams.at(-1)!.url).toBe("/live?room=flow%3A1");
     const nudge = (at: string) => act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ at, revision: "v1:9" }) })); });
     let release!: () => void;
     const fetcher = vi.fn()
@@ -88,8 +90,8 @@ test("a nudge during a read is kept, a failed read retries on its own, and reloa
     // The server's stream fell behind and caught up.
     await act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("reload", { data: "{}" })); });
     expect(fetcher).toHaveBeenCalledTimes(5);
-    // And the page reconciles on its own slow beat.
-    await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    // Without a write, the room says nothing and the page reads nothing.
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(fetcher).toHaveBeenCalledTimes(5);
   } finally { vi.useRealTimers(); }
 });

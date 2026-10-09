@@ -1,4 +1,4 @@
-import type { Registration } from './handler-registry.js';
+import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { handleCliHttp,type RunOperateAs } from '../cli-http.js';
@@ -20,7 +20,8 @@ import { handleTeamHttp, TEAM_PASSWORD_REVERIFY_MS } from '../team-http.js';
 import { handleTeamsHttp } from "../teams.js";
 import type { EdgeContext } from './handler-context.js';
 import { flowHook,telegramHook,type RemoteHookContext } from "./remote-hooks.js";
-import { respond,type ServeOptions,type Who } from "./shared.js";
+import { respond,type ServeOptions } from "./http.js";
+import { type Who } from "./session.js";
 
 export interface RemoteRuntime {
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
@@ -30,7 +31,6 @@ export interface RemoteRuntime {
   allowedHost: (host: string | undefined) => boolean;
   team: { execute: import("../team-contract.js").TeamExecute; start: () => void; close: () => Promise<void>; pass: () => Promise<void>; cursor: (actor: import("../team-contract.js").TeamActor, conversationId?: string) => number | null; domain: import("../team-leads.js").TeamLeads; };
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
-  teamStreams: Set<ServerResponse<IncomingMessage>>;
   requestBudget: RequestBudget;
   options: ServeOptions;
   coding: CodingWorkspace | null;
@@ -49,7 +49,7 @@ export interface RemoteRuntime {
   teamsTenantBudget: SourceAdmission;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
-  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, teamStreams, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, SSO_FRESH_MS, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
+  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, SSO_FRESH_MS, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
 
   /**
    * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
@@ -117,7 +117,7 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       if (actor.principal !== undefined) return reply;
       const who = identify(request, false);
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
-    }, cursor: team.cursor, streams: teamStreams,
+    },
   });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
@@ -155,49 +155,35 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),
   });
-  async function edge(ctx: EdgeContext): Promise<void> {
-    const { request, response, url, route } = ctx;
-    switch (route.id) {
-      case 'edge.telegram-hook': return telegramHook(hookContext, request, response);
-      case 'edge.flow-hook': case 'edge.flow-form': case 'edge.flow-form-send': return flowHook(hookContext, request, response, url);
-      case 'edge.mcp': return mcpHttp(request, response);
-      case 'edge.oauth-discovery': case 'edge.oauth-register': case 'edge.oauth-token': case 'edge.oauth-authorize': case 'edge.oauth-consent':
-        await oauthHttp(request, response, url); return;
-      case 'edge.sessions-list': case 'edge.sessions-show': case 'edge.sessions-changes': case 'edge.sessions-start': case 'edge.sessions-send': case 'edge.sessions-stop': case 'edge.sessions-resume': case 'edge.sessions-recover':
-        await sessionEndpoint(request, response); return;
-      case 'edge.team-read': case 'edge.team-send': case 'edge.team-events': await teamEndpoint(request, response); return;
-      case 'edge.cli': await cliEndpoint(request, response); return;
-      case 'edge.teams':
-        if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock,
-          admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
-        return respond(response, 404, 'text/plain; charset=utf-8', 'No such address.');
-    }
-    throw new Error('Unregistered remote route');
-  }
-  const registrations: Registration[] = [
-    { id: "edge.telegram-hook", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.flow-form", domain: "remote", stage: "edge", method: "GET,HEAD", handle: edge },
-    { id: "edge.flow-form-send", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.flow-hook", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.mcp", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.oauth-discovery", domain: "remote", stage: "edge", method: "GET,HEAD", handle: edge },
-    { id: "edge.oauth-register", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.oauth-token", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.oauth-authorize", domain: "remote", stage: "edge", method: "GET,HEAD", handle: edge },
-    { id: "edge.oauth-consent", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-list", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-show", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-changes", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-start", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-send", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-stop", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-resume", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.sessions-recover", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.team-read", domain: "remote", stage: "edge", method: "GET", handle: edge },
-    { id: "edge.team-send", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.team-events", domain: "remote", stage: "edge", method: "GET", handle: edge },
-    { id: "edge.cli", domain: "remote", stage: "edge", method: "POST", handle: edge },
-    { id: "edge.teams", domain: "remote", stage: "edge", method: "POST", handle: edge },
-  ];
-  return { registrations, edge };
+  const teams = async ({ request, response }: EdgeContext): Promise<void> => {
+    if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock,
+      admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
+    return respond(response, 404, 'text/plain; charset=utf-8', 'No such address.');
+  };
+  // Each protocol adapter keeps its own operation boundary; every row still names its own entry.
+  const registrations = handlersOf("remote", {}, {
+    "edge.telegram-hook": async ({ request, response }) => { await telegramHook(hookContext, request, response); },
+    "edge.flow-form": async ({ request, response, url }) => { await flowHook(hookContext, request, response, url); },
+    "edge.flow-form-send": async ({ request, response, url }) => { await flowHook(hookContext, request, response, url); },
+    "edge.flow-hook": async ({ request, response, url }) => { await flowHook(hookContext, request, response, url); },
+    "edge.mcp": async ({ request, response }) => { await mcpHttp(request, response); },
+    "edge.oauth-discovery": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
+    "edge.oauth-register": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
+    "edge.oauth-token": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
+    "edge.oauth-authorize": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
+    "edge.oauth-consent": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
+    "edge.sessions-list": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-show": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-changes": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-start": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-send": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-stop": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-resume": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.sessions-recover": async ({ request, response }) => { await sessionEndpoint(request, response); },
+    "edge.team-read": async ({ request, response }) => { await teamEndpoint(request, response); },
+    "edge.team-send": async ({ request, response }) => { await teamEndpoint(request, response); },
+    "edge.cli": async ({ request, response }) => { await cliEndpoint(request, response); },
+    "edge.teams": teams,
+  });
+  return { registrations };
 }

@@ -77,7 +77,7 @@ test("before sign-in, every address still asks for sign-in rather than revealing
 });
 
 test("a caller the route does not admit gets that route's own refusal", async () => {
-  const live = await send("/flows/1/live", { headers: bearer() });
+  const live = await send("/live?room=flow%3A1", { headers: bearer() });
   expect([live.status, live.headers["content-type"], live.body]).toEqual([403, "application/json", JSON.stringify({ error: "session" })]);
 });
 

@@ -6,8 +6,8 @@ import { assignmentPresentationOf, shortenedMaterialReason, type AssignmentStatu
 import { plainReasonWords } from './proof.js';
 import { chatResultHref } from './chat-controls.js';
 import { statusDetailsHtml, statusWhyHtml, type PullRequestFact, type TaskStatus } from './task-status.js';
+import { html, type Html } from './html.js';
 
-const escape = (value: string): string => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 
 /** The existing verified receipt reader may discover damage after a verdict
  * was saved. Keep the limitation visible without inventing another work stage. */
@@ -61,11 +61,11 @@ export function assignmentAttemptsOf(assignment: AssignmentSnapshot): Assignment
   }));
 }
 
-export function assignmentAttemptsHtml(assignment: AssignmentSnapshot): string {
-  if (assignment.attempts.length === 0) return '';
-  return `<details class="assignment-attempts"><summary>Attempts <span class="meta">${assignment.attempts.length}</span></summary><ol>` + assignmentAttemptsOf(assignment).map(attempt =>
-    `<li data-attempt-task="${escape(attempt.taskId)}" data-history-version="${escape(attempt.taskId)}"><a href="${escape(attempt.href)}">${escape(attempt.label)}</a>${attempt.runId === null ? '' : ` <a href="/r/${attempt.runId}">Run #${attempt.runId}</a>`}${attempt.detail === null ? '' : `<p class="meta">${escape(attempt.detail)}</p>`}</li>`
-  ).join('') + `</ol>${assignment.owner === null ? '' : `<p class="meta">Lead: ${escape(assignment.owner.label)}${assignment.owner.active ? '' : ' · access ended'}</p>`}<p class="work-meta work-id">Task <span class="mono">${escape(assignment.rootId)}</span></p></details>`;
+export function assignmentAttemptsHtml(assignment: AssignmentSnapshot): Html {
+  if (assignment.attempts.length === 0) return html``;
+  return html`<details class="assignment-attempts"><summary>Attempts <span class="meta">${assignment.attempts.length}</span></summary><ol>${assignmentAttemptsOf(assignment).map(attempt =>
+    html`<li data-attempt-task="${attempt.taskId}" data-history-version="${attempt.taskId}"><a href="${attempt.href}">${attempt.label}</a>${attempt.runId === null ? '' : html` <a href="/r/${attempt.runId}">Run #${attempt.runId}</a>`}${attempt.detail === null ? '' : html`<p class="meta">${attempt.detail}</p>`}</li>`
+  )}</ol>${assignment.owner === null ? '' : html`<p class="meta">Lead: ${assignment.owner.label}${assignment.owner.active ? '' : ' · access ended'}</p>`}<p class="work-meta work-id">Task <span class="mono">${assignment.rootId}</span></p></details>`;
 }
 
 /** Only recognized storage limits and explicitly identified older records are
@@ -123,17 +123,16 @@ export function assignmentCardOf(assignment: AssignmentSnapshot, options: Assign
   };
 }
 
-export function assignmentSummaryHtml(assignment: AssignmentSnapshot, options: AssignmentCardOptions & { compact?: boolean; sentence?: string | undefined } = {}): string {
+export function assignmentSummaryHtml(assignment: AssignmentSnapshot, options: AssignmentCardOptions & { compact?: boolean; sentence?: string | undefined } = {}): Html {
   const card = assignmentCardOf(assignment, options);
   const tone = card.status.tone;
-  return `<section class="${options.compact ? 'assignment-summary' : 'card assignment-summary'}" aria-label="assignment progress" data-assignment="${escape(assignment.rootId)}" data-work-status="${card.token}" data-tone="${card.tone}" data-headline="${escape(card.status.headline)}" data-headline-tone="${tone}"${options.compact ? '' : ' data-task-status'}>` +
-    (options.compact ? `<span class="status-line" data-work-status="${card.token}" data-tone="${card.tone}"><i class="status-dot" aria-hidden="true"></i><span class="status-label">${card.label}</span></span>` : `<h2 class="assignment-state status-headline"><i aria-hidden="true"></i>${escape(card.label)}</h2>`) +
-    `<p class="meta assignment-detail status-sentence">${escape(options.sentence ?? card.status.sentence)}</p>` +
-    (card.action === null ? '' : `<a class="${options.compact ? 'work-action' : 'button-link'}" href="${escape(card.action.href)}"${card.action.openResult ? ' data-open-result' : ''}${options.compact ? '' : ' data-primary-action'}>${escape(card.action.label)}${options.compact ? ' →' : ''}</a>`) +
-    (options.compact ? '' : statusDetailsHtml(card.status)) +
-    statusWhyHtml(card.status, card.reasons, card.diagnostics) +
-    (card.notices === null ? '' : `<details class="assignment-notices"><summary>${card.notices.summary}</summary>${card.notices.lines.map(one => `<p class="meta">${escape(one)}</p>`).join('')}</details>`) +
-    assignmentAttemptsHtml(assignment) + `</section>`;
+  return html`<section class="${options.compact ? 'assignment-summary' : 'card assignment-summary'}" aria-label="assignment progress" data-assignment="${assignment.rootId}" data-work-status="${card.token}" data-tone="${card.tone}" data-headline="${card.status.headline}" data-headline-tone="${tone}"${options.compact ? '' : html` data-task-status`}>${
+    options.compact ? html`<span class="status-line" data-work-status="${card.token}" data-tone="${card.tone}"><i class="status-dot" aria-hidden="true"></i><span class="status-label">${card.label}</span></span>` : html`<h2 class="assignment-state status-headline"><i aria-hidden="true"></i>${card.label}</h2>`}<p class="meta assignment-detail status-sentence">${options.sentence ?? card.status.sentence}</p>${
+    card.action === null ? '' : html`<a class="${options.compact ? 'work-action' : 'button-link'}" href="${card.action.href}"${card.action.openResult ? html` data-open-result` : ''}${options.compact ? '' : html` data-primary-action`}>${card.action.label}${options.compact ? ' →' : ''}</a>`}${
+    options.compact ? '' : statusDetailsHtml(card.status)}${
+    statusWhyHtml(card.status, card.reasons, card.diagnostics)}${
+    card.notices === null ? '' : html`<details class="assignment-notices"><summary>${card.notices.summary}</summary>${card.notices.lines.map(one => html`<p class="meta">${one}</p>`)}</details>`}${
+    assignmentAttemptsHtml(assignment)}</section>`;
 }
 
 /** Shared assignment layout; actions remain comfortable on touch screens. */

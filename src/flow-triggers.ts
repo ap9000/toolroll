@@ -1,4 +1,5 @@
 import { adapterPolicy } from "./server/route-policy.js";
+import { html, htmlString, postForm, styleElement, type Html } from "./html.js";
 /**
  * Flow triggers (v82): what starts cards in a flow without someone adding
  * them by hand.
@@ -1010,12 +1011,7 @@ export function stopSharingFlowButton(store: Store, trigger: FlowTriggerRow, now
   store.updateFlowTrigger(trigger.id, { hookHash: null }, now);
 }
 
-const esc = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-
-/** The public page: the button's name and its questions, nothing about the flow, the project or anyone in it. */
-function formHtml(label: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
-<title>${esc(label)}</title><style>
+const FORM_CSS = `
 :root{color-scheme:light dark;--bg:#f7f7f5;--card:#fff;--text:#1c1d1b;--muted:#666a63;--line:#dcded8;--accent:#2d5a45}
 @media (prefers-color-scheme:dark){:root{--bg:#141614;--card:#1d201d;--text:#ecefe9;--muted:#9ea39a;--line:#343934;--accent:#8fd0ae}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -1023,19 +1019,26 @@ main{max-width:560px;margin:0 auto;padding:40px 16px}h1{font-size:1.5rem;margin:
 label{display:grid;gap:6px;margin:0 0 16px;font-weight:600}input,textarea{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%}
 textarea{min-height:96px;resize:vertical}button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:12px 18px;min-height:44px;background:var(--accent);color:var(--bg);cursor:pointer}
 p{color:var(--muted)}.trap{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}a{color:var(--accent)}
-</style></head><body><main><h1>${esc(label)}</h1><div class="card">${body}</div></main></body></html>`;
+`;
+
+/** The public page: the button's name and its questions, nothing about the flow, the project or anyone in it. */
+function formHtml(label: string, body: Html): string {
+  return htmlString(html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>${label}</title>${styleElement(FORM_CSS)}</head><body><main><h1>${label}</h1><div class="card">${body}</div></main></body></html>`);
 }
 
+/** The page's bytes (the public route writes them itself, with its own headers). */
 export type FormAnswer = { status: number; html: string };
 
 /** GET a shared form: its questions. */
 export function flowFormPage(store: Store, token: string, now: Date): FormAnswer {
   const trigger = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? store.flowTriggerByHook(hookHash(token)) : null;
   const config = trigger === null ? null : triggerConfigOf(trigger);
-  if (trigger === null || config?.kind !== "button") return { status: 404, html: formHtml("Not found", "<p>This form isn't available. Ask whoever shared it for a new link.</p>") };
+  if (trigger === null || config?.kind !== "button") return { status: 404, html: formHtml("Not found", html`<p>This form isn't available. Ask whoever shared it for a new link.</p>`) };
   if (!adapterPolicy({ caller: "anonymous", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, html: "" };
-  const fields = config.questions.map((question, index) => `<label>${esc(question)}${index === 0 ? `<input name="a${index}" required maxlength="200" autocomplete="off">` : `<textarea name="a${index}" maxlength="3000"></textarea>`}</label>`).join("");
-  return { status: 200, html: formHtml(config.label, `<form method="post">${fields}<div class="trap" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div><input type="hidden" name="t" value="${now.getTime()}"><button>Send</button></form>`) };
+  const fields = config.questions.map((question, index) => html`<label>${question}${index === 0 ? html`<input name="a${index}" required maxlength="200" autocomplete="off">` : html`<textarea name="a${index}" maxlength="3000"></textarea>`}</label>`);
+  // Signed out by nature: no session, so no CSRF; the trap, the shown time and the hourly limit guard it. It posts back to its own address.
+  return { status: 200, html: formHtml(config.label, postForm("", html`${fields}<div class="trap" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div><input type="hidden" name="t" value="${now.getTime()}"><button>Send</button>`, { signedOut: true })) };
 }
 
 /** POST a shared form: at most one card per submission, keys refused, a limit per hour, and quiet about what a bot did wrong. */
@@ -1044,19 +1047,19 @@ export function receiveFlowForm(store: Store, token: string, fields: URLSearchPa
   const config = trigger === null ? null : triggerConfigOf(trigger);
   if (trigger === null || config?.kind !== "button") return flowFormPage(store, token, now);
   if (!adapterPolicy({ caller: "anonymous", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, html: "" };
-  const again = `<p><a href="${esc(FORM_PATH + token)}">Send another</a></p>`;
-  const thanks = formHtml(config.label, `<p>Thanks — it's been sent.</p>${again}`);
+  const again = html`<p><a href="${FORM_PATH + token}">Send another</a></p>`;
+  const thanks = formHtml(config.label, html`<p>Thanks — it's been sent.</p>${again}`);
   // A filled trap, or a page posted faster than a person could, gets thanks and makes nothing.
   const form = readFormSubmission(fields, config.questions.length);
   const shown = Number(form.t);
   if ((form.website ?? "") !== "" || !Number.isFinite(shown) || now.getTime() - shown < 2000 || now.getTime() - shown > 86_400_000) return { status: 200, html: thanks };
   const recent = store.handle.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ? AND key LIKE 'form:%' AND at > ?").get(trigger.id, new Date(now.getTime() - 3_600_000).toISOString());
-  if (Number(recent?.["n"] ?? 0) >= FORM_CARDS_PER_HOUR) return { status: 429, html: formHtml(config.label, `<p>Too many sent in the last hour. Try again later.</p>`) };
+  if (Number(recent?.["n"] ?? 0) >= FORM_CARDS_PER_HOUR) return { status: 429, html: formHtml(config.label, html`<p>Too many sent in the last hour. Try again later.</p>`) };
   const answers = form.answers.map((answer, index) => (answer ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, index === 0 ? 200 : 3000));
-  if (answers[0] === "") return { status: 400, html: formHtml(config.label, `<p>Answer “${esc(config.questions[0]!)}” first.</p>${again}`) };
+  if (answers[0] === "") return { status: 400, html: formHtml(config.label, html`<p>Answer “${config.questions[0]!}” first.</p>${again}`) };
   const details = config.questions.slice(1).map((question, index) => answers[index + 1] === "" ? null : `${question}\n${answers[index + 1]}`).filter(one => one !== null).join("\n\n");
   const made = makeCard(store, trigger, config, { key: `form:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: answers[0]!, description: `From the “${config.label}” form:\n\n${details}`.trim(), source: { kind: "form", label: `Form: ${config.label}`, url: null } }, "Form", now);
-  if (made.made !== "added") return { status: 400, html: formHtml(config.label, `<p>${made.note?.includes("key or password") ? "That looks like it holds a key or password. Take it out and send again." : "That couldn't be sent."}</p>${again}`) };
+  if (made.made !== "added") return { status: 400, html: formHtml(config.label, html`<p>${made.note?.includes("key or password") ? "That looks like it holds a key or password. Take it out and send again." : "That couldn't be sent."}</p>${again}`) };
   store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: "Someone sent the form." }, now);
   return { status: 200, html: thanks };
 }

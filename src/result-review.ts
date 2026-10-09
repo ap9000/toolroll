@@ -5,7 +5,7 @@
  * Nothing here reads a database or renders a full page. The server
  * assembles the same verified records it already reads (handoff, proof,
  * diff, matrix, publication, report) into `SharedResultFacts`; every
- * surface prints those facts through `resultFactsAttributes`, so a test —
+ * surface prints those facts through `resultFactsAttributeMap` (as html attributes), so a test —
  * or a person — can check that chat, run detail, and review agree on the
  * run, its head, its checks, its caveats, and its publication.
  *
@@ -187,11 +187,7 @@ export function resultFactsAttributeMap(facts: SharedResultFacts): Record<string
   };
 }
 
-export function resultFactsAttributes(facts: SharedResultFacts): string {
-  return Object.entries(resultFactsAttributeMap(facts)).map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join("");
-}
-
-/** The shared fact names, in the order `resultFactsAttributes` writes them. */
+/** The shared fact names, in the order `resultFactsAttributeMap` lists them. */
 export const RESULT_FACT_KEYS = ["run", "head", "base", "head-source", "checks", "caveats", "evidence", "publication"] as const;
 
 /** Parse the shared facts back — the test-side and proof-side reader.
@@ -493,10 +489,6 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
   }
 })();`;
 
-function escapeAttribute(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function unescapeAttribute(text: string): string {
-  return text.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return text.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }

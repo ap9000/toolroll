@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { htmlString } from "./html.js";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createScheduledFlow } from "./flow-schedule.js";
 import { flowFallbackHtml, flowView } from "./flows-ui.js";
@@ -14,7 +15,7 @@ test("agent cards and the fallback read live task progress and keep the task lin
   fixture.checkpoint(["completed", "completed", "current", "pending", "pending", "pending"]);
   const shown = view();
   expect(shown.cards[0]).toMatchObject({ waiting: "Building · step 3 of 6", task: { id: fixture.id, href: `/t/${fixture.id}` } });
-  expect(flowFallbackHtml(shown)).toContain("Building · step 3 of 6");
+  expect(htmlString(flowFallbackHtml(shown))).toContain("Building · step 3 of 6");
   expect(store.getFlowCard(fixture.card)!.waiting).toBe("Filed as a task");
   fixture.question();
   expect(view().cards[0]!.waiting).toBe("Waiting on you: Use banker's rounding for refunds too?");

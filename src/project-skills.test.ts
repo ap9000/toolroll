@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { html, htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -292,7 +294,7 @@ describe("managed project skills", () => {
     expect(() => store.handle.exec("DELETE FROM skill_snapshot")).toThrow(
       /immutable/,
     );
-    expect(skillsSnapshotHtml(readSkillsSnapshot(store, run))).toContain(
+    expect(htmlString(skillsSnapshotHtml(readSkillsSnapshot(store, run)) || html``)).toContain(
       "does not confirm",
     );
   });
@@ -611,8 +613,8 @@ describe("managed project skills", () => {
           })
         ).status,
       ).toBe(409);
-      expect(skillsHtml(view(), csrf, true)).toContain('name="nonce"');
-      expect(
+      expect(htmlString(withFormToken(csrf, () => skillsHtml(view(), csrf, true)))).toContain('name="nonce"');
+      expect(htmlString(withFormToken(csrf, () =>
         skillsHtml(
           {
             ...view(),
@@ -626,7 +628,7 @@ describe("managed project skills", () => {
           csrf,
           true,
         ),
-      ).not.toContain("<script>alert");
+      ))).not.toContain("<script>alert");
     } finally {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

@@ -20,6 +20,8 @@ import { INTEGRATIONS_CSS, integrationsHtml } from "./integrations-ui.js";
 import { TOOLS_CSS, toolsHtml } from "./tools-ui.js";
 import { settingsGroups, settingsTiles } from "./serve.js";
 import { openStore } from "./store.js";
+import { type Html,htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 
 const SIMPLE_ICONS = ["betterstack", "chrome", "claude", "cloudflare", "confluence", "discord", "figma", "github", "gmail", "intercom", "jira", "linear",
   "notion", "paypal", "posthog", "sentry", "shadcn", "square", "stripe", "supabase", "telegram", "vercel", "webflow", "wix", "zapier"];
@@ -28,13 +30,14 @@ const SVGL = ["canva", "openai", "playwright", "slack", "teams"];
 const LETTERS = ["attio", "klaviyo", "mobbin", "context7"];
 
 /** What one mark shows: an icon id, or the letter in its tile. */
-function shown(html: string): { icon: string | null; letter: string | null; connected: boolean } {
+function shown(fragment: Html | string): { icon: string | null; letter: string | null; connected: boolean } {
+  const html = typeof fragment === "string" ? fragment : htmlString(fragment);
   const path = html.match(/<path fill="currentColor"(?: fill-rule="evenodd")? d="([^"]+)"\/>/)?.[1] ?? null;
   const icon = path === null ? null : Object.entries(BRAND_ICONS).find(([, one]) => one.path === path)?.[0] ?? "unknown";
   const letter = html.match(/data-letter aria-hidden="true">([^<]+)<\/span>/)?.[1] ?? null;
   return { icon, letter, connected: html.includes('data-connected="true"') };
 }
-const marks = (html: string) => [...html.matchAll(/<span class="brand-mark"[\s\S]*?<\/span>/g)].map(([one]) => one);
+const marks = (html: Html | string) => [...(typeof html === "string" ? html : htmlString(html)).matchAll(/<span class="brand-mark"[\s\S]*?<\/span>/g)].map(([one]) => one);
 
 /**
  * The exact box around path data as the generator writes it: absolute M, then relative c, l, h, v and z.
@@ -85,11 +88,11 @@ test("every icon is one 24x24 currentColor path, centred at one optical size, fr
     else expect(long, id).toBeCloseTo(24, 1);
     expect(box.center.x, id).toBeCloseTo(12, 1);
     expect(box.center.y, id).toBeCloseTo(12, 1);
-    const html = brandMarkHtml(id, icon.title, true);
+    const html = htmlString(brandMarkHtml(id, icon.title, true));
     expect(html.match(/<svg[^>]*>/g), id).toEqual(['<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">']);
     expect(html.match(/<path /g)?.length, id).toBe(1);
     expect(html, id).not.toMatch(/#[0-9a-f]{3,6}|rgb\(|url\(|<image|href=/i);
-    expect(renderToStaticMarkup(createElement(BrandIconView, { id: id as never })).replace("></path>", "/>"), id).toBe(brandIconHtml(id as never));
+    expect(renderToStaticMarkup(createElement(BrandIconView, { id: id as never })).replace("></path>", "/>"), id).toBe(htmlString(brandIconHtml(id as never)));
   }
   // Only OpenAI keeps its source's even-odd rule; its holes rely on it.
   expect(Object.entries(BRAND_ICONS).filter(([, one]) => (one as BrandIcon).evenodd).map(([id]) => id)).toEqual(["openai"]);
@@ -140,7 +143,7 @@ test("every one-click service and catalog tool shows its logo, or a letter tile 
 });
 
 test("Tools: connect tiles and tool cards use the mark, ink when connected; a custom tool keeps a letter, even named after a brand", () => {
-  const html = toolsHtml({
+  const html = withFormToken("csrf", () => toolsHtml({
     repo: "/work/shop", project: "shop", kit: null, wanted: null, catalog: [], found: [],
     connections: [{ id: "stripe", label: "Stripe", about: "Payments", state: "connected" }, { id: "attio", label: "Attio", about: "CRM", state: "open" }],
     tools: [
@@ -148,7 +151,7 @@ test("Tools: connect tiles and tool cards use the mark, ink when connected; a cu
       { tool: { name: "postgres", spec: { name: "postgres", transport: "stdio", command: "npx", args: [], url: null, secrets: [], bearer: null, headerSecrets: {}, about: "Database" }, source: "custom", createdBy: "alex", lastTest: null }, secretsSet: [] },
       { tool: { name: "linear", spec: { name: "linear", transport: "stdio", command: "npx", args: [], url: null, secrets: [], bearer: null, headerSecrets: {}, about: "My own Linear bridge" }, source: "custom", createdBy: "alex", lastTest: null }, secretsSet: [] },
     ] as never,
-  }, "csrf", true);
+  }, "csrf", true));
   expect(marks(html).map(shown)).toEqual([
     { icon: "sentry", letter: null, connected: true },
     { icon: null, letter: "P", connected: true },
@@ -163,7 +166,7 @@ test("Integrations: every row shows its logo or a letter tile, ink only when con
   const store = openStore(join(dir, "orders.db"));
   try {
     const list = integrationsNow({ store, dir, telegramTokenFile: join(dir, "telegram-token"), env: {}, repos: [], toolHome: dir });
-    const html = integrationsHtml(list, "csrf", {});
+    const html = htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", {})));
     const rows = [...html.matchAll(/data-integration="([^"]+)" data-state="([^"]+)">([\s\S]*?)<\/div><\/div>/g)];
     expect(rows.length).toBe(list.length);
     const seen = Object.fromEntries(rows.map(([, key, state, body]) => {
@@ -178,12 +181,12 @@ test("Integrations: every row shows its logo or a letter tile, ink only when con
       email: "letter E", mcp: "letter M", monitoring: "letter M", "agent:claude": "claude", "agent:codex": "openai",
     });
     expect(brandIconFor("mcp:/work/shop:supabase")).toBe("supabase");
-    const gmail = integrationsHtml([{ ...list.find(one => one.key === "email")!, account: "alex@gmail.com" }], "", {});
+    const gmail = withFormToken("", () => integrationsHtml([{ ...list.find(one => one.key === "email")!, account: "alex@gmail.com" }], "", {}));
     expect(shown(marks(gmail)[0]!).icon).toBe("gmail");
     // A project's own tool is a letter even when its name matches a logo; a catalog tool shows its logo.
     const tool = { ...list.find(one => one.key === "mcp")!, group: "tools" as const, name: "figma" };
-    expect(shown(marks(integrationsHtml([{ ...tool, key: "mcp:/work/shop:figma", custom: true }], "", {}))[0]!)).toMatchObject({ icon: null, letter: "F" });
-    expect(shown(marks(integrationsHtml([{ ...tool, key: "mcp:/work/shop:figma" }], "", {}))[0]!).icon).toBe("figma");
+    expect(shown(marks(withFormToken("", () => integrationsHtml([{ ...tool, key: "mcp:/work/shop:figma", custom: true }], "", {})))[0]!)).toMatchObject({ icon: null, letter: "F" });
+    expect(shown(marks(withFormToken("", () => integrationsHtml([{ ...tool, key: "mcp:/work/shop:figma" }], "", {})))[0]!).icon).toBe("figma");
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -191,12 +194,12 @@ test("Settings home: the four chat apps draw their logo like the other tiles' ic
   const groups = settingsGroups({ channel: "telegram", implicit: false, configured: ["telegram"] });
   const tiles = groups.flatMap(group => group.tiles).filter(tile => tile.brand !== undefined);
   expect(tiles.map(tile => [tile.brand, tile.status?.words])).toEqual([["telegram", "Gets alerts"], ["slack", "Not set up"], ["discord", "Not set up"], ["teams", "Not set up"]]);
-  const html = settingsTiles(groups);
+  const html = htmlString(settingsTiles(groups));
   expect(html).not.toContain("brand-mark");
   for (const tile of tiles) {
     const link = html.match(new RegExp(`<a href="${tile.href}">([\\s\\S]*?)</a>`))?.[1] ?? "";
     // The svg sits where every other tile's icon sits, so the same rule sizes and colours it.
-    expect(link.startsWith(brandIconHtml(tile.brand!)), tile.href).toBe(true);
+    expect(link.startsWith(htmlString(brandIconHtml(tile.brand!))), tile.href).toBe(true);
     expect(link, tile.href).toContain(`provider-status--${tile.status!.tone}`);
   }
   expect(html.match(/<a href="\/settings\/tools"><svg /)).not.toBeNull();

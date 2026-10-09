@@ -8,10 +8,11 @@ const SLICE_MS = 10_000;
 /** monitorEventLoopDelay samples by sleeping this long, so every raw sample includes it. */
 const EVENT_LOOP_RESOLUTION_MS = 20;
 export const LATENCY_BUCKETS = [0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.015, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60];
-export const ROUTE_FAMILIES = ['cli', 'mcp', 'team', 'team-stream', 'chat', 'chat-stream', 'flows', 'flow-stream', 'tasks', 'results', 'decisions', 'sessions', 'settings', 'projects', 'assets', 'auth', 'metrics', 'health', 'console', 'other'] as const;
+export const ROUTE_FAMILIES = ['cli', 'mcp', 'team', 'live', 'chat', 'flows', 'tasks', 'results', 'decisions', 'sessions', 'settings', 'projects', 'assets', 'auth', 'metrics', 'health', 'console', 'other'] as const;
 export type RouteFamily = typeof ROUTE_FAMILIES[number];
-export type StreamFamily = 'team-stream' | 'chat-stream' | 'flow-stream' | 'other';
-export const STREAM_FAMILIES: readonly StreamFamily[] = ['team-stream', 'chat-stream', 'flow-stream', 'other'];
+/** Every page's live updates are one stream (GET /live). */
+export type StreamFamily = 'live' | 'other';
+export const STREAM_FAMILIES: readonly StreamFamily[] = ['live', 'other'];
 export const QUEUE_BUCKETS = [0, 1024, 4096, 16384, 65536, 262144, 1048576];
 
 /** Only literals from the allowlist can become labels, including for unknown or malformed paths. */
@@ -20,10 +21,8 @@ export function routeFamily(raw: string): RouteFamily {
   try { path = new URL(raw, 'http://localhost').pathname; } catch { return 'other'; }
   if (path === '/api/cli') return 'cli';
   if (path === '/mcp' || path.startsWith('/mcp/')) return 'mcp';
-  if (path === '/api/team/events') return 'team-stream';
+  if (path === '/live') return 'live';
   if (path === '/api/team') return 'team';
-  if (path === '/chat/stream') return 'chat-stream';
-  if (/^\/flows\/[^/]+\/live$/.test(path)) return 'flow-stream';
   if (path === '/metrics') return 'metrics';
   if (path === '/health') return 'health';
   const first = path.split('/')[1];

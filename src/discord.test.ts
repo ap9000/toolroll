@@ -1,5 +1,7 @@
 /** Scripted Discord API and provider responses; no live account acceptance. */
 import { beforeEach, afterEach, expect, test, vi } from "vitest";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -760,7 +762,7 @@ test("credentials stay private; card text cannot ping people or hide terms in ma
     expect(statSync(join(dir, "discord-connection.json")).mode & 0o777).toBe(
       0o600,
     );
-  const html = discordSettingsHtml(store, dir, "csrf");
+  const html = htmlString(withFormToken("csrf", () => discordSettingsHtml(store, dir)));
   expect(html).toContain("&lt;application&gt;");
   expect(html).not.toContain(TOKEN);
   savePrimary(dir, "discord");

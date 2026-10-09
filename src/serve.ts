@@ -1,3 +1,4 @@
+import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
 import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
@@ -133,6 +134,7 @@ freshIdentitySignIn
 } from "./scope.js";
 import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
+import { createLiveHandlers } from './server/live.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -140,7 +142,13 @@ import { createPeopleHandlers } from './server/people-tokens.js';
 import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
-import { BODY_CAP,chromeScript,decisionsFor,DEMO_BANNER,DEMO_BANNER_SHORT,escape,focusDocument,form,KBD_HELP,LEAD_BY_DEFAULT_FACT,loginHref,matchTaskPath,mateBrowserMessages,mateChatVersion,NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,page,PersistentSessions,pinnedTheme,projectChatHref,QUEUE_VIEW,redactedPath,redirect,refuse,requestContext,respond,safeReturn,screen,SENSITIVE_INPUT,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,shell,SHUTDOWN_WAIT_MS,sidebarScript,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,ssoStepUps,TASK_FORM_BODY_CAP,taskChatHref,teamProposalCardParts,wrongHostPage,type ApprovalNonce,type ChatEnablement,type Chrome,type DecisionServer,type LiveTurn,type ProjectPeek,type ReplacedThread,type Screen,type ServeOptions,type SsoIntent,type TaskChatFocus,type Who } from "./server/shared.js";
+import { requestContext } from "./server/request-context.js";
+import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
+import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
+import { decisionsFor,LEAD_BY_DEFAULT_FACT,mateBrowserMessages,mateChatVersion,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
+import { type ProjectPeek } from "./server/render-pages.js";
+import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
+import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
@@ -437,9 +445,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
   };
   const codingProjects = (): string[] => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])].filter(repo => rowVisible(liveCeiling(), repo));
-  const teamStreams = new Set<ServerResponse>();
   /** Open chat streams (live replies), ended when the server closes. */
-  const chatStreams = new Set<ServerResponse>();
+  let liveTurnStarted: (thread: number) => void = () => {};
   /** Google sign-ins in progress (v89): each consent visit's state, for 10 minutes. */
   const googleVisits = new Map<string, GoogleVisit>();
   /** One-click connections on their way: the service's sign-in page and back, 15 minutes at most. */
@@ -636,11 +643,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return respond(response, 400, "text/plain; charset=utf-8", "credentials never travel in URLs");
     }
     if (edgeRoute === null && isEdgeAddress(url.pathname)) return refuseEdge(request, response, url.pathname, wrongMethodEdge);
-    if (edgeRoute !== null && edgeRoute.domain !== 'people') return dispatchEdge(edgeRoute, { url, who: null, request, response, method });
+    // Live rooms share the browser identity/context below; their adapter carries token limits into each room.
+    if (edgeRoute !== null && edgeRoute.domain !== 'people' && edgeRoute.domain !== 'live') return dispatchEdge(edgeRoute, { url, who: null, request, response, method });
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname)));
+    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname)));
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();
@@ -651,7 +659,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // One source charge before password proof and one account/token charge after it, including GET /login.
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal } = {};
-    const who = identify(request, touch, false, refusedToken);
+    const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
     if (refusedToken.principal !== undefined) {
       if (refuseBudget(requestBudget.admit(refusedToken.principal.tokenId, "api"))) return;
       if (method === "POST") {
@@ -685,15 +693,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       browser: who.via === 'cookie',
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } : undefined,
-      refusal: (answer: ServerResponse, status: number, body: string) => sendScreen(answer, status,
+      refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
       workspaceRequest: url.searchParams.get('request'),
     };
     // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
     if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
-      const taskTextForm = url.pathname === "/tasks/add" || /^\/t\/[^/]+\/scope$/.test(url.pathname);
-      const body = method === "POST" ? await form(request, url.pathname === "/settings/skills/import" ? 2 * 1024 * 1024 : url.pathname === "/flows/import" ? 1024 * 1024 : taskTextForm ? TASK_FORM_BODY_CAP : BODY_CAP) : null;
+      if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
+      const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
       const execute = async () => {
         // THE ROUTE TABLE (server/route-table.ts): nothing reaches a handler unless a row declares this method and
@@ -722,7 +730,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           // Authorize every read before considering a conditional response.
           // Task/result opening and receipt reconciliation always re-read work.
           const facts = requestContext.getStore();
-          if (facts?.workspaceRead && who.via === 'cookie' && url.pathname === '/chat' &&
+          if (facts?.workspaceRead && who.via === 'cookie' && route.id === 'chat.page' &&
               !url.searchParams.has('task') && !url.searchParams.has('result') && !url.searchParams.has('request')) {
             const key = createHash('sha256').update(JSON.stringify([workspaceIncarnation, who.name,
               who.session.generation, who.session.csrf, who.session.project, who.session.projectRevision,
@@ -813,7 +821,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // A project link is a read context, not a session-changing operation.
     // Prove it against both admission and the known project catalog before
     // collection queries; unknown/foreign paths reveal no work.
-    if ((url.pathname === '/work' || url.pathname === '/system') && url.searchParams.has('project')) {
+    if ((route.id === 'work' || route.id === 'system') && url.searchParams.has('project')) {
       const wanted = url.searchParams.get('project') ?? '';
       if (url.searchParams.getAll('project').length !== 1 || !visible(wanted) ||
           ![...managedRepos(), ...store.listProjects().map(one => one.path)].includes(wanted)) {
@@ -829,7 +837,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // viewing a result never changes the session's selected project, and
     // the page's project switch keeps showing the person's own choice.
     const chosenProject = project;
-    if (url.pathname === "/review" && url.searchParams.has("result")) {
+    if (route.id === "review" && url.searchParams.has("result")) {
       const wanted = url.searchParams.get("result") ?? "";
       const ref = wanted.length > 0 && wanted.length <= 64 && !hasForbiddenControls(wanted) ? store.lookupRef(wanted) : null;
       const namedProject = url.searchParams.get("project");
@@ -861,8 +869,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const needsProject =
       who.via === "cookie" && project === null && !unscopedMode &&
       route.needsProject &&
-      !(url.pathname === "/review" && url.searchParams.has("result")) &&
-      !(url.pathname === "/board" && url.searchParams.get("scope") === "all");
+      !(route.id === "review" && url.searchParams.has("result")) &&
+      !(route.id === "board" && url.searchParams.get("scope") === "all");
     if (needsProject) return redirect(response, `/projects?return=${encodeURIComponent(safeReturn(url.pathname + url.search))}`);
     return dispatchConsole(route, { url, who, request, response, route, now, project, chosenProject, posted: new URLSearchParams() });
   }
@@ -1029,7 +1037,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const rows = mateConversationRows(who, principal, focusTask, now, chatProject);
     return {
       sessionId: session.id, user: session.approver, version: mateChatVersion({ ...rows, focusTask }),
-      messages: mateBrowserMessages(rows, who.session.csrf, back, { task: focusTask?.id ?? null, project: chatProject }),
+      messages: mateBrowserMessages(rows, back, { task: focusTask?.id ?? null, project: chatProject }),
       pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: MATE_MESSAGE_MAX_CHARS,
       taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null,
     };
@@ -1145,7 +1153,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * non-executable JSON block on an already-authorized page — the same
    * titles the page itself may render, bounded, saturation declared.
    */
-  function paletteIndexTag(project: string | null): string {
+  function paletteIndexTag(project: string | null): Html {
     const admitted = project === null ? admissionList() : null;
     const entries: { label: string; href: string }[] = [
       { label: "work", href: "/work" },
@@ -1173,9 +1181,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const saturated = open.length > 200;
     const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/tasks", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
-    const json = JSON.stringify(saturated ? [...safeEntries, { label: "… more in the task list", href: "/tasks" }] : safeEntries)
-      .replace(/</g, "\\u003c");
-    return `<script type="application/json" id="palette-index">${json}</script>`;
+    return jsonScript(saturated ? [...safeEntries, { label: "… more in the task list", href: "/tasks" }] : safeEntries, { id: "palette-index" });
   }
 
   /**
@@ -1187,8 +1193,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * navigation — no refresh mechanism exists or is promised. The key
    * carries the one configuration bit the entries vary by.
    */
-  const paletteCache = new Map<string, { at: number; tag: string }>();
-  function paletteTagCached(project: string | null): string {
+  const paletteCache = new Map<string, { at: number; tag: Html }>();
+  function paletteTagCached(project: string | null): Html {
     const actor = requestContext.getStore()?.actor;
     const key = `${actor ?? ""}:${actor === undefined ? "" : store.accountOf(actor)?.generation}:${project ?? "(none)"} ${options.telegramTokenFile !== undefined}`;
     const hit = paletteCache.get(key);
@@ -1218,13 +1224,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const teamEntry = requestContext.getStore()?.returnTo;
     if (teamEntry?.startsWith('/chat') && !s.workspace?.team && !teamEntry.includes('task=') && !teamEntry.includes('proposal=') && demoLeadHere() === null) {
-      s.body = '<p class="team-entry"><a href="/chat?team=1">Open team chat</a></p>' + s.body;
-      if (s.workspace?.conversation) s.workspace.controlsHtml = '<p><a href="/chat?team=1">Open team chat</a></p>' + (s.workspace.controlsHtml ?? '');
+      s.body = html`<p class="team-entry"><a href="/chat?team=1">Open team chat</a></p>${s.body}`;
+      if (s.workspace?.conversation) s.workspace.controlsHtml = html`<p><a href="/chat?team=1">Open team chat</a></p>${s.workspace.controlsHtml}`;
     }
     const sensitive =
       s.forceSensitive === true ||
-      SENSITIVE_INPUT.test(s.body) ||
-      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(s.chrome.listPane));
+      SENSITIVE_INPUT.test(htmlString(s.body)) ||
+      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(s.chrome.listPane)));
     const requestFacts = requestContext.getStore();
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
@@ -1234,7 +1240,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       path.searchParams.set('format', 'workspace');
       // The legacy list pane (every task or build as links) duplicates the
       // Crew panel and Tasks page; inside the workspace the page stands alone.
-      const pageHtml = s.body;
+      const pageHtml = htmlString(s.body);
       const extras = s.workspace ?? {};
       const notices = [...(extras.notices ?? [])];
       if (s.chrome.modeBanner) notices.push(s.chrome.modeBanner.words);
@@ -1289,9 +1295,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           ? { request, received: store.mateRequestReceipt(conversation.sessionId, request) !== null } : null,
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
-        catchUpHtml: extras.catchUpHtml ?? '', controlsHtml: extras.controlsHtml ?? '', notices, view: extras.view ?? null,
+        catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
-        pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml,
+        pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml === null ? null : htmlString(extras.pageHtml),
         navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
         chats,
         ...(s.refreshSeconds === undefined ? {} : { refreshSeconds: Math.max(5, Math.floor(s.refreshSeconds)) }),
@@ -1329,9 +1335,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT : sensitiveChrome);
     const nonce = script === "" ? undefined : randomBytes(16).toString("base64");
     const body = chromeLayer
-      ? `${s.body}\n${paletteTagCached(s.chrome?.project ?? null)}\n${KBD_HELP}`
+      ? html`${s.body}\n${paletteTagCached(s.chrome?.project ?? null)}\n${KBD_HELP}`
       : s.body;
-    const html = shell(s.title, body, {
+    const document = shell(s.title, body, {
       ...(s.chrome === undefined ? {} : { chrome: s.chrome }),
       ...(sensitive ? { sensitive: true } : {}),
       ...(s.chrome !== undefined ? { sidebarToggle: true } : {}),
@@ -1341,7 +1347,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Pages that ship the chrome layer keep connect-src (v28 granted it for
     // the since-removed watched-session beat), beside pages whose own
     // functional script polls.
-    return page(response, status, html, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
+    return page(response, status, document, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
   }
   /** The needs-you count every surface wears, read from this request's own
    * Work counts (one query per request, never a cached earlier one), so a
@@ -1357,7 +1363,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function chromeFor(
     project: string | null,
     active: Chrome["active"],
-    listPane?: string,
+    listPane?: Html,
     scope?: Chrome["scope"],
   ): Chrome {
     if (restricted() && !visible(project)) project = null;
@@ -1476,9 +1482,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // holds finished ESCAPED fragments keyed by run:base:epoch — the epoch
   // rotates with every lease AND release, so a stale entry's key can never
   // be asked for again; hits still re-prove the whole guard list.
-  const peekCache = new Map<string, { fragment: string; at: number }>();
+  const peekCache = new Map<string, { fragment: Html; bytes: number; at: number }>();
   let peekCacheBytes = 0;
-  const peekInFlight = new Map<string, Promise<string>>();
+  const peekInFlight = new Map<string, Promise<Html>>();
   const peekBySession = new Map<string, number>();
   const PEEK_CACHE_TTL_MS = 10_000;
   const PEEK_CACHE_ENTRIES = 8;
@@ -1491,7 +1497,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const [key, entry] of peekCache) {
       if (peekCache.size <= PEEK_CACHE_ENTRIES && peekCacheBytes <= PEEK_CACHE_BYTES) break;
       peekCache.delete(key);
-      peekCacheBytes -= Buffer.byteLength(entry.fragment);
+      peekCacheBytes -= entry.bytes;
     }
   };
 
@@ -1499,14 +1505,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * `final` marks conditions that cannot heal for this run (finished,
    * superseded, wrong machine): the region poller reads the marker and
    * stops, instead of refetching a dead build every beat forever. */
-  const peekSay = (message: string, final = false): string =>
-    `<p class="meta"${final ? " data-region-stop" : ""}>${escape(message)}</p>`;
+  const peekSay = (message: string, final = false): Html =>
+    html`<p class="meta"${final ? html` data-region-stop` : ""}>${message}</p>`;
 
   /** The sanitize pipeline (finding 30/35): normalize → mask → escape. */
-  const peekName = (path: string): string => {
+  const peekName = (path: string): Html => {
     const normalized = path.replace(/[\u0000-\u001f\u007f]/g, "");
     const masked = scanForSecrets(normalized).length > 0 ? "[redacted: a credential-shaped name]" : normalized;
-    return escape(masked);
+    return textHtml(masked);
   };
 
   async function handlePost(
@@ -1517,28 +1523,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     response: ServerResponse,
     posted: URLSearchParams,
   ): Promise<void> {
-    const early = () => dispatchConsole(route, { url, who, request, response, route, now: clock(), project: projectOf(who, request) ?? null, chosenProject: projectOf(who, request) ?? null, posted });
-
-
+    // Every POST passes the shared mutation guard. Caller, scope, project (including a limited account's posted repo)
+    // and role were admitted by the route table.
     const denied = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
     if (denied !== null) return refuse(response, who, denied.status, denied.message);
-    if (["chat.demo","provider.resume","settings.updates-dismiss","settings.updates-checks","code.act"].includes(route.id)) return early();
-
-
-    if (restricted()) {
-      const repos = readForm(posted, CONSOLE_FORMS.projectCeiling).getAll("repo");
-      if (repos.length > 1 || repos.some(repo => repo.trim() !== "" && !visible(repo.trim()))) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-    }
-
-    // THE CENTRAL VIEWER GATE (modes chain, D2/E2): consequential POSTs
-    // require ACTIVE approver standing — cookie and bearer alike — with
-    // an EXACT allowlist of session-local acts, never a prefix. /login,
-    // /logout and /join answer before this handler.
-    if (who.role === "viewer") {
-      if (route.viewer !== true) {
-        return refuse(response, who, 403, "your login can watch, not act — ask an approver to upgrade you");
-      }
-    }
+    // Standing can change after a token was minted: a viewer's act stays refused, cookie and bearer alike, except
+    // the row's session-local acts.
+    if (who.role === "viewer" && !route.viewer) return refuse(response, who, 403, "your login can watch, not act — ask an approver to upgrade you");
     const now = clock();
     // Any accepted mutation may change what the inbox owes; the badge
     // re-counts within five seconds either way, this just makes it exact.
@@ -1577,12 +1568,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   server.close = ((callback?: (error?: Error) => void) => {
     leadClosing = true;
     try { requestBudget.flush(); } catch { /* saved again on the close event when it can be */ }
-    for (const stream of teamStreams) stream.end();
-    teamStreams.clear();
-    for (const stream of chatStreams) stream.end();
-    chatStreams.clear();
     flowRooms.close();
     taskRooms.close();
+    liveHandlers.close();
     detachReads();
     liveFollower.close();
     void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
@@ -1643,7 +1631,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get matePrincipal(): ServerRuntime['matePrincipal'] { return matePrincipal; },
     get chatScopeOf(): ServerRuntime['chatScopeOf'] { return chatScopeOf; },
     get liveTurns(): ServerRuntime['liveTurns'] { return liveTurns; },
-    get chatStreams(): ServerRuntime['chatStreams'] { return chatStreams; },
+    get liveTurnStarted(): ServerRuntime['liveTurnStarted'] { return liveTurnStarted; },
     get mateConversationRows(): ServerRuntime['mateConversationRows'] { return mateConversationRows; },
     get demoLeadHere(): ServerRuntime['demoLeadHere'] { return demoLeadHere; },
     get teamBrowserReply(): ServerRuntime['teamBrowserReply'] { return teamBrowserReply; },
@@ -1750,7 +1738,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get allowedHost() { return allowedHost; },
     get team() { return team; },
     get teamBrowserReply() { return teamBrowserReply; },
-    get teamStreams() { return teamStreams; },
     get requestBudget() { return requestBudget; },
     get options() { return options; },
     get coding() { return coding; },
@@ -1768,13 +1755,26 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
   };
+  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf });
+  liveTurnStarted = liveHandlers.turnStarted;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations,
   ]);
-  function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> { return registry.console(route, ctx); }
+  /** The row's role, after admission and before its one handler. */
+  function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    const held = route.role === "any" || ((!route.roleBrowser || who.via === "cookie") &&
+      (route.role === "approver" ? who.role === "approver" : store.isInstanceOperator(who.name)));
+    if (!held) {
+      ctx.request.resume();
+      const refusal = route.roleRefusal!;
+      return Promise.resolve("message" in refusal ? refuse(response, who, 403, refusal.message, refusal.back) : respond(response, refusal.status, refusal.type, refusal.body));
+    }
+    return registry.console(route, ctx);
+  }
   async function dispatchEdge(route: RouteDeclaration, ctx: Omit<import('./server/handler-context.js').EdgeContext, 'route'>): Promise<void> {
     if (route.callers.length === 1 && route.callers[0] === 'cookie' && ctx.request.headers.authorization !== undefined) {
       return respond(ctx.response, 403, 'text/plain; charset=utf-8', 'This address needs a browser sign-in.');
@@ -1789,4 +1789,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   return Object.assign(server, { mintSignInLink, closeCoding });
 }
 
-export { decisionAnswerScript,diffFileAnchor,earlierVersionsWords,editorFileHref,inboxFingerprints,needActionOf,orderChangedFiles,PAGE_CSS,parseInboxTab,pinnedTheme,plainConclusionOf,queueScript,rankReviewQueue,redactedPath,reviewFilePriority,reviewPriorityOf,revisionLineageWords,runFactsFragment,SENSITIVE_INPUT,settingsGroups,settingsTiles,SHUTDOWN_WAIT_MS,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,ssoStepUps,TASK_COMPOSER_MODES,withinSignedTouches,wrongHostPage,type DecisionServer,type InboxTab,type ReviewFileRow,type ReviewPriority,type ReviewQueueFacts,type RouteView,type ServeOptions,type TaskComposerMode } from "./server/shared.js";
+export { PAGE_CSS,pinnedTheme,SENSITIVE_INPUT } from "./server/chrome.js";
+export { redactedPath,SHUTDOWN_WAIT_MS,type ServeOptions } from "./server/http.js";
+export { TASK_COMPOSER_MODES,type TaskComposerMode } from "./server/render-chat.js";
+export { inboxFingerprints,parseInboxTab,queueScript,type InboxTab } from "./server/render-pages.js";
+export { ssoStepUps,wrongHostPage } from "./server/render-people.js";
+export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConclusionOf,rankReviewQueue,reviewFilePriority,reviewPriorityOf,runFactsFragment,withinSignedTouches,type ReviewFileRow,type ReviewPriority,type ReviewQueueFacts } from "./server/render-results.js";
+export { settingsGroups,settingsTiles } from "./server/render-settings.js";
+export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";
+export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/session.js";
