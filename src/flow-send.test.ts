@@ -326,7 +326,8 @@ describe("c3: another project, and Send me the result", () => {
     const steps = [{ id: "build", title: "Build the docs", kind: "task" as const, repo: BETA }];
     const definition = flowFromSteps(steps, null);
     expect(definition.stages[0]).toMatchObject({ kind: "task", repo: BETA });
-    expect(flowTerms(definition, null)[0]).toContain("Builds in another project: /projects/beta");
+    expect(flowTerms(definition, null)[0]).toContain("Builds in project: beta");
+    expect(flowTerms(definition, null).join("\n")).not.toContain(BETA);
     expect(crossProjectProblem(store, definition, { repo: ALPHA, owner: "sam" })).toBe("Zone Build the docs: sam, who owns this flow, can't file work in that project.");
     expect(crossProjectProblem(store, definition, { repo: ALPHA, owner: "alex" })).toBeNull();
 
