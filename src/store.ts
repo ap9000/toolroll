@@ -8295,6 +8295,9 @@ function migrateToV115(db: Database): void {
       // The references lose their foreign key in place (SQLite's documented procedure for removing a constraint, which
       // leaves every stored row as it is); the columns keep what they held.
       const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+      // Node 24's SQLite opens in defensive mode, which forbids this documented procedure; lift it for the rewrite only.
+      const defensive = (db as unknown as { enableDefensive?: (active: boolean) => void }).enableDefensive?.bind(db);
+      defensive?.(false);
       db.exec("PRAGMA writable_schema = ON");
       try {
         const rewrite = db.prepare("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?");
@@ -8302,6 +8305,7 @@ function migrateToV115(db: Database): void {
         db.exec(`PRAGMA schema_version = ${version + 1}`);
       } finally {
         db.exec("PRAGMA writable_schema = OFF");
+        defensive?.(true);
       }
       // A trigger on another table that still names a removed table would fail its next write.
       // (A table named after FROM, JOIN, INTO or UPDATE: "routine" is also a tier's name inside some triggers' text.)
