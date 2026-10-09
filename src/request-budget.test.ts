@@ -164,6 +164,15 @@ test("source admission keeps sliding windows and evicts the least recently used 
   expect(limitWords("per-minute", 5)).toBe("Request limit reached (requests per minute). Try again in 5 seconds.");
 });
 
+test("a full table of made-up sources never locks out a real one", () => {
+  const at = 1_000_000;
+  const budget = new SourceAdmission({ perMinute: 2, tracked: 8, clock: () => at });
+  // Flood well past capacity, each made-up source spending its whole window.
+  for (let i = 0; i < 100; i++) { budget.admit(`fabricated-${i}`); budget.admit(`fabricated-${i}`); }
+  expect(budget.size).toBe(8);
+  expect(budget.admit("203.0.113.42")).toEqual({ ok: true });
+});
+
 test("source admission prunes expired history before evicting a live, older entry", () => {
   let at = 1_000_000;
   const budget = new SourceAdmission({ perMinute: 1, tracked: 2, clock: () => at });
