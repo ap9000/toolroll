@@ -150,7 +150,7 @@ describe("the machine envelope", () => {
       assignment: ["show", "no-such-task", "--json"],
       claim: ["--json"],
       heartbeat: ["--json"],
-      release: ["--json"],
+      worker: ["release", "--json"],
       reap: ["--json"],
       enroll: ["--json"],
       grants: ["--json"],

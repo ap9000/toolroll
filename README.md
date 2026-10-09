@@ -477,7 +477,7 @@ toolroll task block api --on schema     # api waits for schema
 toolroll ready --json                   # what could be dispatched now
 toolroll claim schema --runner builder-1 --key dispatch-schema
 toolroll heartbeat <lease>              # still working
-toolroll release <lease>                # done holding it
+toolroll worker release <lease>         # done holding it
 ```
 
 Four properties make that loop safe to run unattended.
@@ -540,9 +540,10 @@ service unit never carries it. Cron remains first-class if you prefer it —
 cron's cadence, and a stray cron tick alongside a watch is safe (ordinary
 claims settle the race), it just is not needed.
 
-An honesty note for Windows: every pull request now type-checks, builds, and
-runs the native Task Scheduler/link tests plus the core dispatch contract on
-Windows with Node 22 and 24. Approved setup and verification commands use
+An honesty note for Windows: every pull request builds Toolroll on Windows
+with Node 22 and runs the native Job Object containment tests there; the full
+suite runs on Ubuntu (Node 22 and 24), and on macOS nightly and for every
+release. Approved setup and verification commands use
 Windows' native command shell. The scheduled-task definition follows the Task
 Scheduler XML schema and every `schtasks` interaction is covered by scripted
 tests. A physical Windows install has not yet been certified; the exact

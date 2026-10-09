@@ -126,6 +126,17 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("link", "put toolroll on PATH"),
   operator("unlink", "take it off PATH"),
   operator("update", "update to the latest release: verified provenance, drained work, backup, rehearsal, health check, automatic restore; --rollback undoes it"),
+  { invocation: "release", synopsis: "release Toolroll itself from a branch: gate the exact commit, wait for the owner's approval, check, complete, deploy, merge, tag, publish, Homebrew; rerun to resume",
+    audience: "operator", agentMayInvoke: false, mutation: "unkeyed",
+    positionals: [{ name: "branch", required: true, meaning: "the pushed branch with an open pull request" }],
+    flags: [jsonFlag,
+      { name: "repo", takesValue: true, meaning: "the gate checkout the release check runs in (default: this checkout)" },
+      { name: "new", takesValue: false, meaning: "release a new commit on the branch, setting the earlier unfinished release aside" },
+      { name: "limit", takesValue: true, meaning: "<step>=<minutes>: one waiting step's time limit" },
+      { name: "tap", takesValue: true, meaning: "the Homebrew tap, owner/name" },
+      { name: "release-gate", takesValue: true, meaning: "<id>: show why an update pause left before a deployment's swap is safe to lift" },
+      { name: "yes", takesValue: false, meaning: "with --release-gate: lift that one pause once it is proved" }],
+    notableReasons: ["usage", "ambiguous", "drift", "timeout", "check-failed", "ci-failed", "tree-mismatch", "conflict", "mixed-runtime", "gate-held", "after-swap"] },
   operator("demo", "a seeded throwaway sandbox"),
   { invocation: 'session capabilities', synopsis: 'Show executable session schemas and operator authority requirements; no credentials needed', audience: 'agent', agentMayInvoke: true, mutation: 'none', flags: [jsonFlag] },
   ...SESSION_DESCRIPTORS.map(spec => ({
@@ -331,7 +342,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   { invocation: "heartbeat", synopsis: "still working; extends the lease", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "lease", required: true, meaning: "the lease id" }],
     flags: [jsonFlag, dbFlag], notableReasons: ["not-leased", "fenced"] },
-  { invocation: "release", synopsis: "done with it; fenced if superseded", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
+  { invocation: "worker release", synopsis: "done with it; fenced if superseded", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "lease", required: true, meaning: "the lease id" }],
     flags: [jsonFlag, dbFlag], notableReasons: ["not-leased", "fenced"] },
   { invocation: "reap", synopsis: "release every lease that ran out", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent", flags: [jsonFlag, dbFlag] },
@@ -447,7 +458,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 const REMOTE_NO: readonly string[] = [
   // Answered by the local CLI, or a client of a central server itself.
   "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github", "contract", "skills list", "skills get", "skills install",
-  "link", "unlink", "update", "demo", "chat", "connect", "lead list", "lead create", "lead update", "lead member", "lead transfer",
+  "link", "unlink", "update", "release", "demo", "chat", "connect", "lead list", "lead create", "lead update", "lead member", "lead transfer",
   "conversation list", "conversation create", "conversation show", "conversation member", "conversation edit", "conversation withdraw",
   "conversation read", "conversation follow", "conversation stop",
   "session capabilities", "session list", "session show", "session changes", "session start", "session send", "session stop", "session resume", "session recover",
@@ -455,7 +466,7 @@ const REMOTE_NO: readonly string[] = [
   "project show", "project use", "brief", "lead token", "lead say", "health",
   "assignment show", "assignment updates", "assignment claim", "assignment check", "assignment brief", "assignment inbox", "assignment ack",
   // Workers, the loop and the services that run here.
-  "claim", "heartbeat", "release", "reap", "tick", "build", "reconcile",
+  "claim", "heartbeat", "worker release", "reap", "tick", "build", "reconcile",
   "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
   "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.

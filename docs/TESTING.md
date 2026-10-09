@@ -89,6 +89,36 @@ for one check turn. Scripted journeys use no provider slots. The summary
 reports provider concurrency and waits. Standalone `scripts/e2e-parallel.mjs`
 uses the same fixed lane defaults and provider gate for real-model journeys.
 
+## CI
+
+Every pull request and push to main runs `.github/workflows/ci.yml`: the full
+suite on Ubuntu with Node 22 and 24, the Linux cgroup containment job and the
+Windows Job Object containment job. macOS Node 22 and 24 run nightly in
+`macos.yml` and on release tags in `publish.yml`. The publish job uses
+`needs: macos`, so both tag legs must pass before npm publication.
+No job runs behind an `if:`, because GitHub reports a
+skipped job as passing a required check; `src/ci-workflow.test.ts` holds the
+workflows to the check names `toolroll release` waits for.
+
+## Releasing
+
+`toolroll release <branch> --repo <gate checkout>` runs the whole release:
+gate the exact commit with Full checks, wait for an active approver's approval
+(the only human step), require a passing Full result, complete and deploy it.
+The service and both CLI names must record that commit; a matching version
+is insufficient. After PR checks pass, squash merge, delete the matching
+remote branch, verify the merged tree and tag. Both macOS legs gate npm and
+GitHub publication; Homebrew waits for checks to register and all pass.
+
+Stops retain their step. Rerunning reconciles any completed merge, tag or
+publication. Interrupted deployments recover the saved staging directory
+before retrying; failed recovery stops the release. Both CLI names move to
+the deployer's runtime in their own step, put back together on failure. A
+deployment that stopped before its swap with new work still paused is lifted
+only through `toolroll release --release-gate <id>`, which proves the swap
+never began first. Every wait has a time
+limit. `toolroll skills get release` has the details.
+
 ## Unit tests (`npm test`)
 
 Only three kinds are kept, and only these kinds are added:

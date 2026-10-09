@@ -74,6 +74,16 @@ export const DOCUMENTED_REASONS: readonly string[] = [
   "repair-attempts-spent", // the chain's signed attempt cap is spent
   "repair-no-progress", // two consecutive repair attempts failed to shrink the unresolved set
   "repair-refused-integrity", // a refutation named an altered term, not a gap — no automatic repair
+  "ambiguous", //         a value could mean two things (a lease id or a branch) — refused, never guessed
+  "drift", //             the branch, pull request or result moved from the gated commit
+  "check-failed", //      the release check failed; it stays visible and nothing reruns it
+  "ci-failed", //         a required pull-request check failed or is missing — nothing merged
+  "base-moved", //        main gained a commit the release branch lacks — nothing merged
+  "tree-mismatch", //     main's merge commit has a different tree than the gated commit — nothing tagged
+  "conflict", //          a task or tag exists for a different commit
+  "mixed-runtime", //     the console, worker and CLI names don't run one build
+  "gate-held", //         a deployment stopped before its swap and left new work paused — `release --release-gate <id>`
+  "after-swap", //        the deployment got past stopping the service, so its pause is its own recovery's to lift
 ];
 
 export type EnvelopePayload = {
