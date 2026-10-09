@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.54 — 2026-10-09
+
+- **One chat core.** Telegram, Slack, Discord and Teams now share one chat
+  core, and 70 old chat tables are gone.
+- **Nothing to redo.** Chat history and pairings carry over on upgrade.
+- **Consent stays put.** An existing approval consent still covers only the
+  chat providers it named.
+
 ## 0.9.53 — 2026-10-08
 
 - **Fewer features to learn.** Contests, held sessions and fallback chains
